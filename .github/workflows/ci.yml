@@ -21,8 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version-file: go.mod }
-      - uses: golangci/golangci-lint-action@v8
-        with: { version: latest }
+      - run: make lint            # every module (core, api, sdk), also as GOOS=linux
 
   vanity:                       # the kevaso.com Worker that maps import paths to repos
     runs-on: ubuntu-latest

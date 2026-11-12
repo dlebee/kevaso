@@ -12,8 +12,13 @@ race:                       ## unit tests with the race detector (what CI runs)
 vet:
 	@for m in $(MODULES); do (cd $$m && go vet ./... && GOOS=linux go vet ./...) || exit 1; done
 
-lint:                       ## needs golangci-lint
-	@for m in $(MODULES); do (cd $$m && golangci-lint run ./...) || exit 1; done
+GOLANGCI := $(CURDIR)/bin/golangci-lint
+
+$(GOLANGCI):                 ## pinned linter, built into ./bin (gitignored)
+	GOBIN=$(CURDIR)/bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+
+lint: $(GOLANGCI)           ## every module, for this OS and for Linux
+	@for m in $(MODULES); do (cd $$m && $(GOLANGCI) run ./... && GOOS=linux $(GOLANGCI) run ./...) || exit 1; done
 
 e2e:                        ## the test loop on real machines (Lima on macOS, this machine on Linux)
 	go test -tags e2e -count=1 -v -timeout 30m ./test/e2e/...
