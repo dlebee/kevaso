@@ -38,22 +38,28 @@ type Server struct {
 	clock clock.Clock
 	valid *validator
 	mux   *http.ServeMux
+	auth  *Auth
+	h     http.Handler
 }
 
-// New returns a server over a store.
-func New(s store.Store, c clock.Clock) (*Server, error) {
+// New returns a server over a store, without authentication (kevasod dev, tests).
+func New(s store.Store, c clock.Clock) (*Server, error) { return NewWithAuth(s, c, nil) }
+
+// NewWithAuth returns a server that authenticates every request (see Auth).
+func NewWithAuth(s store.Store, c clock.Clock, auth *Auth) (*Server, error) {
 	v, err := newValidator(builtinRules)
 	if err != nil {
 		return nil, err
 	}
-	srv := &Server{store: s, clock: c, valid: v, mux: http.NewServeMux()}
+	srv := &Server{store: s, clock: c, valid: v, mux: http.NewServeMux(), auth: auth}
 	srv.mux.HandleFunc("/apis/kevaso/v1/", srv.route)
 	srv.mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
+	srv.h = srv.wrap(srv.mux)
 	return srv, nil
 }
 
 // ServeHTTP implements http.Handler.
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.h.ServeHTTP(w, r) }
 
 // Status is the error body, like Kubernetes' Status.
 type Status struct {
