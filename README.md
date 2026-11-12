@@ -3,7 +3,7 @@
 Self-hosted, stateful **silos** (microVMs or containers) on the machines you bring, managed
 Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for operators.
 
-**Status:** early (M0–M3 of [MILESTONES.md](MILESTONES.md) done). What exists today:
+**Status:** early (M0–M4 of [MILESTONES.md](MILESTONES.md) done). What exists today:
 
 - `kvoadm init [USER@]ADDRESS --kevasod PATH`: sets up a fresh Linux machine over SSH (host key
   pinned or confirmed first, password used once then keys only, root password rotated, signed
@@ -17,6 +17,12 @@ Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for
 - `kvo apply / get / describe / delete / watch` for Namespaces, Hosts and Silos, using the context
   `kvoadm init` writes (`~/.kevaso/config.yaml`), and `kvo exec silo NAME -- CMD` through the
   agent's dial-out tunnel (hosts need no inbound port);
+- people: `kvoadm users invite bob --namespace payments` gives a one-time code; bob runs
+  `kvo login SERVER --ca sha256:…` (browser sign-in; the control plane is its own OIDC issuer behind
+  its private CA, pinned by fingerprint), and tokens go to the macOS Keychain. RBAC copied from
+  Kubernetes (Roles, ClusterRoles, bindings; built-in cluster-admin / admin / editor / viewer /
+  runner), `kvo ctx`, `kvo ns`, `kvo auth can-i`, ServiceAccount tokens for CI (`kvo create token`),
+  and an audit log of every decision;
 - under the hood: a store with global revisions and resumable watches, CEL validation, a controller
   engine; the testbed and end-to-end loop (`make e2e`).
 
