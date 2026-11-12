@@ -1,0 +1,29 @@
+# 01 · One host that is both the control plane and the worker (what M3 runs).
+#
+#   kvoadm init USER@ADDRESS --name hv1 --worker   # sets up the host: control plane + worker
+#   kvo apply -f examples/01-one-host.yaml         # the namespace and the silo
+#
+# The full example in the design adds a private service and named ports (M6).
+
+apiVersion: kevaso/v1
+kind: Namespace
+metadata: { name: demo }
+---
+apiVersion: kevaso/v1
+kind: Silo
+metadata: { name: hello, namespace: demo }
+spec:
+  runtime: cloud-hypervisor       # a microVM with a real network card
+  image: ubuntu-24.04
+  resources: { cpu: 1, memory: 1Gi }
+  disk: { size: 10Gi }            # thin LVM on the host
+  init:                           # run inside the VM, in order, before the silo is Ready
+    steps:
+      - name: hello
+        run: echo "hello from $(hostname)" > /root/hello && cat /root/hello
+      - name: python
+        shell: python3
+        run: |
+          import platform; print("kernel", platform.release())
+      - name: gateway
+        run: ping -c1 -W2 10.64.0.1
