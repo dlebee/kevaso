@@ -1,7 +1,8 @@
 // Run with: node --test   (from site/vanity)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import worker, { route } from "./vanity.js";
+import { readFileSync } from "node:fs";
+import worker, { route, MODULES, HOST } from "./vanity.js";
 
 const mods = { core: "https://github.com/dlebee/kevaso", "provider-linode": "https://github.com/dlebee/kevaso-provider-linode" };
 
@@ -38,11 +39,17 @@ test("everything else passes through to the site", () => {
   }
 });
 
-test("without a site yet, the worker answers / itself and 404s the rest", async () => {
-  const home = await worker.fetch(new Request("https://kevaso.com/"));
-  assert.equal(home.status, 200);
-  assert.match(await home.text(), /github\.com\/dlebee\/kevaso/);
-  assert.equal((await worker.fetch(new Request("https://kevaso.com/about"))).status, 404);
+test("wrangler.toml routes exactly one <root>* pattern per MODULES entry", () => {
+  const toml = readFileSync(new URL("./wrangler.toml", import.meta.url), "utf8");
+  const routed = [...toml.matchAll(/pattern\s*=\s*"([^"]+)"/g)].map((m) => m[1]).sort();
+  const want = Object.keys(MODULES).map((m) => `${HOST}/${m}*`).sort();
+  assert.deepEqual(routed, want);
+});
+
+test("non-module paths under a module prefix go to the site", async () => {
+  const env = { SITE: { fetch: async (req) => new Response(`site ${new URL(req.url).pathname}`) } };
+  const res = await worker.fetch(new Request("https://kevaso.com/core-concepts"), env);
+  assert.equal(await res.text(), "site /core-concepts");
 });
 
 test("the worker serves HTML the go command can parse", async () => {

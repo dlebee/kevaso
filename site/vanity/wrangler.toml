@@ -4,6 +4,13 @@ main = "vanity.js"
 compatibility_date = "2026-11-01"
 workers_dev = false
 
-# Every request to kevaso.com goes through the Worker; it answers only ?go-get=1 and module paths,
-# and passes everything else to the site's origin.
-routes = [{ pattern = "kevaso.com/*", zone_name = "kevaso.com" }]
+# The Worker only sees module paths; the rest of kevaso.com is the public website (Worker `kevaso-www`,
+# its own private repo, route kevaso.com/*; the most specific route wins). One route per MODULES entry,
+# `<root>*`: an exact `kevaso.com/core` does not match `/core?go-get=1`, the request `go` actually
+# sends. `core*` also catches site paths like `/core-concepts`: those go back to the site through the
+# SITE binding (a test checks this list matches MODULES).
+routes = [
+  { pattern = "kevaso.com/core*", zone_name = "kevaso.com" },
+]
+
+services = [{ binding = "SITE", service = "kevaso-www" }]
