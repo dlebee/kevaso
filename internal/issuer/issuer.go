@@ -359,6 +359,20 @@ func (i *Issuer) Verify(ctx context.Context, raw string) (Claims, error) {
 	return Claims{User: c.Subject, Groups: c.Groups, SessionID: c.SID}, nil
 }
 
+// ClaimedSubject reads who a token says it's for, without checking it: only for the audit log of
+// a refused token (marked as a claim there), never for a decision.
+func ClaimedSubject(raw string) string {
+	tok, err := jwt.ParseSigned(raw, []jose.SignatureAlgorithm{jose.ES256})
+	if err != nil {
+		return ""
+	}
+	var c jwt.Claims
+	if err := tok.UnsafeClaimsWithoutVerification(&c); err != nil {
+		return ""
+	}
+	return c.Subject
+}
+
 // ── HTTP ─────────────────────────────────────────────────────────────────────
 
 // Handler serves discovery, keys, the login page and the token endpoint.

@@ -89,7 +89,7 @@ type bufConn struct {
 func (b bufConn) Read(p []byte) (int, error) { return b.r.Read(p) }
 
 // agentConnect: a host's agent registers its tunnel. A host certificate may register only itself;
-// the local admin socket (the in-process agent) may register its host.
+// the in-process agent (Component) registers its own host.
 func (s *Server) agentConnect(w http.ResponseWriter, r *http.Request) {
 	host := r.URL.Query().Get("host")
 	if host == "" || !strings.EqualFold(r.Header.Get("Upgrade"), "kevaso-tunnel") {
@@ -98,7 +98,7 @@ func (s *Server) agentConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.auth != nil {
 		id, _ := IdentityFrom(r.Context())
-		if id != LocalAdmin && (id.Type != "host" || id.Name != host) {
+		if id != LocalAdmin && id != Component && (id.Type != "host" || id.Name != host) {
 			writeErr(w, errf(http.StatusForbidden, "Forbidden", "%s may not connect as host %s", id, host))
 			return
 		}

@@ -56,7 +56,12 @@ func (id Identity) URI() *url.URL {
 	return &url.URL{Scheme: "kevaso", Host: id.Type, Path: "/" + id.Name + "/role/" + id.Role}
 }
 
-func (id Identity) String() string { return id.Type + ":" + id.Name + " (" + id.Role + ")" }
+func (id Identity) String() string {
+	if id.Role == "" {
+		return id.Type + ":" + id.Name
+	}
+	return id.Type + ":" + id.Name + " (" + id.Role + ")"
+}
 
 // ParseIdentity reads an identity URI.
 func ParseIdentity(u *url.URL) (Identity, error) {

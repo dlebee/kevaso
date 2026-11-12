@@ -183,6 +183,9 @@ func TestASecondUserOnlySeesTheirNamespace(t *testing.T) {
 			t.Errorf("bob may not %s: got %v", what, err)
 		}
 	}
+	if _, err := bob.List(c.ctx, "Silo", "secret-project"); err == nil || strings.Contains(err.Error(), "()") || !strings.Contains(err.Error(), "user:bob: no role lets bob") {
+		t.Errorf("refusal reads %q", err)
+	}
 	// Listing namespaces shows only his.
 	if err := list(c.ctx, bob, "Namespace", "", &l); err != nil || len(l) != 1 || !strings.Contains(string(l[0]), `"payments"`) {
 		t.Fatalf("bob's namespaces: %d %v", len(l), err)
@@ -230,7 +233,7 @@ func TestASecondUserOnlySeesTheirNamespace(t *testing.T) {
 	}
 	if !find(func(e audit.Entry) bool { return e.Event == "disable" && e.User == "bob" }) ||
 		!find(func(e audit.Entry) bool {
-			return e.Event == "authenticate" && !e.Allowed && strings.Contains(e.Reason, "session ended")
+			return e.Event == "authenticate" && !e.Allowed && strings.Contains(e.Reason, "session ended") && e.Claimed == "bob" && e.User == ""
 		}) {
 		t.Error("audit log is missing the disable or the refused token")
 	}

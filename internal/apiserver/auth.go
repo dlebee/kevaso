@@ -42,8 +42,8 @@ type Auth struct {
 }
 
 func (s *Server) record(r *http.Request, id pki.Identity, groups []string, a rbac.Attributes, allowed bool, reason string) {
-	if s.auth == nil || s.auth.Audit == nil || (id.Type == "host" && allowed) {
-		return // hosts do the same narrow things all day; their refusals are what's interesting
+	if s.auth == nil || s.auth.Audit == nil || ((id.Type == "host" || id.Type == "component") && allowed) {
+		return // machines do the same narrow things all day; their refusals are what's interesting
 	}
 	s.auth.Audit.Record(audit.Entry{Time: s.clock.Now(), User: id.Name, Type: id.Type, Groups: groups, Verb: a.Verb,
 		Resource: a.Resource, Namespace: a.Namespace, Name: a.Name, Allowed: allowed, Reason: reason, Remote: r.RemoteAddr})
@@ -53,6 +53,7 @@ type ctxKey int
 
 const (
 	adminConnKey ctxKey = iota
+	componentConnKey
 	identityKey
 	groupsKey
 	nsFilterKey
@@ -71,6 +72,9 @@ func IdentityFrom(ctx context.Context) (pki.Identity, bool) {
 func (s *Server) authenticate(r *http.Request) (pki.Identity, []string, error) {
 	if admin, _ := r.Context().Value(adminConnKey).(bool); admin {
 		return LocalAdmin, groupsOf(LocalAdmin), nil
+	}
+	if c, _ := r.Context().Value(componentConnKey).(bool); c {
+		return Component, nil, nil
 	}
 	if r.TLS != nil && len(r.TLS.VerifiedChains) > 0 { // verified against the cluster CA by TLS
 		id, err := pki.IdentityOf(r.TLS.PeerCertificates[0])
@@ -148,6 +152,9 @@ func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups [
 	if id == LocalAdmin {
 		return true, false, "local admin socket", nil
 	}
+	if id == Component {
+		return true, false, "kevasod itself", nil
+	}
 	if id.Type == "host" {
 		if hostAuthorize(id, r, t) {
 			return true, false, "host " + id.Role, nil
@@ -213,7 +220,11 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 		id, groups, err := s.authenticate(r)
 		if err != nil {
 			if s.auth.Audit != nil {
-				s.auth.Audit.Record(audit.Entry{Time: s.clock.Now(), Event: "authenticate", Verb: r.Method, Resource: r.URL.Path, Reason: err.Error(), Remote: r.RemoteAddr})
+				e := audit.Entry{Time: s.clock.Now(), Event: "authenticate", Verb: r.Method, Resource: r.URL.Path, Reason: err.Error(), Remote: r.RemoteAddr}
+				if raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+					e.Claimed = issuer.ClaimedSubject(raw)
+				}
+				s.auth.Audit.Record(e)
 			}
 			writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "%s", err))
 			return

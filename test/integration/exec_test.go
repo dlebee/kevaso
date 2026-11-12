@@ -42,7 +42,7 @@ func TestKvoExec(t *testing.T) {
 
 	for {
 		out, errs, code := h.kvo(ctx, "piped", "exec", "silo", "hello", "-n", "demo", "--", "echo", "-n", "hi")
-		if code != 0 && (strings.Contains(errs, "HostNotConnected") || strings.Contains(errs, "not found")) && ctx.Err() == nil {
+		if code != 0 && (strings.Contains(errs, "HostNotConnected") || strings.Contains(errs, "not found") || strings.Contains(errs, "not running")) && ctx.Err() == nil {
 			time.Sleep(20 * time.Millisecond) // the agent is still connecting or starting the silo
 			continue
 		}

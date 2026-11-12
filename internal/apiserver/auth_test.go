@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -317,5 +318,52 @@ func TestBuiltinRolesAreSeeded(t *testing.T) {
 	var b v1.ClusterRoleBinding
 	if err := e.admin.Get(e.ctx, "ClusterRoleBinding", "", "cluster-admins", &b); err != nil || b.Subjects[0].Name != "kevaso:cluster-admins" {
 		t.Fatalf("cluster-admins binding: %+v, %v", b, err)
+	}
+}
+
+// kevasod's own agent tunnels in-process (as the component identity), and exec reaches it.
+func TestInProcessAgentTunnel(t *testing.T) {
+	st := store.NewMemory(0)
+	ca, _ := pki.NewCA("t", time.Now())
+	srv, err := apiserver.NewWithAuth(st, clock.Real{}, &apiserver.Auth{CA: ca, Tokens: &jointoken.Issuer{Store: st, Clock: clock.Real{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, closeIP := srv.InProcess()
+	defer closeIP()
+	var me client.WhoAmI
+	if err := c.Call(ctx, http.MethodGet, "/auth/whoami", nil, &me); err != nil || me.Type != "component" {
+		t.Fatalf("whoami: %+v %v", me, err)
+	}
+	_ = c.Create(ctx, ns("dev"))
+	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "dev"},
+		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor"}}
+	if err := c.Create(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	s.Status.Host = "hv1"
+	if err := c.UpdateStatus(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	rt := fake.New()
+	rt.Handler = func(kri.ID, []string, []byte) (string, int) { return "in-process ok", 0 }
+	id := kri.ID{Namespace: "dev", Name: "web", UID: s.UID}
+	_ = rt.Create(ctx, kri.Spec{ID: id})
+	_ = rt.Start(ctx, id)
+	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}}
+	go a.RunTunnel(ctx)
+	for {
+		var out bytes.Buffer
+		code, err := c.Exec(ctx, "dev", "web", []string{"x"}, nil, &out, nil)
+		if err != nil && strings.Contains(err.Error(), "HostNotConnected") && ctx.Err() == nil {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if err != nil || code != 0 || out.String() != "in-process ok" {
+			t.Fatalf("exec: %q %d %v", out.String(), code, err)
+		}
+		break
 	}
 }

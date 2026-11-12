@@ -145,7 +145,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	go func() { defer wg.Done(); errs <- serveErr(apiSrv.ServeTLS(apiL, "", "")) }()
 	go func() { defer wg.Done(); errs <- serveErr(adminSrv.Serve(adminL)) }()
 
-	admin := client.NewUnix(cfg.AdminSocket)
+	admin, closeInProcess := srv.InProcess() // the components' own way in, not the admin socket
 	hbCtx, stopHB := context.WithCancel(ctx)
 	go heartbeat(hbCtx, admin, cfg)
 	go runControllers(hbCtx, admin, cfg)
@@ -158,6 +158,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		rts, err := worker.NewRuntimes(wc)
 		if err != nil {
 			stopHB()
+			closeInProcess()
 			return nil, err
 		}
 		go worker.Run(hbCtx, admin, wc, rts)
@@ -170,6 +171,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 			r.err = err
 		}
 		stopHB()
+		closeInProcess()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = apiSrv.Shutdown(sctx)

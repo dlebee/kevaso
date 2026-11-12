@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,6 +91,16 @@ func TestControlPlaneComesUpReadyAndIssuesAdminCredentials(t *testing.T) {
 			t.Fatalf("silo controller didn't act: %+v", got.Status)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The audit log has the people (david, the admin socket) but not kevasod's own heartbeat and
+	// controllers, which talk in-process as the component identity.
+	log, err := os.ReadFile(filepath.Join(data, "audit.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), `"user":"david"`) || strings.Contains(string(log), `"resource":"hosts/status"`) || strings.Contains(string(log), `"user":"kevasod"`) {
+		t.Fatalf("audit log:\n%s", log)
 	}
 
 	// Restart: same CA, same data.

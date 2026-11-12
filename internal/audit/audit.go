@@ -14,7 +14,8 @@ import (
 type Entry struct {
 	Time      time.Time `json:"time"`
 	User      string    `json:"user"`
-	Type      string    `json:"type,omitempty"` // user | serviceaccount | host
+	Claimed   string    `json:"claimedUser,omitempty"` // a refused token's subject: what it claims, unverified
+	Type      string    `json:"type,omitempty"`        // user | serviceaccount | host
 	Groups    []string  `json:"groups,omitempty"`
 	Verb      string    `json:"verb,omitempty"`
 	Resource  string    `json:"resource,omitempty"`
