@@ -39,6 +39,7 @@ type cluster struct {
 	iss   *issuer.Issuer
 	audit *audit.Memory
 	ctx   context.Context
+	store store.Store
 }
 
 // newCluster runs an API server with TLS from a private CA, the issuer, and the admin socket.
@@ -81,7 +82,7 @@ func newCluster(t *testing.T) *cluster {
 	hs := srv.HTTPServer(true)
 	go func() { _ = hs.Serve(l) }()
 	t.Cleanup(func() { _ = hs.Close() })
-	return &cluster{url: ts.url, ca: ca.PEM, admin: client.NewUnix(filepath.Join(dir, "admin.sock")), iss: iss, audit: log, ctx: ctx}
+	return &cluster{url: ts.url, ca: ca.PEM, admin: client.NewUnix(filepath.Join(dir, "admin.sock")), iss: iss, audit: log, ctx: ctx, store: st}
 }
 
 func (c *cluster) invite(t *testing.T, user string, groups ...string) string {

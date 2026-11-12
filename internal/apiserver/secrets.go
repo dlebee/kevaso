@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -345,6 +346,25 @@ func (s *Server) kmsEndpoints(w http.ResponseWriter, r *http.Request, caller pki
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusOK, client.RecoveryKey{RecoveryKey: rk.String()})
 	case "/admin/kms/rotate":
+		var req client.KMSRotateRequest
+		if r.ContentLength != 0 {
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+				writeErr(w, errf(http.StatusBadRequest, "BadRequest", "rotate: %v", err))
+				return
+			}
+		}
+		// A new recovery key (the old one leaked): the new master key below is escrowed only to it,
+		// so the leaked key opens nothing backed up from now on.
+		pub := secrets.EscrowPublic(ctx, s.store)
+		var rk kms.RecoveryKey
+		if req.NewRecoveryKey {
+			rk = kms.NewRecoveryKey()
+			var err error
+			if pub, err = rk.Public(); err != nil {
+				writeErr(w, err)
+				return
+			}
+		}
 		id, err := s.kmsAdmin.Rotate()
 		if err != nil {
 			writeErr(w, err)
@@ -355,26 +375,34 @@ func (s *Server) kmsEndpoints(w http.ResponseWriter, r *http.Request, caller pki
 			writeErr(w, fmt.Errorf("re-wrapping data keys (the old key is kept, run rotate again): %w", err))
 			return
 		}
-		if pub := secrets.EscrowPublic(ctx, s.store); pub != nil {
+		escrow := func() error {
+			if pub == nil {
+				return nil
+			}
 			esc, err := s.kmsAdmin.EscrowKeys(pub)
 			if err == nil {
 				err = secrets.SaveEscrow(ctx, s.store, esc)
 			}
-			if err != nil {
-				writeErr(w, fmt.Errorf("escrowing the new key (the old key is kept): %w", err))
-				return
-			}
+			return err
+		}
+		if err := escrow(); err != nil { // before retiring: a crash here still leaves a usable escrow
+			writeErr(w, fmt.Errorf("escrowing the new key (the old key is kept): %w", err))
+			return
 		}
 		if err := s.kmsAdmin.Retire(); err != nil {
 			writeErr(w, err)
 			return
 		}
-		if pub := secrets.EscrowPublic(ctx, s.store); pub != nil { // the escrow now holds only the current key
-			if esc, err := s.kmsAdmin.EscrowKeys(pub); err == nil {
-				_ = secrets.SaveEscrow(ctx, s.store, esc)
-			}
+		if err := escrow(); err != nil { // now it holds only the current key
+			writeErr(w, fmt.Errorf("escrow after retiring the old key: %w", err))
+			return
 		}
-		writeJSON(w, http.StatusOK, client.KMSRotation{KeyID: id, Rewrapped: n})
+		resp := client.KMSRotation{KeyID: id, Rewrapped: n}
+		if rk != nil {
+			resp.RecoveryKey = rk.String()
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		writeJSON(w, http.StatusOK, resp)
 	default:
 		writeErr(w, errf(http.StatusNotFound, "NotFound", "%s", r.URL.Path))
 	}

@@ -16,8 +16,9 @@
 //	kevasod admin recovery-key
 //	    the recovery key for secrets, made once (kvoadm init prints it); refused after that
 //
-//	kevasod admin kms-rotate
-//	    a new master key: every secret's data key re-wrapped, the old key retired
+//	kevasod admin kms-rotate [--new-recovery-key]
+//	    a new master key: every secret's data key re-wrapped, the old key retired; with
+//	    --new-recovery-key also a new recovery key (the old one leaked), printed once
 //
 //	kevasod dev [--listen 127.0.0.1:8080] [--data PATH]
 //	    the API without auth on loopback, for trying kvo locally
@@ -60,7 +61,7 @@ func usage() {
   kevasod control-plane --name HOST --address ADDR [--listen 0.0.0.0:6443] [--data /var/lib/kevaso]
   kevasod worker --name HOST --server https://CP:6443 [--ca-file F] [--token-file F] [--data D]
   kevasod admin sign-user --name NAME < csr.pem
-  kevasod admin recovery-key | kms-rotate
+  kevasod admin recovery-key | kms-rotate [--new-recovery-key]
   kevasod dev [--listen 127.0.0.1:8080] [--data PATH]`)
 	os.Exit(2)
 }
@@ -88,9 +89,16 @@ func main() {
 		case len(os.Args) >= 3 && os.Args[2] == "sign-user":
 			err = runSignUser(ctx, os.Args[3:])
 		case len(os.Args) >= 3 && os.Args[2] == "recovery-key":
-			err = runAdminCall(ctx, "/admin/kms/recovery-key", &client.RecoveryKey{})
+			err = runAdminCall(ctx, "/admin/kms/recovery-key", nil, &client.RecoveryKey{})
 		case len(os.Args) >= 3 && os.Args[2] == "kms-rotate":
-			err = runAdminCall(ctx, "/admin/kms/rotate", &client.KMSRotation{})
+			req := client.KMSRotateRequest{}
+			for _, a := range os.Args[3:] {
+				if a != "--new-recovery-key" {
+					usage()
+				}
+				req.NewRecoveryKey = true
+			}
+			err = runAdminCall(ctx, "/admin/kms/rotate", req, &client.KMSRotation{})
 		default:
 			usage()
 		}
@@ -247,9 +255,9 @@ func runSignUser(ctx context.Context, args []string) error {
 
 // runAdminCall POSTs to the admin socket (as root on a control-plane host) and prints the JSON
 // answer: the recovery key (once), or a master key rotation.
-func runAdminCall(ctx context.Context, path string, out any) error {
+func runAdminCall(ctx context.Context, path string, in, out any) error {
 	c := client.NewUnix(defaultAdminSocket)
-	if err := c.Call(ctx, http.MethodPost, path, nil, out); err != nil {
+	if err := c.Call(ctx, http.MethodPost, path, in, out); err != nil {
 		return err
 	}
 	return json.NewEncoder(os.Stdout).Encode(out)

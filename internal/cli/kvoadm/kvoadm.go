@@ -9,6 +9,11 @@
 // Without --ssh-key, the password is asked for once, after the host key is trusted, used for one
 // connection, then the machine is switched to key-only and its root password rotated (research
 // E016–E017). kevasod is installed only after its signature verifies on the host (E018).
+//
+//	kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
+//
+// rotates the master key for secrets over SSH (and, with --new-recovery-key, replaces a leaked
+// recovery key).
 package kvoadm
 
 import (
@@ -50,6 +55,13 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return 0
 	}
+	if len(args) > 0 && args[0] == "kms" {
+		if err := kmsCmd(ctx, args[1:], stdin, stdout); err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) > 0 && args[0] == "users" {
 		if err := usersCmd(ctx, args[1:], stdout); err != nil {
 			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
@@ -58,7 +70,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return 0
 	}
 	if len(args) == 0 || args[0] != "init" {
-		_, _ = fmt.Fprintln(stderr, "usage: kvoadm init [USER@]ADDRESS [--ssh-key PATH] [--host-key SHA256:…] [--kevasod PATH]\n       kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME")
+		_, _ = fmt.Fprintln(stderr, "usage: kvoadm init [USER@]ADDRESS [--ssh-key PATH] [--host-key SHA256:…] [--kevasod PATH]\n       kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME\n       kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]")
 		return 2
 	}
 	o, err := parseInit(args[1:])
@@ -81,6 +93,7 @@ type InitOptions struct {
 	Worker                                                                            bool   // also install the worker component (one-host cluster)
 	LoopStorage                                                                       string // development: back silo disks with a loop file of this size
 	Advertise                                                                         string // the address other hosts reach this one at, if not the SSH one
+	EgressExtraCA                                                                     string // a PEM file on the host the egress gate also trusts upstream
 }
 
 func parseInit(args []string) (InitOptions, error) {
@@ -124,6 +137,8 @@ func parseInit(args []string) (InitOptions, error) {
 			o.LoopStorage, err = next()
 		case "--address":
 			o.Advertise, err = next()
+		case "--egress-extra-ca":
+			o.EgressExtraCA, err = next()
 		default:
 			if strings.HasPrefix(a, "-") {
 				return o, fmt.Errorf("unknown flag %s", a)
@@ -265,6 +280,9 @@ func Unit(o InitOptions) string {
 		if o.LoopStorage != "" {
 			args = append(args, "--loop-storage", "/var/lib/kevaso-storage.img", "--loop-size", o.LoopStorage)
 		}
+		if o.EgressExtraCA != "" {
+			args = append(args, "--egress-extra-ca", o.EgressExtraCA)
+		}
 	}
 	return `[Unit]
 Description=Kevaso control plane (kevasod)
@@ -385,46 +403,11 @@ func bootstrap(ctx context.Context, o InitOptions, home string, stdin io.Reader,
 	}
 
 	// 1. Connect: host key first, then a key or the password (asked once).
-	policy := sshboot.HostKeyPolicy{Pin: o.HostKey}
-	if o.HostKey == "" {
-		policy.Confirm = func(typ, fp string) bool {
-			if o.HostKeyFirstUse {
-				return true
-			}
-			_, _ = fmt.Fprintf(out, "host key of %s is %s %s. Trust it? Type yes: ", o.Address, typ, fp)
-			line, _ := readLine(in)
-			return strings.TrimSpace(line) == "yes"
-		}
-	}
-	var auth sshboot.Auth
-	usedPassword := false
-	if o.SSHKey != "" {
-		b, err := os.ReadFile(o.SSHKey)
-		if err != nil {
-			return nil, err
-		}
-		if auth.Signer, err = ssh.ParsePrivateKey(b); err != nil {
-			return nil, fmt.Errorf("%s: %w", o.SSHKey, err)
-		}
-	} else {
-		usedPassword = true
-		auth.Password = func() (string, error) {
-			_, _ = fmt.Fprintf(out, "password for %s@%s: ", o.User, o.Address)
-			if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
-				pw, err := term.ReadPassword(int(f.Fd()))
-				_, _ = fmt.Fprintln(out)
-				return string(pw), err
-			}
-			return readLine(in)
-		}
-	}
-	addr := net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))
-	conn, err := sshboot.Connect(ctx, sshboot.Target{Addr: addr, User: o.User}, policy, auth)
+	conn, usedPassword, err := dialHost(ctx, o, in, stdin, out)
 	if err != nil {
 		return nil, err
 	}
-	conn.Sudo = o.User != "root"
-	say("connected to %s (host key %s)", addr, conn.Fingerprint)
+	say("connected to %s (host key %s)", net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort)), conn.Fingerprint)
 
 	// 2. Check the machine.
 	uname, err := conn.Run(ctx, "uname -m", nil)
@@ -481,4 +464,49 @@ func waitHostReady(ctx context.Context, c *client.Client, name string, d time.Du
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+// dialHost connects to a host the way kvoadm does: the host key pinned or confirmed first, then a
+// key or the password (asked once).
+func dialHost(ctx context.Context, o InitOptions, in *bufio.Reader, stdin io.Reader, out io.Writer) (*sshboot.Conn, bool, error) {
+	policy := sshboot.HostKeyPolicy{Pin: o.HostKey}
+	if o.HostKey == "" {
+		policy.Confirm = func(typ, fp string) bool {
+			if o.HostKeyFirstUse {
+				return true
+			}
+			_, _ = fmt.Fprintf(out, "host key of %s is %s %s. Trust it? Type yes: ", o.Address, typ, fp)
+			line, _ := readLine(in)
+			return strings.TrimSpace(line) == "yes"
+		}
+	}
+	var auth sshboot.Auth
+	usedPassword := false
+	if o.SSHKey != "" {
+		b, err := os.ReadFile(o.SSHKey)
+		if err != nil {
+			return nil, false, err
+		}
+		if auth.Signer, err = ssh.ParsePrivateKey(b); err != nil {
+			return nil, false, fmt.Errorf("%s: %w", o.SSHKey, err)
+		}
+	} else {
+		usedPassword = true
+		auth.Password = func() (string, error) {
+			_, _ = fmt.Fprintf(out, "password for %s@%s: ", o.User, o.Address)
+			if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+				pw, err := term.ReadPassword(int(f.Fd()))
+				_, _ = fmt.Fprintln(out)
+				return string(pw), err
+			}
+			return readLine(in)
+		}
+	}
+	addr := net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))
+	conn, err := sshboot.Connect(ctx, sshboot.Target{Addr: addr, User: o.User}, policy, auth)
+	if err != nil {
+		return nil, false, err
+	}
+	conn.Sudo = o.User != "root"
+	return conn, usedPassword, nil
 }

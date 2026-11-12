@@ -77,8 +77,16 @@ type RecoveryKey struct {
 	RecoveryKey string `json:"recoveryKey"`
 }
 
-// KMSRotation is POST /admin/kms/rotate: the new master key and how many data keys were re-wrapped.
+// KMSRotateRequest is POST /admin/kms/rotate. NewRecoveryKey also replaces the recovery key (it
+// leaked): the new master key is escrowed only to the new one.
+type KMSRotateRequest struct {
+	NewRecoveryKey bool `json:"newRecoveryKey,omitempty"`
+}
+
+// KMSRotation is its answer: the new master key, how many data keys were re-wrapped, and the new
+// recovery key if one was asked for (shown only now).
 type KMSRotation struct {
-	KeyID     string `json:"keyID"`
-	Rewrapped int    `json:"rewrapped"`
+	KeyID       string `json:"keyID"`
+	Rewrapped   int    `json:"rewrapped"`
+	RecoveryKey string `json:"recoveryKey,omitempty"`
 }

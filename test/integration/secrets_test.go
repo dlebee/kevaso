@@ -5,13 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/login"
+	"kevaso.com/core/internal/secrets"
+	"kevaso.com/core/internal/store"
 )
 
 func secretObj(name string, labels map[string]string, value string) *v1.Secret {
@@ -233,5 +238,48 @@ func TestRecoveryKeyAndRotation(t *testing.T) {
 	var v client.SecretValue
 	if err := c.admin.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/a/value", nil, &v); err != nil || string(v.Value) != "value-a" {
 		t.Fatalf("after rotation: %q %v", v.Value, err)
+	}
+	// A plain rotation keeps the recovery key: the escrow (a backup's way back) still opens with it.
+	oldRK, err := kms.ParseRecoveryKey(rk.RecoveryKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rot.RecoveryKey != "" {
+		t.Fatal("a plain rotation made a new recovery key")
+	}
+	restore := func(rk kms.RecoveryKey) ([]byte, error) {
+		o, err := c.store.Get(c.ctx, store.Key{Kind: secrets.KindEscrow, Name: "local"})
+		if err != nil {
+			return nil, err
+		}
+		var esc kms.Escrow
+		_ = json.Unmarshal(o.Data, &esc)
+		var current string
+		for id := range esc.Keys {
+			current = id
+		}
+		l, err := kms.Recover(filepath.Join(t.TempDir(), "restored.json"), esc, rk, current)
+		if err != nil {
+			return nil, err
+		}
+		var sec v1.Secret
+		_ = c.admin.Get(c.ctx, "Secret", "web3", "a", &sec)
+		val, _, err := (&secrets.Vault{Store: c.store, KMS: l, Now: time.Now}).Value(c.ctx, &sec)
+		return val, err
+	}
+	if got, err := restore(oldRK); err != nil || string(got) != "value-a" {
+		t.Fatalf("restore with the recovery key after a plain rotation: %q %v", got, err)
+	}
+
+	// The recovery key leaked: a new one, with a new master key escrowed only to it.
+	if err := c.admin.Call(c.ctx, http.MethodPost, "/admin/kms/rotate", client.KMSRotateRequest{NewRecoveryKey: true}, &rot); err != nil || !strings.HasPrefix(rot.RecoveryKey, "KVR1-") || rot.RecoveryKey == rk.RecoveryKey {
+		t.Fatalf("rotate with a new recovery key: %+v %v", rot, err)
+	}
+	newRK, _ := kms.ParseRecoveryKey(rot.RecoveryKey)
+	if _, err := restore(oldRK); err == nil {
+		t.Fatal("the leaked recovery key still opens the escrow")
+	}
+	if got, err := restore(newRK); err != nil || string(got) != "value-a" {
+		t.Fatalf("restore with the new recovery key: %q %v", got, err)
 	}
 }
