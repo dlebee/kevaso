@@ -128,6 +128,15 @@ func filter(silo *v1.Silo, h *v1.Host, w *v1.WorkerSpec, u usage, needMem int64)
 		}
 		return "runtime " + silo.Spec.Runtime + " not Ready"
 	}
+	if h.Spec.Unschedulable {
+		return "host is cordoned (draining)"
+	}
+	if r := silo.Spec.Placement.Region; r != "" && h.Spec.Region != r {
+		return fmt.Sprintf("in region %s, not %s", dashed(h.Spec.Region), r)
+	}
+	if z := silo.Spec.Placement.Zone; z != "" && h.Spec.Zone != z {
+		return fmt.Sprintf("in zone %s, not %s", dashed(h.Spec.Zone), z)
+	}
 	for k, want := range silo.Spec.Placement.HostSelector {
 		if got, ok := w.Labels[k]; !ok || got != want {
 			return fmt.Sprintf("label %s=%s missing", k, want)
@@ -166,4 +175,11 @@ func untoleratedTaint(silo *v1.Silo, taints []v1.Taint, effect v1.TaintEffect) b
 		}
 	}
 	return false
+}
+
+func dashed(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
 }

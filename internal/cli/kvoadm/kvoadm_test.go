@@ -122,3 +122,32 @@ func TestUnit(t *testing.T) {
 		}
 	}
 }
+
+func TestParseHostAdd(t *testing.T) {
+	o, err := parseHostAdd([]string{"root@198.51.100.30", "--name", "worker-1", "--install", "worker", "--label", "gpu=no",
+		"--region", "ca-central", "--zone", "tor", "--kevasod", "/k", "--address", "10.0.0.5", "--server", "https://10.0.0.1:6443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Name != "worker-1" || o.Address != "198.51.100.30" || o.Advertise != "10.0.0.5" || o.Region != "ca-central" || o.Zone != "tor" ||
+		o.Labels["gpu"] != "no" || o.ServerForIt != "https://10.0.0.1:6443" || len(o.Runtimes) != 1 || o.Runtimes[0] != "cloud-hypervisor" {
+		t.Fatalf("parsed %+v", o)
+	}
+	if _, err := parseHostAdd([]string{"h", "--install", "control-plane", "--kevasod", "/k"}); err == nil {
+		t.Error("control-plane install accepted")
+	}
+	u := WorkerUnit(o, "https://10.0.0.1:6443")
+	if !strings.Contains(u, "ExecStart=/usr/local/bin/kevasod worker --name worker-1 --server https://10.0.0.1:6443 --runtime cloud-hypervisor") {
+		t.Fatalf("unit:\n%s", u)
+	}
+	if strings.Contains(u, "RuntimeDirectory") { // a worker has no admin socket
+		t.Fatal("worker unit makes a runtime directory")
+	}
+}
+
+func TestUnitAdvertisesAnotherAddress(t *testing.T) {
+	u := Unit(InitOptions{Name: "cp-1", Address: "127.0.0.1", Advertise: "192.168.105.2", Cluster: "c"})
+	if !strings.Contains(u, "--address 192.168.105.2 --cluster c --extra-name 127.0.0.1") {
+		t.Fatalf("unit:\n%s", u)
+	}
+}

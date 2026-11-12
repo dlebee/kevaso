@@ -43,6 +43,13 @@ import (
 
 // Run runs one kvoadm command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "host" {
+		if err := hostCmd(ctx, args[1:], stdin, stdout); err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) > 0 && args[0] == "users" {
 		if err := usersCmd(ctx, args[1:], stdout); err != nil {
 			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
@@ -73,6 +80,7 @@ type InitOptions struct {
 	HostKeyFirstUse                                                                   bool   // trust the host key without asking (tests only)
 	Worker                                                                            bool   // also install the worker component (one-host cluster)
 	LoopStorage                                                                       string // development: back silo disks with a loop file of this size
+	Advertise                                                                         string // the address other hosts reach this one at, if not the SSH one
 }
 
 func parseInit(args []string) (InitOptions, error) {
@@ -114,6 +122,8 @@ func parseInit(args []string) (InitOptions, error) {
 			o.Worker = true
 		case "--loop-storage":
 			o.LoopStorage, err = next()
+		case "--address":
+			o.Advertise, err = next()
 		default:
 			if strings.HasPrefix(a, "-") {
 				return o, fmt.Errorf("unknown flag %s", a)
@@ -242,7 +252,14 @@ func SSHKey(dir string) (ssh.Signer, []byte, error) {
 
 // Unit is the control plane's systemd unit.
 func Unit(o InitOptions) string {
-	args := []string{"control-plane", "--name", o.Name, "--address", o.Address, "--cluster", o.Cluster}
+	addr := o.Address
+	if o.Advertise != "" {
+		addr = o.Advertise
+	}
+	args := []string{"control-plane", "--name", o.Name, "--address", addr, "--cluster", o.Cluster}
+	if o.Advertise != "" && o.Advertise != o.Address {
+		args = append(args, "--extra-name", o.Address)
+	}
 	if o.Worker {
 		args = append(args, "--worker", "--runtime", "cloud-hypervisor")
 		if o.LoopStorage != "" {
@@ -286,96 +303,11 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 		home = filepath.Join(h, ".kevaso")
 	}
 	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
-	in := bufio.NewReader(stdin)
-
-	binArch, err := ElfArch(o.Kevasod)
-	if err != nil {
-		return err
-	}
-	bin, err := os.ReadFile(o.Kevasod)
-	if err != nil {
-		return err
-	}
-	signKey, signPub, err := SigningKey(home)
-	if err != nil {
-		return err
-	}
-	_, ownPub, err := SSHKey(filepath.Join(home, "ssh"))
-	if err != nil {
-		return err
-	}
-
-	// 1. Connect: host key first, then a key or the password (asked once).
-	policy := sshboot.HostKeyPolicy{Pin: o.HostKey}
-	if o.HostKey == "" {
-		policy.Confirm = func(typ, fp string) bool {
-			if o.HostKeyFirstUse {
-				return true
-			}
-			_, _ = fmt.Fprintf(out, "host key of %s is %s %s. Trust it? Type yes: ", o.Address, typ, fp)
-			line, _ := readLine(in)
-			return strings.TrimSpace(line) == "yes"
-		}
-	}
-	var auth sshboot.Auth
-	usedPassword := false
-	if o.SSHKey != "" {
-		b, err := os.ReadFile(o.SSHKey)
-		if err != nil {
-			return err
-		}
-		if auth.Signer, err = ssh.ParsePrivateKey(b); err != nil {
-			return fmt.Errorf("%s: %w", o.SSHKey, err)
-		}
-	} else {
-		usedPassword = true
-		auth.Password = func() (string, error) {
-			_, _ = fmt.Fprintf(out, "password for %s@%s: ", o.User, o.Address)
-			if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
-				pw, err := term.ReadPassword(int(f.Fd()))
-				_, _ = fmt.Fprintln(out)
-				return string(pw), err
-			}
-			return readLine(in)
-		}
-	}
-	addr := net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))
-	conn, err := sshboot.Connect(ctx, sshboot.Target{Addr: addr, User: o.User}, policy, auth)
+	conn, err := bootstrap(ctx, o, home, stdin, out, say)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
-	conn.Sudo = o.User != "root"
-	say("connected to %s (host key %s)", addr, conn.Fingerprint)
-
-	// 2. Check the machine.
-	uname, err := conn.Run(ctx, "uname -m", nil)
-	if err != nil {
-		return err
-	}
-	if got := strings.TrimSpace(string(uname)); got != binArch {
-		return fmt.Errorf("the host is %s but --kevasod is built for %s", got, binArch)
-	}
-	if _, err := conn.Run(ctx, "command -v openssl >/dev/null && command -v systemctl >/dev/null", nil); err != nil {
-		return errors.New("the host needs openssl and systemd")
-	}
-
-	// 3. If a password got us in, switch to keys and rotate it.
-	if usedPassword {
-		if err := conn.Harden(ctx, ownPub); err != nil {
-			return err
-		}
-		say("installed kvoadm's SSH key (%s), sshd is key-only, root password rotated", filepath.Join(home, "ssh", "id_ed25519"))
-	}
-
-	// 4. Install kevasod, signature checked on the host, and start the control plane.
-	if err := conn.PinSigningKey(ctx, signPub); err != nil {
-		return err
-	}
-	if err := conn.InstallBinary(ctx, "kevasod", bin, ed25519.Sign(signKey, bin)); err != nil {
-		return err
-	}
-	say("kevasod installed (signature verified on the host)")
 	if err := conn.InstallUnit(ctx, "kevasod.service", []byte(Unit(o))); err != nil {
 		return err
 	}
@@ -417,6 +349,102 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	}
 	say("host %s is Ready. Try: kvo get hosts", o.Name)
 	return nil
+}
+
+// bootstrap is what every host gets from kvoadm, over one SSH session (design §3.1): the host key
+// checked, the machine checked, keys instead of the password (rotated), and a signed kevasod
+// verified on the host. It returns the connection, for installing a component.
+func bootstrap(ctx context.Context, o InitOptions, home string, stdin io.Reader, out io.Writer, say func(string, ...any)) (*sshboot.Conn, error) {
+	in := bufio.NewReader(stdin)
+
+	binArch, err := ElfArch(o.Kevasod)
+	if err != nil {
+		return nil, err
+	}
+	bin, err := os.ReadFile(o.Kevasod)
+	if err != nil {
+		return nil, err
+	}
+	signKey, signPub, err := SigningKey(home)
+	if err != nil {
+		return nil, err
+	}
+	_, ownPub, err := SSHKey(filepath.Join(home, "ssh"))
+	if err != nil {
+		return nil, err
+	}
+
+	// 1. Connect: host key first, then a key or the password (asked once).
+	policy := sshboot.HostKeyPolicy{Pin: o.HostKey}
+	if o.HostKey == "" {
+		policy.Confirm = func(typ, fp string) bool {
+			if o.HostKeyFirstUse {
+				return true
+			}
+			_, _ = fmt.Fprintf(out, "host key of %s is %s %s. Trust it? Type yes: ", o.Address, typ, fp)
+			line, _ := readLine(in)
+			return strings.TrimSpace(line) == "yes"
+		}
+	}
+	var auth sshboot.Auth
+	usedPassword := false
+	if o.SSHKey != "" {
+		b, err := os.ReadFile(o.SSHKey)
+		if err != nil {
+			return nil, err
+		}
+		if auth.Signer, err = ssh.ParsePrivateKey(b); err != nil {
+			return nil, fmt.Errorf("%s: %w", o.SSHKey, err)
+		}
+	} else {
+		usedPassword = true
+		auth.Password = func() (string, error) {
+			_, _ = fmt.Fprintf(out, "password for %s@%s: ", o.User, o.Address)
+			if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+				pw, err := term.ReadPassword(int(f.Fd()))
+				_, _ = fmt.Fprintln(out)
+				return string(pw), err
+			}
+			return readLine(in)
+		}
+	}
+	addr := net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))
+	conn, err := sshboot.Connect(ctx, sshboot.Target{Addr: addr, User: o.User}, policy, auth)
+	if err != nil {
+		return nil, err
+	}
+	conn.Sudo = o.User != "root"
+	say("connected to %s (host key %s)", addr, conn.Fingerprint)
+
+	// 2. Check the machine.
+	uname, err := conn.Run(ctx, "uname -m", nil)
+	if err != nil {
+		return nil, err
+	}
+	if got := strings.TrimSpace(string(uname)); got != binArch {
+		return nil, fmt.Errorf("the host is %s but --kevasod is built for %s", got, binArch)
+	}
+	if _, err := conn.Run(ctx, "command -v openssl >/dev/null && command -v systemctl >/dev/null", nil); err != nil {
+		return nil, errors.New("the host needs openssl and systemd")
+	}
+
+	// 3. If a password got us in, switch to keys and rotate it.
+	if usedPassword {
+		if err := conn.Harden(ctx, ownPub); err != nil {
+			return nil, err
+		}
+		say("installed kvoadm's SSH key (%s), sshd is key-only, root password rotated", filepath.Join(home, "ssh", "id_ed25519"))
+	}
+
+	// 4. Install kevasod, signature checked on the host, and start the control plane.
+	if err := conn.PinSigningKey(ctx, signPub); err != nil {
+		return nil, err
+	}
+	if err := conn.InstallBinary(ctx, "kevasod", bin, ed25519.Sign(signKey, bin)); err != nil {
+		return nil, err
+	}
+	say("kevasod installed (signature verified on the host)")
+	return conn, nil
 }
 
 func lastLine(b []byte) []byte {

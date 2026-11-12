@@ -1,0 +1,108 @@
+package worker
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"kevaso.com/core/api/client"
+	"kevaso.com/core/api/meta"
+	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/clock"
+)
+
+// JoinConfig is a worker-only host joining a cluster (kvoadm host add sets these files up).
+type JoinConfig struct {
+	HostName  string
+	Server    string // the control plane's API, e.g. https://203.0.113.10:6443
+	CAFile    string // the cluster CA (pinned)
+	TokenFile string // the one-time join token; removed once used
+	DataDir   string // the host's key and certificate go to DataDir/pki
+}
+
+// Join returns a client authenticated as this host. The first time it enrolls with the join token
+// (the key is made here and never leaves; research E019) and keeps the certificate; afterwards it
+// reuses the certificate.
+func Join(ctx context.Context, cfg JoinConfig) (*client.Client, error) {
+	ca, err := os.ReadFile(cfg.CAFile)
+	if err != nil {
+		return nil, fmt.Errorf("cluster CA: %w", err)
+	}
+	dir := filepath.Join(cfg.DataDir, "pki")
+	certPath, keyPath := filepath.Join(dir, "host.crt"), filepath.Join(dir, "host.key")
+	cert, cerr := os.ReadFile(certPath)
+	key, kerr := os.ReadFile(keyPath)
+	if cerr != nil || kerr != nil {
+		tok, err := os.ReadFile(cfg.TokenFile)
+		if err != nil {
+			return nil, fmt.Errorf("not joined yet, and no join token: %w", err)
+		}
+		anon, err := client.NewTLS(cfg.Server, ca, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		cred, err := anon.Enroll(ctx, strings.TrimSpace(string(tok)), cfg.HostName, "worker")
+		if err != nil {
+			return nil, fmt.Errorf("join: %w", err)
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(keyPath, cred.Key, 0o600); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(certPath, cred.Certificate, 0o644); err != nil {
+			return nil, err
+		}
+		_ = os.Remove(cfg.TokenFile) // used up anyway
+		cert, key = cred.Certificate, cred.Key
+	}
+	return client.NewTLS(cfg.Server, ca, cert, key)
+}
+
+// Heartbeat keeps this host's Ready condition and lastHeartbeat fresh: the control plane's host
+// lease reads them (a host that stops reporting is lost).
+func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Duration, clk clock.Clock, log func(string, ...any)) {
+	tick := func() {
+		for attempt := 0; attempt < 5; attempt++ {
+			var h v1.Host
+			if err := c.Get(ctx, "Host", "", host, &h); err != nil {
+				if ctx.Err() == nil {
+					log("heartbeat: %v", err)
+				}
+				return
+			}
+			now := clk.Now().UTC()
+			meta.SetCondition(&h.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "WorkerUp",
+				Message: "kevasod reporting", ObservedGeneration: h.Generation}, now.Truncate(time.Second))
+			hb := now.Truncate(time.Second)
+			h.Status.LastHeartbeat = &hb
+			err := c.UpdateStatus(ctx, &h)
+			if client.IsConflict(err) {
+				continue
+			}
+			if err != nil && ctx.Err() == nil {
+				log("heartbeat: %v", err)
+			}
+			return
+		}
+	}
+	tick()
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			tick()
+		}
+	}
+}
+
+// ErrNoHost: kvoadm host add creates the Host before the worker starts.
+var ErrNoHost = errors.New("this host isn't registered (kvoadm host add creates it)")

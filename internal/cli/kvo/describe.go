@@ -64,6 +64,9 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			disk += " (" + o.Spec.Disk.Class + ")"
 		}
 		kv(0, "Disk", disk)
+		if p := o.Spec.Placement; p.Region != "" || p.Zone != "" {
+			kv(0, "Placement", "region="+dash(p.Region)+" zone="+dash(p.Zone))
+		}
 		if len(o.Spec.Placement.HostSelector) > 0 {
 			kv(0, "Host selector", pairs(o.Spec.Placement.HostSelector))
 		}
@@ -101,6 +104,11 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		}
 	case *v1.Host:
 		kv(0, "Address", o.Spec.Address)
+		kv(0, "Region", dash(o.Spec.Region))
+		kv(0, "Zone", dash(o.Spec.Zone))
+		if o.Spec.Unschedulable {
+			kv(0, "Schedulable", "no (cordoned)")
+		}
 		var comps []string
 		if o.Spec.Components.ControlPlane != nil {
 			comps = append(comps, "control-plane")

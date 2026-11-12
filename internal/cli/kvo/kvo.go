@@ -557,7 +557,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error 
 	case "Silo":
 		head = append(head, "RUNTIME", "PHASE", "HOST")
 	case "Host":
-		head = append(head, "ADDRESS", "COMPONENTS", "RUNTIMES")
+		head = append(head, "ADDRESS", "REGION", "COMPONENTS", "RUNTIMES")
 	case "Namespace":
 		head = append(head, "STATUS")
 	}
@@ -592,7 +592,14 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error 
 					}
 				}
 			}
-			row = append(row, o.Spec.Address, strings.Join(comps, ","), dash(strings.Join(rts, ",")))
+			region := dash(o.Spec.Region)
+			if o.Spec.Zone != "" {
+				region += "/" + o.Spec.Zone
+			}
+			if o.Spec.Unschedulable {
+				comps = append(comps, "cordoned")
+			}
+			row = append(row, o.Spec.Address, region, strings.Join(comps, ","), dash(strings.Join(rts, ",")))
 		case *v1.Namespace:
 			row = append(row, dash(o.Status.Phase))
 		}

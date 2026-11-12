@@ -103,6 +103,12 @@ func TestSchedule(t *testing.T) {
 			hosts: hosts(host("metal"), host("lin", noRuntime())), want: "lin"},
 		{name: "hostSelector", silo: silo("a", selector("region", "home")),
 			hosts: hosts(host("tor", labels("region", "ca-central")), host("home", labels("region", "home"))), want: "home"},
+		{name: "region", silo: silo("a", func(s *v1.Silo) { s.Spec.Placement.Region = "eu-central" }),
+			hosts: hosts(host("tor", where("ca-central", "tor")), host("fra", where("eu-central", "fra"))), want: "fra"},
+		{name: "zone", silo: silo("a", func(s *v1.Silo) { s.Spec.Placement.Zone = "tor" }),
+			hosts:    hosts(host("fra", where("eu-central", "fra")), host("nowhere")),
+			excluded: map[string]string{"fra": "in zone fra, not tor", "nowhere": "in zone (none), not tor"}},
+		{name: "cordoned host", silo: silo("a"), hosts: hosts(host("hv1", func(h *v1.Host) { h.Spec.Unschedulable = true }), host("hv2")), want: "hv2"},
 		{name: "hostSelector matches nothing", silo: silo("a", selector("gpu", "true")), hosts: hosts(host("hv1")),
 			excluded: map[string]string{"hv1": "label gpu=true missing"}},
 		{name: "NoSchedule taint repels", silo: silo("a"),
@@ -157,4 +163,8 @@ func TestBadMemoryIsAnError(t *testing.T) {
 	if _, err := Schedule(silo("a", size(1, "lots")), hosts(host("hv1")), nil); err == nil {
 		t.Fatal("unparseable memory accepted")
 	}
+}
+
+func where(region, zone string) hostOpt {
+	return func(h *v1.Host) { h.Spec.Region, h.Spec.Zone = region, zone }
 }

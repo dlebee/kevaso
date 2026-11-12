@@ -4,6 +4,11 @@
 //	        [--admin-socket /run/kevaso/admin.sock] [--cluster NAME] [--extra-name NAME]…
 //	    the control-plane component (installed by `kvoadm init` as a systemd service)
 //
+//	kevasod worker --name HOST --server https://CP:6443 [--ca-file /etc/kevaso/ca.crt]
+//	        [--token-file /etc/kevaso/join-token] [--data /var/lib/kevaso] [--runtime NAME]…
+//	    a worker-only host (installed by `kvoadm host add`): joins with the one-time token the first
+//	    time, then runs silos and reports to the control plane, dialing out only
+//
 //	kevasod admin sign-user --name NAME [--admin-socket PATH] < csr.pem
 //	    on a control-plane host, as root: sign a user's CSR through the admin socket; prints JSON
 //	    {certificate, ca}. kvoadm runs it over SSH, so the user's key never leaves their machine.
@@ -43,6 +48,7 @@ const defaultAdminSocket = "/run/kevaso/admin.sock"
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   kevasod control-plane --name HOST --address ADDR [--listen 0.0.0.0:6443] [--data /var/lib/kevaso]
+  kevasod worker --name HOST --server https://CP:6443 [--ca-file F] [--token-file F] [--data D]
   kevasod admin sign-user --name NAME < csr.pem
   kevasod dev [--listen 127.0.0.1:8080] [--data PATH]`)
 	os.Exit(2)
@@ -57,6 +63,8 @@ func main() {
 	switch os.Args[1] {
 	case "control-plane":
 		err = runControlPlane(ctx, os.Args[2:])
+	case "worker":
+		err = runWorker(ctx, os.Args[2:])
 	case "admin":
 		if len(os.Args) < 3 || os.Args[2] != "sign-user" {
 			usage()
@@ -120,6 +128,52 @@ func runControlPlane(ctx context.Context, args []string) error {
 		return err
 	}
 	return r.Wait()
+}
+
+func runWorker(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("worker", flag.ExitOnError)
+	var jc worker.JoinConfig
+	fs.StringVar(&jc.HostName, "name", "", "this host's name (as kvoadm host add registered it)")
+	fs.StringVar(&jc.Server, "server", "", "the control plane's API URL")
+	fs.StringVar(&jc.CAFile, "ca-file", "/etc/kevaso/ca.crt", "the cluster CA")
+	fs.StringVar(&jc.TokenFile, "token-file", "/etc/kevaso/join-token", "the one-time join token")
+	fs.StringVar(&jc.DataDir, "data", "/var/lib/kevaso", "data directory")
+	var runtimes multi
+	fs.Var(&runtimes, "runtime", "runtime to install (repeatable; default cloud-hypervisor)")
+	loop := fs.String("loop-storage", "", "development only: back silo disks with this sparse file")
+	loopSize := fs.String("loop-size", "64G", "size of the loop storage file")
+	every := fs.Duration("heartbeat", 10*time.Second, "how often to report")
+	_ = fs.Parse(args)
+	if jc.HostName == "" || jc.Server == "" {
+		return errors.New("worker needs --name and --server")
+	}
+	if len(runtimes) == 0 {
+		runtimes = multi{"cloud-hypervisor"}
+	}
+	logger := log.New(os.Stderr, "", log.LstdFlags)
+	var c *client.Client
+	for { // the control plane may not be reachable yet: keep trying
+		var err error
+		if c, err = worker.Join(ctx, jc); err == nil {
+			break
+		}
+		logger.Printf("join: %v (retrying)", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+	}
+	logger.Printf("joined %s as host %s", jc.Server, jc.HostName)
+	wc := worker.Config{HostName: jc.HostName, Runtimes: runtimes, DataDir: jc.DataDir, Clock: clock.Real{}, Log: logger.Printf,
+		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize}}
+	rts, err := worker.NewRuntimes(wc)
+	if err != nil {
+		return err
+	}
+	go worker.Heartbeat(ctx, c, jc.HostName, *every, clock.Real{}, logger.Printf)
+	worker.Run(ctx, c, wc, rts)
+	return nil
 }
 
 func runSignUser(ctx context.Context, args []string) error {

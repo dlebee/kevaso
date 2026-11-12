@@ -32,7 +32,7 @@ func (s *Server) can(ctx context.Context, id pki.Identity, groups []string, a rb
 // invites, list users, update users (cluster-admin has them all).
 func (s *Server) users(w http.ResponseWriter, r *http.Request, id pki.Identity, groups []string) {
 	iss := s.auth.Issuer
-	if iss == nil {
+	if iss == nil && r.URL.Path != "/admin/join-tokens" {
 		writeErr(w, errf(http.StatusNotFound, "NotFound", "this cluster has no issuer"))
 		return
 	}
@@ -41,6 +41,8 @@ func (s *Server) users(w http.ResponseWriter, r *http.Request, id pki.Identity, 
 	switch {
 	case r.URL.Path == "/admin/invites" && r.Method == http.MethodPost:
 		a = rbac.Attributes{Verb: "create", Resource: "invites"}
+	case r.URL.Path == "/admin/join-tokens" && r.Method == http.MethodPost:
+		a = rbac.Attributes{Verb: "create", Resource: "jointokens"}
 	case r.URL.Path == "/admin/users" && r.Method == http.MethodGet:
 		a = rbac.Attributes{Verb: "list", Resource: "users"}
 	case strings.HasSuffix(r.URL.Path, "/disable") && r.Method == http.MethodPost:
@@ -61,6 +63,36 @@ func (s *Server) users(w http.ResponseWriter, r *http.Request, id pki.Identity, 
 		return
 	}
 	switch a.Resource + "/" + a.Verb {
+	case "jointokens/create":
+		body, err := readBody(r)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		var req client.JoinTokenRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
+			return
+		}
+		for _, role := range req.Roles {
+			if role != "worker" {
+				writeErr(w, errf(http.StatusBadRequest, "BadRequest", "hosts can join as worker (control-plane joins come with HA)"))
+				return
+			}
+		}
+		ttl := 30 * time.Minute
+		if req.TTL != "" {
+			if ttl, err = time.ParseDuration(req.TTL); err != nil || ttl <= 0 || ttl > 24*time.Hour {
+				writeErr(w, errf(http.StatusBadRequest, "BadRequest", "ttl must be a duration up to 24h"))
+				return
+			}
+		}
+		tok, err := s.auth.Tokens.Create(r.Context(), req.Host, req.Roles, ttl)
+		if err != nil {
+			writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, client.JoinTokenResponse{Token: tok, Expires: s.clock.Now().Add(ttl)})
 	case "invites/create":
 		body, err := readBody(r)
 		if err != nil {

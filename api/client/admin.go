@@ -51,3 +51,16 @@ type TokenResponse struct {
 	Token   string    `json:"token"`
 	Expires time.Time `json:"expires"`
 }
+
+// JoinTokenRequest asks for a one-time token for a host to join (POST /admin/join-tokens).
+type JoinTokenRequest struct {
+	Host  string   `json:"host"`
+	Roles []string `json:"roles"`         // worker (control-plane joins come with HA)
+	TTL   string   `json:"ttl,omitempty"` // default 30m
+}
+
+// JoinTokenResponse is the token (secret: it goes to the host and nowhere else).
+type JoinTokenResponse struct {
+	Token   string    `json:"token"`
+	Expires time.Time `json:"expires"`
+}

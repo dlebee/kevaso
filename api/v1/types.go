@@ -47,6 +47,12 @@ type Host struct {
 type HostSpec struct {
 	Address    string         `json:"address"`
 	Components HostComponents `json:"components"`
+	// Region and Zone say where the machine is (design §3.4): shown everywhere, used for placement.
+	Region string `json:"region,omitempty"`
+	Zone   string `json:"zone,omitempty"`
+	// Unschedulable: no new silos land here (kvoadm host drain sets it; silos already here stay
+	// unless drain moves them).
+	Unschedulable bool `json:"unschedulable,omitempty"`
 }
 
 // HostComponents are installed explicitly; there's no hidden all-in-one mode.
@@ -164,6 +170,8 @@ type Resources struct {
 // Placement narrows where a silo may run.
 type Placement struct {
 	HostSelector map[string]string `json:"hostSelector,omitempty"`
+	Region       string            `json:"region,omitempty"` // only hosts in this region
+	Zone         string            `json:"zone,omitempty"`   // only hosts in this zone
 }
 
 // Toleration lets a silo land on a worker with a matching taint. An empty Effect tolerates both effects.

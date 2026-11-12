@@ -235,7 +235,7 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			s.issueUserCert(w, r, id)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/admin/users") || r.URL.Path == "/admin/invites" {
+		if strings.HasPrefix(r.URL.Path, "/admin/users") || r.URL.Path == "/admin/invites" || r.URL.Path == "/admin/join-tokens" {
 			s.users(w, r, id, groups)
 			return
 		}
