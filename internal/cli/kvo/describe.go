@@ -218,6 +218,9 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			kv(0, "Valid", o.Status.NotBefore.Local().Format("2006-01-02")+" to "+o.Status.NotAfter.Local().Format("2006-01-02"))
 			kv(0, "Renews after", o.Status.RenewAfter.Local().Format("2006-01-02"))
 		}
+		if o.Status.NextAttempt != nil {
+			kv(0, "Next try", fmt.Sprintf("%s (failed %d times in a row)", o.Status.NextAttempt.Local().Format("15:04:05"), o.Status.FailedAttempts))
+		}
 		conds = o.Status.Conditions
 	case *v1.Secret:
 		typ := o.Spec.Type

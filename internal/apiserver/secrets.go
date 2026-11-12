@@ -308,6 +308,35 @@ type KMSAdmin interface {
 	Retire() error
 }
 
+// SetBackup enables POST /admin/backup (admin socket only): make returns a backup sealed to the
+// recovery key's public half it's given.
+func (s *Server) SetBackup(make func(ctx context.Context, recoveryPublic []byte) ([]byte, error)) {
+	s.backup = make
+}
+
+func (s *Server) backupEndpoint(w http.ResponseWriter, r *http.Request, caller pki.Identity) {
+	if caller != LocalAdmin {
+		writeErr(w, errf(http.StatusForbidden, "Forbidden", "backups are made only through the admin socket"))
+		return
+	}
+	if s.backup == nil || r.Method != http.MethodPost {
+		writeErr(w, errf(http.StatusNotFound, "NotFound", "%s %s", r.Method, r.URL.Path))
+		return
+	}
+	pub := secrets.EscrowPublic(r.Context(), s.store)
+	if pub == nil {
+		writeErr(w, errf(http.StatusConflict, "NoRecoveryKey", "no recovery key yet: kvoadm init makes it, and backups are sealed to it"))
+		return
+	}
+	b, err := s.backup(r.Context(), pub)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, client.Backup{Backup: b})
+}
+
 // SetKMSAdmin enables /admin/kms/* (admin socket only).
 func (s *Server) SetKMSAdmin(k KMSAdmin) { s.kmsAdmin = k }
 

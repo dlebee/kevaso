@@ -70,6 +70,13 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return 0
 	}
+	if len(args) > 0 && args[0] == "backup" {
+		if err := backupCmd(ctx, args[1:], stdin, stdout); err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) > 0 && args[0] == "users" {
 		if err := usersCmd(ctx, args[1:], stdout); err != nil {
 			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
@@ -79,7 +86,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if len(args) == 0 || args[0] != "init" {
 		_, _ = fmt.Fprintln(stderr, `usage:
-  kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL]
+  kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL] [--restore BACKUP]
+  kvoadm backup [USER@]ADDRESS --output FILE [--ssh-key PATH]
   kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime NAME]… [--loop-storage SIZE]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker [--runtime NAME]…
   kvoadm host list | drain NAME | uncordon NAME
@@ -118,7 +126,10 @@ type InitOptions struct {
 	// Extra hardening, only when asked for (flags, or a question in a terminal).
 	DisablePasswordLogin bool
 	ChangeRootPassword   bool
-	DryRun               bool // look at the machine, change nothing
+	DryRun               bool   // look at the machine, change nothing
+	Restore              string // a backup to restore (kvoadm backup), instead of a new cluster
+	nameGiven            bool
+	clusterGiven         bool
 	looked               bool // the machine was already looked at (host add)
 	hardeningAsked       bool // a hardening flag was given: don't ask
 }
@@ -151,6 +162,7 @@ func parseTarget(args []string) (InitOptions, error) {
 		switch a {
 		case "--name":
 			o.Name, err = next()
+			o.nameGiven = true
 		case "--ssh-key":
 			o.SSHKey, err = next()
 		case "--host-key":
@@ -161,6 +173,9 @@ func parseTarget(args []string) (InitOptions, error) {
 			o.APIServer, err = next()
 		case "--cluster":
 			o.Cluster, err = next()
+			o.clusterGiven = true
+		case "--restore":
+			o.Restore, err = next()
 		case "--user":
 			o.UserName, err = next()
 		case "--ssh-port":
@@ -405,11 +420,24 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 		home = filepath.Join(h, ".kevaso")
 	}
 	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
+	var restore []byte
+	if o.Restore != "" {
+		var err error
+		if restore, err = prepareRestore(&o, stdin, out); err != nil {
+			return fmt.Errorf("restore: %w", err)
+		}
+	}
 	conn, err := bootstrap(ctx, o, home, stdin, out, say)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
+	if restore != nil {
+		if _, err := conn.Run(ctx, "kevasod admin restore --data /var/lib/kevaso", restore); err != nil {
+			return fmt.Errorf("restore: %w", err)
+		}
+		say("backup restored into /var/lib/kevaso: store, cluster CA, and the master key rebuilt with the recovery key")
+	}
 	if err := conn.InstallUnit(ctx, "kevasod.service", []byte(Unit(o))); err != nil {
 		return err
 	}
@@ -459,6 +487,8 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 		}
 	} else if !strings.Contains(err.Error(), "AlreadyExists") {
 		return fmt.Errorf("recovery key: %w", err)
+	} else if restore != nil {
+		say("the recovery key is still the one you restored with")
 	}
 	return nil
 }

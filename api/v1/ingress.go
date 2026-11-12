@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"encoding/json"
 	"time"
 
 	"kevaso.com/core/api/meta"
@@ -89,10 +90,27 @@ type Issuer struct {
 	Spec            IssuerSpec `json:"spec"`
 }
 
-// IssuerSpec is one of ACME or the cluster's own CA.
+// IssuerSpec says which cert-controller issues certificates, and its settings: spec.controller with
+// spec.config, or the shorthands acme (controller "acme") and internalCA (controller "internal-ca").
 type IssuerSpec struct {
-	ACME       *ACMEIssuer `json:"acme,omitempty"`
-	InternalCA bool        `json:"internalCA,omitempty"`
+	Controller string          `json:"controller,omitempty"`
+	Config     json.RawMessage `json:"config,omitempty"`
+	ACME       *ACMEIssuer     `json:"acme,omitempty"`
+	InternalCA bool            `json:"internalCA,omitempty"`
+}
+
+// CertController is the cert-controller an Issuer uses and its configuration.
+func (i *Issuer) CertController() (string, json.RawMessage) {
+	switch {
+	case i.Spec.Controller != "":
+		return i.Spec.Controller, i.Spec.Config
+	case i.Spec.ACME != nil:
+		b, _ := json.Marshal(i.Spec.ACME)
+		return "acme", b
+	case i.Spec.InternalCA:
+		return "internal-ca", nil
+	}
+	return "", nil
 }
 
 // ACMEIssuer is an ACME server (Let's Encrypt, or a private one).
@@ -102,6 +120,32 @@ type ACMEIssuer struct {
 	// ServerCA is a PEM CA to trust for the ACME server itself (a private ACME server; Let's
 	// Encrypt needs none).
 	ServerCA string `json:"serverCA,omitempty"`
+	// Solvers say how each host is proven: the most specific selector wins (dnsNames, then the
+	// longest dnsZones match, then a solver without a selector). Default: http01 for every host.
+	Solvers []ACMESolver `json:"solvers,omitempty"`
+}
+
+// ACMESolver is one way of answering ACME challenges, for the hosts its selector matches.
+type ACMESolver struct {
+	Selector *ACMESelector `json:"selector,omitempty"`
+	HTTP01   *ACMEHTTP01   `json:"http01,omitempty"`
+	DNS01    *ACMEDNS01    `json:"dns01,omitempty"`
+}
+
+// ACMESelector picks hosts: exact names, or every name in (or under) a zone.
+type ACMESelector struct {
+	DNSNames []string `json:"dnsNames,omitempty"`
+	DNSZones []string `json:"dnsZones,omitempty"`
+}
+
+// ACMEHTTP01 answers on port 80 through the cluster's ingress controllers.
+type ACMEHTTP01 struct{}
+
+// ACMEDNS01 answers with a TXT record at _acme-challenge.<host>, written by a DNS provider
+// registered on the control-plane host (kevasod control-plane --dns-provider NAME=PROGRAM).
+type ACMEDNS01 struct {
+	Provider           string `json:"provider"`
+	PropagationSeconds int    `json:"propagationSeconds,omitempty"` // wait before the server checks (default 60)
 }
 
 // Let's Encrypt's directory URLs.
@@ -128,11 +172,15 @@ type CertificateSpec struct {
 
 // CertificateStatus is its current certificate's validity and how getting it went.
 type CertificateStatus struct {
-	NotBefore  *time.Time       `json:"notBefore,omitempty"`
-	NotAfter   *time.Time       `json:"notAfter,omitempty"`
-	RenewAfter *time.Time       `json:"renewAfter,omitempty"`
-	Serial     string           `json:"serial,omitempty"`
-	Conditions []meta.Condition `json:"conditions,omitempty"`
+	NotBefore  *time.Time `json:"notBefore,omitempty"`
+	NotAfter   *time.Time `json:"notAfter,omitempty"`
+	RenewAfter *time.Time `json:"renewAfter,omitempty"`
+	Serial     string     `json:"serial,omitempty"`
+	// FailedAttempts and NextAttempt: after a failure, the next try waits 1 minute, doubling up to
+	// an hour, so a broken setup doesn't hammer the CA (Let's Encrypt rate-limits).
+	FailedAttempts int              `json:"failedAttempts,omitempty"`
+	NextAttempt    *time.Time       `json:"nextAttempt,omitempty"`
+	Conditions     []meta.Condition `json:"conditions,omitempty"`
 }
 
 // CertificateFor is the name of the Certificate an Ingress gets.

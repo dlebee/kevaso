@@ -40,14 +40,17 @@ func buildPebble(t *testing.T, ctx context.Context, arch string) string {
 	run("mod", "init", "pebbleget")
 	run("get", "github.com/letsencrypt/pebble/v2/cmd/pebble@"+pebbleVersion)
 	run("build", "-o", "pebble", "github.com/letsencrypt/pebble/v2/cmd/pebble")
-	return filepath.Join(dir, "pebble")
+	run("build", "-o", "pebble-challtestsrv", "github.com/letsencrypt/pebble/v2/cmd/pebble-challtestsrv")
+	return dir
 }
 
 // TestIngressHTTPS is M10's "done when" (example 04): HTTPS for several private silos through an
 // ingress controller silo, with certificates from an ACME server over real HTTP-01, renewed by
 // Kevaso. Pebble stands in for Let's Encrypt on the client machine; names come from sslip.io (public
 // DNS: NAME.<ip>.sslip.io resolves to the IP), so the ACME server really fetches the challenge from
-// the ingress controller on metal-1's port 80.
+// the ingress controller on metal-1's port 80. Some hosts are proven with DNS-01 instead: Pebble
+// resolves through pebble-challtestsrv, whose TXT records a DNS provider program registered on
+// metal-1's control plane writes (the same way a script against a DNS host's API would).
 //
 //	metal-1  control plane + worker (docker): the ingress controller and two private apps
 //	client   "the internet": Pebble, and the browser
@@ -119,13 +122,16 @@ func TestIngressHTTPS(t *testing.T) {
 	mzone := strings.ReplaceAll(metalIP, ".", "-") + ".sslip.io"
 	czone := strings.ReplaceAll(clientIP, ".", "-") + ".sslip.io"
 	apiHost, shopHost, pebbleHost := "api."+mzone, "shop."+mzone, "pebble."+czone
+	docsHost, wildHost := "docs."+mzone, "*.wild."+mzone // proven by DNS-01
 	t.Logf("metal-1 %s, client %s; sites %s %s; ACME at %s", metalIP, clientIP, apiHost, shopHost, pebbleHost)
 
 	// Pebble on the client, its own API on a certificate from the test's CA, validating HTTP-01
 	// on port 80 like Let's Encrypt.
-	pebble := buildPebble(t, ctx, arch)
-	if err := copyTo(ctx, machines["client"], pebble, "/usr/local/bin/pebble"); err != nil {
-		t.Fatal(err)
+	pebbleDir := buildPebble(t, ctx, arch)
+	for _, b := range []string{"pebble", "pebble-challtestsrv"} {
+		if err := copyTo(ctx, machines["client"], filepath.Join(pebbleDir, b), "/usr/local/bin/"+b); err != nil {
+			t.Fatal(err)
+		}
 	}
 	setup := strings.ReplaceAll(inetSetup, "DNS:api.allowed.test,DNS:pass.test,DNS:other.blocked.test", "DNS:"+pebbleHost)
 	caOut, err := sh("client", setup+`
@@ -135,7 +141,9 @@ cat > /etc/inet/pebble.json <<JSON
   "certificate": "/etc/inet/leaf.pem", "privateKey": "/etc/inet/leaf.key",
   "httpPort": 80, "tlsPort": 443, "ocspResponderURL": "", "externalAccountBindingRequired": false}}
 JSON
-systemd-run --unit=pebble --setenv=PEBBLE_VA_NOSLEEP=1 --setenv=PEBBLE_WFE_NONCEREJECT=0 /usr/local/bin/pebble -config /etc/inet/pebble.json
+systemd-run --unit=challtestsrv /usr/local/bin/pebble-challtestsrv -defaultIPv4 `+metalIP+` -defaultIPv6 "" \
+  -dnsserver 127.0.0.1:8053 -management 0.0.0.0:8055 -http01 "" -https01 "" -tlsalpn01 "" -doh ""
+systemd-run --unit=pebble --setenv=PEBBLE_VA_NOSLEEP=1 --setenv=PEBBLE_WFE_NONCEREJECT=0 /usr/local/bin/pebble -config /etc/inet/pebble.json -dnsserver 127.0.0.1:8053
 sleep 2
 cat /etc/inet/ca.pem`)
 	if err != nil {
@@ -161,6 +169,20 @@ cat /etc/inet/ca.pem`)
 	info, err := sshd.SSH(ctx, machines["metal"])
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The DNS provider: a program in /etc/kevaso/dns-providers, called present|cleanup FQDN VALUE.
+	if out, err := sh("metal", `mkdir -p /etc/kevaso/dns-providers && cat > /etc/kevaso/dns-providers/challtest <<'SH'
+#!/bin/sh
+set -e
+case "$1" in
+present) curl -fsS -X POST -d "{\"host\":\"$2\",\"value\":\"$3\"}" http://`+clientIP+`:8055/set-txt ;;
+cleanup) curl -fsS -X POST -d "{\"host\":\"$2\"}" http://`+clientIP+`:8055/clear-txt ;;
+*) exit 2 ;;
+esac
+echo "challtest: $1 $2" >&2
+SH
+chmod 0755 /etc/kevaso/dns-providers/challtest`); err != nil {
+		t.Fatalf("dns provider: %v\n%s", err, out)
 	}
 	hk, _ := d.Exec(ctx, machines["metal"], "ssh-keygen", "-lf", "/etc/ssh/ssh_host_ed25519_key.pub")
 	must(kvoadm.Run, "", "init", info.User+"@"+info.Host, "--ssh-port", strconv.Itoa(info.Port), "--ssh-key", info.KeyFile,
@@ -206,6 +228,10 @@ spec:
     email: ops@example.com
     serverCA: |
 ` + indent(inetCA, "      ") + `
+    solvers:
+      - http01: {}
+      - selector: { dnsNames: [` + docsHost + `], dnsZones: [wild.` + mzone + `] }
+        dns01: { provider: challtest, propagationSeconds: 2 }
 ---
 apiVersion: kevaso/v1
 kind: Silo
@@ -242,6 +268,22 @@ spec:
   hosts: [` + shopHost + `]
   tls: { mode: acme }
   rules: [{ path: /, silo: { name: web, port: http } }]
+---
+apiVersion: kevaso/v1
+kind: Ingress
+metadata: { name: docs, namespace: shop }
+spec:
+  ingressClass: public
+  hosts: [` + docsHost + `]
+  rules: [{ path: /, silo: { name: web, port: http } }]
+---
+apiVersion: kevaso/v1
+kind: Certificate
+metadata: { name: wild, namespace: shop }
+spec:
+  hosts: ["` + wildHost + `"]
+  issuer: pebble
+  secretName: wild-tls
 `
 	must(kvo.Run, manifest, "apply", "-f", "-")
 
@@ -250,7 +292,7 @@ spec:
 	for {
 		silos, _ := kvoRun(ctx, "", "get", "silos", "-A")
 		certs, _ := kvoRun(ctx, "", "get", "certificates", "-A")
-		if strings.Count(silos, "Running") == 3 && strings.Count(certs, " yes") == 2 {
+		if strings.Count(silos, "Running") == 3 && strings.Count(certs, " yes") == 4 {
 			t.Logf("silos:\n%s\ncertificates:\n%s", silos, certs)
 			break
 		}
@@ -259,7 +301,7 @@ spec:
 		}
 		if time.Now().After(deadline) {
 			j, _ := sh("metal", "journalctl -u kevasod -n 60 --no-pager | grep -v 'retry in 5m' | tail -40")
-			for _, c := range []string{"api-tls -n payments", "shop-tls -n shop"} {
+			for _, c := range []string{"api-tls -n payments", "shop-tls -n shop", "docs-tls -n shop", "wild -n shop"} {
 				desc, _ := kvoRun(ctx, "", append([]string{"describe", "certificate"}, strings.Fields(c)...)...)
 				t.Log(desc)
 			}
@@ -281,13 +323,26 @@ spec:
 		}
 	}
 	curl := func(args string) string {
-		out, _ := sh("client", "curl -sS --max-time 10 --cacert /etc/inet/pebble-root.pem "+args+" 2>&1")
+		// Names pinned to metal-1: the test doesn't depend on reaching sslip.io from the client.
+		pin := ""
+		for _, h := range []string{apiHost, shopHost, docsHost} {
+			pin += " --resolve " + h + ":443:" + metalIP + " --resolve " + h + ":80:" + metalIP
+		}
+		out, _ := sh("client", "curl -sS --max-time 10 --cacert /etc/inet/pebble-root.pem"+pin+" "+args+" 2>&1")
 		return strings.TrimSpace(out)
 	}
 	expect("https://api over a Pebble certificate", curl("https://"+apiHost+"/"), "hello from the api")
 	expect("https://shop, another namespace", curl("https://"+shopHost+"/"), "hello from the shop")
+	expect("https://docs, its certificate proven by DNS-01", curl("https://"+docsHost+"/"), "hello from the shop")
+	txt, _ := sh("client", "journalctl -u challtestsrv --no-pager | grep -ci txt")
+	if n, _ := strconv.Atoi(strings.TrimSpace(txt)); n == 0 {
+		t.Error("no TXT record was ever written: DNS-01 wasn't used")
+	} else {
+		t.Logf("DNS-01: %d TXT record changes at the DNS server: ok", n)
+	}
+	expect("a wildcard certificate (DNS-01 only)", must(kvo.Run, "", "describe", "certificate", "wild", "-n", "shop"), "*.wild.")
 	expect("http redirects to https", curl("-o /dev/null -w '%{http_code} %{redirect_url}' http://"+apiHost+"/x"), "308 https://"+apiHost+"/x")
-	expect("the certificate is Pebble's, for the host", curl("-v -o /dev/null https://"+apiHost+"/"), "subject: CN="+apiHost)
+	expect("the certificate is for the host (its SAN)", curl("-v -o /dev/null https://"+apiHost+"/"), "matched cert's \""+apiHost+"\"")
 	expect("an unknown host", curl("-o /dev/null -w '%{http_code}' --resolve nobody."+mzone+":80:"+metalIP+" http://nobody."+mzone+"/"), "404")
 	if got := curl("-o /dev/null -w '%{http_code}' http://" + metalIP + ":8080/"); strings.Contains(got, "200") {
 		t.Errorf("the app's own port answered from outside: %q", got)

@@ -311,3 +311,15 @@ func (s *SQLite) Close() error {
 }
 
 var _ Store = (*SQLite)(nil)
+
+// Snapshot writes a consistent copy of the store to path (which must not exist), while it keeps
+// serving: a backup.
+func (s *SQLite) Snapshot(ctx context.Context, path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("store closed")
+	}
+	_, err := s.db.ExecContext(ctx, "VACUUM INTO ?", path)
+	return err
+}

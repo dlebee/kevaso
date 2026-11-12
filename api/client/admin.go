@@ -90,3 +90,21 @@ type KMSRotation struct {
 	Rewrapped   int    `json:"rewrapped"`
 	RecoveryKey string `json:"recoveryKey,omitempty"`
 }
+
+// Backup is POST /admin/backup: the backup, sealed to the recovery key (base64 in JSON).
+type Backup struct {
+	Backup []byte `json:"backup"`
+}
+
+// RestoreRequest is what kevasod admin restore reads on stdin.
+type RestoreRequest struct {
+	Backup      []byte `json:"backup"`
+	RecoveryKey string `json:"recoveryKey"`
+}
+
+// Restored is what kevasod admin restore prints: what the backup was of.
+type Restored struct {
+	Cluster string `json:"cluster"`
+	Host    string `json:"host"`
+	Created string `json:"created"`
+}

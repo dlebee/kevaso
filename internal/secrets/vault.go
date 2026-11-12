@@ -375,3 +375,13 @@ func EscrowPublic(ctx context.Context, s store.Store) []byte {
 	}
 	return e.RecoveryPublic
 }
+
+// LoadEscrow reads the recovery escrow from the store.
+func LoadEscrow(ctx context.Context, s store.Store) (kms.Escrow, error) {
+	var e kms.Escrow
+	o, err := s.Get(ctx, store.Key{Kind: KindEscrow, Name: "local"})
+	if err != nil {
+		return e, err
+	}
+	return e, json.Unmarshal(o.Data, &e)
+}

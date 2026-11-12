@@ -51,6 +51,7 @@ type Server struct {
 	policy   *rbac.Source
 	vault    *secrets.Vault // nil: no KMS, secrets can't hold values
 	kmsAdmin KMSAdmin
+	backup   func(context.Context, []byte) ([]byte, error)
 }
 
 // New returns a server over a store, without authentication (kevasod dev, tests).

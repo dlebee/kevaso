@@ -20,8 +20,10 @@ import (
 	"kevaso.com/core/api/informer"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/builtin/kcc/acme"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/audit"
+	"kevaso.com/core/internal/backup"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controllers/certificate"
 	hostcontroller "kevaso.com/core/internal/controllers/host"
@@ -35,6 +37,7 @@ import (
 	"kevaso.com/core/internal/secrets"
 	"kevaso.com/core/internal/store"
 	"kevaso.com/core/internal/worker"
+	"kevaso.com/core/sdk/kcc"
 )
 
 // Config is what the control plane needs.
@@ -52,7 +55,11 @@ type Config struct {
 	Clock       clock.Clock
 	// Worker, when set, also runs the worker component on this host (one-host clusters).
 	Worker *worker.Config
-	Log    func(format string, args ...any)
+	// CertControllers are cert-controllers registered on this host beyond the built-in ones
+	// (acme, internal-ca), and DNSProviders the DNS providers acme's dns01 solvers may name.
+	CertControllers kcc.Registry
+	DNSProviders    map[string]acme.DNSProvider
+	Log             func(format string, args ...any)
 }
 
 func (c *Config) defaults() {
@@ -133,6 +140,11 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	}
 	srv.SetVault(&secrets.Vault{Store: st, KMS: localKMS, Now: cfg.Clock.Now})
 	srv.SetKMSAdmin(localKMS)
+	srv.SetBackup(func(ctx context.Context, pub []byte) ([]byte, error) {
+		ks, _ := localKMS.Status(ctx)
+		return backup.Make(ctx, cfg.DataDir, st.Snapshot,
+			backup.Manifest{Cluster: cfg.ClusterName, Host: cfg.HostName, Created: cfg.Clock.Now(), KMSKeyID: ks.KeyID}, pub)
+	})
 
 	if err := os.MkdirAll(filepath.Dir(cfg.AdminSocket), 0o700); err != nil {
 		_ = st.Close()
@@ -209,6 +221,24 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 }
 
 // runControllers starts the built-in controllers on informers fed through the admin socket.
+// certControllers are the built-in cert-controllers plus the ones registered on this host (which
+// can't replace a built-in one).
+func certControllers(cfg Config, cd certDeps) kcc.Registry {
+	r := certificate.BuiltinCertControllers(cd.store, cd.kms, cd.ca, cfg.Clock.Now, cfg.DNSProviders)
+	for n, c := range cfg.CertControllers {
+		if _, builtin := r[n]; builtin {
+			cfg.Log("cert-controller %s: that name is built in; ignored", n)
+			continue
+		}
+		r[n] = c
+		cfg.Log("cert-controller %s: %s", n, c.Info().Description)
+	}
+	for n := range cfg.DNSProviders {
+		cfg.Log("dns provider %s registered", n)
+	}
+	return r
+}
+
 // certDeps are what the certificate controller needs beyond the API.
 type certDeps struct {
 	store store.Store
@@ -231,8 +261,11 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
 	pools.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IPPool", Name: k.Name}) })
-	e.Register(&certificate.Controller{Client: c, Store: cd.store, KMS: cd.kms, CA: cd.ca, Clock: cfg.Clock,
-		Certificates: certs, Ingresses: ingresses, Classes: classes, Issuers: issuers, Log: cfg.Log}, engine.Options{Workers: 2})
+	cc := &certificate.Controller{Client: c, Store: cd.store, KMS: cd.kms, Clock: cfg.Clock,
+		CertControllers: certControllers(cfg, cd),
+		Certificates:    certs, Ingresses: ingresses, Classes: classes, Issuers: issuers, Log: cfg.Log}
+	e.Register(cc, engine.Options{Workers: 2})
+	e.Register(cc.IngressController(), engine.Options{Workers: 1})
 	ingressesOf := func(match func(*v1.Ingress) bool) {
 		for _, o := range ingresses.List() {
 			if ing := o.(*v1.Ingress); match(ing) {
@@ -245,6 +278,13 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 		ingressesOf(func(ing *v1.Ingress) bool { return ing.Namespace == k.Namespace && v1.CertificateFor(ing) == k.Name })
 	})
 	ingresses.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Ingress", Namespace: k.Namespace, Name: k.Name}) })
+	issuers.AddHandler(func(k informer.Key) { // an Issuer made or fixed: its certificates try again
+		for _, o := range certs.List() {
+			if c := o.(*v1.Certificate); c.Spec.Issuer == k.Name {
+				e.Changed(engine.Key{Kind: "Certificate", Namespace: c.Namespace, Name: c.Name})
+			}
+		}
+	})
 	classes.AddHandler(func(k informer.Key) {
 		ingressesOf(func(ing *v1.Ingress) bool { return ing.Spec.IngressClass == k.Name })
 	})
@@ -290,6 +330,16 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config) {
 		} else if err != nil {
 			cfg.Log("heartbeat: %v", err)
 			return
+		} else if h.Spec.Address != cfg.Address { // moved (restored onto a new machine)
+			cfg.Log("host %s: address %s → %s", cfg.HostName, h.Spec.Address, cfg.Address)
+			h.Spec.Address = cfg.Address
+			if err := c.Update(ctx, &h); err != nil {
+				cfg.Log("host address: %v", err)
+				return
+			}
+			if err := c.Get(ctx, "Host", "", cfg.HostName, &h); err != nil {
+				return
+			}
 		}
 		meta.SetCondition(&h.Status.Conditions, meta.Condition{
 			Type: "Ready", Status: meta.ConditionTrue, Reason: "ControlPlaneUp",

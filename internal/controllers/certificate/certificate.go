@@ -10,7 +10,6 @@ package certificate
 
 import (
 	"context"
-	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -21,28 +20,28 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
 	"strings"
 	"time"
-
-	"golang.org/x/crypto/acme"
 
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/informer"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/builtin/kcc/acme"
+	"kevaso.com/core/builtin/kcc/internalca"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/store"
+	"kevaso.com/core/sdk/kcc"
 )
 
 // Internal store kinds.
 const (
-	KindChallenge = "ACMEChallenge" // a pending HTTP-01 token → its key authorization
-	KindAccount   = "ACMEAccount"   // an Issuer's ACME account key, sealed
+	KindChallenge = "ACMEChallenge"       // a pending HTTP-01 token → its key authorization
+	KindState     = "CertControllerState" // a cert-controller's per-issuer state, sealed
 )
 
 // Labels on what the controller makes.
@@ -70,15 +69,14 @@ type Controller struct {
 	Client       *client.Client
 	Store        store.Store // challenges and ACME account keys
 	KMS          kms.KMS
-	CA           *pki.CA
 	Clock        clock.Clock
 	Certificates *informer.Informer
 	Ingresses    *informer.Informer
 	Classes      *informer.Informer
 	Issuers      *informer.Informer
 	Log          func(string, ...any)
-	// ACMEHTTP, if set, is the HTTP client for ACME servers (tests).
-	ACMEHTTP *http.Client
+	// CertControllers are the cert-controllers Issuers may name (built in: acme, internal-ca).
+	CertControllers kcc.Registry
 }
 
 func (c *Controller) log(f string, a ...any) {
@@ -92,6 +90,18 @@ func (c *Controller) Name() string { return "certificate" }
 
 // Kind implements engine.Controller (Ingress keys come in too, with Kind "Ingress").
 func (c *Controller) Kind() string { return "Certificate" }
+
+// Ingresses is the controller's other half: Ingress → Certificate and the Ingress's status. The
+// engine routes keys by kind, so it's registered as a controller of its own.
+func (c *Controller) IngressController() engine.Controller { return ingressController{c} }
+
+type ingressController struct{ c *Controller }
+
+func (i ingressController) Name() string { return "ingress-certificate" }
+func (i ingressController) Kind() string { return "Ingress" }
+func (i ingressController) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
+	return engine.Result{}, i.c.reconcileIngress(ctx, k)
+}
 
 // EnsureIssuers makes the built-in issuers if they're missing.
 func EnsureIssuers(ctx context.Context, cl *client.Client) error {
@@ -110,9 +120,6 @@ func EnsureIssuers(ctx context.Context, cl *client.Client) error {
 
 // Reconcile implements engine.Controller.
 func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
-	if k.Kind == "Ingress" {
-		return engine.Result{}, c.reconcileIngress(ctx, k)
-	}
 	o, ok := c.Certificates.Get(k.Namespace, k.Name)
 	if !ok {
 		return engine.Result{}, nil
@@ -262,6 +269,11 @@ func RenewAfter(notBefore, notAfter time.Time) time.Time {
 func (c *Controller) needsIssue(ctx context.Context, cert *v1.Certificate) (bool, time.Duration) {
 	st := cert.Status
 	ready := meta.FindCondition(st.Conditions, "Ready")
+	if ready != nil && ready.Status != meta.ConditionTrue && ready.ObservedGeneration == cert.Generation && st.NextAttempt != nil {
+		if wait := st.NextAttempt.Sub(c.Clock.Now()); wait > 0 && !c.fixed(cert, ready.Reason) {
+			return false, wait // backing off after a failure
+		}
+	}
 	if ready == nil || ready.Status != meta.ConditionTrue || st.RenewAfter == nil || ready.ObservedGeneration != cert.Generation {
 		return true, 0
 	}
@@ -288,17 +300,22 @@ func (c *Controller) reconcileCertificate(ctx context.Context, cert *v1.Certific
 	if err != nil {
 		return engine.Result{}, err
 	}
-	var chain [][]byte
-	switch {
-	case is.Spec.InternalCA:
-		chain, err = c.internalCA(cert.Spec.Hosts, key)
-	case is.Spec.ACME != nil:
-		chain, err = c.acmeIssue(ctx, &is, cert.Spec.Hosts, key)
-	default:
-		err = errors.New("the issuer has neither acme nor internalCA")
+	name, config := is.CertController()
+	cc, err := c.CertControllers.Get(name)
+	if err != nil {
+		return engine.Result{}, c.fail(ctx, cert, "NoCertController", fmt.Sprintf("issuer %s: %v", is.Name, err))
+	}
+	// The key is made here; the cert-controller only ever sees the CSR.
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: cert.Spec.Hosts[0]}, DNSNames: cert.Spec.Hosts}, key)
+	if err != nil {
+		return engine.Result{}, err
+	}
+	chain, err := cc.Issue(ctx, kcc.Request{Issuer: is.Name, Config: config, Hosts: cert.Spec.Hosts, CSR: csr})
+	if err == nil && len(chain) == 0 {
+		err = errors.New("the cert-controller returned no certificate")
 	}
 	if err != nil {
-		return engine.Result{}, c.fail(ctx, cert, "IssueFailed", err.Error())
+		return engine.Result{}, c.fail(ctx, cert, "IssueFailed", fmt.Sprintf("%s: %v", name, err))
 	}
 	leaf, err := x509.ParseCertificate(chain[0])
 	if err != nil {
@@ -316,17 +333,57 @@ func (c *Controller) reconcileCertificate(ctx context.Context, cert *v1.Certific
 	c.log("certificate %s/%s: issued by %s for %s, valid until %s", cert.Namespace, cert.Name, cert.Spec.Issuer, strings.Join(cert.Spec.Hosts, ","), na.Format(time.RFC3339))
 	return engine.Result{RequeueAfter: min(ra.Sub(c.Clock.Now()), 12*time.Hour)}, c.setStatus(ctx, cert, func(st *v1.CertificateStatus, gen int64) {
 		st.NotBefore, st.NotAfter, st.RenewAfter, st.Serial = &nb, &na, &ra, leaf.SerialNumber.Text(16)
+		st.FailedAttempts, st.NextAttempt = 0, nil
 		meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "Issued",
 			Message: "valid until " + na.Format("2006-01-02"), ObservedGeneration: gen}, c.now())
 	})
 }
 
+// fixed: the failure was a missing Issuer or cert-controller, and it's there now (no need to wait
+// out the backoff once someone fixes the setup).
+func (c *Controller) fixed(cert *v1.Certificate, reason string) bool {
+	if reason != "NoIssuer" && reason != "NoCertController" || c.Issuers == nil {
+		return false
+	}
+	o, ok := c.Issuers.Get("", cert.Spec.Issuer)
+	if !ok {
+		return false
+	}
+	name, _ := o.(*v1.Issuer).CertController()
+	_, err := c.CertControllers.Get(name)
+	return err == nil
+}
+
+// Backoff is how long to wait before the next try after n failures in a row: 1 minute, doubling, at
+// most an hour. Pure.
+func Backoff(n int) time.Duration {
+	if n < 1 {
+		n = 1
+	}
+	d := time.Minute
+	for i := 1; i < n && d < time.Hour; i++ {
+		d *= 2
+	}
+	return min(d, time.Hour)
+}
+
 func (c *Controller) fail(ctx context.Context, cert *v1.Certificate, reason, msg string) error {
-	c.log("certificate %s/%s: %s", cert.Namespace, cert.Name, msg)
-	_ = c.setStatus(ctx, cert, func(st *v1.CertificateStatus, gen int64) {
+	var wait time.Duration
+	err := c.setStatus(ctx, cert, func(st *v1.CertificateStatus, gen int64) {
+		if r := meta.FindCondition(st.Conditions, "Ready"); r == nil || r.ObservedGeneration != gen || r.Status == meta.ConditionTrue {
+			st.FailedAttempts = 0 // a new spec, or it was fine before: start over
+		}
+		st.FailedAttempts++
+		wait = Backoff(st.FailedAttempts)
+		next := c.now().Add(wait)
+		st.NextAttempt = &next
 		meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: reason, Message: msg, ObservedGeneration: gen}, c.now())
 	})
-	return errors.New(msg) // retried with backoff
+	c.log("certificate %s/%s: %s (next try in %v)", cert.Namespace, cert.Name, msg, wait)
+	if err != nil {
+		return err // couldn't record it: the engine retries
+	}
+	return nil // the status change wakes us; needsIssue waits until NextAttempt
 }
 
 func (c *Controller) setStatus(ctx context.Context, cert *v1.Certificate, mutate func(*v1.CertificateStatus, int64)) error {
@@ -386,167 +443,88 @@ func (c *Controller) writeSecret(ctx context.Context, cert *v1.Certificate, bund
 	return errors.New("secret kept changing")
 }
 
-// ── issuers ──────────────────────────────────────────────────────────────────
+// ── what the built-in acme cert-controller gets from the control plane ───────
 
-func (c *Controller) internalCA(hosts []string, key *ecdsa.PrivateKey) ([][]byte, error) {
-	if c.CA == nil {
-		return nil, errors.New("no cluster CA here")
+// HTTP01Solver keeps HTTP-01 answers in the store, where the ingress controllers' broker calls
+// find them: the cluster's ingress controllers serve them on port 80.
+type HTTP01Solver struct {
+	Store store.Store
+	Now   func() time.Time
+}
+
+// Present implements acme.Solver.
+func (s *HTTP01Solver) Present(ctx context.Context, host, token, keyAuth string) error {
+	b, _ := json.Marshal(Challenge{Token: token, KeyAuth: keyAuth, Host: host, Expires: s.Now().Add(10 * time.Minute)})
+	if _, err := s.Store.Create(ctx, store.Key{Kind: KindChallenge, Name: token}, b); err != nil && !errors.Is(err, store.ErrExists) {
+		return err
 	}
-	tc, err := c.CA.ServerCertForKey(hosts, key, c.Clock.Now(), 90*24*time.Hour)
+	return nil
+}
+
+// CleanUp implements acme.Solver.
+func (s *HTTP01Solver) CleanUp(ctx context.Context, token string) error {
+	o, err := s.Store.Get(ctx, store.Key{Kind: KindChallenge, Name: token})
+	if err != nil {
+		return nil
+	}
+	_, err = s.Store.Delete(ctx, o.Key, o.Revision)
+	return err
+}
+
+// SealedStore keeps a cert-controller's per-issuer state in the store, sealed by the KMS.
+type SealedStore struct {
+	Store store.Store
+	KMS   kms.KMS
+}
+
+func stateKey(issuer, k string) store.Key { return store.Key{Kind: KindState, Name: issuer + "." + k} }
+func stateAAD(issuer, k string) []byte    { return []byte("kcc-state/" + issuer + "/" + k) }
+
+// Get implements acme.Store.
+func (s *SealedStore) Get(ctx context.Context, issuer, k string) ([]byte, error) {
+	o, err := s.Store.Get(ctx, stateKey(issuer, k))
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, acme.ErrNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
-	return tc.Certificate, nil
-}
-
-// acmeClient is the issuer's ACME client, with its account (made on first use, key sealed).
-func (c *Controller) acmeClient(ctx context.Context, is *v1.Issuer) (*acme.Client, error) {
-	hc := c.ACMEHTTP
-	if hc == nil && is.Spec.ACME.ServerCA != "" {
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM([]byte(is.Spec.ACME.ServerCA)) {
-			return nil, errors.New("acme.serverCA: no certificate")
-		}
-		hc = &http.Client{Timeout: time.Minute, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}
-	}
-	key, fresh, err := c.accountKey(ctx, is.Name)
-	if err != nil {
+	var sealed kms.Sealed
+	if err := json.Unmarshal(o.Data, &sealed); err != nil {
 		return nil, err
 	}
-	cl := &acme.Client{Key: key, DirectoryURL: is.Spec.ACME.Server, HTTPClient: hc, UserAgent: "kevaso"}
-	if fresh {
-		acct := &acme.Account{}
-		if is.Spec.ACME.Email != "" {
-			acct.Contact = []string{"mailto:" + is.Spec.ACME.Email}
-		}
-		if _, err := cl.Register(ctx, acct, acme.AcceptTOS); err != nil && !errors.Is(err, acme.ErrAccountAlreadyExists) {
-			return nil, fmt.Errorf("acme account: %w", err)
-		}
-	}
-	return cl, nil
+	return kms.Open(ctx, s.KMS, sealed, stateAAD(issuer, k))
 }
 
-type accountRecord struct {
-	Sealed     kms.Sealed `json:"sealed"`
-	Registered bool       `json:"registered"`
+// Put implements acme.Store.
+func (s *SealedStore) Put(ctx context.Context, issuer, k string, v []byte) error {
+	sealed, err := kms.Seal(ctx, s.KMS, v, stateAAD(issuer, k))
+	if err != nil {
+		return err
+	}
+	b, _ := json.Marshal(sealed)
+	cur, err := s.Store.Get(ctx, stateKey(issuer, k))
+	if errors.Is(err, store.ErrNotFound) {
+		_, err = s.Store.Create(ctx, stateKey(issuer, k), b)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	_, err = s.Store.Update(ctx, stateKey(issuer, k), b, cur.Revision)
+	return err
 }
 
-func (c *Controller) accountKey(ctx context.Context, issuer string) (crypto.Signer, bool, error) {
-	k := store.Key{Kind: KindAccount, Name: issuer}
-	aad := []byte("acme-account/" + issuer)
-	if o, err := c.Store.Get(ctx, k); err == nil {
-		var r accountRecord
-		if err := json.Unmarshal(o.Data, &r); err != nil {
-			return nil, false, err
-		}
-		der, err := kms.Open(ctx, c.KMS, r.Sealed, aad)
-		if err != nil {
-			return nil, false, err
-		}
-		key, err := x509.ParsePKCS8PrivateKey(der)
-		clear(der)
-		if err != nil {
-			return nil, false, err
-		}
-		return key.(crypto.Signer), false, nil
+// BuiltinCertControllers are the cert-controllers every control plane has; dns are the DNS
+// providers registered on this control-plane host, for acme's dns01 solvers.
+func BuiltinCertControllers(st store.Store, k kms.KMS, ca *pki.CA, now func() time.Time, dns map[string]acme.DNSProvider) kcc.Registry {
+	return kcc.Registry{
+		"acme": &acme.Controller{HTTP01: &HTTP01Solver{Store: st, Now: now}, DNSProviders: dns, Store: &SealedStore{Store: st, KMS: k}},
+		"internal-ca": &internalca.Controller{Sign: func(csr []byte, hosts []string) ([][]byte, error) {
+			return ca.SignServerCSR(csr, hosts, now(), 90*24*time.Hour)
+		}},
 	}
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, false, err
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		return nil, false, err
-	}
-	sealed, err := kms.Seal(ctx, c.KMS, der, aad)
-	clear(der)
-	if err != nil {
-		return nil, false, err
-	}
-	b, _ := json.Marshal(accountRecord{Sealed: sealed, Registered: true})
-	if _, err := c.Store.Create(ctx, k, b); err != nil {
-		return nil, false, err
-	}
-	return key, true, nil
 }
-
-// acmeIssue runs an ACME order with HTTP-01 for every host, the answers served by the ingress
-// controllers (they read pending challenges from the store through the broker).
-func (c *Controller) acmeIssue(ctx context.Context, is *v1.Issuer, hosts []string, key *ecdsa.PrivateKey) ([][]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-	cl, err := c.acmeClient(ctx, is)
-	if err != nil {
-		return nil, err
-	}
-	order, err := cl.AuthorizeOrder(ctx, acme.DomainIDs(hosts...))
-	if err != nil {
-		return nil, fmt.Errorf("acme order: %w", err)
-	}
-	var tokens []string
-	defer func() {
-		for _, t := range tokens {
-			if o, err := c.Store.Get(context.WithoutCancel(ctx), store.Key{Kind: KindChallenge, Name: t}); err == nil {
-				_, _ = c.Store.Delete(context.WithoutCancel(ctx), o.Key, o.Revision)
-			}
-		}
-	}()
-	for _, u := range order.AuthzURLs {
-		z, err := cl.GetAuthorization(ctx, u)
-		if err != nil {
-			return nil, err
-		}
-		if z.Status == acme.StatusValid {
-			continue
-		}
-		var ch *acme.Challenge
-		for _, x := range z.Challenges {
-			if x.Type == "http-01" {
-				ch = x
-			}
-		}
-		if ch == nil {
-			return nil, fmt.Errorf("%s: the ACME server offers no http-01 challenge", z.Identifier.Value)
-		}
-		keyAuth, err := cl.HTTP01ChallengeResponse(ch.Token)
-		if err != nil {
-			return nil, err
-		}
-		b, _ := json.Marshal(Challenge{Token: ch.Token, KeyAuth: keyAuth, Host: z.Identifier.Value, Expires: c.Clock.Now().Add(10 * time.Minute)})
-		if _, err := c.Store.Create(ctx, store.Key{Kind: KindChallenge, Name: ch.Token}, b); err != nil && !errors.Is(err, store.ErrExists) {
-			return nil, err
-		}
-		tokens = append(tokens, ch.Token)
-		// Give the ingress controllers a moment to pick the answer up before the server checks.
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(ChallengePickup):
-		}
-		if _, err := cl.Accept(ctx, ch); err != nil {
-			return nil, fmt.Errorf("%s: accept: %w", z.Identifier.Value, err)
-		}
-		if _, err := cl.WaitAuthorization(ctx, z.URI); err != nil {
-			return nil, fmt.Errorf("%s: %w (does %s point at the ingress controller, on port 80?)", z.Identifier.Value, err, z.Identifier.Value)
-		}
-	}
-	if _, err := cl.WaitOrder(ctx, order.URI); err != nil {
-		return nil, fmt.Errorf("acme order: %w", err)
-	}
-	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: hosts[0]}, DNSNames: hosts}, key)
-	if err != nil {
-		return nil, err
-	}
-	der, _, err := cl.CreateOrderCert(ctx, order.FinalizeURL, csr, true)
-	if err != nil {
-		return nil, fmt.Errorf("acme finalize: %w", err)
-	}
-	return der, nil
-}
-
-// ChallengePickup is how long the controller waits for ingress controllers to have a new answer
-// (they poll for it every few seconds).
-var ChallengePickup = 6 * time.Second
 
 // Pending lists the HTTP-01 answers ingress controllers should serve (token → key authorization).
 func Pending(ctx context.Context, s store.Store, now time.Time) (map[string]string, error) {

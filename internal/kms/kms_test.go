@@ -158,3 +158,29 @@ func TestOpenLocalRefusesLooseFile(t *testing.T) {
 		t.Fatal("opened a key file others can read")
 	}
 }
+
+func TestSealToRecovery(t *testing.T) {
+	rk := NewRecoveryKey()
+	pub, _ := rk.Public()
+	data := []byte("the cluster's state")
+	blob, err := SealToRecovery(pub, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(blob, data) {
+		t.Fatal("plaintext visible")
+	}
+	if got, err := OpenWithRecovery(rk, blob); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("open = %q, %v", got, err)
+	}
+	if _, err := OpenWithRecovery(NewRecoveryKey(), blob); err == nil {
+		t.Fatal("another recovery key opened the backup")
+	}
+	blob[len(blob)-1] ^= 1
+	if _, err := OpenWithRecovery(rk, blob); err == nil {
+		t.Fatal("a changed backup opened")
+	}
+	if _, err := OpenWithRecovery(rk, []byte("junk")); err == nil {
+		t.Fatal("junk opened")
+	}
+}

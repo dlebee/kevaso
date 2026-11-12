@@ -60,3 +60,31 @@ func TestSQLiteSurvivesReopen(t *testing.T) {
 		t.Fatalf("revision after reopen jumped to %d", o3.Revision)
 	}
 }
+
+func TestSnapshot(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := store.OpenSQLite(filepath.Join(dir, "store.db"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.Create(ctx, store.Key{Kind: "Silo", Namespace: "a", Name: "x"}, []byte(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	snap := filepath.Join(dir, "snap.db")
+	if err := s.Snapshot(ctx, snap); err != nil {
+		t.Fatal(err)
+	}
+	c, err := store.OpenSQLite(snap, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if o, err := c.Get(ctx, store.Key{Kind: "Silo", Namespace: "a", Name: "x"}); err != nil || string(o.Data) != `{"v":1}` {
+		t.Fatalf("snapshot: %v %v", o, err)
+	}
+	if err := s.Snapshot(ctx, snap); err == nil {
+		t.Error("overwrote an existing file")
+	}
+}

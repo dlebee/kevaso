@@ -108,8 +108,13 @@ var builtinRules = map[string][]Rule{
 			"tls.mode must be acme, internal-ca or none"},
 	},
 	"Issuer": {
-		{`has(self.spec.acme) != (has(self.spec.internalCA) && self.spec.internalCA)`, "an Issuer is either acme or internalCA"},
+		{`(has(self.spec.acme) ? 1 : 0) + (has(self.spec.internalCA) && self.spec.internalCA ? 1 : 0) + (has(self.spec.controller) && self.spec.controller != '' ? 1 : 0) == 1`,
+			"an Issuer names one cert-controller: controller (with config), or the shorthand acme or internalCA"},
 		{`!has(self.spec.acme) || self.spec.acme.server.startsWith('https://')`, "acme.server is an https:// directory URL"},
+		{`!has(self.spec.acme) || !has(self.spec.acme.solvers) || self.spec.acme.solvers.all(s, (has(s.http01) ? 1 : 0) + (has(s.dns01) ? 1 : 0) == 1)`,
+			"each acme solver is exactly one of http01 or dns01"},
+		{`!has(self.spec.acme) || !has(self.spec.acme.solvers) || self.spec.acme.solvers.all(s, !has(s.dns01) || (has(s.dns01.provider) && s.dns01.provider != ''))`,
+			"a dns01 solver names a DNS provider registered on the control plane"},
 	},
 	"Certificate": {
 		{`has(self.spec.hosts) && self.spec.hosts.size() > 0`, "spec.hosts needs at least one host name"},

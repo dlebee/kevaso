@@ -252,6 +252,10 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			s.kmsEndpoints(w, r, id)
 			return
 		}
+		if r.URL.Path == "/admin/backup" {
+			s.backupEndpoint(w, r, id)
+			return
+		}
 		if r.URL.Path == "/auth/can-i" {
 			s.canI(w, r, id, groups)
 			return

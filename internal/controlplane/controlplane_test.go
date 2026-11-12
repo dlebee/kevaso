@@ -125,3 +125,36 @@ func TestStartValidates(t *testing.T) {
 		t.Fatal("empty config accepted")
 	}
 }
+
+// Restored onto a machine with another address, the control plane updates its own Host.
+func TestHostFollowsANewAddress(t *testing.T) {
+	data := t.TempDir()
+	sockDir, _ := os.MkdirTemp("/tmp", "kvcp")
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "admin.sock")
+	r, stop := start(t, data, sock)
+	waitReady(t, client.NewUnix(sock))
+	stop()
+	_ = r.Wait()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r2, err := Start(ctx, Config{ClusterName: "test", HostName: "cp-1", Address: "127.0.0.2",
+		DataDir: data, Listen: "127.0.0.1:0", AdminSocket: sock, Heartbeat: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cancel(); _ = r2.Wait() }()
+	admin := client.NewUnix(sock)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var h v1.Host
+		if err := admin.Get(ctx, "Host", "", "cp-1", &h); err == nil && h.Spec.Address == "127.0.0.2" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the host kept its old address")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

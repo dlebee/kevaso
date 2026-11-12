@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/pki"
+	"kevaso.com/core/sdk/kcc"
 )
 
 func TestDesiredCertificate(t *testing.T) {
@@ -48,9 +50,17 @@ func TestInternalCAAndBundle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &Controller{CA: ca, Clock: clock.Real{}}
+	cc, err := BuiltinCertControllers(nil, nil, ca, clock.Real{}.Now, nil).Get("internal-ca")
+	if err != nil {
+		t.Fatal(err)
+	}
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	chain, err := c.internalCA([]string{"api.payments.kevaso"}, key)
+	hosts := []string{"api.payments.kevaso"}
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: hosts[0]}, DNSNames: hosts}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain, err := cc.Issue(context.Background(), kcc.Request{Issuer: "internal-ca", Hosts: hosts, CSR: csr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,5 +79,12 @@ func TestInternalCAAndBundle(t *testing.T) {
 	if leaf.NotAfter.Sub(leaf.NotBefore) < 89*24*time.Hour {
 		t.Errorf("lifetime %s", leaf.NotAfter.Sub(leaf.NotBefore))
 	}
-	_ = context.Background()
+}
+
+func TestBackoff(t *testing.T) {
+	for n, want := range map[int]time.Duration{0: time.Minute, 1: time.Minute, 2: 2 * time.Minute, 3: 4 * time.Minute, 7: time.Hour, 50: time.Hour} {
+		if got := Backoff(n); got != want {
+			t.Errorf("Backoff(%d) = %v, want %v", n, got, want)
+		}
+	}
 }

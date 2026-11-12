@@ -42,8 +42,11 @@ import (
 	"time"
 
 	"kevaso.com/core/api/client"
+	"kevaso.com/core/builtin/kcc/acme"
+	kccexec "kevaso.com/core/builtin/kcc/exec"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/apiserver"
+	"kevaso.com/core/internal/backup"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controlplane"
 	"kevaso.com/core/internal/guest"
@@ -52,6 +55,7 @@ import (
 	"kevaso.com/core/internal/secrets"
 	"kevaso.com/core/internal/store"
 	"kevaso.com/core/internal/worker"
+	"kevaso.com/core/sdk/kcc"
 )
 
 const defaultAdminSocket = "/run/kevaso/admin.sock"
@@ -61,7 +65,8 @@ func usage() {
   kevasod control-plane --name HOST --address ADDR [--listen 0.0.0.0:6443] [--data /var/lib/kevaso]
   kevasod worker --name HOST --server https://CP:6443 [--ca-file F] [--token-file F] [--data D]
   kevasod admin sign-user --name NAME < csr.pem
-  kevasod admin recovery-key | kms-rotate [--new-recovery-key]
+  kevasod admin recovery-key | kms-rotate [--new-recovery-key] | backup
+  kevasod admin restore [--data /var/lib/kevaso] < {"backup":…,"recoveryKey":…}
   kevasod dev [--listen 127.0.0.1:8080] [--data PATH]`)
 	os.Exit(2)
 }
@@ -106,6 +111,10 @@ func main() {
 				req.NewRecoveryKey = true
 			}
 			err = runAdminCall(ctx, "/admin/kms/rotate", req, &client.KMSRotation{})
+		case len(os.Args) >= 3 && os.Args[2] == "backup":
+			err = runAdminCall(ctx, "/admin/backup", nil, &client.Backup{})
+		case len(os.Args) >= 3 && os.Args[2] == "restore":
+			err = runRestore(ctx, os.Args[3:])
 		default:
 			usage()
 		}
@@ -146,8 +155,45 @@ func runControlPlane(ctx context.Context, args []string) error {
 	loopSize := fs.String("loop-size", "64G", "size of the loop storage file")
 	egressCA := fs.String("egress-extra-ca", "", "PEM file the egress gate also trusts for upstream hosts (a company TLS proxy)")
 	gwScope := fs.String("openshell-gateway-scope", "namespace", "OpenShell gateways: one per host, namespace or silo")
+	var certCtrls, dnsProviders multi
+	fs.Var(&certCtrls, "cert-controller", "register a program as a cert-controller Issuers can name: NAME=/path/to/program (repeatable)")
+	fs.Var(&dnsProviders, "dns-provider", "register a program as a DNS provider for acme dns01 solvers: NAME=/path/to/program (repeatable)")
+	certCtrlDir := fs.String("cert-controllers-dir", "/etc/kevaso/cert-controllers", "every program here is a cert-controller, named after its file")
+	dnsDir := fs.String("dns-providers-dir", "/etc/kevaso/dns-providers", "every program here is a DNS provider, named after its file")
 	_ = fs.Parse(args)
 	cfg.ExtraNames = extra
+	for _, d := range []struct {
+		dir  string
+		into *multi
+	}{{*certCtrlDir, &certCtrls}, {*dnsDir, &dnsProviders}} {
+		found, err := kccexec.Discover(d.dir)
+		if err != nil {
+			return err
+		}
+		for n, p := range found {
+			*d.into = append(*d.into, n+"="+p)
+		}
+	}
+	for _, r := range certCtrls {
+		n, p, err := kccexec.ParseRegistration(r)
+		if err != nil {
+			return fmt.Errorf("--cert-controller %w", err)
+		}
+		if cfg.CertControllers == nil {
+			cfg.CertControllers = kcc.Registry{}
+		}
+		cfg.CertControllers[n] = &kccexec.CertController{Name: n, Program: p}
+	}
+	for _, r := range dnsProviders {
+		n, p, err := kccexec.ParseRegistration(r)
+		if err != nil {
+			return fmt.Errorf("--dns-provider %w", err)
+		}
+		if cfg.DNSProviders == nil {
+			cfg.DNSProviders = map[string]acme.DNSProvider{}
+		}
+		cfg.DNSProviders[n] = &kccexec.DNSProvider{Program: p}
+	}
 	if *withWorker {
 		if len(runtimes) == 0 {
 			runtimes = multi{"cloud-hypervisor"}
@@ -260,6 +306,27 @@ func runSignUser(ctx context.Context, args []string) error {
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+// runRestore puts a backup into a fresh data directory (before the control plane first starts
+// there): {"backup", "recoveryKey"} as JSON on stdin, never on the command line.
+func runRestore(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("restore", flag.ExitOnError)
+	data := fs.String("data", "/var/lib/kevaso", "data directory")
+	_ = fs.Parse(args)
+	var req client.RestoreRequest
+	if err := json.NewDecoder(io.LimitReader(os.Stdin, 2<<30)).Decode(&req); err != nil {
+		return fmt.Errorf("restore: reading the request on stdin: %w", err)
+	}
+	rk, err := kms.ParseRecoveryKey(req.RecoveryKey)
+	if err != nil {
+		return err
+	}
+	m, err := backup.Restore(ctx, req.Backup, rk, *data)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(client.Restored{Cluster: m.Cluster, Host: m.Host, Created: m.Created.Format(time.RFC3339)})
 }
 
 // runAdminCall POSTs to the admin socket (as root on a control-plane host) and prints the JSON

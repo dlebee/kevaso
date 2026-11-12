@@ -6,10 +6,10 @@ Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for
 **New here? Read [the guide](https://dlebee.github.io/kevaso-docs/)**: from an empty machine to a shared
 cluster, one explained step at a time. (`docs/` in this repo is for people working on Kevaso itself.)
 
-**Status:** early (M0–M9 of [MILESTONES.md](MILESTONES.md) done). What exists today:
+**Status:** early (M0–M10 of [MILESTONES.md](MILESTONES.md) done). What exists today:
 
 - setup in explicit steps ([guide](https://dlebee.github.io/kevaso-docs/setup/prepare/)): you make Kevaso's SSH key and
-  check the machine's fingerprint, `kvoadm check` looks without changing anything, `kvoadm init`
+  check the machine's fingerprint, `kvoadm init` first looks without changing anything (`--dry-run` stops there), then
   installs the control plane (signed `kevasod` verified on the host) and gives you `kvo` access, and
   `kvoadm host enable-worker` lets the same machine run silos;
 - `kevasod control-plane`: the API over TLS with client certificates from the cluster's private CA,
@@ -53,6 +53,16 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
 - container runtimes: `runtime: docker` / `podman` on the same silo bridge as the VMs (firewall,
   default-deny egress, exposure and the egress gate apply unchanged), init steps as init containers,
   volumes that persist, the broker over a socket of their own;
+- HTTPS: an ingress controller is a silo (`kvo-guest ingress`); `IngressClass` and `Ingress` route
+  host names and paths to private silos, each Ingress opening exactly one path through the
+  firewall. Certificates are automatic and renewed: Kevaso makes the key and keeps the lifecycle,
+  and a **cert-controller** (`sdk/kcc`) turns a CSR into a chain. Built in: `acme` (Let's Encrypt or
+  your own CA, cert-manager-style solvers: http01 through the ingress controllers, dns01 through a
+  DNS provider program, wildcards) and `internal-ca`; anything else (certbot…) is a program on the
+  control-plane host that Issuers can only name;
+- backups: `kvoadm backup` writes the control plane's state sealed to the recovery key, and
+  `kvoadm init --restore FILE` brings it back on a fresh machine, the master key rebuilt from the
+  recovery key;
 - under the hood: a store with global revisions and resumable watches, CEL validation, a controller
   engine; the testbed and end-to-end loop (`make e2e`).
 

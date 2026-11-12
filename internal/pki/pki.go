@@ -221,6 +221,38 @@ func (ca *CA) serverCert(cn string, names []string, key *ecdsa.PrivateKey, now t
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, nil
 }
 
+// SignServerCSR signs a CSR (DER) as a server certificate for hosts (the CSR's own names are
+// ignored): the internal-ca cert-controller. It returns the chain, leaf then CA.
+func (ca *CA) SignServerCSR(csrDER []byte, hosts []string, now time.Time, ttl time.Duration) ([][]byte, error) {
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		return nil, err
+	}
+	if err := csr.CheckSignature(); err != nil {
+		return nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial(),
+		Subject:      pkix.Name{CommonName: hosts[0]},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     now.Add(ttl),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	for _, n := range hosts {
+		if ip := net.ParseIP(n); ip != nil {
+			tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+		} else {
+			tmpl.DNSNames = append(tmpl.DNSNames, n)
+		}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.Cert, csr.PublicKey, ca.Key)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{der, ca.Cert.Raw}, nil
+}
+
 // SignCSR issues a client certificate for the CSR's public key, with exactly the given identity.
 // The CSR's own subject and SANs are ignored: whoever calls SignCSR decides the identity.
 func (ca *CA) SignCSR(csrPEM []byte, id Identity, now time.Time, ttl time.Duration) ([]byte, error) {
