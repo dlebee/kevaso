@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"strings"
 
@@ -56,6 +57,18 @@ func semantic(obj meta.Object) []string {
 			}
 			if sec.Path != "" && (!strings.HasPrefix(sec.Path, "/run/") || strings.Contains(sec.Path, "..")) {
 				errs = append(errs, fmt.Sprintf("secret %s: path %q must be under /run/ (tmpfs: a secret file never reaches the silo's disk), without ..", sec.Name, sec.Path))
+			}
+		}
+	case *v1.Ingress:
+		for _, h := range o.Spec.Hosts {
+			if _, err := (v1.EgressRule{To: h}).Parse(); err != nil || strings.Contains(h, "/") || net.ParseIP(h) != nil {
+				errs = append(errs, fmt.Sprintf("spec.hosts: %q isn't a host name", h))
+			}
+		}
+	case *v1.Certificate:
+		for _, h := range o.Spec.Hosts {
+			if _, err := (v1.EgressRule{To: h}).Parse(); err != nil || strings.Contains(h, "/") || net.ParseIP(h) != nil {
+				errs = append(errs, fmt.Sprintf("spec.hosts: %q isn't a host name", h))
 			}
 		}
 	case *v1.Secret:

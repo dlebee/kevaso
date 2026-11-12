@@ -95,6 +95,26 @@ var builtinRules = map[string][]Rule{
 		{`!has(self.spec.requires) || !has(self.spec.requires.assurance) || self.spec.requires.assurance in ['host', 'vtpm', 'confidential']`,
 			"requires.assurance must be host, vtpm or confidential"},
 	},
+	"IngressClass": {
+		{`self.spec.controller.silo != '' && self.spec.controller.namespace != ''`, "spec.controller needs a silo and its namespace"},
+	},
+	"Ingress": {
+		{`self.spec.ingressClass != ''`, "spec.ingressClass is required"},
+		{`has(self.spec.hosts) && self.spec.hosts.size() > 0`, "spec.hosts needs at least one host name"},
+		{`has(self.spec.rules) && self.spec.rules.size() > 0 && self.spec.rules.all(r, r.silo.name != '' && r.silo.port != '')`,
+			"every rule needs a silo name and a port name"},
+		{`self.spec.rules.all(r, !has(r.path) || r.path.startsWith('/'))`, "paths start with /"},
+		{`!has(self.spec.tls) || !has(self.spec.tls.mode) || self.spec.tls.mode in ['acme', 'internal-ca', 'none']`,
+			"tls.mode must be acme, internal-ca or none"},
+	},
+	"Issuer": {
+		{`has(self.spec.acme) != (has(self.spec.internalCA) && self.spec.internalCA)`, "an Issuer is either acme or internalCA"},
+		{`!has(self.spec.acme) || self.spec.acme.server.startsWith('https://')`, "acme.server is an https:// directory URL"},
+	},
+	"Certificate": {
+		{`has(self.spec.hosts) && self.spec.hosts.size() > 0`, "spec.hosts needs at least one host name"},
+		{`self.spec.issuer != '' && self.spec.secretName != ''`, "spec.issuer and spec.secretName are required"},
+	},
 	"Role":               rbacRuleRules,
 	"ClusterRole":        rbacRuleRules,
 	"RoleBinding":        append([]Rule{{`self.roleRef.kind in ['Role', 'ClusterRole']`, "roleRef.kind must be Role or ClusterRole"}}, bindingRules...),

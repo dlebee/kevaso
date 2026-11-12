@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+
+	"kevaso.com/core/internal/sshboot"
 )
 
 // checkScript prints what kvoadm needs to know about a machine, one KEY=VALUE per line. It only
@@ -29,7 +31,7 @@ systemctl is-active --quiet kevasod 2>/dev/null && echo kevasod=running || echo 
 (ss -ltnH 2>/dev/null | awk '{print $4}' | grep -q ':6443$') && echo port_6443=taken || echo port_6443=free
 `
 
-// CheckResult is one line of kvoadm check.
+// CheckResult is one line of what kvoadm found on a machine.
 type CheckResult struct {
 	What, Found, Note string
 	Level             string // ok | warn | fail
@@ -98,24 +100,15 @@ func Assess(facts map[string]string) []CheckResult {
 	return out
 }
 
-// checkCmd: kvoadm check [USER@]ADDRESS --ssh-key PATH [--host-key SHA256:…] [--ssh-port N]
-// logs in the way init would and reports what it finds. It changes nothing.
-func checkCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) (bool, error) {
-	o, err := parseTarget(args)
-	if err != nil {
-		return false, err
-	}
-	if err := needCredential(o); err != nil {
-		return false, err
-	}
-	conn, _, err := dialHost(ctx, o, bufio.NewReader(stdin), stdin, out)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = conn.Close() }()
+// ErrDryRun stops a command after it looked at the machine (--dry-run): nothing was changed.
+var ErrDryRun = errors.New("dry run: nothing was changed")
+
+// inspectMachine reads the machine (changing nothing), prints what it found, and reports whether
+// it's fit (no ✗). Every command that sets a machine up does this first.
+func inspectMachine(ctx context.Context, conn *sshboot.Conn, out io.Writer) (map[string]string, bool, error) {
 	raw, err := conn.Run(ctx, "sh -c "+shQuote(checkScript), nil)
 	if err != nil {
-		return false, fmt.Errorf("reading the machine: %w", err)
+		return nil, false, fmt.Errorf("reading the machine: %w", err)
 	}
 	facts := map[string]string{}
 	for _, line := range strings.Split(string(raw), "\n") {
@@ -124,9 +117,9 @@ func checkCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer
 		}
 	}
 	if facts["arch"] == "" {
-		return false, errors.New("the machine answered nothing kvoadm understands")
+		return facts, false, errors.New("the machine answered nothing kvoadm understands")
 	}
-	_, _ = fmt.Fprintf(out, "%s@%s (host key %s)\n\n", o.User, o.Address, conn.Fingerprint)
+	_, _ = fmt.Fprintln(out, "\nWhat's on this machine:")
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	ok := true
 	for _, r := range Assess(facts) {
@@ -138,15 +131,31 @@ func checkCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer
 		if r.Note != "" {
 			note = "  " + r.Note
 		}
-		_, _ = fmt.Fprintf(tw, "%s %s\t%s\t%s\n", mark, r.What, r.Found, note)
+		_, _ = fmt.Fprintf(tw, "  %s %s\t%s\t%s\n", mark, r.What, r.Found, note)
 	}
 	_ = tw.Flush()
-	if ok {
-		_, _ = fmt.Fprintln(out, "\nReady for kvoadm init. Nothing was changed.")
-	} else {
-		_, _ = fmt.Fprintln(out, "\nFix the ✗ lines first. Nothing was changed.")
+	_, _ = fmt.Fprintln(out)
+	return facts, ok, nil
+}
+
+// lookFirst logs in and reads the machine before anything is created for it (host add declares the
+// Host and makes a join token before installing): a dry run or an unfit machine leaves nothing behind.
+func lookFirst(ctx context.Context, o InitOptions, stdin io.Reader, out io.Writer) error {
+	conn, _, err := dialHost(ctx, o, bufio.NewReader(stdin), stdin, out)
+	if err != nil {
+		return err
 	}
-	return ok, nil
+	defer func() { _ = conn.Close() }()
+	_, fit, err := inspectMachine(ctx, conn, out)
+	switch {
+	case err != nil:
+		return err
+	case !fit:
+		return errors.New("fix the ✗ lines first: nothing was changed")
+	case o.DryRun:
+		return ErrDryRun
+	}
+	return nil
 }
 
 func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

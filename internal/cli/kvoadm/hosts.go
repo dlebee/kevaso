@@ -148,6 +148,10 @@ func adminClient(kctx string) (*client.Client, kvoconfig.Context, error) {
 // and from then on only dials out.
 func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writer) error {
 	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
+	if err := lookFirst(ctx, o.InitOptions, stdin, out); err != nil {
+		return err
+	}
+	o.looked = true
 	c, kc, err := adminClient(o.KvoContext)
 	if err != nil {
 		return err
@@ -275,7 +279,11 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 		if err != nil {
 			return err
 		}
-		return hostAdd(ctx, o, stdin, out)
+		if err := hostAdd(ctx, o, stdin, out); !errors.Is(err, ErrDryRun) {
+			return err
+		}
+		_, _ = fmt.Fprintln(out, "Dry run: nothing was changed.")
+		return nil
 	case "enable-worker":
 		return enableWorker(ctx, args[1:], stdin, out)
 	case "list":

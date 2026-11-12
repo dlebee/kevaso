@@ -1,8 +1,7 @@
 // Package kvoadm is the operator CLI. Setting up a machine is a few explicit steps
 // (https://dlebee.github.io/kevaso-docs/setup/prepare/), each one doing one thing:
 //
-//	kvoadm check [USER@]ADDRESS --ssh-key PATH --host-key SHA256:…   look before changing anything
-//	kvoadm init  [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME]
+//	kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME]
 //	             [--api-server URL] [--cluster NAME] [--user NAME]      the control plane, your kvo
 //	                                                                    context, the recovery key
 //	kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime R]… [--loop-storage SIZE]
@@ -17,7 +16,8 @@
 // logs in with a password once and adds kvoadm's own key for next time. It changes nothing else
 // about logging in unless asked: --disable-password-login (keys only), --change-root-password (a
 // random one nobody knows), or, in a terminal without those flags, a question for each
-// (--no-extra-hardening: don't ask). kevasod is installed only after its signature verifies on the host
+// (--no-extra-hardening: don't ask). Before changing anything, init and host add read the machine
+// and show what they found, stopping on anything that won't work; --dry-run stops right there. kevasod is installed only after its signature verifies on the host
 // (E018). init --worker is init and enable-worker in one go.
 package kvoadm
 
@@ -63,17 +63,6 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return 0
 	}
-	if len(args) > 0 && args[0] == "check" {
-		ok, err := checkCmd(ctx, args[1:], stdin, stdout)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
-			return 1
-		}
-		if !ok {
-			return 1
-		}
-		return 0
-	}
 	if len(args) > 0 && args[0] == "kms" {
 		if err := kmsCmd(ctx, args[1:], stdin, stdout); err != nil {
 			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
@@ -90,7 +79,6 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if len(args) == 0 || args[0] != "init" {
 		_, _ = fmt.Fprintln(stderr, `usage:
-  kvoadm check [USER@]ADDRESS --ssh-key PATH --host-key SHA256:…
   kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL]
   kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime NAME]… [--loop-storage SIZE]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker [--runtime NAME]…
@@ -105,7 +93,10 @@ The step-by-step guide: https://dlebee.github.io/kevaso-docs/setup/prepare/`)
 		_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
 		return 2
 	}
-	if err := initCluster(ctx, o, stdin, stdout); err != nil {
+	if err := initCluster(ctx, o, stdin, stdout); errors.Is(err, ErrDryRun) {
+		_, _ = fmt.Fprintln(stdout, "Dry run: nothing was changed.")
+		return 0
+	} else if err != nil {
 		_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
 		return 1
 	}
@@ -127,6 +118,8 @@ type InitOptions struct {
 	// Extra hardening, only when asked for (flags, or a question in a terminal).
 	DisablePasswordLogin bool
 	ChangeRootPassword   bool
+	DryRun               bool // look at the machine, change nothing
+	looked               bool // the machine was already looked at (host add)
 	hardeningAsked       bool // a hardening flag was given: don't ask
 }
 
@@ -181,6 +174,8 @@ func parseTarget(args []string) (InitOptions, error) {
 			o.DisablePasswordLogin, o.hardeningAsked = true, true
 		case "--change-root-password":
 			o.ChangeRootPassword, o.hardeningAsked = true, true
+		case "--dry-run":
+			o.DryRun = true
 		case "--no-extra-hardening":
 			o.hardeningAsked = true
 		case "--accept-host-key-on-first-use":
@@ -497,6 +492,21 @@ func bootstrap(ctx context.Context, o InitOptions, home string, stdin io.Reader,
 		return nil, err
 	}
 	say("connected to %s (host key %s)", net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort)), conn.Fingerprint)
+
+	// Look before changing anything (--dry-run stops here), unless the caller already did.
+	if o.looked {
+		// host add looked before declaring the Host
+	} else if _, fit, err := inspectMachine(ctx, conn, out); err != nil {
+		_ = conn.Close()
+		return nil, err
+	} else if !fit {
+		_ = conn.Close()
+		return nil, errors.New("fix the ✗ lines first: nothing was changed")
+	}
+	if o.DryRun {
+		_ = conn.Close()
+		return nil, ErrDryRun
+	}
 
 	// 2. Check the machine.
 	uname, err := conn.Run(ctx, "uname -m", nil)
