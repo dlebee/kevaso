@@ -170,3 +170,24 @@ func TestEgressGrants(t *testing.T) {
 		t.Errorf("forward chain ends with %q, want the default-deny drop", last)
 	}
 }
+
+// Grants by host name and injected secrets: the silo's TLS to outside the cluster goes to the gate.
+func TestGateRedirect(t *testing.T) {
+	s := Silo{Key: "dev/claude-1", IP: a("10.64.2.2"), GatePorts: []v1.PortRange{{From: 443, To: 443}, {From: 8443, To: 8443}}}
+	plain := Silo{Key: "dev/plain", IP: a("10.64.2.3")}
+	h := host(s, plain)
+	h.GatePort = 15001
+	r := Rules(h)
+	has(t, r,
+		`iifname "kvbr0" ip saddr 10.64.2.2 ip daddr != { 10.64.0.0/16, 10.62.0.0/16, 10.63.0.0/16 } tcp dport { 443, 8443 } redirect to :15001`,
+		`iifname "kvbr0" ip daddr 10.64.2.1 tcp dport 15001 accept`,
+	)
+	hasNot(t, r, "ip saddr 10.64.2.3 ip daddr != { 10.64.0.0/16, 10.62.0.0/16, 10.63.0.0/16 } tcp dport")
+	// The gate's port opens only on the input chain, before its drop.
+	_, in, _ := strings.Cut(r, "chain input {")
+	if i, j := strings.Index(in, "dport 15001 accept"), strings.Index(in, `iifname "kvbr0" drop`); i < 0 || i > j {
+		t.Error("gate port not accepted before the input drop")
+	}
+	h.GatePort = 0
+	hasNot(t, Rules(h), "redirect", "15001")
+}

@@ -41,6 +41,12 @@ mv /usr/local/bin/kvo-guest.new /usr/local/bin/kvo-guest
 printf '%s' "$2" > /etc/systemd/system/kvo-guest.service
 systemctl daemon-reload
 systemctl enable kvo-guest.service >/dev/null 2>&1
+if [ -n "$3" ]; then
+  mkdir -p /usr/local/share/ca-certificates
+  printf '%s' "$3" > /usr/local/share/ca-certificates/kevaso-egress.crt
+  update-ca-certificates >/dev/null 2>&1 || true
+  grep -q '^NODE_EXTRA_CA_CERTS=' /etc/environment 2>/dev/null || printf 'NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/kevaso-egress.crt\nREQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt\nSSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\n' >> /etc/environment
+fi
 /usr/local/bin/kvo-guest sync --once
 systemctl restart kvo-guest.service
 printf '%s' "$1" > /var/lib/kevaso-guest/version
@@ -71,6 +77,10 @@ func (a *Agent) prepareGuest(ctx context.Context, rt kri.Runtime, s *v1.Silo) er
 	if err != nil {
 		return fmt.Errorf("guest helper: %w", err)
 	}
+	if len(a.GuestCA) > 0 { // a new egress CA re-runs the setup too
+		sum := sha256.Sum256(a.GuestCA)
+		version += "-" + hex.EncodeToString(sum[:4])
+	}
 	var out bytes.Buffer
 	if code, err := rt.Exec(ctx, idOf(s), kri.ExecRequest{Command: []string{"cat", "/var/lib/kevaso-guest/version"}, Stdout: &out}); err == nil && code == 0 &&
 		strings.TrimSpace(out.String()) == version && a.guestServiceActive(ctx, rt, s) {
@@ -83,7 +93,7 @@ func (a *Agent) prepareGuest(ctx context.Context, rt kri.Runtime, s *v1.Silo) er
 	}
 	defer func() { _ = f.Close() }()
 	out.Reset()
-	code, err := rt.Exec(ctx, idOf(s), kri.ExecRequest{Command: []string{"sh", "-c", prepareScript, "sh", version, guestUnit}, Stdin: f, Stdout: &out, Stderr: &out})
+	code, err := rt.Exec(ctx, idOf(s), kri.ExecRequest{Command: []string{"sh", "-c", prepareScript, "sh", version, guestUnit, string(a.GuestCA)}, Stdin: f, Stdout: &out, Stderr: &out})
 	if err != nil {
 		return fmt.Errorf("installing the guest helper: %w", err)
 	}

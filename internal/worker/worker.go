@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/clock"
+	"kevaso.com/core/internal/gate"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -45,6 +47,9 @@ type Config struct {
 	// MeshSubnet: wait for the control plane to give this host its silo subnet (on the mesh) and
 	// use it; without, silos use 10.64.0.0/24.
 	MeshSubnet bool
+	// EgressExtraCA is a PEM file the egress gate trusts for upstream hosts, on top of the system
+	// roots (a company's TLS proxy; the e2e test's stand-in internet).
+	EgressExtraCA string
 }
 
 // Installer is a runtime that needs setting up on the host first.
@@ -165,6 +170,18 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 		}
 	}
 	report()
+	// The egress gate's CA: made on this host, its silos trust it (design §8.1, E025).
+	var egressCA *gate.CA
+	var upstream *x509.CertPool
+	if runtime.GOOS == "linux" && cfg.DataDir != "" {
+		var err error
+		if egressCA, err = gate.LoadOrCreateCA(filepath.Join(cfg.DataDir, "egress-ca"), cfg.HostName); err != nil {
+			cfg.Log("egress gate: %v (no injection on this host)", err)
+		}
+		if upstream, err = upstreamRoots(cfg.EgressExtraCA); err != nil {
+			cfg.Log("egress gate: extra CA: %v", err)
+		}
+	}
 	for name, rt := range rts {
 		go func(name string, rt Installer) {
 			cfg.Log("installing runtime %s", name)
@@ -182,7 +199,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 			} else {
 				cfg.Log("runtime %s ready", name)
 				if _, ok := rt.(chInstaller); ok { // its bridge is there now: keep its firewall current
-					go RunNetwork(ctx, c, cfg.HostName, cfg.Log)
+					go RunNetwork(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log)
 				}
 			}
 			mu.Lock()
@@ -213,6 +230,9 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	}
 	if exe, err := os.Executable(); err == nil && runtime.GOOS == "linux" {
 		a.GuestHelper = exe // kevasod itself: in a silo, as kvo-guest
+	}
+	if egressCA != nil {
+		a.GuestCA = egressCA.PEM
 	}
 	a.Run(ctx)
 }

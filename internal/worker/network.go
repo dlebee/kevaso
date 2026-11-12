@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/x509"
 	"net"
 	"net/netip"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kni"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
+	"kevaso.com/core/internal/gate"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -45,6 +47,7 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 				}
 			}
 		}
+		ks.GatePorts = gate.PolicyFor(s, grants).Ports()
 		view.Local = append(view.Local, ks)
 	}
 	return view
@@ -63,9 +66,11 @@ func PoolAddresses(hostName string, silos []*v1.Silo) []string {
 
 // RunNetwork keeps the host's silo firewall and pool addresses in line with the API: on every
 // change, and every minute to repair drift. The firewall is reloaded only when its text changes
-// (atomically: nft -f replaces the tables in one transaction).
-func RunNetwork(ctx context.Context, c *client.Client, hostName string, log func(string, ...any)) {
+// (atomically: nft -f replaces the tables in one transaction). With an egress CA it also runs the
+// egress gate.
+func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate.CA, upstream *x509.CertPool, log func(string, ...any)) {
 	silos, hosts, grantsInf := informer.New(c, "Silo"), informer.New(c, "Host"), informer.New(c, "Grant")
+	secretsInf := informer.New(c, "Secret")
 	changed := make(chan struct{}, 1)
 	poke := func(informer.Key) {
 		select {
@@ -79,8 +84,16 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, log func
 	go silos.Run(ctx)
 	go hosts.Run(ctx)
 	go grantsInf.Run(ctx)
+	go secretsInf.Run(ctx)
 	if !silos.WaitSynced(ctx) || !hosts.WaitSynced(ctx) || !grantsInf.WaitSynced(ctx) {
 		return
+	}
+	currentGrants := func() []*v1.Grant {
+		var out []*v1.Grant
+		for _, o := range grantsInf.List() {
+			out = append(out, o.(*v1.Grant))
+		}
+		return out
 	}
 	current := func() []*v1.Silo {
 		var out []*v1.Silo
@@ -90,6 +103,14 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, log func
 		return out
 	}
 	go (&DNS{Listen: net.JoinHostPort(cloudhypervisor.Gateway.String(), "53"), Silos: current, Log: log}).Run(ctx)
+	gatePort := 0
+	if ca != nil {
+		eg := &egress{c: c, hostName: hostName, ca: ca, upstream: upstream, log: log, silos: current, grants: currentGrants}
+		secretsInf.AddHandler(func(informer.Key) { eg.invalidate() })
+		grantsInf.AddHandler(func(informer.Key) { eg.invalidate() })
+		go eg.run(ctx)
+		gatePort = GatePort
+	}
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	last := ""
@@ -102,11 +123,9 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, log func
 		if o, ok := hosts.Get("", hostName); ok {
 			me = o.(*v1.Host)
 		}
-		var grants []*v1.Grant
-		for _, o := range grantsInf.List() {
-			grants = append(grants, o.(*v1.Grant))
-		}
-		rules := kni.Rules(NetworkView(hostName, me, all, grants))
+		view := NetworkView(hostName, me, all, currentGrants())
+		view.GatePort = gatePort
+		rules := kni.Rules(view)
 		if rules != last {
 			if err := applyNFT(ctx, rules); err != nil {
 				log("silo firewall: %v", err)

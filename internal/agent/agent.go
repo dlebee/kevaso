@@ -47,6 +47,8 @@ type Agent struct {
 	// GuestHelper is the kvo-guest binary copied into silos whose runtime has a broker channel
 	// (kevasod itself: it runs as kvo-guest by that name). Empty: no helper.
 	GuestHelper string
+	// GuestCA is the host's egress CA, put in every silo's trust store with the helper.
+	GuestCA []byte
 
 	silos    *informer.Informer
 	secrets  *informer.Informer

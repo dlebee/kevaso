@@ -32,6 +32,9 @@ type Silo struct {
 	// Egress is what its Grants open outside the cluster (CIDR rules; host names go through the
 	// egress gate).
 	Egress []v1.ParsedEgress
+	// GatePorts are the TCP ports its traffic outside the cluster goes to the egress gate on
+	// (grants by host name, injected secrets).
+	GatePorts []v1.PortRange
 }
 
 // Host is one worker's view.
@@ -42,6 +45,8 @@ type Host struct {
 	Address netip.Addr // the host's own (public, if it has one) address
 	Local   []Silo     // silos on this host
 	All     []Silo     // every silo in the cluster with an address, to resolve allowFrom sources
+	// GatePort is where the egress gate listens on the gateway (0: no gate).
+	GatePort int
 }
 
 // Prefixes no silo may reach directly: the mesh's host addresses.
@@ -124,7 +129,7 @@ func Rules(h Host) string {
 	for _, s := range local {
 		byKey[s.Key] = s
 	}
-	var dnat, snat, fwd, br, egress []string
+	var redirect, dnat, snat, fwd, br, egress []string
 	for _, s := range local {
 		if !s.IP.IsValid() {
 			continue
@@ -140,6 +145,15 @@ func Rules(h Host) string {
 				}
 				fwd = append(fwd, fmt.Sprintf("oifname %q ip daddr %s %s%s dport %d ct status dnat accept", h.Bridge, s.IP, src, r.proto, r.port))
 			}
+		}
+		// To the egress gate: its TLS by host name, to outside the cluster.
+		if h.GatePort > 0 && len(s.GatePorts) > 0 {
+			ps := make([]string, len(s.GatePorts))
+			for i, p := range s.GatePorts {
+				ps[i] = p.String()
+			}
+			redirect = append(redirect, fmt.Sprintf("iifname %q ip saddr %s ip daddr != { %s, 10.62.0.0/16, 10.63.0.0/16 } tcp dport %s redirect to :%d",
+				h.Bridge, s.IP, silosAll, set(ps), h.GatePort))
 		}
 		// Outbound: only what its grants open.
 		for _, e := range s.Egress {
@@ -192,6 +206,9 @@ func Rules(h Host) string {
 	w("table inet kevaso {")
 	w("  chain prerouting {")
 	w("    type nat hook prerouting priority dstnat; policy accept;")
+	for _, r := range redirect {
+		w("    %s", r)
+	}
 	for _, r := range dnat {
 		w("    %s", r)
 	}
@@ -225,6 +242,9 @@ func Rules(h Host) string {
 	w("    iifname %q ip daddr %s udp dport 53 accept", h.Bridge, h.Gateway)
 	w("    iifname %q ip daddr %s tcp dport 53 accept", h.Bridge, h.Gateway)
 	w("    iifname %q ip daddr %s icmp type echo-request accept", h.Bridge, h.Gateway)
+	if h.GatePort > 0 && len(redirect) > 0 {
+		w("    iifname %q ip daddr %s tcp dport %d accept", h.Bridge, h.Gateway, h.GatePort)
+	}
 	w("    iifname %q drop", h.Bridge)
 	w("  }")
 	w("}")
