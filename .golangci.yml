@@ -1,0 +1,30 @@
+version: "2"
+linters:
+  enable: [depguard, errcheck, govet, ineffassign, staticcheck, unused, misspell, gocritic]
+  settings:
+    depguard:
+      rules:
+        # Built-in plugins use the same interfaces as any provider: api and sdk only.
+        builtin:
+          files: ["**/builtin/**"]
+          deny:
+            - pkg: kevaso.com/core/internal
+              desc: built-in plugins may import only kevaso.com/core/api and kevaso.com/core/sdk
+        # api and sdk are what plugins import: they must never pull in the server.
+        public-modules:
+          files: ["**/api/**", "**/sdk/**"]
+          deny:
+            - pkg: kevaso.com/core/internal
+              desc: api and sdk must not depend on the server
+            - pkg: kevaso.com/core/cmd
+              desc: api and sdk must not depend on the server
+            - pkg: kevaso.com/core/testbed
+              desc: api and sdk must not depend on the testbed
+        # The testbed is a dev tool; it must never leak into the product.
+        product:
+          files: ["**/internal/**", "**/cmd/kevasod/**", "**/cmd/kvo/**", "**/cmd/kvoadm/**", "**/builtin/**"]
+          deny:
+            - pkg: kevaso.com/core/testbed
+              desc: the testbed is for tests only
+formatters:
+  enable: [gofmt, goimports]
