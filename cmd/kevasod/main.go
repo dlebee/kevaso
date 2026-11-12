@@ -51,7 +51,6 @@ func main() {
 		usage()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	var err error
 	switch os.Args[1] {
 	case "control-plane":
@@ -66,6 +65,7 @@ func main() {
 	default:
 		usage()
 	}
+	stop()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "kevasod:", err)
 		os.Exit(1)

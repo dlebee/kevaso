@@ -110,7 +110,7 @@ func (c Config) Client(name string) (*client.Client, string, error) {
 	if !ok {
 		return nil, "", fmt.Errorf("no context %q in the kvo config (kvoadm init writes one)", name)
 	}
-	read := func(p string) ([]byte, error) { return os.ReadFile(p) }
+	read := os.ReadFile
 	ca, err := read(ctx.CA)
 	if err != nil {
 		return nil, "", err
