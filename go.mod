@@ -13,6 +13,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/crypto v0.59.0
 	golang.org/x/oauth2 v0.38.0
+	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
 	kevaso.com/core/api v0.0.0-00010101000000-000000000000
@@ -38,7 +39,6 @@ require (
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/tools v0.52.0 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240826202546-f6391c0de4c7 // indirect

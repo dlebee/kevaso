@@ -3,7 +3,7 @@
 Self-hosted, stateful **silos** (microVMs or containers) on the machines you bring, managed
 Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for operators.
 
-**Status:** early (M0–M6 of [MILESTONES.md](MILESTONES.md) done). What exists today:
+**Status:** early (M0–M7 of [MILESTONES.md](MILESTONES.md) done). What exists today:
 
 - `kvoadm init [USER@]ADDRESS --kevasod PATH`: sets up a fresh Linux machine over SSH (host key
   pinned or confirmed first, password used once then keys only, root password rotated, signed
@@ -33,6 +33,13 @@ Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for
   (`worker-ip`, `ip-pool` from an `IPPool`), raw TCP/UDP with the client's IP kept. Its outbound
   address can be the host's, the service's, or its own pool address. Silo-to-silo traffic is denied
   until the receiving silo's `allowFrom` opens it; exposing publicly needs its own permission;
+- secrets: `Secret` values sealed with envelope encryption under a local KMS (a recovery key printed
+  once by `kvoadm init`), never returned by reads; `Grant`s say what a silo may reach and use.
+  Silos reach nothing outside the cluster without one. API keys are **injected** at the host's
+  egress gate, so they never enter the silo; other secrets come over the silo's own vsock channel
+  (`kvo-guest secret get`, tmpfs files, env for legacy apps); signing keys stay outside (`Sign`,
+  with slashing protection). Per-secret RBAC (`list`, `use`, `read-value`, `write`, by name or
+  label), write-only secrets, and rotation that reaches every silo using a secret;
 - under the hood: a store with global revisions and resumable watches, CEL validation, a controller
   engine; the testbed and end-to-end loop (`make e2e`).
 
