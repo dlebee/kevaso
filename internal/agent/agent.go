@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,9 +44,16 @@ type Agent struct {
 	// elsewhere (onHostLoss: Recreate) and starts nothing, so two copies never run.
 	LastContact func() time.Time
 	FenceAfter  time.Duration // default 30s, under the control plane's 40s host lease
+	// GuestHelper is the kvo-guest binary copied into silos whose runtime has a broker channel
+	// (kevasod itself: it runs as kvo-guest by that name). Empty: no helper.
+	GuestHelper string
 
-	silos  *informer.Informer
-	fenced atomic.Bool
+	silos    *informer.Informer
+	secrets  *informer.Informer
+	grants   *informer.Informer
+	fenced   atomic.Bool
+	broker   *Broker
+	prepared sync.Map // silo uid → struct{}: the guest helper is in place for this agent's run
 }
 
 // DefaultFenceAfter is under the host lease (40s), so a cut-off host has stopped its Recreate silos
@@ -127,6 +135,8 @@ func idOf(s *v1.Silo) kri.ID { return kri.ID{Namespace: s.Namespace, Name: s.Nam
 // Run runs the agent until ctx ends.
 func (a *Agent) Run(ctx context.Context) {
 	a.silos = informer.New(a.Client, "Silo")
+	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
+	a.broker = &Broker{Client: a.Client, HostName: a.HostName, Log: a.Log}
 	e := engine.New(a.Clock)
 	e.OnError = func(_ string, k engine.Key, err error, retry time.Duration) {
 		a.log("silo %s: %v (retry in %v)", k, err, retry)
@@ -134,6 +144,12 @@ func (a *Agent) Run(ctx context.Context) {
 	e.Register(a, engine.Options{Workers: 4})
 	a.silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	go a.silos.Run(ctx)
+	// Rotation fan-out: a secret or grant changing tells the guest helpers of the silos here that
+	// receive it.
+	for kind, inf := range map[string]*informer.Informer{"Secret": a.secrets, "Grant": a.grants} {
+		inf.AddHandler(func(k informer.Key) { a.fanOut(kind, k.Namespace, k.Name) })
+		go inf.Run(ctx)
+	}
 	go a.RunTunnel(ctx)
 	go a.fence(ctx, e)
 	go func() { // after the first sync, look for runtime silos the API no longer knows
@@ -229,7 +245,15 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		})
 	}
 
-	// Running: init steps, then Ready.
+	// Running: the broker channel and the guest helper, then init steps, then Ready.
+	if br, ok := rt.(kri.Broker); ok {
+		if err := a.broker.Ensure(ctx, br, id); err != nil {
+			return engine.Result{}, fmt.Errorf("broker channel: %w", err)
+		}
+		if err := a.prepareGuest(ctx, rt, s); err != nil {
+			return engine.Result{}, err
+		}
+	}
 	if done, err := a.runInit(ctx, rt, s); err != nil || !done {
 		return engine.Result{}, err
 	}
@@ -363,6 +387,10 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				continue
 			}
 			a.log("removing %s from %s", id, rt.Info().Name)
+			if a.broker != nil {
+				a.broker.Close(id.UID)
+			}
+			a.prepared.Delete(id.UID)
 			if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
 				return err
 			}
@@ -372,6 +400,23 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 		}
 	}
 	return nil
+}
+
+// fanOut notifies the local silos a changed secret or grant reaches.
+func (a *Agent) fanOut(kind, namespace, name string) {
+	var local []*v1.Silo
+	for _, o := range a.silos.List() {
+		if s := o.(*v1.Silo); s.Status.Host == a.HostName {
+			local = append(local, s)
+		}
+	}
+	var grants []*v1.Grant
+	for _, o := range a.grants.List() {
+		grants = append(grants, o.(*v1.Grant))
+	}
+	for _, s := range Affected(local, grants, kind, namespace, name) {
+		a.broker.Notify(s.Namespace, s.Name, name)
+	}
 }
 
 var _ engine.Controller = (*Agent)(nil)

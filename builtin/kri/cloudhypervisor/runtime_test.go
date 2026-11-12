@@ -162,7 +162,7 @@ func TestRenderedFiles(t *testing.T) {
 	for _, want := range []string{
 		"User=kevaso-vmm", "NoNewPrivileges=yes", "CapabilityBoundingSet=\n", "DevicePolicy=closed",
 		"DeviceAllow=/dev/kvm rw", "DeviceAllow=/dev/kevaso/" + n.LV + " rw", "InaccessiblePaths=/var/lib/kevaso ",
-		"--memory size=4096M", "image_type=raw", "tap=" + n.Tap, "ReadWritePaths=" + n.Dir,
+		"--memory size=4096M", "image_type=raw", "tap=" + n.Tap, "TemporaryFileSystem=" + SilosDir + "\n", "BindPaths=" + n.Dir + "\n", "--vsock cid=3,socket=" + n.Vsock + " ",
 	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("unit missing %q", want)

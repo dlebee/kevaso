@@ -182,3 +182,17 @@ func (g *Grant) SecretNames() []string {
 	}
 	return out
 }
+
+// GrantsFor returns the grants a silo lists that exist, in its namespace, in the silo's order.
+func GrantsFor(s *Silo, all []*Grant) []*Grant {
+	var out []*Grant
+	for _, name := range s.Spec.Grants {
+		for _, g := range all {
+			if g.Namespace == s.Namespace && g.Name == name {
+				out = append(out, g)
+				break
+			}
+		}
+	}
+	return out
+}

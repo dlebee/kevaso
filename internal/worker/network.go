@@ -16,9 +16,9 @@ import (
 	"kevaso.com/core/sdk/kri"
 )
 
-// NetworkView builds this host's KNI view from the API: its silos (with their taps and
-// addresses) and every running silo (allowFrom sources). Pure.
-func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo) kni.Host {
+// NetworkView builds this host's KNI view from the API: its silos (with their taps, addresses and
+// what their grants open) and every running silo (allowFrom sources). Pure.
+func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Grant) kni.Host {
 	view := kni.Host{Bridge: cloudhypervisor.Bridge, Subnet: cloudhypervisor.Network, Gateway: cloudhypervisor.Gateway}
 	if h != nil {
 		view.Address, _ = netip.ParseAddr(h.Spec.Address)
@@ -37,6 +37,13 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo) kni.Host {
 		ks.PublicIP, _ = netip.ParseAddr(s.Status.Service.PublicIP)
 		if src := s.Spec.Network.Egress.Source; src == v1.EgressSameAsService || src == v1.EgressPool {
 			ks.EgressIP, _ = netip.ParseAddr(s.Status.Service.EgressIP)
+		}
+		for _, g := range v1.GrantsFor(s, grants) {
+			for _, r := range g.Spec.Egress {
+				if e, err := r.Parse(); err == nil {
+					ks.Egress = append(ks.Egress, e)
+				}
+			}
 		}
 		view.Local = append(view.Local, ks)
 	}
@@ -58,7 +65,7 @@ func PoolAddresses(hostName string, silos []*v1.Silo) []string {
 // change, and every minute to repair drift. The firewall is reloaded only when its text changes
 // (atomically: nft -f replaces the tables in one transaction).
 func RunNetwork(ctx context.Context, c *client.Client, hostName string, log func(string, ...any)) {
-	silos, hosts := informer.New(c, "Silo"), informer.New(c, "Host")
+	silos, hosts, grantsInf := informer.New(c, "Silo"), informer.New(c, "Host"), informer.New(c, "Grant")
 	changed := make(chan struct{}, 1)
 	poke := func(informer.Key) {
 		select {
@@ -68,9 +75,11 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, log func
 	}
 	silos.AddHandler(poke)
 	hosts.AddHandler(poke)
+	grantsInf.AddHandler(poke)
 	go silos.Run(ctx)
 	go hosts.Run(ctx)
-	if !silos.WaitSynced(ctx) || !hosts.WaitSynced(ctx) {
+	go grantsInf.Run(ctx)
+	if !silos.WaitSynced(ctx) || !hosts.WaitSynced(ctx) || !grantsInf.WaitSynced(ctx) {
 		return
 	}
 	current := func() []*v1.Silo {
@@ -93,7 +102,11 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, log func
 		if o, ok := hosts.Get("", hostName); ok {
 			me = o.(*v1.Host)
 		}
-		rules := kni.Rules(NetworkView(hostName, me, all))
+		var grants []*v1.Grant
+		for _, o := range grantsInf.List() {
+			grants = append(grants, o.(*v1.Grant))
+		}
+		rules := kni.Rules(NetworkView(hostName, me, all, grants))
 		if rules != last {
 			if err := applyNFT(ctx, rules); err != nil {
 				log("silo firewall: %v", err)

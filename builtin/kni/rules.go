@@ -4,8 +4,9 @@
 //
 // Default deny, as the design's table says: no silo reaches another silo's ports (on this host or
 // across the mesh) unless the receiving silo's allowFrom opens them; nothing outside reaches a silo
-// unless its service is exposed; silos can't reach the mesh's host addresses, nor their own host
-// beyond DNS and ping. Exposed ports are DNAT (the client's address is kept: E009), and a silo's
+// unless its service is exposed; a silo reaches nothing outside the cluster unless one of its
+// Grants opens it (raw TCP/UDP to a CIDR here; host names through the egress gate); silos can't
+// reach the mesh's host addresses, nor their own host beyond DNS and ping. Exposed ports are DNAT (the client's address is kept: E009), and a silo's
 // outbound source is SNAT to its service's or its pool's address when it asks.
 package kni
 
@@ -28,6 +29,9 @@ type Silo struct {
 	// ip-pool: its pool address); EgressIP where its traffic leaves from ("" = the host default).
 	PublicIP netip.Addr
 	EgressIP netip.Addr
+	// Egress is what its Grants open outside the cluster (CIDR rules; host names go through the
+	// egress gate).
+	Egress []v1.ParsedEgress
 }
 
 // Host is one worker's view.
@@ -120,7 +124,7 @@ func Rules(h Host) string {
 	for _, s := range local {
 		byKey[s.Key] = s
 	}
-	var dnat, snat, fwd, br []string
+	var dnat, snat, fwd, br, egress []string
 	for _, s := range local {
 		if !s.IP.IsValid() {
 			continue
@@ -135,6 +139,24 @@ func Rules(h Host) string {
 					src = "ip saddr " + set(from) + " "
 				}
 				fwd = append(fwd, fmt.Sprintf("oifname %q ip daddr %s %s%s dport %d ct status dnat accept", h.Bridge, s.IP, src, r.proto, r.port))
+			}
+		}
+		// Outbound: only what its grants open.
+		for _, e := range s.Egress {
+			if !e.Prefix.IsValid() {
+				continue
+			}
+			for _, proto := range e.Protocols {
+				m := fmt.Sprintf("iifname %q ip saddr %s ip daddr %s ", h.Bridge, s.IP, e.Prefix)
+				if len(e.Ports) == 0 {
+					egress = append(egress, m+"meta l4proto "+proto+" accept")
+					continue
+				}
+				ps := make([]string, len(e.Ports))
+				for i, p := range e.Ports {
+					ps[i] = p.String()
+				}
+				egress = append(egress, m+proto+" dport "+set(ps)+" accept")
 			}
 		}
 		// Outbound source.
@@ -189,6 +211,13 @@ func Rules(h Host) string {
 		w("    %s", r)
 	}
 	w("    oifname %q drop", h.Bridge)
+	// From silos: replies, other silos (over the mesh: their host decides), then grants only.
+	w("    iifname %q ct state established,related accept", h.Bridge)
+	w("    iifname %q ip daddr %s accept", h.Bridge, silosAll)
+	for _, r := range egress {
+		w("    %s", r)
+	}
+	w("    iifname %q drop", h.Bridge)
 	w("  }")
 	w("  chain input {")
 	w("    type filter hook input priority filter; policy accept;")

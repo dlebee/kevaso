@@ -54,6 +54,9 @@ type Names struct {
 	LV     string // logical volume name in VG
 	Unit   string // systemd unit
 	Socket string // VMM API socket
+	// Vsock is the VM's vsock device on the host. A guest connecting to the host (CID 2) on port P
+	// makes Cloud Hypervisor connect to Vsock_P: that socket belongs to this silo only (E014).
+	Vsock string
 }
 
 // NamesFor returns a silo's names.
@@ -66,6 +69,7 @@ func NamesFor(id kri.ID) Names {
 		LV:     "kv-" + s,
 		Unit:   unitPrefix + s + ".service",
 		Socket: "/run/" + unitPrefix + s + "/ch.sock",
+		Vsock:  SilosDir + "/" + s + "/vsock.sock",
 	}
 }
 
@@ -168,7 +172,8 @@ ExecStartPre=+/bin/chown ` + VMMUser + ` ` + disk + `
 ExecStart=` + BinDir + `/cloud-hypervisor --api-socket ` + n.Socket + ` --firmware ` + firmware + ` \
   --cpus boot=` + fmt.Sprint(cpus) + ` --memory size=` + fmt.Sprint(memMiB) + `M \
   --disk path=` + disk + `,image_type=raw --disk path=` + n.Dir + `/seed.img,readonly=on,image_type=raw \
-  --net tap=` + n.Tap + `,mac=` + mac + ` --serial file=` + n.Dir + `/serial.log --console off
+  --net tap=` + n.Tap + `,mac=` + mac + ` --vsock cid=3,socket=` + n.Vsock + ` \
+  --serial file=` + n.Dir + `/serial.log --console off
 Restart=no
 NoNewPrivileges=yes
 CapabilityBoundingSet=
@@ -176,7 +181,10 @@ AmbientCapabilities=
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=` + n.Dir + `
+# Only its own silo directory: another silo's broker socket can't even be seen (connecting to a
+# unix socket works on a read-only mount, so hiding them is what keeps a VMM from posing as another).
+TemporaryFileSystem=` + SilosDir + `
+BindPaths=` + n.Dir + `
 InaccessiblePaths=/var/lib/kevaso /root -` + ImagesDir + `
 DevicePolicy=closed
 DeviceAllow=/dev/kvm rw

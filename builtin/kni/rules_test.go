@@ -131,3 +131,42 @@ func TestDefaultsAndIsolation(t *testing.T) {
 		t.Error("not deterministic")
 	}
 }
+
+// Default-deny egress: a silo reaches outside the cluster only what its grants open (example 03's
+// p2p-anywhere), while other silos over the mesh and replies always pass.
+func TestEgressGrants(t *testing.T) {
+	parse := func(r v1.EgressRule) v1.ParsedEgress {
+		e, err := r.Parse()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	node := Silo{Key: "web3/eth-node", IP: a("10.64.2.2"), Egress: []v1.ParsedEgress{
+		parse(v1.EgressRule{To: "0.0.0.0/0", Ports: []string{"30303"}, Protocols: []string{"tcp", "udp"}}),
+		parse(v1.EgressRule{To: "203.0.113.0/24", Ports: []string{"8000-8100", "9000"}}),
+		parse(v1.EgressRule{To: "198.51.100.7"}),
+		parse(v1.EgressRule{To: "api.github.com"}), // a name: the gate's job, not a firewall rule
+	}}
+	plain := Silo{Key: "web3/plain", IP: a("10.64.2.3")}
+	r := Rules(host(node, plain))
+	_, fwd, _ := strings.Cut(r, "chain forward {")
+	fwd, _, _ = strings.Cut(fwd, "\n  }")
+	has(t, fwd,
+		`iifname "kvbr0" ip saddr 10.64.2.2 ip daddr 0.0.0.0/0 tcp dport 30303 accept`,
+		`iifname "kvbr0" ip saddr 10.64.2.2 ip daddr 0.0.0.0/0 udp dport 30303 accept`,
+		`iifname "kvbr0" ip saddr 10.64.2.2 ip daddr 203.0.113.0/24 tcp dport { 8000-8100, 9000 } accept`,
+		`iifname "kvbr0" ip saddr 10.64.2.2 ip daddr 198.51.100.7/32 meta l4proto tcp accept`,
+		`iifname "kvbr0" ct state established,related accept`,
+		`iifname "kvbr0" ip daddr 10.64.0.0/16 accept`,
+	)
+	hasNot(t, fwd, "10.64.2.3 ip daddr", "github")
+	// Order: the mesh-host drop first, the default drop last.
+	if i, j := strings.Index(fwd, "ip daddr { 10.62.0.0/16, 10.63.0.0/16 } drop"), strings.Index(fwd, "0.0.0.0/0 tcp dport 30303"); i < 0 || i > j {
+		t.Error("a grant comes before the mesh-host drop: 0.0.0.0/0 would open the mesh")
+	}
+	lines := strings.Split(strings.TrimSpace(fwd), "\n")
+	if last := strings.TrimSpace(lines[len(lines)-1]); last != `iifname "kvbr0" drop` {
+		t.Errorf("forward chain ends with %q, want the default-deny drop", last)
+	}
+}

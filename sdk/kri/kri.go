@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 )
 
 // ID names a silo on this host. UID makes a deleted and re-created silo a different one.
@@ -95,4 +96,13 @@ type Runtime interface {
 	List(ctx context.Context) ([]ID, error)
 	// Exec runs a command inside a running silo and returns its exit code. ErrNotFound if absent.
 	Exec(ctx context.Context, id ID, req ExecRequest) (int, error)
+}
+
+// Broker is a runtime that gives every silo its own channel to its host (vsock for VMs), so the
+// host knows which silo is calling from the channel itself, never from what the silo says
+// (design §8.2, research E014). The secret broker listens on it.
+type Broker interface {
+	// BrokerListen listens on port of id's channel. Every connection it accepts comes from that
+	// silo and no other; the caller closes the listener when the silo goes.
+	BrokerListen(id ID, port uint32) (net.Listener, error)
 }

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
@@ -120,6 +121,9 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			}
 			kv(0, "Allow from", strings.Join(af, "; "))
 		}
+		kv(0, "Grants", dash(strings.Join(o.Spec.Grants, ", ")))
+		// What proves the silo's identity to the broker (design §8.3): today the host vouches.
+		kv(0, "Assurance", "host (kevasod on its host vouches for it; no vTPM or confidential VM)")
 		conds = o.Status.Conditions
 		if o.Spec.Init != nil && len(o.Spec.Init.Steps) > 0 {
 			tables = append(tables, func() {
@@ -184,6 +188,102 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		conds = o.Status.Conditions
 	case *v1.Namespace:
 		kv(0, "Status", dash(o.Status.Phase))
+	case *v1.Secret:
+		typ := o.Spec.Type
+		if typ == "" {
+			typ = v1.SecretOpaque
+		}
+		kv(0, "Type", typ)
+		if o.Status.Version == 0 {
+			kv(0, "Value", "none yet")
+		} else {
+			kv(0, "Value", fmt.Sprintf("version %d, %d bytes, set %s ago", o.Status.Version, o.Status.Size, since(*o.Status.UpdatedAt)))
+		}
+		if o.Readable() {
+			kv(0, "Readable", "yes, with read-value (kvo get secret "+o.Name+" --reveal)")
+		} else {
+			kv(0, "Readable", "no: write-only, only silos can use it")
+		}
+		var modes []string
+		for _, m := range v1.Deliveries {
+			if o.Allows(m) {
+				modes = append(modes, m)
+			}
+		}
+		kv(0, "Delivery allowed", strings.Join(modes, ", "))
+		if o.Status.PublicKey != "" {
+			kv(0, "Public key", o.Status.PublicKey)
+		}
+		if e := o.Spec.ExpiresAt; e != nil {
+			left := time.Until(*e)
+			note := "in " + since(time.Now().Add(-left))
+			if left < 0 {
+				note = "EXPIRED " + since(*e) + " ago"
+			} else if left < 7*24*time.Hour {
+				note += ": renew it soon (kvo secret set " + o.Name + " --from-file -)"
+			}
+			kv(0, "Expires", note)
+		}
+	case *v1.Grant:
+		for i, e := range o.Spec.Egress {
+			label := ""
+			if i == 0 {
+				label = "Egress"
+			}
+			ports := "all ports"
+			if len(e.Ports) > 0 {
+				ports = "port " + strings.Join(e.Ports, ",")
+			}
+			protos := "tcp"
+			if len(e.Protocols) > 0 {
+				protos = strings.Join(e.Protocols, "+")
+			}
+			how := "host firewall"
+			if pe, err := e.Parse(); err == nil && pe.Host != "" {
+				how, ports = "egress gate, by TLS name", "port "+portList(pe.Ports)
+			}
+			_, _ = fmt.Fprintf(tw, "%s:\t%s %s %s (%s)\n", label, protos, e.To, ports, how)
+		}
+		for i, sec := range o.Spec.Secrets {
+			label := ""
+			if i == 0 {
+				label = "Secrets"
+			}
+			var how string
+			switch sec.Delivery() {
+			case v1.DeliverInject:
+				t := sec.To
+				h, f := t.Header, t.Format
+				if h == "" {
+					h = "Authorization"
+				}
+				if f == "" {
+					f = "Bearer {{value}}"
+				}
+				how = fmt.Sprintf("tier 2, injection: the egress gate adds %s: %s for %s; never in the silo", h, f, t.Host)
+			case v1.DeliverBroker:
+				how = "tier 4, broker: fetched over vsock when needed (kvo-guest secret get " + sec.Name + ")"
+			case v1.DeliverFile:
+				path := sec.Path
+				if path == "" {
+					path = "/run/secrets/" + sec.Name
+				}
+				how = "tier 4, file: " + path + " (tmpfs, rewritten on rotation)"
+			case v1.DeliverEnv:
+				how = "tier 4, env " + envName(sec) + " — FLAGGED: leaks into child processes, dumps, logs and an agent's context"
+			}
+			_, _ = fmt.Fprintf(tw, "%s:\t%s: %s\n", label, sec.Name, how)
+		}
+		if op := o.Spec.Operations; op != nil && op.Sign != nil {
+			p := ""
+			if op.Sign.SlashingProtection {
+				p = ", with slashing protection"
+			}
+			kv(0, "Operations", "tier 3, sign with "+op.Sign.KeyRef+p+": the key never leaves Kevaso")
+		}
+		if rq := o.Spec.Requires; rq != nil && rq.Assurance != "" && rq.Assurance != v1.AssuranceHost {
+			kv(0, "Requires", rq.Assurance+" assurance: no silo can have it yet (only host), so the broker refuses")
+		}
 	}
 	for _, t := range tables {
 		t()
@@ -207,4 +307,20 @@ func pairs(m map[string]string) string {
 		out = append(out, k+"="+m[k])
 	}
 	return strings.Join(out, ", ")
+}
+
+func portList(ps []v1.PortRange) string {
+	out := make([]string, len(ps))
+	for i, p := range ps {
+		out[i] = p.String()
+	}
+	return strings.Join(out, ",")
+}
+
+// envName is the variable a secret delivered as env gets.
+func envName(sec v1.GrantSecret) string {
+	if sec.Env != "" {
+		return sec.Env
+	}
+	return strings.ToUpper(strings.ReplaceAll(sec.Name, "-", "_"))
 }

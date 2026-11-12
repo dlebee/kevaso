@@ -45,6 +45,7 @@ import (
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controlplane"
+	"kevaso.com/core/internal/guest"
 	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/mesh"
 	"kevaso.com/core/internal/secrets"
@@ -65,6 +66,13 @@ func usage() {
 }
 
 func main() {
+	// Copied into a silo as kvo-guest, the same binary is the guest helper.
+	if filepath.Base(os.Args[0]) == "kvo-guest" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		code := guest.Main(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+		stop()
+		os.Exit(code)
+	}
 	if len(os.Args) < 2 {
 		usage()
 	}

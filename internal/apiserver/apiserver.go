@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/clock"
@@ -71,6 +72,7 @@ func NewWithAuth(s store.Store, c clock.Clock, auth *Auth) (*Server, error) {
 	}
 	srv.mux.HandleFunc("/apis/kevaso/v1/", srv.route)
 	srv.mux.HandleFunc("/agent/connect", srv.agentConnect)
+	srv.mux.HandleFunc(client.PathAgentBroker, srv.agentBroker)
 	srv.mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	srv.h = srv.wrap(srv.mux)
 	return srv, nil

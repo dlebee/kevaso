@@ -211,6 +211,9 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	if cfg.Contact != nil {
 		a.LastContact = cfg.Contact.Last
 	}
+	if exe, err := os.Executable(); err == nil && runtime.GOOS == "linux" {
+		a.GuestHelper = exe // kevasod itself: in a silo, as kvo-guest
+	}
 	a.Run(ctx)
 }
 
