@@ -399,6 +399,45 @@ func dash(s string) string {
 	return s
 }
 
+// summary is one line of an object's state, for watch.
+func summary(obj meta.Object) string {
+	var parts []string
+	var conds []meta.Condition
+	switch o := obj.(type) {
+	case *v1.Silo:
+		parts = append(parts, "phase="+dash(o.Status.Phase), "host="+dash(o.Status.Host))
+		if n := len(o.Status.Init); n > 0 {
+			done := 0
+			for _, st := range o.Status.Init {
+				if st.State == "Done" {
+					done++
+				}
+			}
+			parts = append(parts, fmt.Sprintf("init=%d/%d", done, n))
+		}
+		if o.Status.Address != "" {
+			parts = append(parts, "address="+o.Status.Address)
+		}
+		conds = o.Status.Conditions
+	case *v1.Host:
+		names := make([]string, 0, len(o.Status.Runtimes))
+		for n := range o.Status.Runtimes {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			parts = append(parts, n+"="+o.Status.Runtimes[n].State)
+		}
+		conds = o.Status.Conditions
+	}
+	for _, cd := range conds { // say why something isn't true yet
+		if cd.Status != meta.ConditionTrue && cd.Message != "" {
+			parts = append(parts, fmt.Sprintf("%s: %s", cd.Type, cd.Message))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
 func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 	var head []string
@@ -503,8 +542,8 @@ func watch(ctx context.Context, c *client.Client, o opts, stdout io.Writer) erro
 	if err != nil {
 		return err
 	}
-	for ev := range ch {
-		obj, _, err := v1.Decode(ev.Object)
+	line := func(typ string, raw json.RawMessage) error {
+		obj, _, err := v1.Decode(raw)
 		if err != nil {
 			return err
 		}
@@ -513,7 +552,18 @@ func watch(ctx context.Context, c *client.Client, o opts, stdout io.Writer) erro
 		if m.Namespace != "" {
 			name = m.Namespace + "/" + m.Name
 		}
-		_, _ = fmt.Fprintf(stdout, "%-8s %s/%s @%s\n", ev.Type, strings.ToLower(k.Kind), name, m.ResourceVersion)
+		_, _ = fmt.Fprintf(stdout, "%s %-8s %s/%s  %s\n", time.Now().Format("15:04:05"), typ, strings.ToLower(k.Kind), name, summary(obj))
+		return nil
+	}
+	for _, it := range l.Items { // what's there now, then every change
+		if err := line("NOW", it); err != nil {
+			return err
+		}
+	}
+	for ev := range ch {
+		if err := line(string(ev.Type), ev.Object); err != nil {
+			return err
+		}
 	}
 	if ctx.Err() != nil {
 		return nil // stopped on purpose
