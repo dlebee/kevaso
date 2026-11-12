@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	yaml "go.yaml.in/yaml/v3"
+
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -311,8 +313,29 @@ func TestUnitAndProfile(t *testing.T) {
 	}
 	bearer := ProfileYAML(silo, kri.Credential{Name: "gh", Env: "GH_TOKEN", Host: "api.github.com", Header: "Authorization", Bearer: true})
 	header := ProfileYAML(silo, kri.Credential{Name: "a", Env: "K", Host: "api.anthropic.com", Header: "X-Api-Key"})
-	if !strings.Contains(bearer, "auth_style: bearer") || !strings.Contains(header, "auth_style: header\n      header_name: x-api-key") || !strings.Contains(header, "env_vars: [K]") {
-		t.Errorf("profiles:\n%s\n%s", bearer, header)
+	for _, doc := range []string{bearer, header, PolicyYAML(kri.Policy{Egress: []kri.Endpoint{{Host: "api.anthropic.com", Port: 443}}, Credentials: []kri.Credential{{Host: "api.anthropic.com"}}})} {
+		var m map[string]any
+		if err := yaml.Unmarshal([]byte(doc), &m); err != nil {
+			t.Fatalf("not YAML: %v\n%s", err, doc)
+		}
+	}
+	var prof struct {
+		Credentials []struct {
+			AuthStyle  string   `yaml:"auth_style"`
+			HeaderName string   `yaml:"header_name"`
+			EnvVars    []string `yaml:"env_vars"`
+		}
+		Endpoints []struct{ Host string }
+		Binaries  []string
+	}
+	_ = yaml.Unmarshal([]byte(header), &prof)
+	if len(prof.Credentials) != 1 || prof.Credentials[0].AuthStyle != "header" || prof.Credentials[0].HeaderName != "x-api-key" ||
+		prof.Credentials[0].EnvVars[0] != "K" || prof.Endpoints[0].Host != "api.anthropic.com" || prof.Binaries[0] != "/**" {
+		t.Errorf("header profile parsed as %+v", prof)
+	}
+	_ = yaml.Unmarshal([]byte(bearer), &prof)
+	if prof.Credentials[0].AuthStyle != "bearer" || prof.Credentials[0].HeaderName != "authorization" {
+		t.Errorf("bearer profile parsed as %+v", prof)
 	}
 	if PolicyYAML(kri.Policy{}) != basePolicy || strings.Contains(PolicyYAML(kri.Policy{}), "network_policies") {
 		t.Error("no grants must mean no network")
@@ -321,5 +344,24 @@ func TestUnitAndProfile(t *testing.T) {
 		if Phase(in) != want {
 			t.Errorf("Phase(%s)", in)
 		}
+	}
+}
+
+// A caller that never closes stdin doesn't keep Exec waiting once the command is done.
+func TestLocalRunDoesNotWaitForStdin(t *testing.T) {
+	r, w := io.Pipe()
+	defer func() { _ = w.Close() }()
+	done := make(chan int, 1)
+	go func() {
+		code, _ := Local{}.Run(context.Background(), Cmd{Name: "sh", Args: []string{"-c", "exit 3"}, Stdin: r})
+		done <- code
+	}()
+	select {
+	case code := <-done:
+		if code != 3 {
+			t.Fatalf("exit %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run waited for stdin after the command exited")
 	}
 }

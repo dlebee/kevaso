@@ -242,6 +242,9 @@ func (r *Runtime) setupGateway(ctx context.Context, g Gateway) error {
 	var last error
 	for {
 		_, err := r.cli(ctx, g, nil, nil, "gateway", "add", g.Endpoint(), "--local", "--name", g.Name())
+		if err != nil && strings.Contains(err.Error(), "already") { // registered by an earlier run
+			err = nil
+		}
 		if err == nil {
 			if _, err = r.cli(ctx, g, nil, nil, "sandbox", "list", "-o", "json"); err == nil {
 				return nil
@@ -435,7 +438,8 @@ func (r *Runtime) List(context.Context) ([]kri.ID, error) {
 }
 
 // Exec implements kri.Runtime: `openshell sandbox exec`, as the sandbox's user, with stdin, stdout,
-// stderr and the exit code passed through. It waits for the sandbox to be Ready first.
+// stderr and the exit code passed through. It waits for the sandbox to be Ready first. OpenShell
+// takes at most 4 MiB of piped stdin (larger files: compress them, or upload).
 func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int, error) {
 	s, ok := r.load(id)
 	if !ok {

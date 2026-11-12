@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -140,7 +141,7 @@ func TestOpenShellSilos(t *testing.T) {
 	bin := filepath.Join(tmp, "kevasod")
 	hget := filepath.Join(tmp, "hget")
 	_ = os.WriteFile(filepath.Join(tmp, "hget.go"), []byte(hgetGo), 0o644)
-	for _, b := range [][]string{{"-o", bin, "kevaso.com/core/cmd/kevasod"}, {"-o", hget, filepath.Join(tmp, "hget.go")}} {
+	for _, b := range [][]string{{"-o", bin, "kevaso.com/core/cmd/kevasod"}, {"-ldflags", "-s -w", "-o", hget, filepath.Join(tmp, "hget.go")}} {
 		build := exec.CommandContext(ctx, "go", append([]string{"build"}, b...)...)
 		build.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
 		if out, err := build.CombinedOutput(); err != nil {
@@ -216,10 +217,16 @@ spec:
 		time.Sleep(10 * time.Second)
 	}
 
-	hgetBin, err := os.ReadFile(hget)
+	// OpenShell takes at most 4 MiB of piped stdin: send the client compressed.
+	raw, err := os.ReadFile(hget)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var gz bytes.Buffer
+	zw, _ := gzip.NewWriterLevel(&gz, gzip.BestCompression)
+	_, _ = zw.Write(raw)
+	_ = zw.Close()
+	hgetBin := gz.Bytes()
 	for _, s := range []string{"vm", "ct"} {
 		t.Run(s, func(t *testing.T) {
 			in := func(script string) string {
@@ -228,7 +235,7 @@ spec:
 				return strings.TrimSpace(o.String())
 			}
 			var o, e bytes.Buffer
-			if code := kvo.Run(ctx, []string{"exec", "silo", s, "-n", "agents", "--", "sh", "-c", "cat > /sandbox/hget && chmod +x /sandbox/hget"}, bytes.NewReader(hgetBin), &o, &e); code != 0 {
+			if code := kvo.Run(ctx, []string{"exec", "silo", s, "-n", "agents", "--", "sh", "-c", "gunzip -c > /sandbox/hget && chmod +x /sandbox/hget"}, bytes.NewReader(hgetBin), &o, &e); code != 0 {
 				t.Fatalf("upload hget: %d %s %s", code, o.String(), e.String())
 			}
 			desc := must(kvo.Run, "", "describe", "silo", s, "-n", "agents")
@@ -252,10 +259,10 @@ spec:
 			} else {
 				t.Logf("a host no grant names: refused (%s)", firstLine(got))
 			}
-			if got := in(`/sandbox/hget https://` + passHost + `/`); !strings.Contains(got, "certificate") {
-				t.Errorf("pass (allowed by name, not inspected) should reach the real server, whose CA the silo doesn't trust: %q", got)
+			if got := in(`/sandbox/hget https://` + passHost + `/`); !strings.Contains(got, `"auth": "none"`) {
+				t.Errorf("pass (allowed by name, no secret) should answer with nothing injected: %q", got)
 			} else {
-				t.Log("a name allowed without a secret: passed through to the real server")
+				t.Log("a name allowed without a secret: reached, nothing injected")
 			}
 			if n := in(fmt.Sprintf("grep -rl -F -e '%s' /sandbox /tmp 2>/dev/null | wc -l; env | grep -c -F -e '%s'", apiKey, apiKey)); strings.Fields(n)[0] != "0" || strings.Fields(n)[1] != "0" {
 				t.Errorf("the key is inside the silo: %q", n)

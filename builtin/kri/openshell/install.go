@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // Install readies the host: the pinned OpenShell package (checksum verified here), Docker for the
@@ -38,6 +39,9 @@ func (r *Runtime) Install(ctx context.Context, progress func(string)) error {
 			return err
 		}
 	}
+	// Both runtimes (VM and container drivers) install the same package, at the same time.
+	installMu.Lock()
+	defer installMu.Unlock()
 	var v bytes.Buffer
 	_, _ = r.Host.Run(ctx, Cmd{Name: "openshell", Args: []string{"--version"}, Stdout: &v, Stderr: &v})
 	if !strings.Contains(v.String(), strings.TrimPrefix(Version, "v")) {
@@ -64,6 +68,8 @@ func (r *Runtime) Install(ctx context.Context, progress func(string)) error {
 	progress("OpenShell " + Version + " ready (" + r.Driver + " driver, gateway per " + r.scope() + ")")
 	return nil
 }
+
+var installMu sync.Mutex
 
 // download fetches url to path and checks its SHA-256 before keeping it.
 func download(ctx context.Context, url, path, sum string) error {
@@ -115,8 +121,26 @@ type Local struct{}
 func (Local) Run(ctx context.Context, c Cmd) (int, error) {
 	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
 	cmd.Env = append([]string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"}, c.Env...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = c.Stdin, c.Stdout, c.Stderr
-	err := cmd.Run()
+	cmd.Stdout, cmd.Stderr = c.Stdout, c.Stderr
+	// Stdin through our own pipe: exec.Cmd would otherwise wait for the copy to finish, so a caller
+	// that never closes stdin (an interactive kvo exec) would hang after the command exited.
+	var stdin io.WriteCloser
+	if c.Stdin != nil {
+		var err error
+		if stdin, err = cmd.StdinPipe(); err != nil {
+			return -1, err
+		}
+	}
+	if err := cmd.Start(); err != nil {
+		return -1, err
+	}
+	if stdin != nil {
+		go func() {
+			_, _ = io.Copy(stdin, c.Stdin)
+			_ = stdin.Close()
+		}()
+	}
+	err := cmd.Wait()
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		return ee.ExitCode(), nil

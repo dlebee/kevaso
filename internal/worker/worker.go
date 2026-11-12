@@ -195,28 +195,39 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	}
 	for name, rt := range rts {
 		go func(name string, rt Installer) {
-			cfg.Log("installing runtime %s", name)
-			st := v1.RuntimeStatus{State: "Ready", Version: rt.Info().Version}
-			err := rt.Install(ctx, func(step string) {
-				cfg.Log("runtime %s: %s", name, step)
+			// A failed install (a download cut short, a mirror down) is tried again every minute.
+			for {
+				cfg.Log("installing runtime %s", name)
+				st := v1.RuntimeStatus{State: "Ready", Version: rt.Info().Version}
+				err := rt.Install(ctx, func(step string) {
+					cfg.Log("runtime %s: %s", name, step)
+					mu.Lock()
+					states[name] = v1.RuntimeStatus{State: "Installing", Version: st.Version, Message: step}
+					mu.Unlock()
+					report()
+				})
+				if err != nil {
+					cfg.Log("runtime %s: %v (trying again in a minute)", name, err)
+					st.State, st.Message = "Failed", err.Error()
+				} else {
+					cfg.Log("runtime %s ready", name)
+					if _, ok := rt.(chInstaller); ok { // its bridge is there now: keep its firewall current
+						go RunNetwork(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log)
+					}
+				}
 				mu.Lock()
-				states[name] = v1.RuntimeStatus{State: "Installing", Version: st.Version, Message: step}
+				states[name] = st
 				mu.Unlock()
 				report()
-			})
-			if err != nil {
-				cfg.Log("runtime %s: %v", name, err)
-				st.State, st.Message = "Failed", err.Error()
-			} else {
-				cfg.Log("runtime %s ready", name)
-				if _, ok := rt.(chInstaller); ok { // its bridge is there now: keep its firewall current
-					go RunNetwork(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log)
+				if err == nil {
+					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Minute):
 				}
 			}
-			mu.Lock()
-			states[name] = st
-			mu.Unlock()
-			report()
 		}(name, rt)
 	}
 	go func() { // keep allocatable and runtime states fresh

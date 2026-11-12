@@ -234,9 +234,9 @@ func ProfileID(id kri.ID, c kri.Credential) string {
 // ProfileYAML is the provider profile for a credential: what OpenShell swaps the placeholder in $Env
 // for, in which header, for which host (E026, E037).
 func ProfileYAML(id kri.ID, c kri.Credential) string {
-	style := "header\n      header_name: " + strings.ToLower(c.Header)
+	style := "header\n    header_name: " + strings.ToLower(c.Header)
 	if c.Bearer {
-		style = "bearer\n      header_name: authorization"
+		style = "bearer\n    header_name: authorization"
 	}
 	return `id: ` + ProfileID(id, c) + `
 display_name: Kevaso ` + c.Name + `
