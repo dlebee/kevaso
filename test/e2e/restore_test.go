@@ -21,9 +21,10 @@ import (
 )
 
 // TestBackupAndRestore: the control plane's machine is lost. kvoadm init made a cluster and printed
-// the recovery key; kvoadm backup took a backup; the machine is deleted; kvoadm init --restore on a
-// fresh machine brings the cluster back, its secrets opening with the master key rebuilt from the
-// recovery key, and the old kvo credentials still working (same cluster CA).
+// the recovery key, kvoadm host add gave it a worker, kvoadm backup took a backup; the machine is
+// deleted; kvoadm init --restore on a fresh machine (another address) brings the cluster back, its
+// secrets opening with the master key rebuilt from the recovery key, and reconnects the worker to
+// it, mesh included.
 func TestBackupAndRestore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
 	defer cancel()
@@ -78,7 +79,7 @@ func TestBackupAndRestore(t *testing.T) {
 	}
 	machine := func(role string) (testbed.Machine, []string, string) {
 		t.Helper()
-		m, err := d.Create(ctx, run, testbed.Spec{Role: role, CPUs: 2, Memory: "2GiB", Disk: "10GiB"})
+		m, err := d.Create(ctx, run, testbed.Spec{Role: role, CPUs: 2, Memory: "2GiB", Disk: "10GiB", Shared: true})
 		if err != nil {
 			t.Fatalf("create %s: %v", role, err)
 		}
@@ -102,6 +103,9 @@ func TestBackupAndRestore(t *testing.T) {
 	if rk == "" {
 		t.Fatalf("no recovery key in:\n%s", initOut)
 	}
+	_, targetW, ipW := machine("w1")
+	t.Log(kvoadmRun("", append(append([]string{"host", "add"}, targetW...), "--kevasod", bin, "--name", "w1", "--install", "worker",
+		"--runtime", "none", "--address", ipW, "--server", "https://"+ipA+":6443")...))
 	const password = "s3cret-db-password-0123"
 	kvoMust("apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: payments }\n", "apply", "-f", "-")
 	kvoMust(password, "create", "secret", "db", "-n", "payments", "--from-file", "-")
@@ -163,4 +167,29 @@ func TestBackupAndRestore(t *testing.T) {
 	} else {
 		t.Logf("host cp-1 moved %s → %s", ipA, ipB)
 	}
+
+	// 6. The worker was reconnected by the restore, and the mesh works again: it reaches the new
+	// control plane over WireGuard.
+	if !strings.Contains(restoreOut, "worker w1 reconnected") {
+		t.Fatalf("the restore didn't reconnect w1:\n%s", restoreOut)
+	}
+	var cpMesh string
+	for deadline := time.Now().Add(3 * time.Minute); ; {
+		hosts := parseHosts(t, []byte(kvoMust("", "get", "hosts", "-o", "json")))
+		if cp := hosts["cp-1"]; cp != nil && cp.Status.Network.MeshIP != "" && cp.Status.Network.PublicKey != "" {
+			cpMesh = cp.Status.Network.MeshIP
+			out, err := d.Exec(ctx, created["w1"], "ping", "-c1", "-W2", cpMesh)
+			if err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				wg, _ := d.Exec(ctx, created["w1"], "sudo", "wg", "show")
+				t.Fatalf("w1 can't reach cp-1 at %s over the mesh: %v %s\n%s", cpMesh, err, out, wg)
+			}
+		} else if time.Now().After(deadline) {
+			t.Fatal("cp-1 never published its mesh identity")
+		}
+		time.Sleep(3 * time.Second)
+	}
+	t.Logf("w1 reaches the restored cp-1 over the mesh (%s)", cpMesh)
 }

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -211,6 +213,11 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 		return err
 	}
 	say("worker started (kevasod.service), joining %s", server)
+	// How kvoadm reaches it, kept on its Host (and so in backups): kvoadm init --restore uses it to
+	// reconnect the worker to a restored control plane.
+	if err := annotateSSH(ctx, c, o.Name, fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))), conn.Fingerprint); err != nil {
+		say("couldn't record how to reach %s (%v): after a restore, reconnect it with kvoadm host reconnect", o.Name, err)
+	}
 
 	// 4. It joins and reports.
 	if err := waitHostReady(ctx, c, o.Name, 3*time.Minute); err != nil {
@@ -219,6 +226,23 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 	}
 	say("host %s is Ready (it dials out to the control plane; nothing listens on it). Its runtimes install next: kvo watch hosts", o.Name)
 	return nil
+}
+
+func annotateSSH(ctx context.Context, c *client.Client, name, target, hostKey string) error {
+	for attempt := 0; ; attempt++ {
+		var h v1.Host
+		if err := c.Get(ctx, "Host", "", name, &h); err != nil {
+			return err
+		}
+		if h.Annotations == nil {
+			h.Annotations = map[string]string{}
+		}
+		h.Annotations[AnnotationSSH], h.Annotations[AnnotationSSHHostKey] = target, hostKey
+		err := c.Update(ctx, &h)
+		if err == nil || !client.IsConflict(err) || attempt > 5 {
+			return err
+		}
+	}
 }
 
 func dashOr(s string) string {
@@ -271,7 +295,7 @@ func hostList(ctx context.Context, kctx string, out io.Writer) error {
 // hostCmd dispatches kvoadm host add|list|… .
 func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("host needs add, enable-worker, list, drain or uncordon")
+		return errors.New("host needs add, enable-worker, reconnect, list, drain or uncordon")
 	}
 	switch args[0] {
 	case "add":
@@ -286,6 +310,8 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 		return nil
 	case "enable-worker":
 		return enableWorker(ctx, args[1:], stdin, out)
+	case "reconnect":
+		return hostReconnect(ctx, args[1:], stdin, out)
 	case "list":
 		kctx := ""
 		if len(args) == 3 && args[1] == "--context" {

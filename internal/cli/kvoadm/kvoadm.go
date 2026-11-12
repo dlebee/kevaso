@@ -89,6 +89,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL] [--restore BACKUP]
   kvoadm backup [USER@]ADDRESS --output FILE [--ssh-key PATH]
   kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime NAME]… [--loop-storage SIZE]
+  kvoadm host reconnect [USER@]ADDRESS --ssh-key PATH [--server URL]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker [--runtime NAME]…
   kvoadm host list | drain NAME | uncordon NAME
   kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME
@@ -489,6 +490,16 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 		return fmt.Errorf("recovery key: %w", err)
 	} else if restore != nil {
 		say("the recovery key is still the one you restored with")
+	}
+	// 8. After a restore: the workers, pointed at this control plane.
+	if restore != nil {
+		addr := o.Address
+		if o.Advertise != "" {
+			addr = o.Advertise
+		}
+		if err := reconnectWorkers(ctx, o, c, "https://"+net.JoinHostPort(addr, "6443"), stdin, out); err != nil {
+			return fmt.Errorf("reconnecting workers: %w", err)
+		}
 	}
 	return nil
 }
