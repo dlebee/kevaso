@@ -30,6 +30,8 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/store"
+
+	"github.com/hashicorp/yamux"
 )
 
 // Server is the API server.
@@ -40,6 +42,8 @@ type Server struct {
 	mux   *http.ServeMux
 	auth  *Auth
 	h     http.Handler
+
+	tunnels tunnels // agents' dial-out connections, by host
 }
 
 // New returns a server over a store, without authentication (kevasod dev, tests).
@@ -52,7 +56,9 @@ func NewWithAuth(s store.Store, c clock.Clock, auth *Auth) (*Server, error) {
 		return nil, err
 	}
 	srv := &Server{store: s, clock: c, valid: v, mux: http.NewServeMux(), auth: auth}
+	srv.tunnels.sess = map[string]*yamux.Session{}
 	srv.mux.HandleFunc("/apis/kevaso/v1/", srv.route)
+	srv.mux.HandleFunc("/agent/connect", srv.agentConnect)
 	srv.mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	srv.h = srv.wrap(srv.mux)
 	return srv, nil
@@ -110,6 +116,7 @@ type target struct {
 	namespace string
 	name      string
 	status    bool
+	exec      bool // a silo's /exec
 }
 
 func parsePath(path string) (target, error) {
@@ -135,6 +142,8 @@ func parsePath(path string) (target, error) {
 	switch {
 	case len(parts) == 3 && parts[2] == "status":
 		t.status = true
+	case len(parts) == 3 && parts[2] == "exec" && k.Kind == "Silo":
+		t.exec = true
 	case len(parts) > 2:
 		return t, errf(http.StatusNotFound, "NotFound", "unknown path %q", path)
 	}
@@ -153,6 +162,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	switch {
+	case t.exec:
+		s.siloExec(w, r, t.namespace, t.name)
 	case r.Method == http.MethodGet && t.name == "" && r.URL.Query().Get("watch") == "true":
 		s.watch(ctx, w, r, t)
 	case r.Method == http.MethodGet && t.name == "":

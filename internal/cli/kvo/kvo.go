@@ -4,6 +4,7 @@
 //	kvo get KIND [NAME] [-n NS|-A] [-o yaml|json]
 //	kvo delete KIND NAME [-n NS]
 //	kvo watch KIND [-n NS|-A]
+//	kvo exec silo NAME [-n NS] -- CMD [ARGS…]   run a command in a silo; exits with its code
 //
 // The cluster comes from --server or $KVO_SERVER (plain HTTP, for `kevasod dev`), otherwise from the
 // kvo config's current context (or --context): TLS with a pinned CA and a client certificate, as
@@ -38,6 +39,7 @@ type opts struct {
 	server, context, namespace, output, file string
 	all                                      bool
 	args                                     []string
+	command                                  []string // after --
 }
 
 func parse(args []string, env func(string) string) (opts, error) {
@@ -53,6 +55,10 @@ func parse(args []string, env func(string) string) (opts, error) {
 			}
 			i++
 			return args[i], nil
+		}
+		if a == "--" {
+			o.command = args[i+1:]
+			break
 		}
 		name, _, _ := strings.Cut(a, "=")
 		var err error
@@ -85,7 +91,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|delete|watch …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|delete|watch|exec …")
 		return 2
 	}
 	o, err := parse(args[1:], os.Getenv)
@@ -107,6 +113,12 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		err = del(ctx, c, o, stdout)
 	case "watch":
 		err = watch(ctx, c, o, stdout)
+	case "exec":
+		var code int
+		code, err = execIn(ctx, c, o, stdin, stdout, stderr)
+		if err == nil {
+			return code
+		}
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}
@@ -458,6 +470,17 @@ func del(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	}
 	_, _ = fmt.Fprintf(stdout, "%s/%s deleted\n", strings.ToLower(k.Kind), o.args[1])
 	return nil
+}
+
+// execIn runs o.command in a silo, wiring this process's streams to it.
+func execIn(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	if len(o.args) != 2 || len(o.command) == 0 {
+		return 0, errors.New("exec needs silo NAME -- COMMAND")
+	}
+	if k, err := kindOf(o.args[0]); err != nil || k.Kind != "Silo" {
+		return 0, errors.New("exec works on silos: kvo exec silo NAME -- COMMAND")
+	}
+	return c.Exec(ctx, defaultNS(o), o.args[1], o.command, stdin, stdout, stderr)
 }
 
 func watch(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error {

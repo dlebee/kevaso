@@ -1,6 +1,7 @@
 package apiserver_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -13,11 +14,14 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/jointoken"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/store"
+	"kevaso.com/core/sdk/kri"
+	"kevaso.com/core/sdk/kri/fake"
 )
 
 type authEnv struct {
@@ -244,5 +248,59 @@ func TestClientPinsTheClusterCA(t *testing.T) {
 	}
 	if _, err := c.List(e.ctx, "Namespace", ""); err == nil || code(err) != 0 {
 		t.Fatalf("talking to a server not signed by the pinned CA must fail at TLS, got %v", err)
+	}
+}
+
+// The agent tunnel over real TLS: a worker connects as itself only, may not exec, and an admin's
+// exec reaches the silo through it.
+func TestTunnelAndExecAuthorization(t *testing.T) {
+	e := setupAuth(t)
+	_ = e.admin.Create(e.ctx, ns("dev"))
+	_ = e.admin.Create(e.ctx, host("hv2"))
+	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "dev"},
+		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor"}}
+	if err := e.admin.Create(e.ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	s.Status.Host = "hv2"
+	if err := e.admin.UpdateStatus(e.ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	tok, _ := e.tokens.Create(e.ctx, "hv2", []string{"worker"}, time.Hour)
+	cred, err := e.tlsClient(t, nil).Enroll(e.ctx, tok, "hv2", "worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := e.tlsClient(t, &cred)
+
+	if _, err := worker.Upgrade(e.ctx, http.MethodGet, "/agent/connect?host=hv3", "kevaso-tunnel", nil); code(err) != http.StatusForbidden {
+		t.Fatalf("worker connecting as another host: want 403, got %v", err)
+	}
+	if _, err := worker.Exec(e.ctx, "dev", "web", []string{"true"}, nil, nil, nil); code(err) != http.StatusForbidden {
+		t.Fatalf("worker exec: want 403, got %v", err)
+	}
+	if _, err := e.tlsClient(t, nil).Upgrade(e.ctx, http.MethodGet, "/agent/connect?host=hv2", "kevaso-tunnel", nil); code(err) != http.StatusUnauthorized {
+		t.Fatalf("no certificate: want 401, got %v", err)
+	}
+
+	rt := fake.New()
+	rt.Handler = func(id kri.ID, cmd []string, _ []byte) (string, int) { return "hi from " + id.Name, 0 }
+	if err := rt.Create(e.ctx, kri.Spec{ID: kri.ID{Namespace: "dev", Name: "web", UID: s.UID}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = rt.Start(e.ctx, kri.ID{Namespace: "dev", Name: "web", UID: s.UID})
+	a := &agent.Agent{Client: worker, HostName: "hv2", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}}
+	go a.RunTunnel(e.ctx)
+	for {
+		var out bytes.Buffer
+		c, err := e.admin.Exec(e.ctx, "dev", "web", []string{"hostname"}, nil, &out, nil)
+		if code(err) == http.StatusServiceUnavailable && e.ctx.Err() == nil {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if err != nil || c != 0 || out.String() != "hi from web" {
+			t.Fatalf("admin exec: %q, %d, %v", out.String(), c, err)
+		}
+		break
 	}
 }

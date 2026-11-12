@@ -65,6 +65,7 @@ func (a *Agent) Run(ctx context.Context) {
 	e.Register(a, engine.Options{Workers: 4})
 	a.silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	go a.silos.Run(ctx)
+	go a.RunTunnel(ctx)
 	go func() { // after the first sync, look for runtime silos the API no longer knows
 		if a.silos.WaitSynced(ctx) {
 			a.collectGarbage(ctx, e)

@@ -63,6 +63,9 @@ func authorize(id pki.Identity, r *http.Request, t target) bool {
 	case id.Role == "control-plane" && id.Type == "host":
 		return true
 	case id.Role == "worker" && id.Type == "host":
+		if t.exec {
+			return false
+		}
 		if r.Method == http.MethodGet {
 			return true
 		}

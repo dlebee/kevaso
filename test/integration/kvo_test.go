@@ -60,7 +60,7 @@ func newHarness(t *testing.T) *harness {
 // kvo runs one command; it returns stdout, stderr and the exit code.
 func (h *harness) kvo(ctx context.Context, stdin string, args ...string) (string, string, int) {
 	var out, errb bytes.Buffer
-	args = append(args, "--server", h.server)
+	args = append([]string{args[0], "--server", h.server}, args[1:]...) // before any `--`
 	code := kvo.Run(ctx, args, strings.NewReader(stdin), &out, &errb)
 	return out.String(), errb.String(), code
 }
