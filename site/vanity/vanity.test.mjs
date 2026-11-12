@@ -38,6 +38,13 @@ test("everything else passes through to the site", () => {
   }
 });
 
+test("without a site yet, the worker answers / itself and 404s the rest", async () => {
+  const home = await worker.fetch(new Request("https://kevaso.com/"));
+  assert.equal(home.status, 200);
+  assert.match(await home.text(), /github\.com\/dlebee\/kevaso/);
+  assert.equal((await worker.fetch(new Request("https://kevaso.com/about"))).status, 404);
+});
+
 test("the worker serves HTML the go command can parse", async () => {
   const res = await worker.fetch(new Request("https://kevaso.com/core/api?go-get=1"));
   assert.equal(res.status, 200);

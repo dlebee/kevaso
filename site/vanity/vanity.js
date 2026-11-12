@@ -2,12 +2,15 @@
 //
 // `go get kevaso.com/core/api` asks https://kevaso.com/core/api?go-get=1 where the code lives. This
 // Worker answers those requests from MODULES below, and leaves every other request alone (it goes to
-// the site's origin). A browser opening a module path (e.g. https://kevaso.com/core) is redirected to
-// its repo.
+// the site). A browser opening a module path (e.g. https://kevaso.com/core) is redirected to its repo.
+// Until kevaso.com has a real site (SITE_ORIGIN = true), other paths get a tiny landing page or a 404.
 //
 // To add or move a repo: edit MODULES, run the tests, redeploy. Import paths never change.
 
 export const HOST = "kevaso.com";
+
+// Set to true once kevaso.com has its own site behind Cloudflare: other requests then go to it.
+export const SITE_ORIGIN = false;
 
 // Module root (first path segment) → git repository. Modules inside a repo (core/api, core/sdk) are
 // covered by their root's entry.
@@ -51,6 +54,10 @@ export function route(url, modules = MODULES, host = HOST) {
   return { kind: "pass" };
 }
 
+const LANDING = `<!doctype html><meta charset="utf-8"><title>Kevaso</title>
+<p>Kevaso: stateful silos on the machines you bring. Code: <a href="${MODULES.core}">${MODULES.core}</a></p>
+`;
+
 export default {
   async fetch(request) {
     const r = route(request.url);
@@ -63,7 +70,10 @@ export default {
       case "redirect":
         return Response.redirect(r.location, 302);
       default:
-        return fetch(request);
+        if (SITE_ORIGIN) return fetch(request);
+        return new URL(request.url).pathname === "/"
+          ? new Response(LANDING, { headers: { "content-type": "text/html; charset=utf-8" } })
+          : new Response("not found\n", { status: 404 });
     }
   },
 };
