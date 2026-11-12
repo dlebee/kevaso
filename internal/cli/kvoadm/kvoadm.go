@@ -421,7 +421,7 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	if rk, err := conn.Run(ctx, "kevasod admin recovery-key", nil); err == nil {
 		var r client.RecoveryKey
 		if json.Unmarshal(lastLine(rk), &r) == nil && r.RecoveryKey != "" {
-			_, _ = fmt.Fprintf(out, "\nRecovery key for secrets (needed to restore a backup; shown only now, keep it offline):\n\n    %s\n\n", r.RecoveryKey)
+			_, _ = fmt.Fprintf(out, "\nRecovery key for secrets (the spare key to them; shown only now, keep it offline):\n\n    %s\n\n", r.RecoveryKey)
 		}
 	} else if !strings.Contains(err.Error(), "AlreadyExists") {
 		return fmt.Errorf("recovery key: %w", err)
