@@ -1,0 +1,9 @@
+# Cloudflare Worker that answers `go get kevaso.com/...` (see vanity.js).
+name = "kevaso-vanity"
+main = "vanity.js"
+compatibility_date = "2026-11-01"
+workers_dev = false
+
+# Every request to kevaso.com goes through the Worker; it answers only ?go-get=1 and module paths,
+# and passes everything else to the site's origin.
+routes = [{ pattern = "kevaso.com/*", zone_name = "kevaso.com" }]

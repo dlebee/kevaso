@@ -19,7 +19,7 @@ func Check(dev string) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("open %s: %w", dev, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only use: nothing to flush
 	v, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), kvmGetAPIVersion, 0)
 	if errno != 0 {
 		return Result{}, fmt.Errorf("KVM_GET_API_VERSION: %w", errno)
@@ -28,7 +28,7 @@ func Check(dev string) (Result, error) {
 	vm, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), kvmCreateVM, 0)
 	if errno == 0 {
 		res.CreatedVM = true
-		syscall.Close(int(vm))
+		_ = syscall.Close(int(vm)) // the VM was only a probe
 	}
 	return res, nil
 }

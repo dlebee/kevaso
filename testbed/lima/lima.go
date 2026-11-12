@@ -106,7 +106,7 @@ func (d *Driver) Create(ctx context.Context, run testbed.RunID, spec testbed.Spe
 	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
 		return testbed.Machine{}, err
 	}
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }() // best effort: a temp config file
 	if _, err := d.Runner.Run(ctx, "start", "--name="+name, "--tty=false", path); err != nil {
 		return testbed.Machine{}, err
 	}

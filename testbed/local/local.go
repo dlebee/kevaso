@@ -42,7 +42,7 @@ func (Driver) CopyTo(_ context.Context, _ testbed.Machine, local, remote string)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }() // read-only
 	info, err := in.Stat()
 	if err != nil {
 		return err
@@ -52,7 +52,7 @@ func (Driver) CopyTo(_ context.Context, _ testbed.Machine, local, remote string)
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
+		_ = out.Close() // the copy error is the one that matters
 		return err
 	}
 	return out.Close()
