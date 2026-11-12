@@ -95,6 +95,8 @@ type HostStatus struct {
 	// LastHeartbeat is when the host's agent last reported; host-loss detection (M5) reads it.
 	LastHeartbeat *time.Time               `json:"lastHeartbeat,omitempty"`
 	Runtimes      map[string]RuntimeStatus `json:"runtimes,omitempty"`
+	// Allocatable is what the worker offers to silos (after what the host itself needs).
+	Allocatable Resources `json:"allocatable,omitempty"`
 }
 
 // RuntimeStatus is one installed runtime's state on a worker.
@@ -118,8 +120,38 @@ type SiloSpec struct {
 	Runtime     string       `json:"runtime"`
 	Image       string       `json:"image,omitempty"`
 	Resources   Resources    `json:"resources,omitempty"`
+	Disk        Disk         `json:"disk,omitempty"`
 	Placement   Placement    `json:"placement,omitempty"`
 	Tolerations []Toleration `json:"tolerations,omitempty"`
+	Init        *Init        `json:"init,omitempty"`
+}
+
+// Disk is the silo's own disk.
+type Disk struct {
+	Class string `json:"class,omitempty"` // default: local
+	Size  string `json:"size,omitempty"`  // e.g. 20Gi
+}
+
+// Init is the steps that run inside a silo before it's Ready (GitHub Actions-style).
+type Init struct {
+	When    string     `json:"when,omitempty"`    // firstBoot (default) | everyBoot
+	Timeout string     `json:"timeout,omitempty"` // e.g. 15m
+	Steps   []InitStep `json:"steps"`
+}
+
+// InitStep is one step: a script run as root, by a shell or any interpreter in the image.
+type InitStep struct {
+	Name  string `json:"name"`
+	Shell string `json:"shell,omitempty"` // default: sh
+	Run   string `json:"run"`
+}
+
+// StepStatus is how one init step went.
+type StepStatus struct {
+	Name     string `json:"name"`
+	State    string `json:"state"` // Pending | Running | Done | Failed
+	ExitCode *int   `json:"exitCode,omitempty"`
+	Duration string `json:"duration,omitempty"`
 }
 
 // Resources a silo asks for.
@@ -148,7 +180,9 @@ func (t Toleration) Tolerates(taint Taint) bool {
 
 // SiloStatus is what controllers report.
 type SiloStatus struct {
-	Phase      string           `json:"phase,omitempty"` // Pending | Scheduled | Running | Stopped | Failed
+	Phase      string           `json:"phase,omitempty"` // Pending | Scheduled | Starting | Running | Failed
 	Host       string           `json:"host,omitempty"`  // where the scheduler placed it
 	Conditions []meta.Condition `json:"conditions,omitempty"`
+	Init       []StepStatus     `json:"init,omitempty"`
+	Address    string           `json:"address,omitempty"` // the silo's private address
 }

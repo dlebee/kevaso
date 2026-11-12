@@ -130,6 +130,14 @@ func TestValidation(t *testing.T) {
 		"toleration without key": func(s *v1.Silo) { s.Spec.Tolerations = []v1.Toleration{{Value: "x"}} },
 		"NoExecute toleration":   func(s *v1.Silo) { s.Spec.Tolerations = []v1.Toleration{{Key: "k", Effect: "NoExecute"}} },
 		"bad name":               func(s *v1.Silo) { s.Name = "Hello_World" },
+		"init step without run":  func(s *v1.Silo) { s.Spec.Init = &v1.Init{Steps: []v1.InitStep{{Name: "x"}}} },
+		"init without steps":     func(s *v1.Silo) { s.Spec.Init = &v1.Init{} },
+		"duplicate init step names": func(s *v1.Silo) {
+			s.Spec.Init = &v1.Init{Steps: []v1.InitStep{{Name: "x", Run: "true"}, {Name: "x", Run: "false"}}}
+		},
+		"init when typo": func(s *v1.Silo) {
+			s.Spec.Init = &v1.Init{When: "always", Steps: []v1.InitStep{{Name: "x", Run: "true"}}}
+		},
 	} {
 		s := newSilo("ok")
 		mutate(s)

@@ -154,3 +154,16 @@ func TestValidateName(t *testing.T) {
 		}
 	}
 }
+
+func TestParseBytes(t *testing.T) {
+	for in, want := range map[string]int64{"": 0, "0": 0, "1024": 1024, "4Gi": 4 << 30, "512Mi": 512 << 20, "10G": 10e9, "2Ti": 2 << 40} {
+		if got, err := ParseBytes(in); err != nil || got != want {
+			t.Errorf("ParseBytes(%q) = %d, %v; want %d", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"4GB", "-1Gi", "1.5Gi", "Gi", "lots", "99999999999Ti"} {
+		if _, err := ParseBytes(bad); err == nil {
+			t.Errorf("ParseBytes(%q) accepted", bad)
+		}
+	}
+}

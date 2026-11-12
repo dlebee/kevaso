@@ -26,6 +26,12 @@ var builtinRules = map[string][]Rule{
 			"every toleration needs a key"},
 		{`!has(self.spec.tolerations) || self.spec.tolerations.all(t, !has(t.effect) || t.effect in ['NoSchedule', 'PreferNoSchedule'])`,
 			"toleration effect must be NoSchedule or PreferNoSchedule"},
+		{`!has(self.spec.init) || (has(self.spec.init.steps) && self.spec.init.steps.size() > 0 && self.spec.init.steps.all(s, s.name != '' && s.run != ''))`,
+			"every init step needs a name and something to run"},
+		{`!has(self.spec.init) || !has(self.spec.init.when) || self.spec.init.when in ['firstBoot', 'everyBoot']`,
+			"init.when must be firstBoot or everyBoot"},
+		{`!has(self.spec.init) || !has(self.spec.init.steps) || self.spec.init.steps.all(a, self.spec.init.steps.exists_one(b, b.name == a.name))`,
+			"init step names must be unique"},
 	},
 	"Host": {
 		{`self.spec.address != ''`, "spec.address is required"},
