@@ -71,6 +71,27 @@ func TestControlPlaneComesUpReadyAndIssuesAdminCredentials(t *testing.T) {
 	}
 	waitReady(t, kvo) // the same answer over TLS with the minted certificate
 
+	// The silo controller runs: with no worker in the cluster, a silo waits and says why.
+	ctx := context.Background()
+	_ = kvo.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
+	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "dev"},
+		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor"}}
+	if err := kvo.Create(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var got v1.Silo
+		_ = kvo.Get(ctx, "Silo", "dev", "web", &got)
+		if c := meta.FindCondition(got.Status.Conditions, "Scheduled"); c != nil && c.Reason == "Unschedulable" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("silo controller didn't act: %+v", got.Status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
 	// Restart: same CA, same data.
 	stop()
 	if err := r.Wait(); err != nil {

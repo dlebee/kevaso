@@ -17,10 +17,13 @@ import (
 	"time"
 
 	"kevaso.com/core/api/client"
+	"kevaso.com/core/api/informer"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/clock"
+	silocontroller "kevaso.com/core/internal/controllers/silo"
+	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/jointoken"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/store"
@@ -132,6 +135,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	admin := client.NewUnix(cfg.AdminSocket)
 	hbCtx, stopHB := context.WithCancel(ctx)
 	go heartbeat(hbCtx, admin, cfg)
+	go runControllers(hbCtx, admin, cfg)
 
 	go func() {
 		select {
@@ -151,6 +155,21 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	}()
 	cfg.Log("API on https://%s, admin socket %s", r.APIAddr, cfg.AdminSocket)
 	return r, nil
+}
+
+// runControllers starts the built-in controllers on informers fed through the admin socket.
+func runControllers(ctx context.Context, c *client.Client, cfg Config) {
+	silos, hosts := informer.New(c, "Silo"), informer.New(c, "Host")
+	e := engine.New(cfg.Clock)
+	e.OnError = func(ctrl string, k engine.Key, err error, retry time.Duration) {
+		cfg.Log("%s: %s: %v (retry in %v)", ctrl, k, err, retry)
+	}
+	e.Register(&silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, Clock: cfg.Clock}, engine.Options{Workers: 1})
+	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
+	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
+	go silos.Run(ctx)
+	go hosts.Run(ctx)
+	e.Run(ctx)
 }
 
 func serveErr(err error) error {
