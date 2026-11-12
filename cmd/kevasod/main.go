@@ -30,10 +30,12 @@ import (
 	"time"
 
 	"kevaso.com/core/api/client"
+	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controlplane"
 	"kevaso.com/core/internal/store"
+	"kevaso.com/core/internal/worker"
 )
 
 const defaultAdminSocket = "/run/kevaso/admin.sock"
@@ -88,8 +90,29 @@ func runControlPlane(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.AdminSocket, "admin-socket", defaultAdminSocket, "admin unix socket")
 	fs.StringVar(&cfg.ClusterName, "cluster", "kevaso", "cluster name")
 	fs.Var(&extra, "extra-name", "more names or IPs for the API certificate (repeatable)")
+	var runtimes, labels multi
+	withWorker := fs.Bool("worker", false, "also run the worker component on this host")
+	fs.Var(&runtimes, "runtime", "runtime to install for the worker (repeatable; default cloud-hypervisor)")
+	fs.Var(&labels, "label", "worker label key=value (repeatable)")
+	loop := fs.String("loop-storage", "", "development only: back silo disks with this sparse file when the host has no 'kevaso' volume group")
+	loopSize := fs.String("loop-size", "64G", "size of the loop storage file")
 	_ = fs.Parse(args)
 	cfg.ExtraNames = extra
+	if *withWorker {
+		if len(runtimes) == 0 {
+			runtimes = multi{"cloud-hypervisor"}
+		}
+		lbl := map[string]string{}
+		for _, kv := range labels {
+			k, v, ok := strings.Cut(kv, "=")
+			if !ok {
+				return fmt.Errorf("--label %q: want key=value", kv)
+			}
+			lbl[k] = v
+		}
+		cfg.Worker = &worker.Config{Runtimes: runtimes, Labels: lbl,
+			Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize}}
+	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	cfg.Log = logger.Printf
 	r, err := controlplane.Start(ctx, cfg)

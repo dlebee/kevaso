@@ -27,6 +27,7 @@ import (
 	"kevaso.com/core/internal/jointoken"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/store"
+	"kevaso.com/core/internal/worker"
 )
 
 // Config is what the control plane needs.
@@ -40,7 +41,9 @@ type Config struct {
 	AdminSocket string // e.g. /run/kevaso/admin.sock
 	Heartbeat   time.Duration
 	Clock       clock.Clock
-	Log         func(format string, args ...any)
+	// Worker, when set, also runs the worker component on this host (one-host clusters).
+	Worker *worker.Config
+	Log    func(format string, args ...any)
 }
 
 func (c *Config) defaults() {
@@ -136,6 +139,19 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	hbCtx, stopHB := context.WithCancel(ctx)
 	go heartbeat(hbCtx, admin, cfg)
 	go runControllers(hbCtx, admin, cfg)
+	if cfg.Worker != nil {
+		wc := *cfg.Worker
+		wc.HostName, wc.Clock, wc.Log = cfg.HostName, cfg.Clock, cfg.Log
+		if wc.DataDir == "" {
+			wc.DataDir = cfg.DataDir
+		}
+		rts, err := worker.NewRuntimes(wc)
+		if err != nil {
+			stopHB()
+			return nil, err
+		}
+		go worker.Run(hbCtx, admin, wc, rts)
+	}
 
 	go func() {
 		select {

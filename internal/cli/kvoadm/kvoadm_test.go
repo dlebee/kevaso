@@ -101,6 +101,16 @@ func TestSSHKeyIsStable(t *testing.T) {
 	}
 }
 
+func TestUnitWithWorker(t *testing.T) {
+	u := Unit(InitOptions{Name: "hv1", Address: "a", Cluster: "c", Worker: true, LoopStorage: "40G"})
+	if !strings.Contains(u, "--worker --runtime cloud-hypervisor --loop-storage /var/lib/kevaso-storage.img --loop-size 40G") {
+		t.Fatalf("unit:\n%s", u)
+	}
+	if strings.Contains(Unit(InitOptions{Name: "hv1", Address: "a", Cluster: "c"}), "--worker") {
+		t.Fatal("worker installed without --worker")
+	}
+}
+
 func TestUnit(t *testing.T) {
 	u := Unit(InitOptions{Name: "cp-1", Address: "203.0.113.10", Cluster: "home"})
 	for _, want := range []string{

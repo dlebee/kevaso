@@ -3,6 +3,7 @@
 //
 //	kvoadm init [USER@]ADDRESS [--name NAME] [--ssh-port 22] [--ssh-key PATH] [--host-key SHA256:…]
 //	            [--kevasod PATH] [--api-server URL] [--cluster NAME] [--user NAME]
+//	            [--worker [--loop-storage SIZE]]   also run silos on this host (one-host cluster)
 //
 // Without --ssh-key, the password is asked for once, after the host key is trusted, used for one
 // connection, then the machine is switched to key-only and its root password rotated (research
@@ -61,7 +62,9 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 type InitOptions struct {
 	User, Address, Name, SSHKey, HostKey, Kevasod, APIServer, Cluster, UserName, Home string
 	SSHPort                                                                           int
-	HostKeyFirstUse                                                                   bool // trust the host key without asking (tests only)
+	HostKeyFirstUse                                                                   bool   // trust the host key without asking (tests only)
+	Worker                                                                            bool   // also install the worker component (one-host cluster)
+	LoopStorage                                                                       string // development: back silo disks with a loop file of this size
 }
 
 func parseInit(args []string) (InitOptions, error) {
@@ -99,6 +102,10 @@ func parseInit(args []string) (InitOptions, error) {
 			}
 		case "--accept-host-key-on-first-use":
 			o.HostKeyFirstUse = true
+		case "--worker":
+			o.Worker = true
+		case "--loop-storage":
+			o.LoopStorage, err = next()
 		default:
 			if strings.HasPrefix(a, "-") {
 				return o, fmt.Errorf("unknown flag %s", a)
@@ -228,6 +235,12 @@ func SSHKey(dir string) (ssh.Signer, []byte, error) {
 // Unit is the control plane's systemd unit.
 func Unit(o InitOptions) string {
 	args := []string{"control-plane", "--name", o.Name, "--address", o.Address, "--cluster", o.Cluster}
+	if o.Worker {
+		args = append(args, "--worker", "--runtime", "cloud-hypervisor")
+		if o.LoopStorage != "" {
+			args = append(args, "--loop-storage", "/var/lib/kevaso-storage.img", "--loop-size", o.LoopStorage)
+		}
+	}
 	return `[Unit]
 Description=Kevaso control plane (kevasod)
 After=network-online.target
