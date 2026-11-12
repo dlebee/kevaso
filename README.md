@@ -6,7 +6,7 @@ Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for
 **New here? Read [the guide](https://dlebee.github.io/kevaso-docs/)**: from an empty machine to a shared
 cluster, one explained step at a time. (`docs/` in this repo is for people working on Kevaso itself.)
 
-**Status:** early (M0–M8 of [MILESTONES.md](MILESTONES.md) done). What exists today:
+**Status:** early (M0–M9 of [MILESTONES.md](MILESTONES.md) done). What exists today:
 
 - setup in explicit steps ([guide](https://dlebee.github.io/kevaso-docs/setup/prepare/)): you make Kevaso's SSH key and
   check the machine's fingerprint, `kvoadm check` looks without changing anything, `kvoadm init`
@@ -50,6 +50,9 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   (`--openshell-gateway-scope`). Grants become OpenShell's policy and providers: the silo holds only a
   placeholder (`$API_KEY`) its programs send, and OpenShell swaps the real key in on the way out. What
   OpenShell can't do (services, address ranges, UDP, file/env/broker/sign) is refused when you apply;
+- container runtimes: `runtime: docker` / `podman` on the same silo bridge as the VMs (firewall,
+  default-deny egress, exposure and the egress gate apply unchanged), init steps as init containers,
+  volumes that persist, the broker over a socket of their own;
 - under the hood: a store with global revisions and resumable watches, CEL validation, a controller
   engine; the testbed and end-to-end loop (`make e2e`).
 
