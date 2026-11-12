@@ -234,7 +234,17 @@ func TestHardenNeverSendsThePasswordAndThenKeysWork(t *testing.T) {
 	c := connectWithPassword(t, h, hk)
 	client := newSigner(t)
 	pub := ssh.MarshalAuthorizedKey(client.PublicKey())
-	if err := c.Harden(ctxT(t), pub); err != nil {
+	// By default only the key goes in: nothing else on the machine changes.
+	if err := c.AuthorizeKey(ctxT(t), pub); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Harden(ctxT(t), HardenOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if cmds, _, _ := h.seen(); len(cmds) != 1 {
+		t.Fatalf("without hardening options: %d commands, want 1 (the key): %q", len(cmds), cmds)
+	}
+	if err := c.Harden(ctxT(t), HardenOptions{DisablePasswordLogin: true, ChangeRootPassword: true}); err != nil {
 		t.Fatal(err)
 	}
 	cmds, stdins, _ := h.seen()

@@ -216,22 +216,34 @@ KbdInteractiveAuthentication no
 // transmitted (E017).
 const RotateRootPassword = `set -o pipefail; head -c 48 /dev/urandom | base64 -w0 | sed 's/^/root:/' | chpasswd`
 
-// Harden installs authorizedKey for root, switches sshd to key-only, and rotates the root password.
-func (c *Conn) Harden(ctx context.Context, authorizedKey []byte) error {
-	steps := []struct {
-		what, cmd string
-		stdin     []byte
-	}{
-		// Idempotent: adds the key only if it isn't there yet (the key travels on stdin).
-		{"install SSH key", `umask 077 && mkdir -p /root/.ssh && touch /root/.ssh/authorized_keys && ` +
-			`k=$(cat) && (grep -qxF "$k" /root/.ssh/authorized_keys || printf '%s\n' "$k" >> /root/.ssh/authorized_keys)`,
-			bytes.TrimSpace(authorizedKey)},
-		{"sshd key-only", "cat > /etc/ssh/sshd_config.d/00-kevaso.conf && sshd -t && (systemctl reload ssh || systemctl reload sshd)", []byte(SSHDDropIn)},
-		{"rotate root password", "bash -c " + Quote(RotateRootPassword), nil},
+// HardenOptions are the extra hardening steps, each only when asked for (people don't expect
+// their root password changed or their password logins turned off).
+type HardenOptions struct {
+	DisablePasswordLogin bool // sshd: keys only, root by key only (E016)
+	ChangeRootPassword   bool // a random root password generated on the host, never sent (E017)
+}
+
+// AuthorizeKey adds authorizedKey to root's authorized_keys (once; the key travels on stdin).
+func (c *Conn) AuthorizeKey(ctx context.Context, authorizedKey []byte) error {
+	_, err := c.Run(ctx, `umask 077 && mkdir -p /root/.ssh && touch /root/.ssh/authorized_keys && `+
+		`k=$(cat) && (grep -qxF "$k" /root/.ssh/authorized_keys || printf '%s\n' "$k" >> /root/.ssh/authorized_keys)`,
+		bytes.TrimSpace(authorizedKey))
+	if err != nil {
+		return fmt.Errorf("install SSH key: %w", err)
 	}
-	for _, s := range steps {
-		if _, err := c.Run(ctx, s.cmd, s.stdin); err != nil {
-			return fmt.Errorf("%s: %w", s.what, err)
+	return nil
+}
+
+// Harden does the extra hardening steps o asks for.
+func (c *Conn) Harden(ctx context.Context, o HardenOptions) error {
+	if o.DisablePasswordLogin {
+		if _, err := c.Run(ctx, "cat > /etc/ssh/sshd_config.d/00-kevaso.conf && sshd -t && (systemctl reload ssh || systemctl reload sshd)", []byte(SSHDDropIn)); err != nil {
+			return fmt.Errorf("sshd key-only: %w", err)
+		}
+	}
+	if o.ChangeRootPassword {
+		if _, err := c.Run(ctx, "bash -c "+Quote(RotateRootPassword), nil); err != nil {
+			return fmt.Errorf("change root password: %w", err)
 		}
 	}
 	return nil

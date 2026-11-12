@@ -14,8 +14,10 @@
 //
 // kvoadm logs in with the SSH key you made for it (--ssh-key), checking the machine's host key
 // against the fingerprint you give (--host-key) or asking you to confirm it. --password instead
-// logs in with a password once and then switches the machine to keys only, its root password
-// rotated (research E016–E017). kevasod is installed only after its signature verifies on the host
+// logs in with a password once and adds kvoadm's own key for next time. It changes nothing else
+// about logging in unless asked: --disable-password-login (keys only), --change-root-password (a
+// random one nobody knows), or, in a terminal without those flags, a question for each
+// (--no-extra-hardening: don't ask). kevasod is installed only after its signature verifies on the host
 // (E018). init --worker is init and enable-worker in one go.
 package kvoadm
 
@@ -40,6 +42,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/term"
@@ -120,7 +123,11 @@ type InitOptions struct {
 	EgressExtraCA                                                                     string   // a PEM file on the host the egress gate also trusts upstream
 	Runtimes                                                                          []string // worker runtimes (default cloud-hypervisor)
 	GatewayScope                                                                      string   // OpenShell: host | namespace | silo
-	Password                                                                          bool     // log in with a password once (no --ssh-key): kvoadm then switches the machine to its own key
+	Password                                                                          bool     // log in with a password once (no --ssh-key): kvoadm then adds its own key
+	// Extra hardening, only when asked for (flags, or a question in a terminal).
+	DisablePasswordLogin bool
+	ChangeRootPassword   bool
+	hardeningAsked       bool // a hardening flag was given: don't ask
 }
 
 func parseInit(args []string) (InitOptions, error) {
@@ -170,6 +177,12 @@ func parseTarget(args []string) (InitOptions, error) {
 			}
 		case "--password":
 			o.Password = true
+		case "--disable-password-login":
+			o.DisablePasswordLogin, o.hardeningAsked = true, true
+		case "--change-root-password":
+			o.ChangeRootPassword, o.hardeningAsked = true, true
+		case "--no-extra-hardening":
+			o.hardeningAsked = true
 		case "--accept-host-key-on-first-use":
 			o.HostKeyFirstUse = true
 		case "--worker":
@@ -215,6 +228,32 @@ func parseTarget(args []string) (InitOptions, error) {
 		}
 	}
 	return o, nil
+}
+
+// askHardening returns the extra hardening steps: from the flags, or, in a terminal with none of
+// them given, from a question for each (No by default). Scripts never get a question.
+func askHardening(o InitOptions, stdin io.Reader, out io.Writer) (sshboot.HardenOptions, error) {
+	h := sshboot.HardenOptions{DisablePasswordLogin: o.DisablePasswordLogin, ChangeRootPassword: o.ChangeRootPassword}
+	f, ok := stdin.(*os.File)
+	if o.hardeningAsked || !ok || !term.IsTerminal(int(f.Fd())) {
+		return h, nil
+	}
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewConfirm().
+			Title("Turn off SSH password logins on this machine?").
+			Description("Keys only from then on: nobody can guess their way in. Check that your key works first.").
+			Affirmative("Turn off").Negative("Leave as is").
+			Value(&h.DisablePasswordLogin),
+		huh.NewConfirm().
+			Title("Change root's password to a random one?").
+			Description("Nobody will know it, you included: you'd log in with keys, or reset it from your provider's console.").
+			Affirmative("Change it").Negative("Leave as is").
+			Value(&h.ChangeRootPassword),
+	)).WithInput(f).WithOutput(out)
+	if err := form.Run(); err != nil {
+		return h, err
+	}
+	return h, nil
 }
 
 // needCredential: kvoadm logs in with the SSH key you made for it, or, only if you say so, with a
@@ -471,12 +510,26 @@ func bootstrap(ctx context.Context, o InitOptions, home string, stdin io.Reader,
 		return nil, errors.New("the host needs openssl and systemd")
 	}
 
-	// 3. If a password got us in, switch to keys and rotate it.
+	// 3. If a password got us in, add kvoadm's own key, so later commands don't need it.
 	if usedPassword {
-		if err := conn.Harden(ctx, ownPub); err != nil {
+		if err := conn.AuthorizeKey(ctx, ownPub); err != nil {
 			return nil, err
 		}
-		say("installed kvoadm's SSH key (%s), sshd is key-only, root password rotated", filepath.Join(home, "ssh", "id_ed25519"))
+		say("added kvoadm's SSH key (%s) to root's authorized_keys; use it as --ssh-key from now on", filepath.Join(home, "ssh", "id_ed25519"))
+	}
+	// Extra hardening: only what you ask for.
+	h, err := askHardening(o, stdin, out)
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.Harden(ctx, h); err != nil {
+		return nil, err
+	}
+	if h.DisablePasswordLogin {
+		say("SSH password logins are off: keys only from now on")
+	}
+	if h.ChangeRootPassword {
+		say("root's password changed to a random one nobody knows (log in with keys, or reset it from the provider's console)")
 	}
 
 	// 4. Install kevasod, signature checked on the host, and start the control plane.
