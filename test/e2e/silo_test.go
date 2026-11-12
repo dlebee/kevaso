@@ -145,6 +145,14 @@ func TestExample01RunsASiloOnCloudHypervisor(t *testing.T) {
 		time.Sleep(10 * time.Second)
 	}
 
+	// kvo exec reaches into the VM: kvo → API server → the agent's dial-out tunnel → SSH in the silo.
+	if o, e, code := kvoRun("", "exec", "silo", "hello", "-n", "demo", "--", "cat", "/root/proof"); code != 0 || !strings.Contains(o, "made inside") {
+		t.Fatalf("kvo exec cat: exit %d, %q, %q", code, o, e)
+	}
+	if o, e, code := kvoRun("piped in\n", "exec", "silo", "hello", "-n", "demo", "--", "sh", "-c", "cat; exit 4"); code != 4 || o != "piped in\n" {
+		t.Fatalf("kvo exec stdin/exit: exit %d, %q, %q", code, o, e)
+	}
+
 	// The VMM really runs locked down (research E010): its own user, no capabilities,
 	// no-new-privileges, a syscall filter.
 	st, err := d.Exec(ctx, m, "sudo", "sh", "-c",
