@@ -27,10 +27,11 @@ func ServiceAccountUser(namespace, name string) string {
 type Attributes struct {
 	User      string
 	Groups    []string
-	Verb      string // get, list, watch, create, update, delete, …
-	Resource  string // plural, with the subresource: silos, silos/status, silos/exec
-	Namespace string // "" for cluster-scoped kinds and cluster-wide lists
-	Name      string // "" for lists and creates
+	Verb      string            // get, list, watch, create, update, delete, …
+	Resource  string            // plural, with the subresource: silos, silos/status, silos/exec
+	Namespace string            // "" for cluster-scoped kinds and cluster-wide lists
+	Name      string            // "" for lists and creates
+	Labels    map[string]string // the object's labels, for rules with a selector (secrets)
 }
 
 func (a Attributes) String() string {
@@ -161,16 +162,69 @@ func bound(subjects []v1.Subject, bindingNS string, a Attributes) bool {
 
 func allows(rules []v1.PolicyRule, a Attributes) bool {
 	for _, r := range rules {
-		if match(r.Verbs, a.Verb) && matchResource(r.Resources, a.Resource) &&
-			(len(r.ResourceNames) == 0 || (a.Name != "" && slices.Contains(r.ResourceNames, a.Name))) {
+		if matchVerb(r.Verbs, a.Verb, a.Resource) && matchResource(r.Resources, a.Resource) &&
+			(len(r.ResourceNames) == 0 || (a.Name != "" && slices.Contains(r.ResourceNames, a.Name))) &&
+			(len(r.Selector) == 0 || (a.Name != "" && a.Labels != nil && selects(r.Selector, a.Labels))) {
 			return true
 		}
 	}
 	return false
 }
 
-func match(list []string, v string) bool {
-	return slices.Contains(list, "*") || slices.Contains(list, v)
+func selects(sel, labels map[string]string) bool {
+	for k, v := range sel {
+		if labels[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// matchVerb: on secrets, list covers reading metadata (get, list, watch) and write covers every
+// change (create, update, patch, delete).
+func matchVerb(list []string, v, resource string) bool {
+	if slices.Contains(list, "*") || slices.Contains(list, v) {
+		return true
+	}
+	if resource != "secrets" {
+		return false
+	}
+	switch v {
+	case "get", "watch":
+		return slices.Contains(list, "list")
+	case "create", "update", "patch", "delete":
+		return slices.Contains(list, v1.VerbWrite)
+	}
+	return false
+}
+
+// MaySelect reports whether some rule could allow verb on resource in namespace for objects with
+// the right name or labels (a list someone may see only part of).
+func (p *Policy) MaySelect(a Attributes) bool {
+	check := func(rules []v1.PolicyRule) bool {
+		for _, r := range rules {
+			if matchVerb(r.Verbs, a.Verb, a.Resource) && matchResource(r.Resources, a.Resource) &&
+				(len(r.ResourceNames) > 0 || len(r.Selector) > 0) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, b := range p.ClusterRoleBindings {
+		if bound(b.Subjects, "", a) {
+			if cr := p.ClusterRoles[b.RoleRef.Name]; cr != nil && check(cr.Rules) {
+				return true
+			}
+		}
+	}
+	for _, b := range p.RoleBindings {
+		if b.Namespace == a.Namespace && bound(b.Subjects, b.Namespace, a) {
+			if rules, ok := p.rulesOf(b); ok && check(rules) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // matchResource: "*" is everything, "silos" isn't "silos/exec", "*/status" is every status.

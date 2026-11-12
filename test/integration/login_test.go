@@ -24,8 +24,10 @@ import (
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
+	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/login"
 	"kevaso.com/core/internal/pki"
+	"kevaso.com/core/internal/secrets"
 	"kevaso.com/core/internal/store"
 	"kevaso.com/core/internal/tokenstore"
 )
@@ -61,6 +63,12 @@ func newCluster(t *testing.T) *cluster {
 	if err != nil {
 		t.Fatal(err)
 	}
+	localKMS, err := kms.OpenLocal(filepath.Join(t.TempDir(), "kms.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetVault(&secrets.Vault{Store: st, KMS: localKMS, Now: time.Now})
+	srv.SetKMSAdmin(localKMS)
 	sc, _ := ca.ServerCert([]string{"127.0.0.1"}, now, time.Hour)
 	ts.start(t, srv, srv.TLSConfig(sc))
 

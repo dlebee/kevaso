@@ -13,6 +13,12 @@
 //	    on a control-plane host, as root: sign a user's CSR through the admin socket; prints JSON
 //	    {certificate, ca}. kvoadm runs it over SSH, so the user's key never leaves their machine.
 //
+//	kevasod admin recovery-key
+//	    the recovery key for secrets, made once (kvoadm init prints it); refused after that
+//
+//	kevasod admin kms-rotate
+//	    a new master key: every secret's data key re-wrapped, the old key retired
+//
 //	kevasod dev [--listen 127.0.0.1:8080] [--data PATH]
 //	    the API without auth on loopback, for trying kvo locally
 package main
@@ -39,7 +45,9 @@ import (
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controlplane"
+	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/mesh"
+	"kevaso.com/core/internal/secrets"
 	"kevaso.com/core/internal/store"
 	"kevaso.com/core/internal/worker"
 )
@@ -51,6 +59,7 @@ func usage() {
   kevasod control-plane --name HOST --address ADDR [--listen 0.0.0.0:6443] [--data /var/lib/kevaso]
   kevasod worker --name HOST --server https://CP:6443 [--ca-file F] [--token-file F] [--data D]
   kevasod admin sign-user --name NAME < csr.pem
+  kevasod admin recovery-key | kms-rotate
   kevasod dev [--listen 127.0.0.1:8080] [--data PATH]`)
 	os.Exit(2)
 }
@@ -67,10 +76,16 @@ func main() {
 	case "worker":
 		err = runWorker(ctx, os.Args[2:])
 	case "admin":
-		if len(os.Args) < 3 || os.Args[2] != "sign-user" {
+		switch {
+		case len(os.Args) >= 3 && os.Args[2] == "sign-user":
+			err = runSignUser(ctx, os.Args[3:])
+		case len(os.Args) >= 3 && os.Args[2] == "recovery-key":
+			err = runAdminCall(ctx, "/admin/kms/recovery-key", &client.RecoveryKey{})
+		case len(os.Args) >= 3 && os.Args[2] == "kms-rotate":
+			err = runAdminCall(ctx, "/admin/kms/rotate", &client.KMSRotation{})
+		default:
 			usage()
 		}
-		err = runSignUser(ctx, os.Args[3:])
 	case "dev":
 		err = runDev(ctx, os.Args[2:])
 	default:
@@ -220,6 +235,16 @@ func runSignUser(ctx context.Context, args []string) error {
 	}
 }
 
+// runAdminCall POSTs to the admin socket (as root on a control-plane host) and prints the JSON
+// answer: the recovery key (once), or a master key rotation.
+func runAdminCall(ctx context.Context, path string, out any) error {
+	c := client.NewUnix(defaultAdminSocket)
+	if err := c.Call(ctx, http.MethodPost, path, nil, out); err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(out)
+}
+
 func runDev(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("dev", flag.ExitOnError)
 	home, _ := os.UserHomeDir()
@@ -245,6 +270,11 @@ func runDev(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	localKMS, err := kms.OpenLocal(strings.TrimSuffix(*data, filepath.Ext(*data)) + "-kms.json")
+	if err != nil {
+		return err
+	}
+	srv.SetVault(&secrets.Vault{Store: st, KMS: localKMS, Now: time.Now})
 	hs := &http.Server{Addr: *listen, Handler: srv, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()

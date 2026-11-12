@@ -7,16 +7,27 @@ import "kevaso.com/core/api/meta"
 // no access.
 
 // PolicyRule allows Verbs on Resources (plural names, with subresources as "silos/exec"), optionally
-// only the named objects. "*" matches anything.
+// only the named objects, or (secrets only) only the ones whose labels match Selector. "*" matches
+// anything.
 type PolicyRule struct {
-	Verbs         []string `json:"verbs"`
-	Resources     []string `json:"resources"`
-	ResourceNames []string `json:"resourceNames,omitempty"`
+	Verbs         []string          `json:"verbs"`
+	Resources     []string          `json:"resources"`
+	ResourceNames []string          `json:"resourceNames,omitempty"`
+	Selector      map[string]string `json:"selector,omitempty"`
 }
 
 // Verbs the API knows. Subresources carry the sensitive actions: create on silos/exec runs a
 // command in a silo.
 var Verbs = []string{"get", "list", "watch", "create", "update", "patch", "delete"}
+
+// Secret verbs (design §8.6), separate powers: list (see that a secret exists: get, list and
+// watch its metadata), read-value (read the value as a person), use (name it in a Grant, so a silo
+// receives it) and write (create, update, rotate, delete).
+const (
+	VerbUse       = "use"
+	VerbReadValue = "read-value"
+	VerbWrite     = "write"
+)
 
 // Role grants rules inside its namespace.
 type Role struct {

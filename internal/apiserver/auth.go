@@ -57,6 +57,7 @@ const (
 	identityKey
 	groupsKey
 	nsFilterKey
+	secretFilterKey
 )
 
 // LocalAdmin is the identity of whoever reaches the admin socket (root on the host).
@@ -123,6 +124,8 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 		a.Verb, a.Resource = "create", t.kind.Plural+"/exec"
 	case t.token:
 		a.Verb, a.Resource = "create", t.kind.Plural+"/token"
+	case t.value:
+		a.Verb = "read-value"
 	case r.Method == http.MethodGet && t.name == "" && r.URL.Query().Get("watch") == "true":
 		a.Verb = "watch"
 	case r.Method == http.MethodGet && t.name == "":
@@ -166,15 +169,21 @@ func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups [
 		return false, false, "", err
 	}
 	a := attributes(id, groups, r, t)
+	a.Labels = s.secretLabels(ctx, t)
 	d := p.Authorize(a)
 	if !d.Allowed && t.kind.Kind == "Namespace" && a.Verb == "list" {
 		return true, true, "namespaces you have a role in", nil
+	}
+	if !d.Allowed && t.kind.Kind == "Secret" && (a.Verb == "list" || a.Verb == "watch") && p.MaySelect(a) {
+		return true, true, "secrets your roles name or select", nil
 	}
 	return d.Allowed, false, d.Reason, nil
 }
 
 func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
 	switch {
+	case t.value: // values reach hosts only for their own silos, through the broker
+		return false
 	case id.Role == "control-plane" && id.Type == "host":
 		return true
 	case id.Role == "worker" && id.Type == "host":
@@ -239,6 +248,10 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			s.users(w, r, id, groups)
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, "/admin/kms/") {
+			s.kmsEndpoints(w, r, id)
+			return
+		}
 		if r.URL.Path == "/auth/can-i" {
 			s.canI(w, r, id, groups)
 			return
@@ -259,7 +272,9 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 				writeErr(w, errf(http.StatusForbidden, "Forbidden", "%s: %s", id, reason))
 				return
 			}
-			if filter {
+			if filter && t.kind.Kind == "Secret" {
+				r = r.WithContext(context.WithValue(ctx, secretFilterKey, true))
+			} else if filter {
 				r = r.WithContext(context.WithValue(ctx, nsFilterKey, true))
 			}
 		}

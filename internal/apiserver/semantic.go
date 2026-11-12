@@ -36,6 +36,32 @@ func semantic(obj meta.Object) []string {
 				errs = append(errs, fmt.Sprintf("allowFrom: %q: want NAME or NAMESPACE/NAME", a.Silo))
 			}
 		}
+	case *v1.Grant:
+		for _, r := range o.Spec.Egress {
+			if _, err := r.Parse(); err != nil {
+				errs = append(errs, err.Error())
+			}
+		}
+		for _, sec := range o.Spec.Secrets {
+			if sec.To != nil {
+				if _, err := (v1.EgressRule{To: sec.To.Host}).Parse(); err != nil || strings.Contains(sec.To.Host, "*") || strings.Contains(sec.To.Host, "/") {
+					errs = append(errs, fmt.Sprintf("secret %s: to.host %q must be one host name", sec.Name, sec.To.Host))
+				}
+				if f := sec.To.Format; f != "" && strings.Count(f, "{{value}}") != 1 {
+					errs = append(errs, fmt.Sprintf("secret %s: to.format must contain {{value}} once", sec.Name))
+				}
+				if h := sec.To.Header; h != "" && strings.ContainsAny(h, " :\r\n") {
+					errs = append(errs, fmt.Sprintf("secret %s: to.header %q isn't a header name", sec.Name, h))
+				}
+			}
+			if sec.Path != "" && (!strings.HasPrefix(sec.Path, "/") || strings.Contains(sec.Path, "..")) {
+				errs = append(errs, fmt.Sprintf("secret %s: path %q must be absolute, without ..", sec.Name, sec.Path))
+			}
+		}
+	case *v1.Secret:
+		if len(o.Spec.Value) > 64<<10 {
+			errs = append(errs, "spec.value: at most 64 KiB")
+		}
 	case *v1.IPPool:
 		for _, a := range o.Spec.Addresses {
 			p, err := netip.ParsePrefix(a)

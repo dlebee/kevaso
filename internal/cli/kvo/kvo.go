@@ -50,6 +50,7 @@ type opts struct {
 	ca                                       string // kvo login: the CA fingerprint to pin
 	duration                                 string // kvo create token
 	all, noBrowser                           bool
+	secret                                   secretOpts
 	args                                     []string
 	command                                  []string // after --
 	ctxNamespace                             string   // the context's default namespace
@@ -94,6 +95,29 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.noBrowser = true
 		case "--duration":
 			o.duration, err = val()
+		case "--from-file":
+			o.secret.fromFile, err = val()
+		case "--from-literal":
+			o.secret.fromLiteral, err = val()
+			o.secret.literalSet = true
+		case "--i-know":
+			o.secret.iKnow = true
+		case "--generate":
+			o.secret.generate = true
+		case "--type":
+			o.secret.typ, err = val()
+		case "--write-only":
+			o.secret.writeOnly = true
+		case "--allow":
+			var v string
+			v, err = val()
+			o.secret.allow = append(o.secret.allow, strings.Split(v, ",")...)
+		case "-l", "--label":
+			var v string
+			v, err = val()
+			o.secret.labels = append(o.secret.labels, v)
+		case "--reveal":
+			o.secret.reveal = true
 		default:
 			if strings.HasPrefix(a, "-") && a != "-" {
 				return o, fmt.Errorf("unknown flag %s", a)
@@ -145,7 +169,13 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "describe":
 		err = describe(ctx, c, o, stdout)
 	case "create":
-		err = createToken(ctx, c, o, stdout)
+		if len(o.args) > 0 && o.args[0] == "secret" {
+			err = createSecret(ctx, c, o, stdin, stdout)
+		} else {
+			err = createToken(ctx, c, o, stdout)
+		}
+	case "secret":
+		err = secretCommand(ctx, c, o, stdin, stdout)
 	case "delete":
 		err = del(ctx, c, o, stdout)
 	case "watch":
@@ -404,6 +434,12 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	if k.Scope == v1.Namespaced && !o.all {
 		ns = defaultNS(o)
 	}
+	if o.secret.reveal {
+		if k.Kind != "Secret" || len(o.args) != 2 {
+			return errors.New("--reveal works with one secret: kvo get secret NAME --reveal")
+		}
+		return revealSecret(ctx, c, ns, o.args[1], stdout)
+	}
 	var objs []meta.Object
 	if len(o.args) >= 2 {
 		obj := k.New()
@@ -560,6 +596,10 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error 
 		head = append(head, "ADDRESS", "REGION", "COMPONENTS", "RUNTIMES")
 	case "Namespace":
 		head = append(head, "STATUS")
+	case "Secret":
+		head = append(head, "TYPE", "VERSION", "UPDATED", "READABLE")
+	case "Grant":
+		head = append(head, "EGRESS", "SECRETS")
 	}
 	head = append(head, "AGE")
 	_, _ = fmt.Fprintln(tw, strings.Join(head, "\t"))
@@ -602,6 +642,34 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error 
 			row = append(row, o.Spec.Address, region, strings.Join(comps, ","), dash(strings.Join(rts, ",")))
 		case *v1.Namespace:
 			row = append(row, dash(o.Status.Phase))
+		case *v1.Secret:
+			typ, updated, readable := o.Spec.Type, "-", "yes"
+			if typ == "" {
+				typ = v1.SecretOpaque
+			}
+			if o.Status.UpdatedAt != nil {
+				updated = since(*o.Status.UpdatedAt)
+			}
+			if !o.Readable() {
+				readable = "write-only"
+			}
+			ver := "no value"
+			if o.Status.Version > 0 {
+				ver = fmt.Sprint(o.Status.Version)
+			}
+			row = append(row, typ, ver, updated, readable)
+		case *v1.Grant:
+			var eg, secs []string
+			for _, e := range o.Spec.Egress {
+				eg = append(eg, e.To)
+			}
+			for _, sc := range o.Spec.Secrets {
+				secs = append(secs, sc.Name+":"+sc.Delivery())
+			}
+			if op := o.Spec.Operations; op != nil && op.Sign != nil {
+				secs = append(secs, op.Sign.KeyRef+":sign")
+			}
+			row = append(row, dash(strings.Join(eg, ",")), dash(strings.Join(secs, ",")))
 		}
 		row = append(row, age(m))
 		_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))

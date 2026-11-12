@@ -161,6 +161,9 @@ type SiloSpec struct {
 	Service   *Service    `json:"service,omitempty"`
 	AllowFrom []AllowFrom `json:"allowFrom,omitempty"`
 	Network   SiloNetwork `json:"network,omitempty"`
+	// Grants are the Grant objects (in this namespace) the silo uses: what it may reach outside
+	// the cluster and which secrets it gets, and how (design §8).
+	Grants []string `json:"grants,omitempty"`
 }
 
 // Availability is the silo's answer to losing its host.

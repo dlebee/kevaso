@@ -32,6 +32,8 @@ func init() {
 	register(KindInfo{Kind: "ClusterRole", Plural: "clusterroles", Scope: Cluster, New: func() meta.Object { return &ClusterRole{} }})
 	register(KindInfo{Kind: "ClusterRoleBinding", Plural: "clusterrolebindings", Scope: Cluster, New: func() meta.Object { return &ClusterRoleBinding{} }})
 	register(KindInfo{Kind: "IPPool", Plural: "ippools", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &IPPool{} }})
+	register(KindInfo{Kind: "Secret", Plural: "secrets", Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Secret{} }})
+	register(KindInfo{Kind: "Grant", Plural: "grants", Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Grant{} }})
 	register(KindInfo{Kind: "ServiceAccount", Plural: "serviceaccounts", ShortNames: []string{"sa"}, Scope: Namespaced, New: func() meta.Object { return &ServiceAccount{} }})
 }
 

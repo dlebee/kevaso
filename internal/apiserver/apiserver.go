@@ -31,6 +31,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/rbac"
+	"kevaso.com/core/internal/secrets"
 	"kevaso.com/core/internal/store"
 
 	"github.com/hashicorp/yamux"
@@ -45,8 +46,10 @@ type Server struct {
 	auth  *Auth
 	h     http.Handler
 
-	tunnels tunnels // agents' dial-out connections, by host
-	policy  *rbac.Source
+	tunnels  tunnels // agents' dial-out connections, by host
+	policy   *rbac.Source
+	vault    *secrets.Vault // nil: no KMS, secrets can't hold values
+	kmsAdmin KMSAdmin
 }
 
 // New returns a server over a store, without authentication (kevasod dev, tests).
@@ -127,6 +130,7 @@ type target struct {
 	status    bool
 	exec      bool // a silo's /exec
 	token     bool // a service account's /token
+	value     bool // a secret's /value
 }
 
 func parsePath(path string) (target, error) {
@@ -156,6 +160,8 @@ func parsePath(path string) (target, error) {
 		t.exec = true
 	case len(parts) == 3 && parts[2] == "token" && k.Kind == "ServiceAccount":
 		t.token = true
+	case len(parts) == 3 && parts[2] == "value" && k.Kind == "Secret":
+		t.value = true
 	case len(parts) > 2:
 		return t, errf(http.StatusNotFound, "NotFound", "unknown path %q", path)
 	}
@@ -178,6 +184,10 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.siloExec(w, r, t.namespace, t.name)
 	case t.token:
 		s.serviceAccountToken(w, r, t)
+	case t.value && r.Method == http.MethodGet:
+		s.secretValue(ctx, w, t)
+	case t.value:
+		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "%s %s: set a value with an update of the secret", r.Method, r.URL.Path))
 	case r.Method == http.MethodGet && t.name == "" && r.URL.Query().Get("watch") == "true":
 		s.watch(ctx, w, r, t)
 	case r.Method == http.MethodGet && t.name == "":
@@ -256,6 +266,9 @@ func (s *Server) list(ctx context.Context, w http.ResponseWriter, t target) {
 		mine := p.NamespacesFor(rbac.Attributes{User: id.Name, Groups: GroupsFrom(ctx)})
 		objs = slices.DeleteFunc(objs, func(o store.Object) bool { return !slices.Contains(mine, o.Name) })
 	}
+	if filter, _ := ctx.Value(secretFilterKey).(bool); filter {
+		objs = slices.DeleteFunc(objs, func(o store.Object) bool { return !s.visibleSecret(ctx, o) })
+	}
 	for _, o := range objs {
 		b, err := render(o)
 		if err != nil {
@@ -295,7 +308,11 @@ func (s *Server) watch(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		flusher.Flush()
 	}
 	enc := json.NewEncoder(w)
+	filterSecrets, _ := ctx.Value(secretFilterKey).(bool)
 	for ev := range ch {
+		if filterSecrets && !s.visibleSecret(ctx, ev.Object) {
+			continue
+		}
 		b, err := render(ev.Object)
 		if err != nil {
 			return
@@ -350,10 +367,26 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		writeErr(w, err)
 		return
 	}
-	o, err := fn(ctx, t, obj)
+	if err := s.checkSecretUse(ctx, t, obj); err != nil {
+		writeErr(w, err)
+		return
+	}
+	value, err := s.prepareSecret(ctx, t, obj)
 	if err != nil {
 		writeErr(w, err)
 		return
+	}
+	o, err := fn(ctx, t, obj)
+	if err != nil {
+		clear(value)
+		writeErr(w, err)
+		return
+	}
+	if value != nil && o.Data != nil {
+		if o, err = s.storeSecretValue(ctx, o, value); err != nil {
+			writeErr(w, err)
+			return
+		}
 	}
 	if o.Data == nil { // finalized away: the object is gone
 		writeJSON(w, http.StatusOK, Status{Code: http.StatusOK, Reason: "Deleted", Message: t.key().String() + " deleted"})
@@ -530,6 +563,9 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, t target) {
 			} else if err != nil {
 				writeErr(w, err)
 				return
+			}
+			if t.kind.Kind == "Secret" && s.vault != nil {
+				s.vault.Forget(ctx, t.namespace, t.name)
 			}
 			writeJSON(w, http.StatusOK, Status{Code: http.StatusOK, Reason: "Deleted", Message: t.key().String() + " deleted"})
 			return

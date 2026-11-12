@@ -115,3 +115,61 @@ func TestStatusWildcard(t *testing.T) {
 		t.Fatal("*/status")
 	}
 }
+
+// Design §8.6: separate secret verbs, rules by label and by name.
+func TestSecretRules(t *testing.T) {
+	p := NewPolicy(append([]meta.Object{
+		&v1.Role{ObjectMeta: meta.ObjectMeta{Name: "web3-dev", Namespace: "web3"}, Rules: []v1.PolicyRule{
+			{Verbs: []string{"list", "use"}, Resources: []string{"secrets"}, Selector: map[string]string{"sensitivity": "normal"}},
+			{Verbs: []string{"use"}, Resources: []string{"secrets"}, ResourceNames: []string{"validator-1-key"}},
+		}},
+		&v1.RoleBinding{ObjectMeta: meta.ObjectMeta{Name: "dev", Namespace: "web3"}, RoleRef: v1.RoleRef{Kind: "Role", Name: "web3-dev"}, Subjects: []v1.Subject{{Kind: "User", Name: "dev"}}},
+		&v1.RoleBinding{ObjectMeta: meta.ObjectMeta{Name: "ed", Namespace: "web3"}, RoleRef: v1.RoleRef{Kind: "ClusterRole", Name: "editor"}, Subjects: []v1.Subject{{Kind: "User", Name: "ed"}}},
+		&v1.RoleBinding{ObjectMeta: meta.ObjectMeta{Name: "ada", Namespace: "web3"}, RoleRef: v1.RoleRef{Kind: "ClusterRole", Name: "admin"}, Subjects: []v1.Subject{{Kind: "User", Name: "ada"}}},
+		&v1.RoleBinding{ObjectMeta: meta.ObjectMeta{Name: "vic", Namespace: "web3"}, RoleRef: v1.RoleRef{Kind: "ClusterRole", Name: "viewer"}, Subjects: []v1.Subject{{Kind: "User", Name: "vic"}}},
+	}, func() []meta.Object {
+		var o []meta.Object
+		for _, r := range BuiltinRoles() {
+			o = append(o, r)
+		}
+		return o
+	}()...))
+	normal, critical := map[string]string{"sensitivity": "normal"}, map[string]string{"sensitivity": "critical"}
+	for _, c := range []struct {
+		who, verb, name string
+		labels          map[string]string
+		want            bool
+	}{
+		{"dev", "get", "infura-key", normal, true}, // list covers reading metadata
+		{"dev", "list", "", nil, false},            // the whole list: only with a filter
+		{"dev", "use", "infura-key", normal, true},
+		{"dev", "use", "db-root", critical, false},
+		{"dev", "use", "validator-1-key", critical, true}, // by name
+		{"dev", "get", "validator-1-key", critical, false},
+		{"dev", "read-value", "infura-key", normal, false},
+		{"dev", "update", "infura-key", normal, false},
+		{"ed", "create", "", nil, true}, // write covers create, update, delete
+		{"ed", "delete", "db-root", critical, true},
+		{"ed", "use", "db-root", critical, true},
+		{"ed", "read-value", "db-root", critical, false},
+		{"ada", "read-value", "db-root", critical, true},
+		{"vic", "list", "", nil, true},
+		{"vic", "use", "infura-key", normal, false},
+		{"vic", "get", "x", nil, true},
+	} {
+		a := Attributes{User: c.who, Verb: c.verb, Resource: "secrets", Namespace: "web3", Name: c.name, Labels: c.labels}
+		if got := p.Authorize(a).Allowed; got != c.want {
+			t.Errorf("%s %s secrets/%s %v: %v, want %v", c.who, c.verb, c.name, c.labels, got, c.want)
+		}
+	}
+	// "list" and "write" are aliases only on secrets.
+	if p.Authorize(Attributes{User: "dev", Verb: "get", Resource: "silos", Namespace: "web3", Name: "x", Labels: normal}).Allowed {
+		t.Error("a secrets selector rule allowed something on silos")
+	}
+	if !p.MaySelect(Attributes{User: "dev", Verb: "list", Resource: "secrets", Namespace: "web3"}) {
+		t.Error("dev should get a filtered list")
+	}
+	if p.MaySelect(Attributes{User: "nobody", Verb: "list", Resource: "secrets", Namespace: "web3"}) {
+		t.Error("someone with no role got a filtered list")
+	}
+}

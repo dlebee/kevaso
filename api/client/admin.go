@@ -64,3 +64,21 @@ type JoinTokenResponse struct {
 	Token   string    `json:"token"`
 	Expires time.Time `json:"expires"`
 }
+
+// SecretValue is GET …/secrets/NAME/value: a secret's current value (only with read-value, never
+// for a write-only secret).
+type SecretValue struct {
+	Value   []byte `json:"value"`
+	Version int64  `json:"version"`
+}
+
+// RecoveryKey is POST /admin/kms/recovery-key (admin socket, once): keep it offline.
+type RecoveryKey struct {
+	RecoveryKey string `json:"recoveryKey"`
+}
+
+// KMSRotation is POST /admin/kms/rotate: the new master key and how many data keys were re-wrapped.
+type KMSRotation struct {
+	KeyID     string `json:"keyID"`
+	Rewrapped int    `json:"rewrapped"`
+}

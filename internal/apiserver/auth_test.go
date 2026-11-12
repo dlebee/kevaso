@@ -224,6 +224,11 @@ func TestWorkerWritesOnlyItsOwnSilosStatus(t *testing.T) {
 	if err := worker.Update(e.ctx, &s); code(err) != http.StatusForbidden {
 		t.Fatalf("worker writing a silo's spec: want 403, got %v", err)
 	}
+	// Hosts read everything but a secret's value: values reach a host only through the broker,
+	// for silos placed on it.
+	if err := worker.Call(e.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/dev/secrets/x/value", nil, nil); code(err) != http.StatusForbidden {
+		t.Fatalf("worker reading a secret value: want 403, got %v", err)
+	}
 }
 
 func TestCertificateFromAnotherCAIsRejected(t *testing.T) {

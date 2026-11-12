@@ -28,8 +28,10 @@ import (
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
+	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/mesh"
 	"kevaso.com/core/internal/pki"
+	"kevaso.com/core/internal/secrets"
 	"kevaso.com/core/internal/store"
 	"kevaso.com/core/internal/worker"
 )
@@ -122,6 +124,14 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		_ = st.Close()
 		return nil, err
 	}
+	// The master key for secrets: a root-only file next to the store (design §8.4a).
+	localKMS, err := kms.OpenLocal(filepath.Join(cfg.DataDir, "kms", "local.json"))
+	if err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("kms: %w", err)
+	}
+	srv.SetVault(&secrets.Vault{Store: st, KMS: localKMS, Now: cfg.Clock.Now})
+	srv.SetKMSAdmin(localKMS)
 
 	if err := os.MkdirAll(filepath.Dir(cfg.AdminSocket), 0o700); err != nil {
 		_ = st.Close()

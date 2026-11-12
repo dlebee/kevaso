@@ -348,6 +348,16 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 		return err
 	}
 	say("host %s is Ready. Try: kvo get hosts", o.Name)
+
+	// 7. The recovery key for secrets: made on the host, shown once, here, and never again.
+	if rk, err := conn.Run(ctx, "kevasod admin recovery-key", nil); err == nil {
+		var r client.RecoveryKey
+		if json.Unmarshal(lastLine(rk), &r) == nil && r.RecoveryKey != "" {
+			_, _ = fmt.Fprintf(out, "\nRecovery key for secrets (needed to restore a backup; shown only now, keep it offline):\n\n    %s\n\n", r.RecoveryKey)
+		}
+	} else if !strings.Contains(err.Error(), "AlreadyExists") {
+		return fmt.Errorf("recovery key: %w", err)
+	}
 	return nil
 }
 
