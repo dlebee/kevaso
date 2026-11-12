@@ -77,6 +77,13 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return 0
 	}
+	if len(args) > 0 && args[0] == "plugin" {
+		if err := pluginCmd(ctx, args[1:], stdin, stdout); err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) > 0 && args[0] == "users" {
 		if err := usersCmd(ctx, args[1:], stdout); err != nil {
 			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
@@ -94,6 +101,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm host list | drain NAME | uncordon NAME
   kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME
   kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
+  kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--credential NAME=FILE]… [--side controller|node]
+  kvoadm plugin remove [USER@]ADDRESS --name NAME
 The step-by-step guide: https://dlebee.github.io/kevaso-docs/setup/prepare/`)
 		return 2
 	}

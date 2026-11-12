@@ -293,6 +293,9 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		return err
 	}
 	for _, v := range s.Volumes {
+		if v.HostPath != "" {
+			continue // the agent mounted it
+		}
 		name := VolumeName(s.ID, v.Name)
 		if _, err := r.eng(ctx, nil, "volume", "inspect", name); err == nil {
 			continue
@@ -326,6 +329,10 @@ func (r *Runtime) runArgs(s state, name string) []string {
 			"-e", "SSL_CERT_FILE="+ca, "-e", "REQUESTS_CA_BUNDLE="+ca, "-e", "CURL_CA_BUNDLE="+ca, "-e", "NODE_EXTRA_CA_CERTS="+ca)
 	}
 	for _, v := range s.Volumes {
+		if v.HostPath != "" {
+			args = append(args, "-v", v.HostPath+":"+v.MountPath)
+			continue
+		}
 		args = append(args, "-v", VolumeName(s.ID, v.Name)+":"+v.MountPath)
 	}
 	if s.CPU > 0 {
@@ -417,7 +424,9 @@ func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 		}
 	}
 	for _, v := range s.Volumes {
-		_, _ = r.eng(ctx, nil, "volume", "rm", "-f", VolumeName(id, v.Name))
+		if v.HostPath == "" {
+			_, _ = r.eng(ctx, nil, "volume", "rm", "-f", VolumeName(id, v.Name))
+		}
 	}
 	_, _ = r.cmd(ctx, nil, "ip", "link", "del", n.Veth)
 	return r.Host.RemoveAll(n.Dir)

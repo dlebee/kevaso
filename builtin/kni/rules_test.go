@@ -191,3 +191,18 @@ func TestGateRedirect(t *testing.T) {
 	h.GatePort = 0
 	hasNot(t, Rules(h), "redirect", "15001")
 }
+
+// A plugin's load balancer (a NodeBalancer) reaches the silo through node ports, from its own
+// addresses only; nothing opens on the host's public address.
+func TestNodePortRules(t *testing.T) {
+	spec := v1.SiloSpec{Service: &v1.Service{Expose: v1.ExposeLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Class: "linode-nodebalancer"},
+		Ports: []v1.ServicePort{{Name: "web", Port: 80}, {Name: "dns", Port: 53, Protocol: "UDP"}}}}
+	r := Rules(host(Silo{Key: "dev/web", IP: a("10.64.2.5"), Spec: spec,
+		NodePorts:    []v1.NodePort{{Name: "web", Port: 80, NodePort: 30000}, {Name: "dns", Port: 53, NodePort: 30001}},
+		SourceRanges: []string{"192.168.255.0/24"}}))
+	has(t, r,
+		"ip saddr 192.168.255.0/24 tcp dport 30000 dnat ip to 10.64.2.5:80",
+		"ip saddr 192.168.255.0/24 udp dport 30001 dnat ip to 10.64.2.5:53",
+		`oifname "kvbr0" ip daddr 10.64.2.5 ip saddr 192.168.255.0/24 tcp dport 80 ct status dnat accept`)
+	hasNot(t, r, "ip daddr 198.51.100.10")
+}

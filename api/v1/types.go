@@ -117,6 +117,17 @@ type HostStatus struct {
 	// Network is the host's place on the mesh: its index and addresses (assigned by the control
 	// plane) and its WireGuard public keys (published by the host; private keys never leave it).
 	Network NetworkStatus `json:"network,omitempty"`
+	// Provider is what a provider plugin knows about this machine, if it's one of its own (a
+	// Linode): the plugin's classes (volumes, load balancers) only reach such hosts.
+	Provider *HostProvider `json:"provider,omitempty"`
+}
+
+// HostProvider is a machine as its provider sees it.
+type HostProvider struct {
+	Name           string `json:"name"`                     // the plugin, e.g. linode
+	ID             string `json:"id"`                       // the provider's ID for the machine
+	Region         string `json:"region"`                   // the provider's region, e.g. ca-central
+	PrivateAddress string `json:"privateAddress,omitempty"` // its private address in the region
 }
 
 // NetworkStatus is a host's mesh identity.
@@ -266,4 +277,20 @@ type SiloStatus struct {
 	Init       []StepStatus     `json:"init,omitempty"`
 	Address    string           `json:"address,omitempty"` // the silo's private address
 	Service    ServiceStatus    `json:"service,omitempty"`
+	// Volumes are its volumes from a provider's storage class: where each is and whether it's
+	// attached and mounted.
+	Volumes []VolumeStatus `json:"volumes,omitempty"`
+}
+
+// VolumeStatus is one provider volume of a silo. The control plane creates and attaches it (Handle,
+// Region, AttachedTo, Device); the host's agent formats it once and mounts it (Mounted).
+type VolumeStatus struct {
+	Name       string `json:"name"`
+	Class      string `json:"class"`
+	Handle     string `json:"handle,omitempty"`     // the provider's ID
+	Region     string `json:"region,omitempty"`     // where it is: the silo stays in this region
+	AttachedTo string `json:"attachedTo,omitempty"` // the host it's attached to
+	Device     string `json:"device,omitempty"`     // its path on that host
+	Mounted    bool   `json:"mounted,omitempty"`
+	Message    string `json:"message,omitempty"` // what's going on, or what went wrong
 }

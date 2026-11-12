@@ -22,6 +22,7 @@ import (
 	"kevaso.com/core/api/informer"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/builtin/kri/hostexec"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/policy"
@@ -52,6 +53,10 @@ type Agent struct {
 	GuestHelper string
 	// GuestCA is the host's egress CA, put in every silo's trust store with the helper.
 	GuestCA []byte
+	// Host runs commands on the host, for provider volumes (format once, mount); nil: this host
+	// can't mount them. VolumesDir is where they go (default DefaultVolumesDir).
+	Host       hostexec.Runner
+	VolumesDir string
 
 	silos    *informer.Informer
 	secrets  *informer.Informer
@@ -212,7 +217,13 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		s = o.(*v1.Silo)
 	}
 	if s == nil || s.Status.Host != a.HostName || s.DeletionTimestamp != nil {
-		return engine.Result{}, a.removeEverywhere(ctx, k, s)
+		if err := a.removeEverywhere(ctx, k, s); err != nil {
+			return engine.Result{}, err
+		}
+		if s != nil { // mounted, but its runtime copy never got made
+			return engine.Result{}, a.unmountVolumes(ctx, s.UID, s)
+		}
+		return engine.Result{}, nil
 	}
 	if a.fenced.Load() && s.Policy() != v1.OnHostLossWait {
 		return engine.Result{RequeueAfter: 5 * time.Second}, nil // cut off: start nothing that may run elsewhere
@@ -226,6 +237,17 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		return engine.Result{}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 			st.Phase = PhaseFailed
 			setCond(st, "Ready", meta.ConditionFalse, "RuntimeMissing", "runtime "+s.Spec.Runtime+" isn't installed on "+a.HostName, s.Generation, a.now())
+		})
+	}
+	// Provider volumes first: attached by the control plane, formatted once and mounted here. Also
+	// after a reboot, before the silo starts again.
+	vols, ready, msg, err := a.mountVolumes(ctx, s)
+	if err != nil {
+		return engine.Result{}, err
+	}
+	if !ready {
+		return engine.Result{RequeueAfter: volumeWait}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			setCond(st, "Ready", meta.ConditionFalse, "VolumesPending", msg, s.Generation, a.now())
 		})
 	}
 	id := idOf(s)
@@ -248,11 +270,6 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			setCond(st, "Ready", meta.ConditionFalse, "Creating", "creating on "+a.HostName, s.Generation, a.now())
 		}); err != nil {
 			return engine.Result{}, err
-		}
-		var vols []kri.Volume
-		for _, v := range s.Spec.Volumes {
-			size, _ := v1.ParseBytes(v.Size)
-			vols = append(vols, kri.Volume{Name: v.Name, MountPath: v.MountPath, SizeBytes: size})
 		}
 		if err := rt.Create(ctx, kri.Spec{ID: id, Image: s.Spec.Image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
 			Volumes: vols, Command: s.Spec.Command}); err != nil {
@@ -478,6 +495,9 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				return err
 			}
 			if err := rt.Delete(ctx, id); err != nil {
+				return err
+			}
+			if err := a.unmountVolumes(ctx, id.UID, s); err != nil {
 				return err
 			}
 		}

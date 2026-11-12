@@ -62,6 +62,14 @@ func reasonOf(err error) string {
 // IsNotFound reports a 404.
 func IsNotFound(err error) bool { return reasonOf(err) == "NotFound" }
 
+// IgnoreNotFound is nil for a NotFound error, err otherwise.
+func IgnoreNotFound(err error) error {
+	if IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
 // IsConflict reports a stale resourceVersion: re-read and try again.
 func IsConflict(err error) bool { return reasonOf(err) == "Conflict" }
 

@@ -9,13 +9,13 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/sdk/kcc"
 )
 
@@ -29,25 +29,26 @@ func script(t *testing.T, body string) string {
 }
 
 func TestCertController(t *testing.T) {
-	ca, err := pki.NewCA("test", time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
 	// The "tool": checks it got a CSR on stdin, prints a chain made beforehand.
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	hosts := []string{"api.example.com"}
 	csr, _ := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: hosts[0]}, DNSNames: hosts}, key)
-	chain, err := ca.SignServerCSR(csr, hosts, time.Now(), 24*time.Hour)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: hosts[0]}, DNSNames: hosts,
+		NotBefore: time.Now(), NotAfter: time.Now().Add(24 * time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
 		t.Fatal(err)
 	}
+	chain := [][]byte{der}
 	dir := t.TempDir()
 	pemFile := filepath.Join(dir, "chain.pem")
 	var buf bytes.Buffer
 	for _, c := range chain {
 		buf.WriteString(string(pemCert(c)))
 	}
-	os.WriteFile(pemFile, buf.Bytes(), 0o600)
+	if err := os.WriteFile(pemFile, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	prog := script(t, `[ "$1" = issue ] || exit 2
 grep -q 'BEGIN CERTIFICATE REQUEST' || exit 3
 echo "issuing" >&2
@@ -108,26 +109,33 @@ func TestDiscover(t *testing.T) {
 		t.Fatalf("missing dir: %v %v", m, err)
 	}
 	dir := filepath.Join(t.TempDir(), "dns-providers")
-	os.Mkdir(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "cloudflare"), []byte("#!/bin/sh\n"), 0o755)
-	os.WriteFile(filepath.Join(dir, ".hidden"), []byte(""), 0o644)
+	must(t, os.Mkdir(dir, 0o755))
+	must(t, os.WriteFile(filepath.Join(dir, "cloudflare"), []byte("#!/bin/sh\n"), 0o755))
+	must(t, os.WriteFile(filepath.Join(dir, ".hidden"), []byte(""), 0o644))
 	m, err := Discover(dir)
 	if err != nil || m["cloudflare"] != filepath.Join(dir, "cloudflare") || len(m) != 1 {
 		t.Fatalf("%v %v", m, err)
 	}
-	os.WriteFile(filepath.Join(dir, "loose"), []byte("#!/bin/sh\n"), 0o755)
-	os.Chmod(filepath.Join(dir, "loose"), 0o757)
+	must(t, os.WriteFile(filepath.Join(dir, "loose"), []byte("#!/bin/sh\n"), 0o755))
+	must(t, os.Chmod(filepath.Join(dir, "loose"), 0o757))
 	if _, err := Discover(dir); err == nil || !strings.Contains(err.Error(), "writable") {
 		t.Errorf("an others-writable program: %v", err)
 	}
-	os.Remove(filepath.Join(dir, "loose"))
-	os.WriteFile(filepath.Join(dir, "notes"), []byte("x"), 0o644)
+	must(t, os.Remove(filepath.Join(dir, "loose")))
+	must(t, os.WriteFile(filepath.Join(dir, "notes"), []byte("x"), 0o644))
 	if _, err := Discover(dir); err == nil || !strings.Contains(err.Error(), "executable") {
 		t.Errorf("a non-executable file: %v", err)
 	}
-	os.Remove(filepath.Join(dir, "notes"))
-	os.Chmod(dir, 0o777)
+	must(t, os.Remove(filepath.Join(dir, "notes")))
+	must(t, os.Chmod(dir, 0o777))
 	if _, err := Discover(dir); err == nil {
 		t.Error("a world-writable directory was trusted")
+	}
+}
+
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
 	}
 }

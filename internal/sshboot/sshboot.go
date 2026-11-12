@@ -115,11 +115,24 @@ func Connect(ctx context.Context, t Target, policy HostKeyPolicy, auth Auth) (*C
 				return errors.New("probe only")
 			},
 		}
-		if c, err := dial(ctx, t.Addr, probe); err == nil {
-			_ = c.Close()
+		// A freshly booted machine's sshd may drop the first connections: try a few times.
+		var lastErr error
+		for attempt := 0; attempt < 4 && seen == nil; attempt++ {
+			if attempt > 0 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(3 * time.Second):
+				}
+			}
+			c, err := dial(ctx, t.Addr, probe)
+			if err == nil {
+				_ = c.Close()
+			}
+			lastErr = err
 		}
 		if seen == nil {
-			return nil, fmt.Errorf("couldn't read the host key of %s", t.Addr)
+			return nil, fmt.Errorf("couldn't read the host key of %s: %v", t.Addr, lastErr)
 		}
 		fp = ssh.FingerprintSHA256(seen)
 		if !policy.Confirm(seen.Type(), fp) {

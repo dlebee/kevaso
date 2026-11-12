@@ -25,12 +25,14 @@ func TestBackupAndRestore(t *testing.T) {
 	if err := ca.Save(filepath.Join(src, "pki")); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(src, "audit.log"), []byte("{}\n"), 0o600)
+	if err := os.WriteFile(filepath.Join(src, "audit.log"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	st, err := store.OpenSQLite(filepath.Join(src, "store.db"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	k, err := kms.OpenLocal(filepath.Join(src, "kms", "local.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +99,7 @@ func TestBackupAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st2.Close()
+	defer func() { _ = st2.Close() }()
 	k2, err := kms.OpenLocal(filepath.Join(dst, "kms", "local.json"))
 	if err != nil {
 		t.Fatal(err)

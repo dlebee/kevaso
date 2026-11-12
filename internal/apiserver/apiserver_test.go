@@ -308,9 +308,13 @@ func TestServiceAndPoolValidation(t *testing.T) {
 			s.Spec.Service.Expose = "hostPort"
 			s.Spec.Service.HostPort = &v1.HostPortSpec{AllowFrom: []string{"10.0.0.0/33"}}
 		}),
-		"cloud LB class": svc(func(s *v1.Silo) {
+		"LB class with bad characters": svc(func(s *v1.Silo) {
 			s.Spec.Service.Expose = "loadBalancer"
-			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "linode-nodebalancer"}
+			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "Linode_NB"}
+		}),
+		"address on worker-ip": svc(func(s *v1.Silo) {
+			s.Spec.Service.Expose = "loadBalancer"
+			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "worker-ip", Address: "203.0.113.9"}
 		}),
 		"ip-pool without a pool": svc(func(s *v1.Silo) {
 			s.Spec.Service.Expose = "loadBalancer"

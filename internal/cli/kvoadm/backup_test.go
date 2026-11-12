@@ -58,7 +58,7 @@ func TestPrepareRestore(t *testing.T) {
 	ca, _ := pki.NewCA("c", time.Now())
 	_ = ca.Save(filepath.Join(dir, "pki"))
 	st, _ := store.OpenSQLite(filepath.Join(dir, "store.db"), 0)
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	k, _ := kms.OpenLocal(filepath.Join(dir, "kms", "local.json"))
 	rk := kms.NewRecoveryKey()
 	pub, _ := rk.Public()

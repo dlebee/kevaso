@@ -11,6 +11,7 @@ workers_dev = false
 # SITE binding (a test checks this list matches MODULES).
 routes = [
   { pattern = "kevaso.com/core*", zone_name = "kevaso.com" },
+  { pattern = "kevaso.com/provider-linode*", zone_name = "kevaso.com" },
 ]
 
 services = [{ binding = "SITE", service = "kevaso-www" }]

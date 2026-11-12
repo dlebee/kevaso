@@ -49,9 +49,11 @@ type HostPortSpec struct {
 
 // LoadBalancerSpec asks for an outside address from a class.
 type LoadBalancerSpec struct {
-	Class     string   `json:"class"`
-	Pool      string   `json:"pool,omitempty"` // ip-pool: which IPPool
-	StableIP  bool     `json:"stableIP,omitempty"`
+	Class    string `json:"class"`
+	Pool     string `json:"pool,omitempty"` // ip-pool: which IPPool
+	StableIP bool   `json:"stableIP,omitempty"`
+	// Address asks for a specific address, for classes that let you pick one (a shared IP you own).
+	Address   string   `json:"address,omitempty"`
 	AllowFrom []string `json:"allowFrom,omitempty"`
 }
 
@@ -78,6 +80,71 @@ type ServiceStatus struct {
 	PublicIP string `json:"publicIP,omitempty"` // the outside address, if exposed
 	EgressIP string `json:"egressIP,omitempty"` // where its outgoing traffic comes from
 	PoolIP   string `json:"poolIP,omitempty"`   // the address it holds from an IPPool (stable)
+	// NodePorts: for load-balancer classes that send to the host on ports of their own, which
+	// host port each service port arrives on (the host forwards it to the silo), and from where.
+	NodePorts    []NodePort `json:"nodePorts,omitempty"`
+	SourceRanges []string   `json:"sourceRanges,omitempty"`
+	// Announce: the public address is routed to the silo's host, which puts it on its loopback
+	// (a shared IP announced over BGP).
+	Announce bool `json:"announce,omitempty"`
+}
+
+// NodePort is the host port a service port arrives on from a load balancer.
+type NodePort struct {
+	Name     string `json:"name"`
+	Port     int    `json:"port"`
+	NodePort int    `json:"nodePort"`
+}
+
+// Equal reports whether two service statuses are the same.
+func (a ServiceStatus) Equal(b ServiceStatus) bool {
+	if a.Name != b.Name || a.PublicIP != b.PublicIP || a.EgressIP != b.EgressIP || a.PoolIP != b.PoolIP || a.Announce != b.Announce ||
+		len(a.NodePorts) != len(b.NodePorts) || len(a.SourceRanges) != len(b.SourceRanges) {
+		return false
+	}
+	for i := range a.NodePorts {
+		if a.NodePorts[i] != b.NodePorts[i] {
+			return false
+		}
+	}
+	for i := range a.SourceRanges {
+		if a.SourceRanges[i] != b.SourceRanges[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// NodePort range: like Kubernetes'.
+const (
+	NodePortMin = 30000
+	NodePortMax = 32767
+)
+
+// IsBuiltinLB says whether a load-balancer class is built in (the others come from plugins).
+func IsBuiltinLB(class string) bool { return class == LBWorkerIP || class == LBIPPool }
+
+// PluginLB is the silo's plugin load-balancer class ("" if it has none).
+func PluginLB(s *Silo) string {
+	sv := s.Spec.Service
+	if sv == nil || sv.Expose != ExposeLoadBalancer || sv.LoadBalancer == nil || IsBuiltinLB(sv.LoadBalancer.Class) {
+		return ""
+	}
+	return sv.LoadBalancer.Class
+}
+
+// VolumeLocal is the built-in storage class (the host's own disk).
+const VolumeLocal = "local"
+
+// PluginVolumes are the silo's volumes on a plugin's storage class.
+func PluginVolumes(s *Silo) []Volume {
+	var out []Volume
+	for _, v := range s.Spec.Volumes {
+		if v.Class != "" && v.Class != VolumeLocal {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // IPPool is addresses routed to one host, for silos to have their own (design §7.2b).

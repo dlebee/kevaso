@@ -68,7 +68,7 @@ func TestSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if _, err := s.Create(ctx, store.Key{Kind: "Silo", Namespace: "a", Name: "x"}, []byte(`{"v":1}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if o, err := c.Get(ctx, store.Key{Kind: "Silo", Namespace: "a", Name: "x"}); err != nil || string(o.Data) != `{"v":1}` {
 		t.Fatalf("snapshot: %v %v", o, err)
 	}

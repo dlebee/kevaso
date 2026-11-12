@@ -27,6 +27,7 @@ import (
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controllers/certificate"
 	hostcontroller "kevaso.com/core/internal/controllers/host"
+	"kevaso.com/core/internal/controllers/provider"
 	silocontroller "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/issuer"
@@ -34,6 +35,8 @@ import (
 	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/mesh"
 	"kevaso.com/core/internal/pki"
+	"kevaso.com/core/internal/plugins"
+	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/internal/secrets"
 	"kevaso.com/core/internal/store"
 	"kevaso.com/core/internal/worker"
@@ -59,7 +62,10 @@ type Config struct {
 	// (acme, internal-ca), and DNSProviders the DNS providers acme's dns01 solvers may name.
 	CertControllers kcc.Registry
 	DNSProviders    map[string]acme.DNSProvider
-	Log             func(format string, args ...any)
+	// Plugins are the provider plugins (load balancers, volumes, DNS); nil: none. kevasod watches
+	// kplugin.Dir for them.
+	Plugins *plugins.Registry
+	Log     func(format string, args ...any)
 }
 
 func (c *Config) defaults() {
@@ -225,6 +231,14 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 // can't replace a built-in one).
 func certControllers(cfg Config, cd certDeps) kcc.Registry {
 	r := certificate.BuiltinCertControllers(cd.store, cd.kms, cd.ca, cfg.Clock.Now, cfg.DNSProviders)
+	if a, ok := r["acme"].(*acme.Controller); ok && cfg.Plugins != nil {
+		a.DNSLookup = func(name string) acme.DNSProvider {
+			if _, ok := cfg.Plugins.DNS(name); !ok {
+				return nil
+			}
+			return &provider.DNSProvider{Plugins: cfg.Plugins, Name: name, Owner: "kevaso:" + cfg.ClusterName + "/acme"}
+		}
+	}
 	for n, c := range cfg.CertControllers {
 		if _, builtin := r[n]; builtin {
 			cfg.Log("cert-controller %s: that name is built in; ignored", n)
@@ -256,7 +270,12 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	e.OnError = func(ctrl string, k engine.Key, err error, retry time.Duration) {
 		cfg.Log("%s: %s: %v (retry in %v)", ctrl, k, err, retry)
 	}
-	e.Register(&silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, Pools: pools, Clock: cfg.Clock}, engine.Options{Workers: 1})
+	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, Pools: pools, Clock: cfg.Clock}
+	if cfg.Plugins != nil {
+		reg := cfg.Plugins
+		sc.Classes = func() map[string]scheduler.Class { return provider.Classes(reg) }
+	}
+	e.Register(sc, engine.Options{Workers: 1})
 	e.Register(&hostcontroller.Controller{Client: c, Hosts: hosts, Clock: cfg.Clock, Lease: cfg.HostLease}, engine.Options{Workers: 1})
 	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
@@ -296,6 +315,28 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 			}
 		}
 	})
+	if reg := cfg.Plugins; reg != nil {
+		e.Register(&provider.Hosts{Client: c, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 1})
+		e.Register(&provider.LoadBalancers{Client: c, Silos: silos, Hosts: hosts, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 2})
+		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 2})
+		e.Register(&provider.IngressDNS{Client: c, Ingresses: ingresses, Classes: classes, Plugins: reg, Cluster: cfg.ClusterName, Clock: cfg.Clock}, engine.Options{Workers: 1})
+		classes.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IngressClass", Name: k.Name}) })
+		// A plugin came or went: everything that may use it looks again.
+		reg.OnChange = func() {
+			for _, o := range hosts.List() {
+				e.Changed(engine.Key{Kind: "Host", Name: o.(*v1.Host).Name})
+			}
+			for _, o := range silos.List() {
+				s := o.(*v1.Silo)
+				e.Changed(engine.Key{Kind: "Silo", Namespace: s.Namespace, Name: s.Name})
+			}
+			for _, o := range ingresses.List() {
+				ing := o.(*v1.Ingress)
+				e.Changed(engine.Key{Kind: "Ingress", Namespace: ing.Namespace, Name: ing.Name})
+			}
+		}
+		go reg.Run(ctx)
+	}
 	for _, inf := range []*informer.Informer{certs, ingresses, classes, issuers} {
 		go inf.Run(ctx)
 	}
@@ -317,7 +358,8 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config) {
 	tick := func() {
 		var h v1.Host
 		err := c.Get(ctx, "Host", "", cfg.HostName, &h)
-		if client.IsNotFound(err) {
+		switch {
+		case client.IsNotFound(err):
 			h = v1.Host{
 				TypeMeta:   meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"},
 				ObjectMeta: meta.ObjectMeta{Name: cfg.HostName},
@@ -327,10 +369,10 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config) {
 				cfg.Log("register host: %v", err)
 				return
 			}
-		} else if err != nil {
+		case err != nil:
 			cfg.Log("heartbeat: %v", err)
 			return
-		} else if h.Spec.Address != cfg.Address { // moved (restored onto a new machine)
+		case h.Spec.Address != cfg.Address: // moved (restored onto a new machine)
 			cfg.Log("host %s: address %s → %s", cfg.HostName, h.Spec.Address, cfg.Address)
 			h.Spec.Address = cfg.Address
 			if err := c.Update(ctx, &h); err != nil {

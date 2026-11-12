@@ -35,6 +35,10 @@ type Silo struct {
 	// GatePorts are the TCP ports its traffic outside the cluster goes to the egress gate on
 	// (grants by host name, injected secrets).
 	GatePorts []v1.PortRange
+	// NodePorts are host ports a plugin's load balancer sends its service ports to, from
+	// SourceRanges only (a NodeBalancer's addresses).
+	NodePorts    []v1.NodePort
+	SourceRanges []string
 }
 
 // Host is one worker's view.
@@ -144,6 +148,24 @@ func Rules(h Host) string {
 					src = "ip saddr " + set(from) + " "
 				}
 				fwd = append(fwd, fmt.Sprintf("oifname %q ip daddr %s %s%s dport %d ct status dnat accept", h.Bridge, s.IP, src, r.proto, r.port))
+			}
+		}
+		// From a plugin's load balancer: its node ports, from its addresses only.
+		if len(s.NodePorts) > 0 && len(s.SourceRanges) > 0 {
+			protos := map[string]string{}
+			if s.Spec.Service != nil {
+				for _, p := range s.Spec.Service.Ports {
+					protos[p.Name] = protoOf(p)
+				}
+			}
+			src := "ip saddr " + set(s.SourceRanges) + " "
+			for _, np := range s.NodePorts {
+				proto := protos[np.Name]
+				if proto == "" {
+					continue
+				}
+				dnat = append(dnat, fmt.Sprintf("%s%s dport %d dnat ip to %s:%d", src, proto, np.NodePort, s.IP, np.Port))
+				fwd = append(fwd, fmt.Sprintf("oifname %q ip daddr %s %s%s dport %d ct status dnat accept", h.Bridge, s.IP, src, proto, np.Port))
 			}
 		}
 		// To the egress gate: its TLS by host name, to outside the cluster.

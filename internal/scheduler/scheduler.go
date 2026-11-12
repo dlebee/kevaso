@@ -9,7 +9,9 @@
 //  4. have no NoSchedule taint the silo doesn't tolerate;
 //  5. have room: allocatable CPU and memory minus what silos already placed there ask for;
 //  6. for exposure: a public address (not behind NAT) with the silo's host ports free, and for an
-//     IPPool address, be the pool's host with one free.
+//     IPPool address, be the pool's host with one free;
+//  7. for a plugin's class (a load balancer, a volume): be one of that plugin's machines, in the
+//     region the silo's volumes already are.
 //
 // Among the hosts left, it prefers ones without an untolerated PreferNoSchedule taint, then the one
 // with the most free memory (spreading silos out), then the name (so it's deterministic).
@@ -55,9 +57,28 @@ type usage struct {
 	mem int64
 }
 
+// Class is what the scheduler needs about a plugin's class.
+type Class struct {
+	Plugin       string // the plugin serving it
+	OwnHostsOnly bool   // only the plugin's own machines can use it
+	NodePorts    bool   // load balancers: the host gets node ports
+}
+
+// Env is the rest of the cluster a decision depends on.
+type Env struct {
+	Pools []*v1.IPPool
+	// Classes are the plugins' load-balancer and storage classes, by name.
+	Classes map[string]Class
+}
+
 // Schedule picks a host for silo. placed are all silos already assigned (status.host set); pools,
 // the IPPools (for silos that take an address from one).
 func Schedule(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, pools ...*v1.IPPool) (Decision, error) {
+	return ScheduleIn(silo, hosts, placed, Env{Pools: pools})
+}
+
+// ScheduleIn is Schedule with plugins' classes.
+func ScheduleIn(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, env Env) (Decision, error) {
 	needMem, err := v1.ParseBytes(silo.Spec.Resources.Memory)
 	if err != nil {
 		return Decision{}, err
@@ -91,7 +112,10 @@ func Schedule(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, pools ...*v1.I
 		}
 		reason := filter(silo, h, w, used[h.Name], needMem)
 		if reason == "" {
-			reason = netFilter(silo, h, placed, pools)
+			reason = netFilter(silo, h, placed, env.Pools)
+		}
+		if reason == "" {
+			reason = classFilter(silo, h, env.Classes)
 		}
 		if reason != "" {
 			d.Excluded[h.Name] = reason
@@ -161,6 +185,33 @@ func filter(silo *v1.Silo, h *v1.Host, w *v1.WorkerSpec, u usage, needMem int64)
 	}
 	if allocMem > 0 && u.mem+needMem > allocMem {
 		return fmt.Sprintf("not enough memory (needs %s)", silo.Spec.Resources.Memory)
+	}
+	return ""
+}
+
+// classFilter: a plugin's class needs one of the plugin's machines, and volumes that already exist
+// keep the silo in their region.
+func classFilter(silo *v1.Silo, h *v1.Host, classes map[string]Class) string {
+	var used []string
+	if c := v1.PluginLB(silo); c != "" {
+		used = append(used, c)
+	}
+	for _, v := range v1.PluginVolumes(silo) {
+		used = append(used, v.Class)
+	}
+	for _, name := range used {
+		c, ok := classes[name]
+		if !ok {
+			return "class " + name + ": no plugin serves it (is its plugin installed and running?)"
+		}
+		if c.OwnHostsOnly && (h.Status.Provider == nil || h.Status.Provider.Name != c.Plugin) {
+			return "class " + name + " needs a " + c.Plugin + " machine"
+		}
+	}
+	for _, v := range silo.Status.Volumes {
+		if v.Region != "" && (h.Status.Provider == nil || h.Status.Provider.Region != v.Region) {
+			return fmt.Sprintf("volume %s is in region %s", v.Name, v.Region)
+		}
 	}
 	return ""
 }

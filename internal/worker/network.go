@@ -37,6 +37,11 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 		}
 		ks.Tap = cloudhypervisor.NamesFor(kri.ID{Namespace: s.Namespace, Name: s.Name, UID: s.UID}).Tap
 		ks.PublicIP, _ = netip.ParseAddr(s.Status.Service.PublicIP)
+		if len(s.Status.Service.NodePorts) > 0 {
+			// Reached through the load balancer's node ports, not on its address.
+			ks.PublicIP = netip.Addr{}
+			ks.NodePorts, ks.SourceRanges = s.Status.Service.NodePorts, s.Status.Service.SourceRanges
+		}
 		if src := s.Spec.Network.Egress.Source; src == v1.EgressSameAsService || src == v1.EgressPool {
 			ks.EgressIP, _ = netip.ParseAddr(s.Status.Service.EgressIP)
 		}
@@ -59,6 +64,18 @@ func PoolAddresses(hostName string, silos []*v1.Silo) []string {
 	for _, s := range silos {
 		if s.Status.Host == hostName && s.Status.Service.PoolIP != "" {
 			out = append(out, s.Status.Service.PoolIP)
+		}
+	}
+	return out
+}
+
+// AnnouncedAddresses are the shared addresses this host's silos are reached on (status.service
+// announce): they go on its loopback, where the provider's node side announces them (BGP).
+func AnnouncedAddresses(hostName string, silos []*v1.Silo) []string {
+	var out []string
+	for _, s := range silos {
+		if s.Status.Host == hostName && s.Status.Service.Announce && s.Status.Service.PublicIP != "" && s.DeletionTimestamp == nil {
+			out = append(out, s.Status.Service.PublicIP)
 		}
 	}
 	return out
@@ -151,6 +168,9 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 				log("pool addresses: %v", err)
 			}
 		}
+		if err := syncAddresses(ctx, "lo", "lo:kv", AnnouncedAddresses(hostName, all)); err != nil {
+			log("announced addresses: %v", err)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -201,6 +221,11 @@ func syncPoolAddresses(ctx context.Context, hostAddr string, want []string) erro
 	if len(label) > 15 {
 		label = iface[:12] + ":kv"
 	}
+	return syncAddresses(ctx, iface, label, want)
+}
+
+// syncAddresses puts the wanted /32s on iface with label (ours), and removes ours not wanted.
+func syncAddresses(ctx context.Context, iface, label string, want []string) error {
 	out, err := exec.CommandContext(ctx, "ip", "-4", "-o", "addr", "show", "dev", iface, "label", label).Output()
 	if err != nil {
 		return err
@@ -223,7 +248,9 @@ func syncPoolAddresses(ctx context.Context, hostAddr string, want []string) erro
 			}
 			// Announce it (gratuitous ARP), like MetalLB: neighbours that knew it elsewhere, from
 			// an earlier holder, update at once instead of when their cache expires.
-			_ = exec.CommandContext(ctx, "arping", "-U", "-c", "2", "-I", iface, a).Run()
+			if iface != "lo" {
+				_ = exec.CommandContext(ctx, "arping", "-U", "-c", "2", "-I", iface, a).Run()
+			}
 		}
 	}
 	for a := range have {

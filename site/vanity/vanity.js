@@ -14,7 +14,7 @@ export const HOST = "kevaso.com";
 // covered by their root's entry.
 export const MODULES = {
   core: "https://github.com/dlebee/kevaso",
-  // "provider-linode": "https://github.com/dlebee/kevaso-provider-linode",
+  "provider-linode": "https://github.com/dlebee/kevaso-provider-linode",
   // "provider-juicefs": "https://github.com/dlebee/kevaso-provider-juicefs",
 };
 

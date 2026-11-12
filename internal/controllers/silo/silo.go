@@ -38,6 +38,11 @@ var RecreateAfter = 30 * time.Second
 // Decide returns the status the silo should have, whether it differs from the current one, and
 // when to look again (0: only on changes). Pure.
 func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, pools ...*v1.IPPool) (v1.SiloStatus, bool, time.Duration, error) {
+	return DecideIn(s, hosts, silos, now, scheduler.Env{Pools: pools})
+}
+
+// DecideIn is Decide with plugins' classes.
+func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env scheduler.Env) (v1.SiloStatus, bool, time.Duration, error) {
 	st := s.Status
 	st.Conditions = append([]meta.Condition(nil), st.Conditions...)
 	if s.DeletionTimestamp != nil {
@@ -62,7 +67,7 @@ func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, pools
 			// saying (its exposure changed, or it was placed before it had them).
 			changed := false
 			if h != nil {
-				if svc, err := scheduler.ServiceStatus(s, h, silos, pools); err == nil && svc != st.Service {
+				if svc, err := scheduler.ServiceStatus(s, h, silos, env); err == nil && !svc.Equal(st.Service) {
 					st.Service, changed = svc, true
 				}
 			}
@@ -97,7 +102,7 @@ func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, pools
 	}
 	sched := *s
 	sched.Status = st
-	d, err := scheduler.Schedule(&sched, hosts, silos, pools...)
+	d, err := scheduler.ScheduleIn(&sched, hosts, silos, env)
 	if err != nil {
 		return st, false, 0, err
 	}
@@ -111,7 +116,7 @@ func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, pools
 		cond.Status, cond.Reason, cond.Message = meta.ConditionTrue, "Scheduled", d.Message()
 		for _, h := range hosts {
 			if h.Name == d.Host {
-				svc, err := scheduler.ServiceStatus(&sched, h, silos, pools)
+				svc, err := scheduler.ServiceStatus(&sched, h, silos, env)
 				if err != nil {
 					return st, false, 0, err
 				}
@@ -136,6 +141,8 @@ type Controller struct {
 	Hosts  *informer.Informer
 	Pools  *informer.Informer // IPPools; nil: none
 	Clock  clock.Clock
+	// Classes returns the plugins' classes now (nil: none).
+	Classes func() map[string]scheduler.Class
 
 	mu      sync.Mutex
 	assumed map[informer.Key]string // silo → host, written but not yet seen in the cache
@@ -192,7 +199,11 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 			pools = append(pools, o.(*v1.IPPool))
 		}
 	}
-	st, changed, again, err := Decide(s, hosts, silos, c.Clock.Now().UTC().Truncate(time.Second), pools...)
+	env := scheduler.Env{Pools: pools}
+	if c.Classes != nil {
+		env.Classes = c.Classes()
+	}
+	st, changed, again, err := DecideIn(s, hosts, silos, c.Clock.Now().UTC().Truncate(time.Second), env)
 	if err != nil || !changed {
 		return engine.Result{RequeueAfter: again}, err
 	}

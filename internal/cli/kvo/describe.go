@@ -109,6 +109,49 @@ func describeObject(w io.Writer, obj meta.Object) error {
 				}
 				kv(0, "Ports", strings.Join(ps, ", "))
 			}
+			if len(st.NodePorts) > 0 {
+				var ps []string
+				for _, p := range st.NodePorts {
+					ps = append(ps, fmt.Sprintf("%s %d → host port %d", p.Name, p.Port, p.NodePort))
+				}
+				kv(0, "Node ports", strings.Join(ps, ", ")+" (from "+strings.Join(st.SourceRanges, ", ")+")")
+			}
+			if st.Announce {
+				kv(0, "Announced", "the public IP is routed to the silo's host (BGP)")
+			}
+		}
+		if len(o.Spec.Volumes) > 0 {
+			got := map[string]v1.VolumeStatus{}
+			for _, vs := range o.Status.Volumes {
+				got[vs.Name] = vs
+			}
+			vols := o.Spec.Volumes
+			tables = append(tables, func() {
+				_, _ = fmt.Fprintln(tw, "Volumes:")
+				_, _ = fmt.Fprintln(tw, "  NAME	CLASS	SIZE	MOUNT	WHERE	STATE")
+				for _, v := range vols {
+					class := v.Class
+					if class == "" {
+						class = v1.VolumeLocal
+					}
+					where, state := "on the host", "-"
+					if vs, ok := got[v.Name]; ok {
+						where = dash(vs.Region)
+						if vs.Handle != "" {
+							where += " #" + vs.Handle
+						}
+						switch {
+						case vs.Mounted:
+							state = "mounted on " + vs.AttachedTo
+						case vs.AttachedTo != "":
+							state = "attached to " + vs.AttachedTo
+						case vs.Message != "":
+							state = vs.Message
+						}
+					}
+					_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n", v.Name, class, dash(v.Size), v.MountPath, where, state)
+				}
+			})
 		}
 		if len(o.Spec.AllowFrom) > 0 {
 			var af []string
@@ -150,6 +193,13 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		kv(0, "Address", o.Spec.Address)
 		kv(0, "Region", dash(o.Spec.Region))
 		kv(0, "Zone", dash(o.Spec.Zone))
+		if p := o.Status.Provider; p != nil {
+			priv := ""
+			if p.PrivateAddress != "" {
+				priv = ", private " + p.PrivateAddress
+			}
+			kv(0, "Provider", fmt.Sprintf("%s (#%s in %s%s)", p.Name, p.ID, p.Region, priv))
+		}
 		if o.Spec.Unschedulable {
 			kv(0, "Schedulable", "no (cordoned)")
 		}

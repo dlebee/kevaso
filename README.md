@@ -6,7 +6,7 @@ Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for
 **New here? Read [the guide](https://dlebee.github.io/kevaso-docs/)**: from an empty machine to a shared
 cluster, one explained step at a time. (`docs/` in this repo is for people working on Kevaso itself.)
 
-**Status:** early (M0–M10 of [MILESTONES.md](MILESTONES.md) done). What exists today:
+**Status:** early (M0–M11 of [MILESTONES.md](MILESTONES.md) done). What exists today:
 
 - setup in explicit steps ([guide](https://dlebee.github.io/kevaso-docs/setup/prepare/)): you make Kevaso's SSH key and
   check the machine's fingerprint, `kvoadm init` first looks without changing anything (`--dry-run` stops there), then
@@ -63,6 +63,11 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
 - backups: `kvoadm backup` writes the control plane's state sealed to the recovery key, and
   `kvoadm init --restore FILE` brings it back on a fresh machine, the master key rebuilt from the
   recovery key;
+- providers: a plugin protocol (`sdk/kplugin`, JSON over a unix socket) for load-balancer classes,
+  storage classes and DNS, installed with `kvoadm plugin install` as a hardened unit holding its
+  cloud token alone. The first is [Linode](https://github.com/dlebee/kevaso-provider-linode):
+  NodeBalancers, Block Storage volumes (formatted once, deleted with the silo), shared IPs announced
+  over BGP that follow their silo to another Linode, and Linode DNS for Ingress host names;
 - under the hood: a store with global revisions and resumable watches, CEL validation, a controller
   engine; the testbed and end-to-end loop (`make e2e`).
 

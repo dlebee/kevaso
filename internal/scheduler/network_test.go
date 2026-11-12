@@ -68,7 +68,7 @@ func TestPoolScheduling(t *testing.T) {
 	// Two silos, same port, own addresses: both fit on metal-1.
 	a := lb("a")
 	a.Status.Host = "metal-1"
-	st, err := ServiceStatus(a, hs[0], nil, []*v1.IPPool{p})
+	st, err := ServiceStatus(a, hs[0], nil, Env{Pools: []*v1.IPPool{p}})
 	if err != nil || st.PoolIP != "198.51.100.17" || st.PublicIP != "198.51.100.17" || st.EgressIP != "198.51.100.17" || st.Name != "a.dev.kevaso" {
 		t.Fatalf("a: %+v %v", st, err)
 	}
@@ -78,7 +78,7 @@ func TestPoolScheduling(t *testing.T) {
 		t.Fatalf("b: %+v", d)
 	}
 	b.Status.Host = "metal-1"
-	stB, _ := ServiceStatus(b, hs[0], []*v1.Silo{a}, []*v1.IPPool{p})
+	stB, _ := ServiceStatus(b, hs[0], []*v1.Silo{a}, Env{Pools: []*v1.IPPool{p}})
 	if stB.PoolIP != "198.51.100.18" {
 		t.Fatalf("b's address %+v", stB)
 	}
@@ -88,7 +88,7 @@ func TestPoolScheduling(t *testing.T) {
 		t.Fatalf("full pool: %+v", d)
 	}
 	// Stable: a keeps its address on a later decision.
-	if again, _ := ServiceStatus(a, hs[0], []*v1.Silo{a, b}, []*v1.IPPool{p}); again.PoolIP != "198.51.100.17" {
+	if again, _ := ServiceStatus(a, hs[0], []*v1.Silo{a, b}, Env{Pools: []*v1.IPPool{p}}); again.PoolIP != "198.51.100.17" {
 		t.Fatalf("a's address moved: %+v", again)
 	}
 	// A missing pool says so.
@@ -100,15 +100,15 @@ func TestPoolScheduling(t *testing.T) {
 func TestServiceStatusHostPort(t *testing.T) {
 	h := host("metal-1", func(h *v1.Host) { h.Spec.Address = "198.51.100.10" })
 	s := exposed("n", "metal-1", func(s *v1.Silo) { s.Spec.Network.Egress.Source = v1.EgressSameAsService })
-	st, _ := ServiceStatus(s, h, nil, nil)
+	st, _ := ServiceStatus(s, h, nil, Env{})
 	if st.PublicIP != "198.51.100.10" || st.EgressIP != "198.51.100.10" || st.PoolIP != "" {
 		t.Fatalf("%+v", st)
 	}
 	plain := silo("plain")
-	if st, _ := ServiceStatus(plain, h, nil, nil); st.PublicIP != "" || st.EgressIP != "198.51.100.10" {
+	if st, _ := ServiceStatus(plain, h, nil, Env{}); st.PublicIP != "" || st.EgressIP != "198.51.100.10" {
 		t.Fatalf("private: %+v", st)
 	}
-	if st, _ := ServiceStatus(plain, host("home", func(h *v1.Host) { h.Spec.Network.BehindNAT = true }), nil, nil); st.EgressIP != "" {
+	if st, _ := ServiceStatus(plain, host("home", func(h *v1.Host) { h.Spec.Network.BehindNAT = true }), nil, Env{}); st.EgressIP != "" {
 		t.Fatalf("behind NAT there's no known egress address: %+v", st)
 	}
 }

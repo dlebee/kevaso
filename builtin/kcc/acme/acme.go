@@ -99,7 +99,9 @@ type Controller struct {
 	HTTP01 HTTP01Solver
 	// DNSProviders are the DNS providers dns01 solvers may name.
 	DNSProviders map[string]DNSProvider
-	Store        Store
+	// DNSLookup, if set, finds DNS providers not in DNSProviders (plugins that come and go).
+	DNSLookup func(name string) DNSProvider
+	Store     Store
 	// HTTP, if set, is the client for ACME servers (tests).
 	HTTP *http.Client
 	// Pickup is how long to give the solver's answer to reach the ingress controllers before the
@@ -240,14 +242,24 @@ func (c *Controller) Issue(ctx context.Context, r kcc.Request) ([][]byte, error)
 	return der, nil
 }
 
+func (c *Controller) dnsProvider(name string) DNSProvider {
+	if p := c.DNSProviders[name]; p != nil {
+		return p
+	}
+	if c.DNSLookup != nil {
+		return c.DNSLookup(name)
+	}
+	return nil
+}
+
 func (c *Controller) checkSolver(sc SolverConfig) error {
 	switch {
 	case (sc.HTTP01 != nil) == (sc.DNS01 != nil):
 		return errors.New("acme: each solver is exactly one of http01 or dns01")
 	case sc.HTTP01 != nil && c.HTTP01 == nil:
 		return errors.New("acme: http01 isn't served here")
-	case sc.DNS01 != nil && c.DNSProviders[sc.DNS01.Provider] == nil:
-		return fmt.Errorf("acme: no DNS provider %q on the control plane (kevasod control-plane --dns-provider %s=COMMAND)", sc.DNS01.Provider, sc.DNS01.Provider)
+	case sc.DNS01 != nil && c.dnsProvider(sc.DNS01.Provider) == nil:
+		return fmt.Errorf("acme: no DNS provider %q on the control plane (a plugin serving it, or kevasod control-plane --dns-provider %s=COMMAND)", sc.DNS01.Provider, sc.DNS01.Provider)
 	}
 	return nil
 }
@@ -275,7 +287,7 @@ func (c *Controller) present(ctx context.Context, cl *xacme.Client, z *xacme.Aut
 			return nil, 0, nil, err
 		}
 		fqdn := "_acme-challenge." + z.Identifier.Value + "."
-		p := c.DNSProviders[sc.DNS01.Provider]
+		p := c.dnsProvider(sc.DNS01.Provider)
 		if err := p.Present(ctx, fqdn, value); err != nil {
 			return nil, 0, nil, fmt.Errorf("dns provider %s: %w", sc.DNS01.Provider, err)
 		}

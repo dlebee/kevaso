@@ -35,6 +35,15 @@ type IngressClassSpec struct {
 	Public bool `json:"public,omitempty"`
 	// Issuer is the Issuer certificates for tls.mode acme come from (default: letsencrypt).
 	Issuer string `json:"issuer,omitempty"`
+	// DNS, when set, publishes every Ingress host name of this class through a DNS provider,
+	// pointing at the controller's public address.
+	DNS *IngressDNS `json:"dns,omitempty"`
+}
+
+// IngressDNS is the DNS provider an IngressClass publishes host names with.
+type IngressDNS struct {
+	Provider string `json:"provider"`      // a DNS provider name, e.g. linode
+	TTL      int    `json:"ttl,omitempty"` // seconds (default 300)
 }
 
 // SiloRef names a silo in a namespace.
@@ -80,6 +89,7 @@ type IngressTarget struct {
 type IngressStatus struct {
 	Address     string           `json:"address,omitempty"`     // where the hosts should point (the controller's public IP)
 	Certificate string           `json:"certificate,omitempty"` // the Certificate made for it
+	DNSNames    []string         `json:"dnsNames,omitempty"`    // the host names published through the class's DNS provider
 	Conditions  []meta.Condition `json:"conditions,omitempty"`
 }
 

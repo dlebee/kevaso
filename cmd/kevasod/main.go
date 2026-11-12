@@ -52,10 +52,12 @@ import (
 	"kevaso.com/core/internal/guest"
 	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/mesh"
+	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/secrets"
 	"kevaso.com/core/internal/store"
 	"kevaso.com/core/internal/worker"
 	"kevaso.com/core/sdk/kcc"
+	"kevaso.com/core/sdk/kplugin"
 )
 
 const defaultAdminSocket = "/run/kevaso/admin.sock"
@@ -160,6 +162,7 @@ func runControlPlane(ctx context.Context, args []string) error {
 	fs.Var(&dnsProviders, "dns-provider", "register a program as a DNS provider for acme dns01 solvers: NAME=/path/to/program (repeatable)")
 	certCtrlDir := fs.String("cert-controllers-dir", "/etc/kevaso/cert-controllers", "every program here is a cert-controller, named after its file")
 	dnsDir := fs.String("dns-providers-dir", "/etc/kevaso/dns-providers", "every program here is a DNS provider, named after its file")
+	pluginsDir := fs.String("plugins-dir", kplugin.Dir, "provider plugins' sockets: DIR/NAME/plugin.sock (\"\": none)")
 	_ = fs.Parse(args)
 	cfg.ExtraNames = extra
 	for _, d := range []struct {
@@ -211,6 +214,9 @@ func runControlPlane(ctx context.Context, args []string) error {
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	cfg.Log = logger.Printf
+	if *pluginsDir != "" {
+		cfg.Plugins = &plugins.Registry{Dir: *pluginsDir, Log: logger.Printf}
+	}
 	r, err := controlplane.Start(ctx, cfg)
 	if err != nil {
 		return err

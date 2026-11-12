@@ -56,6 +56,9 @@ type Volume struct {
 	Name      string
 	MountPath string
 	SizeBytes int64
+	// HostPath, if set, is a folder on the host that already holds the volume (a provider's block
+	// volume, mounted by the agent): the runtime binds it instead of making storage of its own.
+	HostPath string
 }
 
 // InitStep is one init step (design §0.2): a script run by a shell or any interpreter.

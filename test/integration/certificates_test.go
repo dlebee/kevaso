@@ -120,7 +120,7 @@ func TestCertificatesInAControlPlane(t *testing.T) {
 		t.Fatal(err)
 	}
 	if n := fl.calls.Load(); n != 1 || flaky.Status.FailedAttempts != 1 || flaky.Status.NextAttempt == nil ||
-		flaky.Status.NextAttempt.Sub(time.Now()) < 50*time.Second {
+		time.Until(*flaky.Status.NextAttempt) < 50*time.Second {
 		t.Errorf("after a failure: %d calls, status %+v", n, flaky.Status)
 	}
 	_ = cp
