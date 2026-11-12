@@ -21,6 +21,7 @@ package kvoadm
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -40,6 +41,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/term"
 
 	"kevaso.com/core/api/client"
@@ -535,8 +537,8 @@ func dialHost(ctx context.Context, o InitOptions, in *bufio.Reader, stdin io.Rea
 		if err != nil {
 			return nil, false, err
 		}
-		if auth.Signer, err = ssh.ParsePrivateKey(b); err != nil {
-			return nil, false, fmt.Errorf("%s: %w", o.SSHKey, err)
+		if auth.Signer, err = loadKey(o.SSHKey, b, stdin, out); err != nil {
+			return nil, false, err
 		}
 	} else {
 		usedPassword = true
@@ -557,4 +559,43 @@ func dialHost(ctx context.Context, o InitOptions, in *bufio.Reader, stdin io.Rea
 	}
 	conn.Sudo = o.User != "root"
 	return conn, usedPassword, nil
+}
+
+// loadKey reads the SSH key kvoadm logs in with. A key with a passphrase (as it should have) is
+// taken from your ssh-agent when it's loaded there, or its passphrase is asked for once.
+func loadKey(path string, pem []byte, stdin io.Reader, out io.Writer) (ssh.Signer, error) {
+	signer, err := ssh.ParsePrivateKey(pem)
+	if err == nil {
+		return signer, nil
+	}
+	var missing *ssh.PassphraseMissingError
+	if !errors.As(err, &missing) {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" && missing.PublicKey != nil {
+		if c, err := net.Dial("unix", sock); err == nil {
+			signers, _ := agent.NewClient(c).Signers()
+			for _, s := range signers {
+				if bytes.Equal(s.PublicKey().Marshal(), missing.PublicKey.Marshal()) {
+					return s, nil // the agent holds it: no passphrase needed here
+				}
+			}
+		}
+	}
+	f, ok := stdin.(*os.File)
+	if !ok || !term.IsTerminal(int(f.Fd())) {
+		return nil, fmt.Errorf("%s has a passphrase: load it with ssh-add first (or run kvoadm in a terminal)", path)
+	}
+	_, _ = fmt.Fprintf(out, "passphrase for %s: ", path)
+	pass, err := term.ReadPassword(int(f.Fd()))
+	_, _ = fmt.Fprintln(out)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(pass)
+	signer, err = ssh.ParsePrivateKeyWithPassphrase(pem, pass)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return signer, nil
 }

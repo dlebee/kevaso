@@ -2,13 +2,17 @@ package kvoadm
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/binary"
 	"encoding/pem"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/ssh"
 
 	v1 "kevaso.com/core/api/v1"
 )
@@ -214,5 +218,22 @@ func TestWithWorker(t *testing.T) {
 		return u
 	}() {
 		t.Error("init --worker and init + enable-worker should give the same unit")
+	}
+}
+
+func TestLoadKeyWithPassphrase(t *testing.T) {
+	_, sk, _ := ed25519.GenerateKey(rand.Reader)
+	blk, err := ssh.MarshalPrivateKeyWithPassphrase(sk, "kevaso admin", []byte("correct horse"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSH_AUTH_SOCK", "")
+	_, err = loadKey("k", pem.EncodeToMemory(blk), strings.NewReader(""), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "ssh-add") {
+		t.Fatalf("a passphrase key without an agent or a terminal: %v", err)
+	}
+	plain, _ := ssh.MarshalPrivateKey(sk, "")
+	if s, err := loadKey("k", pem.EncodeToMemory(plain), strings.NewReader(""), io.Discard); err != nil || s == nil {
+		t.Fatalf("plain key: %v", err)
 	}
 }
