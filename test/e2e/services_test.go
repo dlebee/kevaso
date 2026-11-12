@@ -173,6 +173,14 @@ apiVersion: kevaso/v1
 kind: Namespace
 metadata: { name: ops }
 ---
+# M7: silos reach nothing outside the cluster without a grant; these open the client's port 9100,
+# where the test listens to see which address a silo's traffic leaves from.
+apiVersion: kevaso/v1
+kind: Grant
+metadata: { name: to-client, namespace: web3 }
+spec:
+  egress: [{ to: "` + clientIP + `/32", ports: ["9100"] }]
+---
 apiVersion: kevaso/v1
 kind: IPPool
 metadata: { name: metal-1-extra }
@@ -188,6 +196,7 @@ spec: { host: metal-1, addresses: ["` + pool1 + `", "` + pool2 + `"] }
     expose: hostPort
     hostPort: { ports: [p2p, disc] }
   network: { egress: { source: sameAsService } }
+  grants: [to-client]
   allowFrom: [{ silo: ops/metrics, ports: [rpc] }]`+echoInit("tcp/30303", "udp/30303", "tcp/8545")) +
 		// Example 03's dashboard, open to the client's address only…
 		silo("ops", "metrics", `  service:
@@ -204,7 +213,8 @@ spec: { host: metal-1, addresses: ["` + pool1 + `", "` + pool2 + `"] }
     ports: [{ name: p2p, port: 30303, protocol: TCP }, { name: disc, port: 30303, protocol: UDP }]
     expose: loadBalancer
     loadBalancer: { class: ip-pool, pool: metal-1-extra, stableIP: true }
-  network: { egress: { source: sameAsService } }`+echoInit("tcp/30303", "udp/30303")) +
+  network: { egress: { source: sameAsService } }
+  grants: [to-client]`+echoInit("tcp/30303", "udp/30303")) +
 		silo("web3", "eth-node-b", `  service:
     ports: [{ name: p2p, port: 30303, protocol: TCP }, { name: disc, port: 30303, protocol: UDP }]
     expose: loadBalancer
@@ -303,5 +313,10 @@ spec: { host: metal-1, addresses: ["` + pool1 + `", "` + pool2 + `"] }
 	refused("locked → eth-node rpc (not allowed)", inside("ops", "locked", "nc -w3 eth-node.web3.kevaso 8545 </dev/null"))
 	refused("metrics → eth-node p2p (only rpc was allowed)", inside("ops", "metrics", "nc -w3 eth-node.web3.kevaso 30303 </dev/null"))
 	refused("silo → its host's kevasod API", inside("ops", "metrics", "nc -w3 "+metalIP+" 6443 </dev/null && echo sees"))
-	expect("silo → the internet (open until M7's grants)", inside("ops", "metrics", "getent hosts ubuntu.com && echo sees"), "sees")
+	if out := egressSeen("ops", "metrics"); strings.Contains(out, "from") {
+		t.Errorf("a silo without a grant reached the client (M7: default-deny egress): %q", out)
+	} else {
+		t.Log("silo without a grant → the client: refused")
+	}
+	expect("names still resolve without a grant (DNS on the gateway)", inside("ops", "metrics", "getent hosts ubuntu.com && echo sees"), "sees")
 }

@@ -49,11 +49,15 @@ type Delivery struct {
 	Version int64  `json:"version"`
 }
 
-// Injection is a header the egress gate adds to a silo's requests to Host.
+// Injection is a header the egress gate adds to a silo's requests to Host (or, on runtimes that
+// inject themselves, a credential they swap in for a placeholder).
 type Injection struct {
 	Host    string `json:"host"`
 	Header  string `json:"header"`
-	Value   string `json:"value"` // the formatted header value
+	Value   string `json:"value"`  // the formatted header value
+	Raw     []byte `json:"raw"`    // the secret's value itself
+	Format  string `json:"format"` // how Value was made from Raw, e.g. "Bearer {{value}}"
+	Env     string `json:"env"`    // the variable a placeholder goes in (OpenShell)
 	Secret  string `json:"secret"`
 	Version int64  `json:"version"`
 }

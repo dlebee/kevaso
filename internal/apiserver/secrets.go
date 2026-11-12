@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/pki"
+	"kevaso.com/core/internal/policy"
 	"kevaso.com/core/internal/rbac"
 	"kevaso.com/core/internal/secrets"
 	"kevaso.com/core/internal/store"
@@ -406,4 +408,41 @@ func (s *Server) kmsEndpoints(w http.ResponseWriter, r *http.Request, caller pki
 	default:
 		writeErr(w, errf(http.StatusNotFound, "NotFound", "%s", r.URL.Path))
 	}
+}
+
+// checkRuntimeFit refuses, for a silo on a runtime that enforces grants itself (OpenShell: no
+// network card, egress only through its proxy), what that runtime can't do, instead of accepting it
+// and never opening it: services and allowFrom (nothing reaches it), another egress address, and
+// grants it can't enforce (address ranges, UDP, deliveries other than inject).
+func (s *Server) checkRuntimeFit(ctx context.Context, t target, obj meta.Object) error {
+	silo, ok := obj.(*v1.Silo)
+	if !ok || t.status || !policy.SelfEnforced(silo.Spec.Runtime) {
+		return nil
+	}
+	rt := silo.Spec.Runtime
+	var problems []string
+	if silo.Spec.Service != nil {
+		problems = append(problems, rt+" has no network interface, so no service: reach it with kvo exec")
+	}
+	if len(silo.Spec.AllowFrom) > 0 {
+		problems = append(problems, rt+" takes no inbound connections: allowFrom has nothing to open")
+	}
+	if src := silo.Spec.Network.Egress.Source; src != "" && src != v1.EgressHost {
+		problems = append(problems, rt+"'s traffic leaves from the host's address only (egress.source: host)")
+	}
+	var grants []*v1.Grant
+	for _, name := range silo.Spec.Grants {
+		o, err := s.store.Get(ctx, store.Key{Kind: "Grant", Namespace: t.namespace, Name: name})
+		if err != nil {
+			continue // checkSecretUse reports missing grants
+		}
+		if g, _, err := v1.Decode(o.Data); err == nil {
+			grants = append(grants, g.(*v1.Grant))
+		}
+	}
+	problems = append(problems, policy.Check(silo, grants)...)
+	if len(problems) > 0 {
+		return errf(http.StatusUnprocessableEntity, "Invalid", "Silo %s: %s", silo.Name, strings.Join(problems, "; "))
+	}
+	return nil
 }

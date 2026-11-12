@@ -13,6 +13,10 @@
 //	kvo auth can-i VERB RESOURCE[/NAME|/SUBRESOURCE] [-n NS]   exits 0 for yes, 1 for no
 //	kvo auth whoami
 //	kvo create token NAME [-n NS] [--duration 1h]   a service account token, for CI ($KVO_TOKEN)
+//	kvo create secret NAME (--from-file F|- | --generate) [--type opaque|ed25519|ecdsa-p256]
+//	        [--write-only] [--allow broker,inject,file,env] [-l KEY=VALUE]…   values never on argv
+//	kvo secret set NAME --from-file F|-        rotate: every silo using it follows
+//	kvo get secret NAME --reveal               the value (read-value; never a write-only secret)
 //
 // The cluster comes from --server or $KVO_SERVER (plain HTTP, for `kevasod dev`), otherwise from the
 // kvo config's current context (or --context): TLS with a pinned CA and a client certificate, as
@@ -134,7 +138,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|login|logout|ctx|ns|auth …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|create|secret|login|logout|ctx|ns|auth …")
 		return 2
 	}
 	o, err := parse(args[1:], os.Getenv)

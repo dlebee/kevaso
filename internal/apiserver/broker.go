@@ -160,9 +160,13 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 				if format == "" {
 					format = "Bearer {{value}}"
 				}
+				env := gs.Env
+				if env == "" {
+					env = strings.ToUpper(strings.ReplaceAll(gs.Name, "-", "_"))
+				}
 				out = append(out, client.Injection{Host: strings.ToLower(gs.To.Host), Header: header,
-					Value: strings.Replace(format, "{{value}}", string(value), 1), Secret: gs.Name, Version: ver})
-				clear(value)
+					Value: strings.Replace(format, "{{value}}", string(value), 1), Raw: value, Format: format,
+					Env: env, Secret: gs.Name, Version: ver})
 			}
 		}
 		return client.BrokerResponse{Injections: out}, fmt.Sprintf("%d injections for the egress gate", len(out)), true

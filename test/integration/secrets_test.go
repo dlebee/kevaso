@@ -283,3 +283,51 @@ func TestRecoveryKeyAndRotation(t *testing.T) {
 		t.Fatalf("restore with the new recovery key: %q %v", got, err)
 	}
 }
+
+// OpenShell silos have no network card and enforce grants in OpenShell's policy: what it can't do
+// is refused at admission, not accepted and silently never opened.
+func TestOpenShellAdmission(t *testing.T) {
+	c := newCluster(t)
+	_ = c.admin.Create(c.ctx, ns("web3"))
+	for _, g := range []*v1.Grant{
+		grantObj("p2p-anywhere", v1.GrantSpec{Egress: []v1.EgressRule{{To: "0.0.0.0/0", Ports: []string{"30303"}, Protocols: []string{"tcp", "udp"}}}}),
+		grantObj("anthropic", v1.GrantSpec{
+			Egress:  []v1.EgressRule{{To: "api.github.com"}},
+			Secrets: []v1.GrantSecret{{Name: "anthropic-key", Deliver: v1.DeliverInject, Env: "ANTHROPIC_API_KEY", To: &v1.InjectTarget{Host: "api.anthropic.com", Header: "x-api-key", Format: "{{value}}"}}},
+		}),
+		grantObj("db", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-password", Deliver: v1.DeliverFile, Path: "/run/secrets/db"}}}),
+	} {
+		if err := c.admin.Create(c.ctx, g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk := func(name string, f func(*v1.Silo)) error {
+		s := silo(name, "web3")
+		s.Spec.Runtime = "openshell"
+		f(s)
+		return c.admin.Create(c.ctx, s)
+	}
+	for _, tc := range []struct {
+		name string
+		f    func(*v1.Silo)
+		want string
+	}{
+		{"svc", func(s *v1.Silo) { s.Spec.Service = &v1.Service{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}} }, "no network interface"},
+		{"from", func(s *v1.Silo) { s.Spec.AllowFrom = []v1.AllowFrom{{Silo: "x"}} }, "allowFrom"},
+		{"p2p", func(s *v1.Silo) { s.Spec.Grants = []string{"p2p-anywhere"} }, "address range"},
+		{"file", func(s *v1.Silo) { s.Spec.Grants = []string{"db"} }, "deliver file isn't available"},
+	} {
+		if err := mk(tc.name, tc.f); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want 422 %q, got %v", tc.name, tc.want, err)
+		}
+	}
+	if err := mk("agent", func(s *v1.Silo) { s.Spec.Grants = []string{"anthropic"} }); err != nil {
+		t.Fatalf("an OpenShell silo with an inject grant: %v", err)
+	}
+	// The same p2p grant is fine on a runtime with a network card.
+	s := silo("node", "web3")
+	s.Spec.Grants = []string{"p2p-anywhere"}
+	if err := c.admin.Create(c.ctx, s); err != nil {
+		t.Fatalf("cloud-hypervisor with p2p-anywhere: %v", err)
+	}
+}

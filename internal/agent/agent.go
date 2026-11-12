@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/policy"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -56,6 +58,7 @@ type Agent struct {
 	fenced   atomic.Bool
 	broker   *Broker
 	prepared sync.Map // silo uid → struct{}: the guest helper is in place for this agent's run
+	engine   *engine.Engine
 }
 
 // DefaultFenceAfter is under the host lease (40s), so a cut-off host has stopped its Recreate silos
@@ -140,6 +143,7 @@ func (a *Agent) Run(ctx context.Context) {
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
 	a.broker = &Broker{Client: a.Client, HostName: a.HostName, Log: a.Log}
 	e := engine.New(a.Clock)
+	a.engine = e
 	e.OnError = func(_ string, k engine.Key, err error, retry time.Duration) {
 		a.log("silo %s: %v (retry in %v)", k, err, retry)
 	}
@@ -247,7 +251,13 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		})
 	}
 
-	// Running: the broker channel and the guest helper, then init steps, then Ready.
+	// Running: the silo's policy (runtimes that enforce grants themselves), the broker channel and
+	// the guest helper, then init steps, then Ready.
+	if pr, ok := rt.(kri.Policied); ok {
+		if err := a.applyPolicy(ctx, pr, s); err != nil {
+			return engine.Result{}, err
+		}
+	}
 	if br, ok := rt.(kri.Broker); ok {
 		if err := a.broker.Ensure(ctx, br, id); err != nil {
 			return engine.Result{}, fmt.Errorf("broker channel: %w", err)
@@ -418,7 +428,45 @@ func (a *Agent) fanOut(kind, namespace, name string) {
 	}
 	for _, s := range Affected(local, grants, kind, namespace, name) {
 		a.broker.Notify(s.Namespace, s.Name, name)
+		if a.engine != nil { // runtimes that enforce grants themselves get the new policy
+			a.engine.Changed(engine.Key{Kind: "Silo", Namespace: s.Namespace, Name: s.Name})
+		}
 	}
+}
+
+// applyPolicy gives a runtime that enforces grants itself the silo's policy, with the credentials
+// it injects (from the control plane, for silos on this host), and says in a condition what it
+// couldn't enforce.
+func (a *Agent) applyPolicy(ctx context.Context, rt kri.Policied, s *v1.Silo) error {
+	var resp client.BrokerResponse
+	if err := a.Client.Call(ctx, http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{
+		Namespace: s.Namespace, Name: s.Name, UID: s.UID, Host: a.HostName,
+		Request: client.BrokerRequest{Op: client.OpInjections}}, &resp); err != nil {
+		return fmt.Errorf("credentials for the policy: %w", err)
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("credentials for the policy: %s", resp.Error)
+	}
+	var grants []*v1.Grant
+	for _, o := range a.grants.List() {
+		grants = append(grants, o.(*v1.Grant))
+	}
+	p, problems := policy.For(s, grants, resp.Injections)
+	defer func() {
+		for _, c := range p.Credentials {
+			clear(c.Value)
+		}
+	}()
+	if err := rt.SetPolicy(ctx, idOf(s), p); err != nil {
+		return fmt.Errorf("policy: %w", err)
+	}
+	return a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+		if len(problems) > 0 {
+			setCond(st, "PolicyApplied", meta.ConditionFalse, "NotEnforceable", strings.Join(problems, "; "), s.Generation, a.now())
+			return
+		}
+		setCond(st, "PolicyApplied", meta.ConditionTrue, "Applied", fmt.Sprintf("%d endpoints, %d injected credentials", len(p.Egress), len(p.Credentials)), s.Generation, a.now())
+	})
 }
 
 var _ engine.Controller = (*Agent)(nil)

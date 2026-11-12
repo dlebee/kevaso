@@ -106,3 +106,35 @@ type Broker interface {
 	// silo and no other; the caller closes the listener when the silo goes.
 	BrokerListen(id ID, port uint32) (net.Listener, error)
 }
+
+// Policied is a runtime that enforces a silo's grants itself (OpenShell: its policy engine and
+// providers), instead of the host's firewall and egress gate.
+type Policied interface {
+	// SetPolicy makes the silo's policy exactly p. Idempotent: unchanged policy, no work.
+	SetPolicy(ctx context.Context, id ID, p Policy) error
+}
+
+// Policy is what a silo may reach outside the cluster, and the credentials injected on the way.
+type Policy struct {
+	Egress      []Endpoint
+	Credentials []Credential
+}
+
+// Endpoint is one destination: a host name ("api.github.com", "*.github.com") or one IPv4 address, and
+// one TCP port.
+type Endpoint struct {
+	Host string
+	Port int
+}
+
+// Credential is a secret the runtime injects for requests to Host. The silo sees only a placeholder
+// in Env, which its programs send in Header; the runtime swaps the real value in.
+type Credential struct {
+	Name    string // the secret's name
+	Env     string
+	Host    string
+	Header  string // e.g. Authorization
+	Bearer  bool   // the header value is "Bearer <value>"
+	Value   []byte
+	Version int64
+}

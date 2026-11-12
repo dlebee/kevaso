@@ -89,11 +89,13 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 type InitOptions struct {
 	User, Address, Name, SSHKey, HostKey, Kevasod, APIServer, Cluster, UserName, Home string
 	SSHPort                                                                           int
-	HostKeyFirstUse                                                                   bool   // trust the host key without asking (tests only)
-	Worker                                                                            bool   // also install the worker component (one-host cluster)
-	LoopStorage                                                                       string // development: back silo disks with a loop file of this size
-	Advertise                                                                         string // the address other hosts reach this one at, if not the SSH one
-	EgressExtraCA                                                                     string // a PEM file on the host the egress gate also trusts upstream
+	HostKeyFirstUse                                                                   bool     // trust the host key without asking (tests only)
+	Worker                                                                            bool     // also install the worker component (one-host cluster)
+	LoopStorage                                                                       string   // development: back silo disks with a loop file of this size
+	Advertise                                                                         string   // the address other hosts reach this one at, if not the SSH one
+	EgressExtraCA                                                                     string   // a PEM file on the host the egress gate also trusts upstream
+	Runtimes                                                                          []string // worker runtimes (default cloud-hypervisor)
+	GatewayScope                                                                      string   // OpenShell: host | namespace | silo
 }
 
 func parseInit(args []string) (InitOptions, error) {
@@ -139,6 +141,12 @@ func parseInit(args []string) (InitOptions, error) {
 			o.Advertise, err = next()
 		case "--egress-extra-ca":
 			o.EgressExtraCA, err = next()
+		case "--runtime":
+			var v string
+			v, err = next()
+			o.Runtimes = append(o.Runtimes, v)
+		case "--openshell-gateway-scope":
+			o.GatewayScope, err = next()
 		default:
 			if strings.HasPrefix(a, "-") {
 				return o, fmt.Errorf("unknown flag %s", a)
@@ -276,7 +284,17 @@ func Unit(o InitOptions) string {
 		args = append(args, "--extra-name", o.Address)
 	}
 	if o.Worker {
-		args = append(args, "--worker", "--runtime", "cloud-hypervisor")
+		args = append(args, "--worker")
+		rts := o.Runtimes
+		if len(rts) == 0 {
+			rts = []string{"cloud-hypervisor"}
+		}
+		for _, r := range rts {
+			args = append(args, "--runtime", r)
+		}
+		if o.GatewayScope != "" {
+			args = append(args, "--openshell-gateway-scope", o.GatewayScope)
+		}
 		if o.LoopStorage != "" {
 			args = append(args, "--loop-storage", "/var/lib/kevaso-storage.img", "--loop-size", o.LoopStorage)
 		}

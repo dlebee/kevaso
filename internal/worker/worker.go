@@ -25,6 +25,7 @@ import (
 	"kevaso.com/core/api/client"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
+	"kevaso.com/core/builtin/kri/openshell"
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/gate"
@@ -50,6 +51,9 @@ type Config struct {
 	// EgressExtraCA is a PEM file the egress gate trusts for upstream hosts, on top of the system
 	// roots (a company's TLS proxy; the e2e test's stand-in internet).
 	EgressExtraCA string
+	// GatewayScope is how many OpenShell gateways run (host | namespace | silo; default namespace):
+	// sandboxes of one gateway share its user (design §3.1).
+	GatewayScope string
 }
 
 // Installer is a runtime that needs setting up on the host first.
@@ -121,8 +125,15 @@ func NewRuntimes(cfg Config) (map[string]Installer, error) {
 			out[name] = chInstaller{Runtime: &cloudhypervisor.Runtime{
 				Host: cloudhypervisor.Local{}, Arch: Arch(), ExecKey: signer, ExecPub: pub, Version: cloudhypervisor.Version,
 			}, storage: cfg.Storage}
+		case "openshell", "openshell-container":
+			driver := openshell.DriverVM
+			if name == "openshell-container" {
+				driver = openshell.DriverDocker
+			}
+			out[name] = &openshell.Runtime{Host: openshell.Local{}, Name: name, Driver: driver, Scope: cfg.GatewayScope,
+				ExtraCA: cfg.EgressExtraCA, Arch: Arch()}
 		default:
-			return nil, fmt.Errorf("runtime %q isn't available yet (M3 has cloud-hypervisor)", name)
+			return nil, fmt.Errorf("runtime %q isn't available yet (cloud-hypervisor, openshell, openshell-container are)", name)
 		}
 	}
 	return out, nil
@@ -248,7 +259,15 @@ func updateHost(ctx context.Context, c *client.Client, cfg Config, states map[st
 		if h.Spec.Components.Worker == nil {
 			w := &v1.WorkerSpec{Labels: cfg.Labels}
 			for _, name := range cfg.Runtimes {
-				w.Runtimes = append(w.Runtimes, v1.RuntimeSpec{Name: name})
+				rs := v1.RuntimeSpec{Name: name}
+				if strings.HasPrefix(name, "openshell") {
+					scope := cfg.GatewayScope
+					if scope == "" {
+						scope = openshell.ScopeNamespace
+					}
+					rs.Options = map[string]string{"gatewayScope": scope}
+				}
+				w.Runtimes = append(w.Runtimes, rs)
 			}
 			h.Spec.Components.Worker = w
 			if err := c.Update(ctx, &h); err != nil {

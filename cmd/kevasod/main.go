@@ -138,6 +138,7 @@ func runControlPlane(ctx context.Context, args []string) error {
 	loop := fs.String("loop-storage", "", "development only: back silo disks with this sparse file when the host has no 'kevaso' volume group")
 	loopSize := fs.String("loop-size", "64G", "size of the loop storage file")
 	egressCA := fs.String("egress-extra-ca", "", "PEM file the egress gate also trusts for upstream hosts (a company TLS proxy)")
+	gwScope := fs.String("openshell-gateway-scope", "namespace", "OpenShell gateways: one per host, namespace or silo")
 	_ = fs.Parse(args)
 	cfg.ExtraNames = extra
 	if *withWorker {
@@ -152,7 +153,7 @@ func runControlPlane(ctx context.Context, args []string) error {
 			}
 			lbl[k] = v
 		}
-		cfg.Worker = &worker.Config{Runtimes: runtimes, Labels: lbl, EgressExtraCA: *egressCA,
+		cfg.Worker = &worker.Config{Runtimes: runtimes, Labels: lbl, EgressExtraCA: *egressCA, GatewayScope: *gwScope,
 			Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize}}
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
@@ -179,6 +180,7 @@ func runWorker(ctx context.Context, args []string) error {
 	every := fs.Duration("heartbeat", 10*time.Second, "how often to report")
 	withMesh := fs.Bool("mesh", true, "put this host on the WireGuard mesh")
 	egressCA := fs.String("egress-extra-ca", "", "PEM file the egress gate also trusts for upstream hosts (a company TLS proxy)")
+	gwScope := fs.String("openshell-gateway-scope", "namespace", "OpenShell gateways: one per host, namespace or silo")
 	_ = fs.Parse(args)
 	if jc.HostName == "" || jc.Server == "" {
 		return errors.New("worker needs --name and --server")
@@ -206,7 +208,7 @@ func runWorker(ctx context.Context, args []string) error {
 	logger.Printf("joined %s as host %s", jc.Server, jc.HostName)
 	contact := &worker.Contact{}
 	wc := worker.Config{HostName: jc.HostName, Runtimes: runtimes, DataDir: jc.DataDir, Clock: clock.Real{}, Log: logger.Printf,
-		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize}, Contact: contact, MeshSubnet: *withMesh, EgressExtraCA: *egressCA}
+		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize}, Contact: contact, MeshSubnet: *withMesh, EgressExtraCA: *egressCA, GatewayScope: *gwScope}
 	rts, err := worker.NewRuntimes(wc)
 	if err != nil {
 		return err
