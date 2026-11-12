@@ -276,3 +276,65 @@ func TestRBACObjectsAreValidated(t *testing.T) {
 		}
 	}
 }
+
+func TestServiceAndPoolValidation(t *testing.T) {
+	c, ctx := setup(t)
+	svc := func(f func(*v1.Silo)) *v1.Silo {
+		s := newSilo("p2p")
+		s.Spec.Service = &v1.Service{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}}}
+		f(s)
+		return s
+	}
+	good := svc(func(s *v1.Silo) {
+		s.Spec.Service.Expose = "hostPort"
+		s.Spec.Service.HostPort = &v1.HostPortSpec{Ports: []string{"p2p", "disc"}, AllowFrom: []string{"203.0.113.0/24", "198.51.100.7"}}
+		s.Spec.Network.Egress.Source = "sameAsService"
+		s.Spec.AllowFrom = []v1.AllowFrom{{Silo: "ops/grafana", Ports: []string{"p2p"}}}
+	})
+	if err := c.Create(ctx, good); err != nil {
+		t.Fatal(err)
+	}
+	for name, s := range map[string]*v1.Silo{
+		"unknown expose":          svc(func(s *v1.Silo) { s.Spec.Service.Expose = "public" }),
+		"port 0":                  svc(func(s *v1.Silo) { s.Spec.Service.Ports[0].Port = 0 }),
+		"SCTP":                    svc(func(s *v1.Silo) { s.Spec.Service.Ports[0].Protocol = "SCTP" }),
+		"duplicate port names":    svc(func(s *v1.Silo) { s.Spec.Service.Ports[1].Name = "p2p" }),
+		"hostPort without expose": svc(func(s *v1.Silo) { s.Spec.Service.HostPort = &v1.HostPortSpec{} }),
+		"hostPort names a ghost": svc(func(s *v1.Silo) {
+			s.Spec.Service.Expose = "hostPort"
+			s.Spec.Service.HostPort = &v1.HostPortSpec{Ports: []string{"rpc"}}
+		}),
+		"bad CIDR": svc(func(s *v1.Silo) {
+			s.Spec.Service.Expose = "hostPort"
+			s.Spec.Service.HostPort = &v1.HostPortSpec{AllowFrom: []string{"10.0.0.0/33"}}
+		}),
+		"cloud LB class": svc(func(s *v1.Silo) {
+			s.Spec.Service.Expose = "loadBalancer"
+			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "linode-nodebalancer"}
+		}),
+		"ip-pool without a pool": svc(func(s *v1.Silo) {
+			s.Spec.Service.Expose = "loadBalancer"
+			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "ip-pool"}
+		}),
+		"sameAsService, private":   svc(func(s *v1.Silo) { s.Spec.Network.Egress.Source = "sameAsService" }),
+		"egress pool without pool": svc(func(s *v1.Silo) { s.Spec.Network.Egress.Source = "pool" }),
+		"allowFrom a/b/c":          svc(func(s *v1.Silo) { s.Spec.AllowFrom = []v1.AllowFrom{{Silo: "a/b/c"}} }),
+	} {
+		s.Name = "bad"
+		if err := c.Create(ctx, s); !client.IsInvalid(err) {
+			t.Errorf("%s: want Invalid, got %v", name, err)
+		}
+	}
+	pool := func(addrs ...string) *v1.IPPool {
+		return &v1.IPPool{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IPPool"}, ObjectMeta: meta.ObjectMeta{Name: "extra"},
+			Spec: v1.IPPoolSpec{Host: "metal-1", Addresses: addrs}}
+	}
+	for name, p := range map[string]*v1.IPPool{"empty": pool(), "garbage": pool("nope"), "IPv6 for now": pool("2001:db8:42::/64")} {
+		if err := c.Create(ctx, p); !client.IsInvalid(err) {
+			t.Errorf("pool %s: want Invalid, got %v", name, err)
+		}
+	}
+	if err := c.Create(ctx, pool("198.51.100.16/29", "198.51.100.30")); err != nil {
+		t.Fatal(err)
+	}
+}

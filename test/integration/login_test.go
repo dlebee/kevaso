@@ -297,3 +297,53 @@ func clientKeyCSR(t *testing.T) (key, csr []byte, err error) {
 	t.Helper()
 	return client.NewKeyAndCSR("david")
 }
+
+// Exposing a silo publicly is its own permission: an editor can't, an admin of the namespace can.
+func TestExposePublicNeedsItsOwnPermission(t *testing.T) {
+	c := newCluster(t)
+	_ = c.admin.Create(c.ctx, ns("web3"))
+	bind := func(user, role string) {
+		if err := c.admin.Create(c.ctx, &v1.RoleBinding{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "RoleBinding"},
+			ObjectMeta: meta.ObjectMeta{Name: user, Namespace: "web3"}, RoleRef: v1.RoleRef{Kind: "ClusterRole", Name: role},
+			Subjects: []v1.Subject{{Kind: "User", Name: user}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bind("ed", "editor")
+	bind("ada", "admin")
+	as := func(user string) *client.Client {
+		tok, err := login.Login(c.ctx, c.url, c.ca, login.Options{Open: browser(t, c.invite(t, user))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl, _ := client.NewTLS(c.url, c.ca, nil, nil)
+		cl.Token = func(context.Context) (string, error) { return tok.AccessToken, nil }
+		return cl
+	}
+	node := func(name string) *v1.Silo {
+		s := silo(name, "web3")
+		s.Spec.Service = &v1.Service{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}}, Expose: v1.ExposeHostPort}
+		return s
+	}
+	ed, ada := as("ed"), as("ada")
+	err := ed.Create(c.ctx, node("by-ed"))
+	var ce *client.Error
+	if !errors.As(err, &ce) || ce.Code != http.StatusForbidden || !strings.Contains(err.Error(), "services/expose-public") {
+		t.Fatalf("editor exposing: %v", err)
+	}
+	private := silo("private", "web3")
+	private.Spec.Service = &v1.Service{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}}
+	if err := ed.Create(c.ctx, private); err != nil {
+		t.Fatalf("editor, private service: %v", err)
+	}
+	if err := ada.Create(c.ctx, node("by-ada")); err != nil {
+		t.Fatalf("admin exposing: %v", err)
+	}
+	// The editor can still change other things on the exposed silo.
+	var s v1.Silo
+	_ = ed.Get(c.ctx, "Silo", "web3", "by-ada", &s)
+	s.Spec.Resources.CPU = 2
+	if err := ed.Update(c.ctx, &s); err != nil {
+		t.Fatalf("editor updating an already-exposed silo: %v", err)
+	}
+}

@@ -19,7 +19,8 @@ var (
 var workloads = []string{"silos", "serviceaccounts"}
 
 // BuiltinRoles are the roles of design §9.3: cluster-admin (everything), admin (a namespace, its
-// roles included), editor (workloads, exec), viewer (read workloads), runner (runs).
+// roles included, and exposing silos publicly), editor (workloads, exec; not public exposure),
+// viewer (read workloads), runner (runs).
 func BuiltinRoles() []*v1.ClusterRole {
 	mk := func(name string, rules ...v1.PolicyRule) *v1.ClusterRole {
 		return &v1.ClusterRole{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterRole"},
@@ -29,7 +30,7 @@ func BuiltinRoles() []*v1.ClusterRole {
 		mk("cluster-admin", v1.PolicyRule{Verbs: []string{"*"}, Resources: []string{"*"}}),
 		mk("admin",
 			v1.PolicyRule{Verbs: write, Resources: slices.Concat(workloads, []string{"roles", "rolebindings"})},
-			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "serviceaccounts/token"}}),
+			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "serviceaccounts/token", "services/expose-public"}}),
 		mk("editor",
 			v1.PolicyRule{Verbs: write, Resources: workloads},
 			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "serviceaccounts/token"}}),

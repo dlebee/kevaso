@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"kevaso.com/core/builtin/kni"
 )
 
 // Asset is a file to download, with its pinned digest.
@@ -134,31 +136,10 @@ func (r *Runtime) installPackages(ctx context.Context) error {
 	return r.run(ctx, "env", append([]string{"DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "-qq"}, missing...)...)
 }
 
-// NFT is the host's silo firewall: NAT out to the internet; no silo-to-silo traffic, on the bridge
-// or across the mesh to other hosts' silos; and silos can't reach the mesh's host addresses
-// (default deny; allowFrom and NetworkPolicy open what's wanted in M6).
+// NFT is the host's silo firewall with no silos yet (the worker rewrites it as silos come and
+// go): see builtin/kni.
 func NFT() string {
-	return `table inet kevaso_nat
-delete table inet kevaso_nat
-table inet kevaso_nat {
-  chain postrouting {
-    type nat hook postrouting priority srcnat; policy accept;
-    ip saddr ` + Network.String() + ` ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16 } oifname != "` + Bridge + `" masquerade
-  }
-  chain forward {
-    type filter hook forward priority filter; policy accept;
-    iifname "` + Bridge + `" ip daddr { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16 } drop
-  }
-}
-table bridge kevaso_silos
-delete table bridge kevaso_silos
-table bridge kevaso_silos {
-  chain forward {
-    type filter hook forward priority filter; policy accept;
-    iifname "kvt*" oifname "kvt*" drop
-  }
-}
-`
+	return kni.Rules(kni.Host{Bridge: Bridge, Subnet: Network, Gateway: Gateway})
 }
 
 func (r *Runtime) setupNetwork(ctx context.Context) error {

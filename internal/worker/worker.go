@@ -181,6 +181,9 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 				st.State, st.Message = "Failed", err.Error()
 			} else {
 				cfg.Log("runtime %s ready", name)
+				if _, ok := rt.(chInstaller); ok { // its bridge is there now: keep its firewall current
+					go RunNetwork(ctx, c, cfg.HostName, cfg.Log)
+				}
 			}
 			mu.Lock()
 			states[name] = st

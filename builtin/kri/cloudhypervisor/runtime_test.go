@@ -168,7 +168,10 @@ func TestRenderedFiles(t *testing.T) {
 			t.Errorf("unit missing %q", want)
 		}
 	}
-	nc := NetworkConfig("52:4b:00:00:00:01", AllocateIPMust(t))
+	nc := NetworkConfig("52:4b:00:00:00:01", AllocateIPMust(t), "web3")
+	if !strings.Contains(nc, "nameservers: { addresses: [10.64.0.1], search: [web3.kevaso, kevaso] }") {
+		t.Errorf("dns: %s", nc)
+	}
 	if !strings.Contains(nc, "10.64.0.2/24") || !strings.Contains(nc, "via: 10.64.0.1") {
 		t.Errorf("network-config:\n%s", nc)
 	}
@@ -470,9 +473,10 @@ func TestSetNetworkAndFirewall(t *testing.T) {
 	}
 	nft := NFT()
 	for _, want := range []string{
-		"ip saddr 10.64.7.0/24 ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16 }", // NAT only to the internet
-		`iifname "kvbr0" ip daddr { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16 } drop`,     // no other hosts' silos, no mesh hosts
-		`iifname "kvt*" oifname "kvt*" drop`,                                             // no silo-to-silo on the bridge
+		"ip saddr 10.64.7.0/24 ip daddr != { 10.64.0.0/16, 10.62.0.0/16, 10.63.0.0/16 }", // NAT only to the internet
+		`iifname "kvbr0" ip daddr { 10.62.0.0/16, 10.63.0.0/16 } drop`,                   // no mesh hosts
+		`oifname "kvbr0" drop`,               // nothing reaches a silo unless opened
+		`iifname "kvt*" oifname "kvt*" drop`, // no silo-to-silo on the bridge
 	} {
 		if !strings.Contains(nft, want) {
 			t.Errorf("firewall missing %q:\n%s", want, nft)

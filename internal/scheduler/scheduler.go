@@ -7,7 +7,9 @@
 //  2. have the silo's runtime installed and Ready;
 //  3. carry every label in the silo's hostSelector;
 //  4. have no NoSchedule taint the silo doesn't tolerate;
-//  5. have room: allocatable CPU and memory minus what silos already placed there ask for.
+//  5. have room: allocatable CPU and memory minus what silos already placed there ask for;
+//  6. for exposure: a public address (not behind NAT) with the silo's host ports free, and for an
+//     IPPool address, be the pool's host with one free.
 //
 // Among the hosts left, it prefers ones without an untolerated PreferNoSchedule taint, then the one
 // with the most free memory (spreading silos out), then the name (so it's deterministic).
@@ -53,8 +55,9 @@ type usage struct {
 	mem int64
 }
 
-// Schedule picks a host for silo. placed are all silos already assigned (status.host set).
-func Schedule(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo) (Decision, error) {
+// Schedule picks a host for silo. placed are all silos already assigned (status.host set); pools,
+// the IPPools (for silos that take an address from one).
+func Schedule(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, pools ...*v1.IPPool) (Decision, error) {
 	needMem, err := v1.ParseBytes(silo.Spec.Resources.Memory)
 	if err != nil {
 		return Decision{}, err
@@ -86,7 +89,11 @@ func Schedule(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo) (Decision, err
 		if w == nil {
 			continue // not a worker: not even a candidate
 		}
-		if reason := filter(silo, h, w, used[h.Name], needMem); reason != "" {
+		reason := filter(silo, h, w, used[h.Name], needMem)
+		if reason == "" {
+			reason = netFilter(silo, h, placed, pools)
+		}
+		if reason != "" {
 			d.Excluded[h.Name] = reason
 			continue
 		}

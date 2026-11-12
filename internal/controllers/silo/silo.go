@@ -37,7 +37,7 @@ var RecreateAfter = 30 * time.Second
 
 // Decide returns the status the silo should have, whether it differs from the current one, and
 // when to look again (0: only on changes). Pure.
-func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time) (v1.SiloStatus, bool, time.Duration, error) {
+func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, pools ...*v1.IPPool) (v1.SiloStatus, bool, time.Duration, error) {
 	st := s.Status
 	st.Conditions = append([]meta.Condition(nil), st.Conditions...)
 	if s.DeletionTimestamp != nil {
@@ -58,11 +58,18 @@ func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time) (v1.S
 		cond := meta.Condition{Type: "HostLost", ObservedGeneration: s.Generation}
 		switch {
 		case !lost:
-			if c := meta.FindCondition(st.Conditions, "HostLost"); c == nil || c.Status != meta.ConditionTrue {
-				return st, false, 0, nil // placed, and its host is fine: the agent owns it
+			// Placed, and its host is fine: the agent owns it. Only the service's addresses may need
+			// saying (its exposure changed, or it was placed before it had them).
+			changed := false
+			if h != nil {
+				if svc, err := scheduler.ServiceStatus(s, h, silos, pools); err == nil && svc != st.Service {
+					st.Service, changed = svc, true
+				}
 			}
-			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "HostBack", st.Host+" is back"
-			changed := meta.SetCondition(&st.Conditions, cond, now)
+			if c := meta.FindCondition(st.Conditions, "HostLost"); c != nil && c.Status == meta.ConditionTrue {
+				cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "HostBack", st.Host+" is back"
+				changed = meta.SetCondition(&st.Conditions, cond, now) || changed
+			}
 			return st, changed, 0, nil
 		case s.Policy() == v1.OnHostLossRecreate && now.Sub(since) < RecreateAfter:
 			again = RecreateAfter - now.Sub(since)
@@ -90,7 +97,7 @@ func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time) (v1.S
 	}
 	sched := *s
 	sched.Status = st
-	d, err := scheduler.Schedule(&sched, hosts, silos)
+	d, err := scheduler.Schedule(&sched, hosts, silos, pools...)
 	if err != nil {
 		return st, false, 0, err
 	}
@@ -102,6 +109,15 @@ func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time) (v1.S
 	} else {
 		st.Phase, st.Host = PhaseScheduled, d.Host
 		cond.Status, cond.Reason, cond.Message = meta.ConditionTrue, "Scheduled", d.Message()
+		for _, h := range hosts {
+			if h.Name == d.Host {
+				svc, err := scheduler.ServiceStatus(&sched, h, silos, pools)
+				if err != nil {
+					return st, false, 0, err
+				}
+				st.Service = svc
+			}
+		}
 	}
 	changed := meta.SetCondition(&conds, cond, now)
 	st.Conditions = conds
@@ -118,6 +134,7 @@ type Controller struct {
 	Client *client.Client
 	Silos  *informer.Informer
 	Hosts  *informer.Informer
+	Pools  *informer.Informer // IPPools; nil: none
 	Clock  clock.Clock
 
 	mu      sync.Mutex
@@ -169,7 +186,13 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		return engine.Result{}, nil // already placed by us; the cache just hasn't caught up
 	}
 	hosts, silos := c.lists()
-	st, changed, again, err := Decide(s, hosts, silos, c.Clock.Now().UTC().Truncate(time.Second))
+	var pools []*v1.IPPool
+	if c.Pools != nil {
+		for _, o := range c.Pools.List() {
+			pools = append(pools, o.(*v1.IPPool))
+		}
+	}
+	st, changed, again, err := Decide(s, hosts, silos, c.Clock.Now().UTC().Truncate(time.Second), pools...)
 	if err != nil || !changed {
 		return engine.Result{RequeueAfter: again}, err
 	}
@@ -189,14 +212,14 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 // silo's change (freed capacity) may let pending silos fit now, and a host change concerns the
 // silos on it.
 func (c *Controller) Map(changed engine.Key) []engine.Key {
-	if changed.Kind != "Host" && changed.Kind != "Silo" {
+	if changed.Kind != "Host" && changed.Kind != "Silo" && changed.Kind != "IPPool" {
 		return nil
 	}
 	var keys []engine.Key
 	for _, o := range c.Silos.List() {
 		s := o.(*v1.Silo)
 		self := changed.Kind == "Silo" && changed.Namespace == s.Namespace && changed.Name == s.Name
-		onIt := changed.Kind == "Host" && s.Status.Host == changed.Name
+		onIt := (changed.Kind == "Host" && s.Status.Host == changed.Name) || (changed.Kind == "IPPool" && scheduler.PoolOf(s) == changed.Name)
 		if (s.Status.Host == "" && !self) || onIt {
 			keys = append(keys, engine.Key{Kind: "Silo", Namespace: s.Namespace, Name: s.Name})
 		}

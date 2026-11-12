@@ -346,6 +346,10 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		return
 	}
 	t.name = om.Name
+	if err := s.checkExposure(ctx, t, obj); err != nil {
+		writeErr(w, err)
+		return
+	}
 	o, err := fn(ctx, t, obj)
 	if err != nil {
 		writeErr(w, err)
@@ -408,7 +412,8 @@ func (s *Server) admit(kind string, obj meta.Object) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if failed := s.valid.validate(kind, m); len(failed) > 0 {
+	failed := append(s.valid.validate(kind, m), semantic(obj)...)
+	if len(failed) > 0 {
 		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %s", kind, obj.GetObjectMeta().Name, joinMessages(failed))
 	}
 	return b, nil
@@ -602,6 +607,39 @@ func (s *Server) ensureBuiltins(ctx context.Context) error {
 		if err != nil && !errors.Is(err, store.ErrExists) {
 			return fmt.Errorf("built-in %s %s: %w", k.Kind, o.GetObjectMeta().Name, err)
 		}
+	}
+	return nil
+}
+
+// checkExposure: making a silo reachable from outside (hostPort, loadBalancer) is its own
+// permission, create on services/expose-public in the namespace (design §7.2a), on top of writing
+// the silo. Status writes don't change the spec, so they don't need it.
+func (s *Server) checkExposure(ctx context.Context, t target, obj meta.Object) error {
+	silo, ok := obj.(*v1.Silo)
+	if !ok || t.status || s.auth == nil || silo.Spec.Service == nil {
+		return nil
+	}
+	if e := silo.Spec.Service.Expose; e != v1.ExposeHostPort && e != v1.ExposeLoadBalancer {
+		return nil
+	}
+	if old, err := s.store.Get(ctx, t.key()); err == nil { // already exposed the same way: nothing new
+		if prev, _, err := v1.Decode(old.Data); err == nil {
+			if ps := prev.(*v1.Silo).Spec.Service; ps != nil && ps.Expose == silo.Spec.Service.Expose {
+				return nil
+			}
+		}
+	}
+	id, _ := IdentityFrom(ctx)
+	if id == LocalAdmin || id == Component || id.Type == "host" {
+		return nil
+	}
+	p, err := s.policy.Policy(ctx)
+	if err != nil {
+		return err
+	}
+	d := p.Authorize(rbac.Attributes{User: id.Name, Groups: GroupsFrom(ctx), Verb: "create", Resource: "services/expose-public", Namespace: t.namespace})
+	if !d.Allowed {
+		return errf(http.StatusForbidden, "Forbidden", "%s may not expose silos publicly (needs create on services/expose-public): %s", id, d.Reason)
 	}
 	return nil
 }

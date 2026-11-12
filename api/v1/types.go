@@ -157,6 +157,10 @@ type SiloSpec struct {
 	Init        *Init        `json:"init,omitempty"`
 	// Availability says what happens when the silo's host is lost (design §0.3).
 	Availability Availability `json:"availability,omitempty"`
+	// Service is the silo's own service (design §7.1); AllowFrom opens it to other silos.
+	Service   *Service    `json:"service,omitempty"`
+	AllowFrom []AllowFrom `json:"allowFrom,omitempty"`
+	Network   SiloNetwork `json:"network,omitempty"`
 }
 
 // Availability is the silo's answer to losing its host.
@@ -243,4 +247,5 @@ type SiloStatus struct {
 	Conditions []meta.Condition `json:"conditions,omitempty"`
 	Init       []StepStatus     `json:"init,omitempty"`
 	Address    string           `json:"address,omitempty"` // the silo's private address
+	Service    ServiceStatus    `json:"service,omitempty"`
 }

@@ -80,6 +80,46 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		kv(0, "Phase", dash(o.Status.Phase))
 		kv(0, "Host", dash(o.Status.Host))
 		kv(0, "Address", dash(o.Status.Address))
+		if sv := o.Spec.Service; sv != nil || o.Status.Service.Name != "" {
+			st := o.Status.Service
+			kv(0, "Name", dash(st.Name))
+			expose := "private"
+			if sv != nil && sv.Expose != "" {
+				expose = sv.Expose
+				if sv.LoadBalancer != nil {
+					expose += " (" + sv.LoadBalancer.Class + ")"
+				}
+			}
+			kv(0, "Exposure", expose)
+			kv(0, "Public IP", dash(st.PublicIP))
+			egress := dash(st.EgressIP)
+			if src := o.Spec.Network.Egress.Source; src != "" {
+				egress += " (" + src + ")"
+			}
+			kv(0, "Egress IP", egress)
+			if sv != nil && len(sv.Ports) > 0 {
+				var ps []string
+				for _, p := range sv.Ports {
+					proto := p.Protocol
+					if proto == "" {
+						proto = "TCP"
+					}
+					ps = append(ps, fmt.Sprintf("%s %d/%s", p.Name, p.Port, proto))
+				}
+				kv(0, "Ports", strings.Join(ps, ", "))
+			}
+		}
+		if len(o.Spec.AllowFrom) > 0 {
+			var af []string
+			for _, a := range o.Spec.AllowFrom {
+				p := "all ports"
+				if len(a.Ports) > 0 {
+					p = strings.Join(a.Ports, ",")
+				}
+				af = append(af, a.Silo+" → "+p)
+			}
+			kv(0, "Allow from", strings.Join(af, "; "))
+		}
 		conds = o.Status.Conditions
 		if o.Spec.Init != nil && len(o.Spec.Init.Steps) > 0 {
 			tables = append(tables, func() {

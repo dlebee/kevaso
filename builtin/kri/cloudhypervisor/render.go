@@ -135,8 +135,9 @@ func MetaData(id kri.ID) string {
 	return "instance-id: " + id.UID + "\nlocal-hostname: " + id.Name + "\n"
 }
 
-// NetworkConfig gives the guest its static address on the bridge.
-func NetworkConfig(mac string, ip netip.Addr) string {
+// NetworkConfig gives the guest its static address on the bridge, and the host's DNS on the
+// gateway, which answers private names (NAME.NAMESPACE.kevaso, or NAME in the same namespace).
+func NetworkConfig(mac string, ip netip.Addr, namespace string) string {
 	return fmt.Sprintf(`version: 2
 ethernets:
   nic0:
@@ -144,8 +145,8 @@ ethernets:
     set-name: eth0
     addresses: [%s/%d]
     routes: [{ to: default, via: %s }]
-    nameservers: { addresses: [1.1.1.1, 9.9.9.9] }
-`, mac, ip, Network.Bits(), Gateway)
+    nameservers: { addresses: [%s], search: [%s.kevaso, kevaso] }
+`, mac, ip, Network.Bits(), Gateway, Gateway, namespace)
 }
 
 // Unit is the VMM's systemd unit: Cloud Hypervisor as an unprivileged user, with the lockdown

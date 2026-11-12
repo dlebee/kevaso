@@ -8,6 +8,7 @@ require (
 	cel.dev/cel-go v0.33.2
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/hashicorp/yamux v0.1.2
+	github.com/miekg/dns v1.1.68
 	github.com/vishvananda/netlink v1.3.1
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/crypto v0.59.0
@@ -34,9 +35,11 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948 // indirect
+	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/tools v0.52.0 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240826202546-f6391c0de4c7 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240826202546-f6391c0de4c7 // indirect

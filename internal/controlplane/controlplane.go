@@ -199,17 +199,19 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 
 // runControllers starts the built-in controllers on informers fed through the admin socket.
 func runControllers(ctx context.Context, c *client.Client, cfg Config) {
-	silos, hosts := informer.New(c, "Silo"), informer.New(c, "Host")
+	silos, hosts, pools := informer.New(c, "Silo"), informer.New(c, "Host"), informer.New(c, "IPPool")
 	e := engine.New(cfg.Clock)
 	e.OnError = func(ctrl string, k engine.Key, err error, retry time.Duration) {
 		cfg.Log("%s: %s: %v (retry in %v)", ctrl, k, err, retry)
 	}
-	e.Register(&silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, Clock: cfg.Clock}, engine.Options{Workers: 1})
+	e.Register(&silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, Pools: pools, Clock: cfg.Clock}, engine.Options{Workers: 1})
 	e.Register(&hostcontroller.Controller{Client: c, Hosts: hosts, Clock: cfg.Clock, Lease: cfg.HostLease}, engine.Options{Workers: 1})
 	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
+	pools.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IPPool", Name: k.Name}) })
 	go silos.Run(ctx)
 	go hosts.Run(ctx)
+	go pools.Run(ctx)
 	e.Run(ctx)
 }
 

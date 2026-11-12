@@ -177,7 +177,7 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		},
 		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID)), 0o600) },
 		func() error {
-			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip)), 0o600)
+			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, spec.ID.Namespace)), 0o600)
 		},
 		func() error {
 			return r.run(ctx, "cloud-localds", "--network-config="+n.Dir+"/network-config", n.Dir+"/seed.img", n.Dir+"/user-data", n.Dir+"/meta-data")
