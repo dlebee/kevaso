@@ -153,7 +153,7 @@ func (r *Runtime) cmd(ctx context.Context, stdin io.Reader, name string, args ..
 
 // inspect returns a container's state ("" when it doesn't exist) and its process id.
 func (r *Runtime) inspect(ctx context.Context, name string) (string, int, error) {
-	out, err := r.eng(ctx, nil, "inspect", "--format", "{{.State.Status}} {{.State.Pid}}", name)
+	out, err := r.eng(ctx, nil, "container", "inspect", "--format", "{{.State.Status}} {{.State.Pid}}", name)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "no such") {
 			return "", 0, nil

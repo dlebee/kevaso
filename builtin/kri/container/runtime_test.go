@@ -52,7 +52,10 @@ func (f *fake) Run(_ context.Context, c hostexec.Cmd) (int, error) {
 		f.wired[f.pid] = true
 	case c.Name == "docker":
 		switch a[0] {
-		case "inspect":
+		case "container":
+			if a[1] != "inspect" {
+				break
+			}
 			st, ok := f.containers[a[len(a)-1]]
 			if !ok {
 				return fail("Error: No such object")
