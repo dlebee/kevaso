@@ -174,3 +174,23 @@ func TestExecAndCopyArgs(t *testing.T) {
 		t.Fatalf("copy args = %q", got)
 	}
 }
+
+func TestParseSSHConfig(t *testing.T) {
+	cfg := `Host lima-kvt-a1b2c3-w1
+  IdentityFile "/Users/me/.lima/_config/user"
+  IdentityFile "/Users/me/.ssh/id_ed25519"
+  User me
+  Hostname 127.0.0.1
+  Port 50123
+`
+	info, err := ParseSSHConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Host != "127.0.0.1" || info.Port != 50123 || info.User != "me" || info.KeyFile != "/Users/me/.lima/_config/user" {
+		t.Fatalf("parsed %+v", info)
+	}
+	if _, err := ParseSSHConfig([]byte("Host x\n  User me\n")); err == nil {
+		t.Fatal("incomplete config accepted")
+	}
+}

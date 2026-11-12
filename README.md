@@ -3,12 +3,17 @@
 Self-hosted, stateful **silos** (microVMs or containers) on the machines you bring, managed
 Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for operators.
 
-**Status:** early. What exists today:
+**Status:** early (M0–M2 of [MILESTONES.md](MILESTONES.md) done). What exists today:
 
-- the three Go modules: `kevaso.com/core` (server and binaries), `kevaso.com/core/api`,
-  `kevaso.com/core/sdk`;
-- the **testbed** and the end-to-end test loop (`make e2e`): it creates a machine (a Lima VM on macOS,
-  the machine itself on Linux CI), checks it can run microVMs, and tears it down.
+- `kvoadm init [USER@]ADDRESS --kevasod PATH`: sets up a fresh Linux machine over SSH (host key
+  pinned or confirmed first, password used once then keys only, root password rotated, signed
+  `kevasod` verified on the host) and installs the control plane as a systemd service;
+- `kevasod control-plane`: the API over TLS with client certificates from the cluster's private CA,
+  a root-only admin socket, one-time join tokens for hosts, SQLite storage, a Ready heartbeat;
+- `kvo apply / get / delete / watch` for Namespaces, Hosts and Silos, using the context
+  `kvoadm init` writes (`~/.kevaso/config.yaml`);
+- under the hood: a store with global revisions and resumable watches, CEL validation, a controller
+  engine; the testbed and end-to-end loop (`make e2e`).
 
 What's planned, in order: [MILESTONES.md](MILESTONES.md).
 

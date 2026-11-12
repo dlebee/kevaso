@@ -178,4 +178,63 @@ func parseList(out []byte) ([]testbed.Machine, error) {
 	return ms, sc.Err()
 }
 
-var _ testbed.Driver = (*Driver)(nil)
+// limaHome is $LIMA_HOME or ~/.lima.
+func limaHome() (string, error) {
+	if h := os.Getenv("LIMA_HOME"); h != "" {
+		return h, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".lima"), nil
+}
+
+// SSH implements testbed.SSHAccess from the ssh.config Lima writes for each instance.
+func (d *Driver) SSH(_ context.Context, m testbed.Machine) (testbed.SSHInfo, error) {
+	home, err := limaHome()
+	if err != nil {
+		return testbed.SSHInfo{}, err
+	}
+	b, err := os.ReadFile(filepath.Join(home, m.Name, "ssh.config"))
+	if err != nil {
+		return testbed.SSHInfo{}, err
+	}
+	return ParseSSHConfig(b)
+}
+
+// ParseSSHConfig reads Hostname, Port, User and IdentityFile from an OpenSSH config.
+func ParseSSHConfig(b []byte) (testbed.SSHInfo, error) {
+	var info testbed.SSHInfo
+	sc := bufio.NewScanner(bytes.NewReader(b))
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		if len(f) < 2 {
+			continue
+		}
+		val := strings.Trim(strings.Join(f[1:], " "), `"`)
+		switch strings.ToLower(f[0]) {
+		case "hostname":
+			info.Host = val
+		case "port":
+			if _, err := fmt.Sscan(val, &info.Port); err != nil {
+				return info, fmt.Errorf("ssh.config port %q", val)
+			}
+		case "user":
+			info.User = val
+		case "identityfile":
+			if info.KeyFile == "" { // the first one is Lima's own key
+				info.KeyFile = val
+			}
+		}
+	}
+	if info.Host == "" || info.Port == 0 || info.User == "" || info.KeyFile == "" {
+		return info, fmt.Errorf("ssh.config incomplete: %+v", info)
+	}
+	return info, nil
+}
+
+var (
+	_ testbed.Driver    = (*Driver)(nil)
+	_ testbed.SSHAccess = (*Driver)(nil)
+)

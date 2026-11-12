@@ -112,6 +112,19 @@ type Driver interface {
 	List(ctx context.Context) ([]Machine, error)
 }
 
+// SSHInfo is how to reach a machine over SSH (what kvoadm needs).
+type SSHInfo struct {
+	Host    string
+	Port    int
+	User    string // has passwordless sudo
+	KeyFile string // private key that logs in as User
+}
+
+// SSHAccess is implemented by drivers whose machines kvoadm can set up over SSH.
+type SSHAccess interface {
+	SSH(ctx context.Context, m Machine) (SSHInfo, error)
+}
+
 // Leftovers picks the machines a sweep should delete: every testbed machine not belonging to keep,
 // and, when olderThan > 0, only those created before now-olderThan (machines whose age is unknown are
 // included, since a leftover's age often is).
