@@ -20,7 +20,8 @@ import (
 // Who can do what until M4 brings RBAC:
 //   - the local admin socket and user certificates with role cluster-admin: everything;
 //   - hosts with role control-plane: everything (they run the controllers);
-//   - hosts with role worker: read everything, write only their own Host's status;
+//   - hosts with role worker: read everything, write only their own Host's status and the status
+//     of silos placed on them (they can't move a silo elsewhere);
 //   - anyone without a certificate: only POST /enroll, with a join token.
 type Auth struct {
 	CA      *pki.CA
@@ -65,7 +66,12 @@ func authorize(id pki.Identity, r *http.Request, t target) bool {
 		if r.Method == http.MethodGet {
 			return true
 		}
-		return r.Method == http.MethodPut && t.kind.Kind == "Host" && t.status && t.name == id.Name
+		if r.Method != http.MethodPut || !t.status {
+			return false
+		}
+		// Its own Host's status; a Silo's status only if the silo is placed on it (checked in
+		// update, which has the stored object).
+		return (t.kind.Kind == "Host" && t.name == id.Name) || t.kind.Kind == "Silo"
 	}
 	return false
 }

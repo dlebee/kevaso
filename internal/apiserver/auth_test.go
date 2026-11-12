@@ -177,6 +177,50 @@ func TestEnrollmentWithJoinToken(t *testing.T) {
 	}
 }
 
+func TestWorkerWritesOnlyItsOwnSilosStatus(t *testing.T) {
+	e := setupAuth(t)
+	_ = e.admin.Create(e.ctx, ns("dev"))
+	_ = e.admin.Create(e.ctx, host("hv2"))
+	mk := func(name, onHost string) {
+		s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev"},
+			Spec: v1.SiloSpec{Runtime: "cloud-hypervisor"}}
+		_ = e.admin.Create(e.ctx, s)
+		s.Status.Host = onHost
+		if err := e.admin.UpdateStatus(e.ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("mine", "hv2")
+	mk("theirs", "hv3")
+	tok, _ := e.tokens.Create(e.ctx, "hv2", []string{"worker"}, time.Hour)
+	cred, err := e.tlsClient(t, nil).Enroll(e.ctx, tok, "hv2", "worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := e.tlsClient(t, &cred)
+
+	var s v1.Silo
+	_ = worker.Get(e.ctx, "Silo", "dev", "mine", &s)
+	s.Status.Phase = "Running"
+	if err := worker.UpdateStatus(e.ctx, &s); err != nil {
+		t.Fatalf("worker writing its own silo's status: %v", err)
+	}
+	_ = worker.Get(e.ctx, "Silo", "dev", "mine", &s)
+	s.Status.Host = "hv9" // moving it elsewhere
+	if err := worker.UpdateStatus(e.ctx, &s); code(err) != http.StatusForbidden {
+		t.Fatalf("worker moving a silo: want 403, got %v", err)
+	}
+	var other v1.Silo
+	_ = worker.Get(e.ctx, "Silo", "dev", "theirs", &other)
+	other.Status.Phase = "Running"
+	if err := worker.UpdateStatus(e.ctx, &other); code(err) != http.StatusForbidden {
+		t.Fatalf("worker writing another host's silo: want 403, got %v", err)
+	}
+	if err := worker.Update(e.ctx, &s); code(err) != http.StatusForbidden {
+		t.Fatalf("worker writing a silo's spec: want 403, got %v", err)
+	}
+}
+
 func TestCertificateFromAnotherCAIsRejected(t *testing.T) {
 	e := setupAuth(t)
 	rogue, _ := pki.NewCA("rogue", time.Now())

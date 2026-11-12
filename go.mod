@@ -10,6 +10,7 @@ require (
 	golang.org/x/crypto v0.59.0
 	golang.org/x/term v0.48.0
 	kevaso.com/core/api v0.0.0-00010101000000-000000000000
+	kevaso.com/core/sdk v0.0.0-00010101000000-000000000000
 	modernc.org/sqlite v1.62.0
 )
 

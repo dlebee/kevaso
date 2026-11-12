@@ -429,6 +429,12 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 	}
 	oldMeta := old.GetObjectMeta()
 
+	if id, ok := IdentityFrom(ctx); ok && id.Type == "host" && id.Role == "worker" && t.kind.Kind == "Silo" {
+		oldHost, newHost := old.(*v1.Silo).Status.Host, obj.(*v1.Silo).Status.Host
+		if oldHost != id.Name || newHost != id.Name {
+			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s may only write the status of silos placed on it", id)
+		}
+	}
 	var next meta.Object
 	if t.status {
 		// /status: everything from the stored object except status.
