@@ -250,3 +250,29 @@ func TestFinalizersHoldDeletion(t *testing.T) {
 		t.Fatalf("after the last finalizer: want NotFound, got %v", err)
 	}
 }
+
+func TestRBACObjectsAreValidated(t *testing.T) {
+	c, ctx := setup(t)
+	tm := func(k string) meta.TypeMeta { return meta.TypeMeta{APIVersion: v1.APIVersion, Kind: k} }
+	good := &v1.RoleBinding{TypeMeta: tm("RoleBinding"), ObjectMeta: meta.ObjectMeta{Name: "bob", Namespace: "dev"},
+		RoleRef: v1.RoleRef{Kind: "ClusterRole", Name: "editor"}, Subjects: []v1.Subject{{Kind: "User", Name: "bob"}}}
+	if err := c.Create(ctx, good); err != nil {
+		t.Fatal(err)
+	}
+	for name, obj := range map[string]meta.Object{
+		"bad verb": &v1.Role{TypeMeta: tm("Role"), ObjectMeta: meta.ObjectMeta{Name: "r", Namespace: "dev"},
+			Rules: []v1.PolicyRule{{Verbs: []string{"exec"}, Resources: []string{"silos"}}}},
+		"no resources": &v1.ClusterRole{TypeMeta: tm("ClusterRole"), ObjectMeta: meta.ObjectMeta{Name: "r"},
+			Rules: []v1.PolicyRule{{Verbs: []string{"get"}}}},
+		"no subjects": &v1.RoleBinding{TypeMeta: tm("RoleBinding"), ObjectMeta: meta.ObjectMeta{Name: "b", Namespace: "dev"},
+			RoleRef: v1.RoleRef{Kind: "Role", Name: "r"}},
+		"bad subject kind": &v1.RoleBinding{TypeMeta: tm("RoleBinding"), ObjectMeta: meta.ObjectMeta{Name: "b", Namespace: "dev"},
+			RoleRef: v1.RoleRef{Kind: "Role", Name: "r"}, Subjects: []v1.Subject{{Kind: "Robot", Name: "x"}}},
+		"cluster binding to a Role": &v1.ClusterRoleBinding{TypeMeta: tm("ClusterRoleBinding"), ObjectMeta: meta.ObjectMeta{Name: "b"},
+			RoleRef: v1.RoleRef{Kind: "Role", Name: "r"}, Subjects: []v1.Subject{{Kind: "User", Name: "x"}}},
+	} {
+		if err := c.Create(ctx, obj); !client.IsInvalid(err) {
+			t.Errorf("%s: want Invalid, got %v", name, err)
+		}
+	}
+}

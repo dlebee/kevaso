@@ -33,6 +33,10 @@ var builtinRules = map[string][]Rule{
 		{`!has(self.spec.init) || !has(self.spec.init.steps) || self.spec.init.steps.all(a, self.spec.init.steps.exists_one(b, b.name == a.name))`,
 			"init step names must be unique"},
 	},
+	"Role":               rbacRuleRules,
+	"ClusterRole":        rbacRuleRules,
+	"RoleBinding":        append([]Rule{{`self.roleRef.kind in ['Role', 'ClusterRole']`, "roleRef.kind must be Role or ClusterRole"}}, bindingRules...),
+	"ClusterRoleBinding": append([]Rule{{`self.roleRef.kind == 'ClusterRole'`, "a ClusterRoleBinding can only grant a ClusterRole"}}, bindingRules...),
 	"Host": {
 		{`self.spec.address != ''`, "spec.address is required"},
 		{`has(self.spec.components.controlPlane) || has(self.spec.components.worker)`,
@@ -42,6 +46,20 @@ var builtinRules = map[string][]Rule{
 		{`!has(self.spec.components.worker) || !has(self.spec.components.worker.runtimes) || self.spec.components.worker.runtimes.all(r, r.name in ['cloud-hypervisor', 'openshell', 'docker', 'podman', 'openshell-container'])`,
 			"unknown runtime in spec.components.worker.runtimes"},
 	},
+}
+
+var rbacRuleRules = []Rule{
+	{`!has(self.rules) || self.rules.all(r, has(r.verbs) && r.verbs.size() > 0 && has(r.resources) && r.resources.size() > 0)`,
+		"every rule needs verbs and resources"},
+	{`!has(self.rules) || self.rules.all(r, r.verbs.all(v, v in ['*', 'get', 'list', 'watch', 'create', 'update', 'patch', 'delete']))`,
+		"verbs must be *, get, list, watch, create, update, patch or delete"},
+}
+
+var bindingRules = []Rule{
+	{`self.roleRef.name != ''`, "roleRef.name is required"},
+	{`has(self.subjects) && self.subjects.size() > 0`, "a binding needs at least one subject"},
+	{`self.subjects.all(s, s.kind in ['User', 'Group', 'ServiceAccount'] && s.name != '')`,
+		"every subject needs a name and a kind of User, Group or ServiceAccount"},
 }
 
 type compiledRule struct {

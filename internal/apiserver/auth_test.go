@@ -304,3 +304,18 @@ func TestTunnelAndExecAuthorization(t *testing.T) {
 		break
 	}
 }
+
+// With auth on, the built-in roles exist, and the cluster-admins group has cluster-admin.
+func TestBuiltinRolesAreSeeded(t *testing.T) {
+	e := setupAuth(t)
+	for _, name := range []string{"cluster-admin", "admin", "editor", "viewer", "runner"} {
+		var r v1.ClusterRole
+		if err := e.admin.Get(e.ctx, "ClusterRole", "", name, &r); err != nil || len(r.Rules) == 0 {
+			t.Errorf("ClusterRole %s: %v", name, err)
+		}
+	}
+	var b v1.ClusterRoleBinding
+	if err := e.admin.Get(e.ctx, "ClusterRoleBinding", "", "cluster-admins", &b); err != nil || b.Subjects[0].Name != "kevaso:cluster-admins" {
+		t.Fatalf("cluster-admins binding: %+v, %v", b, err)
+	}
+}

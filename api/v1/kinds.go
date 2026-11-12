@@ -27,6 +27,11 @@ func init() {
 	register(KindInfo{Kind: "Namespace", Plural: "namespaces", ShortNames: []string{"ns"}, Scope: Cluster, New: func() meta.Object { return &Namespace{} }})
 	register(KindInfo{Kind: "Host", Plural: "hosts", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &Host{} }})
 	register(KindInfo{Kind: "Silo", Plural: "silos", Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Silo{} }})
+	register(KindInfo{Kind: "Role", Plural: "roles", Scope: Namespaced, New: func() meta.Object { return &Role{} }})
+	register(KindInfo{Kind: "RoleBinding", Plural: "rolebindings", Scope: Namespaced, New: func() meta.Object { return &RoleBinding{} }})
+	register(KindInfo{Kind: "ClusterRole", Plural: "clusterroles", Scope: Cluster, New: func() meta.Object { return &ClusterRole{} }})
+	register(KindInfo{Kind: "ClusterRoleBinding", Plural: "clusterrolebindings", Scope: Cluster, New: func() meta.Object { return &ClusterRoleBinding{} }})
+	register(KindInfo{Kind: "ServiceAccount", Plural: "serviceaccounts", ShortNames: []string{"sa"}, Scope: Namespaced, New: func() meta.Object { return &ServiceAccount{} }})
 }
 
 // Lookup finds a kind by its name ("Silo") or plural ("silos").

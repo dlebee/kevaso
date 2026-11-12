@@ -8,21 +8,25 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"kevaso.com/core/internal/jointoken"
 	"kevaso.com/core/internal/pki"
+	"kevaso.com/core/internal/rbac"
 )
 
 // Auth turns on authentication. Without it (kevasod dev) every request is allowed, and the server
 // must only listen on loopback.
 //
-// Who can do what until M4 brings RBAC:
-//   - the local admin socket and user certificates with role cluster-admin: everything;
+// Who can do what:
+//   - the local admin socket: everything, whatever RBAC says (bootstrap and break-glass);
+//   - people and service accounts: what RBAC grants them (see internal/rbac). User certificates
+//     minted by kvoadm are in the cluster-admins group;
 //   - hosts with role control-plane: everything (they run the controllers);
 //   - hosts with role worker: read everything, write only their own Host's status and the status
 //     of silos placed on them (they can't move a silo elsewhere);
-//   - anyone without a certificate: only POST /enroll, with a join token.
+//   - anyone without credentials: only POST /enroll, with a join token.
 type Auth struct {
 	CA      *pki.CA
 	Tokens  *jointoken.Issuer
@@ -34,6 +38,8 @@ type ctxKey int
 const (
 	adminConnKey ctxKey = iota
 	identityKey
+	groupsKey
+	nsFilterKey
 )
 
 // LocalAdmin is the identity of whoever reaches the admin socket (root on the host).
@@ -56,10 +62,79 @@ func (s *Server) authenticate(r *http.Request) (pki.Identity, bool) {
 	return pki.Identity{}, false
 }
 
-func authorize(id pki.Identity, r *http.Request, t target) bool {
+// GroupsFrom returns the groups of a request's identity.
+func GroupsFrom(ctx context.Context) []string {
+	g, _ := ctx.Value(groupsKey).([]string)
+	return g
+}
+
+// groupsOf: what a certificate identity is a member of.
+func groupsOf(id pki.Identity) []string {
+	g := []string{rbac.Authenticated}
+	if id.Type == "user" && id.Role == "cluster-admin" {
+		g = append(g, rbac.ClusterAdmins)
+	}
+	return g
+}
+
+// attributes turns a request into RBAC terms.
+func attributes(id pki.Identity, groups []string, r *http.Request, t target) rbac.Attributes {
+	a := rbac.Attributes{User: id.Name, Groups: groups, Resource: t.kind.Plural, Namespace: t.namespace, Name: t.name}
+	if id.Type == "serviceaccount" {
+		a.User = id.Name // already system:serviceaccount:NS:NAME
+	}
 	switch {
-	case id.Role == "cluster-admin" && id.Type == "user":
-		return true
+	case t.exec:
+		a.Verb, a.Resource = "create", t.kind.Plural+"/exec"
+	case r.Method == http.MethodGet && t.name == "" && r.URL.Query().Get("watch") == "true":
+		a.Verb = "watch"
+	case r.Method == http.MethodGet && t.name == "":
+		a.Verb = "list"
+	case r.Method == http.MethodGet:
+		a.Verb = "get"
+	case r.Method == http.MethodPost:
+		a.Verb = "create"
+	case r.Method == http.MethodPut:
+		a.Verb = "update"
+	case r.Method == http.MethodPatch:
+		a.Verb = "patch"
+	case r.Method == http.MethodDelete:
+		a.Verb = "delete"
+	default:
+		a.Verb = strings.ToLower(r.Method)
+	}
+	if t.status {
+		a.Resource = t.kind.Plural + "/status"
+	}
+	return a
+}
+
+// authorizeRequest decides an API request. For people it asks RBAC; a person who may not list
+// namespaces still gets the list, cut down to the ones they have a role in.
+func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups []string, r *http.Request, t target) (allowed, filterNS bool, reason string, err error) {
+	if id == LocalAdmin {
+		return true, false, "local admin socket", nil
+	}
+	if id.Type == "host" {
+		if hostAuthorize(id, r, t) {
+			return true, false, "host " + id.Role, nil
+		}
+		return false, false, "hosts with role " + id.Role + " may not do this", nil
+	}
+	p, err := s.policy.Policy(ctx)
+	if err != nil {
+		return false, false, "", err
+	}
+	a := attributes(id, groups, r, t)
+	d := p.Authorize(a)
+	if !d.Allowed && t.kind.Kind == "Namespace" && a.Verb == "list" {
+		return true, true, "namespaces you have a role in", nil
+	}
+	return d.Allowed, false, d.Reason, nil
+}
+
+func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
+	switch {
 	case id.Role == "control-plane" && id.Type == "host":
 		return true
 	case id.Role == "worker" && id.Type == "host":
@@ -100,15 +175,27 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "a client certificate from this cluster is required"))
 			return
 		}
-		r = r.WithContext(context.WithValue(r.Context(), identityKey, id))
+		groups := groupsOf(id)
+		ctx := context.WithValue(context.WithValue(r.Context(), identityKey, id), groupsKey, groups)
+		r = r.WithContext(ctx)
 		if r.URL.Path == "/admin/certs" {
 			s.issueUserCert(w, r, id)
 			return
 		}
 		t, err := parsePath(r.URL.Path)
-		if err == nil && !authorize(id, r, t) {
-			writeErr(w, errf(http.StatusForbidden, "Forbidden", "%s may not %s %s", id, r.Method, r.URL.Path))
-			return
+		if err == nil {
+			ok, filter, reason, err := s.authorizeRequest(ctx, id, groups, r, t)
+			if err != nil {
+				writeErr(w, err)
+				return
+			}
+			if !ok {
+				writeErr(w, errf(http.StatusForbidden, "Forbidden", "%s: %s", id, reason))
+				return
+			}
+			if filter {
+				r = r.WithContext(context.WithValue(ctx, nsFilterKey, true))
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

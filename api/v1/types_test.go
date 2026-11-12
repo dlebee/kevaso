@@ -94,8 +94,8 @@ func TestLookup(t *testing.T) {
 	if _, ok := Lookup("pods"); ok {
 		t.Error("Lookup(pods) found something")
 	}
-	if got := len(Kinds()); got != 3 {
-		t.Errorf("%d kinds, want 3", got)
+	if got := len(Kinds()); got != 8 {
+		t.Errorf("%d kinds, want 8", got)
 	}
 }
 

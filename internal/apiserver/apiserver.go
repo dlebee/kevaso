@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/clock"
+	"kevaso.com/core/internal/rbac"
 	"kevaso.com/core/internal/store"
 
 	"github.com/hashicorp/yamux"
@@ -44,6 +46,7 @@ type Server struct {
 	h     http.Handler
 
 	tunnels tunnels // agents' dial-out connections, by host
+	policy  *rbac.Source
 }
 
 // New returns a server over a store, without authentication (kevasod dev, tests).
@@ -57,6 +60,12 @@ func NewWithAuth(s store.Store, c clock.Clock, auth *Auth) (*Server, error) {
 	}
 	srv := &Server{store: s, clock: c, valid: v, mux: http.NewServeMux(), auth: auth}
 	srv.tunnels.sess = map[string]*yamux.Session{}
+	srv.policy = &rbac.Source{Store: s}
+	if auth != nil {
+		if err := srv.ensureBuiltins(context.Background()); err != nil {
+			return nil, err
+		}
+	}
 	srv.mux.HandleFunc("/apis/kevaso/v1/", srv.route)
 	srv.mux.HandleFunc("/agent/connect", srv.agentConnect)
 	srv.mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
@@ -232,6 +241,16 @@ func (s *Server) list(ctx context.Context, w http.ResponseWriter, t target) {
 		return
 	}
 	l := List{APIVersion: v1.APIVersion, Kind: t.kind.Kind + "List", Metadata: ListMeta{ResourceVersion: strconv.FormatInt(rev, 10)}, Items: []json.RawMessage{}}
+	if filter, _ := ctx.Value(nsFilterKey).(bool); filter {
+		id, _ := IdentityFrom(ctx)
+		p, err := s.policy.Policy(ctx)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		mine := p.NamespacesFor(rbac.Attributes{User: id.Name, Groups: GroupsFrom(ctx)})
+		objs = slices.DeleteFunc(objs, func(o store.Object) bool { return !slices.Contains(mine, o.Name) })
+	}
 	for _, o := range objs {
 		b, err := render(o)
 		if err != nil {
@@ -560,4 +579,24 @@ func setField(obj meta.Object, name string, val any) {
 	if v.IsValid() && val != nil {
 		v.Set(reflect.ValueOf(val))
 	}
+}
+
+// ensureBuiltins creates the built-in roles and the cluster-admins binding if they're missing.
+// (Changing them is allowed; deleting one brings it back on the next start.)
+func (s *Server) ensureBuiltins(ctx context.Context) error {
+	var objs []meta.Object
+	for _, r := range rbac.BuiltinRoles() {
+		objs = append(objs, r)
+	}
+	for _, b := range rbac.BuiltinBindings() {
+		objs = append(objs, b)
+	}
+	for _, o := range objs {
+		k, _ := v1.Lookup(o.GetTypeMeta().Kind)
+		_, err := s.create(ctx, target{kind: k, name: o.GetObjectMeta().Name}, o)
+		if err != nil && !errors.Is(err, store.ErrExists) {
+			return fmt.Errorf("built-in %s %s: %w", k.Kind, o.GetObjectMeta().Name, err)
+		}
+	}
+	return nil
 }
