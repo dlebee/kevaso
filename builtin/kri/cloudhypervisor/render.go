@@ -26,11 +26,19 @@ const (
 	unitPrefix = "kevaso-silo-"
 )
 
-// Network is the silos' private network on this host (M5 gives each host its own /24).
+// Network is the silos' private network on this host: the mesh gives each host its own /24
+// (10.64.<index>.0/24); a host without the mesh uses 10.64.0.0/24. Set it with SetNetwork before
+// Install.
 var Network = netip.MustParsePrefix("10.64.0.0/24")
 
-// Gateway is the host's address on the bridge.
+// Gateway is the host's address on the bridge: the subnet's first address.
 var Gateway = netip.MustParseAddr("10.64.0.1")
+
+// SetNetwork sets this host's silo subnet (one Cloud Hypervisor runtime per kevasod).
+func SetNetwork(p netip.Prefix) {
+	Network = p.Masked()
+	Gateway = Network.Addr().Next()
+}
 
 // short is a stable 10-hex-digit name for a silo: device names (TAP: 15 chars max), LVs, units.
 func short(id kri.ID) string {

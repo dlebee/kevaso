@@ -28,6 +28,7 @@ import (
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
+	"kevaso.com/core/internal/mesh"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/store"
 	"kevaso.com/core/internal/worker"
@@ -44,6 +45,7 @@ type Config struct {
 	AdminSocket string // e.g. /run/kevaso/admin.sock
 	Heartbeat   time.Duration
 	HostLease   time.Duration // a host without a heartbeat this long is lost (default 40s)
+	Mesh        bool          // put this host on the WireGuard mesh (Linux; off in tests)
 	Clock       clock.Clock
 	// Worker, when set, also runs the worker component on this host (one-host clusters).
 	Worker *worker.Config
@@ -151,9 +153,17 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	hbCtx, stopHB := context.WithCancel(ctx)
 	go heartbeat(hbCtx, admin, cfg)
 	go runControllers(hbCtx, admin, cfg)
+	if cfg.Mesh {
+		m := &mesh.Agent{Client: admin, HostName: cfg.HostName, Dir: filepath.Join(cfg.DataDir, "mesh"), Log: cfg.Log}
+		go func() {
+			if err := m.Run(hbCtx); err != nil {
+				cfg.Log("mesh: %v", err)
+			}
+		}()
+	}
 	if cfg.Worker != nil {
 		wc := *cfg.Worker
-		wc.HostName, wc.Clock, wc.Log = cfg.HostName, cfg.Clock, cfg.Log
+		wc.HostName, wc.Clock, wc.Log, wc.MeshSubnet = cfg.HostName, cfg.Clock, cfg.Log, cfg.Mesh
 		if wc.DataDir == "" {
 			wc.DataDir = cfg.DataDir
 		}

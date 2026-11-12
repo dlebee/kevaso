@@ -53,6 +53,17 @@ type HostSpec struct {
 	// Unschedulable: no new silos land here (kvoadm host drain sets it; silos already here stay
 	// unless drain moves them).
 	Unschedulable bool `json:"unschedulable,omitempty"`
+	// Network: how the mesh reaches this machine.
+	Network HostNetwork `json:"network,omitempty"`
+}
+
+// HostNetwork is what the mesh needs to know about a machine's reachability (design §7).
+type HostNetwork struct {
+	// BehindNAT: nothing unsolicited reaches this machine (a box at home). It dials out to public
+	// hosts; to other NAT'd hosts it goes through a relay, end-to-end encrypted.
+	BehindNAT bool `json:"behindNAT,omitempty"`
+	// ListenPort is the WireGuard port on Address (default 51820), for public hosts.
+	ListenPort int `json:"listenPort,omitempty"`
 }
 
 // HostComponents are installed explicitly; there's no hidden all-in-one mode.
@@ -103,6 +114,19 @@ type HostStatus struct {
 	Runtimes      map[string]RuntimeStatus `json:"runtimes,omitempty"`
 	// Allocatable is what the worker offers to silos (after what the host itself needs).
 	Allocatable Resources `json:"allocatable,omitempty"`
+	// Network is the host's place on the mesh: its index and addresses (assigned by the control
+	// plane) and its WireGuard public keys (published by the host; private keys never leave it).
+	Network NetworkStatus `json:"network,omitempty"`
+}
+
+// NetworkStatus is a host's mesh identity.
+type NetworkStatus struct {
+	Index          int    `json:"index,omitempty"`          // 1…255, assigned once
+	MeshIP         string `json:"meshIP,omitempty"`         // on kevaso0, e.g. 10.63.0.3
+	SiloSubnet     string `json:"siloSubnet,omitempty"`     // its silos, e.g. 10.64.3.0/24
+	PublicKey      string `json:"publicKey,omitempty"`      // kevaso0's WireGuard key
+	InnerIP        string `json:"innerIP,omitempty"`        // behind NAT: on the end-to-end tunnel kevaso1
+	InnerPublicKey string `json:"innerPublicKey,omitempty"` // kevaso1's key
 }
 
 // RuntimeStatus is one installed runtime's state on a worker.

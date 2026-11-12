@@ -457,3 +457,25 @@ func ed25519Pub(t *testing.T) ssh.PublicKey {
 	}
 	return p
 }
+
+func TestSetNetworkAndFirewall(t *testing.T) {
+	saved, savedGW := Network, Gateway
+	defer func() { Network, Gateway = saved, savedGW }()
+	SetNetwork(netip.MustParsePrefix("10.64.7.0/24"))
+	if Gateway.String() != "10.64.7.1" {
+		t.Fatalf("gateway %s", Gateway)
+	}
+	if ip, _ := AllocateIP(nil); ip.String() != "10.64.7.2" {
+		t.Fatalf("first silo %s", ip)
+	}
+	nft := NFT()
+	for _, want := range []string{
+		"ip saddr 10.64.7.0/24 ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16 }", // NAT only to the internet
+		`iifname "kvbr0" ip daddr { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16 } drop`,     // no other hosts' silos, no mesh hosts
+		`iifname "kvt*" oifname "kvt*" drop`,                                             // no silo-to-silo on the bridge
+	} {
+		if !strings.Contains(nft, want) {
+			t.Errorf("firewall missing %q:\n%s", want, nft)
+		}
+	}
+}

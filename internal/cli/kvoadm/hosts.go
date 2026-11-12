@@ -28,6 +28,7 @@ type HostAddOptions struct {
 	Advertise   string // the Host's address, if not the SSH one
 	KvoContext  string // the kvo context to act as (a cluster-admin)
 	ServerForIt string // the API URL as the new host reaches it (default: the context's)
+	BehindNAT   bool   // nothing unsolicited reaches it (a box at home)
 }
 
 func parseHostAdd(args []string) (HostAddOptions, error) {
@@ -71,6 +72,8 @@ func parseHostAdd(args []string) (HostAddOptions, error) {
 			o.KvoContext, err = val()
 		case "--server":
 			o.ServerForIt, err = val()
+		case "--behind-nat":
+			o.BehindNAT = true
 		default:
 			rest = append(rest, a)
 		}
@@ -166,7 +169,7 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 		runtimes = append(runtimes, v1.RuntimeSpec{Name: r})
 	}
 	h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: o.Name},
-		Spec: v1.HostSpec{Address: o.Advertise, Region: o.Region, Zone: o.Zone,
+		Spec: v1.HostSpec{Address: o.Advertise, Region: o.Region, Zone: o.Zone, Network: v1.HostNetwork{BehindNAT: o.BehindNAT},
 			Components: v1.HostComponents{Worker: &v1.WorkerSpec{Labels: o.Labels, Runtimes: runtimes}}}}
 	if err := c.Create(ctx, h); err != nil && !client.IsAlreadyExists(err) {
 		return fmt.Errorf("register host %s: %w", o.Name, err)

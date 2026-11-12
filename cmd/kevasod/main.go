@@ -39,6 +39,7 @@ import (
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controlplane"
+	"kevaso.com/core/internal/mesh"
 	"kevaso.com/core/internal/store"
 	"kevaso.com/core/internal/worker"
 )
@@ -98,6 +99,7 @@ func runControlPlane(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.AdminSocket, "admin-socket", defaultAdminSocket, "admin unix socket")
 	fs.StringVar(&cfg.ClusterName, "cluster", "kevaso", "cluster name")
 	fs.Var(&extra, "extra-name", "more names or IPs for the API certificate (repeatable)")
+	fs.BoolVar(&cfg.Mesh, "mesh", true, "put this host on the WireGuard mesh")
 	var runtimes, labels multi
 	withWorker := fs.Bool("worker", false, "also run the worker component on this host")
 	fs.Var(&runtimes, "runtime", "runtime to install for the worker (repeatable; default cloud-hypervisor)")
@@ -143,6 +145,7 @@ func runWorker(ctx context.Context, args []string) error {
 	loop := fs.String("loop-storage", "", "development only: back silo disks with this sparse file")
 	loopSize := fs.String("loop-size", "64G", "size of the loop storage file")
 	every := fs.Duration("heartbeat", 10*time.Second, "how often to report")
+	withMesh := fs.Bool("mesh", true, "put this host on the WireGuard mesh")
 	_ = fs.Parse(args)
 	if jc.HostName == "" || jc.Server == "" {
 		return errors.New("worker needs --name and --server")
@@ -167,12 +170,20 @@ func runWorker(ctx context.Context, args []string) error {
 	logger.Printf("joined %s as host %s", jc.Server, jc.HostName)
 	contact := &worker.Contact{}
 	wc := worker.Config{HostName: jc.HostName, Runtimes: runtimes, DataDir: jc.DataDir, Clock: clock.Real{}, Log: logger.Printf,
-		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize}, Contact: contact}
+		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize}, Contact: contact, MeshSubnet: *withMesh}
 	rts, err := worker.NewRuntimes(wc)
 	if err != nil {
 		return err
 	}
 	go worker.Heartbeat(ctx, c, jc.HostName, *every, clock.Real{}, logger.Printf, contact)
+	if *withMesh {
+		m := &mesh.Agent{Client: c, HostName: jc.HostName, Dir: filepath.Join(jc.DataDir, "mesh"), Log: logger.Printf}
+		go func() {
+			if err := m.Run(ctx); err != nil {
+				logger.Printf("mesh: %v", err)
+			}
+		}()
+	}
 	worker.Run(ctx, c, wc, rts)
 	return nil
 }

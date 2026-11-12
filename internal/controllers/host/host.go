@@ -1,11 +1,13 @@
-// Package host is the control plane's host-lease controller: a host whose kevasod stops reporting
-// is marked lost (Ready Unknown, reason HostLost) once its lease runs out, which is what the silo
-// controller's onHostLoss policies act on.
+// Package host is the control plane's host controller. It gives every host its place on the mesh
+// (an index, its mesh IP and silo subnet), and runs the host lease: a host whose kevasod stops
+// reporting is marked lost (Ready Unknown, reason HostLost) once its lease runs out, which is what
+// the silo controller's onHostLoss policies act on.
 package host
 
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"kevaso.com/core/api/client"
@@ -14,6 +16,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/mesh"
 )
 
 // DefaultLease is how long a host may go without a heartbeat before it's lost. Agents fence
@@ -56,6 +59,45 @@ type Controller struct {
 	Hosts  *informer.Informer
 	Clock  clock.Clock
 	Lease  time.Duration
+
+	mu       sync.Mutex
+	assigned map[string]int // indexes written but maybe not in the cache yet (like an assume cache)
+}
+
+// assignIndex gives h its mesh index if it has none, reporting whether it wrote. Called with c.mu
+// held.
+func (c *Controller) assignIndex(ctx context.Context, h *v1.Host) (bool, error) {
+	if h.Status.Network.Index > 0 {
+		delete(c.assigned, h.Name)
+		return false, nil
+	}
+	if c.assigned == nil {
+		c.assigned = map[string]int{}
+	}
+	var hosts []*v1.Host
+	for _, o := range c.Hosts.List() {
+		x := o.(*v1.Host)
+		if i, ok := c.assigned[x.Name]; ok && x.Status.Network.Index == 0 && x.Name != h.Name {
+			x.Status.Network.Index = i
+		}
+		hosts = append(hosts, x)
+	}
+	got, err := mesh.AssignIndexes(hosts)
+	if err != nil {
+		return false, err
+	}
+	i, ok := got[h.Name]
+	if !ok {
+		return false, nil
+	}
+	n := &h.Status.Network
+	n.Index = i
+	n.MeshIP, n.SiloSubnet, n.InnerIP = mesh.Addresses(i)
+	if err := c.Client.UpdateStatus(ctx, h); err != nil {
+		return false, err
+	}
+	c.assigned[h.Name] = i
+	return true, nil
 }
 
 // Name implements engine.Controller.
@@ -71,6 +113,15 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		return engine.Result{}, nil
 	}
 	h := o.(*v1.Host)
+	c.mu.Lock()
+	wrote, err := c.assignIndex(ctx, h)
+	c.mu.Unlock()
+	if err != nil {
+		return engine.Result{}, err
+	}
+	if wrote {
+		return engine.Result{RequeueAfter: 10 * time.Millisecond}, nil // continue from fresh state
+	}
 	lease := c.Lease
 	if lease <= 0 {
 		lease = DefaultLease

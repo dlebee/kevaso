@@ -134,14 +134,20 @@ func (r *Runtime) installPackages(ctx context.Context) error {
 	return r.run(ctx, "env", append([]string{"DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "-qq"}, missing...)...)
 }
 
-// NFT is the host's silo firewall: NAT out, and no silo-to-silo traffic on the bridge (default
-// deny; allowFrom and NetworkPolicy open it in M6).
-const NFT = `table inet kevaso_nat
+// NFT is the host's silo firewall: NAT out to the internet; no silo-to-silo traffic, on the bridge
+// or across the mesh to other hosts' silos; and silos can't reach the mesh's host addresses
+// (default deny; allowFrom and NetworkPolicy open what's wanted in M6).
+func NFT() string {
+	return `table inet kevaso_nat
 delete table inet kevaso_nat
 table inet kevaso_nat {
   chain postrouting {
     type nat hook postrouting priority srcnat; policy accept;
-    ip saddr 10.64.0.0/24 oifname != "` + Bridge + `" masquerade
+    ip saddr ` + Network.String() + ` ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16 } oifname != "` + Bridge + `" masquerade
+  }
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    iifname "` + Bridge + `" ip daddr { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16 } drop
   }
 }
 table bridge kevaso_silos
@@ -153,6 +159,7 @@ table bridge kevaso_silos {
   }
 }
 `
+}
 
 func (r *Runtime) setupNetwork(ctx context.Context) error {
 	if _, err := r.Host.Run(ctx, "ip", "link", "show", Bridge); err != nil {
@@ -169,7 +176,7 @@ func (r *Runtime) setupNetwork(ctx context.Context) error {
 	if err := r.run(ctx, "sysctl", "-qw", "net.ipv4.ip_forward=1"); err != nil {
 		return err
 	}
-	if err := r.Host.WriteFile("/etc/kevaso-silos.nft", []byte(NFT), 0o600); err != nil {
+	if err := r.Host.WriteFile("/etc/kevaso-silos.nft", []byte(NFT()), 0o600); err != nil {
 		return err
 	}
 	return r.run(ctx, "nft", "-f", "/etc/kevaso-silos.nft")

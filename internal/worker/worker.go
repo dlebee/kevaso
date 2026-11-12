@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -41,6 +42,9 @@ type Config struct {
 	// (stops silos that may be recreated elsewhere) when it's too old. Nil: never fence (the
 	// control plane's own host).
 	Contact *Contact
+	// MeshSubnet: wait for the control plane to give this host its silo subnet (on the mesh) and
+	// use it; without, silos use 10.64.0.0/24.
+	MeshSubnet bool
 }
 
 // Installer is a runtime that needs setting up on the host first.
@@ -140,11 +144,19 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 			cfg.Log("worker status: %v", err)
 		}
 	}
-	// The control plane registers the Host; wait for it before reporting worker fields.
+	// The control plane registers the Host (and, on the mesh, gives it a subnet); wait for it
+	// before reporting worker fields and installing runtimes.
 	for {
 		var h v1.Host
 		if err := c.Get(ctx, "Host", "", cfg.HostName, &h); err == nil {
-			break
+			if !cfg.MeshSubnet {
+				break
+			}
+			if p, err := netip.ParsePrefix(h.Status.Network.SiloSubnet); err == nil {
+				cloudhypervisor.SetNetwork(p)
+				cfg.Log("silo subnet %s", p)
+				break
+			}
 		}
 		select {
 		case <-ctx.Done():
