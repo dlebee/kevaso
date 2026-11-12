@@ -14,18 +14,20 @@ import (
 )
 
 func TestParseInit(t *testing.T) {
-	o, err := parseInit([]string{"ubuntu@203.0.113.10", "--kevasod", "/k", "--ssh-port", "2222", "--name", "cp-1"})
+	o, err := parseInit([]string{"ubuntu@203.0.113.10", "--kevasod", "/k", "--ssh-port", "2222", "--name", "cp-1", "--ssh-key", "/key"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if o.User != "ubuntu" || o.Address != "203.0.113.10" || o.SSHPort != 2222 || o.Name != "cp-1" || o.Kevasod != "/k" {
 		t.Fatalf("parsed %+v", o)
 	}
-	o, _ = parseInit([]string{"203.0.113.10", "--kevasod", "/k"})
+	o, _ = parseInit([]string{"203.0.113.10", "--kevasod", "/k", "--password"})
 	if o.User != "root" || o.Name != "203-0-113-10" {
 		t.Fatalf("defaults: %+v", o)
 	}
-	for _, bad := range [][]string{{}, {"a", "b", "--kevasod", "/k"}, {"a"}, {"a", "--kevasod", "/k", "--bogus"}, {"a", "--ssh-port", "x", "--kevasod", "/k"}} {
+	for _, bad := range [][]string{{}, {"a", "b", "--kevasod", "/k"}, {"a"}, {"a", "--kevasod", "/k", "--bogus"}, {"a", "--ssh-port", "x", "--kevasod", "/k"},
+		{"a", "--kevasod", "/k"}, // how to log in: a key, or --password, said explicitly
+		{"a", "--kevasod", "/k", "--ssh-key", "/key", "--password"}} {
 		if _, err := parseInit(bad); err == nil {
 			t.Errorf("%v accepted", bad)
 		}
@@ -127,7 +129,7 @@ func TestUnit(t *testing.T) {
 
 func TestParseHostAdd(t *testing.T) {
 	o, err := parseHostAdd([]string{"root@198.51.100.30", "--name", "worker-1", "--install", "worker", "--label", "gpu=no",
-		"--region", "ca-central", "--zone", "tor", "--kevasod", "/k", "--address", "10.0.0.5", "--server", "https://10.0.0.1:6443"})
+		"--region", "ca-central", "--zone", "tor", "--kevasod", "/k", "--address", "10.0.0.5", "--server", "https://10.0.0.1:6443", "--ssh-key", "/key"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,5 +165,54 @@ func TestDrainPlan(t *testing.T) {
 	move, stay := DrainPlan("hv1", []*v1.Silo{mk("runner", "hv1", "Recreate"), mk("db", "hv1", ""), mk("web", "hv1", "Wait"), mk("other", "hv2", "Recreate")})
 	if len(move) != 1 || move[0].Name != "runner" || len(stay) != 2 {
 		t.Fatalf("move %v stay %v", move, stay)
+	}
+}
+
+func TestAssess(t *testing.T) {
+	good := map[string]string{"os": "Ubuntu 24.04.1 LTS", "arch": "x86_64", "uid": "0", "systemd": "yes", "openssl": "yes", "apt": "yes",
+		"kvm": "yes", "cpus": "4", "memory_mib": "8000", "disk_free_gib": "70", "password_login": "no", "kevasod": "absent", "port_6443": "free"}
+	for _, r := range Assess(good) {
+		if r.Level != "ok" {
+			t.Errorf("a good machine: %+v", r)
+		}
+	}
+	bad := map[string]string{}
+	for k, v := range good {
+		bad[k] = v
+	}
+	bad["arch"], bad["systemd"], bad["kvm"], bad["password_login"], bad["port_6443"] = "riscv64", "no", "no", "yes", "taken"
+	levels := map[string]string{}
+	for _, r := range Assess(bad) {
+		levels[r.What] = r.Level
+	}
+	for what, want := range map[string]string{"CPU": "fail", "systemd": "fail", "KVM": "warn", "SSH password login": "warn", "port 6443": "fail"} {
+		if levels[what] != want {
+			t.Errorf("%s: %s, want %s", what, levels[what], want)
+		}
+	}
+}
+
+func TestWithWorker(t *testing.T) {
+	cp := Unit(InitOptions{Name: "hv1", Address: "203.0.113.10", Cluster: "home"})
+	got, err := WithWorker(cp, InitOptions{Runtimes: []string{"docker", "cloud-hypervisor"}, LoopStorage: "40G"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "ExecStart=/usr/local/bin/kevasod control-plane --name hv1 --address 203.0.113.10 --cluster home --worker --runtime docker --runtime cloud-hypervisor --loop-storage /var/lib/kevaso-storage.img --loop-size 40G\n") {
+		t.Fatalf("unit:\n%s", got)
+	}
+	// Again, with other runtimes: the worker flags are replaced, not added to.
+	again, _ := WithWorker(got, InitOptions{Runtimes: []string{"podman"}})
+	if strings.Count(again, "--worker") != 1 || strings.Contains(again, "docker") || strings.Contains(again, "loop") || !strings.Contains(again, "--runtime podman") {
+		t.Fatalf("re-run:\n%s", again)
+	}
+	if _, err := WithWorker("[Service]\nExecStart=/usr/local/bin/kevasod worker --name x\n", InitOptions{}); err == nil {
+		t.Fatal("rewrote a worker-only unit")
+	}
+	if Unit(InitOptions{Name: "a", Address: "b", Cluster: "c", Worker: true}) != func() string {
+		u, _ := WithWorker(Unit(InitOptions{Name: "a", Address: "b", Cluster: "c"}), InitOptions{})
+		return u
+	}() {
+		t.Error("init --worker and init + enable-worker should give the same unit")
 	}
 }

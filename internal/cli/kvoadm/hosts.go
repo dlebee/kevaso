@@ -267,7 +267,7 @@ func hostList(ctx context.Context, kctx string, out io.Writer) error {
 // hostCmd dispatches kvoadm host add|list|… .
 func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("host needs add, list, drain or uncordon")
+		return errors.New("host needs add, enable-worker, list, drain or uncordon")
 	}
 	switch args[0] {
 	case "add":
@@ -276,6 +276,8 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 			return err
 		}
 		return hostAdd(ctx, o, stdin, out)
+	case "enable-worker":
+		return enableWorker(ctx, args[1:], stdin, out)
 	case "list":
 		kctx := ""
 		if len(args) == 3 && args[1] == "--context" {

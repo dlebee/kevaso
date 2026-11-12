@@ -1,19 +1,22 @@
-// Package kvoadm is the operator CLI: `kvoadm init` sets up a fresh machine over SSH, installs the
-// control plane on it, and gives you working `kvo` credentials; `kvoadm users` invites people
-// (one-time codes for `kvo login`), lists and disables them.
+// Package kvoadm is the operator CLI. Setting up a machine is a few explicit steps
+// (docs/guide/02-install.md), each one doing one thing:
 //
-//	kvoadm init [USER@]ADDRESS [--name NAME] [--ssh-port 22] [--ssh-key PATH] [--host-key SHA256:…]
-//	            [--kevasod PATH] [--api-server URL] [--cluster NAME] [--user NAME]
-//	            [--worker [--loop-storage SIZE]]   also run silos on this host (one-host cluster)
-//
-// Without --ssh-key, the password is asked for once, after the host key is trusted, used for one
-// connection, then the machine is switched to key-only and its root password rotated (research
-// E016–E017). kevasod is installed only after its signature verifies on the host (E018).
-//
+//	kvoadm check [USER@]ADDRESS --ssh-key PATH --host-key SHA256:…   look before changing anything
+//	kvoadm init  [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME]
+//	             [--api-server URL] [--cluster NAME] [--user NAME]      the control plane, your kvo
+//	                                                                    context, the recovery key
+//	kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime R]… [--loop-storage SIZE]
+//	                                                                    the same machine runs silos too
+//	kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker …   another machine
+//	kvoadm host list | drain NAME | uncordon NAME
+//	kvoadm users invite NAME [--namespace NS [--role editor]] | list | disable NAME
 //	kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
 //
-// rotates the master key for secrets over SSH (and, with --new-recovery-key, replaces a leaked
-// recovery key).
+// kvoadm logs in with the SSH key you made for it (--ssh-key), checking the machine's host key
+// against the fingerprint you give (--host-key) or asking you to confirm it. --password instead
+// logs in with a password once and then switches the machine to keys only, its root password
+// rotated (research E016–E017). kevasod is installed only after its signature verifies on the host
+// (E018). init --worker is init and enable-worker in one go.
 package kvoadm
 
 import (
@@ -55,6 +58,17 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return 0
 	}
+	if len(args) > 0 && args[0] == "check" {
+		ok, err := checkCmd(ctx, args[1:], stdin, stdout)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 1
+		}
+		if !ok {
+			return 1
+		}
+		return 0
+	}
 	if len(args) > 0 && args[0] == "kms" {
 		if err := kmsCmd(ctx, args[1:], stdin, stdout); err != nil {
 			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
@@ -70,7 +84,15 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return 0
 	}
 	if len(args) == 0 || args[0] != "init" {
-		_, _ = fmt.Fprintln(stderr, "usage: kvoadm init [USER@]ADDRESS [--ssh-key PATH] [--host-key SHA256:…] [--kevasod PATH]\n       kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME\n       kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]")
+		_, _ = fmt.Fprintln(stderr, `usage:
+  kvoadm check [USER@]ADDRESS --ssh-key PATH --host-key SHA256:…
+  kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL]
+  kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime NAME]… [--loop-storage SIZE]
+  kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker [--runtime NAME]…
+  kvoadm host list | drain NAME | uncordon NAME
+  kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME
+  kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
+The step-by-step guide: docs/guide/02-install.md`)
 		return 2
 	}
 	o, err := parseInit(args[1:])
@@ -96,9 +118,22 @@ type InitOptions struct {
 	EgressExtraCA                                                                     string   // a PEM file on the host the egress gate also trusts upstream
 	Runtimes                                                                          []string // worker runtimes (default cloud-hypervisor)
 	GatewayScope                                                                      string   // OpenShell: host | namespace | silo
+	Password                                                                          bool     // log in with a password once (no --ssh-key): kvoadm then switches the machine to its own key
 }
 
 func parseInit(args []string) (InitOptions, error) {
+	o, err := parseTarget(args)
+	if err != nil {
+		return o, err
+	}
+	if o.Kevasod == "" {
+		return o, errors.New("--kevasod PATH is required: a kevasod binary for the host's OS and CPU (release downloads come later)")
+	}
+	return o, needCredential(o)
+}
+
+// parseTarget reads the target and the flags every command that logs in to a machine shares.
+func parseTarget(args []string) (InitOptions, error) {
 	o := InitOptions{SSHPort: 22, Cluster: "kevaso"}
 	var target string
 	for i := 0; i < len(args); i++ {
@@ -131,6 +166,8 @@ func parseInit(args []string) (InitOptions, error) {
 			if v, err = next(); err == nil {
 				o.SSHPort, err = strconv.Atoi(v)
 			}
+		case "--password":
+			o.Password = true
 		case "--accept-host-key-on-first-use":
 			o.HostKeyFirstUse = true
 		case "--worker":
@@ -161,7 +198,7 @@ func parseInit(args []string) (InitOptions, error) {
 		}
 	}
 	if target == "" {
-		return o, errors.New("init needs a target: [USER@]ADDRESS")
+		return o, errors.New("which machine? give [USER@]ADDRESS")
 	}
 	o.User, o.Address = "root", target
 	if u, a, ok := strings.Cut(target, "@"); ok {
@@ -175,10 +212,19 @@ func parseInit(args []string) (InitOptions, error) {
 			o.UserName = strings.ToLower(u.Username)
 		}
 	}
-	if o.Kevasod == "" {
-		return o, errors.New("--kevasod PATH is required: a kevasod binary for the host's OS and CPU (release downloads come later)")
-	}
 	return o, nil
+}
+
+// needCredential: kvoadm logs in with the SSH key you made for it, or, only if you say so, with a
+// password once (docs/guide/02-install.md explains both).
+func needCredential(o InitOptions) error {
+	if o.SSHKey == "" && !o.Password {
+		return errors.New("how should kvoadm log in? --ssh-key PATH (a key you made with ssh-keygen and put on the machine: see docs/guide/02-install.md), or --password to type the password once (kvoadm then switches the machine to keys only)")
+	}
+	if o.SSHKey != "" && o.Password {
+		return errors.New("--ssh-key or --password, not both")
+	}
+	return nil
 }
 
 // ElfArch maps a Linux binary's machine type to `uname -m` names.
@@ -284,23 +330,7 @@ func Unit(o InitOptions) string {
 		args = append(args, "--extra-name", o.Address)
 	}
 	if o.Worker {
-		args = append(args, "--worker")
-		rts := o.Runtimes
-		if len(rts) == 0 {
-			rts = []string{"cloud-hypervisor"}
-		}
-		for _, r := range rts {
-			args = append(args, "--runtime", r)
-		}
-		if o.GatewayScope != "" {
-			args = append(args, "--openshell-gateway-scope", o.GatewayScope)
-		}
-		if o.LoopStorage != "" {
-			args = append(args, "--loop-storage", "/var/lib/kevaso-storage.img", "--loop-size", o.LoopStorage)
-		}
-		if o.EgressExtraCA != "" {
-			args = append(args, "--egress-extra-ca", o.EgressExtraCA)
-		}
+		args = append(args, workerArgs(o)...)
 	}
 	return `[Unit]
 Description=Kevaso control plane (kevasod)
