@@ -3,7 +3,7 @@
 Self-hosted, stateful **silos** (microVMs or containers) on the machines you bring, managed
 Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for operators.
 
-**Status:** early (M0–M5 of [MILESTONES.md](MILESTONES.md) done). What exists today:
+**Status:** early (M0–M6 of [MILESTONES.md](MILESTONES.md) done). What exists today:
 
 - `kvoadm init [USER@]ADDRESS --kevasod PATH`: sets up a fresh Linux machine over SSH (host key
   pinned or confirmed first, password used once then keys only, root password rotated, signed
@@ -28,6 +28,11 @@ Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for
   by the control plane (each its own silo subnet; boxes behind NAT reach each other through a relay,
   end-to-end encrypted inside it, so the relay sees only UDP). Placement by region/zone, host
   leases, `onHostLoss: Wait | Recreate` with agent-side fencing, `kvoadm host drain / uncordon / list`;
+- services: every silo can carry its own (`spec.service`): a private name
+  (`NAME.NAMESPACE.kevaso`, served on each worker), and exposure with `hostPort` or a load balancer
+  (`worker-ip`, `ip-pool` from an `IPPool`), raw TCP/UDP with the client's IP kept. Its outbound
+  address can be the host's, the service's, or its own pool address. Silo-to-silo traffic is denied
+  until the receiving silo's `allowFrom` opens it; exposing publicly needs its own permission;
 - under the hood: a store with global revisions and resumable watches, CEL validation, a controller
   engine; the testbed and end-to-end loop (`make e2e`).
 

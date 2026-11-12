@@ -118,6 +118,9 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, log func
 }
 
 func applyNFT(ctx context.Context, rules string) error {
+	// Connection tracking on the bridge (for same-host allowFrom replies) is its own module, and
+	// nft doesn't load it by itself.
+	_ = exec.CommandContext(ctx, "modprobe", "nf_conntrack_bridge").Run()
 	const path = "/etc/kevaso-silos.nft"
 	if err := (cloudhypervisor.Local{}).WriteFile(path, []byte(rules), 0o600); err != nil {
 		return err
@@ -173,6 +176,9 @@ func syncPoolAddresses(ctx context.Context, hostAddr string, want []string) erro
 			if b, err := exec.CommandContext(ctx, "ip", "addr", "add", a+"/32", "dev", iface, "label", label).CombinedOutput(); err != nil {
 				return &cmdError{"ip addr add " + a, err, string(b)}
 			}
+			// Announce it (gratuitous ARP), like MetalLB: neighbours that knew it elsewhere, from
+			// an earlier holder, update at once instead of when their cache expires.
+			_ = exec.CommandContext(ctx, "arping", "-U", "-c", "2", "-I", iface, a).Run()
 		}
 	}
 	for a := range have {

@@ -206,9 +206,11 @@ func Rules(h Host) string {
 	w("    type filter hook forward priority filter; policy accept;")
 	for _, s := range local {
 		if s.Tap != "" && s.IP.IsValid() {
-			w("    iifname %q ip saddr != %s drop", s.Tap, s.IP) // no silo speaks for another
+			w("    iifname %q ip saddr != %s drop", s.Tap, s.IP)     // no silo speaks for another…
+			w("    iifname %q arp saddr ip != %s drop", s.Tap, s.IP) // …nor claims its address
 		}
 	}
+	w("    ether type arp accept") // silos must find each other's MAC before allowFrom can matter
 	w("    ct state established,related accept")
 	for _, r := range br {
 		w("    %s", r)

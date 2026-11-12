@@ -59,7 +59,7 @@ var Images = map[string]map[string]Asset{
 }
 
 // Packages the host needs (Ubuntu/Debian names).
-var Packages = []string{"qemu-utils", "cloud-image-utils", "lvm2", "thin-provisioning-tools", "nftables", "iproute2"}
+var Packages = []string{"qemu-utils", "cloud-image-utils", "lvm2", "thin-provisioning-tools", "nftables", "iproute2", "iputils-arping"}
 
 // StorageOptions say where silo disks live.
 type StorageOptions struct {
@@ -157,6 +157,7 @@ func (r *Runtime) setupNetwork(ctx context.Context) error {
 	if err := r.run(ctx, "sysctl", "-qw", "net.ipv4.ip_forward=1"); err != nil {
 		return err
 	}
+	_, _ = r.Host.Run(ctx, "modprobe", "nf_conntrack_bridge") // bridge conntrack, for the silo rules
 	if err := r.Host.WriteFile("/etc/kevaso-silos.nft", []byte(NFT()), 0o600); err != nil {
 		return err
 	}

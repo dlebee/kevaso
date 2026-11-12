@@ -53,6 +53,8 @@ func TestHostPortAndSameAsService(t *testing.T) {
 		`oifname "kvbr0" ip daddr 10.64.2.2 tcp dport 30303 ct status dnat accept`,
 		`ip saddr 10.64.2.2 ip daddr != { 10.64.0.0/16, 10.62.0.0/16, 10.63.0.0/16 } oifname != "kvbr0" snat ip to 198.51.100.10`,
 		`iifname "kvt0011223344" ip saddr != 10.64.2.2 drop`,
+		`iifname "kvt0011223344" arp saddr ip != 10.64.2.2 drop`,
+		"ether type arp accept",
 		`oifname "kvbr0" drop`, // everything else to silos
 	)
 	hasNot(t, r, "dport 8545") // rpc stays private
