@@ -416,7 +416,13 @@ func (s *Server) kmsEndpoints(w http.ResponseWriter, r *http.Request, caller pki
 // grants it can't enforce (address ranges, UDP, deliveries other than inject).
 func (s *Server) checkRuntimeFit(ctx context.Context, t target, obj meta.Object) error {
 	silo, ok := obj.(*v1.Silo)
-	if !ok || t.status || !policy.SelfEnforced(silo.Spec.Runtime) {
+	if !ok || t.status {
+		return nil
+	}
+	if err := s.checkContainerFit(ctx, t, silo); err != nil {
+		return err
+	}
+	if !policy.SelfEnforced(silo.Spec.Runtime) {
 		return nil
 	}
 	rt := silo.Spec.Runtime
@@ -441,6 +447,47 @@ func (s *Server) checkRuntimeFit(ctx context.Context, t target, obj meta.Object)
 		}
 	}
 	problems = append(problems, policy.Check(silo, grants)...)
+	if len(problems) > 0 {
+		return errf(http.StatusUnprocessableEntity, "Invalid", "Silo %s: %s", silo.Name, strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// containerRuntime reports the container family's own runtimes (on the host's bridge).
+func containerRuntime(rt string) bool { return rt == "docker" || rt == "podman" }
+
+// checkContainerFit: command and volumes are container features for now; containers get secrets
+// through the broker socket and the egress gate, not yet as files or environment variables.
+func (s *Server) checkContainerFit(ctx context.Context, t target, silo *v1.Silo) error {
+	rt := silo.Spec.Runtime
+	var problems []string
+	if !containerRuntime(rt) {
+		if len(silo.Spec.Command) > 0 {
+			problems = append(problems, "command is for container silos (docker, podman); "+rt+" boots its image")
+		}
+		if len(silo.Spec.Volumes) > 0 && !policy.SelfEnforced(rt) {
+			problems = append(problems, "extra volumes on "+rt+" come later (container silos have them now)")
+		}
+		if policy.SelfEnforced(rt) && len(silo.Spec.Volumes) > 0 {
+			problems = append(problems, "volumes on "+rt+" come later: /sandbox is what persists")
+		}
+	} else {
+		for _, name := range silo.Spec.Grants {
+			o, err := s.store.Get(ctx, store.Key{Kind: "Grant", Namespace: t.namespace, Name: name})
+			if err != nil {
+				continue
+			}
+			g, _, err := v1.Decode(o.Data)
+			if err != nil {
+				continue
+			}
+			for _, sec := range g.(*v1.Grant).Spec.Secrets {
+				if d := sec.Delivery(); d == v1.DeliverFile || d == v1.DeliverEnv {
+					problems = append(problems, fmt.Sprintf("grant %s: secret %s: deliver %s isn't available on %s yet (broker and inject are)", name, sec.Name, d, rt))
+				}
+			}
+		}
+	}
 	if len(problems) > 0 {
 		return errf(http.StatusUnprocessableEntity, "Invalid", "Silo %s: %s", silo.Name, strings.Join(problems, "; "))
 	}

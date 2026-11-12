@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -226,7 +227,13 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		}); err != nil {
 			return engine.Result{}, err
 		}
-		if err := rt.Create(ctx, kri.Spec{ID: id, Image: s.Spec.Image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk}); err != nil {
+		var vols []kri.Volume
+		for _, v := range s.Spec.Volumes {
+			size, _ := v1.ParseBytes(v.Size)
+			vols = append(vols, kri.Volume{Name: v.Name, MountPath: v.MountPath, SizeBytes: size})
+		}
+		if err := rt.Create(ctx, kri.Spec{ID: id, Image: s.Spec.Image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
+			Volumes: vols, Command: s.Spec.Command}); err != nil {
 			_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 				st.Phase = PhaseFailed
 				setCond(st, "Ready", meta.ConditionFalse, "CreateFailed", err.Error(), s.Generation, a.now())
@@ -235,10 +242,25 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		}
 		return engine.Result{RequeueAfter: time.Millisecond}, nil
 	case kri.Created, kri.Stopped:
+		if ic, ok := rt.(kri.InitContainers); ok {
+			// Init containers: the steps run before the main process, each in its own container.
+			if rs.State == kri.Stopped && s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" && initDone(s) {
+				if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Init = nil }); err != nil {
+					return engine.Result{}, err
+				}
+				return engine.Result{RequeueAfter: time.Millisecond}, nil
+			}
+			done, err := a.runSteps(ctx, s, func(ctx context.Context, step v1.InitStep, out io.Writer) (int, error) {
+				return ic.RunInit(ctx, id, kri.InitStep{Name: step.Name, Shell: step.Shell, Run: step.Run}, out)
+			})
+			if err != nil || !done {
+				return engine.Result{}, err
+			}
+		}
 		if err := rt.Start(ctx, id); err != nil {
 			return engine.Result{}, err
 		}
-		if s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" {
+		if _, ok := rt.(kri.InitContainers); !ok && s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" {
 			if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Init = nil }); err != nil {
 				return engine.Result{}, err
 			}
@@ -262,8 +284,10 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		if err := a.broker.Ensure(ctx, br, id); err != nil {
 			return engine.Result{}, fmt.Errorf("broker channel: %w", err)
 		}
-		if err := a.prepareGuest(ctx, rt, s); err != nil {
-			return engine.Result{}, err
+		if rt.Info().Capabilities.Isolation == "vm" { // containers get kvo-guest and the CA mounted in
+			if err := a.prepareGuest(ctx, rt, s); err != nil {
+				return engine.Result{}, err
+			}
 		}
 	}
 	if done, err := a.runInit(ctx, rt, s); err != nil || !done {
@@ -275,9 +299,34 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	})
 }
 
-// runInit runs the init steps that haven't run yet, recording each one. It returns done=true once
-// every step succeeded (or there are none); a failed step stops the rest and marks InitFailed.
+// runInit runs the init steps that haven't run yet inside the running silo (through Exec).
 func (a *Agent) runInit(ctx context.Context, rt kri.Runtime, s *v1.Silo) (bool, error) {
+	return a.runSteps(ctx, s, func(ctx context.Context, step v1.InitStep, out io.Writer) (int, error) {
+		return rt.Exec(ctx, idOf(s), kri.ExecRequest{Command: command(step), Stdout: out, Stderr: out})
+	})
+}
+
+// initDone reports whether every init step of the silo has succeeded.
+func initDone(s *v1.Silo) bool {
+	if s.Spec.Init == nil {
+		return true
+	}
+	done := map[string]bool{}
+	for _, st := range s.Status.Init {
+		done[st.Name] = st.State == "Done"
+	}
+	for _, step := range s.Spec.Init.Steps {
+		if !done[step.Name] {
+			return false
+		}
+	}
+	return true
+}
+
+// runSteps runs the init steps that haven't run yet with run, recording each one. It returns
+// done=true once every step succeeded (or there are none); a failed step stops the rest and marks
+// InitFailed.
+func (a *Agent) runSteps(ctx context.Context, s *v1.Silo, run func(context.Context, v1.InitStep, io.Writer) (int, error)) (bool, error) {
 	if s.Spec.Init == nil || len(s.Spec.Init.Steps) == 0 {
 		return true, nil
 	}
@@ -301,7 +350,7 @@ func (a *Agent) runInit(ctx context.Context, rt kri.Runtime, s *v1.Silo) (bool, 
 		}
 		start := a.now()
 		var out bytes.Buffer
-		code, err := rt.Exec(ctx, idOf(s), kri.ExecRequest{Command: command(step), Stdout: &out, Stderr: &out})
+		code, err := run(ctx, step, &out)
 		if err != nil {
 			return false, fmt.Errorf("init step %s: %w", step.Name, err)
 		}

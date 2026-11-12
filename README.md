@@ -3,7 +3,7 @@
 Self-hosted, stateful **silos** (microVMs or containers) on the machines you bring, managed
 Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for operators.
 
-**Status:** early (M0–M7 of [MILESTONES.md](MILESTONES.md) done). What exists today:
+**Status:** early (M0–M8 of [MILESTONES.md](MILESTONES.md) done). What exists today:
 
 - `kvoadm init [USER@]ADDRESS --kevasod PATH`: sets up a fresh Linux machine over SSH (host key
   pinned or confirmed first, password used once then keys only, root password rotated, signed
@@ -40,6 +40,12 @@ Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for
   (`kvo-guest secret get`, tmpfs files, env for legacy apps); signing keys stay outside (`Sign`,
   with slashing protection). Per-secret RBAC (`list`, `use`, `read-value`, `write`, by name or
   label), write-only secrets, and rotation that reaches every silo using a secret;
+- OpenShell runtimes: `runtime: openshell` (NVIDIA OpenShell's microVM, no network card) and
+  `openshell-container` (its Docker driver, no KVM needed). kevasod installs the pinned release and runs
+  its gateways under their own users in locked-down units, one per host, namespace or silo
+  (`--openshell-gateway-scope`). Grants become OpenShell's policy and providers: the silo holds only a
+  placeholder (`$API_KEY`) its programs send, and OpenShell swaps the real key in on the way out. What
+  OpenShell can't do (services, address ranges, UDP, file/env/broker/sign) is refused when you apply;
 - under the hood: a store with global revisions and resumable watches, CEL validation, a controller
   engine; the testbed and end-to-end loop (`make e2e`).
 

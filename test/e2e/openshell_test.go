@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -40,7 +41,7 @@ func main() {
 		k, v, _ := strings.Cut(h, "=")
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
 		fmt.Println("error:", err)
 		os.Exit(1)

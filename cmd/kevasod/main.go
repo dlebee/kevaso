@@ -67,6 +67,13 @@ func usage() {
 }
 
 func main() {
+	// A container silo's pause container: hold the network namespace, nothing else.
+	if filepath.Base(os.Args[0]) == "kevaso-pause" {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+		<-sig
+		return
+	}
 	// Copied into a silo as kvo-guest, the same binary is the guest helper.
 	if filepath.Base(os.Args[0]) == "kvo-guest" {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

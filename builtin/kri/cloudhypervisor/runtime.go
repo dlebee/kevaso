@@ -133,11 +133,16 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		return err
 	}
 	n := NamesFor(spec.ID)
-	all, err := r.states()
-	if err != nil {
-		return err
+	IPMu.Lock() // container silos share the bridge and its addresses: until the state is saved
+	ipLocked := true
+	unlockIP := func() {
+		if ipLocked {
+			ipLocked = false
+			IPMu.Unlock()
+		}
 	}
-	ip, err := AllocateIP(usedIPs(all))
+	defer unlockIP()
+	ip, err := AllocateIP(UsedIPs(r.Host))
 	if err != nil {
 		return err
 	}
@@ -165,6 +170,7 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	if err := r.saveState(st); err != nil { // first: from here on, Delete knows what to clean up
 		return err
 	}
+	unlockIP()
 	steps := []func() error{
 		func() error {
 			return r.run(ctx, "lvcreate", "-q", "-T", VG+"/"+ThinPool, "-V", strconv.FormatInt(disk>>20, 10)+"m", "-n", n.LV)

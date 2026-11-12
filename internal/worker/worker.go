@@ -25,6 +25,8 @@ import (
 	"kevaso.com/core/api/client"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
+	"kevaso.com/core/builtin/kri/container"
+	"kevaso.com/core/builtin/kri/hostexec"
 	"kevaso.com/core/builtin/kri/openshell"
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/clock"
@@ -125,6 +127,9 @@ func NewRuntimes(cfg Config) (map[string]Installer, error) {
 			out[name] = chInstaller{Runtime: &cloudhypervisor.Runtime{
 				Host: cloudhypervisor.Local{}, Arch: Arch(), ExecKey: signer, ExecPub: pub, Version: cloudhypervisor.Version,
 			}, storage: cfg.Storage}
+		case "docker", "podman":
+			self, _ := os.Executable()
+			out[name] = &container.Runtime{Host: hostexec.Local{}, Engine: name, Self: self}
 		case "openshell", "openshell-container":
 			driver := openshell.DriverVM
 			if name == "openshell-container" {
@@ -193,6 +198,12 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 			cfg.Log("egress gate: extra CA: %v", err)
 		}
 	}
+	for _, rt := range rts { // container silos trust the host's CAs plus its egress CA
+		if cr, ok := rt.(*container.Runtime); ok {
+			cr.CABundle = caBundle(egressCA)
+		}
+	}
+	var networkOnce sync.Once
 	for name, rt := range rts {
 		go func(name string, rt Installer) {
 			// A failed install (a download cut short, a mirror down) is tried again every minute.
@@ -211,8 +222,8 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 					st.State, st.Message = "Failed", err.Error()
 				} else {
 					cfg.Log("runtime %s ready", name)
-					if _, ok := rt.(chInstaller); ok { // its bridge is there now: keep its firewall current
-						go RunNetwork(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log)
+					if usesBridge(rt) { // the bridge is there now: keep its firewall current (once)
+						networkOnce.Do(func() { go RunNetwork(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log) })
 					}
 				}
 				mu.Lock()
@@ -257,6 +268,25 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 		a.GuestCA = egressCA.PEM
 	}
 	a.Run(ctx)
+}
+
+// usesBridge reports whether a runtime puts its silos on the host's silo bridge (the firewall and
+// the egress gate run for those).
+func usesBridge(rt Installer) bool {
+	switch rt.(type) {
+	case chInstaller, *container.Runtime:
+		return true
+	}
+	return false
+}
+
+// caBundle is the host's system CAs plus its egress CA, for container silos.
+func caBundle(egress *gate.CA) []byte {
+	b, _ := os.ReadFile("/etc/ssl/certs/ca-certificates.crt")
+	if egress != nil {
+		b = append(append(b, '\n'), egress.PEM...)
+	}
+	return b
 }
 
 // updateHost makes sure the Host declares the worker component and reports its runtimes and

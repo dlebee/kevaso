@@ -3,11 +3,13 @@ package cloudhypervisor
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
 	"sort"
 	"strings"
+	"sync"
 
 	"kevaso.com/core/sdk/kri"
 )
@@ -216,11 +218,31 @@ func shellQuote(argv []string) string {
 	return strings.Join(q, " ")
 }
 
-// usedIPs reads the addresses other silos hold.
-func usedIPs(states []State) []string {
+// ContainersDir is where the container runtimes (docker, podman) keep their silos: they share the
+// bridge, so its addresses, with the VMs.
+const ContainersDir = "/var/lib/kevaso-containers"
+
+// IPMu serializes address allocation among the runtimes of one host (hold it from AllocateIP until
+// the new silo's state, with its address, is saved).
+var IPMu sync.Mutex
+
+// UsedIPs reads the addresses every silo on this host holds, VMs and containers.
+func UsedIPs(h Host) []string {
 	var out []string
-	for _, s := range states {
-		out = append(out, s.IP)
+	for _, pattern := range []string{SilosDir + "/*/silo.json", ContainersDir + "/*/state.json"} {
+		paths, _ := h.Glob(pattern)
+		for _, p := range paths {
+			b, err := h.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			var s struct {
+				IP string `json:"ip"`
+			}
+			if json.Unmarshal(b, &s) == nil && s.IP != "" {
+				out = append(out, s.IP)
+			}
+		}
 	}
 	sort.Strings(out)
 	return out

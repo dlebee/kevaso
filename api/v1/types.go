@@ -164,6 +164,21 @@ type SiloSpec struct {
 	// Grants are the Grant objects (in this namespace) the silo uses: what it may reach outside
 	// the cluster and which secrets it gets, and how (design §8).
 	Grants []string `json:"grants,omitempty"`
+	// Volumes are extra storage, kept across stops and restarts; on containers they're what
+	// persists (design §6).
+	Volumes []Volume `json:"volumes,omitempty"`
+	// Command is a container silo's main process (default: the image's own; for the ubuntu-24.04
+	// image, which has none that stays up, a process that sleeps, so the silo is a machine to exec into).
+	Command []string `json:"command,omitempty"`
+}
+
+// Volume is a silo's extra storage.
+type Volume struct {
+	Name      string `json:"name"`
+	Class     string `json:"class,omitempty"` // default: local
+	Size      string `json:"size,omitempty"`  // e.g. 10Gi (on container runtimes: not enforced yet)
+	MountPath string `json:"mountPath"`
+	Important bool   `json:"important,omitempty"` // never left behind by a Recreate
 }
 
 // Availability is the silo's answer to losing its host.

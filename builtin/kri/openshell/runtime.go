@@ -7,34 +7,22 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"kevaso.com/core/builtin/kri/hostexec"
 	"kevaso.com/core/sdk/kri"
 )
 
-// Cmd is one command on the host.
-type Cmd struct {
-	Name   string
-	Args   []string
-	Env    []string // added to a minimal environment
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
-}
-
-// Runner runs commands and touches files. The real one is Local; tests use a fake.
-type Runner interface {
-	Run(ctx context.Context, c Cmd) (exitCode int, err error)
-	WriteFile(path string, data []byte, mode os.FileMode) error
-	ReadFile(path string) ([]byte, error)
-	RemoveAll(path string) error
-	Glob(pattern string) ([]string, error)
-}
+// Cmd, Runner and Local are the shared host command runner.
+type (
+	Cmd    = hostexec.Cmd
+	Runner = hostexec.Runner
+	Local  = hostexec.Local
+)
 
 // Runtime is one OpenShell driver as a KRI runtime.
 type Runtime struct {

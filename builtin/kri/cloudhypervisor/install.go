@@ -142,7 +142,12 @@ func NFT() string {
 	return kni.Rules(kni.Host{Bridge: Bridge, Subnet: Network, Gateway: Gateway})
 }
 
-func (r *Runtime) setupNetwork(ctx context.Context) error {
+func (r *Runtime) setupNetwork(ctx context.Context) error { return SetupNetwork(ctx, r.Host) }
+
+// SetupNetwork makes the silo bridge with the host's gateway address, turns on forwarding and loads
+// the baseline firewall. Every runtime on the bridge (VMs, containers) needs it; it's idempotent.
+func SetupNetwork(ctx context.Context, h Host) error {
+	r := &Runtime{Host: h}
 	if _, err := r.Host.Run(ctx, "ip", "link", "show", Bridge); err != nil {
 		if err := r.run(ctx, "ip", "link", "add", Bridge, "type", "bridge"); err != nil {
 			return err

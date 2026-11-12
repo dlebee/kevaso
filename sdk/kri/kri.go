@@ -47,6 +47,29 @@ type Spec struct {
 	CPU       int
 	Memory    int64 // bytes
 	DiskBytes int64
+	Volumes   []Volume
+	Command   []string // containers: the main process (empty: the image's)
+}
+
+// Volume is extra storage mounted in the silo.
+type Volume struct {
+	Name      string
+	MountPath string
+	SizeBytes int64
+}
+
+// InitStep is one init step (design §0.2): a script run by a shell or any interpreter.
+type InitStep struct {
+	Name  string
+	Shell string // default sh
+	Run   string
+}
+
+// InitContainers is a runtime that runs a silo's init steps before its main process starts, each
+// in a container of its own from the silo's image, with its network and volumes (design §0.2:
+// containers map init to init containers). Runtimes without it run steps through Exec once running.
+type InitContainers interface {
+	RunInit(ctx context.Context, id ID, step InitStep, out io.Writer) (exitCode int, err error)
 }
 
 // State is where a silo is on this host.
