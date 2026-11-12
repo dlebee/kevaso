@@ -167,10 +167,3 @@ func (q *queue) shutDown() {
 	q.queued = map[Key]bool{}
 	q.cond.Broadcast()
 }
-
-// len is the number of keys ready to process (for tests).
-func (q *queue) len() int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return len(q.items)
-}
