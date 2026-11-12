@@ -34,6 +34,10 @@ func init() {
 	register(KindInfo{Kind: "IPPool", Plural: "ippools", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &IPPool{} }})
 	register(KindInfo{Kind: "Secret", Plural: "secrets", Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Secret{} }})
 	register(KindInfo{Kind: "Grant", Plural: "grants", Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Grant{} }})
+	register(KindInfo{Kind: "IngressClass", Plural: "ingressclasses", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &IngressClass{} }})
+	register(KindInfo{Kind: "Ingress", Plural: "ingresses", ShortNames: []string{"ing"}, Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Ingress{} }})
+	register(KindInfo{Kind: "Issuer", Plural: "issuers", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &Issuer{} }})
+	register(KindInfo{Kind: "Certificate", Plural: "certificates", ShortNames: []string{"cert"}, Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Certificate{} }})
 	register(KindInfo{Kind: "ServiceAccount", Plural: "serviceaccounts", ShortNames: []string{"sa"}, Scope: Namespaced, New: func() meta.Object { return &ServiceAccount{} }})
 }
 
