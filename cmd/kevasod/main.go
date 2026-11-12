@@ -165,13 +165,14 @@ func runWorker(ctx context.Context, args []string) error {
 		}
 	}
 	logger.Printf("joined %s as host %s", jc.Server, jc.HostName)
+	contact := &worker.Contact{}
 	wc := worker.Config{HostName: jc.HostName, Runtimes: runtimes, DataDir: jc.DataDir, Clock: clock.Real{}, Log: logger.Printf,
-		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize}}
+		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize}, Contact: contact}
 	rts, err := worker.NewRuntimes(wc)
 	if err != nil {
 		return err
 	}
-	go worker.Heartbeat(ctx, c, jc.HostName, *every, clock.Real{}, logger.Printf)
+	go worker.Heartbeat(ctx, c, jc.HostName, *every, clock.Real{}, logger.Printf, contact)
 	worker.Run(ctx, c, wc, rts)
 	return nil
 }

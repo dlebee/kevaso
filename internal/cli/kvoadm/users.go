@@ -91,7 +91,7 @@ func usersCmd(ctx context.Context, args []string, stdout io.Writer) error {
 			rb := &v1.RoleBinding{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "RoleBinding"},
 				ObjectMeta: meta.ObjectMeta{Name: user + "-" + role, Namespace: namespace},
 				RoleRef:    v1.RoleRef{Kind: "ClusterRole", Name: role}, Subjects: []v1.Subject{{Kind: "User", Name: user}}}
-			if err := c.Create(ctx, rb); err != nil && !client.IsConflict(err) {
+			if err := c.Create(ctx, rb); err != nil && !client.IsAlreadyExists(err) {
 				return fmt.Errorf("binding %s as %s in %s: %w", user, role, namespace, err)
 			}
 			_, _ = fmt.Fprintf(stdout, "→ %s is %s in namespace %s\n", user, role, namespace)

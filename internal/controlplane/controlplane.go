@@ -23,6 +23,7 @@ import (
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/audit"
 	"kevaso.com/core/internal/clock"
+	hostcontroller "kevaso.com/core/internal/controllers/host"
 	silocontroller "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/issuer"
@@ -42,6 +43,7 @@ type Config struct {
 	Listen      string // TLS API, e.g. 0.0.0.0:6443
 	AdminSocket string // e.g. /run/kevaso/admin.sock
 	Heartbeat   time.Duration
+	HostLease   time.Duration // a host without a heartbeat this long is lost (default 40s)
 	Clock       clock.Clock
 	// Worker, when set, also runs the worker component on this host (one-host clusters).
 	Worker *worker.Config
@@ -193,6 +195,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config) {
 		cfg.Log("%s: %s: %v (retry in %v)", ctrl, k, err, retry)
 	}
 	e.Register(&silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, Clock: cfg.Clock}, engine.Options{Workers: 1})
+	e.Register(&hostcontroller.Controller{Client: c, Hosts: hosts, Clock: cfg.Clock, Lease: cfg.HostLease}, engine.Options{Workers: 1})
 	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
 	go silos.Run(ctx)

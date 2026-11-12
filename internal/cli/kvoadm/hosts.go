@@ -168,7 +168,7 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 	h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: o.Name},
 		Spec: v1.HostSpec{Address: o.Advertise, Region: o.Region, Zone: o.Zone,
 			Components: v1.HostComponents{Worker: &v1.WorkerSpec{Labels: o.Labels, Runtimes: runtimes}}}}
-	if err := c.Create(ctx, h); err != nil && !client.IsConflict(err) {
+	if err := c.Create(ctx, h); err != nil && !client.IsAlreadyExists(err) {
 		return fmt.Errorf("register host %s: %w", o.Name, err)
 	}
 	say("host %s registered (worker; region %s)", o.Name, dashOr(o.Region))
@@ -273,6 +273,89 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 			kctx = args[2]
 		}
 		return hostList(ctx, kctx, out)
+	case "drain", "uncordon":
+		if len(args) < 2 {
+			return fmt.Errorf("host %s needs NAME", args[0])
+		}
+		kctx := ""
+		if len(args) == 4 && args[2] == "--context" {
+			kctx = args[3]
+		}
+		return hostDrain(ctx, args[1], kctx, args[0] == "uncordon", out)
 	}
 	return fmt.Errorf("unknown host command %q", args[0])
+}
+
+// DrainPlan splits the silos on a host into the ones drain moves off (onHostLoss: Recreate: a
+// fresh instance elsewhere) and the ones that stay (Wait: pinned to it by their local disk). Pure.
+func DrainPlan(host string, silos []*v1.Silo) (move, stay []*v1.Silo) {
+	for _, s := range silos {
+		if s.Status.Host != host || s.DeletionTimestamp != nil {
+			continue
+		}
+		if s.Policy() == v1.OnHostLossRecreate {
+			move = append(move, s)
+		} else {
+			stay = append(stay, s)
+		}
+	}
+	return move, stay
+}
+
+// hostDrain cordons a host and moves off what can move. uncordon undoes the cordon.
+func hostDrain(ctx context.Context, name, kctx string, uncordon bool, out io.Writer) error {
+	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
+	c, _, err := adminClient(kctx)
+	if err != nil {
+		return err
+	}
+	for attempt := 0; ; attempt++ {
+		var h v1.Host
+		if err := c.Get(ctx, "Host", "", name, &h); err != nil {
+			return err
+		}
+		h.Spec.Unschedulable = !uncordon
+		err := c.Update(ctx, &h)
+		if err == nil {
+			break
+		}
+		if !client.IsConflict(err) || attempt > 5 {
+			return err
+		}
+	}
+	if uncordon {
+		say("%s is schedulable again", name)
+		return nil
+	}
+	say("%s is cordoned: no new silos land on it", name)
+	l, err := c.List(ctx, "Silo", "")
+	if err != nil {
+		return err
+	}
+	var silos []*v1.Silo
+	for _, raw := range l.Items {
+		obj, _, err := v1.Decode(raw)
+		if err != nil {
+			return err
+		}
+		silos = append(silos, obj.(*v1.Silo))
+	}
+	move, stay := DrainPlan(name, silos)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, s := range move {
+		s.Status.Host, s.Status.Phase, s.Status.Address, s.Status.Init = "", "Pending", "", nil
+		meta.SetCondition(&s.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Drained",
+			Message: "moved off " + name + " by kvoadm host drain: a fresh instance from its image (onHostLoss: Recreate)", ObservedGeneration: s.Generation}, now)
+		if err := c.UpdateStatus(ctx, s); err != nil {
+			return fmt.Errorf("move %s/%s: %w", s.Namespace, s.Name, err)
+		}
+		say("%s/%s: recreated elsewhere (onHostLoss: Recreate)", s.Namespace, s.Name)
+	}
+	for _, s := range stay {
+		say("%s/%s stays: onHostLoss %s pins it to %s (its disk is local). Delete it, or change its policy, to empty the host", s.Namespace, s.Name, s.Policy(), name)
+	}
+	if len(stay) == 0 {
+		say("%s is empty of silos once the moved ones are gone", name)
+	}
+	return nil
 }

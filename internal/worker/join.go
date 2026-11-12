@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"kevaso.com/core/api/client"
@@ -64,9 +65,23 @@ func Join(ctx context.Context, cfg JoinConfig) (*client.Client, error) {
 	return client.NewTLS(cfg.Server, ca, cert, key)
 }
 
+// Contact remembers when this host last reached the control plane (the agent fences by it).
+type Contact struct{ unixNano atomic.Int64 }
+
+// Mark records a successful contact.
+func (c *Contact) Mark(t time.Time) { c.unixNano.Store(t.UnixNano()) }
+
+// Last is the last successful contact (zero if none yet).
+func (c *Contact) Last() time.Time {
+	if n := c.unixNano.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Time{}
+}
+
 // Heartbeat keeps this host's Ready condition and lastHeartbeat fresh: the control plane's host
-// lease reads them (a host that stops reporting is lost).
-func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Duration, clk clock.Clock, log func(string, ...any)) {
+// lease reads them (a host that stops reporting is lost). Each success is marked on contact.
+func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Duration, clk clock.Clock, log func(string, ...any), contact *Contact) {
 	tick := func() {
 		for attempt := 0; attempt < 5; attempt++ {
 			var h v1.Host
@@ -84,6 +99,9 @@ func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Du
 			err := c.UpdateStatus(ctx, &h)
 			if client.IsConflict(err) {
 				continue
+			}
+			if err == nil && contact != nil {
+				contact.Mark(clk.Now())
 			}
 			if err != nil && ctx.Err() == nil {
 				log("heartbeat: %v", err)

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	v1 "kevaso.com/core/api/v1"
 )
 
 func TestParseInit(t *testing.T) {
@@ -149,5 +151,17 @@ func TestUnitAdvertisesAnotherAddress(t *testing.T) {
 	u := Unit(InitOptions{Name: "cp-1", Address: "127.0.0.1", Advertise: "192.168.105.2", Cluster: "c"})
 	if !strings.Contains(u, "--address 192.168.105.2 --cluster c --extra-name 127.0.0.1") {
 		t.Fatalf("unit:\n%s", u)
+	}
+}
+
+func TestDrainPlan(t *testing.T) {
+	mk := func(name, host, policy string) *v1.Silo {
+		s := &v1.Silo{}
+		s.Name, s.Namespace, s.Status.Host, s.Spec.Availability.OnHostLoss = name, "d", host, policy
+		return s
+	}
+	move, stay := DrainPlan("hv1", []*v1.Silo{mk("runner", "hv1", "Recreate"), mk("db", "hv1", ""), mk("web", "hv1", "Wait"), mk("other", "hv2", "Recreate")})
+	if len(move) != 1 || move[0].Name != "runner" || len(stay) != 2 {
+		t.Fatalf("move %v stay %v", move, stay)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -161,3 +162,87 @@ type boom struct{}
 func (boom) Error() string { return "disk full" }
 
 var errBoom = boom{}
+
+// Cut off from the control plane past FenceAfter, the agent stops what may be recreated elsewhere
+// (onHostLoss: Recreate) and keeps Wait silos running.
+func TestFencingWhenCutOff(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
+	ts := httptest.NewServer(srv)
+	t.Cleanup(func() { cancel(); ts.Close() })
+	c := client.New(ts.URL)
+	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
+	rt := fake.New()
+	rt.Handler = func(kri.ID, []string, []byte) (string, int) { return "", 0 }
+	var mu sync.Mutex
+	last := time.Now()
+	contact := func() time.Time { mu.Lock(); defer mu.Unlock(); return last }
+	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{},
+		LastContact: contact, FenceAfter: 300 * time.Millisecond}
+	go a.Run(ctx)
+	e := &env{c: c, rt: rt, ctx: ctx}
+	for _, name := range []string{"stateless", "precious"} {
+		e.place(t, name, "hv1", nil)
+	}
+	for { // the agent writes status meanwhile: retry on conflicts
+		var s v1.Silo
+		_ = c.Get(ctx, "Silo", "dev", "stateless", &s)
+		s.Spec.Availability.OnHostLoss = v1.OnHostLossRecreate
+		err := c.Update(ctx, &s)
+		if err == nil {
+			break
+		}
+		if !client.IsConflict(err) {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"stateless", "precious"} {
+		e.wait(t, name, func(s *v1.Silo) bool { return s.Status.Phase == "Running" })
+	}
+	state := func(name string) kri.State {
+		var s v1.Silo
+		_ = c.Get(ctx, "Silo", "dev", name, &s)
+		st, _ := rt.Status(ctx, kri.ID{Namespace: "dev", Name: name, UID: s.UID})
+		return st.State
+	}
+	keepContact := func() {
+		mu.Lock()
+		last = time.Now()
+		mu.Unlock()
+	}
+	// Cut off.
+	deadline := time.Now().Add(5 * time.Second)
+	for state("stateless") != kri.Stopped {
+		if time.Now().After(deadline) {
+			t.Fatalf("the Recreate silo wasn't fenced: %s", state("stateless"))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	time.Sleep(1500 * time.Millisecond) // and it stays stopped while cut off
+	if got := state("stateless"); got != kri.Stopped {
+		t.Fatalf("fenced silo restarted while cut off: %s", got)
+	}
+	if got := state("precious"); got != kri.Running {
+		t.Fatalf("a Wait silo was stopped: %s", got)
+	}
+	// Contact again: it runs again (it wasn't recreated elsewhere).
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(50 * time.Millisecond):
+				keepContact()
+			}
+		}
+	}()
+	defer close(stop)
+	deadline = time.Now().Add(10 * time.Second)
+	for state("stateless") != kri.Running {
+		if time.Now().After(deadline) {
+			t.Fatalf("not restarted after contact came back: %s", state("stateless"))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

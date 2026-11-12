@@ -131,6 +131,31 @@ type SiloSpec struct {
 	Placement   Placement    `json:"placement,omitempty"`
 	Tolerations []Toleration `json:"tolerations,omitempty"`
 	Init        *Init        `json:"init,omitempty"`
+	// Availability says what happens when the silo's host is lost (design §0.3).
+	Availability Availability `json:"availability,omitempty"`
+}
+
+// Availability is the silo's answer to losing its host.
+type Availability struct {
+	// OnHostLoss: Wait (default: stay, down until the host is back), Recreate (a fresh instance from
+	// the image on another host; data on host-local disks is lost, by declaration), or Move (with its
+	// data; needs every disk on a movable storage class).
+	OnHostLoss string `json:"onHostLoss,omitempty"`
+}
+
+// OnHostLoss policies.
+const (
+	OnHostLossWait     = "Wait"
+	OnHostLossRecreate = "Recreate"
+	OnHostLossMove     = "Move"
+)
+
+// Policy returns the silo's onHostLoss policy, Wait by default.
+func (s *Silo) Policy() string {
+	if s.Spec.Availability.OnHostLoss == "" {
+		return OnHostLossWait
+	}
+	return s.Spec.Availability.OnHostLoss
 }
 
 // Disk is the silo's own disk.

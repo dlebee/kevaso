@@ -40,35 +40,89 @@ func newSilo(name string) *v1.Silo {
 
 func TestDecide(t *testing.T) {
 	s := newSilo("a")
-	st, changed, err := silo.Decide(s, []*v1.Host{readyHost("hv1")}, nil, now)
+	st, changed, _, err := silo.Decide(s, []*v1.Host{readyHost("hv1")}, nil, now)
 	if err != nil || !changed || st.Host != "hv1" || st.Phase != silo.PhaseScheduled || !meta.IsTrue(st.Conditions, "Scheduled") {
 		t.Fatalf("schedulable: %+v changed=%v err=%v", st, changed, err)
 	}
 
-	st, changed, _ = silo.Decide(s, nil, nil, now)
+	st, changed, _, _ = silo.Decide(s, nil, nil, now)
 	c := meta.FindCondition(st.Conditions, "Scheduled")
 	if !changed || st.Phase != silo.PhasePending || c == nil || c.Reason != "Unschedulable" {
 		t.Fatalf("no hosts: %+v", st)
 	}
 	// Same answer again: nothing to write.
 	s.Status = st
-	if _, changed, _ = silo.Decide(s, nil, nil, now.Add(time.Minute)); changed {
+	if _, changed, _, _ = silo.Decide(s, nil, nil, now.Add(time.Minute)); changed {
 		t.Fatal("an unchanged decision reported a change (would write status in a loop)")
 	}
 
 	placed := newSilo("b")
 	placed.Status.Host = "hv1"
-	if _, changed, _ = silo.Decide(placed, []*v1.Host{readyHost("hv2")}, nil, now); changed {
+	if _, changed, _, _ = silo.Decide(placed, []*v1.Host{readyHost("hv2")}, nil, now); changed {
 		t.Fatal("a placed silo was moved: silos are stateful, moves are never a side effect")
 	}
 	deleting := newSilo("c")
 	deleting.DeletionTimestamp = &now
-	if _, changed, _ = silo.Decide(deleting, []*v1.Host{readyHost("hv1")}, nil, now); changed {
+	if _, changed, _, _ = silo.Decide(deleting, []*v1.Host{readyHost("hv1")}, nil, now); changed {
 		t.Fatal("a silo being deleted was scheduled")
 	}
 }
 
 // ── the controller against a real API server ─────────────────────────────────
+
+func lostHost(name string, since time.Time) *v1.Host {
+	h := readyHost(name)
+	h.Status.Conditions = []meta.Condition{{Type: "Ready", Status: meta.ConditionUnknown, Reason: "HostLost", LastTransitionTime: since}}
+	return h
+}
+
+// Losing a host: every policy, every moment.
+func TestDecideOnHostLoss(t *testing.T) {
+	onHv1 := func(policy string) *v1.Silo {
+		s := newSilo("a")
+		s.Spec.Availability.OnHostLoss = policy
+		s.Status.Host, s.Status.Phase, s.Status.Address = "hv1", "Running", "10.64.0.2"
+		s.Status.Init = []v1.StepStatus{{Name: "x", State: "Done"}}
+		return s
+	}
+	lostAt := now.Add(-10 * time.Second)
+
+	// Wait (and the default): stays, Unknown, says why; no retry timer.
+	for _, policy := range []string{"", v1.OnHostLossWait} {
+		st, changed, again, _ := silo.Decide(onHv1(policy), []*v1.Host{lostHost("hv1", lostAt), readyHost("hv2")}, nil, now)
+		c := meta.FindCondition(st.Conditions, "HostLost")
+		if !changed || again != 0 || st.Host != "hv1" || st.Phase != silo.PhaseUnknown || c == nil || c.Reason != "Waiting" {
+			t.Fatalf("Wait %q: %+v again=%v", policy, st, again)
+		}
+	}
+	// Recreate, too soon: still fencing; look again when it's safe.
+	st, changed, again, _ := silo.Decide(onHv1(v1.OnHostLossRecreate), []*v1.Host{lostHost("hv1", lostAt), readyHost("hv2")}, nil, now)
+	if c := meta.FindCondition(st.Conditions, "HostLost"); !changed || st.Host != "hv1" || again != silo.RecreateAfter-10*time.Second || c.Reason != "Fencing" {
+		t.Fatalf("Recreate early: %+v again=%v", st, again)
+	}
+	// Recreate, after RecreateAfter: a fresh instance on another host, nothing carried over.
+	st, changed, _, _ = silo.Decide(onHv1(v1.OnHostLossRecreate), []*v1.Host{lostHost("hv1", now.Add(-time.Minute)), readyHost("hv2")}, nil, now)
+	if c := meta.FindCondition(st.Conditions, "HostLost"); !changed || st.Host != "hv2" || st.Phase != silo.PhaseScheduled ||
+		st.Address != "" || st.Init != nil || c.Reason != "Recreated" {
+		t.Fatalf("Recreate: %+v", st)
+	}
+	// …and if nowhere fits, it waits Pending (not back on the lost host).
+	st, _, _, _ = silo.Decide(onHv1(v1.OnHostLossRecreate), []*v1.Host{lostHost("hv1", now.Add(-time.Minute))}, nil, now)
+	if st.Host != "" || st.Phase != silo.PhasePending {
+		t.Fatalf("Recreate with nowhere to go: %+v", st)
+	}
+	// The host comes back: the condition says so, and the agent takes over again.
+	back := onHv1(v1.OnHostLossWait)
+	back.Status.Conditions = []meta.Condition{{Type: "HostLost", Status: meta.ConditionTrue, Reason: "Waiting"}}
+	st, changed, _, _ = silo.Decide(back, []*v1.Host{readyHost("hv1")}, nil, now)
+	if c := meta.FindCondition(st.Conditions, "HostLost"); !changed || st.Host != "hv1" || c.Status != meta.ConditionFalse || c.Reason != "HostBack" {
+		t.Fatalf("host back: %+v", st)
+	}
+	back.Status = st
+	if _, changed, _, _ = silo.Decide(back, []*v1.Host{readyHost("hv1")}, nil, now); changed {
+		t.Fatal("a recovered silo keeps changing")
+	}
+}
 
 func TestControllerSchedulesAndRetriesWhenAHostArrives(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

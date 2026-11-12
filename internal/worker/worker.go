@@ -37,6 +37,10 @@ type Config struct {
 	Storage  cloudhypervisor.StorageOptions
 	Clock    clock.Clock
 	Log      func(string, ...any)
+	// Contact, on a worker-only host, is when the heartbeat last got through; the agent fences
+	// (stops silos that may be recreated elsewhere) when it's too old. Nil: never fence (the
+	// control plane's own host).
+	Contact *Contact
 }
 
 // Installer is a runtime that needs setting up on the host first.
@@ -189,6 +193,9 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 		runtimes[name] = rt
 	}
 	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log}
+	if cfg.Contact != nil {
+		a.LastContact = cfg.Contact.Last
+	}
 	a.Run(ctx)
 }
 

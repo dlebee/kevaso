@@ -1,7 +1,12 @@
-// Package silo is the control plane's silo controller. In M3 it schedules: a new silo gets a host
-// (or an Unschedulable condition explaining why each host was excluded), and stays on that host:
-// silos are stateful, so moving one is never a side effect (host loss and moves come in M5 / M14).
-// The host's agent takes it from Scheduled to Running.
+// Package silo is the control plane's silo controller. It schedules: a new silo gets a host (or an
+// Unschedulable condition explaining why each host was excluded), and stays on that host: silos
+// are stateful, so moving one is never a side effect. The host's agent takes it from Scheduled to
+// Running.
+//
+// When its host is lost (design §0.3), the silo's onHostLoss policy decides: Wait keeps it there
+// (Unknown until the host is back); Recreate starts a fresh instance elsewhere, but only after
+// RecreateAfter, by which time the lost host's agent has fenced it (stopped it, if it's alive but
+// cut off), so two copies never run.
 package silo
 
 import (
@@ -14,6 +19,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/clock"
+	hostctl "kevaso.com/core/internal/controllers/host"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/scheduler"
 )
@@ -22,19 +28,73 @@ import (
 const (
 	PhasePending   = "Pending"   // waiting for a host that fits
 	PhaseScheduled = "Scheduled" // a host was chosen; its agent will create the silo
+	PhaseUnknown   = "Unknown"   // its host is lost
 )
 
-// Decide returns the status the silo should have, and whether it differs from the current one. Pure.
-func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time) (v1.SiloStatus, bool, error) {
+// RecreateAfter is how long after its host is lost a Recreate silo is started elsewhere. The lost
+// host's agent fences well before (agent.FenceAfter < host lease), so this is the safety margin.
+var RecreateAfter = 30 * time.Second
+
+// Decide returns the status the silo should have, whether it differs from the current one, and
+// when to look again (0: only on changes). Pure.
+func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time) (v1.SiloStatus, bool, time.Duration, error) {
 	st := s.Status
-	if s.DeletionTimestamp != nil || st.Host != "" {
-		return st, false, nil // being deleted, or already placed: the host's agent owns it now
+	st.Conditions = append([]meta.Condition(nil), st.Conditions...)
+	if s.DeletionTimestamp != nil {
+		return st, false, 0, nil
 	}
-	d, err := scheduler.Schedule(s, hosts, silos)
+	var again time.Duration
+	if st.Host != "" {
+		var h *v1.Host
+		for _, x := range hosts {
+			if x.Name == st.Host {
+				h = x
+			}
+		}
+		lost, since := false, time.Time{}
+		if h != nil {
+			lost, since = hostctl.Lost(h)
+		}
+		cond := meta.Condition{Type: "HostLost", ObservedGeneration: s.Generation}
+		switch {
+		case !lost:
+			if c := meta.FindCondition(st.Conditions, "HostLost"); c == nil || c.Status != meta.ConditionTrue {
+				return st, false, 0, nil // placed, and its host is fine: the agent owns it
+			}
+			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "HostBack", st.Host+" is back"
+			changed := meta.SetCondition(&st.Conditions, cond, now)
+			return st, changed, 0, nil
+		case s.Policy() == v1.OnHostLossRecreate && now.Sub(since) < RecreateAfter:
+			again = RecreateAfter - now.Sub(since)
+			cond.Status, cond.Reason = meta.ConditionTrue, "Fencing"
+			cond.Message = st.Host + " lost; recreating elsewhere once its agent has surely stopped it (onHostLoss: Recreate)"
+			st.Phase = PhaseUnknown
+			changed := meta.SetCondition(&st.Conditions, cond, now)
+			return st, changed || s.Status.Phase != st.Phase, again, nil
+		case s.Policy() == v1.OnHostLossRecreate:
+			// Not lost any more (it's being placed afresh); the condition keeps what happened.
+			cond.Status, cond.Reason = meta.ConditionFalse, "Recreated"
+			cond.Message = st.Host + " was lost: a fresh instance from the image went elsewhere (data on its local disk is lost, by onHostLoss: Recreate)"
+			meta.SetCondition(&st.Conditions, cond, now)
+			meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Recreating",
+				Message: "recreating after losing " + st.Host, ObservedGeneration: s.Generation}, now)
+			st.Host, st.Address, st.Init = "", "", nil
+			// …and it's scheduled right away, below.
+		default: // Wait
+			cond.Status, cond.Reason = meta.ConditionTrue, "Waiting"
+			cond.Message = st.Host + " lost; waiting for it to come back (onHostLoss: Wait)"
+			st.Phase = PhaseUnknown
+			changed := meta.SetCondition(&st.Conditions, cond, now)
+			return st, changed || s.Status.Phase != st.Phase, 0, nil
+		}
+	}
+	sched := *s
+	sched.Status = st
+	d, err := scheduler.Schedule(&sched, hosts, silos)
 	if err != nil {
-		return st, false, err
+		return st, false, 0, err
 	}
-	conds := append([]meta.Condition(nil), st.Conditions...)
+	conds := st.Conditions
 	cond := meta.Condition{Type: "Scheduled", ObservedGeneration: s.Generation}
 	if d.Host == "" {
 		st.Phase = PhasePending
@@ -46,7 +106,7 @@ func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time) (v1.S
 	changed := meta.SetCondition(&conds, cond, now)
 	st.Conditions = conds
 	changed = changed || st.Phase != s.Status.Phase || st.Host != s.Status.Host
-	return st, changed, nil
+	return st, changed, again, nil
 }
 
 // Controller reconciles silos.
@@ -109,9 +169,9 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		return engine.Result{}, nil // already placed by us; the cache just hasn't caught up
 	}
 	hosts, silos := c.lists()
-	st, changed, err := Decide(s, hosts, silos, c.Clock.Now().UTC().Truncate(time.Second))
+	st, changed, again, err := Decide(s, hosts, silos, c.Clock.Now().UTC().Truncate(time.Second))
 	if err != nil || !changed {
-		return engine.Result{}, err
+		return engine.Result{RequeueAfter: again}, err
 	}
 	s.Status = st
 	// Conditional on the version we read (in s.ResourceVersion): a conflict means the cache was
@@ -119,14 +179,15 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	if err := c.Client.UpdateStatus(ctx, s); err != nil {
 		return engine.Result{}, err
 	}
-	if st.Host != "" {
+	if st.Host != "" && st.Host != s.Status.Host {
 		c.assumed[key] = st.Host
 	}
-	return engine.Result{}, nil
+	return engine.Result{RequeueAfter: again}, nil
 }
 
-// Map implements engine.Mapper: a host change (new, Ready, labels, capacity) or another silo's
-// change (freed capacity) may let pending silos fit now.
+// Map implements engine.Mapper: a host change (new, Ready, labels, capacity, lost) or another
+// silo's change (freed capacity) may let pending silos fit now, and a host change concerns the
+// silos on it.
 func (c *Controller) Map(changed engine.Key) []engine.Key {
 	if changed.Kind != "Host" && changed.Kind != "Silo" {
 		return nil
@@ -135,7 +196,8 @@ func (c *Controller) Map(changed engine.Key) []engine.Key {
 	for _, o := range c.Silos.List() {
 		s := o.(*v1.Silo)
 		self := changed.Kind == "Silo" && changed.Namespace == s.Namespace && changed.Name == s.Name
-		if s.Status.Host == "" && !self {
+		onIt := changed.Kind == "Host" && s.Status.Host == changed.Name
+		if (s.Status.Host == "" && !self) || onIt {
 			keys = append(keys, engine.Key{Kind: "Silo", Namespace: s.Namespace, Name: s.Name})
 		}
 	}
