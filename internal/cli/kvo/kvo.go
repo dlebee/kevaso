@@ -12,6 +12,7 @@
 //	kvo ns [NAME]                 show the default namespace, or set it for this context
 //	kvo auth can-i VERB RESOURCE[/NAME|/SUBRESOURCE] [-n NS]   exits 0 for yes, 1 for no
 //	kvo auth whoami
+//	kvo create token NAME [-n NS] [--duration 1h]   a service account token, for CI ($KVO_TOKEN)
 //
 // The cluster comes from --server or $KVO_SERVER (plain HTTP, for `kevasod dev`), otherwise from the
 // kvo config's current context (or --context): TLS with a pinned CA and a client certificate, as
@@ -25,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"slices"
 	"sort"
@@ -46,6 +48,7 @@ const DefaultServer = "http://127.0.0.1:8080"
 type opts struct {
 	server, context, namespace, output, file string
 	ca                                       string // kvo login: the CA fingerprint to pin
+	duration                                 string // kvo create token
 	all, noBrowser                           bool
 	args                                     []string
 	command                                  []string // after --
@@ -89,6 +92,8 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.ca, err = val()
 		case "--no-browser":
 			o.noBrowser = true
+		case "--duration":
+			o.duration, err = val()
 		default:
 			if strings.HasPrefix(a, "-") && a != "-" {
 				return o, fmt.Errorf("unknown flag %s", a)
@@ -139,6 +144,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		err = get(ctx, c, o, stdout)
 	case "describe":
 		err = describe(ctx, c, o, stdout)
+	case "create":
+		err = createToken(ctx, c, o, stdout)
 	case "delete":
 		err = del(ctx, c, o, stdout)
 	case "watch":
@@ -160,9 +167,26 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 }
 
 // clientFor picks the cluster: --server / $KVO_SERVER, else the kvo config, else kevasod dev.
+//
+// For CI and scripts, $KVO_TOKEN (a service account token, from kvo create token) is sent as the
+// bearer token: with --server https://… it needs $KVO_CA_FILE (the cluster CA); with a context it
+// uses that context's server and CA and nothing else from it.
 func clientFor(o *opts) (*client.Client, error) {
+	token := os.Getenv("KVO_TOKEN")
 	if o.server != "" {
-		return client.New(o.server), nil
+		if token == "" || !strings.HasPrefix(o.server, "https://") {
+			return client.New(o.server), nil
+		}
+		ca, err := os.ReadFile(os.Getenv("KVO_CA_FILE"))
+		if err != nil {
+			return nil, fmt.Errorf("KVO_TOKEN with an https server needs KVO_CA_FILE: %w", err)
+		}
+		c, err := client.NewTLS(o.server, ca, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		c.Token = func(context.Context) (string, error) { return token, nil }
+		return c, nil
 	}
 	path, err := kvoconfig.Path()
 	if err != nil {
@@ -175,11 +199,45 @@ func clientFor(o *opts) (*client.Client, error) {
 	if len(cfg.Contexts) == 0 && o.context == "" {
 		return client.New(DefaultServer), nil
 	}
+	if token != "" {
+		name, kc, err := cfg.Resolve(o.context)
+		if err != nil {
+			return nil, err
+		}
+		ca, err := os.ReadFile(kc.CA)
+		if err != nil {
+			return nil, err
+		}
+		c, err := client.NewTLS(kc.Server, ca, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		c.Token = func(context.Context) (string, error) { return token, nil }
+		o.ctxNamespace = cfg.Contexts[name].Namespace
+		return c, nil
+	}
 	c, name, err := cfg.Client(path, o.context)
 	if err == nil {
 		o.ctxNamespace = cfg.Contexts[name].Namespace
 	}
 	return c, err
+}
+
+// createToken: kvo create token NAME [-n NS] [--duration 1h] prints a service account token.
+func createToken(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error {
+	if len(o.args) != 2 || o.args[0] != "token" {
+		return errors.New("create token needs the service account's NAME (kvo create token NAME -n NS)")
+	}
+	p, err := client.Path("ServiceAccount", defaultNS(o), o.args[1])
+	if err != nil {
+		return err
+	}
+	var resp client.TokenResponse
+	if err := c.Call(ctx, http.MethodPost, p+"/token", client.TokenRequest{Duration: o.duration}, &resp); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(stdout, resp.Token)
+	return nil
 }
 
 func defaultNS(o opts) string {

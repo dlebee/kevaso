@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"kevaso.com/core/api/client"
+	"kevaso.com/core/internal/audit"
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
 	"kevaso.com/core/internal/pki"
@@ -36,6 +37,16 @@ type Auth struct {
 	CertTTL time.Duration // client certificates' lifetime; default 30 days
 	// Issuer signs people in (kvo login) and verifies their bearer tokens. Optional.
 	Issuer *issuer.Issuer
+	// Audit records every decision about people and service accounts (and hosts' refusals).
+	Audit audit.Sink
+}
+
+func (s *Server) record(r *http.Request, id pki.Identity, groups []string, a rbac.Attributes, allowed bool, reason string) {
+	if s.auth == nil || s.auth.Audit == nil || (id.Type == "host" && allowed) {
+		return // hosts do the same narrow things all day; their refusals are what's interesting
+	}
+	s.auth.Audit.Record(audit.Entry{Time: s.clock.Now(), User: id.Name, Type: id.Type, Groups: groups, Verb: a.Verb,
+		Resource: a.Resource, Namespace: a.Namespace, Name: a.Name, Allowed: allowed, Reason: reason, Remote: r.RemoteAddr})
 }
 
 type ctxKey int
@@ -106,6 +117,8 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 	switch {
 	case t.exec:
 		a.Verb, a.Resource = "create", t.kind.Plural+"/exec"
+	case t.token:
+		a.Verb, a.Resource = "create", t.kind.Plural+"/token"
 	case r.Method == http.MethodGet && t.name == "" && r.URL.Query().Get("watch") == "true":
 		a.Verb = "watch"
 	case r.Method == http.MethodGet && t.name == "":
@@ -158,7 +171,7 @@ func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
 	case id.Role == "control-plane" && id.Type == "host":
 		return true
 	case id.Role == "worker" && id.Type == "host":
-		if t.exec {
+		if t.exec || t.token {
 			return false
 		}
 		if r.Method == http.MethodGet {
@@ -199,6 +212,9 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 		}
 		id, groups, err := s.authenticate(r)
 		if err != nil {
+			if s.auth.Audit != nil {
+				s.auth.Audit.Record(audit.Entry{Time: s.clock.Now(), Event: "authenticate", Verb: r.Method, Resource: r.URL.Path, Reason: err.Error(), Remote: r.RemoteAddr})
+			}
 			writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "%s", err))
 			return
 		}
@@ -227,6 +243,7 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 				writeErr(w, err)
 				return
 			}
+			s.record(r, id, groups, attributes(id, groups, r, t), ok, reason)
 			if !ok {
 				writeErr(w, errf(http.StatusForbidden, "Forbidden", "%s: %s", id, reason))
 				return

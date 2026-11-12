@@ -25,6 +25,7 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 
 	"kevaso.com/core/api/client"
+	"kevaso.com/core/internal/audit"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/store"
 )
@@ -57,6 +58,7 @@ type Issuer struct {
 	URL        string        // the iss claim, e.g. https://203.0.113.10:6443
 	AccessTTL  time.Duration // default 15 minutes
 	SessionTTL time.Duration // idle limit of a refresh token; default 30 days
+	Audit      audit.Sink    // sign-ins, refused sign-ins, stolen refresh tokens, disabled users
 
 	key *ecdsa.PrivateKey
 	kid string
@@ -80,8 +82,39 @@ type Claims struct {
 type tokenClaims struct {
 	jwt.Claims
 	Groups []string `json:"groups,omitempty"`
-	SID    string   `json:"sid,omitempty"`
+	SID    string   `json:"sid,omitempty"`    // a person's session
+	SAUID  string   `json:"sa_uid,omitempty"` // a service account's UID: deleting it revokes
 	Nonce  string   `json:"nonce,omitempty"`
+}
+
+// ServiceAccountToken signs a token for namespace/name, valid for d or until the account is
+// deleted (or deleted and re-created: the token is bound to its UID).
+func (i *Issuer) ServiceAccountToken(ctx context.Context, namespace, name string, d time.Duration) (string, time.Time, error) {
+	uid, err := i.serviceAccountUID(ctx, namespace, name)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	now := i.Clock.Now()
+	exp := now.Add(d)
+	tok, err := i.sign(tokenClaims{
+		Claims: jwt.Claims{Issuer: i.URL, Subject: "system:serviceaccount:" + namespace + ":" + name, Audience: jwt.Audience{Audience},
+			IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now.Add(-time.Minute)), Expiry: jwt.NewNumericDate(exp), ID: random(8)},
+		Groups: []string{"system:serviceaccounts", "system:serviceaccounts:" + namespace},
+		SAUID:  uid,
+	})
+	return tok, exp, err
+}
+
+func (i *Issuer) serviceAccountUID(ctx context.Context, namespace, name string) (string, error) {
+	var sa struct {
+		Metadata struct {
+			UID string `json:"uid"`
+		} `json:"metadata"`
+	}
+	if _, err := getJSON(ctx, i.Store, store.Key{Kind: "ServiceAccount", Namespace: namespace, Name: name}, &sa); err != nil {
+		return "", err
+	}
+	return sa.Metadata.UID, nil
 }
 
 // New loads (or creates) the signing key.
@@ -91,6 +124,17 @@ func New(ctx context.Context, st store.Store, clk clock.Clock, url string) (*Iss
 		return nil, err
 	}
 	return &Issuer{Store: st, Clock: clk, URL: strings.TrimRight(url, "/"), key: k, kid: kid, codes: map[string]authCode{}}, nil
+}
+
+func (i *Issuer) record(r *http.Request, event, user string, allowed bool, reason string) {
+	if i.Audit == nil {
+		return
+	}
+	e := audit.Entry{Time: i.Clock.Now(), Event: event, User: user, Type: "user", Allowed: allowed, Reason: reason}
+	if r != nil {
+		e.Remote = r.RemoteAddr
+	}
+	i.Audit.Record(e)
 }
 
 func (i *Issuer) accessTTL() time.Duration {
@@ -192,6 +236,7 @@ func (i *Issuer) Disable(ctx context.Context, name string) error {
 	if _, err := i.Store.Update(ctx, key, data, rev); err != nil {
 		return err
 	}
+	i.record(nil, "disable", name, true, "user disabled; sessions ended")
 	sessions, _, err := i.Store.List(ctx, store.Selector{Kind: KindSession})
 	if err != nil {
 		return err
@@ -295,6 +340,12 @@ func (i *Issuer) Verify(ctx context.Context, raw string) (Claims, error) {
 	}
 	if err := c.ValidateWithLeeway(jwt.Expected{Issuer: i.URL, AnyAudience: jwt.Audience{Audience}, Time: i.Clock.Now()}, 30*time.Second); err != nil {
 		return Claims{}, err
+	}
+	if ns, name, ok := strings.Cut(strings.TrimPrefix(c.Subject, "system:serviceaccount:"), ":"); ok && strings.HasPrefix(c.Subject, "system:serviceaccount:") {
+		if uid, err := i.serviceAccountUID(ctx, ns, name); err != nil || c.SAUID == "" || uid != c.SAUID {
+			return Claims{}, errors.New("service account no longer exists")
+		}
+		return Claims{User: c.Subject, Groups: c.Groups}, nil
 	}
 	if c.SID == "" {
 		return Claims{}, errors.New("not an access token")
@@ -437,9 +488,11 @@ func (i *Issuer) login(w http.ResponseWriter, r *http.Request) {
 		_, err = i.user(r.Context(), user)
 	}
 	if err != nil {
+		i.record(r, "sign-in", user, false, err.Error())
 		showPage(w, http.StatusUnauthorized, req, err.Error())
 		return
 	}
+	i.record(r, "sign-in", user, true, "invite code")
 	code := random(24)
 	i.mu.Lock()
 	now := i.Clock.Now()
@@ -487,7 +540,7 @@ func (i *Issuer) token(w http.ResponseWriter, r *http.Request) {
 	case "authorization_code":
 		i.exchange(w, r.Context(), f)
 	case "refresh_token":
-		i.refresh(w, r.Context(), f.Get("refresh_token"))
+		i.refresh(w, r, f.Get("refresh_token"))
 	default:
 		tokenErr(w, http.StatusBadRequest, "unsupported_grant_type", "authorization_code or refresh_token")
 	}
@@ -536,7 +589,8 @@ func (i *Issuer) exchange(w http.ResponseWriter, ctx context.Context, f url.Valu
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (i *Issuer) refresh(w http.ResponseWriter, ctx context.Context, tok string) {
+func (i *Issuer) refresh(w http.ResponseWriter, r *http.Request, tok string) {
+	ctx := r.Context()
 	bad := func(msg string) { tokenErr(w, http.StatusBadRequest, "invalid_grant", msg) }
 	sid, secret, ok := split(tok, "kvr_")
 	if !ok {
@@ -559,6 +613,7 @@ func (i *Issuer) refresh(w http.ResponseWriter, ctx context.Context, tok string)
 	case s.PrevHash != "" && sameHash(secret, s.PrevHash):
 		// An old refresh token came back: someone else has a copy. End the session for everyone.
 		_, _ = i.Store.Delete(ctx, key, 0)
+		i.record(r, "refresh-token-reuse", s.User, false, "an old refresh token came back: session "+sid+" revoked")
 		bad("refresh token was already used; session revoked")
 		return
 	case !sameHash(secret, s.RefreshHash) || !now.Before(s.Expires):

@@ -55,6 +55,7 @@ func (s *Server) users(w http.ResponseWriter, r *http.Request, id pki.Identity, 
 		writeErr(w, err)
 		return
 	}
+	s.record(r, id, groups, a, d.Allowed, d.Reason)
 	if !d.Allowed {
 		writeErr(w, errf(http.StatusForbidden, "Forbidden", "%s: %s", id, d.Reason))
 		return
@@ -125,4 +126,41 @@ func (s *Server) canI(w http.ResponseWriter, r *http.Request, id pki.Identity, g
 		return
 	}
 	writeJSON(w, http.StatusOK, client.CanIResponse{Allowed: d.Allowed, Reason: d.Reason})
+}
+
+// serviceAccountToken issues a token for a service account (RBAC: create serviceaccounts/token).
+func (s *Server) serviceAccountToken(w http.ResponseWriter, r *http.Request, t target) {
+	if r.Method != http.MethodPost {
+		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "POST to get a token"))
+		return
+	}
+	if s.auth == nil || s.auth.Issuer == nil {
+		writeErr(w, errf(http.StatusNotFound, "NotFound", "this cluster has no issuer"))
+		return
+	}
+	body, err := readBody(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	var req client.TokenRequest
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
+			return
+		}
+	}
+	d := time.Hour
+	if req.Duration != "" {
+		if d, err = time.ParseDuration(req.Duration); err != nil || d <= 0 || d > 90*24*time.Hour {
+			writeErr(w, errf(http.StatusBadRequest, "BadRequest", "duration must be up to 2160h (90 days)"))
+			return
+		}
+	}
+	tok, exp, err := s.auth.Issuer.ServiceAccountToken(r.Context(), t.namespace, t.name, d)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, client.TokenResponse{Token: tok, Expires: exp})
 }

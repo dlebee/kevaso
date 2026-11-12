@@ -21,6 +21,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/apiserver"
+	"kevaso.com/core/internal/audit"
 	"kevaso.com/core/internal/clock"
 	silocontroller "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/engine"
@@ -110,7 +111,9 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("issuer: %w", err)
 	}
-	srv, err := apiserver.NewWithAuth(st, cfg.Clock, &apiserver.Auth{CA: ca, Tokens: tokens, Issuer: iss})
+	auditLog := &audit.File{Path: filepath.Join(cfg.DataDir, "audit.log"), OnError: func(err error) { cfg.Log("audit: %v", err) }}
+	iss.Audit = auditLog
+	srv, err := apiserver.NewWithAuth(st, cfg.Clock, &apiserver.Auth{CA: ca, Tokens: tokens, Issuer: iss, Audit: auditLog})
 	if err != nil {
 		_ = st.Close()
 		return nil, err

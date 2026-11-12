@@ -3,6 +3,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -110,5 +111,80 @@ func TestKvoLoginAndRBACFromTheCLI(t *testing.T) {
 	ok(kvoCmd, "", "logout")
 	if _, errs, code := run(c.ctx, kvoCmd, "", "get", "silos"); code == 0 || !strings.Contains(errs, "not signed in") {
 		t.Errorf("after logout: %d %s", code, errs)
+	}
+}
+
+// A service account for CI: a token from kvo create token, used through $KVO_TOKEN, limited by
+// RBAC, and dead once the account is deleted (even if it's re-created).
+func TestServiceAccountTokens(t *testing.T) {
+	c := newCluster(t)
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("KVO_CONFIG", cfgPath)
+	t.Setenv("KVO_SERVER", "")
+	t.Setenv("KVO_TOKEN", "")
+	for _, n := range []string{"payments", "other"} {
+		_ = c.admin.Create(c.ctx, ns(n))
+	}
+	key, csr, _ := clientKeyCSR(t)
+	cert, ca, _ := c.admin.SignUserCSR(c.ctx, "david", csr)
+	_ = kvoconfig.AddContext(cfgPath, "admin", c.url, ca, cert, key)
+	ok := func(stdin string, args ...string) string {
+		t.Helper()
+		out, errs, code := run(c.ctx, kvoCmd, stdin, args...)
+		if code != 0 {
+			t.Fatalf("%v: exit %d\n%s%s", args, code, out, errs)
+		}
+		return out
+	}
+	ok(`apiVersion: kevaso/v1
+kind: ServiceAccount
+metadata: { name: deployer, namespace: payments }
+---
+apiVersion: kevaso/v1
+kind: RoleBinding
+metadata: { name: deployer, namespace: payments }
+roleRef: { kind: ClusterRole, name: editor }
+subjects: [{ kind: ServiceAccount, name: deployer }]
+`, "apply", "-f", "-")
+	if _, errs, code := run(c.ctx, kvoCmd, "", "create", "token", "nobody", "-n", "payments"); code == 0 || !strings.Contains(errs, "NotFound") {
+		t.Errorf("token for a missing account: %d %s", code, errs)
+	}
+	tok := strings.TrimSpace(ok("", "create", "token", "deployer", "-n", "payments", "--duration", "10m"))
+	if strings.Count(tok, ".") != 2 {
+		t.Fatalf("token %q", tok)
+	}
+	if _, errs, code := run(c.ctx, kvoCmd, "", "create", "token", "deployer", "-n", "payments", "--duration", "9999h"); code == 0 || !strings.Contains(errs, "90 days") {
+		t.Errorf("too long: %d %s", code, errs)
+	}
+
+	t.Setenv("KVO_TOKEN", tok)
+	if out := ok("", "auth", "whoami"); !strings.HasPrefix(out, "serviceaccount system:serviceaccount:payments:deployer") {
+		t.Fatalf("whoami: %s", out)
+	}
+	ok(`{"apiVersion":"kevaso/v1","kind":"Silo","metadata":{"name":"api","namespace":"payments"},"spec":{"runtime":"cloud-hypervisor","image":"ubuntu-24.04","resources":{"cpu":1,"memory":"1Gi"}}}`, "apply", "-f", "-")
+	if _, errs, code := run(c.ctx, kvoCmd, "", "get", "silos", "-n", "other"); code == 0 || !strings.Contains(errs, "Forbidden") {
+		t.Errorf("SA in another namespace: %d %s", code, errs)
+	}
+	// editor includes serviceaccounts/token (as in Kubernetes), only in its namespace.
+	if _, errs, code := run(c.ctx, kvoCmd, "", "create", "token", "deployer", "-n", "payments"); code != 0 {
+		t.Errorf("editor minting a token in its namespace: %s", errs)
+	}
+
+	// With --server and KVO_CA_FILE instead of a context.
+	caFile := filepath.Join(t.TempDir(), "ca.crt")
+	_ = os.WriteFile(caFile, c.ca, 0o644)
+	t.Setenv("KVO_CA_FILE", caFile)
+	if out := ok("", "get", "silos", "-n", "payments", "--server", c.url); !strings.Contains(out, "api") {
+		t.Fatalf("with --server: %s", out)
+	}
+	t.Setenv("KVO_CA_FILE", "")
+
+	// Deleting the account ends the token, and re-creating it doesn't bring it back.
+	t.Setenv("KVO_TOKEN", "")
+	ok("", "delete", "serviceaccount", "deployer", "-n", "payments")
+	ok(`{"apiVersion":"kevaso/v1","kind":"ServiceAccount","metadata":{"name":"deployer","namespace":"payments"}}`, "apply", "-f", "-")
+	t.Setenv("KVO_TOKEN", tok)
+	if _, errs, code := run(c.ctx, kvoCmd, "", "get", "silos", "-n", "payments"); code == 0 || !strings.Contains(errs, "Unauthorized") {
+		t.Errorf("token after the account was deleted: %d %s", code, errs)
 	}
 }

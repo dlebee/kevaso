@@ -126,6 +126,7 @@ type target struct {
 	name      string
 	status    bool
 	exec      bool // a silo's /exec
+	token     bool // a service account's /token
 }
 
 func parsePath(path string) (target, error) {
@@ -153,6 +154,8 @@ func parsePath(path string) (target, error) {
 		t.status = true
 	case len(parts) == 3 && parts[2] == "exec" && k.Kind == "Silo":
 		t.exec = true
+	case len(parts) == 3 && parts[2] == "token" && k.Kind == "ServiceAccount":
+		t.token = true
 	case len(parts) > 2:
 		return t, errf(http.StatusNotFound, "NotFound", "unknown path %q", path)
 	}
@@ -173,6 +176,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case t.exec:
 		s.siloExec(w, r, t.namespace, t.name)
+	case t.token:
+		s.serviceAccountToken(w, r, t)
 	case r.Method == http.MethodGet && t.name == "" && r.URL.Query().Get("watch") == "true":
 		s.watch(ctx, w, r, t)
 	case r.Method == http.MethodGet && t.name == "":

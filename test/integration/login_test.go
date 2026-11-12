@@ -20,6 +20,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/apiserver"
+	"kevaso.com/core/internal/audit"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
@@ -34,6 +35,7 @@ type cluster struct {
 	ca    []byte
 	admin *client.Client
 	iss   *issuer.Issuer
+	audit *audit.Memory
 	ctx   context.Context
 }
 
@@ -53,7 +55,9 @@ func newCluster(t *testing.T) *cluster {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := apiserver.NewWithAuth(st, clock.Real{}, &apiserver.Auth{CA: ca, Tokens: &jointoken.Issuer{Store: st, Clock: clock.Real{}}, Issuer: iss})
+	log := &audit.Memory{}
+	iss.Audit = log
+	srv, err := apiserver.NewWithAuth(st, clock.Real{}, &apiserver.Auth{CA: ca, Tokens: &jointoken.Issuer{Store: st, Clock: clock.Real{}}, Issuer: iss, Audit: log})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +73,7 @@ func newCluster(t *testing.T) *cluster {
 	hs := srv.HTTPServer(true)
 	go func() { _ = hs.Serve(l) }()
 	t.Cleanup(func() { _ = hs.Close() })
-	return &cluster{url: ts.url, ca: ca.PEM, admin: client.NewUnix(filepath.Join(dir, "admin.sock")), iss: iss, ctx: ctx}
+	return &cluster{url: ts.url, ca: ca.PEM, admin: client.NewUnix(filepath.Join(dir, "admin.sock")), iss: iss, audit: log, ctx: ctx}
 }
 
 func (c *cluster) invite(t *testing.T, user string, groups ...string) string {
@@ -189,6 +193,33 @@ func TestASecondUserOnlySeesTheirNamespace(t *testing.T) {
 		t.Fatalf("can-i: %+v", can)
 	}
 
+	// Everything bob did, or tried, is in the audit log, with the reason.
+	find := func(pred func(audit.Entry) bool) bool {
+		for _, e := range c.audit.Entries() {
+			if pred(e) {
+				return true
+			}
+		}
+		return false
+	}
+	for what, pred := range map[string]func(audit.Entry) bool{
+		"sign-in": func(e audit.Entry) bool { return e.Event == "sign-in" && e.User == "bob" && e.Allowed },
+		"allowed": func(e audit.Entry) bool {
+			return e.User == "bob" && e.Verb == "create" && e.Resource == "silos" && e.Allowed && strings.Contains(e.Reason, "bob")
+		},
+		"denied": func(e audit.Entry) bool {
+			return e.User == "bob" && e.Verb == "list" && e.Namespace == "secret-project" && !e.Allowed
+		},
+		"denied admin": func(e audit.Entry) bool { return e.User == "bob" && e.Resource == "invites" && !e.Allowed },
+		"admin socket": func(e audit.Entry) bool {
+			return e.User == "root" && e.Resource == "namespaces" && e.Reason == "local admin socket"
+		},
+	} {
+		if !find(pred) {
+			t.Errorf("audit log has no %s entry", what)
+		}
+	}
+
 	// Disabling bob ends it at once.
 	if err := c.admin.Call(c.ctx, http.MethodPost, "/admin/users/bob/disable", nil, nil); err != nil {
 		t.Fatal(err)
@@ -196,6 +227,12 @@ func TestASecondUserOnlySeesTheirNamespace(t *testing.T) {
 	var ce *client.Error
 	if err := list(c.ctx, bob, "Silo", "payments", &l); !errors.As(err, &ce) || ce.Code != http.StatusUnauthorized {
 		t.Fatalf("bob after disable: %v", err)
+	}
+	if !find(func(e audit.Entry) bool { return e.Event == "disable" && e.User == "bob" }) ||
+		!find(func(e audit.Entry) bool {
+			return e.Event == "authenticate" && !e.Allowed && strings.Contains(e.Reason, "session ended")
+		}) {
+		t.Error("audit log is missing the disable or the refused token")
 	}
 }
 

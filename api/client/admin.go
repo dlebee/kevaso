@@ -40,3 +40,14 @@ type CanIResponse struct {
 	Allowed bool   `json:"allowed"`
 	Reason  string `json:"reason"`
 }
+
+// TokenRequest asks for a service account token (POST …/serviceaccounts/NAME/token).
+type TokenRequest struct {
+	Duration string `json:"duration,omitempty"` // default 1h, at most 2160h (90 days)
+}
+
+// TokenResponse is the token; it's shown once and works until it expires or the account is deleted.
+type TokenResponse struct {
+	Token   string    `json:"token"`
+	Expires time.Time `json:"expires"`
+}
