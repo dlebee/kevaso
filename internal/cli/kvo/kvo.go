@@ -6,6 +6,12 @@
 //	kvo delete KIND NAME [-n NS]
 //	kvo watch KIND [-n NS|-A]
 //	kvo exec silo NAME [-n NS] -- CMD [ARGS…]   run a command in a silo; exits with its code
+//	kvo login [SERVER --ca sha256:…] [--context NAME] [--no-browser]   sign in (browser + invite code)
+//	kvo logout                    forget this context's session
+//	kvo ctx [NAME]                list contexts, or switch to one
+//	kvo ns [NAME]                 show the default namespace, or set it for this context
+//	kvo auth can-i VERB RESOURCE[/NAME|/SUBRESOURCE] [-n NS]   exits 0 for yes, 1 for no
+//	kvo auth whoami
 //
 // The cluster comes from --server or $KVO_SERVER (plain HTTP, for `kevasod dev`), otherwise from the
 // kvo config's current context (or --context): TLS with a pinned CA and a client certificate, as
@@ -39,9 +45,11 @@ const DefaultServer = "http://127.0.0.1:8080"
 
 type opts struct {
 	server, context, namespace, output, file string
-	all                                      bool
+	ca                                       string // kvo login: the CA fingerprint to pin
+	all, noBrowser                           bool
 	args                                     []string
 	command                                  []string // after --
+	ctxNamespace                             string   // the context's default namespace
 }
 
 func parse(args []string, env func(string) string) (opts, error) {
@@ -77,6 +85,10 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.file, err = val()
 		case "-A", "--all-namespaces":
 			o.all = true
+		case "--ca":
+			o.ca, err = val()
+		case "--no-browser":
+			o.noBrowser = true
 		default:
 			if strings.HasPrefix(a, "-") && a != "-" {
 				return o, fmt.Errorf("unknown flag %s", a)
@@ -93,7 +105,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|login|logout|ctx|ns|auth …")
 		return 2
 	}
 	o, err := parse(args[1:], os.Getenv)
@@ -101,12 +113,26 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		_, _ = fmt.Fprintln(stderr, "kvo:", err)
 		return 2
 	}
-	c, err := clientFor(o)
+	switch args[0] { // commands about the config itself
+	case "login", "logout", "ctx", "ns":
+		if err := configCommand(ctx, args[0], o, stdout, stderr); err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvo:", err)
+			return 1
+		}
+		return 0
+	}
+	c, err := clientFor(&o)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "kvo:", err)
 		return 1
 	}
 	switch args[0] {
+	case "auth":
+		var code int
+		code, err = auth(ctx, c, o, stdout)
+		if err == nil {
+			return code
+		}
 	case "apply":
 		err = apply(ctx, c, o, stdin, stdout)
 	case "get":
@@ -134,7 +160,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 }
 
 // clientFor picks the cluster: --server / $KVO_SERVER, else the kvo config, else kevasod dev.
-func clientFor(o opts) (*client.Client, error) {
+func clientFor(o *opts) (*client.Client, error) {
 	if o.server != "" {
 		return client.New(o.server), nil
 	}
@@ -149,13 +175,19 @@ func clientFor(o opts) (*client.Client, error) {
 	if len(cfg.Contexts) == 0 && o.context == "" {
 		return client.New(DefaultServer), nil
 	}
-	c, _, err := cfg.Client(o.context)
+	c, name, err := cfg.Client(path, o.context)
+	if err == nil {
+		o.ctxNamespace = cfg.Contexts[name].Namespace
+	}
 	return c, err
 }
 
 func defaultNS(o opts) string {
-	if o.namespace != "" {
+	switch {
+	case o.namespace != "":
 		return o.namespace
+	case o.ctxNamespace != "":
+		return o.ctxNamespace
 	}
 	return "default"
 }

@@ -74,8 +74,8 @@ func newCluster(t *testing.T) *cluster {
 
 func (c *cluster) invite(t *testing.T, user string, groups ...string) string {
 	t.Helper()
-	var resp apiserver.InviteResponse
-	if err := c.admin.Call(c.ctx, http.MethodPost, "/admin/invites", apiserver.InviteRequest{User: user, Groups: groups}, &resp); err != nil {
+	var resp client.InviteResponse
+	if err := c.admin.Call(c.ctx, http.MethodPost, "/admin/invites", client.InviteRequest{User: user, Groups: groups}, &resp); err != nil {
 		t.Fatal(err)
 	}
 	return resp.Code
@@ -172,7 +172,7 @@ func TestASecondUserOnlySeesTheirNamespace(t *testing.T) {
 		"list silos everywhere":        list(c.ctx, bob, "Silo", "", &l),
 		"list hosts":                   list(c.ctx, bob, "Host", "", &l),
 		"bind himself admin":           bob.Create(c.ctx, &v1.RoleBinding{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "RoleBinding"}, ObjectMeta: meta.ObjectMeta{Name: "x", Namespace: "payments"}, RoleRef: v1.RoleRef{Kind: "ClusterRole", Name: "admin"}, Subjects: []v1.Subject{{Kind: "User", Name: "bob"}}}),
-		"invite someone":               bob.Call(c.ctx, http.MethodPost, "/admin/invites", apiserver.InviteRequest{User: "eve"}, nil),
+		"invite someone":               bob.Call(c.ctx, http.MethodPost, "/admin/invites", client.InviteRequest{User: "eve"}, nil),
 	} {
 		var ce *client.Error
 		if !errors.As(err, &ce) || ce.Code != http.StatusForbidden {
@@ -183,7 +183,7 @@ func TestASecondUserOnlySeesTheirNamespace(t *testing.T) {
 	if err := list(c.ctx, bob, "Namespace", "", &l); err != nil || len(l) != 1 || !strings.Contains(string(l[0]), `"payments"`) {
 		t.Fatalf("bob's namespaces: %d %v", len(l), err)
 	}
-	var can apiserver.CanIResponse
+	var can client.CanIResponse
 	_ = bob.Call(c.ctx, http.MethodGet, "/auth/can-i?verb=create&resource=silos/exec&namespace=payments", nil, &can)
 	if !can.Allowed || !strings.Contains(can.Reason, "RoleBinding payments/bob") {
 		t.Fatalf("can-i: %+v", can)
@@ -251,4 +251,9 @@ func (s *tlsServer) start(t *testing.T, h http.Handler, cfg *tls.Config) {
 	s.ts.TLS = cfg
 	s.ts.StartTLS()
 	t.Cleanup(s.ts.Close)
+}
+
+func clientKeyCSR(t *testing.T) (key, csr []byte, err error) {
+	t.Helper()
+	return client.NewKeyAndCSR("david")
 }

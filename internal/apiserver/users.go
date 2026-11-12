@@ -7,30 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"kevaso.com/core/internal/issuer"
+	"kevaso.com/core/api/client"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/rbac"
 )
-
-// InviteRequest asks for a one-time sign-in code for a user (POST /admin/invites).
-type InviteRequest struct {
-	User   string   `json:"user"`
-	Groups []string `json:"groups,omitempty"`
-	TTL    string   `json:"ttl,omitempty"` // default 15m
-}
-
-// InviteResponse carries the code; it's shown once.
-type InviteResponse struct {
-	User    string    `json:"user"`
-	Code    string    `json:"code"`
-	Expires time.Time `json:"expires"`
-}
-
-// CanIResponse answers GET /auth/can-i.
-type CanIResponse struct {
-	Allowed bool   `json:"allowed"`
-	Reason  string `json:"reason"`
-}
 
 // can asks RBAC about a non-resource action (the admin socket may do anything; hosts nothing).
 func (s *Server) can(ctx context.Context, id pki.Identity, groups []string, a rbac.Attributes) (rbac.Decision, error) {
@@ -86,7 +66,7 @@ func (s *Server) users(w http.ResponseWriter, r *http.Request, id pki.Identity, 
 			writeErr(w, err)
 			return
 		}
-		var req InviteRequest
+		var req client.InviteRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
 			return
@@ -103,14 +83,19 @@ func (s *Server) users(w http.ResponseWriter, r *http.Request, id pki.Identity, 
 			writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
 			return
 		}
-		writeJSON(w, http.StatusOK, InviteResponse{User: req.User, Code: code, Expires: exp})
+		fp, _ := client.Fingerprint(s.auth.CA.PEM)
+		writeJSON(w, http.StatusOK, client.InviteResponse{User: req.User, Code: code, Expires: exp, CAFingerprint: fp})
 	case "users/list":
 		us, err := iss.Users(r.Context())
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string][]issuer.User{"items": us})
+		out := make([]client.User, 0, len(us))
+		for _, u := range us {
+			out = append(out, client.User(u))
+		}
+		writeJSON(w, http.StatusOK, map[string][]client.User{"items": out})
 	case "users/update":
 		if err := iss.Disable(r.Context(), name); err != nil {
 			writeErr(w, err)
@@ -139,5 +124,5 @@ func (s *Server) canI(w http.ResponseWriter, r *http.Request, id pki.Identity, g
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, CanIResponse{Allowed: d.Allowed, Reason: d.Reason})
+	writeJSON(w, http.StatusOK, client.CanIResponse{Allowed: d.Allowed, Reason: d.Reason})
 }

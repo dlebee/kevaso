@@ -27,7 +27,6 @@ import (
 	"golang.org/x/oauth2"
 
 	"kevaso.com/core/api/client"
-	"kevaso.com/core/internal/issuer"
 )
 
 // FetchCA downloads the cluster CA and accepts it only if it has the fingerprint the admin gave.
@@ -86,9 +85,9 @@ func HTTPClient(caPEM []byte) (*http.Client, error) {
 func Config(server, loopbackBase string) *oauth2.Config {
 	server = strings.TrimRight(server, "/")
 	return &oauth2.Config{
-		ClientID: issuer.ClientID, Scopes: []string{"openid", "offline_access", "groups"},
+		ClientID: client.OIDCClientID, Scopes: []string{"openid", "offline_access", "groups"},
 		RedirectURL: loopbackBase + "/callback",
-		Endpoint: oauth2.Endpoint{AuthURL: loopbackBase + issuer.PathAuthorize, TokenURL: server + issuer.PathToken,
+		Endpoint: oauth2.Endpoint{AuthURL: loopbackBase + client.PathAuthorize, TokenURL: server + client.PathToken,
 			AuthStyle: oauth2.AuthStyleInParams}, // a public client (E022)
 	}
 }
@@ -139,8 +138,8 @@ func Login(ctx context.Context, server string, caPEM []byte, o Options) (*oauth2
 		Transport: pinned.Transport,
 	}
 	mux := http.NewServeMux()
-	mux.Handle(issuer.PathAuthorize, proxy) // only the sign-in pages are relayed
-	mux.Handle(issuer.PathLogin, proxy)
+	mux.Handle(client.PathAuthorize, proxy) // only the sign-in pages are relayed
+	mux.Handle(client.PathLogin, proxy)
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		var res result

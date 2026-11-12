@@ -24,15 +24,16 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 
+	"kevaso.com/core/api/client"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/store"
 )
 
 // ClientID is kvo's: a public client (no secret), loopback redirects only.
-const ClientID = "kvo"
+const ClientID = client.OIDCClientID
 
 // Audience of access tokens: the Kevaso API.
-const Audience = "kevaso"
+const Audience = client.OIDCAudience
 
 // raceGrace: a just-replaced refresh token coming back this soon is a race between two local
 // commands, not theft.
@@ -42,11 +43,11 @@ var loopback = regexp.MustCompile(`^http://127\.0\.0\.1:[0-9]{1,5}/callback$`)
 
 // Paths, under the API server.
 const (
-	PathDiscovery = "/.well-known/openid-configuration"
-	PathKeys      = "/oidc/keys"
-	PathAuthorize = "/oidc/authorize"
-	PathLogin     = "/oidc/login"
-	PathToken     = "/oidc/token"
+	PathDiscovery = client.PathDiscovery
+	PathKeys      = client.PathKeys
+	PathAuthorize = client.PathAuthorize
+	PathLogin     = client.PathLogin
+	PathToken     = client.PathToken
 )
 
 // Issuer issues and verifies tokens.

@@ -1,5 +1,6 @@
-// Package kvoadm is the operator CLI. M2 has `kvoadm init`: set up a fresh machine over SSH, install
-// the control plane on it, and give you working `kvo` credentials.
+// Package kvoadm is the operator CLI: `kvoadm init` sets up a fresh machine over SSH, installs the
+// control plane on it, and gives you working `kvo` credentials; `kvoadm users` invites people
+// (one-time codes for `kvo login`), lists and disables them.
 //
 //	kvoadm init [USER@]ADDRESS [--name NAME] [--ssh-port 22] [--ssh-key PATH] [--host-key SHA256:…]
 //	            [--kevasod PATH] [--api-server URL] [--cluster NAME] [--user NAME]
@@ -42,8 +43,15 @@ import (
 
 // Run runs one kvoadm command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "users" {
+		if err := usersCmd(ctx, args[1:], stdout); err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) == 0 || args[0] != "init" {
-		_, _ = fmt.Fprintln(stderr, "usage: kvoadm init [USER@]ADDRESS [--ssh-key PATH] [--host-key SHA256:…] [--kevasod PATH]")
+		_, _ = fmt.Fprintln(stderr, "usage: kvoadm init [USER@]ADDRESS [--ssh-key PATH] [--host-key SHA256:…] [--kevasod PATH]\n       kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME")
 		return 2
 	}
 	o, err := parseInit(args[1:])

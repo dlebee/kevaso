@@ -30,10 +30,10 @@ func TestAddContextAndClient(t *testing.T) {
 			t.Fatalf("%s mode %v %v, want 0600", f, fi.Mode(), err)
 		}
 	}
-	if _, _, err := c.Client("nope"); err == nil {
+	if _, _, err := c.Client(path, "nope"); err == nil {
 		t.Fatal("unknown context accepted")
 	}
-	if _, _, err := c.Client(""); err == nil {
+	if _, _, err := c.Client(path, ""); err == nil {
 		t.Fatal("a context with a garbage CA produced a client")
 	}
 }

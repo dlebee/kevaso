@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"kevaso.com/core/api/client"
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
 	"kevaso.com/core/internal/pki"
@@ -213,6 +214,10 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 		}
 		if r.URL.Path == "/auth/can-i" {
 			s.canI(w, r, id, groups)
+			return
+		}
+		if r.URL.Path == "/auth/whoami" {
+			writeJSON(w, http.StatusOK, client.WhoAmI{Type: id.Type, Name: id.Name, Role: id.Role, Groups: groups})
 			return
 		}
 		t, err := parsePath(r.URL.Path)
