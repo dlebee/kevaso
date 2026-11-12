@@ -12,6 +12,15 @@ var Packages = map[string][]string{
 	"podman": {"podman", "nftables", "iproute2"},
 }
 
+// DockerDaemonJSON keeps Docker out of the host's firewall and networks: container silos use the
+// silo bridge, through their pause container.
+const DockerDaemonJSON = `{
+  "iptables": false,
+  "ip6tables": false,
+  "bridge": "none"
+}
+`
+
 // Install readies the host: the engine, and the silo bridge with its baseline firewall (shared with
 // the VM runtime).
 func (r *Runtime) Install(ctx context.Context, progress func(string)) error {
@@ -29,9 +38,19 @@ func (r *Runtime) Install(ctx context.Context, progress func(string)) error {
 		}
 	}
 	if r.engine() == "docker" {
-		if _, err := r.cmd(ctx, nil, "systemctl", "enable", "--now", "docker"); err != nil {
+		// Kevaso owns the host's firewall and networks its containers itself (the silo bridge), so
+		// Docker mustn't: left alone it sets the FORWARD policy to DROP, which no rule of ours can
+		// undo, and every silo's forwarded traffic (VMs too) would stop.
+		if err := r.Host.WriteFile("/etc/docker/daemon.json", []byte(DockerDaemonJSON), 0o644); err != nil {
 			return err
 		}
+		if _, err := r.cmd(ctx, nil, "systemctl", "enable", "docker"); err != nil {
+			return err
+		}
+		if _, err := r.cmd(ctx, nil, "systemctl", "restart", "docker"); err != nil {
+			return err
+		}
+		_, _ = r.cmd(ctx, nil, "sh", "-c", "iptables -P FORWARD ACCEPT 2>/dev/null; ip link del docker0 2>/dev/null; true")
 	}
 	progress("silo bridge")
 	if err := cloudhypervisor.SetupNetwork(ctx, chHost{r.Host}); err != nil {
