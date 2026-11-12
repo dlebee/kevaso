@@ -604,6 +604,10 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error 
 		head = append(head, "TYPE", "VERSION", "UPDATED", "READABLE")
 	case "Grant":
 		head = append(head, "EGRESS", "SECRETS")
+	case "Ingress":
+		head = append(head, "CLASS", "HOSTS", "ADDRESS", "READY")
+	case "Certificate":
+		head = append(head, "HOSTS", "ISSUER", "EXPIRES", "READY")
 	}
 	head = append(head, "AGE")
 	_, _ = fmt.Fprintln(tw, strings.Join(head, "\t"))
@@ -674,6 +678,14 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error 
 				secs = append(secs, op.Sign.KeyRef+":sign")
 			}
 			row = append(row, dash(strings.Join(eg, ",")), dash(strings.Join(secs, ",")))
+		case *v1.Ingress:
+			row = append(row, o.Spec.IngressClass, strings.Join(o.Spec.Hosts, ","), dash(o.Status.Address), readiness(o.Status.Conditions))
+		case *v1.Certificate:
+			exp := "-"
+			if o.Status.NotAfter != nil {
+				exp = o.Status.NotAfter.Local().Format("2006-01-02")
+			}
+			row = append(row, strings.Join(o.Spec.Hosts, ","), o.Spec.Issuer, exp, readiness(o.Status.Conditions))
 		}
 		row = append(row, age(m))
 		_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))
@@ -760,4 +772,18 @@ func watch(ctx context.Context, c *client.Client, o opts, stdout io.Writer) erro
 		return nil // stopped on purpose
 	}
 	return errors.New("watch ended by the server")
+}
+
+// readiness is a Ready condition in a table: yes, or why not.
+func readiness(conds []meta.Condition) string {
+	c := meta.FindCondition(conds, "Ready")
+	switch {
+	case c == nil:
+		return "-"
+	case c.Status == meta.ConditionTrue:
+		return "yes"
+	case c.Reason != "":
+		return "no (" + c.Reason + ")"
+	}
+	return "no"
 }

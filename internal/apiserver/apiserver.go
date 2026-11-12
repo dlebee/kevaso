@@ -377,6 +377,10 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		writeErr(w, err)
 		return
 	}
+	if err := s.checkPublishPublic(ctx, t, obj); err != nil {
+		writeErr(w, err)
+		return
+	}
 	value, err := s.prepareSecret(ctx, t, obj)
 	if err != nil {
 		writeErr(w, err)

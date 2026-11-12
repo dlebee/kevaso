@@ -14,6 +14,7 @@ const (
 	OpPublicKey  = "public-key" // the public half of a key the silo may sign with
 	OpDeliveries = "deliveries" // which secrets go to files and env vars (names and versions only)
 	OpWatch      = "watch"      // a stream of events: a secret or grant changed, re-read
+	OpIngress    = "ingress"    // an ingress controller silo's routes, certificates and ACME answers
 )
 
 // OpInjections is what a host's egress gate asks for its silos (never forwarded from a silo).
@@ -29,15 +30,16 @@ type BrokerRequest struct {
 
 // BrokerResponse is one line back (watch: one per event).
 type BrokerResponse struct {
-	Error      string      `json:"error,omitempty"`
-	Value      []byte      `json:"value,omitempty"`
-	Version    int64       `json:"version,omitempty"`
-	Signature  []byte      `json:"signature,omitempty"`
-	PublicKey  string      `json:"publicKey,omitempty"`
-	Deliveries []Delivery  `json:"deliveries,omitempty"`
-	Injections []Injection `json:"injections,omitempty"`
-	Event      string      `json:"event,omitempty"` // watch: "changed" (a secret or grant), "ready"
-	Secret     string      `json:"secret,omitempty"`
+	Error      string         `json:"error,omitempty"`
+	Value      []byte         `json:"value,omitempty"`
+	Version    int64          `json:"version,omitempty"`
+	Signature  []byte         `json:"signature,omitempty"`
+	PublicKey  string         `json:"publicKey,omitempty"`
+	Deliveries []Delivery     `json:"deliveries,omitempty"`
+	Injections []Injection    `json:"injections,omitempty"`
+	Ingress    *IngressConfig `json:"ingress,omitempty"`
+	Event      string         `json:"event,omitempty"` // watch: "changed" (a secret or grant), "ready"
+	Secret     string         `json:"secret,omitempty"`
 }
 
 // Delivery is a secret the guest helper writes to a file or an environment variable.
@@ -75,3 +77,27 @@ type AgentBrokerRequest struct {
 
 // PathAgentBroker is where hosts relay broker requests.
 const PathAgentBroker = "/agent/broker"
+
+// IngressConfig is what an ingress controller silo serves.
+type IngressConfig struct {
+	Routes []IngressRoute `json:"routes"`
+	// Certs are certificate bundles (chain then key, PEM) for TLS hosts.
+	Certs []IngressCert `json:"certs"`
+	// Challenges are ACME HTTP-01 answers to serve on port 80 (token → key authorization).
+	Challenges map[string]string `json:"challenges"`
+}
+
+// IngressRoute sends a host and path prefix to a backend.
+type IngressRoute struct {
+	Host    string `json:"host"`
+	Path    string `json:"path"`
+	Backend string `json:"backend"` // host:port, a private name
+	TLS     bool   `json:"tls"`     // served on 443; port 80 redirects
+	Ingress string `json:"ingress"` // namespace/name, for logs
+}
+
+// IngressCert is a certificate for some hosts.
+type IngressCert struct {
+	Hosts  []string `json:"hosts"`
+	Bundle []byte   `json:"bundle"`
+}

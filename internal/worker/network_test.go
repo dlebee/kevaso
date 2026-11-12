@@ -58,3 +58,23 @@ func TestNetworkView(t *testing.T) {
 		t.Fatalf("pool addresses %v", got)
 	}
 }
+
+func TestWithIngressPaths(t *testing.T) {
+	api := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "payments"}, Spec: v1.SiloSpec{AllowFrom: []v1.AllowFrom{{Silo: "worker"}}}}
+	other := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "other", Namespace: "payments"}}
+	class := &v1.IngressClass{ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{Controller: v1.SiloRef{Silo: "ingress-public", Namespace: "kevaso-system"}}}
+	ing := &v1.Ingress{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "payments"}, Spec: v1.IngressSpec{IngressClass: "public",
+		Rules: []v1.IngressRule{{Path: "/", Silo: v1.IngressTarget{Name: "api", Port: "http"}}}}}
+	stray := &v1.Ingress{ObjectMeta: meta.ObjectMeta{Name: "x", Namespace: "payments"}, Spec: v1.IngressSpec{IngressClass: "missing",
+		Rules: []v1.IngressRule{{Silo: v1.IngressTarget{Name: "other", Port: "http"}}}}}
+	got := WithIngressPaths([]*v1.Silo{api, other}, []*v1.Ingress{ing, stray}, []*v1.IngressClass{class})
+	if len(got[0].Spec.AllowFrom) != 2 || got[0].Spec.AllowFrom[1].Silo != "kevaso-system/ingress-public" || got[0].Spec.AllowFrom[1].Ports[0] != "http" {
+		t.Fatalf("api allowFrom %+v", got[0].Spec.AllowFrom)
+	}
+	if len(api.Spec.AllowFrom) != 1 {
+		t.Fatal("the silo given was changed")
+	}
+	if len(got[1].Spec.AllowFrom) != 0 {
+		t.Fatal("an Ingress of a class that doesn't exist opened a path")
+	}
+}

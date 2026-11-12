@@ -71,6 +71,7 @@ func PoolAddresses(hostName string, silos []*v1.Silo) []string {
 func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate.CA, upstream *x509.CertPool, log func(string, ...any)) {
 	silos, hosts, grantsInf := informer.New(c, "Silo"), informer.New(c, "Host"), informer.New(c, "Grant")
 	secretsInf := informer.New(c, "Secret")
+	ingInf, classInf := informer.New(c, "Ingress"), informer.New(c, "IngressClass")
 	changed := make(chan struct{}, 1)
 	poke := func(informer.Key) {
 		select {
@@ -85,6 +86,10 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 	go hosts.Run(ctx)
 	go grantsInf.Run(ctx)
 	go secretsInf.Run(ctx)
+	ingInf.AddHandler(poke)
+	classInf.AddHandler(poke)
+	go ingInf.Run(ctx)
+	go classInf.Run(ctx)
 	if !silos.WaitSynced(ctx) || !hosts.WaitSynced(ctx) || !grantsInf.WaitSynced(ctx) {
 		return
 	}
@@ -123,7 +128,15 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		if o, ok := hosts.Get("", hostName); ok {
 			me = o.(*v1.Host)
 		}
-		view := NetworkView(hostName, me, all, currentGrants())
+		var ings []*v1.Ingress
+		for _, o := range ingInf.List() {
+			ings = append(ings, o.(*v1.Ingress))
+		}
+		var classes []*v1.IngressClass
+		for _, o := range classInf.List() {
+			classes = append(classes, o.(*v1.IngressClass))
+		}
+		view := NetworkView(hostName, me, WithIngressPaths(all, ings, classes), currentGrants())
 		view.GatePort = gatePort
 		rules := kni.Rules(view)
 		if rules != last {
@@ -234,4 +247,39 @@ func uplink(addr string) string {
 		}
 	}
 	return ""
+}
+
+// WithIngressPaths returns the silos with the paths Ingresses open (design §7.2b: "an Ingress opens
+// its own path, visibly"): each Ingress's target port, reachable from its class's controller silo,
+// as if the target's allowFrom said so. The silos given aren't changed. Pure.
+func WithIngressPaths(silos []*v1.Silo, ingresses []*v1.Ingress, classes []*v1.IngressClass) []*v1.Silo {
+	byClass := map[string]*v1.IngressClass{}
+	for _, c := range classes {
+		byClass[c.Name] = c
+	}
+	extra := map[string][]v1.AllowFrom{}
+	for _, ing := range ingresses {
+		c, ok := byClass[ing.Spec.IngressClass]
+		if !ok || ing.DeletionTimestamp != nil {
+			continue
+		}
+		from := c.Spec.Controller.Namespace + "/" + c.Spec.Controller.Silo
+		for _, r := range ing.Spec.Rules {
+			key := ing.Namespace + "/" + r.Silo.Name
+			extra[key] = append(extra[key], v1.AllowFrom{Silo: from, Ports: []string{r.Silo.Port}})
+		}
+	}
+	if len(extra) == 0 {
+		return silos
+	}
+	out := make([]*v1.Silo, len(silos))
+	for i, s := range silos {
+		out[i] = s
+		if add := extra[s.Namespace+"/"+s.Name]; len(add) > 0 {
+			cp := *s
+			cp.Spec.AllowFrom = append(append([]v1.AllowFrom(nil), s.Spec.AllowFrom...), add...)
+			out[i] = &cp
+		}
+	}
+	return out
 }

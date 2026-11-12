@@ -6,6 +6,7 @@
 //	kvo-guest sign KEY [--slot N]       sign stdin with a key that never enters the silo; prints hex
 //	kvo-guest public-key KEY            the key's public half, hex
 //	kvo-guest sync [--once]             write file and env deliveries, and keep them up to date
+//	kvo-guest ingress [--install]       be an ingress controller (--install: as a service, in a VM)
 //
 // kevasod copies itself into the silo as /usr/local/bin/kvo-guest; called by that name it runs this.
 package guest
@@ -86,7 +87,7 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 }
 
 func run(ctx context.Context, dial Dialer, root string, args []string, stdin io.Reader, stdout io.Writer) error {
-	usage := errors.New("usage: kvo-guest secret get NAME | sign KEY [--slot N] < payload | public-key KEY | sync [--once]")
+	usage := errors.New("usage: kvo-guest secret get NAME | sign KEY [--slot N] < payload | public-key KEY | sync [--once] | ingress [--install]")
 	if len(args) == 0 {
 		return usage
 	}
@@ -138,6 +139,14 @@ func run(ctx context.Context, dial Dialer, root string, args []string, stdin io.
 		}
 		_, err = fmt.Fprintln(stdout, resp.PublicKey)
 		return err
+	case "ingress":
+		if len(args) == 2 && args[1] == "--install" {
+			return InstallIngress()
+		}
+		if len(args) != 1 {
+			return usage
+		}
+		return (&Ingress{Dial: dial}).Run(ctx)
 	case "sync":
 		once := len(args) == 2 && args[1] == "--once"
 		if len(args) > 2 || (len(args) == 2 && !once) {

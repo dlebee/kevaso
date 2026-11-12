@@ -185,9 +185,19 @@ func (ca *CA) ServerCert(names []string, now time.Time, ttl time.Duration) (tls.
 	if err != nil {
 		return tls.Certificate{}, err
 	}
+	return ca.serverCert("kevaso-apiserver", names, key, now, ttl)
+}
+
+// ServerCertForKey signs a server certificate for names with key (made by the caller), e.g. for
+// an Ingress's private hosts (the internal-ca issuer).
+func (ca *CA) ServerCertForKey(names []string, key *ecdsa.PrivateKey, now time.Time, ttl time.Duration) (tls.Certificate, error) {
+	return ca.serverCert(names[0], names, key, now, ttl)
+}
+
+func (ca *CA) serverCert(cn string, names []string, key *ecdsa.PrivateKey, now time.Time, ttl time.Duration) (tls.Certificate, error) {
 	tmpl := &x509.Certificate{
 		SerialNumber: serial(),
-		Subject:      pkix.Name{CommonName: "kevaso-apiserver"},
+		Subject:      pkix.Name{CommonName: cn},
 		NotBefore:    now.Add(-time.Minute),
 		NotAfter:     now.Add(ttl),
 		KeyUsage:     x509.KeyUsageDigitalSignature,

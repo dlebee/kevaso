@@ -16,7 +16,7 @@ var (
 )
 
 // workloads is what lives in a namespace and its users work with.
-var workloads = []string{"silos", "serviceaccounts", "grants"}
+var workloads = []string{"silos", "serviceaccounts", "grants", "ingresses", "certificates"}
 
 // Secret powers by role: admins do everything a person can, editors can create and use secrets but
 // never read a value back, viewers see that they exist.
@@ -38,7 +38,7 @@ func BuiltinRoles() []*v1.ClusterRole {
 		mk("cluster-admin", v1.PolicyRule{Verbs: []string{"*"}, Resources: []string{"*"}}),
 		mk("admin",
 			v1.PolicyRule{Verbs: write, Resources: slices.Concat(workloads, []string{"roles", "rolebindings"})},
-			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "serviceaccounts/token", "services/expose-public"}},
+			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "serviceaccounts/token", "services/expose-public", "ingresses/publish-public"}},
 			secretsAdmin),
 		mk("editor",
 			v1.PolicyRule{Verbs: write, Resources: workloads},

@@ -23,6 +23,7 @@ import (
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/audit"
 	"kevaso.com/core/internal/clock"
+	"kevaso.com/core/internal/controllers/certificate"
 	hostcontroller "kevaso.com/core/internal/controllers/host"
 	silocontroller "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/engine"
@@ -162,7 +163,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	admin, closeInProcess := srv.InProcess() // the components' own way in, not the admin socket
 	hbCtx, stopHB := context.WithCancel(ctx)
 	go heartbeat(hbCtx, admin, cfg)
-	go runControllers(hbCtx, admin, cfg)
+	go runControllers(hbCtx, admin, cfg, certDeps{store: st, kms: localKMS, ca: ca})
 	if cfg.Mesh {
 		m := &mesh.Agent{Client: admin, HostName: cfg.HostName, Dir: filepath.Join(cfg.DataDir, "mesh"), Log: cfg.Log}
 		go func() {
@@ -208,8 +209,19 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 }
 
 // runControllers starts the built-in controllers on informers fed through the admin socket.
-func runControllers(ctx context.Context, c *client.Client, cfg Config) {
+// certDeps are what the certificate controller needs beyond the API.
+type certDeps struct {
+	store store.Store
+	kms   kms.KMS
+	ca    *pki.CA
+}
+
+func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDeps) {
 	silos, hosts, pools := informer.New(c, "Silo"), informer.New(c, "Host"), informer.New(c, "IPPool")
+	certs, ingresses, classes, issuers := informer.New(c, "Certificate"), informer.New(c, "Ingress"), informer.New(c, "IngressClass"), informer.New(c, "Issuer")
+	if err := certificate.EnsureIssuers(ctx, c); err != nil {
+		cfg.Log("built-in issuers: %v", err)
+	}
 	e := engine.New(cfg.Clock)
 	e.OnError = func(ctrl string, k engine.Key, err error, retry time.Duration) {
 		cfg.Log("%s: %s: %v (retry in %v)", ctrl, k, err, retry)
@@ -219,6 +231,34 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config) {
 	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
 	pools.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IPPool", Name: k.Name}) })
+	e.Register(&certificate.Controller{Client: c, Store: cd.store, KMS: cd.kms, CA: cd.ca, Clock: cfg.Clock,
+		Certificates: certs, Ingresses: ingresses, Classes: classes, Issuers: issuers, Log: cfg.Log}, engine.Options{Workers: 2})
+	ingressesOf := func(match func(*v1.Ingress) bool) {
+		for _, o := range ingresses.List() {
+			if ing := o.(*v1.Ingress); match(ing) {
+				e.Changed(engine.Key{Kind: "Ingress", Namespace: ing.Namespace, Name: ing.Name})
+			}
+		}
+	}
+	certs.AddHandler(func(k informer.Key) {
+		e.Changed(engine.Key{Kind: "Certificate", Namespace: k.Namespace, Name: k.Name})
+		ingressesOf(func(ing *v1.Ingress) bool { return ing.Namespace == k.Namespace && v1.CertificateFor(ing) == k.Name })
+	})
+	ingresses.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Ingress", Namespace: k.Namespace, Name: k.Name}) })
+	classes.AddHandler(func(k informer.Key) {
+		ingressesOf(func(ing *v1.Ingress) bool { return ing.Spec.IngressClass == k.Name })
+	})
+	silos.AddHandler(func(k informer.Key) { // a controller's address shows in its Ingresses' status
+		for _, o := range classes.List() {
+			cl := o.(*v1.IngressClass)
+			if cl.Spec.Controller.Namespace == k.Namespace && cl.Spec.Controller.Silo == k.Name {
+				ingressesOf(func(ing *v1.Ingress) bool { return ing.Spec.IngressClass == cl.Name })
+			}
+		}
+	})
+	for _, inf := range []*informer.Informer{certs, ingresses, classes, issuers} {
+		go inf.Run(ctx)
+	}
 	go silos.Run(ctx)
 	go hosts.Run(ctx)
 	go pools.Run(ctx)
