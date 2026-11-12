@@ -3,6 +3,8 @@
 package v1
 
 import (
+	"time"
+
 	"kevaso.com/core/api/meta"
 )
 
@@ -89,8 +91,10 @@ type Taint struct {
 
 // HostStatus is what the host's agent reports.
 type HostStatus struct {
-	Conditions []meta.Condition         `json:"conditions,omitempty"`
-	Runtimes   map[string]RuntimeStatus `json:"runtimes,omitempty"`
+	Conditions []meta.Condition `json:"conditions,omitempty"`
+	// LastHeartbeat is when the host's agent last reported; host-loss detection (M5) reads it.
+	LastHeartbeat *time.Time               `json:"lastHeartbeat,omitempty"`
+	Runtimes      map[string]RuntimeStatus `json:"runtimes,omitempty"`
 }
 
 // RuntimeStatus is one installed runtime's state on a worker.

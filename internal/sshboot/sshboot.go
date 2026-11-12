@@ -51,6 +51,9 @@ type Target struct {
 type Conn struct {
 	c           *ssh.Client
 	Fingerprint string // the host key it's pinned to
+	// Sudo runs every command through `sudo -n` (logged in as a user with passwordless sudo, e.g.
+	// a cloud image's default user, instead of root).
+	Sudo bool
 }
 
 // ErrHostKey: the host key wasn't the pinned one, or wasn't confirmed.
@@ -162,6 +165,9 @@ func (c *Conn) Run(ctx context.Context, cmd string, stdin []byte) ([]byte, error
 	type result struct {
 		out []byte
 		err error
+	}
+	if c.Sudo {
+		cmd = "sudo -n sh -c " + Quote(cmd)
 	}
 	done := make(chan result, 1)
 	go func() {

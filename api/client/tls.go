@@ -102,6 +102,19 @@ func (c *Client) Enroll(ctx context.Context, token, host, role string) (Credenti
 	return c.requestCert(ctx, "/enroll", certRequest{Token: token, Host: host, Role: role})
 }
 
+// SignUserCSR mints a cluster-admin certificate for name from a CSR made elsewhere (so the key
+// never leaves the machine that made it). Only works over the admin socket.
+func (c *Client) SignUserCSR(ctx context.Context, name string, csrPEM []byte) (certPEM, caPEM []byte, err error) {
+	var resp certResponse
+	if err := c.do(ctx, http.MethodPost, "/admin/certs", certRequest{Name: name, CSR: string(csrPEM)}, &resp); err != nil {
+		return nil, nil, err
+	}
+	return []byte(resp.Certificate), []byte(resp.CA), nil
+}
+
+// NewKeyAndCSR makes a fresh key and a CSR for it (PEM).
+func NewKeyAndCSR(cn string) (keyPEM, csrPEM []byte, err error) { return newKeyAndCSR(cn) }
+
 // IssueUserCert mints a cluster-admin certificate for name. Only works over the admin socket.
 func (c *Client) IssueUserCert(ctx context.Context, name string) (Credentials, error) {
 	return c.requestCert(ctx, "/admin/certs", certRequest{Name: name})

@@ -5,8 +5,9 @@
 //	kvo delete KIND NAME [-n NS]
 //	kvo watch KIND [-n NS|-A]
 //
-// The server comes from --server or $KVO_SERVER (default http://127.0.0.1:8080, `kevasod dev`).
-// M2 adds TLS and contexts, M4 `kvo login`.
+// The cluster comes from --server or $KVO_SERVER (plain HTTP, for `kevasod dev`), otherwise from the
+// kvo config's current context (or --context): TLS with a pinned CA and a client certificate, as
+// `kvoadm init` writes it. With neither, it's http://127.0.0.1:8080. M4 adds `kvo login`.
 package kvo
 
 import (
@@ -27,22 +28,20 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/kvoconfig"
 )
 
 // DefaultServer is where `kevasod dev` listens.
 const DefaultServer = "http://127.0.0.1:8080"
 
 type opts struct {
-	server, namespace, output, file string
-	all                             bool
-	args                            []string
+	server, context, namespace, output, file string
+	all                                      bool
+	args                                     []string
 }
 
 func parse(args []string, env func(string) string) (opts, error) {
-	o := opts{server: env("KVO_SERVER"), namespace: ""}
-	if o.server == "" {
-		o.server = DefaultServer
-	}
+	o := opts{server: env("KVO_SERVER")}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		val := func() (string, error) {
@@ -60,6 +59,8 @@ func parse(args []string, env func(string) string) (opts, error) {
 		switch name {
 		case "--server":
 			o.server, err = val()
+		case "--context":
+			o.context, err = val()
 		case "-n", "--namespace":
 			o.namespace, err = val()
 		case "-o", "--output":
@@ -92,7 +93,11 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		_, _ = fmt.Fprintln(stderr, "kvo:", err)
 		return 2
 	}
-	c := client.New(o.server)
+	c, err := clientFor(o)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "kvo:", err)
+		return 1
+	}
 	switch args[0] {
 	case "apply":
 		err = apply(ctx, c, o, stdin, stdout)
@@ -110,6 +115,26 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return 1
 	}
 	return 0
+}
+
+// clientFor picks the cluster: --server / $KVO_SERVER, else the kvo config, else kevasod dev.
+func clientFor(o opts) (*client.Client, error) {
+	if o.server != "" {
+		return client.New(o.server), nil
+	}
+	path, err := kvoconfig.Path()
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := kvoconfig.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(cfg.Contexts) == 0 && o.context == "" {
+		return client.New(DefaultServer), nil
+	}
+	c, _, err := cfg.Client(o.context)
+	return c, err
 }
 
 func defaultNS(o opts) string {

@@ -319,6 +319,20 @@ func TestRunReportsFailures(t *testing.T) {
 	}
 }
 
+func TestSudoWrapsEveryCommand(t *testing.T) {
+	hk := newSigner(t)
+	h := startFakeHost(t, hk)
+	c := connectWithPassword(t, h, hk)
+	c.Sudo = true
+	if _, err := c.Run(ctxT(t), "systemctl restart kevasod", []byte("in")); err != nil {
+		t.Fatal(err)
+	}
+	cmds, stdins, _ := h.seen()
+	if cmds[0] != "sudo -n sh -c 'systemctl restart kevasod'" || string(stdins[0]) != "in" {
+		t.Fatalf("sudo command %q, stdin %q", cmds[0], stdins[0])
+	}
+}
+
 func TestQuote(t *testing.T) {
 	for in, want := range map[string]string{"a": "'a'", "it's": `'it'\''s'`, "$(rm -rf /)": "'$(rm -rf /)'"} {
 		if got := Quote(in); got != want {

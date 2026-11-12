@@ -1,56 +1,150 @@
-// Command kevasod is the agent on every host. Until M2 it has one mode, for development:
+// Command kevasod is the agent on every host.
+//
+//	kevasod control-plane --name HOST --address ADDR [--listen 0.0.0.0:6443] [--data /var/lib/kevaso]
+//	        [--admin-socket /run/kevaso/admin.sock] [--cluster NAME] [--extra-name NAME]…
+//	    the control-plane component (installed by `kvoadm init` as a systemd service)
+//
+//	kevasod admin sign-user --name NAME [--admin-socket PATH] < csr.pem
+//	    on a control-plane host, as root: sign a user's CSR through the admin socket; prints JSON
+//	    {certificate, ca}. kvoadm runs it over SSH, so the user's key never leaves their machine.
 //
 //	kevasod dev [--listen 127.0.0.1:8080] [--data PATH]
-//
-// which serves the API (no auth, loopback only) over a SQLite store, so `kvo` has something to
-// talk to. M2 replaces it with the real control-plane component (TLS, admin socket, join tokens).
+//	    the API without auth on loopback, for trying kvo locally
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
+	"kevaso.com/core/api/client"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/clock"
+	"kevaso.com/core/internal/controlplane"
 	"kevaso.com/core/internal/store"
 )
 
+const defaultAdminSocket = "/run/kevaso/admin.sock"
+
+func usage() {
+	fmt.Fprintln(os.Stderr, `usage:
+  kevasod control-plane --name HOST --address ADDR [--listen 0.0.0.0:6443] [--data /var/lib/kevaso]
+  kevasod admin sign-user --name NAME < csr.pem
+  kevasod dev [--listen 127.0.0.1:8080] [--data PATH]`)
+	os.Exit(2)
+}
+
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != "dev" {
-		fmt.Fprintln(os.Stderr, "usage: kevasod dev [--listen 127.0.0.1:8080] [--data PATH]")
-		os.Exit(2)
+	if len(os.Args) < 2 {
+		usage()
 	}
-	fs := flag.NewFlagSet("dev", flag.ExitOnError)
-	home, _ := os.UserHomeDir()
-	listen := fs.String("listen", "127.0.0.1:8080", "address to serve the API on (loopback only: no auth yet)")
-	data := fs.String("data", filepath.Join(home, ".kevaso", "dev.db"), "SQLite file")
-	_ = fs.Parse(os.Args[2:])
-	if err := run(*listen, *data); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var err error
+	switch os.Args[1] {
+	case "control-plane":
+		err = runControlPlane(ctx, os.Args[2:])
+	case "admin":
+		if len(os.Args) < 3 || os.Args[2] != "sign-user" {
+			usage()
+		}
+		err = runSignUser(ctx, os.Args[3:])
+	case "dev":
+		err = runDev(ctx, os.Args[2:])
+	default:
+		usage()
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "kevasod:", err)
 		os.Exit(1)
 	}
 }
 
-func run(listen, data string) error {
-	host, _, err := net.SplitHostPort(listen)
+type multi []string
+
+func (m *multi) String() string     { return strings.Join(*m, ",") }
+func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
+
+func runControlPlane(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("control-plane", flag.ExitOnError)
+	var cfg controlplane.Config
+	var extra multi
+	fs.StringVar(&cfg.HostName, "name", "", "this host's name")
+	fs.StringVar(&cfg.Address, "address", "", "this host's address")
+	fs.StringVar(&cfg.Listen, "listen", "0.0.0.0:6443", "TLS API address")
+	fs.StringVar(&cfg.DataDir, "data", "/var/lib/kevaso", "data directory (store, CA)")
+	fs.StringVar(&cfg.AdminSocket, "admin-socket", defaultAdminSocket, "admin unix socket")
+	fs.StringVar(&cfg.ClusterName, "cluster", "kevaso", "cluster name")
+	fs.Var(&extra, "extra-name", "more names or IPs for the API certificate (repeatable)")
+	_ = fs.Parse(args)
+	cfg.ExtraNames = extra
+	logger := log.New(os.Stderr, "", log.LstdFlags)
+	cfg.Log = logger.Printf
+	r, err := controlplane.Start(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	return r.Wait()
+}
+
+func runSignUser(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("sign-user", flag.ExitOnError)
+	name := fs.String("name", "", "the user's name")
+	sock := fs.String("admin-socket", defaultAdminSocket, "admin unix socket")
+	wait := fs.Duration("wait", 2*time.Minute, "how long to wait for the control plane to come up")
+	_ = fs.Parse(args)
+	csr, err := io.ReadAll(io.LimitReader(os.Stdin, 64<<10))
+	if err != nil {
+		return err
+	}
+	c := client.NewUnix(*sock)
+	deadline := time.Now().Add(*wait)
+	for {
+		cert, ca, err := c.SignUserCSR(ctx, *name, csr)
+		if err == nil {
+			return json.NewEncoder(os.Stdout).Encode(map[string]string{"certificate": string(cert), "ca": string(ca)})
+		}
+		var apiErr *client.Error
+		if errors.As(err, &apiErr) || time.Now().After(deadline) {
+			return err // the server answered (a real refusal), or it never came up
+		}
+		select { // the service is still starting: the socket isn't there yet
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func runDev(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("dev", flag.ExitOnError)
+	home, _ := os.UserHomeDir()
+	listen := fs.String("listen", "127.0.0.1:8080", "address to serve the API on (loopback only: no auth)")
+	data := fs.String("data", filepath.Join(home, ".kevaso", "dev.db"), "SQLite file")
+	_ = fs.Parse(args)
+	host, _, err := net.SplitHostPort(*listen)
 	if err != nil {
 		return err
 	}
 	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		return fmt.Errorf("dev mode has no authentication: listen on loopback only, not %s", listen)
+		return fmt.Errorf("dev mode has no authentication: listen on loopback only, not %s", *listen)
 	}
-	if err := os.MkdirAll(filepath.Dir(data), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(*data), 0o700); err != nil {
 		return err
 	}
-	st, err := store.OpenSQLite(data, 0)
+	st, err := store.OpenSQLite(*data, 0)
 	if err != nil {
 		return err
 	}
@@ -59,16 +153,14 @@ func run(listen, data string) error {
 	if err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	hs := &http.Server{Addr: listen, Handler: srv, ReadHeaderTimeout: 10 * time.Second}
+	hs := &http.Server{Addr: *listen, Handler: srv, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = hs.Shutdown(sctx)
 	}()
-	fmt.Printf("kevasod dev: API on http://%s, data in %s (Ctrl-C to stop)\n", listen, data)
+	fmt.Printf("kevasod dev: API on http://%s, data in %s (Ctrl-C to stop)\n", *listen, *data)
 	if err := hs.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
