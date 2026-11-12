@@ -14,7 +14,7 @@ Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for
   Cloud Hypervisor + firmware + an Ubuntu 24.04 image, thin-LVM disks, a bridge with NAT and
   silo↔silo isolation, and boots each silo as a locked-down VMM (own user, no capabilities, seccomp);
 - a scheduler (runtime, labels, taints, CPU/memory) and the silo's **init steps**, run inside the VM;
-- `kvo apply / get / delete / watch` for Namespaces, Hosts and Silos, using the context
+- `kvo apply / get / describe / delete / watch` for Namespaces, Hosts and Silos, using the context
   `kvoadm init` writes (`~/.kevaso/config.yaml`), and `kvo exec silo NAME -- CMD` through the
   agent's dial-out tunnel (hosts need no inbound port);
 - under the hood: a store with global revisions and resumable watches, CEL validation, a controller

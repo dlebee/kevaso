@@ -2,6 +2,7 @@
 //
 //	kvo apply -f FILE|-             create or update every object in a YAML/JSON file
 //	kvo get KIND [NAME] [-n NS|-A] [-o yaml|json]
+//	kvo describe KIND NAME [-n NS]   everything about one object, for people
 //	kvo delete KIND NAME [-n NS]
 //	kvo watch KIND [-n NS|-A]
 //	kvo exec silo NAME [-n NS] -- CMD [ARGS…]   run a command in a silo; exits with its code
@@ -19,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -91,7 +93,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|delete|watch|exec …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec …")
 		return 2
 	}
 	o, err := parse(args[1:], os.Getenv)
@@ -109,6 +111,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		err = apply(ctx, c, o, stdin, stdout)
 	case "get":
 		err = get(ctx, c, o, stdout)
+	case "describe":
+		err = describe(ctx, c, o, stdout)
 	case "delete":
 		err = del(ctx, c, o, stdout)
 	case "watch":
@@ -163,7 +167,7 @@ func kindOf(name string) (v1.KindInfo, error) {
 	}
 	if !ok {
 		for _, kk := range v1.Kinds() {
-			if strings.EqualFold(kk.Kind, name) || strings.EqualFold(kk.Plural, name) {
+			if strings.EqualFold(kk.Kind, name) || strings.EqualFold(kk.Plural, name) || slices.Contains(kk.ShortNames, strings.ToLower(name)) {
 				return kk, nil
 			}
 		}
@@ -379,7 +383,12 @@ func age(m *meta.ObjectMeta) string {
 	if m.CreationTimestamp == nil {
 		return "-"
 	}
-	d := time.Since(*m.CreationTimestamp).Round(time.Second)
+	return since(*m.CreationTimestamp)
+}
+
+// since is a short duration from t to now: 42s, 5m, 3h, 2d.
+func since(t time.Time) string {
+	d := time.Since(t).Round(time.Second)
 	switch {
 	case d < time.Minute:
 		return fmt.Sprintf("%ds", int(d.Seconds()))
@@ -406,7 +415,11 @@ func summary(obj meta.Object) string {
 	switch o := obj.(type) {
 	case *v1.Silo:
 		parts = append(parts, "phase="+dash(o.Status.Phase), "host="+dash(o.Status.Host))
-		if n := len(o.Status.Init); n > 0 {
+		n := len(o.Status.Init)
+		if o.Spec.Init != nil {
+			n = max(n, len(o.Spec.Init.Steps))
+		}
+		if n > 0 {
 			done := 0
 			for _, st := range o.Status.Init {
 				if st.State == "Done" {
@@ -426,7 +439,12 @@ func summary(obj meta.Object) string {
 		}
 		sort.Strings(names)
 		for _, n := range names {
-			parts = append(parts, n+"="+o.Status.Runtimes[n].State)
+			rs := o.Status.Runtimes[n]
+			p := n + "=" + rs.State
+			if rs.Message != "" && rs.State != "Ready" {
+				p += " (" + rs.Message + ")"
+			}
+			parts = append(parts, p)
 		}
 		conds = o.Status.Conditions
 	}
@@ -477,7 +495,11 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error 
 			if w := o.Spec.Components.Worker; w != nil {
 				comps = append(comps, "worker")
 				for _, r := range w.Runtimes {
-					rts = append(rts, r.Name)
+					if st, ok := o.Status.Runtimes[r.Name]; ok {
+						rts = append(rts, r.Name+":"+st.State)
+					} else {
+						rts = append(rts, r.Name)
+					}
 				}
 			}
 			row = append(row, o.Spec.Address, strings.Join(comps, ","), dash(strings.Join(rts, ",")))

@@ -35,10 +35,15 @@ eval "$(awk '/^ *(Hostname|Port|User|IdentityFile) /{gsub(/"/,"",$2); print "SSH
 (Lima forwards the VM's port 6443 to your Mac's 127.0.0.1:6443.)
 
 ```bash
-bin/kvo get hosts -o yaml
+bin/kvo watch hosts
 ```
 
-hv1 is Ready; `runtimes.cloud-hypervisor` goes Installing → Ready.
+hv1 is Ready; `cloud-hypervisor` shows each install step (packages, binaries, the ~600 MB image,
+network, storage) and then `Ready`, about 5 minutes the first time. Ctrl-C, then all of it at once:
+
+```bash
+bin/kvo describe host hv1
+```
 
 ## 3. The silo
 
@@ -50,7 +55,11 @@ bin/kvo apply -f examples/01-one-host.yaml
 bin/kvo watch silos -n demo
 ```
 
-(Ctrl-C when it's Running; `bin/kvo get silo hello -n demo -o yaml` shows the whole status.)
+Ctrl-C when it's Running. Everything about it, init steps and conditions included:
+
+```bash
+bin/kvo describe silo hello -n demo
+```
 
 What you see, in order: the scheduler places it on `hv1` (`phase: Scheduled`), the worker creates its
 disk and VM, then each init step goes `Running` → `Done`, then `phase: Running` with an

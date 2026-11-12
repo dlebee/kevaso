@@ -42,7 +42,7 @@ type Config struct {
 // Installer is a runtime that needs setting up on the host first.
 type Installer interface {
 	kri.Runtime
-	Install(ctx context.Context) error
+	Install(ctx context.Context, progress func(step string)) error
 }
 
 type chInstaller struct {
@@ -50,7 +50,9 @@ type chInstaller struct {
 	storage cloudhypervisor.StorageOptions
 }
 
-func (c chInstaller) Install(ctx context.Context) error { return c.Runtime.Install(ctx, c.storage) }
+func (c chInstaller) Install(ctx context.Context, progress func(string)) error {
+	return c.Runtime.Install(ctx, c.storage, progress)
+}
 
 // Arch is this machine's CPU in `uname -m` terms.
 func Arch() string {
@@ -151,9 +153,16 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 		go func(name string, rt Installer) {
 			cfg.Log("installing runtime %s", name)
 			st := v1.RuntimeStatus{State: "Ready", Version: rt.Info().Version}
-			if err := rt.Install(ctx); err != nil {
+			err := rt.Install(ctx, func(step string) {
+				cfg.Log("runtime %s: %s", name, step)
+				mu.Lock()
+				states[name] = v1.RuntimeStatus{State: "Installing", Version: st.Version, Message: step}
+				mu.Unlock()
+				report()
+			})
+			if err != nil {
 				cfg.Log("runtime %s: %v", name, err)
-				st.State = "Failed"
+				st.State, st.Message = "Failed", err.Error()
 			} else {
 				cfg.Log("runtime %s ready", name)
 			}

@@ -92,6 +92,16 @@ func TestKvoAgainstAnInProcessServer(t *testing.T) {
 	if out := h.ok("", "get", "hosts"); !strings.Contains(out, "control-plane,worker") || !strings.Contains(out, "203.0.113.10") {
 		t.Fatalf("get hosts:\n%s", out)
 	}
+	if out := h.ok("", "get", "ns"); !strings.Contains(out, "demo") {
+		t.Fatalf("get ns:\n%s", out)
+	}
+	// describe is for people: fields by name, then tables.
+	if out := h.ok("", "describe", "silo", "hello", "-n", "demo"); !strings.Contains(out, "Runtime:") || !strings.Contains(out, "2 CPU, 4Gi memory") {
+		t.Fatalf("describe silo:\n%s", out)
+	}
+	if out := h.ok("", "describe", "host", "hv1"); !strings.Contains(out, "region=ca-central") || !strings.Contains(out, "Runtimes:") {
+		t.Fatalf("describe host:\n%s", out)
+	}
 
 	// A watch started now sees the next change.
 	ctx, cancel := context.WithCancel(context.Background())

@@ -103,6 +103,7 @@ type HostStatus struct {
 type RuntimeStatus struct {
 	State   string `json:"state"` // Installing | Ready | Failed
 	Version string `json:"version,omitempty"`
+	Message string `json:"message,omitempty"` // the install step while Installing, the error if Failed
 }
 
 // ── Silo ─────────────────────────────────────────────────────────────────────

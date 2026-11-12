@@ -68,13 +68,14 @@ type StorageOptions struct {
 }
 
 // Install prepares the host: packages, the VMM user, pinned binaries and the image, the silo
-// bridge with NAT and default-deny between silos, and the thin pool. Safe to run again.
-func (r *Runtime) Install(ctx context.Context, store StorageOptions) error {
+// bridge with NAT and default-deny between silos, and the thin pool. Safe to run again. progress,
+// if set, hears each step as it starts ("3/7 binaries").
+func (r *Runtime) Install(ctx context.Context, store StorageOptions, progress func(string)) error {
 	steps := []struct {
 		what string
 		fn   func() error
 	}{
-		{"packages", func() error { return r.installPackages(ctx) }},
+		{"packages (lvm2, nftables, qemu-utils, genisoimage)", func() error { return r.installPackages(ctx) }},
 		{"vmm user", func() error {
 			if _, err := r.Host.Run(ctx, "id", VMMUser); err == nil {
 				return nil
@@ -87,7 +88,7 @@ func (r *Runtime) Install(ctx context.Context, store StorageOptions) error {
 			}
 			return r.run(ctx, "install", "-d", "-m", "0700", ImagesDir)
 		}},
-		{"binaries", func() error {
+		{"binaries (Cloud Hypervisor " + Version + " + firmware)", func() error {
 			assets, ok := Binaries[r.Arch]
 			if !ok {
 				return fmt.Errorf("no Cloud Hypervisor build for %s", r.Arch)
@@ -99,14 +100,17 @@ func (r *Runtime) Install(ctx context.Context, store StorageOptions) error {
 			}
 			return nil
 		}},
-		{"image", func() error {
+		{"image (Ubuntu 24.04, ~600 MB, first time only)", func() error {
 			a := Images["ubuntu-24.04"][r.Arch]
 			return Fetch(ctx, r.Host, a, filepath.Join(ImagesDir, a.File), 0o600)
 		}},
-		{"network", func() error { return r.setupNetwork(ctx) }},
-		{"storage", func() error { return r.setupStorage(ctx, store) }},
+		{"network (bridge, NAT, silo isolation)", func() error { return r.setupNetwork(ctx) }},
+		{"storage (thin LVM pool)", func() error { return r.setupStorage(ctx, store) }},
 	}
-	for _, s := range steps {
+	for i, s := range steps {
+		if progress != nil {
+			progress(fmt.Sprintf("%d/%d %s", i+1, len(steps), s.what))
+		}
 		if err := s.fn(); err != nil {
 			return fmt.Errorf("install %s: %w", s.what, err)
 		}

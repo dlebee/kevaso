@@ -15,6 +15,8 @@ type KindInfo struct {
 	Scope   Scope
 	New     func() meta.Object
 	HasSpec bool // spec changes bump metadata.generation; status writes don't
+	// ShortNames are what `kvo` also accepts, e.g. ns. The API paths use Plural only.
+	ShortNames []string
 }
 
 var kinds = map[string]KindInfo{}
@@ -22,7 +24,7 @@ var kinds = map[string]KindInfo{}
 func register(k KindInfo) { kinds[k.Kind] = k }
 
 func init() {
-	register(KindInfo{Kind: "Namespace", Plural: "namespaces", Scope: Cluster, New: func() meta.Object { return &Namespace{} }})
+	register(KindInfo{Kind: "Namespace", Plural: "namespaces", ShortNames: []string{"ns"}, Scope: Cluster, New: func() meta.Object { return &Namespace{} }})
 	register(KindInfo{Kind: "Host", Plural: "hosts", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &Host{} }})
 	register(KindInfo{Kind: "Silo", Plural: "silos", Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Silo{} }})
 }
