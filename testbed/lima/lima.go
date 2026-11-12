@@ -62,6 +62,12 @@ cpus: {{.CPUs}}
 memory: {{.Memory}}
 disk: {{.Disk}}
 mounts: []
+{{- if .Shared}}
+# A network the run's shared machines reach each other on (Lima's user-v2: VM-to-VM, no root;
+# vzNAT only lets the Mac reach each VM, not VMs each other). It becomes eth0.
+networks:
+- lima: user-v2
+{{- end}}
 {{- if .KVM}}
 # Let the default user open /dev/kvm (Lima's SSH session keeps its old groups, so a group change
 # alone isn't enough). Throwaway test VM only.

@@ -86,8 +86,11 @@ func parseHostAdd(args []string) (HostAddOptions, error) {
 		return o, err
 	}
 	o.InitOptions = init
-	if len(o.Runtimes) == 0 {
+	switch {
+	case len(o.Runtimes) == 0:
 		o.Runtimes = []string{"cloud-hypervisor"}
+	case len(o.Runtimes) == 1 && o.Runtimes[0] == "none":
+		o.Runtimes = nil // a worker with no runtime yet (e.g. a box without KVM, for now)
 	}
 	if o.Advertise == "" {
 		o.Advertise = o.Address
@@ -100,6 +103,9 @@ func WorkerUnit(o HostAddOptions, server string) string {
 	args := []string{"worker", "--name", o.Name, "--server", server}
 	for _, r := range o.Runtimes {
 		args = append(args, "--runtime", r)
+	}
+	if len(o.Runtimes) == 0 {
+		args = append(args, "--runtime", "none")
 	}
 	if o.LoopStorage != "" {
 		args = append(args, "--loop-storage", "/var/lib/kevaso-storage.img", "--loop-size", o.LoopStorage)

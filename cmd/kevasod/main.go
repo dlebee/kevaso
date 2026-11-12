@@ -150,8 +150,11 @@ func runWorker(ctx context.Context, args []string) error {
 	if jc.HostName == "" || jc.Server == "" {
 		return errors.New("worker needs --name and --server")
 	}
-	if len(runtimes) == 0 {
+	switch {
+	case len(runtimes) == 0:
 		runtimes = multi{"cloud-hypervisor"}
+	case len(runtimes) == 1 && runtimes[0] == "none":
+		runtimes = nil
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	var c *client.Client

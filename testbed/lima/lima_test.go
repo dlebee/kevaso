@@ -194,3 +194,15 @@ func TestParseSSHConfig(t *testing.T) {
 		t.Fatal("incomplete config accepted")
 	}
 }
+
+func TestConfigShared(t *testing.T) {
+	s := spec
+	if cfg, _ := Config(s); strings.Contains(cfg, "user-v2") {
+		t.Fatal("a machine joined the shared network without asking")
+	}
+	s.Shared = true
+	cfg, _ := Config(s)
+	if !strings.Contains(cfg, "networks:\n- lima: user-v2") {
+		t.Fatalf("shared:\n%s", cfg)
+	}
+}

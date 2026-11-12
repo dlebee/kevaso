@@ -50,6 +50,9 @@ type Spec struct {
 	Memory string // e.g. "4GiB"
 	Disk   string // e.g. "20GiB"
 	KVM    bool   // the machine must expose a usable /dev/kvm (nested virtualization)
+	// Shared: on a network shared with the other Shared machines of the run, which reach it
+	// directly. Without it, a machine only reaches the internet (and its own host).
+	Shared bool
 }
 
 var rolePattern = regexp.MustCompile(`^[a-z][a-z0-9]{0,7}$`)
