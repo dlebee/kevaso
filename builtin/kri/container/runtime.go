@@ -308,12 +308,15 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 // broker, kvo-guest and the CA bundle, limits, no new privileges.
 func (r *Runtime) runArgs(s state, name string) []string {
 	n := NamesFor(s.ID)
-	args := []string{"--name", name, "--network", "container:" + n.Pause, "--uts", "container:" + n.Pause, // its hostname too (podman doesn't share it with the network)
+	args := []string{"--name", name, "--network", "container:" + n.Pause,
 		"--security-opt", "no-new-privileges", "--pids-limit", "4096",
 		"--label", "kevaso.com/namespace=" + s.ID.Namespace, "--label", "kevaso.com/name=" + s.ID.Name, "--label", "kevaso.com/uid=" + s.ID.UID,
 		"-v", n.Dir + "/resolv.conf:/etc/resolv.conf:ro",
 		"-v", n.Dir + "/broker:/run/kevaso",
 		"-e", "KVO_GUEST_BROKER=unix:/run/kevaso/broker.sock"}
+	if r.engine() == "podman" { // docker shares the hostname with the network; podman needs asking
+		args = append(args, "--uts", "container:"+n.Pause)
+	}
 	if r.Self != "" {
 		args = append(args, "-v", r.Self+":/usr/local/bin/kvo-guest:ro")
 	}

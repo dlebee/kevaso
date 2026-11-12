@@ -205,8 +205,8 @@ func TestLifecycle(t *testing.T) {
 			t.Errorf("main container %q missing %q", main, want)
 		}
 	}
-	if strings.Contains(main, "--hostname") {
-		t.Error("--hostname with a container network: Docker refuses it")
+	if strings.Contains(main, "--hostname") || strings.Contains(main, "--uts") {
+		t.Error("--hostname or --uts with a container network: Docker refuses both")
 	}
 	if st, _ := r.Status(ctx, silo); st.State != kri.Running || st.Address != "10.64.0.3" {
 		t.Fatalf("running: %+v", st)
