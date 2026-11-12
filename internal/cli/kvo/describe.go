@@ -188,6 +188,37 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		conds = o.Status.Conditions
 	case *v1.Namespace:
 		kv(0, "Status", dash(o.Status.Phase))
+	case *v1.Ingress:
+		kv(0, "Class", o.Spec.IngressClass)
+		kv(0, "Hosts", strings.Join(o.Spec.Hosts, ", "))
+		tls := o.Spec.TLS.Mode
+		if tls == "" {
+			tls = "the class's default (acme on public classes, internal-ca otherwise)"
+		}
+		kv(0, "TLS", tls)
+		for i, r := range o.Spec.Rules {
+			label := ""
+			if i == 0 {
+				label = "Routes"
+			}
+			path := r.Path
+			if path == "" {
+				path = "/"
+			}
+			_, _ = fmt.Fprintf(tw, "%s:\t%s → silo %s, port %s\n", label, path, r.Silo.Name, r.Silo.Port)
+		}
+		kv(0, "Address", dash(o.Status.Address)+"  (point the hosts' DNS here)")
+		kv(0, "Certificate", dash(o.Status.Certificate))
+		conds = o.Status.Conditions
+	case *v1.Certificate:
+		kv(0, "Hosts", strings.Join(o.Spec.Hosts, ", "))
+		kv(0, "Issuer", o.Spec.Issuer)
+		kv(0, "Secret", o.Spec.SecretName)
+		if o.Status.NotAfter != nil {
+			kv(0, "Valid", o.Status.NotBefore.Local().Format("2006-01-02")+" to "+o.Status.NotAfter.Local().Format("2006-01-02"))
+			kv(0, "Renews after", o.Status.RenewAfter.Local().Format("2006-01-02"))
+		}
+		conds = o.Status.Conditions
 	case *v1.Secret:
 		typ := o.Spec.Type
 		if typ == "" {
