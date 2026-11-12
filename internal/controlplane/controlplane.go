@@ -24,6 +24,7 @@ import (
 	"kevaso.com/core/internal/clock"
 	silocontroller "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/store"
@@ -103,7 +104,13 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		return nil, err
 	}
 	tokens := &jointoken.Issuer{Store: st, Clock: cfg.Clock}
-	srv, err := apiserver.NewWithAuth(st, cfg.Clock, &apiserver.Auth{CA: ca, Tokens: tokens})
+	_, port, _ := net.SplitHostPort(cfg.Listen)
+	iss, err := issuer.New(ctx, st, cfg.Clock, "https://"+net.JoinHostPort(cfg.Address, port))
+	if err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("issuer: %w", err)
+	}
+	srv, err := apiserver.NewWithAuth(st, cfg.Clock, &apiserver.Auth{CA: ca, Tokens: tokens, Issuer: iss})
 	if err != nil {
 		_ = st.Close()
 		return nil, err

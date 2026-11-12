@@ -5,12 +5,14 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/rbac"
@@ -31,6 +33,8 @@ type Auth struct {
 	CA      *pki.CA
 	Tokens  *jointoken.Issuer
 	CertTTL time.Duration // client certificates' lifetime; default 30 days
+	// Issuer signs people in (kvo login) and verifies their bearer tokens. Optional.
+	Issuer *issuer.Issuer
 }
 
 type ctxKey int
@@ -51,15 +55,30 @@ func IdentityFrom(ctx context.Context) (pki.Identity, bool) {
 	return id, ok
 }
 
-func (s *Server) authenticate(r *http.Request) (pki.Identity, bool) {
+// authenticate finds who's calling: the admin socket, a client certificate, or a bearer token.
+func (s *Server) authenticate(r *http.Request) (pki.Identity, []string, error) {
 	if admin, _ := r.Context().Value(adminConnKey).(bool); admin {
-		return LocalAdmin, true
+		return LocalAdmin, groupsOf(LocalAdmin), nil
 	}
 	if r.TLS != nil && len(r.TLS.VerifiedChains) > 0 { // verified against the cluster CA by TLS
 		id, err := pki.IdentityOf(r.TLS.PeerCertificates[0])
-		return id, err == nil
+		return id, groupsOf(id), err
 	}
-	return pki.Identity{}, false
+	if raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		if s.auth.Issuer == nil {
+			return pki.Identity{}, nil, errors.New("this cluster doesn't accept tokens")
+		}
+		c, err := s.auth.Issuer.Verify(r.Context(), raw)
+		if err != nil {
+			return pki.Identity{}, nil, fmt.Errorf("token: %w (run kvo login)", err)
+		}
+		typ := "user"
+		if strings.HasPrefix(c.User, "system:serviceaccount:") {
+			typ = "serviceaccount"
+		}
+		return pki.Identity{Type: typ, Name: c.User}, append([]string{rbac.Authenticated}, c.Groups...), nil
+	}
+	return pki.Identity{}, nil, errors.New("sign in with kvo login, or use a client certificate from this cluster")
 }
 
 // GroupsFrom returns the groups of a request's identity.
@@ -162,24 +181,38 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		switch r.URL.Path {
-		case "/healthz":
+		switch {
+		case r.URL.Path == "/healthz":
 			next.ServeHTTP(w, r)
 			return
-		case "/enroll":
+		case r.URL.Path == "/enroll":
 			s.enroll(w, r)
 			return
-		}
-		id, ok := s.authenticate(r)
-		if !ok {
-			writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "a client certificate from this cluster is required"))
+		case r.URL.Path == "/ca.crt": // public: kvo login checks it against the fingerprint it was given
+			w.Header().Set("Content-Type", "application/x-pem-file")
+			_, _ = w.Write(s.auth.CA.PEM)
+			return
+		case s.auth.Issuer != nil && (r.URL.Path == issuer.PathDiscovery || strings.HasPrefix(r.URL.Path, "/oidc/")):
+			s.auth.Issuer.Handler().ServeHTTP(w, r)
 			return
 		}
-		groups := groupsOf(id)
+		id, groups, err := s.authenticate(r)
+		if err != nil {
+			writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "%s", err))
+			return
+		}
 		ctx := context.WithValue(context.WithValue(r.Context(), identityKey, id), groupsKey, groups)
 		r = r.WithContext(ctx)
 		if r.URL.Path == "/admin/certs" {
 			s.issueUserCert(w, r, id)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/admin/users") || r.URL.Path == "/admin/invites" {
+			s.users(w, r, id, groups)
+			return
+		}
+		if r.URL.Path == "/auth/can-i" {
+			s.canI(w, r, id, groups)
 			return
 		}
 		t, err := parsePath(r.URL.Path)

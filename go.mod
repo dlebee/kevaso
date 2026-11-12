@@ -6,9 +6,11 @@ toolchain go1.27.4
 
 require (
 	cel.dev/cel-go v0.33.2
+	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/hashicorp/yamux v0.1.2
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/crypto v0.59.0
+	golang.org/x/oauth2 v0.38.0
 	golang.org/x/term v0.48.0
 	kevaso.com/core/api v0.0.0-00010101000000-000000000000
 	kevaso.com/core/sdk v0.0.0-00010101000000-000000000000

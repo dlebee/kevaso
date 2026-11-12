@@ -5,9 +5,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"net"
@@ -118,4 +120,15 @@ func NewKeyAndCSR(cn string) (keyPEM, csrPEM []byte, err error) { return newKeyA
 // IssueUserCert mints a cluster-admin certificate for name. Only works over the admin socket.
 func (c *Client) IssueUserCert(ctx context.Context, name string) (Credentials, error) {
 	return c.requestCert(ctx, "/admin/certs", certRequest{Name: name})
+}
+
+// Fingerprint is how a CA is named for pinning: "sha256:" and the hex SHA-256 of its first
+// certificate's DER.
+func Fingerprint(caPEM []byte) (string, error) {
+	blk, _ := pem.Decode(caPEM)
+	if blk == nil || blk.Type != "CERTIFICATE" {
+		return "", errors.New("CA: no certificate in PEM")
+	}
+	sum := sha256.Sum256(blk.Bytes)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }

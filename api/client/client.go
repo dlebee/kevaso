@@ -22,6 +22,21 @@ import (
 type Client struct {
 	BaseURL string // e.g. http://127.0.0.1:6443
 	HTTP    *http.Client
+	// Token, if set, gives the bearer token for each request (kvo login's access token, refreshed
+	// as needed).
+	Token func(ctx context.Context) (string, error)
+}
+
+// send adds credentials and sends a request.
+func (c *Client) send(hc *http.Client, req *http.Request) (*http.Response, error) {
+	if c.Token != nil {
+		tok, err := c.Token(req.Context())
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	return hc.Do(req)
 }
 
 // New returns a client for the server at baseURL.
@@ -94,7 +109,7 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http().Do(req)
+	resp, err := c.send(c.http(), req)
 	if err != nil {
 		return err
 	}
@@ -210,7 +225,7 @@ func (c *Client) Watch(ctx context.Context, kind, namespace, resourceVersion str
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http().Do(req)
+	resp, err := c.send(c.http(), req)
 	if err != nil {
 		return nil, err
 	}
@@ -240,4 +255,9 @@ func (c *Client) Watch(ctx context.Context, kind, namespace, resourceVersion str
 		}
 	}()
 	return ch, nil
+}
+
+// Call sends any JSON request (for endpoints outside the object API: /admin/…, /auth/…).
+func (c *Client) Call(ctx context.Context, method, path string, in, out any) error {
+	return c.do(ctx, method, path, in, out)
 }

@@ -125,7 +125,7 @@ func (c *Client) Upgrade(ctx context.Context, method, path, proto string, body a
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", proto)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.upgradeClient().Do(req)
+	resp, err := c.send(c.upgradeClient(), req)
 	if err != nil {
 		return nil, err
 	}
