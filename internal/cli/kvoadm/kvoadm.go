@@ -1,5 +1,5 @@
 // Package kvoadm is the operator CLI. Setting up a machine is a few explicit steps
-// (docs/guide/02-install.md), each one doing one thing:
+// (https://dlebee.github.io/kevaso-docs/setup/prepare/), each one doing one thing:
 //
 //	kvoadm check [USER@]ADDRESS --ssh-key PATH --host-key SHA256:…   look before changing anything
 //	kvoadm init  [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME]
@@ -94,7 +94,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm host list | drain NAME | uncordon NAME
   kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME
   kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
-The step-by-step guide: docs/guide/02-install.md`)
+The step-by-step guide: https://dlebee.github.io/kevaso-docs/setup/prepare/`)
 		return 2
 	}
 	o, err := parseInit(args[1:])
@@ -218,10 +218,10 @@ func parseTarget(args []string) (InitOptions, error) {
 }
 
 // needCredential: kvoadm logs in with the SSH key you made for it, or, only if you say so, with a
-// password once (docs/guide/02-install.md explains both).
+// password once (https://dlebee.github.io/kevaso-docs/setup/prepare/ explains both).
 func needCredential(o InitOptions) error {
 	if o.SSHKey == "" && !o.Password {
-		return errors.New("how should kvoadm log in? --ssh-key PATH (a key you made with ssh-keygen and put on the machine: see docs/guide/02-install.md), or --password to type the password once (kvoadm then switches the machine to keys only)")
+		return errors.New("how should kvoadm log in? --ssh-key PATH (a key you made with ssh-keygen and put on the machine: see https://dlebee.github.io/kevaso-docs/setup/prepare/), or --password to type the password once (kvoadm then switches the machine to keys only)")
 	}
 	if o.SSHKey != "" && o.Password {
 		return errors.New("--ssh-key or --password, not both")

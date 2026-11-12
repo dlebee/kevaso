@@ -159,12 +159,34 @@ func (a *Agent) Run(ctx context.Context) {
 	}
 	go a.RunTunnel(ctx)
 	go a.fence(ctx, e)
+	go a.resync(ctx, e)
 	go func() { // after the first sync, look for runtime silos the API no longer knows
 		if a.silos.WaitSynced(ctx) {
 			a.collectGarbage(ctx, e)
 		}
 	}()
 	e.Run(ctx)
+}
+
+// ResyncEvery is how often the agent looks at every silo of its host again, events or not: a VM
+// that died or a container stopped behind Kevaso's back is put back.
+var ResyncEvery = 30 * time.Second
+
+func (a *Agent) resync(ctx context.Context, e *engine.Engine) {
+	t := time.NewTicker(ResyncEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		for _, o := range a.silos.List() {
+			if s := o.(*v1.Silo); s.Status.Host == a.HostName {
+				e.Changed(engine.Key{Kind: "Silo", Namespace: s.Namespace, Name: s.Name})
+			}
+		}
+	}
 }
 
 // collectGarbage enqueues every silo a runtime has, so ones deleted from the API while the agent

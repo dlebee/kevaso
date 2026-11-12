@@ -3,12 +3,12 @@
 Self-hosted, stateful **silos** (microVMs or containers) on the machines you bring, managed
 Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for operators.
 
-**New here? Read [the guide](docs/guide/README.md)**: from an empty machine to a shared cluster, one
-explained step at a time.
+**New here? Read [the guide](https://dlebee.github.io/kevaso-docs/)**: from an empty machine to a shared
+cluster, one explained step at a time. (`docs/` in this repo is for people working on Kevaso itself.)
 
 **Status:** early (M0–M8 of [MILESTONES.md](MILESTONES.md) done). What exists today:
 
-- setup in explicit steps ([Installing](docs/guide/02-install.md)): you make Kevaso's SSH key and
+- setup in explicit steps ([guide](https://dlebee.github.io/kevaso-docs/setup/prepare/)): you make Kevaso's SSH key and
   check the machine's fingerprint, `kvoadm check` looks without changing anything, `kvoadm init`
   installs the control plane (signed `kevasod` verified on the host) and gives you `kvo` access, and
   `kvoadm host enable-worker` lets the same machine run silos;
