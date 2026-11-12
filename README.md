@@ -3,11 +3,15 @@
 Self-hosted, stateful **silos** (microVMs or containers) on the machines you bring, managed
 Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for operators.
 
+**New here? Read [the guide](docs/guide/README.md)**: from an empty machine to a shared cluster, one
+explained step at a time.
+
 **Status:** early (M0–M8 of [MILESTONES.md](MILESTONES.md) done). What exists today:
 
-- `kvoadm init [USER@]ADDRESS --kevasod PATH`: sets up a fresh Linux machine over SSH (host key
-  pinned or confirmed first, password used once then keys only, root password rotated, signed
-  `kevasod` verified on the host) and installs the control plane as a systemd service;
+- setup in explicit steps ([Installing](docs/guide/02-install.md)): you make Kevaso's SSH key and
+  check the machine's fingerprint, `kvoadm check` looks without changing anything, `kvoadm init`
+  installs the control plane (signed `kevasod` verified on the host) and gives you `kvo` access, and
+  `kvoadm host enable-worker` lets the same machine run silos;
 - `kevasod control-plane`: the API over TLS with client certificates from the cluster's private CA,
   a root-only admin socket, one-time join tokens for hosts, SQLite storage, a Ready heartbeat;
 - `kvoadm init … --worker`: the same host also runs silos. The worker installs pinned, digest-checked
