@@ -274,6 +274,13 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 			a.FenceDir = fence.Dir // for kevasod fence-watch, which fences even when this agent is gone
 		}
 	}
+	if cfg.DataDir != "" {
+		a.OnEndpoints = func(servers []string) {
+			if err := KeepServers(cfg.DataDir, servers); err != nil {
+				cfg.Log("keep the control planes' URLs: %v", err)
+			}
+		}
+	}
 	if runtime.GOOS == "linux" {
 		a.Host = hostexec.Local{} // provider volumes: format once, mount
 	}

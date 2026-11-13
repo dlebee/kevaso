@@ -4,6 +4,7 @@
 //	kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME]
 //	             [--api-server URL] [--cluster NAME] [--user NAME]      the control plane, your kvo
 //	                                                                    context, the recovery key
+//	             [--store sqlite|etcd]                                  etcd: ready for more system nodes
 //	kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime R]… [--loop-storage SIZE]
 //	                                                                    the same machine runs silos too
 //	kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker …   another machine
@@ -50,6 +51,7 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/etcd"
 	"kevaso.com/core/internal/kvoconfig"
 	"kevaso.com/core/internal/sshboot"
 )
@@ -109,7 +111,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if len(args) == 0 || args[0] != "init" {
 		_, _ = fmt.Fprintln(stderr, `usage:
-  kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL] [--restore BACKUP]
+  kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL] [--store sqlite|etcd] [--restore BACKUP]
   kvoadm backup [USER@]ADDRESS --output FILE [--ssh-key PATH]
   kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime NAME]… [--loop-storage SIZE]
   kvoadm host reconnect [USER@]ADDRESS --ssh-key PATH [--server URL]
@@ -158,6 +160,7 @@ type InitOptions struct {
 	ChangeRootPassword   bool
 	DryRun               bool   // look at the machine, change nothing
 	Restore              string // a backup to restore (kvoadm backup), instead of a new cluster
+	Store                string // init: sqlite (default) or etcd (the embedded member with a peer listener, ready for more system nodes)
 	nameGiven            bool
 	clusterGiven         bool
 	looked               bool // the machine was already looked at (host add)
@@ -165,9 +168,29 @@ type InitOptions struct {
 }
 
 func parseInit(args []string) (InitOptions, error) {
-	o, err := parseTarget(args)
+	var rest []string
+	store := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--store" {
+			if i+1 >= len(args) {
+				return InitOptions{}, errors.New("--store needs a value: sqlite or etcd")
+			}
+			store = args[i+1]
+			i++
+			continue
+		}
+		rest = append(rest, args[i])
+	}
+	o, err := parseTarget(rest)
 	if err != nil {
 		return o, err
+	}
+	switch store {
+	case "", "sqlite":
+	case "etcd":
+		o.Store = "etcd"
+	default:
+		return o, fmt.Errorf("--store %s: want sqlite or etcd", store)
 	}
 	if o.Kevasod == "" {
 		return o, errors.New("--kevasod PATH is required: a kevasod binary for the host's OS and CPU (release downloads come later)")
@@ -409,6 +432,9 @@ func Unit(o InitOptions) string {
 	args := []string{"control-plane", "--name", o.Name, "--address", addr, "--cluster", o.Cluster}
 	if o.Advertise != "" && o.Advertise != o.Address {
 		args = append(args, "--extra-name", o.Address)
+	}
+	if o.Store == "etcd" {
+		args = append(args, "--store", "etcd", "--etcd-peer-listen", net.JoinHostPort(addr, etcd.DefaultPeerPort))
 	}
 	if o.Worker {
 		args = append(args, workerArgs(o)...)

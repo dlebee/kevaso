@@ -63,7 +63,41 @@ func Join(ctx context.Context, cfg JoinConfig) (*client.Client, error) {
 		_ = os.Remove(cfg.TokenFile) // used up anyway
 		cert, key = cred.Certificate, cred.Key
 	}
-	return client.NewTLSEndpoints(client.SplitServers(cfg.Server), ca, cert, key)
+	return client.NewTLSEndpoints(Servers(cfg.Server, cfg.DataDir), ca, cert, key)
+}
+
+// serversFile keeps the control planes the agent learned from the system nodes (ServersFile).
+const serversFile = "servers"
+
+// Servers are the control planes to use: --server's, then the ones learned since (KeepServers),
+// so a worker set up before the other system nodes joined still finds one when its first is lost,
+// across its own restarts too.
+func Servers(flag, dataDir string) []string {
+	out := client.SplitServers(flag)
+	b, err := os.ReadFile(filepath.Join(dataDir, "pki", serversFile))
+	if err != nil {
+		return out
+	}
+	for _, s := range strings.Fields(string(b)) {
+		known := false
+		for _, x := range out {
+			known = known || x == s
+		}
+		if !known && strings.HasPrefix(s, "https://") {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// KeepServers writes the control planes the agent knows, one per line, for Servers.
+func KeepServers(dataDir string, servers []string) error {
+	p := filepath.Join(dataDir, "pki", serversFile)
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(servers, "\n")+"\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
 }
 
 // Contact remembers when this host last reached the control plane (the agent fences by it).

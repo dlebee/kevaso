@@ -70,6 +70,9 @@ type Agent struct {
 	Nodes *plugins.Registry
 	// TunnelRefresh is how often the agent looks for system nodes to hold a tunnel to (tunnels.go).
 	TunnelRefresh time.Duration
+	// OnEndpoints, if set, hears the control planes the agent's client may use whenever it learns
+	// more from the system nodes (the worker keeps them for its next start).
+	OnEndpoints func([]string)
 
 	tunnelsSeen []string // the last tunnel targets found (only RunTunnels touches it)
 	silos       *informer.Informer

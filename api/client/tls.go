@@ -14,6 +14,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"time"
 )
 
 // NewTLS returns a client that pins the cluster CA and presents a client certificate (both PEM).
@@ -32,9 +33,15 @@ func NewTLS(baseURL string, caPEM, certPEM, keyPEM []byte) (*Client, error) {
 		cfg.Certificates = []tls.Certificate{pair}
 	}
 	c := New(baseURL)
-	c.HTTP = &http.Client{Transport: &http.Transport{TLSClientConfig: cfg, ForceAttemptHTTP2: true}}
+	c.HTTP = &http.Client{Transport: &http.Transport{TLSClientConfig: cfg, ForceAttemptHTTP2: true,
+		DialContext: (&net.Dialer{Timeout: DialTimeout, KeepAlive: 30 * time.Second}).DialContext, TLSHandshakeTimeout: 10 * time.Second}}
 	return c, nil
 }
+
+// DialTimeout bounds connecting to a control plane. Without one, a powered-off machine (no RST,
+// just silence) holds each request for the OS's connect timeout, a minute or two, before the
+// client fails over to the next system node.
+const DialTimeout = 5 * time.Second
 
 // NewUnix returns a client for the admin socket at path (root on a control-plane host).
 func NewUnix(path string) *Client {

@@ -303,12 +303,12 @@ func TestKevasoImages(t *testing.T) {
 	}
 }
 
-// Install runs on every start of kevasod: Docker is restarted (which stops every container) only
-// the first time, or when its configuration changed, or when it isn't running; an agent restart
-// leaves the silos running.
-func TestInstallRestartsDockerOnlyWhenNeeded(t *testing.T) {
+// Install runs at every kevasod start: dockerd is restarted (which, without live-restore, stops
+// every container) only when its configuration changes, not on an agent restart or upgrade. (On
+// Linodes, before this, kvoadm upgrade stopped the worker's container silos.)
+func TestInstallRestartsDockerOnlyWhenItsConfigChanges(t *testing.T) {
 	f := newFake()
-	r := &Runtime{Host: f, Engine: "docker"}
+	r := runtime(t, f)
 	restarts := func() int {
 		n := 0
 		for _, c := range f.cmds {
@@ -318,24 +318,24 @@ func TestInstallRestartsDockerOnlyWhenNeeded(t *testing.T) {
 		}
 		return n
 	}
-	ctx := context.Background()
-	if err := r.Install(ctx, nil); err != nil {
+	if err := r.Install(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if restarts() != 1 || string(f.files["/etc/docker/daemon.json"]) != DockerDaemonJSON {
-		t.Fatalf("first install: %d restarts, daemon.json %q", restarts(), f.files["/etc/docker/daemon.json"])
+	if restarts() != 1 || !strings.Contains(string(f.files["/etc/docker/daemon.json"]), `"live-restore": true`) {
+		t.Fatalf("first install: %d restarts, daemon.json %s", restarts(), f.files["/etc/docker/daemon.json"])
 	}
-	if err := r.Install(ctx, nil); err != nil {
+	if err := r.Install(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if restarts() != 1 {
-		t.Fatalf("installing again restarted Docker (%d restarts): every container stops", restarts())
+		t.Fatalf("a second start restarted dockerd: %v", f.cmds)
+	}
+	if f.last("systemctl enable --now") != "systemctl enable --now docker" {
+		t.Fatal("docker not made sure to run")
 	}
 	f.files["/etc/docker/daemon.json"] = []byte(`{"iptables": true}`)
-	if err := r.Install(ctx, nil); err != nil {
-		t.Fatal(err)
-	}
+	_ = r.Install(context.Background(), nil)
 	if restarts() != 2 {
-		t.Fatalf("a changed daemon.json: %d restarts", restarts())
+		t.Fatal("a changed daemon.json didn't restart dockerd")
 	}
 }

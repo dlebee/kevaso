@@ -13,11 +13,13 @@ var Packages = map[string][]string{
 }
 
 // DockerDaemonJSON keeps Docker out of the host's firewall and networks: container silos use the
-// silo bridge, through their pause container.
+// silo bridge, through their pause container. live-restore keeps containers running while
+// dockerd itself restarts (a package upgrade, a change to this file).
 const DockerDaemonJSON = `{
   "iptables": false,
   "ip6tables": false,
-  "bridge": "none"
+  "bridge": "none",
+  "live-restore": true
 }
 `
 
@@ -41,11 +43,9 @@ func (r *Runtime) Install(ctx context.Context, progress func(string)) error {
 		// Kevaso owns the host's firewall and networks its containers itself (the silo bridge), so
 		// Docker mustn't: left alone it sets the FORWARD policy to DROP, which no rule of ours can
 		// undo, and every silo's forwarded traffic (VMs too) would stop.
-		// Restarted only when that changes or Docker isn't running: a restart stops every container,
-		// and Install runs on each start of kevasod, which must leave running silos running.
-		cur, _ := r.Host.ReadFile("/etc/docker/daemon.json")
-		_, inactive := r.cmd(ctx, nil, "systemctl", "is-active", "--quiet", "docker")
-		if string(cur) != DockerDaemonJSON || inactive != nil {
+		// Install runs at every kevasod start (an upgrade, a restart): dockerd restarts only when
+		// its configuration changed, never just because the agent did, so silos keep running.
+		if cur, err := r.Host.ReadFile("/etc/docker/daemon.json"); err != nil || string(cur) != DockerDaemonJSON {
 			if err := r.Host.WriteFile("/etc/docker/daemon.json", []byte(DockerDaemonJSON), 0o644); err != nil {
 				return err
 			}
@@ -55,8 +55,11 @@ func (r *Runtime) Install(ctx context.Context, progress func(string)) error {
 			if _, err := r.cmd(ctx, nil, "systemctl", "restart", "docker"); err != nil {
 				return err
 			}
-			_, _ = r.cmd(ctx, nil, "sh", "-c", "iptables -P FORWARD ACCEPT 2>/dev/null; ip link del docker0 2>/dev/null; true")
 		}
+		if _, err := r.cmd(ctx, nil, "systemctl", "enable", "--now", "docker"); err != nil { // running, whatever happened since
+			return err
+		}
+		_, _ = r.cmd(ctx, nil, "sh", "-c", "iptables -P FORWARD ACCEPT 2>/dev/null; ip link del docker0 2>/dev/null; true")
 	}
 	progress("silo bridge")
 	if err := cloudhypervisor.SetupNetwork(ctx, chHost{r.Host}); err != nil {

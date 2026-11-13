@@ -11,6 +11,11 @@ import (
 	v1 "kevaso.com/core/api/v1"
 )
 
+// FinalizerMember holds a system node's Host while its store member is still there: kvoadm host
+// remove sets it and deletes the Host; the leader's member controller removes the member (a Host
+// being deleted asks for none) and then this finalizer, so the member always goes first.
+const FinalizerMember = "kevaso.com/store-member"
+
 // DefaultPeerPort is where members listen for each other.
 const DefaultPeerPort = "2380"
 
@@ -31,7 +36,7 @@ func DesiredMembers(hosts []v1.Host) []Desired {
 	var out []Desired
 	for _, h := range hosts {
 		cp := h.Spec.Components.ControlPlane
-		if cp == nil || h.Spec.Address == "" {
+		if cp == nil || h.Spec.Address == "" || h.DeletionTimestamp != nil { // a Host being deleted leaves the store first
 			continue
 		}
 		peer := "https://" + net.JoinHostPort(h.Spec.Address, DefaultPeerPort)

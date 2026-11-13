@@ -27,13 +27,13 @@ func SplitServers(s string) []string {
 	return out
 }
 
-// NewTLSEndpoints is NewTLS for several control planes.
+// NewTLSEndpoints is NewTLS for several control planes; it may learn more later (AddEndpoints).
 func NewTLSEndpoints(servers []string, caPEM, certPEM, keyPEM []byte) (*Client, error) {
 	if len(servers) == 0 {
 		return nil, errors.New("no control-plane URL")
 	}
 	c, err := NewTLS(servers[0], caPEM, certPEM, keyPEM)
-	if err != nil || len(servers) == 1 {
+	if err != nil {
 		return c, err
 	}
 	ft, err := newFailover(servers, c.HTTP.Transport.(*http.Transport))
@@ -50,6 +50,17 @@ func (c *Client) Endpoints() []string {
 		return f.urls()
 	}
 	return []string{c.BaseURL}
+}
+
+// AddEndpoints adds control planes this client may fail over to, after the ones it has (an agent
+// learns them from the system nodes' Hosts: the one it was set up with may be the one lost). It
+// says whether any was new. A client made for one server only (NewTLS) can't take more.
+func (c *Client) AddEndpoints(servers ...string) bool {
+	f, ok := c.http().Transport.(*failover)
+	if !ok {
+		return false
+	}
+	return f.add(servers)
 }
 
 // Pinned is a copy of c that talks to one control plane only (an agent's tunnel to each).
@@ -83,6 +94,28 @@ func newFailover(servers []string, base *http.Transport) (*failover, error) {
 	return f, nil
 }
 
+func (f *failover) add(servers []string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	added := false
+	for _, s := range servers {
+		u, err := url.Parse(strings.TrimRight(s, "/"))
+		if err != nil || u.Host == "" {
+			continue
+		}
+		h := u.Scheme + "://" + u.Host
+		known := false
+		for _, x := range f.hosts {
+			known = known || x == h
+		}
+		if !known {
+			f.hosts = append(f.hosts, h)
+			added = true
+		}
+	}
+	return added
+}
+
 func (f *failover) urls() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -101,11 +134,13 @@ func (f *failover) start() int {
 }
 
 func (f *failover) RoundTrip(req *http.Request) (*http.Response, error) {
-	start := f.start()
+	f.mu.Lock()
+	start, hosts := f.cur, append([]string(nil), f.hosts...)
+	f.mu.Unlock()
 	var last error
-	for i := 0; i < len(f.hosts); i++ {
-		n := (start + i) % len(f.hosts)
-		u, _ := url.Parse(f.hosts[n])
+	for i := 0; i < len(hosts); i++ {
+		n := (start + i) % len(hosts)
+		u, _ := url.Parse(hosts[n])
 		r := req.Clone(req.Context())
 		r.URL.Scheme, r.URL.Host, r.Host = u.Scheme, u.Host, ""
 		if i > 0 && req.Body != nil && req.Body != http.NoBody {

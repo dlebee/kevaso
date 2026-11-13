@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSplitServers(t *testing.T) {
@@ -59,4 +60,63 @@ func TestFailoverToTheNextControlPlane(t *testing.T) {
 	if err := c2.Call(context.Background(), http.MethodGet, "/healthz", nil, nil); err == nil {
 		t.Fatal("no error with every endpoint down")
 	}
+}
+
+// A client set up with one control plane learns more (an agent, from the system nodes' Hosts),
+// and fails over to them when its first is gone.
+func TestAddEndpoints(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"type":"user","name":"ops"}`))
+	}))
+	defer ts.Close()
+	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ts.Certificate().Raw})
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := "https://" + l.Addr().String()
+	_ = l.Close()
+	c, err := NewTLSEndpoints([]string{dead}, ca, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Call(context.Background(), http.MethodGet, "/healthz", nil, nil); err == nil {
+		t.Fatal("reached a dead control plane")
+	}
+	if !c.AddEndpoints(dead, ts.URL+"/") || c.AddEndpoints(ts.URL) {
+		t.Fatal("AddEndpoints: want new once, then nothing new")
+	}
+	var who WhoAmI
+	if err := c.Call(context.Background(), http.MethodPost, "/auth/whoami", map[string]string{}, &who); err != nil || who.Name != "ops" {
+		t.Fatalf("after learning %s: %v", ts.URL, err)
+	}
+	if eps := c.Endpoints(); len(eps) != 2 || eps[0] != dead {
+		t.Fatal(eps)
+	}
+	if one, _ := NewTLS(ts.URL, ca, nil, nil); one.AddEndpoints(dead) {
+		t.Fatal("a one-server client took another")
+	}
+}
+
+// A control plane that's powered off doesn't refuse, it says nothing: the dial gives up after
+// DialTimeout, and that counts as unreached (the next one gets the request).
+func TestDialTimeoutFailsOver(t *testing.T) {
+	c, err := NewTLS("https://192.0.2.1:6443", testCA(t), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := c.HTTP.Transport.(*http.Transport)
+	if tr.DialContext == nil || DialTimeout > 10*time.Second {
+		t.Fatalf("no bounded dial: %v", DialTimeout)
+	}
+	_, err = (&net.Dialer{Timeout: time.Millisecond}).Dial("tcp", "192.0.2.1:6443") // TEST-NET-1: nobody answers
+	if err == nil || !unreached(err) {
+		t.Fatalf("a dial timeout isn't unreached: %v", err)
+	}
+}
+
+func testCA(t *testing.T) []byte {
+	ts := httptest.NewTLSServer(http.NotFoundHandler())
+	defer ts.Close()
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ts.Certificate().Raw})
 }

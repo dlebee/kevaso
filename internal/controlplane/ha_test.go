@@ -20,6 +20,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/apiserver"
+	"kevaso.com/core/internal/cli/kvoadm"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/etcd"
 	"kevaso.com/core/internal/leader"
@@ -234,7 +235,10 @@ func (echo) Exec(_ context.Context, id kri.ID, req kri.ExecRequest) (int, error)
 	return 0, err
 }
 
-func (c *cluster) worker(name string) {
+func (c *cluster) worker(name string, servers ...string) (*client.Client, string) {
+	if len(servers) == 0 {
+		servers = c.urls()
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.t.Cleanup(cancel)
 	h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: name},
@@ -250,7 +254,7 @@ func (c *cluster) worker(name string) {
 	caFile, tokFile := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "join-token")
 	_ = os.WriteFile(caFile, c.ca, 0o600)
 	_ = os.WriteFile(tokFile, []byte(tok.Token), 0o600)
-	wc, err := worker.Join(ctx, worker.JoinConfig{HostName: name, Server: strings.Join(c.urls(), ","), CAFile: caFile, TokenFile: tokFile, DataDir: dir})
+	wc, err := worker.Join(ctx, worker.JoinConfig{HostName: name, Server: strings.Join(servers, ","), CAFile: caFile, TokenFile: tokFile, DataDir: dir})
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -264,8 +268,10 @@ func (c *cluster) worker(name string) {
 		c.t.Fatal(err)
 	}
 	go worker.Heartbeat(ctx, wc, name, 100*time.Millisecond, clock.Real{}, func(string, ...any) {}, nil)
-	a := &agent.Agent{Client: wc, HostName: name, Runtimes: map[string]kri.Runtime{"cloud-hypervisor": echo{fake.New()}}, Clock: clock.Real{}, TunnelRefresh: 100 * time.Millisecond}
+	a := &agent.Agent{Client: wc, HostName: name, Runtimes: map[string]kri.Runtime{"cloud-hypervisor": echo{fake.New()}}, Clock: clock.Real{}, TunnelRefresh: 100 * time.Millisecond,
+		OnEndpoints: func(s []string) { _ = worker.KeepServers(dir, s) }}
 	go a.RunTunnels(ctx)
+	return wc, dir
 }
 
 func (c *cluster) silo(name string) *v1.Silo {
@@ -373,6 +379,92 @@ func TestThreeControlPlanesJoinAndSurviveLosingOne(t *testing.T) {
 	}
 	if l, err := c.admin.List(ctx, "Host", ""); err != nil || len(l.Items) != 4 {
 		t.Fatalf("hosts after losing %s: %v", lead, err)
+	}
+}
+
+// A worker set up while there was one control plane (its --server names only that one) keeps
+// reaching the cluster when that one is lost after more joined: its agent learns the others from
+// their Hosts, and keeps them for its next start. (On real machines, before this, the worker
+// stopped heartbeating, went NotReady and got no silos the moment cp-1 was gone.)
+func TestWorkerSetUpBeforeTheOtherSystemNodesSurvivesLosingTheFirst(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts three etcd members")
+	}
+	c := newCluster(t)
+	first := c.nodes["cp-1"].url
+	wc, dir := c.worker("w1", first)
+	c.join("cp-2", false)
+	c.join("cp-3", false)
+	for _, n := range []string{"cp-1", "cp-2", "cp-3"} {
+		c.waitHost(c.admin, n, voter)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for len(wc.Endpoints()) < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the worker's client knows %v", wc.Endpoints())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got := worker.Servers(first, dir); len(got) != 3 || got[0] != first {
+		t.Fatalf("kept for the next start: %v", got)
+	}
+
+	gone := c.nodes["cp-1"]
+	gone.cancel()
+	_ = gone.run.Wait()
+	lost := time.Now()
+	c.waitHost(c.admin, "w1", func(h *v1.Host) bool {
+		return h.Status.LastHeartbeat != nil && h.Status.LastHeartbeat.After(lost) && meta.IsTrue(h.Status.Conditions, "Ready")
+	})
+	c.leaderName("cp-2", "cp-3")
+	if err := c.admin.Create(context.Background(), &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}}); err != nil {
+		t.Fatal(err)
+	}
+	if s := c.silo("after"); s.Status.Host != "w1" {
+		t.Fatalf("placed on %q", s.Status.Host)
+	}
+}
+
+// kvoadm host remove of a system node that is nothing else: the Host can't be left with no
+// component, so it's deleted held by the member finalizer, and goes only once the member
+// controller removed its member. (On real machines, before this, the removal failed with a 422:
+// "a host needs at least one component".)
+func TestRemoveASystemNodeThatIsOnlyThat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts three etcd members")
+	}
+	c := newCluster(t)
+	c.join("cp-2", false)
+	c.join("cp-3", false)
+	for _, n := range []string{"cp-1", "cp-2", "cp-3"} {
+		c.waitHost(c.admin, n, voter)
+	}
+	ctx := context.Background()
+	var out bytes.Buffer
+	if err := kvoadm.RemoveSystemNode(ctx, c.admin, "cp-3", false, &out); err == nil || !strings.Contains(err.Error(), "remove the host instead") {
+		t.Fatalf("uninstall from a host with nothing else: %v", err)
+	}
+	if err := kvoadm.RemoveSystemNode(ctx, c.admin, "cp-3", true, &out); err != nil {
+		c.dump()
+		t.Fatalf("remove: %v\n%s", err, out.String())
+	}
+	if i, j := strings.Index(out.String(), "left the store"), strings.Index(out.String(), "removed from the cluster"); i < 0 || j < i {
+		t.Fatalf("output:\n%s", out.String())
+	}
+	var h v1.Host
+	if err := c.admin.Get(ctx, "Host", "", "cp-3", &h); !client.IsNotFound(err) {
+		t.Fatalf("cp-3 still there: %v %+v", err, h.ObjectMeta)
+	}
+	// The member went before the Host: the member controller logged the removal, then the release.
+	c.mu.Lock()
+	logs := strings.Join(c.logs, "\n")
+	c.mu.Unlock()
+	i, j := strings.Index(logs, "member controller: Remove cp-3"), strings.Index(logs, "member controller: cp-3 left the store")
+	if i < 0 || j < i {
+		t.Fatalf("member controller's log:\n%s", logs)
+	}
+	for _, n := range []string{"cp-1", "cp-2"} {
+		c.waitHost(c.admin, n, voter)
 	}
 }
 
