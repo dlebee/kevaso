@@ -29,8 +29,22 @@ func LoadKey(path string) (wgtypes.Key, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return k, err
 	}
-	return k, os.WriteFile(path, []byte(k.String()+"\n"), 0o600)
+	// Whole or not there: a key cut short by a kill parsed on no later start, and kept the host
+	// off the mesh for good.
+	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp")
+	if err := writeFile(tmp, []byte(k.String()+"\n"), 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return k, err
+	}
+	if f, err := os.Open(tmp); err == nil {
+		_ = f.Sync()
+		_ = f.Close()
+	}
+	return k, os.Rename(tmp, path)
 }
+
+// writeFile writes a file (tests replace it).
+var writeFile = os.WriteFile
 
 // Agent keeps one host on the mesh: it publishes the host's public keys, and applies the plan
 // whenever a Host changes (and every 30s, to repair drift).
