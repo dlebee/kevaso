@@ -61,7 +61,11 @@ func TestSecretArgsOnARealEngine(t *testing.T) {
 	if out, err := docker("pull", "-q", "debian:bookworm-slim"); err != nil {
 		t.Fatalf("docker pull debian:bookworm-slim: %v: %s", err, out)
 	}
-	args := append([]string{"run", "-d", "--name", name, "--pull", "never", "--tmpfs", "/run:rw,nosuid,nodev,mode=0755"}, secretArgs(s)...)
+	sec, err := secretArgs(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := append([]string{"run", "-d", "--name", name, "--pull", "never", "--tmpfs", "/run:rw,nosuid,nodev,mode=0755"}, sec...)
 	args = append(args, "debian:bookworm-slim", "sleep", "300")
 	if out, err := docker(args...); err != nil {
 		t.Fatalf("docker %s: %v: %s", strings.Join(args, " "), err, out)

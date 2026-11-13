@@ -19,7 +19,11 @@ Silo spec.network={"egress":{"source":"gateway"}}
 Silo spec.network={"egress":{"ip":"x"}}
   Silo s: egress.ip goes with egress.source: pool
 Silo spec.volumes=[{"name":"Data","mountPath":"/d"}]
-  Silo s: every volume needs a name (lower-case letters, digits, -), an absolute mountPath, and a class: local, or a plugin's (e.g. linode-block)
+  Silo s: every volume needs a name (lower-case letters, digits, -), an absolute mountPath of letters, digits, . _ - and / (no . or .. part), and a class: local, or a plugin's (e.g. linode-block)
+Silo spec.volumes=[{"name":"d","mountPath":"/d:rw,z"}]
+  Silo s: every volume needs a name (lower-case letters, digits, -), an absolute mountPath of letters, digits, . _ - and / (no . or .. part), and a class: local, or a plugin's (e.g. linode-block)
+Silo spec.volumes=[{"name":"d","mountPath":"/a/../b"}]
+  Silo s: every volume needs a name (lower-case letters, digits, -), an absolute mountPath of letters, digits, . _ - and / (no . or .. part), and a class: local, or a plugin's (e.g. linode-block)
 Silo spec.volumes=[{"name":"d","class":"linode-block","mountPath":"/d"}]
   Silo s: a volume on a plugin's storage class needs a size (e.g. 10Gi)
 Silo spec.volumes=[{"name":"d","mountPath":"/a"},{"name":"d","mountPath":"/b"}]
@@ -200,8 +204,12 @@ Grant spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"a.example.com",
   Grant g: secret k: to.format must contain {{value}} once
 Grant spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"a.example.com","header":"X: y"}}]
   Grant g: secret k: to.header "X: y" isn't a header name
+Grant spec.secrets=[{"name":"k","deliver":"file","path":"/run/s,src=/,dst=/run/q/f"}]
+  Grant g: secret k: path "/run/s,src=/,dst=/run/q/f" must be under /run/ (tmpfs: a secret file never reaches the silo's disk), a clean path of letters, digits, . _ - and /
+Grant spec.secrets=[{"name":"k","deliver":"file","path":"/run/s/a:b"}]
+  Grant g: secret k: path "/run/s/a:b" must be under /run/ (tmpfs: a secret file never reaches the silo's disk), a clean path of letters, digits, . _ - and /
 Grant spec.secrets=[{"name":"k","deliver":"file","path":"/etc/k"}]
-  Grant g: secret k: path "/etc/k" must be under /run/ (tmpfs: a secret file never reaches the silo's disk), without ..
+  Grant g: secret k: path "/etc/k" must be under /run/ (tmpfs: a secret file never reaches the silo's disk), a clean path of letters, digits, . _ - and /
 IngressClass spec.controller.driver=""
   IngressClass public: spec.controller.driver names the proxy's driver (nginx, caddy, kong…)
 IngressClass spec.controller.siloSet="ingress"

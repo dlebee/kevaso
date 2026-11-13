@@ -58,6 +58,8 @@ var refusals = []refusal{
 	{"Silo", []string{`spec.network={"egress":{"source":"gateway"}}`}, "network.egress.source must be"},
 	{"Silo", []string{`spec.network={"egress":{"ip":"x"}}`}, "egress.ip goes with egress.source: pool"},
 	{"Silo", []string{`spec.volumes=[{"name":"Data","mountPath":"/d"}]`}, "every volume needs a name"},
+	{"Silo", []string{`spec.volumes=[{"name":"d","mountPath":"/d:rw,z"}]`}, "every volume needs a name"},
+	{"Silo", []string{`spec.volumes=[{"name":"d","mountPath":"/a/../b"}]`}, "every volume needs a name"},
 	{"Silo", []string{`spec.volumes=[{"name":"d","class":"linode-block","mountPath":"/d"}]`}, "a volume on a plugin's storage class needs a size"},
 	{"Silo", []string{`spec.volumes=[{"name":"d","mountPath":"/a"},{"name":"d","mountPath":"/b"}]`}, "volume names must be unique"},
 	{"Silo", []string{`spec.update={"strategy":"Yolo"}`}, "update.strategy must be StopFirst or StartFirst"},
@@ -154,6 +156,8 @@ var refusals = []refusal{
 	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"*.example.com"}}]`}, `secret k: to.host "*.example.com" must be one host name`},
 	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"a.example.com","format":"Bearer"}}]`}, "secret k: to.format must contain {{value}} once"},
 	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"a.example.com","header":"X: y"}}]`}, `secret k: to.header "X: y" isn't a header name`},
+	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"file","path":"/run/s,src=/,dst=/run/q/f"}]`}, `secret k: path "/run/s,src=/,dst=/run/q/f" must be under /run/`},
+	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"file","path":"/run/s/a:b"}]`}, `secret k: path "/run/s/a:b" must be under /run/`},
 	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"file","path":"/etc/k"}]`}, `secret k: path "/etc/k" must be under /run/`},
 	// IngressClass
 	{"IngressClass", []string{`spec.controller.driver=""`}, "spec.controller.driver names the proxy's driver"},

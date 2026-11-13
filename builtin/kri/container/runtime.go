@@ -237,7 +237,13 @@ func (r *Runtime) pauseImage(ctx context.Context) (string, error) {
 // ref is what the engine runs for an image name: what it pulls. (own: an image built here; none
 // is any more, since ingress controllers run their vendors' images, design §7.3.)
 func (r *Runtime) ref(_ context.Context, image string) (string, bool, error) {
-	return ImageRef(image), false, nil
+	ref := ImageRef(image)
+	// The reference sits among the engine's options: one that isn't a registry reference (a
+	// leading "-", a space) must never get there.
+	if _, err := v1.ParseImageRef(ref); err != nil {
+		return "", false, err
+	}
+	return ref, false, nil
 }
 
 // selfImage builds (once per kevasod build) an image named name whose only file is kevasod at
@@ -395,7 +401,7 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 // runArgs are a silo container's settings: the pause container's network, the volumes, a tmpfs at
 // /run, the CA bundle, its secrets (read-only folders from the host's tmpfs, an env file), limits,
 // no new privileges.
-func (r *Runtime) runArgs(s state, name string) []string {
+func (r *Runtime) runArgs(s state, name string) ([]string, error) {
 	n := NamesFor(s.ID)
 	// --pull never: every pull is the agent's (Pull, with the silo's credential), never the
 	// engine's own on a run.
@@ -413,20 +419,28 @@ func (r *Runtime) runArgs(s state, name string) []string {
 			"-e", "SSL_CERT_FILE="+ca, "-e", "REQUESTS_CA_BUNDLE="+ca, "-e", "CURL_CA_BUNDLE="+ca, "-e", "NODE_EXTRA_CA_CERTS="+ca)
 	}
 	for _, v := range s.Volumes {
+		// -v SRC:DST[:options]: a colon or comma in either could add options or change the source.
+		if !v1.CleanMountPath(v.MountPath) || v.HostPath != "" && !v1.CleanMountPath(v.HostPath) {
+			return nil, fmt.Errorf("%s: volume %s: mount path %q isn't a clean absolute path", s.ID, v.Name, v.MountPath)
+		}
 		if v.HostPath != "" {
 			args = append(args, "-v", v.HostPath+":"+v.MountPath)
 			continue
 		}
 		args = append(args, "-v", VolumeName(s.ID, v.Name)+":"+v.MountPath)
 	}
-	args = append(args, secretArgs(s)...)
+	sec, err := secretArgs(s)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, sec...)
 	if s.CPU > 0 {
 		args = append(args, "--cpus", strconv.Itoa(s.CPU))
 	}
 	if s.Memory > 0 {
 		args = append(args, "--memory", strconv.FormatInt(s.Memory, 10))
 	}
-	return args
+	return args, nil
 }
 
 // Start implements kri.Runtime: the pause container first (rewired after a reboot), then the main
@@ -469,7 +483,11 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 			return rerr
 		}
 		cmd := MainCommand(s.Image, s.Command)
-		args := append([]string{"run", "-d"}, r.runArgs(s, n.Main)...)
+		ra, aerr := r.runArgs(s, n.Main)
+		if aerr != nil {
+			return aerr
+		}
+		args := append([]string{"run", "-d"}, ra...)
 		if ep, imageCmd, ok := r.imagePID1(ctx, ref); !ok || NeedsInit(ep, imageCmd, cmd) {
 			// The engine's init as PID 1: it reaps, and passes SIGTERM on to the main process (which,
 			// no longer PID 1, gets the default handlers: `docker stop` stops it at once instead of
@@ -512,7 +530,11 @@ func (r *Runtime) RunInit(ctx context.Context, id kri.ID, step kri.InitStep, out
 	if err != nil {
 		return -1, err
 	}
-	args := append([]string{"run", "--rm"}, r.runArgs(s, n.Init)...)
+	ra, err := r.runArgs(s, n.Init)
+	if err != nil {
+		return -1, err
+	}
+	args := append([]string{"run", "--rm"}, ra...)
 	args = append(args, "--entrypoint", shell, ref, "-c", step.Run)
 	return r.Host.Run(ctx, hostexec.Cmd{Name: r.engine(), Args: args, Stdout: out, Stderr: out})
 }

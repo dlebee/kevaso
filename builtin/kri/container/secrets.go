@@ -423,13 +423,18 @@ func (r *Runtime) wipeSecrets(s state) error {
 }
 
 // secretArgs are a container's secret mounts and env file.
-func secretArgs(s state) []string {
+func secretArgs(s state) ([]string, error) {
 	if s.Secrets == nil {
-		return nil
+		return nil, nil
 	}
 	_, files, envFile := SecretsPaths(s.ID)
 	var args []string
 	for _, d := range s.Secrets.Dirs {
+		// The folder goes into one comma-separated argument: only a clean path may (stored state
+		// can be older than the checks at admission).
+		if !v1.CleanMountPath(d) || !strings.HasPrefix(d, "/run/") {
+			return nil, fmt.Errorf("%s: secret folder %q isn't a clean path under /run/", s.ID, d)
+		}
 		args = append(args, "--mount", "type=bind,src="+files+d+",dst="+d+",readonly")
 	}
 	switch {
@@ -441,7 +446,7 @@ func secretArgs(s state) []string {
 	default:
 		args = append(args, "--env-file", envFile)
 	}
-	return args
+	return args, nil
 }
 
 // prepareSecrets has what a container about to be made or started mounts there: the tmpfs and
