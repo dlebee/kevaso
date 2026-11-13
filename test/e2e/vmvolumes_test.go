@@ -67,7 +67,7 @@ func TestVMVolumes(t *testing.T) {
 	})
 	metalIP := r.ip("metal")
 	r.must(kvoadm.Run, "", append(append([]string{"init"}, r.sshArgs("metal")...),
-		"--name", "metal-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker",
+		"--name", "metal-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker",
 		"--runtime", "cloud-hypervisor", "--loop-storage", "25G")...)
 	token := "hostdir-secret-" + randomToken(t)
 	installHostdir(r, "metal", "controller", token)
@@ -88,7 +88,7 @@ kind: Silo
 metadata: { name: vm, namespace: notes }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 1Gi }
   disk: { size: 5Gi }
   volumes:
@@ -237,7 +237,7 @@ kind: Silo
 metadata: { name: vm, namespace: notes }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 1Gi }
   disk: { size: 5Gi }
   volumes:

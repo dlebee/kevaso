@@ -57,10 +57,10 @@ mount -t nfs4 -o vers=4.2,hard %[2]s:%[1]s %[1]s && findmnt -n %[1]s`, hostdirRo
 		}
 	}
 	r.must(kvoadm.Run, "", append(append([]string{"init"}, r.sshArgs("w1")...),
-		"--name", "w1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--address", w1IP, "--worker",
+		"--name", "w1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", w1IP, "--worker",
 		"--runtime", "cloud-hypervisor", "--loop-storage", "20G")...)
 	r.must(kvoadm.Run, "", append(append([]string{"host", "add"}, r.sshArgs("w2")...),
-		"--name", "w2", "--install", "worker", "--address", w2IP, "--server", "https://"+w1IP+":6443", "--runtime", "cloud-hypervisor",
+		"--name", "w2", "--install", "worker", "--internal-ip", w2IP, "--server", "https://"+w1IP+":6443", "--runtime", "cloud-hypervisor",
 		"--loop-storage", "20G")...)
 	token := "hostdir-secret-" + randomToken(t)
 	installHostdir(r, "w1", "controller", token)
@@ -85,7 +85,7 @@ kind: Silo
 metadata: { name: vm, namespace: mv }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 1Gi }
   disk: { class: hostdir, size: 6Gi }
   availability: { onHostLoss: Move }
@@ -157,7 +157,7 @@ spec:
 			out, code := r.in("mv", "vm", "cat /root/marker /data/marker; findmnt -n -o FSTYPE /data")
 			return code == 0 && out == "on-the-root-disk\non-the-data-volume\nvirtiofs", out
 		})
-		keys, _ := r.in("mv", "vm", "cat /home/kevaso/.ssh/authorized_keys | wc -l; cat /var/lib/cloud/data/instance-id")
+		keys, _ := r.in("mv", "vm", "cat /root/.ssh/authorized_keys | wc -l; cat /var/lib/cloud/data/instance-id")
 		t.Logf("%s: in the guest, authorized keys and instance-id: %q", what, keys)
 		if strings.Fields(keys)[0] != "1" {
 			t.Errorf("%s: want only the new host's exec key: %q", what, keys)

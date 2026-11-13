@@ -84,6 +84,19 @@ func banner(addr string) (string, error) {
 	return bufio.NewReader(c).ReadString('\n')
 }
 
+// portScript is what a silo runs to open or close one of its leased ports on its local endpoint
+// (ADR 0009): it asks again with the approval's name while the answer is 428 (waiting for a yes),
+// prints the last status and body, and fails unless it was 200.
+func portScript(port, op, query string) string {
+	return fmt.Sprintf(`u='http://169.254.42.1/v1/ports/%s/%s%s'; a=
+while :; do
+  code=$(curl -sS -o /tmp/answer -w '%%{http_code}' -X POST -H 'Kevaso-Local: 1' "$u${a:+&approval=$a}")
+  [ "$code" = 428 ] || break
+  a=$(sed -n 's/.*"name":"\([^"]*\)".*/\1/p' /tmp/answer); sleep 2
+done
+echo "$code $(cat /tmp/answer)"; [ "$code" = 200 ]`, port, op, query)
+}
+
 // leaseOf reads one silo port's lease ("" phase: none).
 func (r *rig) leaseOf(ns, silo, port string) v1.Lease {
 	r.t.Helper()
@@ -98,8 +111,8 @@ func (r *rig) leaseOf(ns, silo, port string) v1.Lease {
 }
 
 // TestVMLeases is design §7.2d on cloud-hypervisor silos, the address DNATed to a VM on the host's
-// bridge: a leased hostPort port is closed by default; the guest opens it itself (kvo-guest port
-// open --for, through its vsock broker), with and without approval: required; from the Mac
+// bridge: a leased hostPort port is closed by default; the guest opens it itself (POST
+// /v1/ports/NAME/open on its local endpoint, 169.254.42.1), with and without approval: required; from the Mac
 // (through an SSH forward on a second machine, so the traffic arrives on the host's address like
 // a client's) it answers while the lease lasts, a held connection is cut at its end and new ones
 // are refused; the unleased port answers throughout.
@@ -113,7 +126,7 @@ func TestVMLeases(t *testing.T) {
 	})
 	metalIP := r.ip("metal")
 	r.must(kvoadm.Run, "", append(append([]string{"init"}, r.sshArgs("metal")...),
-		"--name", "metal-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker",
+		"--name", "metal-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker",
 		"--runtime", "cloud-hypervisor", "--loop-storage", "20G")...)
 	b64 := base64.StdEncoding.EncodeToString([]byte(bannerPy))
 	silo := func(name, lease string, web, debug int) string {
@@ -123,22 +136,23 @@ kind: Silo
 metadata: { name: %s, namespace: lz }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 768Mi }
   disk: { size: 5Gi }
   init:
     steps:
       - name: banner
         run: echo %s | base64 -d > /usr/local/bin/banner.py && systemd-run --unit=banner python3 /usr/local/bin/banner.py %d %d
+  ports: [{ name: web, port: %d }, { name: debug, port: %d }]
   service:
-    ports: [{ name: web, port: %d }, { name: debug, port: %d }]
-    expose: hostPort
-    lease: %s
+    ports:
+      - { port: web, hostPort: [internal] }
+      - { port: debug, hostPort: [internal], lease: %s }
 `, name, b64, web, debug, web, debug, lease)
 	}
 	r.must(kvo.Run, "apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: lz }\n"+
-		silo("api", "{ ports: [debug], max: 2m }", 8080, 9229)+
-		silo("gated", "{ ports: [debug], max: 5m, approval: { required: true } }", 8081, 9230), "apply", "-f", "-")
+		silo("api", "{ max: 2m }", 8080, 9229)+
+		silo("gated", "{ max: 5m, approval: { required: true } }", 8081, 9230), "apply", "-f", "-")
 	r.waitRunning("lz", 30*time.Minute, "metal", "api", "gated")
 	addr := map[string]string{"api": r.forward("client", metalIP+":9229"), "gated": r.forward("client", metalIP+":9230")}
 	web := map[string]string{"api": r.forward("client", metalIP+":8080"), "gated": r.forward("client", metalIP+":8081")}
@@ -185,13 +199,13 @@ spec:
 	staysClosed("api", "closed by default", 6*time.Second)
 	staysClosed("gated", "closed by default", 6*time.Second)
 
-	// From inside the VM, no approval: kvo-guest port open --for 60s.
-	out, code := r.in("lz", "api", "kvo-guest port open debug --for 60s")
-	t.Logf("kvo-guest port open debug --for 60s: %d %s", code, out)
+	// From inside the VM, no approval: endpoint ports/debug/open --for 60s.
+	out, code := r.in("lz", "api", portScript("debug", "open", "?for=60s"))
+	t.Logf("endpoint ports/debug/open debug --for 60s: %d %s", code, out)
 	if code != 0 {
-		t.Fatalf("kvo-guest port open: exit %d", code)
+		t.Fatalf("endpoint ports/debug/open: exit %d", code)
 	}
-	opens("api", "kvo-guest port open --for 60s")
+	opens("api", "endpoint ports/debug/open --for 60s")
 	l := r.leaseOf("lz", "api", "debug")
 	if l.Status.Phase != v1.LeaseOpen || l.Status.Until == nil {
 		t.Fatalf("lease: %+v", l.Status)
@@ -238,14 +252,14 @@ spec:
 	}
 
 	// The guest closes its own lease early.
-	if out, code := r.in("lz", "api", "kvo-guest port open debug --for 2m"); code != 0 {
-		t.Fatalf("kvo-guest port open --for 2m: %d %s", code, out)
+	if out, code := r.in("lz", "api", portScript("debug", "open", "?for=2m")); code != 0 {
+		t.Fatalf("endpoint ports/debug/open --for 2m: %d %s", code, out)
 	}
-	opens("api", "kvo-guest port open --for 2m")
-	if out, code := r.in("lz", "api", "kvo-guest port close debug"); code != 0 {
-		t.Fatalf("kvo-guest port close: %d %s", code, out)
+	opens("api", "endpoint ports/debug/open --for 2m")
+	if out, code := r.in("lz", "api", portScript("debug", "close", "?")); code != 0 {
+		t.Fatalf("endpoint ports/debug/close: %d %s", code, out)
 	}
-	r.eventually("kvo-guest port close: closed", 20*time.Second, func() (bool, string) {
+	r.eventually("endpoint ports/debug/close: closed", 20*time.Second, func() (bool, string) {
 		ok, s := isOpen("api")
 		return !ok, s
 	})
@@ -258,7 +272,7 @@ spec:
 	}
 	done := make(chan res, 1)
 	go func() {
-		out, code := r.in("lz", "gated", "kvo-guest port open debug --for 60s --wait 3m")
+		out, code := r.in("lz", "gated", portScript("debug", "open", "?for=60s&wait=3m"))
 		done <- res{out, code}
 	}()
 	var pending string
@@ -275,18 +289,18 @@ spec:
 	r.must(kvo.Run, "", "approve", pending, "-n", "lz")
 	select {
 	case res := <-done:
-		t.Logf("kvo-guest port open --wait after the yes: %d %s", res.code, res.out)
+		t.Logf("endpoint ports/debug/open --wait after the yes: %d %s", res.code, res.out)
 		if res.code != 0 {
-			t.Errorf("kvo-guest port open --wait: exit %d", res.code)
+			t.Errorf("endpoint ports/debug/open --wait: exit %d", res.code)
 		}
 	case <-time.After(90 * time.Second):
-		t.Error("kvo-guest port open --wait didn't return after the yes")
+		t.Error("endpoint ports/debug/open --wait didn't return after the yes")
 	}
 	opens("gated", "approved")
 	if l := r.leaseOf("lz", "gated", "debug"); l.Status.ApprovedBy == "" || l.Status.Phase != v1.LeaseOpen {
 		t.Errorf("approved lease: %+v", l.Status)
 	}
-	if out, code := r.in("lz", "gated", "kvo-guest port close debug"); code != 0 {
+	if out, code := r.in("lz", "gated", portScript("debug", "close", "?")); code != 0 {
 		t.Fatalf("close: %d %s", code, out)
 	}
 	r.eventually("gated closed again", 20*time.Second, func() (bool, string) {
@@ -294,7 +308,7 @@ spec:
 		return !ok, s
 	})
 	go func() {
-		out, code := r.in("lz", "gated", "kvo-guest port open debug --for 60s --wait 2m")
+		out, code := r.in("lz", "gated", portScript("debug", "open", "?for=60s&wait=2m"))
 		done <- res{out, code}
 	}()
 	pending = ""
@@ -308,12 +322,12 @@ spec:
 	r.must(kvo.Run, "", "deny", pending, "-n", "lz", "--reason", "not now")
 	select {
 	case res := <-done:
-		t.Logf("kvo-guest port open after a no: %d %s", res.code, res.out)
+		t.Logf("endpoint ports/debug/open after a no: %d %s", res.code, res.out)
 		if res.code == 0 || !strings.Contains(res.out, "not now") {
 			t.Errorf("a denied ask: exit %d %q", res.code, res.out)
 		}
 	case <-time.After(90 * time.Second):
-		t.Error("kvo-guest port open --wait didn't return after the no")
+		t.Error("endpoint ports/debug/open --wait didn't return after the no")
 	}
 	staysClosed("gated", "denied", 8*time.Second)
 	if l := r.leaseOf("lz", "gated", "debug"); l.Status.Phase != v1.LeaseDenied {

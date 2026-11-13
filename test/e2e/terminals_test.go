@@ -126,7 +126,7 @@ func TestTerminalsAndUI(t *testing.T) {
 	kvoBin := buildKvo(t)
 	metalIP := r.ip("metal")
 	r.must(kvoadm.Run, "", append(append([]string{"init"}, r.sshArgs("metal")...),
-		"--name", "metal-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker",
+		"--name", "metal-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker",
 		"--runtime", "cloud-hypervisor", "--runtime", "openshell", "--runtime", "openshell-container",
 		"--openshell-gateway-scope", "namespace", "--loop-storage", "20G")...)
 	r.must(kvo.Run, `apiVersion: kevaso/v1
@@ -138,7 +138,7 @@ kind: Silo
 metadata: { name: ch, namespace: tt }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 768Mi }
   disk: { size: 5Gi }
 ---
@@ -147,7 +147,7 @@ kind: Silo
 metadata: { name: osvm, namespace: tt }
 spec:
   runtime: openshell
-  image: ubuntu-24.04
+  container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 1Gi }
 ---
 apiVersion: kevaso/v1
@@ -155,7 +155,7 @@ kind: Silo
 metadata: { name: osct, namespace: tt }
 spec:
   runtime: openshell-container
-  image: ubuntu-24.04
+  container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 1Gi }
 `, "apply", "-f", "-")
 	r.waitRunning("tt", 35*time.Minute, "metal", "ch", "osvm", "osct")
