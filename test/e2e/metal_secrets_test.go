@@ -21,7 +21,8 @@ import (
 const metalShell = "docker.io/nicolaka/netshoot:v0.13"
 
 // TestMetalSecrets is secrets with no guest helper (ADR 0009), in a microVM and in a container:
-// a file and an env delivery written by the host; the local endpoint read with plain curl (and
+// a file and an env delivery written by the host (into a container: the box-deliveries subtest,
+// which fails until the container runtimes write them); the local endpoint read with plain curl (and
 // refused without its header, and for a secret the grant doesn't name); a key injected by the
 // egress gate into an HTTPS request that never appears inside the silo (nor on the VM's disk,
 // read from the host); a secret with approval: required that holds the call until it's approved.
@@ -30,7 +31,7 @@ const metalShell = "docker.io/nicolaka/netshoot:v0.13"
 func TestMetalSecrets(t *testing.T) {
 	c := metal(t)
 	ns := "vault"
-	c.namespace(ns, "grant/app", "secret/db-password", "secret/tls-key", "secret/env-token", "secret/api-key", "secret/gh-token", "secret/other")
+	c.namespace(ns, "grant/app", "grant/boxapp", "grant/boxfiles", "secret/db-password", "secret/tls-key", "secret/env-token", "secret/api-key", "secret/gh-token", "secret/other")
 	dbPassword, tlsValue, envToken := randomValue(t, "pw-"), "-----TLS "+randomValue(t, "")+"-----", randomValue(t, "env-")
 	apiKey, ghToken, other := randomValue(t, "sk-"), randomValue(t, "gh-"), randomValue(t, "no-")
 	c.must(dbPassword, "create", "secret", "db-password", "-n", ns, "--from-file", "-")
@@ -51,6 +52,15 @@ spec:
     - { name: gh-token, approval: { required: true } }
 ---
 apiVersion: kevaso/v1
+kind: Grant
+metadata: { name: boxapp, namespace: ` + ns + ` }
+spec:
+  secrets:
+    - { name: db-password }
+    - { name: api-key, deliver: inject, to: { host: ` + metalInetName + ` } }
+    - { name: gh-token, approval: { required: true } }
+---
+apiVersion: kevaso/v1
 kind: Silo
 metadata: { name: vm, namespace: ` + ns + ` }
 spec:
@@ -67,7 +77,7 @@ spec:
   runtime: docker
   container: { image: ` + metalShell + `, command: [sh, -c, "while :; do sleep 3600; done"] }
   resources: { cpu: 1, memory: 256Mi }
-  grants: [app]
+  grants: [boxapp]
 `)
 	c.waitRunning(ns, 20*time.Minute, "vm", "box")
 
@@ -75,16 +85,21 @@ spec:
 		t.Run(silo, func(t *testing.T) {
 			c := &mt{metalSuite: c.metalSuite, t: t, ctx: c.ctx}
 			in := func(script string) string { o, _ := c.in(ns, silo, script); return o }
-			ep := func(path, extra string) string {
-				return in("curl -sS --max-time 10 -w ' %{http_code}' -H 'Kevaso-Local: 1' " + extra + " 'http://169.254.42.1" + path + "' 2>&1")
+			ep := func(path, headers string) string {
+				return in("curl -sS --max-time 10 -w ' %{http_code}' " + headers + " 'http://169.254.42.1" + path + "' 2>&1")
 			}
-			c.expect("the endpoint, with plain curl", ep("/v1/secrets/db-password", ""), dbPassword+" 200")
-			c.expect("without its header: refused", ep("/v1/secrets/db-password", "-H 'Kevaso-Local:'"), " 403")
-			c.expect("a secret the grant doesn't name: none", ep("/v1/secrets/other", ""), " 404")
-			c.expect("an inject-only key: none", ep("/v1/secrets/api-key", ""), " 404")
-			c.expect("a file the host wrote, in tmpfs", in("cat /run/secrets/tls.pem; echo; stat -c '%a %U' /run/secrets/tls.pem; grep -E ' /run(/secrets)? ' /proc/mounts | awk '{print $3}'"),
-				tlsValue+"\n400 root\ntmpfs")
-			c.expect("an env delivery the host wrote", in(`set -a; . /run/kevaso/secrets.env; printf '%s' "$APP_TOKEN"`), envToken)
+			const local = "-H 'Kevaso-Local: 1'"
+			c.expect("the endpoint, with plain curl", ep("/v1/secrets/db-password", local), dbPassword+" 200")
+			// (A second -H 'Kevaso-Local:' wouldn't take the first one away: curl sends the first.)
+			c.expect("without its header: refused", ep("/v1/secrets/db-password", ""), " 403")
+			c.expect("from a browser (an Origin): refused", ep("/v1/secrets/db-password", local+" -H 'Origin: http://evil.example'"), " 403")
+			c.expect("a secret the grant doesn't name: none", ep("/v1/secrets/other", local), " 404")
+			c.expect("an inject-only key: none", ep("/v1/secrets/api-key", local), " 404")
+			if silo == "vm" { // a container's file and env deliveries: the box-deliveries subtest
+				c.expect("a file the host wrote, in tmpfs", in("cat /run/secrets/tls.pem; echo; stat -c '%a %U' /run/secrets/tls.pem; grep -E ' /run(/secrets)? ' /proc/mounts | awk '{print $3}'"),
+					tlsValue+"\n400 root\ntmpfs")
+				c.expect("an env delivery the host wrote", in(`set -a; . /run/kevaso/secrets.env; printf '%s' "$APP_TOKEN"`), envToken)
+			}
 
 			// The injected key: the stand-in API sees it (as a hash), the silo never does.
 			ca := `ca=; [ -f /etc/ssl/certs/kevaso-ca-bundle.crt ] && ca="--cacert /etc/ssl/certs/kevaso-ca-bundle.crt"; `
@@ -147,6 +162,37 @@ cat /tmp/answer; [ "$code" = 200 ]`
 			}
 		})
 	}
+
+	// File and env deliveries into a container: refused by admission until the container runtimes
+	// write them (phase/box-deliveries). This fails, saying so, until that lands.
+	t.Run("box-deliveries", func(t *testing.T) {
+		c := &mt{metalSuite: c.metalSuite, t: t, ctx: c.ctx}
+		out, code := c.kvo(`apiVersion: kevaso/v1
+kind: Grant
+metadata: { name: boxfiles, namespace: `+ns+` }
+spec:
+  secrets:
+    - { name: tls-key, deliver: file, path: /run/secrets/tls.pem }
+    - { name: env-token, deliver: env, env: APP_TOKEN }
+---
+apiVersion: kevaso/v1
+kind: Silo
+metadata: { name: boxdel, namespace: `+ns+` }
+spec:
+  runtime: docker
+  container: { image: `+metalShell+`, command: [sh, -c, "while :; do sleep 3600; done"] }
+  resources: { cpu: 1, memory: 256Mi }
+  grants: [boxfiles]
+`, "apply", "-f", "-")
+		if code != 0 {
+			t.Fatalf("file and env deliveries into a docker silo aren't there yet (phase/box-deliveries): %s", strings.TrimSpace(out))
+		}
+		c.waitRunning(ns, 10*time.Minute, "boxdel")
+		in := func(script string) string { o, _ := c.in(ns, "boxdel", script); return o }
+		c.expect("a file the host wrote, in tmpfs", in("cat /run/secrets/tls.pem; echo; stat -c '%a %U' /run/secrets/tls.pem; grep -E ' /run(/secrets)? ' /proc/mounts | awk '{print $3}'"),
+			tlsValue+"\n400 root\ntmpfs")
+		c.expect("an env delivery the host wrote", in(`set -a; . /run/kevaso/secrets.env; printf '%s' "$APP_TOKEN"`), envToken)
+	})
 
 	// The key never reached the microVM's disk either (read from the host).
 	vm := c.silo(ns, "vm")

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -22,7 +23,8 @@ const letsEncryptStaging = "https://acme-staging-v02.api.letsencrypt.org/directo
 
 // TestMetalIngress is ingress through a stock nginx (design §7.3, ADR 0008) on a real external
 // IP: kvoadm ingress install puts the vendor's image in a silo with hostPort: [external]; an
-// Ingress to a silo's service answers this Mac on port 80; an Ingress with a broken annotation is
+// Ingress to a silo's service with tls: none answers this Mac on port 80, and one with no tls:
+// block (HTTPS, the default) redirects port 80 there; an Ingress with a broken annotation is
 // refused (or holds the class at its last good config) while traffic keeps flowing; and, only
 // when KEVASO_METAL_HOSTNAME names the machine in public DNS, a certificate from Let's Encrypt's
 // STAGING directory over HTTP-01, served on 443.
@@ -31,7 +33,7 @@ const letsEncryptStaging = "https://acme-staging-v02.api.letsencrypt.org/directo
 func TestMetalIngress(t *testing.T) {
 	c := metal(t)
 	ns := "web"
-	extra := []string{"ingress/site", "ingress/broken", "ingress/secure", "issuer//le-staging"}
+	extra := []string{"ingress/site", "ingress/tlsdefault", "ingress/broken", "ingress/secure", "issuer//le-staging"}
 	c.namespace(ns, extra...)
 	t.Cleanup(func() {
 		for _, a := range [][]string{{"delete", "ingressclass", "public"}, {"delete", "silo", "ingress-public", "-n", "kevaso-system"}} {
@@ -56,6 +58,15 @@ metadata: { name: site, namespace: ` + ns + ` }
 spec:
   ingressClass: public
   hosts: [` + name + `]
+  tls: { none: true }   # plain HTTP: allowed on a class that isn't public (kvoadm ingress install without --public)
+  rules: [{ path: /, service: { name: app, port: http } }]
+---
+apiVersion: kevaso/v1
+kind: Ingress
+metadata: { name: tlsdefault, namespace: ` + ns + ` }
+spec:
+  ingressClass: public
+  hosts: [tls.` + name + `]
   rules: [{ path: /, service: { name: app, port: http } }]
 `)
 	c.waitRunning("kevaso-system", 10*time.Minute, "ingress-public")
@@ -65,6 +76,18 @@ spec:
 		return err == nil && code == 200 && strings.Contains(body, "app 8080"), fmt.Sprint(code, " ", strings.TrimSpace(body), " ", err)
 	}
 	c.eventually("the Ingress answers this Mac on port 80", 3*time.Minute, get)
+	// No tls: block means HTTPS (the default): port 80 answers with a redirect to it.
+	c.eventually("an Ingress without tls: redirects port 80 to HTTPS", time.Minute, func() (bool, string) {
+		req, _ := http.NewRequest(http.MethodGet, "http://"+c.cfg.ExternalIP+"/x?y=1", nil)
+		req.Host = "tls." + name
+		resp, err := (&http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
+		if err != nil {
+			return false, err.Error()
+		}
+		_ = resp.Body.Close()
+		loc := resp.Header.Get("Location")
+		return resp.StatusCode == 308 && loc == "https://tls."+name+"/x?y=1", fmt.Sprint(resp.StatusCode, " ", loc)
+	})
 	code, _, _ := fromMac("http://"+c.cfg.ExternalIP+"/", "nobody."+name, 5*time.Second)
 	if code != 404 {
 		t.Errorf("an unknown host: %d, want 404", code)

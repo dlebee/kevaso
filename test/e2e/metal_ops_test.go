@@ -19,8 +19,9 @@ import (
 
 // TestMetalLeases is port leases on an [external] port (design §7.2d): closed until leased;
 // opened for a minute, it answers this Mac, a connection held open is cut when the lease ends,
-// and new ones are refused; a port whose lease needs approval stays closed until a person says
-// yes, and closes again on kvo close.
+// and new ones are refused. A port whose lease needs approval opens at once for someone who
+// holds approve (the admin's kvo open); asked for by the silo itself (its local endpoint), it
+// stays closed until a person says yes, and closes again on kvo close.
 //
 // Listens on the external IP while it runs: 18120 (for its minute), 18121 (once approved).
 func TestMetalLeases(t *testing.T) {
@@ -81,14 +82,23 @@ func TestMetalLeases(t *testing.T) {
 	}
 	c.eventually("after the lease: closed to new connections", 30*time.Second, func() (bool, string) { return c.closed(18120) })
 
-	// With approval: the ask waits for a person.
-	c.must("", "open", "silo", "dbg", "-n", ns, "--port", "gated", "--for", "1m", "--no-wait")
+	// With approval required: someone who holds approve (the cluster's admin, this test's user)
+	// opens it at once, by design; the silo itself asking through its local endpoint waits for a
+	// person's yes.
+	c.must("", "open", "silo", "dbg", "-n", ns, "--port", "gated", "--for", "1m")
+	c.eventually("an admin's ask opens the gated port at once", 30*time.Second, func() (bool, string) { return c.open(18121) })
+	c.must("", "close", "silo", "dbg", "-n", ns, "--port", "gated")
+	c.eventually("kvo close: closed", 30*time.Second, func() (bool, string) { return c.closed(18121) })
+
+	c.upload(ns, "dbg", "/tmp/ask.py", metalPortAsk)
+	asked, _ := c.in(ns, "dbg", "python3 /tmp/ask.py gated 1m")
+	t.Logf("the silo asked for port gated: %s", asked)
 	var pending string
-	c.eventually("an expose approval is pending", time.Minute, func() (bool, string) {
+	c.eventually("the silo's ask makes an expose approval", time.Minute, func() (bool, string) {
 		out, _ := c.kvo("", "get", "approvals", "-n", ns, "-o", "json")
 		for _, raw := range metalItems(out) {
 			var a v1.Approval
-			if json.Unmarshal(raw, &a) == nil && a.Spec.Use == "expose" && a.Spec.Port == "gated" && a.Status.Phase == v1.ApprovalPending {
+			if json.Unmarshal(raw, &a) == nil && a.Spec.Use == v1.ApprovalForExpose && a.Spec.Port == "gated" && a.Status.Phase == v1.ApprovalPending {
 				pending = a.Name
 				return true, ""
 			}
@@ -104,6 +114,17 @@ func TestMetalLeases(t *testing.T) {
 	c.must("", "close", "silo", "dbg", "-n", ns, "--port", "gated")
 	c.eventually("kvo close: closed again", 30*time.Second, func() (bool, string) { return c.closed(18121) })
 }
+
+// metalPortAsk is a silo asking its local endpoint to open one of its ports (ADR 0009):
+// python3 ask.py PORT FOR. It prints the status and the answer.
+const metalPortAsk = `import sys, urllib.request, urllib.error
+req = urllib.request.Request("http://169.254.42.1/v1/ports/%s/open?for=%s" % (sys.argv[1], sys.argv[2]), method="POST", headers={"Kevaso-Local": "1"})
+try:
+    r = urllib.request.urlopen(req, timeout=15)
+    print(r.status, r.read().decode())
+except urllib.error.HTTPError as e:
+    print(e.code, e.read().decode())
+`
 
 // TestMetalPanes is panes with no guest helper (ADR 0009) in both runtimes: a silo serves its
 // panes over HTTP inside, the host fetches them (host → silo address, the real firewall in
@@ -200,15 +221,20 @@ func TestMetalFence(t *testing.T) {
 	c.waitRunning(ns, 20*time.Minute, "stay", "moves", "vm")
 	t.Cleanup(func() { _, _ = c.sh("systemctl start kevasod") })
 
-	// Each silo's start time, from the host: containers by their label, the microVM by its unit.
+	// Each silo's start time, from the host only (SSH): containers by their label, the microVM by
+	// its unit. On a one-machine cluster the API is the kevasod being stopped, so what identifies
+	// the silos is read now, while it answers.
+	uids := map[string]string{}
+	for _, name := range []string{"stay", "moves"} {
+		uids[name] = c.silo(ns, name).UID
+	}
+	vm := c.silo(ns, "vm")
+	unit := cloudhypervisor.NamesFor(kri.ID{Namespace: vm.Namespace, Name: vm.Name, UID: vm.UID}).Unit
 	started := func() map[string]string {
 		got := map[string]string{}
-		for _, name := range []string{"stay", "moves"} {
-			s := c.silo(ns, name)
-			got[name] = strings.TrimSpace(c.mustSh(`for id in $(docker ps -q --filter label=kevaso.com/uid=` + s.UID + `); do docker inspect -f '{{.Name}} {{.State.StartedAt}}' "$id"; done | sort`))
+		for name, uid := range uids {
+			got[name] = strings.TrimSpace(c.mustSh(`for id in $(docker ps -q --filter label=kevaso.com/uid=` + uid + `); do docker inspect -f '{{.Name}} {{.State.StartedAt}}' "$id"; done | sort`))
 		}
-		vm := c.silo(ns, "vm")
-		unit := cloudhypervisor.NamesFor(kri.ID{Namespace: vm.Namespace, Name: vm.Name, UID: vm.UID}).Unit
 		got["vm"] = strings.TrimSpace(c.mustSh("systemctl show -p ActiveEnterTimestamp,ActiveState " + unit))
 		return got
 	}
@@ -255,10 +281,11 @@ func TestMetalFence(t *testing.T) {
 	if out, _ := c.sh("systemctl is-active kevaso-fence"); strings.TrimSpace(out) != "active" {
 		t.Errorf("the fence isn't running: %q", out)
 	}
-	same("kevasod stopped past the fence time", before)
+	same("kevasod stopped past the fence time (from the host)", before)
 	c.mustSh("systemctl start kevasod")
 	waitAPI()
 	c.waitRunning(ns, 3*time.Minute, "stay", "moves", "vm")
+	same("kevasod back: the same copies, never restarted", before)
 }
 
 // TestMetalVolumes is a local volume on a microVM (design §0.3): data written to it survives the

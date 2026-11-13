@@ -499,9 +499,12 @@ func (c *mt) namespace(ns string, extra ...string) {
 	})
 }
 
-// fromMac is an HTTP GET from this Mac (no proxy), with Host set when host isn't empty.
+// fromMac is an HTTP GET from this Mac (no proxy, redirects not followed), with Host set when
+// host isn't empty.
 func fromMac(url, host string, timeout time.Duration) (int, string, error) {
-	client := &http.Client{Timeout: timeout, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}
+	client := &http.Client{Timeout: timeout, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true},
+		// A redirect is an answer to check, not one to follow.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return 0, "", err
@@ -638,4 +641,21 @@ func TestMetalReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Log("the machine is clean: every checklist item passed")
+}
+
+// TestMetalCheck only runs the checklist and the baseline comparison, changing nothing: is the
+// machine clean now (after kvoadm reset, say)?
+func TestMetalCheck(t *testing.T) {
+	d := metalDriver(t)
+	defer func() { _ = d.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	base, err := d.Baseline(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Check(ctx, &base); err != nil {
+		t.Fatal(err)
+	}
+	t.Log("the machine is clean: every checklist item passed, and it matches its baseline")
 }

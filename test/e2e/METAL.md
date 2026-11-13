@@ -201,6 +201,16 @@ It lists what it will remove and what it keeps. Then run it for real. It asks yo
 go run ./cmd/kvoadm reset "$KEVASO_METAL_HOST" --ssh-key "$KEVASO_METAL_KEY" --host-key "$KEVASO_METAL_HOSTKEY"
 ```
 
+To see whether the box is clean without changing anything (after `kvoadm reset`, for
+example), run the checklist and the baseline comparison alone:
+
+```bash
+go test -tags metal -run '^TestMetalCheck$' -v -count=1 ./test/e2e/
+```
+
+After `kvoadm reset` it reports only `/var/lib/kvt-inet`, the suite's own stand-in internet,
+which `TestMetalReset` removes. Everything Kevaso installed matches the fresh machine.
+
 It refuses while silos are still on the box. Delete their namespaces first, or add `--force`,
 which destroys them. On this box the volume group is on the loop file, so `--wipe-storage` is
 never needed. Afterwards `TestMetalReset` passes as well: it removes the suite's own files and
@@ -224,7 +234,7 @@ machine, 6443 (the API, mutual TLS) is open from the first test to the final res
 | TestMetalNames | 18100 (api); 53/udp+tcp while the DNS switch is on (a few minutes) | echo; Kevaso's DNS, external names only, never forwarding |
 | TestMetalImages | nothing | |
 | TestMetalSecrets | nothing (the stand-in API is on 127.0.0.77:443, loopback) | |
-| TestMetalIngress | 80, 443 | stock nginx 1.27: the test's site, 404 for unknown hosts |
+| TestMetalIngress | 80, 443 | stock nginx 1.27: the test's site (`tls: none`), a 308 to HTTPS for the Ingress without `tls:` (HTTPS is the default), 404 for unknown hosts |
 | TestMetalProbes | 18110 (only while ready), 18111 | echo |
 | TestMetalLeases | 18120 (for its 1-minute lease), 18121 (once approved, until closed) | echo |
 | TestMetalPanes | nothing (the host dials the silos privately) | |
