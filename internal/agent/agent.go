@@ -360,16 +360,21 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		if err := a.recordForFence(s); err != nil {
 			return engine.Result{}, err
 		}
-		if err := rt.Create(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
-			Volumes: vols, Command: s.Spec.Command, DiskHostPath: diskPath}); err != nil {
+		digest, err := a.pull(ctx, rt, s, image)
+		if err == nil {
+			err = rt.Create(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
+				Volumes: vols, Command: s.Spec.Command, DiskHostPath: diskPath})
+		}
+		if err != nil {
 			_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 				st.Phase = PhaseFailed
-				setCond(st, "Ready", meta.ConditionFalse, "CreateFailed", err.Error(), s.Generation, a.now())
+				setCond(st, "Ready", meta.ConditionFalse, failReason(err, "CreateFailed"), err.Error(), s.Generation, a.now())
 			})
 			return engine.Result{}, err
 		}
 		return engine.Result{RequeueAfter: time.Millisecond}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 			st.Image = running(st.Image, s, image)
+			st.Image.Digest = digest
 		})
 	case kri.Created, kri.Stopped:
 		if ic, ok := rt.(kri.InitContainers); ok {
@@ -484,6 +489,9 @@ func running(cur *v1.SiloImage, s *v1.Silo, image string) *v1.SiloImage {
 			next.From, next.Ref = s.Spec.Image, image
 		}
 	}
+	if cur != nil && cur.Running == image {
+		next.Digest = cur.Digest // what was pulled for it (Create and Reset set a new one)
+	}
 	next.Running, next.Reset = image, s.Spec.Reset
 	return next
 }
@@ -519,6 +527,15 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 			setCond(st, "Updated", meta.ConditionFalse, "ResetUnsupported", "runtime "+s.Spec.Runtime+" can't reset a silo: "+what+" waits", s.Generation, a.now())
 		})
 	}
+	// The pull first, while the old copy still runs: a registry that refuses leaves it running
+	// (and Ready), with Updated saying why the update waits.
+	digest, err := a.pull(ctx, rt, s, image)
+	if err != nil {
+		_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			setCond(st, "Updated", meta.ConditionFalse, failReason(err, "ResetFailed"), err.Error()+" (still running the old image)", s.Generation, a.now())
+		})
+		return true, fmt.Errorf("reset onto %s: %w", image, err)
+	}
 	if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		st.Phase = PhaseStarting
 		setCond(st, "Ready", meta.ConditionFalse, "Updating", "stopping for "+what+" (StopFirst; volumes kept)", s.Generation, a.now())
@@ -540,7 +557,7 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 	if err := rr.Reset(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
 		Volumes: vols, Command: s.Spec.Command, DiskHostPath: diskPath}); err != nil {
 		_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
-			setCond(st, "Updated", meta.ConditionFalse, "ResetFailed", err.Error(), s.Generation, a.now())
+			setCond(st, "Updated", meta.ConditionFalse, failReason(err, "ResetFailed"), err.Error(), s.Generation, a.now())
 		})
 		return true, fmt.Errorf("reset onto %s: %w", image, err)
 	}
@@ -549,6 +566,7 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 	a.log("silo %s/%s: reset onto %s (%s)", s.Namespace, s.Name, image, what)
 	return true, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		st.Image, st.Init, st.Address = running(st.Image, s, image), nil, ""
+		st.Image.Digest = digest
 		setCond(st, "Updated", meta.ConditionTrue, "Reset", "reset onto "+image+" (stop-first, volumes kept)", s.Generation, a.now())
 	})
 }

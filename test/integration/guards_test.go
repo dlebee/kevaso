@@ -115,11 +115,11 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 	})
 	t.Run("image versions", func(t *testing.T) {
 		img := &v1.Image{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Image"}, ObjectMeta: meta.ObjectMeta{Name: "app", Namespace: "web3"},
-			Spec: v1.ImageSpec{Versions: []v1.ImageVersion{{Name: "v1", Container: "docker.io/library/nginx:1.27"}}}}
+			Spec: v1.ImageSpec{Versions: []v1.ImageVersion{{Name: "v1", Disk: &v1.ImageDisk{URL: "https://images.example.com/app.img", SHA256: strings.Repeat("ab", 32)}}}}}
 		if err := ada.Create(c.ctx, img); err != nil {
 			t.Fatal(err)
 		}
-		policy(t, "Image", "spec.versions", `[{'name': 'v1', 'container': 'docker.io/evil/nginx:1.27'}]`)
+		policy(t, "Image", "spec.versions", `[{'name': 'v1', 'disk': {'url': 'https://evil.example.com/app.img', 'sha256': '`+strings.Repeat("ab", 32)+`'}}]`)
 		if err := ada.Get(c.ctx, "Image", "web3", "app", img); err != nil {
 			t.Fatal(err)
 		}

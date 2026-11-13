@@ -83,6 +83,7 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			}
 		}
 		kv(0, "Image", img)
+		describePull(kv, o)
 		if o.Spec.Exclusive {
 			kv(0, "Exclusive", "at most one copy ever runs: updates stop-first, no automatic failover")
 		}
@@ -365,6 +366,12 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			typ = v1.SecretOpaque
 		}
 		kv(0, "Type", typ)
+		if typ == v1.SecretRegistry {
+			kv(0, "Registry", o.Spec.Server+" as "+o.Spec.Username)
+			if o.DefaultPull() {
+				kv(0, "Default pull", "yes: silos in "+o.Namespace+" pulling from "+o.Spec.Server+" use it unless they name another")
+			}
+		}
 		if o.Status.Version == 0 {
 			kv(0, "Value", "none yet")
 		} else {
@@ -374,6 +381,9 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			kv(0, "Readable", "yes, with read-value (kvo get secret "+o.Name+" --reveal)")
 		} else {
 			kv(0, "Readable", "no: write-only, only silos can use it")
+		}
+		if typ == v1.SecretRegistry {
+			kv(0, "Used by", "hosts' agents, to pull the images of silos placed on them: never a silo itself")
 		}
 		var modes []string
 		for _, m := range v1.Deliveries {
@@ -538,13 +548,9 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		vs := o.Spec.Versions
 		tables = append(tables, func() {
 			_, _ = fmt.Fprintln(tw, "Versions:")
-			_, _ = fmt.Fprintln(tw, "  NAME\tCONTAINER\tDISK")
+			_, _ = fmt.Fprintln(tw, "  NAME\tDISK")
 			for _, v := range vs {
-				disk := "-"
-				if v.Disk != nil {
-					disk = v.Disk.URL + " (sha256 " + v.Disk.SHA256[:12] + "…)"
-				}
-				_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\n", v.Name, dash(v.Container), disk)
+				_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, diskOf(v))
 			}
 		})
 	}

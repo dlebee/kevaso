@@ -19,6 +19,8 @@
 //	kvo create token NAME [-n NS] [--duration 1h]   a service account token, for CI ($KVO_TOKEN)
 //	kvo create secret NAME (--from-file F|- | --generate) [--type opaque|ed25519|ecdsa-p256]
 //	        [--write-only] [--allow broker,inject,file,env] [-l KEY=VALUE]…   values never on argv
+//	kvo create secret NAME --type registry --server HOST --username U --from-file -
+//	        [--default-pull]                    a registry credential, write-only; the password on stdin
 //	kvo secret set NAME --from-file F|-        rotate: every silo using it follows
 //	kvo get secret NAME --reveal               the value (read-value; never a write-only secret)
 //	kvo get approvals | kvo watch approvals    silos waiting for a person's yes to use a secret
@@ -60,6 +62,7 @@ const DefaultServer = "http://127.0.0.1:8080"
 
 type opts struct {
 	server, context, namespace, output, file string
+	serverFlag                               string // --server as given (not $KVO_SERVER)
 	ca                                       string // kvo login: the CA fingerprint to pin
 	duration                                 string // kvo create token
 	reason                                   string // kvo deny / approve
@@ -98,6 +101,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 		switch name {
 		case "--server":
 			o.server, err = val()
+			o.serverFlag = o.server
 		case "--context":
 			o.context, err = val()
 		case "-n", "--namespace":
@@ -139,8 +143,14 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.secret.generate = true
 		case "--type":
 			o.secret.typ, err = val()
+		case "--default-pull":
+			o.secret.defaultPull = true
 		case "--write-only":
 			o.secret.writeOnly = true
+		case "--registry":
+			o.secret.server, err = val()
+		case "--username":
+			o.secret.username, err = val()
 		case "--allow":
 			var v string
 			v, err = val()
@@ -201,6 +211,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return 0
 	}
+	registryServer(args[0], &o)
 	c, err := clientFor(&o)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "kvo:", err)
@@ -681,7 +692,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 	case "Service":
 		head = append(head, "TYPE", "CLUSTER-IP", "PUBLIC-IP", "PORTS", "ENDPOINTS")
 	case "Image":
-		head = append(head, "VERSIONS")
+		head = append(head, "VERSIONS", "DISK")
 	case "Approval":
 		head = append(head, "SILO", "SECRET", "USE", "FOR", "PHASE", "WHEN", "ANSWERED-BY")
 	case "Lease":
@@ -810,7 +821,11 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			for _, v := range o.Spec.Versions {
 				vs = append(vs, v.Name)
 			}
-			row = append(row, strings.Join(vs, ","))
+			latest := "-"
+			if n := len(o.Spec.Versions); n > 0 {
+				latest = diskOf(o.Spec.Versions[n-1])
+			}
+			row = append(row, strings.Join(vs, ","), latest)
 		}
 		row = append(row, age(m))
 		_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))

@@ -169,19 +169,22 @@ func TestParseBytes(t *testing.T) {
 }
 
 func TestResolveImage(t *testing.T) {
+	sum := strings.Repeat("ab", 32)
 	img := &Image{ObjectMeta: meta.ObjectMeta{Name: "geth", Namespace: "web3"}, Spec: ImageSpec{Versions: []ImageVersion{
-		{Name: "v1", Container: "ethereum/client-go:v1.14.0"},
-		{Name: "v2", Container: "ethereum/client-go:v1.15.0", Disk: &ImageDisk{URL: "https://x/geth.img", SHA256: strings.Repeat("ab", 32)}},
+		{Name: "v1", Disk: &ImageDisk{URL: "https://x/geth-1.img", SHA256: sum}},
+		{Name: "v2", Disk: &ImageDisk{URL: "https://x/geth-2.img", SHA256: sum}},
 	}}}
 	for _, tc := range []struct{ spec, runtime, want, err string }{
-		{"geth:v1", "docker", "ethereum/client-go:v1.14.0", ""},
-		{"geth", "docker", "ethereum/client-go:v1.15.0", ""}, // the newest
-		{"geth:v2", "cloud-hypervisor", "https://x/geth.img#sha256=" + strings.Repeat("ab", 32), ""},
-		{"geth:v1", "cloud-hypervisor", "", "has no disk image"},
-		{"geth:v9", "docker", "", "has no version v9"},
-		{"nginx:1.27", "docker", "nginx:1.27", ""},                 // not an Image: as it is
-		{"registry:5000/geth", "docker", "registry:5000/geth", ""}, // a port isn't a version
+		{"geth:v1", "cloud-hypervisor", "https://x/geth-1.img#sha256=" + sum, ""},
+		{"geth", "cloud-hypervisor", "https://x/geth-2.img#sha256=" + sum, ""}, // the newest
+		{"geth:v9", "cloud-hypervisor", "", "has no version v9"},
+		{"other", "cloud-hypervisor", "", "no Image other"},
 		{"ubuntu-24.04", "cloud-hypervisor", "ubuntu-24.04", ""},
+		// registry runtimes: the reference as it is, never an Image (admission refuses one)
+		{"geth:v1", "docker", "geth:v1", ""},
+		{"nginx:1.27", "podman", "nginx:1.27", ""},
+		{"registry:5000/geth", "docker", "registry:5000/geth", ""},
+		{"ghcr.io/acme/api@sha256:" + strings.Repeat("0", 64), "openshell-container", "ghcr.io/acme/api@sha256:" + strings.Repeat("0", 64), ""},
 	} {
 		got, err := ResolveImage(tc.spec, tc.runtime, []*Image{img})
 		if tc.err != "" {

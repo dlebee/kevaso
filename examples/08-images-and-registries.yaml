@@ -1,0 +1,57 @@
+# 08 · Machine disks and private registries (design §0.2).
+#
+#   kvo create secret ghcr-pull -n payments --type registry --server ghcr.io --username acme-bot --from-file -
+#   kvo apply -f examples/08-images-and-registries.yaml
+#   kvo get images -n payments                    # disk images only
+#   kvo describe silo api -n payments             # pinned or not, the digest pulled, the pull secret
+#
+# An Image is a bootable OS disk with immutable versions (a URL and its SHA-256, checked by every
+# host that fetches it), for cloud-hypervisor silos and the sets made of them. Container silos
+# don't use Images: their image is a registry reference, used as it is.
+#
+# A private registry's credential is a Secret of type registry: write-only, never delivered to a
+# silo. Only the agent of the host a silo is placed on gets it, for that silo's pull; it hands it to
+# docker or podman in a throwaway file on tmpfs and removes it after. Naming it (imagePull) needs
+# use on the secret. Labelled kevaso.com/default-pull: "true", it's the namespace's default for its
+# server (`--default-pull` on kvo create secret). OpenShell runtimes pull by themselves and take no
+# credential: imagePull is refused there.
+
+apiVersion: kevaso/v1
+kind: Namespace
+metadata: { name: payments }
+---
+apiVersion: kevaso/v1
+kind: Secret
+metadata: { name: ghcr-pull, namespace: payments }
+spec:
+  type: registry                  # the password or token: kvo create secret … --from-file - (never in YAML)
+  server: ghcr.io
+  username: acme-bot
+---
+apiVersion: kevaso/v1
+kind: Silo
+metadata: { name: api, namespace: payments }
+spec:
+  runtime: docker
+  image: ghcr.io/acme/api:v12     # better: ghcr.io/acme/api@sha256:… (a tag can move)
+  imagePull: { secretRef: ghcr-pull }
+  resources: { cpu: 1, memory: 1Gi }
+---
+apiVersion: kevaso/v1
+kind: Image
+metadata: { name: payments-os, namespace: payments }
+spec:
+  versions:                       # oldest first; a version never changes once added
+    - name: v1
+      disk:
+        url: https://images.example.com/payments-os-v1.qcow2
+        sha256: 4b2d8f0e9a7c6b5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d
+---
+apiVersion: kevaso/v1
+kind: Silo
+metadata: { name: ledger, namespace: payments }
+spec:
+  runtime: cloud-hypervisor
+  image: payments-os:v1           # an Image's version (or a built-in OS image: ubuntu-24.04)
+  resources: { cpu: 2, memory: 4Gi }
+  disk: { size: 20Gi }
