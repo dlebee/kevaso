@@ -469,7 +469,7 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 		return fmt.Errorf("get needs a kind (%s)", knownKinds())
 	}
 	if o.args[0] == "kinds" {
-		return getKinds(ctx, c, stdout)
+		return getKinds(ctx, c, o.output, stdout)
 	}
 	k, err := resolveKind(ctx, c, o.args[0])
 	if err != nil {
@@ -509,7 +509,7 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	case "json":
 		return printJSON(stdout, objs, len(o.args) < 2)
 	case "yaml":
-		return printYAML(stdout, objs)
+		return printYAML(stdout, objs, len(o.args) < 2)
 	case "", "wide":
 		if isDefined(k) {
 			return printDefinedTable(ctx, c, stdout, k, objs, o.all)
@@ -534,28 +534,36 @@ func printJSON(w io.Writer, objs []meta.Object, list bool) error {
 	return enc.Encode(objs)
 }
 
-func printYAML(w io.Writer, objs []meta.Object) error {
-	for i, obj := range objs {
-		b, err := json.Marshal(obj)
-		if err != nil {
-			return err
-		}
-		var m any
-		if err := yaml.Unmarshal(b, &m); err != nil {
-			return err
-		}
-		if i > 0 {
-			_, _ = fmt.Fprintln(w, "---")
-		}
-		var buf bytes.Buffer
-		enc := yaml.NewEncoder(&buf)
-		enc.SetIndent(2)
-		if err := enc.Encode(m); err != nil {
-			return err
-		}
-		_, _ = w.Write(buf.Bytes())
+// printYAML is printJSON's shape in YAML: one object as a mapping, a list as a sequence whatever
+// its length ([] for none), never a stream of documents.
+func printYAML(w io.Writer, objs []meta.Object, list bool) error {
+	if !list && len(objs) == 1 {
+		return writeYAML(w, objs[0])
 	}
-	return nil
+	if objs == nil {
+		objs = []meta.Object{}
+	}
+	return writeYAML(w, objs)
+}
+
+// writeYAML writes v as YAML through its JSON form (so field names and omissions match -o json).
+func writeYAML(w io.Writer, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	var m any
+	if err := yaml.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(m); err != nil {
+		return err
+	}
+	_, err = w.Write(buf.Bytes())
+	return err
 }
 
 func age(m *meta.ObjectMeta) string {
