@@ -66,6 +66,7 @@ type Server struct {
 	kinds    kindCache   // the served KindDefinitions (kinds.go)
 	policies policyCache // the admission policies (policies.go)
 	logf     func(string, ...any)
+	drain    time.Duration // silo streams' drain (default streamDrain): tests shorten it
 }
 
 // SetLog is where the server logs what no client hears of (a silo stream that broke).

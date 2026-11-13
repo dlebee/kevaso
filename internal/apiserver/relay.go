@@ -15,8 +15,8 @@ import (
 )
 
 // streamDrain is how long, once everything for the client is written, the client's side is still
-// read (and discarded) waiting for it to close first.
-var streamDrain = 5 * time.Second
+// read (and discarded) waiting for it to close first (Server.drain, if set, instead).
+const streamDrain = 5 * time.Second
 
 // relay relays the frames of one silo stream between a client (conn, read through cr) and the
 // silo's host (stream, over its tunnel), until the silo's side is over; with limit > 0, each way's
@@ -119,7 +119,11 @@ func (s *Server) relay(conn net.Conn, cr *bufio.Reader, stream net.Conn, limit i
 	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
 		_ = cw.CloseWrite()
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(streamDrain))
+	drain := streamDrain
+	if s.drain > 0 {
+		drain = s.drain
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(drain))
 	<-clientDone
 }
 

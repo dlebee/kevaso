@@ -175,10 +175,7 @@ func TestRelayLogsAStreamCutShort(t *testing.T) {
 	agentSide, agent := net.Pipe()
 	var logs []string
 	var lmu sync.Mutex
-	srv := &Server{logf: func(f string, a ...any) { lmu.Lock(); logs = append(logs, fmt.Sprintf(f, a...)); lmu.Unlock() }}
-	old := streamDrain
-	streamDrain = 100 * time.Millisecond
-	defer func() { streamDrain = old }()
+	srv := &Server{drain: 100 * time.Millisecond, logf: func(f string, a ...any) { lmu.Lock(); logs = append(logs, fmt.Sprintf(f, a...)); lmu.Unlock() }}
 	done := make(chan struct{})
 	go func() {
 		srv.relay(srvSide, bufio.NewReader(srvSide), agentSide, 0, "dev/web on hv1 (tar)")
