@@ -165,6 +165,12 @@ func SetupNetwork(ctx context.Context, h Host) error {
 		return err
 	}
 	_, _ = r.Host.Run(ctx, "modprobe", "nf_conntrack_bridge") // bridge conntrack, for the silo rules
+	// The baseline only where there's no ruleset (a boot): a live one is the silos' whole
+	// firewall, kept by the worker, and replacing it here (a kevasod restart, an Install retried)
+	// dropped their ports and anti-spoofing until the worker's next apply.
+	if _, err := r.Host.Run(ctx, "nft", "list", "table", "inet", "kevaso"); err == nil {
+		return nil
+	}
 	if err := r.Host.WriteFile("/etc/kevaso-silos.nft", []byte(NFT()), 0o600); err != nil {
 		return err
 	}
