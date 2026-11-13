@@ -238,10 +238,11 @@ type SiloSpec struct {
 	Panes *PaneConfig `json:"panes,omitempty"`
 	// Availability says what happens when the silo's host is lost (design §0.3).
 	Availability Availability `json:"availability,omitempty"`
-	// Service is the silo's own service (design §7.1); AllowFrom opens it to other silos.
-	Service   *SiloService `json:"service,omitempty"`
-	AllowFrom []AllowFrom  `json:"allowFrom,omitempty"`
-	Network   SiloNetwork  `json:"network,omitempty"`
+	// Ports are what the silo declares (design §7.0); Service is what makes some of them
+	// reachable, and by whom. Without a service nothing is reachable and the silo has no name.
+	Ports   []SiloPort   `json:"ports,omitempty"`
+	Service *SiloService `json:"service,omitempty"`
+	Network SiloNetwork  `json:"network,omitempty"`
 	// Grants are the Grant objects (in this namespace) the silo uses: what it may reach outside
 	// the cluster and which secrets it gets, and how (design §8).
 	Grants []string `json:"grants,omitempty"`
@@ -384,7 +385,7 @@ type SiloStatus struct {
 	Init       []StepStatus      `json:"init,omitempty"`
 	Daemons    []DaemonStatus    `json:"daemons,omitempty"`
 	Upkeep     []UpkeepStatus    `json:"upkeep,omitempty"`
-	Address    string            `json:"address,omitempty"` // the silo's private address
+	SiloIP     string            `json:"siloIP,omitempty"` // the silo's own address in the cluster
 	Service    SiloServiceStatus `json:"service,omitempty"`
 	// Volumes are its volumes from a provider's storage class: where each is and whether it's
 	// attached and mounted.

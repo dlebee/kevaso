@@ -3,8 +3,8 @@
 // and the time, and gets back what to store and what to answer. The worker and the load-balancer
 // controller ask it which ports are open at a moment, and when that next changes.
 //
-// Each port says for itself whether it's leased and on what terms (its lease: default, max,
-// approval, allowFrom); each leased port has its own Lease, so opening one doesn't open another and
+// Each service port says for itself whether it's leased and on what terms (its lease: default,
+// max, approval; its sources are the port's own); each leased port has its own Lease, so opening one doesn't open another and
 // they end on their own clocks.
 //
 // The flow: someone asks to open a leased port for a while (the silo over its broker, or a person
@@ -21,8 +21,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/netip"
-	"slices"
 	"strings"
 	"time"
 
@@ -67,49 +65,41 @@ func Name(silo, port string) string {
 	return silo + "-" + port + "-" + hex.EncodeToString(h[:3])
 }
 
-// Exposed are the names of the ports a service opens to the outside (hostPort: its listed ports,
-// or all; loadBalancer: all). Private services expose none.
-func Exposed(sv *v1.SiloService) []string {
-	if sv == nil || (sv.Expose != v1.ExposeHostPort && sv.Expose != v1.ExposeLoadBalancer) {
-		return nil
-	}
+// Exposed are the names of the declared ports a silo's service opens outside its silo IP (on the
+// host, or a load balancer), in the service's order.
+func Exposed(spec v1.SiloSpec) []string {
 	var out []string
-	for _, p := range sv.Ports {
-		if sv.Expose == v1.ExposeHostPort && sv.HostPort != nil && len(sv.HostPort.Ports) > 0 && !slices.Contains(sv.HostPort.Ports, p.Name) {
-			continue
+	for _, p := range spec.Open() {
+		if p.Outside() {
+			out = append(out, p.Name)
 		}
-		out = append(out, p.Name)
 	}
 	return out
 }
 
-// Of is the lease terms of the service's port named port: nil unless that port is exposed and says
-// lease (a port without lease is always open).
-func Of(sv *v1.SiloService, port string) *v1.PortLease {
-	if !slices.Contains(Exposed(sv), port) {
+// Of is the lease terms of the port named port: nil unless the service opens it outside and
+// says lease (a port without lease is always open).
+func Of(spec v1.SiloSpec, port string) *v1.PortLease {
+	p, ok := spec.OpenPort(port)
+	if !ok || !p.Outside() {
 		return nil
 	}
-	for _, p := range sv.Ports {
-		if p.Name == port {
-			return p.Lease
-		}
-	}
-	return nil
+	return p.Lease
 }
 
-// Leased are the names of the exposed ports that open only on a lease, in the service's order.
-func Leased(sv *v1.SiloService) []string {
+// Leased are the names of the outside ports that open only on a lease, in the service's order.
+func Leased(spec v1.SiloSpec) []string {
 	var out []string
-	for _, p := range Exposed(sv) {
-		if Of(sv, p) != nil {
+	for _, p := range Exposed(spec) {
+		if Of(spec, p) != nil {
 			out = append(out, p)
 		}
 	}
 	return out
 }
 
-// Any says whether any port of the service is leased.
-func Any(sv *v1.SiloService) bool { return len(Leased(sv)) > 0 }
+// Any says whether any port of the silo's service is leased.
+func Any(spec v1.SiloSpec) bool { return len(Leased(spec)) > 0 }
 
 func parse(field, s string) (time.Duration, error) {
 	d, err := time.ParseDuration(s)
@@ -162,29 +152,22 @@ func Duration(ask string, pl *v1.PortLease, l Limits) (d time.Duration, clamped 
 	return d, false, nil
 }
 
-// Validate is admission for the leases on a silo's service ports, port by port: only on a service
-// with an outside exposure, only on a port it exposes, valid durations, default ≤ max ≤ the
-// cluster's limit, sources that are CIDRs.
-func Validate(sv *v1.SiloService, l Limits) []string {
-	if sv == nil {
+// Validate is admission for the leases on a silo's service ports, port by port: only on a port
+// that opens outside its silo IP, valid durations, default ≤ max ≤ the cluster's limit.
+func Validate(spec v1.SiloSpec, l Limits) []string {
+	if spec.Service == nil {
 		return nil
 	}
 	l = l.WithDefaults()
-	outside := sv.Expose == v1.ExposeHostPort || sv.Expose == v1.ExposeLoadBalancer
-	exp := Exposed(sv)
 	var errs []string
-	for _, p := range sv.Ports {
+	for _, p := range spec.Service.Ports {
 		ls := p.Lease
 		if ls == nil {
 			continue
 		}
-		field := fmt.Sprintf("service.ports[%s].lease", p.Name)
-		if !outside {
-			errs = append(errs, field+": only with expose: hostPort or loadBalancer (private access is never leased: it's allowFrom)")
-			continue
-		}
-		if !slices.Contains(exp, p.Name) {
-			errs = append(errs, fmt.Sprintf("%s: %q isn't exposed (service.hostPort.ports)", field, p.Name))
+		field := fmt.Sprintf("service.ports[%s].lease", p.Port)
+		if !p.Outside() {
+			errs = append(errs, field+": only on a port with hostPort or loadBalancer (silo-to-silo access is never leased: it's allowFrom)")
 			continue
 		}
 		max := l.DefaultMax
@@ -206,95 +189,8 @@ func Validate(sv *v1.SiloService, l Limits) []string {
 				errs = append(errs, fmt.Sprintf("%s.default %s is more than its max (%s)", field, d, max))
 			}
 		}
-		for _, c := range ls.AllowFrom {
-			if _, err := prefix(c); err != nil {
-				errs = append(errs, fmt.Sprintf("%s.allowFrom: %q isn't an address or CIDR", field, c))
-			}
-		}
 	}
 	return errs
-}
-
-// ServiceSources are the outside sources of the service itself (hostPort.allowFrom or
-// loadBalancer.allowFrom; nil: anywhere).
-func ServiceSources(sv *v1.SiloService) []string {
-	switch {
-	case sv == nil:
-		return nil
-	case sv.Expose == v1.ExposeHostPort && sv.HostPort != nil:
-		return sv.HostPort.AllowFrom
-	case sv.Expose == v1.ExposeLoadBalancer && sv.LoadBalancer != nil:
-		return sv.LoadBalancer.AllowFrom
-	}
-	return nil
-}
-
-// PortSources are the sources of each leased port whose lease narrows them (lease.allowFrom), by
-// port name: the service's sources narrowed by that port's own. Ports missing from it take the
-// service's sources.
-func PortSources(sv *v1.SiloService) map[string][]string {
-	var out map[string][]string
-	for _, p := range Leased(sv) {
-		if pl := Of(sv, p); len(pl.AllowFrom) > 0 {
-			if out == nil {
-				out = map[string][]string{}
-			}
-			out[p] = Sources(ServiceSources(sv), pl.AllowFrom)
-		}
-	}
-	return out
-}
-
-func prefix(s string) (netip.Prefix, error) {
-	if p, err := netip.ParsePrefix(s); err == nil {
-		return p.Masked(), nil
-	}
-	a, err := netip.ParseAddr(s)
-	if err != nil {
-		return netip.Prefix{}, err
-	}
-	return netip.PrefixFrom(a, a.BitLen()), nil
-}
-
-// Sources are where an open leased port may be reached from: the service's own sources (nil:
-// anywhere) narrowed by lease.allowFrom. A lease never opens wider than the service; when the two
-// don't overlap at all, nothing may reach it (an empty, non-nil list).
-func Sources(service, lease []string) []string {
-	if len(lease) == 0 {
-		return service
-	}
-	if len(service) == 0 {
-		return lease
-	}
-	out := []string{}
-	for _, a := range service {
-		pa, err := prefix(a)
-		if err != nil {
-			continue
-		}
-		for _, b := range lease {
-			pb, err := prefix(b)
-			if err != nil || !pa.Overlaps(pb) {
-				continue
-			}
-			narrow := pb
-			if pa.Bits() > pb.Bits() {
-				narrow = pa
-			}
-			if s := text(narrow); !slices.Contains(out, s) {
-				out = append(out, s)
-			}
-		}
-	}
-	return out
-}
-
-// text writes a prefix the way people wrote it: a single address without /32.
-func text(p netip.Prefix) string {
-	if p.IsSingleIP() {
-		return p.Addr().String()
-	}
-	return p.String()
 }
 
 // ── Asking ───────────────────────────────────────────────────────────────────
@@ -335,11 +231,10 @@ var (
 
 // Check says whether port is a leased port of the silo.
 func Check(silo *v1.Silo, port string) error {
-	sv := silo.Spec.Service
-	if Of(sv, port) != nil {
+	if Of(silo.Spec, port) != nil {
 		return nil
 	}
-	leased := Leased(sv)
+	leased := Leased(silo.Spec)
 	if len(leased) == 0 {
 		return fmt.Errorf("silo %s port %q: %w: none of its ports is leased", silo.Name, port, ErrNotLeased)
 	}
@@ -380,8 +275,7 @@ func Decide(a Ask, silo *v1.Silo, existing *v1.Lease, appr *v1.Approval, l Limit
 	if err := Check(silo, a.Port); err != nil {
 		return Outcome{Err: err}
 	}
-	sv := silo.Spec.Service
-	pl := Of(sv, a.Port)
+	pl := Of(silo.Spec, a.Port)
 	d, clamped, err := Duration(a.For, pl, l)
 	if err != nil {
 		return Outcome{Err: err}
@@ -422,21 +316,11 @@ func Decide(a Ask, silo *v1.Silo, existing *v1.Lease, appr *v1.Approval, l Limit
 		}
 		wait = w
 	}
-	proto, port := "TCP", 0
-	for _, p := range sv.Ports {
-		if p.Name == a.Port {
-			port = p.Port
-			if p.Protocol != "" {
-				proto = p.Protocol
-			}
-		}
-	}
+	op, _ := silo.Spec.OpenPort(a.Port)
+	proto, port := op.Protocol, op.HostNumber()
 	from := "from anywhere"
-	if src := Sources(ServiceSources(sv), pl.AllowFrom); src != nil {
-		from = "from " + strings.Join(src, ", ")
-		if len(src) == 0 {
-			from = "from nowhere (its allowFrom and the service's don't overlap)"
-		}
+	if len(op.Sources) > 0 {
+		from = "from " + strings.Join(op.Sources, ", ")
 	}
 	req := &v1.Approval{
 		TypeMeta:   meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Approval"},
@@ -596,7 +480,7 @@ func For(s *v1.Silo, all []*v1.Lease) map[string]*v1.Lease {
 func States(s *v1.Silo, all []*v1.Lease, now time.Time) []State {
 	mine := For(s, all)
 	var out []State
-	for _, p := range Leased(s.Spec.Service) {
+	for _, p := range Leased(s.Spec) {
 		st := State{Port: p, Phase: v1.LeaseClosed}
 		l := mine[p]
 		switch {

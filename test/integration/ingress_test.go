@@ -62,7 +62,7 @@ func TestIngress(t *testing.T) {
 	}
 	ing := func(name string) *v1.Ingress {
 		return &v1.Ingress{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Ingress"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "payments"},
-			Spec: v1.IngressSpec{IngressClass: "public", Hosts: []string{"api.example.com"}, Rules: []v1.IngressRule{{Path: "/", Silo: v1.IngressTarget{Name: "api", Port: "http"}}}}}
+			Spec: v1.IngressSpec{IngressClass: "public", Hosts: []string{"api.example.com"}, Rules: []v1.IngressRule{{Path: "/", Service: v1.IngressTarget{Name: "api", Port: "http"}}}}}
 	}
 	// Who may publish on a public class.
 	_ = c.admin.Create(c.ctx, &v1.RoleBinding{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "RoleBinding"},
@@ -105,10 +105,11 @@ func TestIngress(t *testing.T) {
 	ctx, cancel := context.WithCancel(c.ctx)
 	defer cancel()
 	go a.Run(ctx)
-	place := func(name, ns string, svc *v1.SiloService) {
+	place := func(name, ns string, ports []v1.SiloPort, svc *v1.SiloService) {
 		t.Helper()
 		s := silo(name, ns)
 		s.Spec.Runtime = "docker"
+		s.Spec.Ports = ports
 		s.Spec.Service = svc
 		if err := c.admin.Create(c.ctx, s); err != nil {
 			t.Fatal(err)
@@ -118,8 +119,9 @@ func TestIngress(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	place("ingress-public", "kevaso-system", &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 80}, {Name: "https", Port: 443}}})
-	place("api", "payments", &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}})
+	place("ingress-public", "kevaso-system", []v1.SiloPort{{Name: "http", Port: 80}, {Name: "https", Port: 443}},
+		&v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}, {Port: "https"}}})
+	place("api", "payments", []v1.SiloPort{{Name: "http", Port: 8080}}, &v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}})
 	if err := c.as(t, "ada").Create(c.ctx, ing("api")); err != nil {
 		t.Fatalf("admin publishing: %v", err)
 	}

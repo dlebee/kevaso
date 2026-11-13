@@ -3,8 +3,8 @@
 // nft.
 //
 // Default deny, as the design's table says: no silo reaches another silo's ports (on this host or
-// across the mesh) unless the receiving silo's allowFrom opens them; nothing outside reaches a silo
-// unless its service is exposed; a silo reaches nothing outside the cluster unless one of its
+// across the mesh) unless the receiving silo's service port names it in allowFrom; nothing outside
+// reaches a silo unless a service port opens on the host (hostPort) or a load balancer; a silo reaches nothing outside the cluster unless one of its
 // Grants opens it (raw TCP/UDP to a CIDR here; host names through the egress gate); silos can't
 // reach the mesh's host addresses, nor their own host beyond DNS and ping. Exposed ports are DNAT (the client's address is kept: E009), and a silo's
 // outbound source is SNAT to its service's or its pool's address when it asks.
@@ -25,10 +25,11 @@ type Silo struct {
 	IP   netip.Addr
 	Tap  string // its tap device on the bridge (local silos only)
 	Spec v1.SiloSpec
-	// PublicIP is where it's reached from outside (hostPort / worker-ip: the host's address,
-	// ip-pool: its pool address); EgressIP where its traffic leaves from ("" = the host default).
-	PublicIP netip.Addr
-	EgressIP netip.Addr
+	// LoadBalancerIP is the address its loadBalancer ports are reached on when it's on this host
+	// (ip-pool, an announced shared IP); EgressIP where its traffic leaves from ("" = the host
+	// default).
+	LoadBalancerIP netip.Addr
+	EgressIP       netip.Addr
 	// Egress is what its Grants open outside the cluster (CIDR rules; host names go through the
 	// egress gate).
 	Egress []v1.ParsedEgress
@@ -39,22 +40,23 @@ type Silo struct {
 	// SourceRanges only (a NodeBalancer's addresses).
 	NodePorts    []v1.NodePort
 	SourceRanges []string
-	// Leases (design §7.2d): Leased are the exposed ports (by name) that open only on a lease, and
+	// Leases (design §7.2d): Leased are the outside ports (by name) that open only on a lease, and
 	// Closed those of them with no active lease now: a closed port has no outside rule at all, and
-	// connections that a lease let in are cut (reset) once it ends. An open leased port takes its
-	// LeaseFrom entry as its sources when it has one (the service's allowFrom narrowed by that
-	// port's lease.allowFrom). Private access (allowFrom on the silo) is never leased.
-	Leased    []string
-	Closed    []string
-	LeaseFrom map[string][]string
+	// connections that a lease let in are cut (reset) once it ends. Silo-to-silo access
+	// (allowFrom) is never leased.
+	Leased []string
+	Closed []string
 	// Held (design §0.6): its service's routeWhen holds traffic back now (ready, and it isn't).
-	// Its exposed ports and node ports get no outside rule, as if closed, but nothing is cut:
-	// connections it has stay (a lease is access, readiness is load). Private access (allowFrom)
-	// stays too: the private name is held where names are answered (no DNS record).
+	// Its outside ports and node ports get no rule, as if closed, but nothing is cut: connections
+	// it has stay (a lease is access, readiness is load). allowFrom stays too: the name is held
+	// where names are answered (no address).
 	Held bool
+	// Paths are extra silo-to-silo openings (an Ingress's controller to its target's port), as if
+	// that port's allowFrom named them: port name → callers (NAMESPACE/NAME).
+	Paths map[string][]string
 }
 
-// Outside is what one exposed port's outside rule is now: open (a rule) only when its lease, if
+// Outside is what one outside port's rule is now: open (a rule) only when its lease, if
 // it's leased, is open and its routing isn't held; cut (end what a lease let in) only when its
 // lease is closed. The two decisions stay apart: either one closes it.
 func Outside(s Silo, port string) (open, cut bool) {
@@ -113,14 +115,6 @@ const silosAll = "10.64.0.0/16"
 // servicesAll is where Services' virtual IPs are (v1.ServiceCIDR).
 const servicesAll = "10.65.0.0/16"
 
-// onHost reports whether s's exposed ports open on its host's own addresses (hostPort, worker-ip)
-// rather than on an address of its own (ip-pool, a plugin's).
-func onHost(s v1.SiloSpec) bool {
-	sv := s.Service
-	return sv != nil && (sv.Expose == v1.ExposeHostPort ||
-		(sv.Expose == v1.ExposeLoadBalancer && sv.LoadBalancer != nil && sv.LoadBalancer.Class == v1.LBWorkerIP))
-}
-
 // pick sends to one of targets, chosen at random per connection.
 func pick(ts []Target) string {
 	if len(ts) == 1 {
@@ -133,33 +127,6 @@ func pick(ts []Target) string {
 	return fmt.Sprintf("dnat ip to numgen random mod %d map { %s }", len(ts), strings.Join(parts, ", "))
 }
 
-type rule struct {
-	name  string
-	proto string // tcp | udp
-	port  int
-}
-
-func protoOf(p v1.ServicePort) string {
-	if strings.EqualFold(p.Protocol, "UDP") {
-		return "udp"
-	}
-	return "tcp"
-}
-
-// ports resolves port names on s's service ("" or empty list = all).
-func ports(s v1.SiloSpec, names []string) []rule {
-	if s.Service == nil {
-		return nil
-	}
-	var out []rule
-	for _, p := range s.Service.Ports {
-		if len(names) == 0 || contains(names, p.Name) {
-			out = append(out, rule{p.Name, protoOf(p), p.Port})
-		}
-	}
-	return out
-}
-
 func contains(l []string, v string) bool {
 	for _, x := range l {
 		if x == v {
@@ -169,27 +136,7 @@ func contains(l []string, v string) bool {
 	return false
 }
 
-// Exposed returns the ports s opens to the outside and from which sources (nil: anywhere).
-func Exposed(s v1.SiloSpec) ([]rule, []string) {
-	sv := s.Service
-	if sv == nil {
-		return nil, nil
-	}
-	switch sv.Expose {
-	case v1.ExposeHostPort:
-		if sv.HostPort == nil {
-			return ports(s, nil), nil
-		}
-		return ports(s, sv.HostPort.Ports), sv.HostPort.AllowFrom
-	case v1.ExposeLoadBalancer:
-		var from []string
-		if sv.LoadBalancer != nil {
-			from = sv.LoadBalancer.AllowFrom
-		}
-		return ports(s, nil), from
-	}
-	return nil, nil
-}
+func lower(proto string) string { return strings.ToLower(proto) }
 
 func set(items []string) string {
 	if len(items) == 1 {
@@ -200,7 +147,7 @@ func set(items []string) string {
 
 // cutRules end the connections an outside rule let in to a silo's port, once that rule is gone (a
 // lease ended): both directions of a translated connection whose original destination matched
-// (orig: its public address, or the node port), placed before the rules that let established
+// (orig: the host's or load balancer's address, or the node port), placed before the rules that let established
 // traffic through. TCP is reset, so both ends learn at once; UDP is dropped. Connections to the
 // same port that weren't translated (silo to silo, allowFrom) are untouched. They're harmless while
 // the port stays closed (nothing new is translated) and go when it opens again.
@@ -232,54 +179,51 @@ func Rules(h Host) string {
 		if !s.IP.IsValid() {
 			continue
 		}
-		// Exposure: DNAT from its address (a host port: every address of the host), then let
-		// through only the allowed sources.
-		exp, from := Exposed(s.Spec)
-		daddr, orig := "", ""
-		switch {
-		case onHost(s.Spec):
+		// Outside ports: DNAT from each address the port opens on (the host's internal and/or
+		// external IP, its load-balancer address), at its number there (as), then let through
+		// only its sources.
+		for _, p := range s.Spec.Open() {
 			var ips []string
-			for _, a := range []netip.Addr{h.InternalIP, h.ExternalIP} {
-				if a.IsValid() {
+			for _, n := range p.HostPort {
+				a := h.InternalIP
+				if n == v1.NetworkExternal {
+					a = h.ExternalIP
+				}
+				if a.IsValid() && !contains(ips, a.String()) {
 					ips = append(ips, a.String())
 				}
 			}
-			if len(ips) > 0 {
-				daddr, orig = "ip daddr "+set(ips), "ct original ip daddr "+set(ips)
+			if p.LoadBalancer && s.LoadBalancerIP.IsValid() && !contains(ips, s.LoadBalancerIP.String()) {
+				ips = append(ips, s.LoadBalancerIP.String())
 			}
-		case s.PublicIP.IsValid():
-			daddr, orig = "ip daddr "+s.PublicIP.String(), fmt.Sprintf("ct original ip daddr %s", s.PublicIP)
-		}
-		if daddr != "" {
-			for _, r := range exp {
-				sources := from
-				if f, ok := s.LeaseFrom[r.name]; ok && contains(s.Leased, r.name) {
-					sources = f
-				}
-				// Leased with no lease now (or a lease no source may use): no rule; cut what a
-				// lease let in. Held by routing: no rule, nothing cut.
-				open, closed := Outside(s, r.name)
-				if closed || (sources != nil && len(sources) == 0) {
-					cut = append(cut, cutRules(h.Bridge, s.IP, r.proto, r.port, orig)...)
-					continue
-				}
-				if !open {
-					continue
-				}
-				dnat = append(dnat, fmt.Sprintf("%s %s dport %d dnat ip to %s:%d", daddr, r.proto, r.port, s.IP, r.port))
-				src := ""
-				if len(sources) > 0 {
-					src = "ip saddr " + set(sources) + " "
-				}
-				fwd = append(fwd, fmt.Sprintf("oifname %q ip daddr %s %s%s dport %d ct status dnat accept", h.Bridge, s.IP, src, r.proto, r.port))
+			if len(ips) == 0 {
+				continue
 			}
+			proto, at := lower(p.Protocol), p.HostNumber()
+			orig := "ct original ip daddr " + set(ips)
+			// Leased with no lease now: no rule; cut what a lease let in. Held by routing: no
+			// rule, nothing cut.
+			open, closed := Outside(s, p.Name)
+			if closed {
+				cut = append(cut, cutRules(h.Bridge, s.IP, proto, p.Number, orig)...)
+				continue
+			}
+			if !open {
+				continue
+			}
+			dnat = append(dnat, fmt.Sprintf("ip daddr %s %s dport %d dnat ip to %s:%d", set(ips), proto, at, s.IP, p.Number))
+			src := ""
+			if len(p.Sources) > 0 {
+				src = "ip saddr " + set(p.Sources) + " "
+			}
+			fwd = append(fwd, fmt.Sprintf("oifname %q ip daddr %s %s%s dport %d %s ct status dnat accept", h.Bridge, s.IP, src, proto, p.Number, orig))
 		}
 		// From a plugin's load balancer: its node ports, from its addresses only.
 		if len(s.NodePorts) > 0 && len(s.SourceRanges) > 0 {
 			protos := map[string]string{}
-			if s.Spec.Service != nil {
-				for _, p := range s.Spec.Service.Ports {
-					protos[p.Name] = protoOf(p)
+			for _, p := range s.Spec.Open() {
+				if p.LoadBalancer {
+					protos[p.Name] = lower(p.Protocol)
 				}
 			}
 			src := "ip saddr " + set(s.SourceRanges) + " "
@@ -331,19 +275,21 @@ func Rules(h Host) string {
 		if s.EgressIP.IsValid() {
 			snat = append(snat, fmt.Sprintf("ip saddr %s ip daddr != { %s, 10.62.0.0/16, 10.63.0.0/16 } oifname != %q snat ip to %s", s.IP, silosAll, h.Bridge, s.EgressIP))
 		}
-		// allowFrom: other silos, by their current address, to the named ports.
+		// allowFrom: other silos, by their current address, to the port that names them.
 		ns := strings.SplitN(s.Key, "/", 2)[0]
-		for _, a := range s.Spec.AllowFrom {
-			key := a.Silo
-			if !strings.Contains(key, "/") {
-				key = ns + "/" + key
-			}
-			src, ok := byKey[key]
-			if !ok || !src.IP.IsValid() {
-				continue // not running anywhere right now: nothing to open
-			}
-			for _, r := range ports(s.Spec, a.Ports) {
-				m := fmt.Sprintf("ip saddr %s ip daddr %s %s dport %d accept", src.IP, s.IP, r.proto, r.port)
+		for _, p := range s.Spec.Open() {
+			callers := append(append([]string(nil), p.AllowFrom...), s.Paths[p.Name]...)
+			seen := map[string]bool{}
+			for _, key := range callers {
+				if !strings.Contains(key, "/") {
+					key = ns + "/" + key
+				}
+				src, ok := byKey[key]
+				if seen[key] || !ok || !src.IP.IsValid() {
+					continue // not running anywhere right now: nothing to open
+				}
+				seen[key] = true
+				m := fmt.Sprintf("ip saddr %s ip daddr %s %s dport %d accept", src.IP, s.IP, lower(p.Protocol), p.Number)
 				if h.Subnet.Contains(src.IP) {
 					br = append(br, m) // same host: bridged…
 					// …or routed, when it came through a Service's virtual IP

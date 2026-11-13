@@ -20,23 +20,33 @@ func ing(ns, name string, hosts []string, rules ...v1.IngressRule) *v1.Ingress {
 	return &v1.Ingress{ObjectMeta: meta.ObjectMeta{Name: name, Namespace: ns}, Spec: v1.IngressSpec{IngressClass: "public", Hosts: hosts, Rules: rules}}
 }
 
-func rule(path, silo string) v1.IngressRule {
-	return v1.IngressRule{Path: path, Silo: v1.IngressTarget{Name: silo, Port: "http"}}
+func rule(path, service string) v1.IngressRule {
+	return v1.IngressRule{Path: path, Service: v1.IngressTarget{Name: service, Port: "http"}}
 }
 
 func inputs(ings ...*v1.Ingress) Inputs {
-	silos := map[string]*v1.Silo{}
-	for i, n := range []string{"payments/api", "payments/ws", "shop/web", "shop/down"} {
+	var silos []*v1.Silo
+	// Each silo's service is named after it, except api-blue's, which is api.
+	for i, n := range []string{"payments/api-blue", "payments/ws", "shop/web", "shop/down"} {
 		ns, name, _ := strings.Cut(n, "/")
-		s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: name, Namespace: ns}, Spec: v1.SiloSpec{Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8000 + i}}}},
-			Status: v1.SiloStatus{Phase: "Running", Address: "10.64.0." + string(rune('1'+i))}}
-		if name == "down" {
-			s.Status.Phase, s.Status.Address = "Stopped", ""
+		s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: name, Namespace: ns}, Spec: v1.SiloSpec{
+			Ports:   []v1.SiloPort{{Name: "http", Port: 8000 + i}},
+			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}}},
+			Status: v1.SiloStatus{Phase: "Running", SiloIP: "10.64.0." + string(rune('1'+i))}}
+		if name == "api-blue" {
+			s.Spec.Service.Name = "api"
 		}
-		silos[n] = s
+		if name == "down" {
+			s.Status.Phase, s.Status.SiloIP = "Stopped", ""
+		}
+		silos = append(silos, s)
 	}
+	// A standalone Service in front of silos: its cluster IP, while it has an endpoint.
+	front := &v1.Service{ObjectMeta: meta.ObjectMeta{Name: "front", Namespace: "shop"},
+		Spec:   v1.ServiceSpec{Ports: []v1.ServicePortSpec{{Name: "http", Port: 80}}},
+		Status: v1.ServiceStatus{ClusterIP: "10.65.0.9", Endpoints: []v1.ServiceEndpoint{{Silo: "web", SiloIP: "10.64.0.3"}}}}
 	return Inputs{Class: class(), Driver: nginx.Driver{}, Ingresses: ings,
-		Silo: func(ns, name string) *v1.Silo { return silos[ns+"/"+name] },
+		Silos: silos, Services: []*v1.Service{front},
 		Bundle: func(ns, secret string) []byte {
 			return map[string][]byte{"payments/api-tls": []byte(kictest.Chain + kictest.Key)}[ns+"/"+secret]
 		},
@@ -46,7 +56,7 @@ func inputs(ings ...*v1.Ingress) Inputs {
 func TestDesire(t *testing.T) {
 	api := ing("payments", "api", []string{"API.example.com."}, rule("/", "api"), rule("/ws", "ws"))
 	api.Annotations = map[string]string{"nginx/proxy-body-size": "10m", "caddy/dial-timeout": "1s"}
-	shop := ing("shop", "web", []string{"shop.example.com"}, rule("", "web"), rule("/down", "down"))
+	shop := ing("shop", "web", []string{"shop.example.com"}, rule("", "web"), rule("/down", "down"), rule("/front", "front"))
 	shop.Spec.TLS.None = true
 	steal := ing("zoo", "steal", []string{"api.example.com"}, rule("/", "api")) // later by name: api.example.com / stays payments/api's
 	other := ing("x", "other", []string{"o.example.com"}, rule("/", "api"))
@@ -62,14 +72,18 @@ func TestDesire(t *testing.T) {
 	for _, r := range d.State.Routes {
 		got = append(got, r.Ingress+" "+r.Host+r.Path+" → "+r.Backend.Address)
 	}
-	want := []string{"payments/api api.example.com/ws → 10.64.0.2", "payments/api api.example.com/ → 10.64.0.1", "shop/web shop.example.com/ → 10.64.0.3"}
+	want := []string{"payments/api api.example.com/ws → 10.64.0.2", "payments/api api.example.com/ → 10.64.0.1",
+		"shop/web shop.example.com/front → 10.65.0.9", "shop/web shop.example.com/ → 10.64.0.3"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("routes %v", got)
 	}
 	if r := d.State.Routes[0]; !r.TLS || r.Backend.Port != 8001 || !reflect.DeepEqual(r.Annotations, map[string]string{"proxy-body-size": "10m"}) {
 		t.Fatalf("route %+v", r)
 	}
-	if d.State.Routes[2].TLS {
+	if r := d.State.Routes[2]; r.Backend.Port != 80 {
+		t.Fatalf("a Service's backend is its own port: %+v", r)
+	}
+	if d.State.Routes[3].TLS {
 		t.Fatal("tls.none routes are plain")
 	}
 	if len(d.State.Certificates) != 1 || d.State.Certificates[0].Name != "payments/api-tls" || d.State.Certificates[0].Hosts[0] != "api.example.com" ||

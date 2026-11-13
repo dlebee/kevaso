@@ -6,12 +6,12 @@ import (
 	"kevaso.com/core/api/meta"
 )
 
-// Ports opened on a lease (design §7.2d). Each port of a silo's outside exposure (hostPort or
-// loadBalancer) says for itself whether it is leased: closed until someone opens it for a while,
-// closing by itself when that time is up. A leased port has its own terms and its own lease (its
-// own max, approval rule, sources and clock); a port without lease is always open. A lease can
-// need a person's yes, as an Approval with the use expose. Private silo-to-silo access (allowFrom)
-// is never leased.
+// Ports opened on a lease (design §7.2d). Each service port that opens outside its silo IP
+// (hostPort or loadBalancer) says for itself whether it is leased: closed until someone opens it
+// for a while, closing by itself when that time is up. A leased port has its own terms and its own
+// lease (its own max, approval rule and clock; its sources are the port's); a port without lease is
+// always open. A lease can need a person's yes, as an Approval with the use expose. Silo-to-silo
+// access (allowFrom) is never leased.
 
 // PortLease is a service port's `lease:`. Present (even empty: `lease: {}`), the port is closed
 // until leased.
@@ -22,9 +22,6 @@ type PortLease struct {
 	Max     string `json:"max,omitempty"`
 	// Approval: each lease of this port needs a person's yes first.
 	Approval *ApprovalRule `json:"approval,omitempty"`
-	// AllowFrom narrows the service's own sources while this port's lease is open (CIDRs); never
-	// wider.
-	AllowFrom []string `json:"allowFrom,omitempty"`
 }
 
 // ApprovalForExpose is an Approval's use for a lease that needs a person's yes.

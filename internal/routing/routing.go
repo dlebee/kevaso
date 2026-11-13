@@ -50,7 +50,7 @@ func decide(routeWhen string, spec v1.SiloSpec, st v1.SiloStatus) v1.Routing {
 	switch {
 	case problem != "":
 		r.Reason = problem
-	case st.Address == "" || (st.Phase != "" && st.Phase != "Running"):
+	case st.SiloIP == "" || (st.Phase != "" && st.Phase != "Running"):
 		r.Reason, r.Since = "not running", since()
 		if st.Phase != "" {
 			r.Reason = "not running (" + st.Phase + ")"

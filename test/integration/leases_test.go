@@ -24,7 +24,7 @@ import (
 )
 
 // Design §7.2d through the real API and the host's broker, with two ports leased on different
-// terms (debug: a yes first, max 1h, narrowed sources; preview: no yes, max 2h) and one always open
+// terms (debug: a yes first, max 1h, its own sources; preview: no yes, max 2h) and one always open
 // (web): a leased port is closed by default; the silo asks and waits; a too-long ask is cut to that
 // port's max; opening one leaves the other closed, and each closes on its own; a person with approve on the silo's
 // exposure says yes and the host's rules for the port appear; it closes early or at its end, and
@@ -37,29 +37,28 @@ func TestPortLeases(t *testing.T) {
 	_ = c.admin.Create(c.ctx, ns("web3"))
 
 	api := silo("api", "web3")
+	ext, office := []string{v1.NetworkExternal}, []string{"203.0.113.0/24"}
+	api.Spec.Ports = []v1.SiloPort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}, {Name: "preview", Port: 3000}}
 	api.Spec.Service = &v1.SiloService{
-		Ports: []v1.ServicePort{{Name: "web", Port: 8080},
-			{Name: "debug", Port: 9229, Lease: &v1.PortLease{Max: "1h", Approval: &v1.ApprovalRule{Required: true}, AllowFrom: []string{"203.0.113.7"}}},
-			{Name: "preview", Port: 3000, Lease: &v1.PortLease{Max: "2h"}}},
-		Expose:   v1.ExposeHostPort,
-		HostPort: &v1.HostPortSpec{AllowFrom: []string{"203.0.113.0/24"}},
+		Ports: []v1.ServicePort{{Port: "web", HostPort: ext, Sources: office},
+			{Port: "debug", HostPort: ext, Sources: []string{"203.0.113.7"}, AllowFrom: []string{"worker"},
+				Lease: &v1.PortLease{Max: "1h", Approval: &v1.ApprovalRule{Required: true}}},
+			{Port: "preview", HostPort: ext, Sources: office, Lease: &v1.PortLease{Max: "2h"}}},
 	}
-	api.Spec.AllowFrom = []v1.AllowFrom{{Silo: "worker", Ports: []string{"debug"}}}
 
 	// Admission.
 	for _, bad := range []struct {
 		mod  func(*v1.SiloService)
 		want string
 	}{
-		{func(sv *v1.SiloService) { sv.Expose, sv.HostPort = "", nil }, "service.ports[debug].lease: only with expose: hostPort or loadBalancer"},
+		{func(sv *v1.SiloService) { sv.Ports[1].HostPort, sv.Ports[1].Sources = nil, nil },
+			"service.ports[debug].lease: only on a port with hostPort or loadBalancer"},
 		{func(sv *v1.SiloService) { sv.Ports[2].Lease.Max = "3h" }, "service.ports[preview].lease.max 3h0m0s is more than this cluster allows (2h0m0s)"},
-		{func(sv *v1.SiloService) { sv.HostPort.Ports = []string{"web", "preview"} }, `service.ports[debug].lease: "debug" isn't exposed`},
 		{func(sv *v1.SiloService) { sv.Ports[1].Lease.Default = "2h" }, "service.ports[debug].lease.default 2h0m0s is more than its max (1h0m0s)"},
 	} {
 		s := silo("bad", "web3")
+		s.Spec.Ports = api.Spec.Ports
 		cp := *api.Spec.Service
-		hp := *cp.HostPort
-		cp.HostPort = &hp
 		cp.Ports = append([]v1.ServicePort(nil), cp.Ports...)
 		for i := range cp.Ports {
 			if cp.Ports[i].Lease != nil {
@@ -76,14 +75,13 @@ func TestPortLeases(t *testing.T) {
 	if err := c.admin.Create(c.ctx, api); err != nil {
 		t.Fatal(err)
 	}
-	api.Status.Host, api.Status.Address = "hv1", "10.64.2.2"
-	api.Status.Service.PublicIP = "198.51.100.10"
+	api.Status.Host, api.Status.SiloIP = "hv1", "10.64.2.2"
 	if err := c.admin.UpdateStatus(c.ctx, api); err != nil {
 		t.Fatal(err)
 	}
 	wk := silo("worker", "web3")
 	_ = c.admin.Create(c.ctx, wk)
-	wk.Status.Host, wk.Status.Address = "hv1", "10.64.2.9"
+	wk.Status.Host, wk.Status.SiloIP = "hv1", "10.64.2.9"
 	_ = c.admin.UpdateStatus(c.ctx, wk)
 
 	// The host's rules, as its network loop would make them now.
@@ -107,22 +105,22 @@ func TestPortLeases(t *testing.T) {
 			o, _, _ := v1.Decode(raw)
 			ls = append(ls, o.(*v1.Lease))
 		}
-		return kni.Rules(worker.WithLeases(worker.NetworkView("hv1", &v1.Host{Spec: v1.HostSpec{ExternalIP: "198.51.100.10"}}, silos, nil), silos, ls, time.Now()))
+		return kni.Rules(worker.WithLeases(worker.NetworkView("hv1", &v1.Host{Spec: v1.HostSpec{ExternalIP: "198.51.100.10"}}, silos, nil, nil), silos, ls, time.Now()))
 	}
 	const (
 		debugDNAT = "ip daddr 198.51.100.10 tcp dport 9229 dnat ip to 10.64.2.2:9229"
-		debugFwd  = `ip daddr 10.64.2.2 ip saddr 203.0.113.7 tcp dport 9229 ct status dnat accept`
+		debugFwd  = `ip daddr 10.64.2.2 ip saddr 203.0.113.7 tcp dport 9229 ct original ip daddr 198.51.100.10 ct status dnat accept`
 		debugCut  = `tcp dport 9229 ct status dnat ct original ip daddr 198.51.100.10 reject with tcp reset`
 		webDNAT   = "ip daddr 198.51.100.10 tcp dport 8080 dnat ip to 10.64.2.2:8080"
 		private   = "ip saddr 10.64.2.9 ip daddr 10.64.2.2 tcp dport 9229 accept"
 		prevDNAT  = "ip daddr 198.51.100.10 tcp dport 3000 dnat ip to 10.64.2.2:3000"
-		prevFwd   = `ip daddr 10.64.2.2 ip saddr 203.0.113.0/24 tcp dport 3000 ct status dnat accept`
+		prevFwd   = `ip daddr 10.64.2.2 ip saddr 203.0.113.0/24 tcp dport 3000 ct original ip daddr 198.51.100.10 ct status dnat accept`
 	)
 	preview := func(when string, open bool) {
 		t.Helper()
 		r := rules()
 		if strings.Contains(r, prevDNAT) != open || strings.Contains(r, prevFwd) != open {
-			t.Fatalf("%s: preview open %v (from the service's own sources):\n%s", when, open, r)
+			t.Fatalf("%s: preview open %v (from its own sources):\n%s", when, open, r)
 		}
 	}
 	closed := func(when string) {

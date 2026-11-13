@@ -172,8 +172,7 @@ func leaseColumns(l *v1.Lease, now time.Time) []string {
 // describeLeases adds a silo's outside ports to kvo describe silo: each always open, or leased with
 // its own terms and whether it's closed, pending or open until a time.
 func describeLeases(ctx context.Context, c *client.Client, s *v1.Silo, w io.Writer) error {
-	sv := s.Spec.Service
-	if !leases.Any(sv) {
+	if !leases.Any(s.Spec) {
 		return nil
 	}
 	var all []*v1.Lease
@@ -194,7 +193,6 @@ func describeLeases(ctx context.Context, c *client.Client, s *v1.Silo, w io.Writ
 
 // writePorts writes each outside port of s at now (readErr: the leases couldn't be read).
 func writePorts(w io.Writer, s *v1.Silo, all []*v1.Lease, readErr error, now time.Time) error {
-	sv := s.Spec.Service
 	err := readErr
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "Outside ports:")
@@ -205,8 +203,8 @@ func writePorts(w io.Writer, s *v1.Silo, all []*v1.Lease, readErr error, now tim
 			states[st.Port] = st
 		}
 	}
-	for _, p := range leases.Exposed(sv) {
-		pl := leases.Of(sv, p)
+	for _, p := range leases.Exposed(s.Spec) {
+		pl := leases.Of(s.Spec, p)
 		if pl == nil {
 			_, _ = fmt.Fprintf(tw, "  %s\t-\talways open\n", p)
 			continue
@@ -226,7 +224,11 @@ func writePorts(w io.Writer, s *v1.Silo, all []*v1.Lease, readErr error, now tim
 				state = "pending: waiting for a yes until " + st.Until.Local().Format(time.Kitchen)
 			}
 		}
-		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\n", p, leaseTerms(pl), state)
+		terms := leaseTerms(pl)
+		if op, _ := s.Spec.OpenPort(p); len(op.Sources) > 0 {
+			terms += ", from " + strings.Join(op.Sources, ", ")
+		}
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\n", p, terms, state)
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(tw, "  (can't read leases: %v)\n", err)
@@ -239,9 +241,6 @@ func leaseTerms(pl *v1.PortLease) string {
 	terms := []string{"default " + orDash(pl.Default, "30m or its max"), "max " + orDash(pl.Max, "the cluster's")}
 	if pl.Approval != nil && pl.Approval.Required {
 		terms = append(terms, "a person's yes first")
-	}
-	if len(pl.AllowFrom) > 0 {
-		terms = append(terms, "from "+strings.Join(pl.AllowFrom, ", "))
 	}
 	return strings.Join(terms, ", ")
 }

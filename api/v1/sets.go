@@ -253,8 +253,9 @@ type ServiceSpec struct {
 	RouteWhen string `json:"routeWhen,omitempty"`
 }
 
-// ServicePortSpec is one port: Port on the virtual IP goes to TargetPort on each endpoint (a
-// port name of the silo's own service, or a number; default: the same port).
+// ServicePortSpec is one port: Port on the cluster IP goes to the declared port TargetPort of
+// each endpoint (spec.ports; default: the port named Name). Its protocol is TCP unless said; an
+// endpoint whose declared port has the other one isn't sent this port.
 type ServicePortSpec struct {
 	Name       string `json:"name"`
 	Port       int    `json:"port"`
@@ -270,21 +271,21 @@ type ServiceStatus struct {
 	// each with why and since when (routeWhen: ready and not ready, say).
 	Endpoints []ServiceEndpoint `json:"endpoints,omitempty"`
 	Held      []ServiceEndpoint `json:"held,omitempty"`
-	// For type LoadBalancer: the outside address, the node port each port arrives on at the
+	// For type LoadBalancer: its load-balancer address, the node port each port arrives on at the
 	// endpoints' hosts, and where the load balancer's traffic comes from.
-	PublicIP     string           `json:"publicIP,omitempty"`
-	IP           string           `json:"ip,omitempty"` // the IP object PublicIP is
-	NodePorts    []NodePort       `json:"nodePorts,omitempty"`
-	SourceRanges []string         `json:"sourceRanges,omitempty"`
-	Conditions   []meta.Condition `json:"conditions,omitempty"`
+	LoadBalancerIP string           `json:"loadBalancerIP,omitempty"`
+	IP             string           `json:"ip,omitempty"` // the IP object LoadBalancerIP is
+	NodePorts      []NodePort       `json:"nodePorts,omitempty"`
+	SourceRanges   []string         `json:"sourceRanges,omitempty"`
+	Conditions     []meta.Condition `json:"conditions,omitempty"`
 }
 
 // ServiceEndpoint is one silo behind a service, with each service port's target there.
 type ServiceEndpoint struct {
-	Silo    string     `json:"silo"`
-	Host    string     `json:"host"`
-	Address string     `json:"address"`
-	Ports   []NodePort `json:"ports"` // Name: the service port, Port: the service's, NodePort: the silo's target
+	Silo   string     `json:"silo"`
+	Host   string     `json:"host"`
+	SiloIP string     `json:"siloIP"`
+	Ports  []NodePort `json:"ports"` // Name: the service port, Port: the service's, NodePort: the silo's target
 	// Reason and Since: why a held endpoint is held, and since when.
 	Reason string     `json:"reason,omitempty"`
 	Since  *time.Time `json:"since,omitempty"`
@@ -303,24 +304,18 @@ func Selects(selector, labels map[string]string) bool {
 	return true
 }
 
-// TargetPort resolves a service port on one silo: by name among its own service's ports, or as a
-// number (0 if it can't).
+// TargetPort resolves a service port on one silo: the number of its declared port TargetPort
+// (default: the port's own name), when its protocol matches (0 if it has none).
 func TargetPort(p ServicePortSpec, s *Silo) int {
 	t := p.TargetPort
 	if t == "" {
-		return p.Port
+		t = p.Name
 	}
-	if n, err := strconv.Atoi(t); err == nil {
-		return n
+	d, ok := s.Spec.Declared(t)
+	if !ok || d.Proto() != (SiloPort{Protocol: p.Protocol}).Proto() {
+		return 0
 	}
-	if s.Spec.Service != nil {
-		for _, sp := range s.Spec.Service.Ports {
-			if sp.Name == t {
-				return sp.Port
-			}
-		}
-	}
-	return 0
+	return d.Port
 }
 
 // SortEndpoints orders endpoints by silo name (deterministic rules).

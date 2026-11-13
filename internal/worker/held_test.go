@@ -13,8 +13,9 @@ import (
 func heldSilo(ready bool) *v1.Silo {
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "rpc", Namespace: "web3", UID: "u1"},
 		Spec: v1.SiloSpec{Probes: &v1.Probes{Readiness: &v1.Probe{TCP: &v1.TCPProbe{Port: "rpc"}}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "rpc", Port: 8545}}, Expose: v1.ExposeHostPort, RouteWhen: v1.RouteWhenReady}},
-		Status: v1.SiloStatus{Phase: "Running", Host: "w1", Address: "10.64.1.2", Service: v1.SiloServiceStatus{PublicIP: "198.51.100.10"}}}
+			Ports:   []v1.SiloPort{{Name: "rpc", Port: 8545}},
+			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc", HostPort: []string{v1.NetworkExternal}}}, RouteWhen: v1.RouteWhenReady}},
+		Status: v1.SiloStatus{Phase: "Running", Host: "w1", SiloIP: "10.64.1.2"}}
 	st := meta.ConditionFalse
 	if ready {
 		st = meta.ConditionTrue
@@ -27,7 +28,7 @@ func heldSilo(ready bool) *v1.Silo {
 func TestNetworkViewHeld(t *testing.T) {
 	const dnat = "ip daddr 198.51.100.10 tcp dport 8545 dnat ip to 10.64.1.2:8545"
 	for _, ready := range []bool{false, true} {
-		view := NetworkView("w1", &v1.Host{Spec: v1.HostSpec{ExternalIP: "198.51.100.10"}}, []*v1.Silo{heldSilo(ready)}, nil)
+		view := NetworkView("w1", &v1.Host{Spec: v1.HostSpec{ExternalIP: "198.51.100.10"}}, []*v1.Silo{heldSilo(ready)}, nil, nil)
 		if len(view.Local) != 1 || view.Local[0].Held == ready {
 			t.Fatalf("ready %v: held %v", ready, view.Local[0].Held)
 		}

@@ -44,12 +44,12 @@ type ExecProbe struct {
 
 // TCPProbe passes when the port accepts a connection, dialled from the silo's host.
 type TCPProbe struct {
-	Port string `json:"port"` // a number, or the name of one of the silo's service ports
+	Port string `json:"port"` // the name of one of the silo's declared ports (spec.ports)
 }
 
 // HTTPProbe passes when a GET answers 2xx or 3xx, sent from the silo's host.
 type HTTPProbe struct {
-	Port string `json:"port"`           // a number, or a service port's name
+	Port string `json:"port"`           // a declared port's name
 	Path string `json:"path,omitempty"` // default /
 }
 

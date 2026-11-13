@@ -313,9 +313,9 @@ func TestOpenShellAdmission(t *testing.T) {
 		want string
 	}{
 		{"svc", func(s *v1.Silo) {
-			s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}}
+			s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 8080}}
+			s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", AllowFrom: []string{"x"}}}}
 		}, "no network interface"},
-		{"from", func(s *v1.Silo) { s.Spec.AllowFrom = []v1.AllowFrom{{Silo: "x"}} }, "allowFrom"},
 		{"p2p", func(s *v1.Silo) { s.Spec.Grants = []string{"p2p-anywhere"} }, "address range"},
 		{"file", func(s *v1.Silo) { s.Spec.Grants = []string{"db"} }, "deliver file isn't available"},
 	} {

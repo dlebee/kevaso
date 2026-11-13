@@ -200,8 +200,9 @@ spec:
   image: docker.io/library/python:3.12-slim
   command: [python3, -m, http.server, "%[3]s", --directory, /site]
   volumes: [{ name: site, mountPath: /site }]
+  ports: [{ name: http, port: %[3]s }]
   service:
-    ports: [{ name: http, port: %[3]s }]
+    ports: [{ port: http }]
   init:
     steps:
       - name: page
@@ -240,9 +241,9 @@ metadata: { name: ingress-public, namespace: kevaso-system }
 spec:
   runtime: docker
   image: docker.io/library/nginx:1.27   # the vendor's image as shipped: driven from outside
+  ports: [{ name: http, port: 80 }, { name: https, port: 443 }]
   service:
-    ports: [{ name: http, port: 80 }, { name: https, port: 443 }]
-    expose: hostPort
+    ports: [{ port: http, hostPort: [internal] }, { port: https, hostPort: [internal] }]
 ---
 apiVersion: kevaso/v1
 kind: IngressClass
@@ -258,7 +259,7 @@ spec:
   ingressClass: public
   hosts: [` + apiHost + `]
   tls: { issuer: pebble }
-  rules: [{ path: /, silo: { name: api, port: http } }]
+  rules: [{ path: /, service: { name: api, port: http } }]
 ---
 apiVersion: kevaso/v1
 kind: Ingress
@@ -267,7 +268,7 @@ spec:
   ingressClass: public
   hosts: [` + shopHost + `]
   tls: { issuer: pebble }
-  rules: [{ path: /, silo: { name: web, port: http } }]
+  rules: [{ path: /, service: { name: web, port: http } }]
 ---
 apiVersion: kevaso/v1
 kind: Ingress
@@ -276,7 +277,7 @@ spec:
   ingressClass: public
   hosts: [` + docsHost + `]
   tls: { issuer: pebble }
-  rules: [{ path: /, silo: { name: web, port: http } }]
+  rules: [{ path: /, service: { name: web, port: http } }]
 ---
 apiVersion: kevaso/v1
 kind: Certificate
@@ -384,7 +385,7 @@ spec:
   ingressClass: public
   hosts: [`+apiHost+`]
   tls: { issuer: pebble }
-  rules: [{ path: /, silo: { name: api, port: http } }]
+  rules: [{ path: /, service: { name: api, port: http } }]
 `, "apply", "-f", "-")
 	time.Sleep(10 * time.Second)
 	desc := must(kvo.Run, "", "describe", "ingress", "api", "-n", "payments")

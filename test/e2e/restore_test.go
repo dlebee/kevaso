@@ -154,7 +154,7 @@ func TestBackupAndRestore(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
 		hosts := kvoMust("", "get", "host", "cp-1", "-o", "yaml")
-		if strings.Contains(hosts, "address: "+ipB) {
+		if strings.Contains(hosts, "internalIP: "+ipB) {
 			break
 		}
 		if time.Now().After(deadline) {

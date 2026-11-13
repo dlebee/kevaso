@@ -21,12 +21,11 @@ func WithLeases(view kni.Host, silos []*v1.Silo, all []*v1.Lease, now time.Time)
 	copy(local, view.Local)
 	for i, ks := range local {
 		s, ok := byKey[ks.Key]
-		if !ok || !leases.Any(s.Spec.Service) {
+		if !ok || !leases.Any(s.Spec) {
 			continue
 		}
-		ks.Leased = leases.Leased(s.Spec.Service)
+		ks.Leased = leases.Leased(s.Spec)
 		ks.Closed = leases.Closed(s, all, now)
-		ks.LeaseFrom = leases.PortSources(s.Spec.Service)
 		local[i] = ks
 	}
 	view.Local = local

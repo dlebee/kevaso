@@ -768,20 +768,29 @@ func (s *Server) checkExposure(ctx context.Context, t target, obj meta.Object) e
 
 // exposure is how an object makes silos reachable from outside ("" if it doesn't).
 func exposure(obj meta.Object) string {
-	var svc *v1.SiloService
+	var spec v1.SiloSpec
 	switch o := obj.(type) {
 	case *v1.Silo:
-		svc = o.Spec.Service
+		spec = o.Spec
 	case *v1.SiloSet:
-		svc = o.Spec.Template.Service
+		spec = o.Spec.Template.SiloSpec
 	case *v1.Service:
 		if o.Spec.Type == v1.ServiceLoadBalancer {
 			return "service:" + o.Spec.LoadBalancerClass
 		}
 		return ""
 	}
-	if svc == nil || (svc.Expose != v1.ExposeHostPort && svc.Expose != v1.ExposeLoadBalancer) {
-		return ""
+	var ways []string
+	for _, p := range spec.Open() {
+		for _, n := range p.HostPort {
+			if w := "hostPort:" + n; !slices.Contains(ways, w) {
+				ways = append(ways, w)
+			}
+		}
+		if w := "loadBalancer:" + spec.LBClass(); p.LoadBalancer && !slices.Contains(ways, w) {
+			ways = append(ways, w)
+		}
 	}
-	return svc.Expose
+	slices.Sort(ways)
+	return strings.Join(ways, ",")
 }

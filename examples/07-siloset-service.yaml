@@ -14,7 +14,7 @@
 #
 # The Linode parts (provider: linode, linode-nodebalancer) need the plugin (kvoadm plugin install
 # linode); without one, drop the hostSelector and use the Service's default type, ClusterIP: a
-# virtual IP and the name rpc.web3.kevaso, for silos its instances allowFrom.
+# virtual IP and the name rpc.web3.kevaso, for the silos its instances' rpc port allows (allowFrom).
 #
 #   kvo scale siloset rpc-pool --instances 5      # more; fewer asks first (it deletes disks)
 #   kvo reset siloset rpc-pool --rolling          # every instance back onto its image, one at a time
@@ -45,10 +45,10 @@ spec:
       readiness:                  # "it can take work now"
         exec: { command: [sh, -c, "geth attach --exec eth.blockNumber /root/.ethereum/geth.ipc"] }
         period: 15s
-    service:
-      ports: [{ name: rpc, port: 8545, protocol: TCP }]
-      expose: private
-      routeWhen: ready            # stated, never assumed: its private name answers only while ready
+    ports: [{ name: rpc, port: 8545, protocol: TCP }]
+    service:                      # each instance's own: rpc-pool-0.web3.kevaso…
+      ports: [{ port: rpc }]      # on its silo IP only; add allowFrom: [SILO] for silos that call it directly
+      routeWhen: ready            # stated, never assumed: its name answers only while ready
 ---
 apiVersion: kevaso/v1
 kind: Service

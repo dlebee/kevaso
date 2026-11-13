@@ -140,7 +140,7 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 			meta.SetCondition(&st.Conditions, cond, now)
 			meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Moving",
 				Message: "moving after losing " + st.Host, ObservedGeneration: s.Generation}, now)
-			st.Host, st.Address, st.MovingFrom = "", "", ""
+			st.Host, st.SiloIP, st.MovingFrom = "", "", ""
 			// …and it's scheduled right away, below (its volumes keep it in their region).
 		case s.Policy() == v1.OnHostLossRecreate:
 			// Not lost any more (it's being placed afresh); the condition keeps what happened.
@@ -149,7 +149,7 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 			meta.SetCondition(&st.Conditions, cond, now)
 			meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Recreating",
 				Message: "recreating after losing " + st.Host, ObservedGeneration: s.Generation}, now)
-			st.Host, st.Address, st.Init = "", "", nil
+			st.Host, st.SiloIP, st.Init = "", "", nil
 			if st.Image != nil { // a fresh instance from the image
 				st.Image.Running, st.Image.Reset = "", ""
 			}

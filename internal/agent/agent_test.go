@@ -83,7 +83,7 @@ func TestRunsASiloAndItsInitStepsThenReady(t *testing.T) {
 		{Name: "check", Shell: "python3", Run: "print('ok')"},
 	}})
 	s := e.wait(t, "web", func(s *v1.Silo) bool { return meta.IsTrue(s.Status.Conditions, "Ready") })
-	if s.Status.Phase != agent.PhaseRunning || s.Status.Address == "" {
+	if s.Status.Phase != agent.PhaseRunning || s.Status.SiloIP == "" {
 		t.Fatalf("status %+v", s.Status)
 	}
 	if len(s.Status.Init) != 2 || s.Status.Init[0].State != "Done" || s.Status.Init[1].State != "Done" {

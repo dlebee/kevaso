@@ -88,7 +88,7 @@ func TestDecideOnHostLoss(t *testing.T) {
 	onHv1 := func(policy string) *v1.Silo {
 		s := newSilo("a")
 		s.Spec.Availability.OnHostLoss = policy
-		s.Status.Host, s.Status.Phase, s.Status.Address = "hv1", "Running", "10.64.0.2"
+		s.Status.Host, s.Status.Phase, s.Status.SiloIP = "hv1", "Running", "10.64.0.2"
 		s.Status.Init = []v1.StepStatus{{Name: "x", State: "Done"}}
 		return s
 	}
@@ -110,7 +110,7 @@ func TestDecideOnHostLoss(t *testing.T) {
 	// Recreate, after RecreateAfter: a fresh instance on another host, nothing carried over.
 	st, changed, _, _ = silo.Decide(onHv1(v1.OnHostLossRecreate), []*v1.Host{lostHost("hv1", now.Add(-time.Minute)), readyHost("hv2")}, nil, now)
 	if c := meta.FindCondition(st.Conditions, "HostLost"); !changed || st.Host != "hv2" || st.Phase != silo.PhaseScheduled ||
-		st.Address != "" || st.Init != nil || c.Reason != "Recreated" {
+		st.SiloIP != "" || st.Init != nil || c.Reason != "Recreated" {
 		t.Fatalf("Recreate: %+v", st)
 	}
 	// …and if nowhere fits, it waits Pending (not back on the lost host).
@@ -206,7 +206,7 @@ func TestDecideOnHostLossMove(t *testing.T) {
 		s.Spec.Runtime = "docker"
 		s.Spec.Volumes = []v1.Volume{{Name: "data", Class: "juicefs", Size: "10Gi", MountPath: "/data"}}
 		s.Spec.Availability.OnHostLoss = v1.OnHostLossMove
-		s.Status.Host, s.Status.Phase, s.Status.Address = "hv1", "Running", "10.64.1.2"
+		s.Status.Host, s.Status.Phase, s.Status.SiloIP = "hv1", "Running", "10.64.1.2"
 		s.Status.Image = &v1.SiloImage{From: "app", Ref: "app:1", Running: "app:1"}
 		s.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "juicefs", Handle: "vol-1", AttachedTo: "hv1", Mounted: true}}
 		return s

@@ -29,11 +29,13 @@ spec:
   image: ubuntu-24.04
   resources: { cpu: 2, memory: 4Gi }
   disk: { size: 100Gi }
+  ports:
+    - { name: p2p,  port: 30303, protocol: TCP }
+    - { name: disc, port: 30303, protocol: UDP }
   service:
     ports:
-      - { name: p2p,  port: 30303, protocol: TCP }
-      - { name: disc, port: 30303, protocol: UDP }
-    expose: loadBalancer
+      - { port: p2p,  loadBalancer: true }
+      - { port: disc, loadBalancer: true }
     loadBalancer: { class: ip-pool, ip: eth-node-a }   # this address and no other
   network:
     egress: { source: sameAsService }                 # out from the same address
@@ -46,11 +48,13 @@ spec:
   image: ubuntu-24.04
   resources: { cpu: 2, memory: 4Gi }
   disk: { size: 100Gi }
+  ports:
+    - { name: p2p,  port: 30303, protocol: TCP }
+    - { name: disc, port: 30303, protocol: UDP }
   service:
     ports:
-      - { name: p2p,  port: 30303, protocol: TCP }
-      - { name: disc, port: 30303, protocol: UDP }
-    expose: loadBalancer
+      - { port: p2p,  loadBalancer: true }
+      - { port: disc, loadBalancer: true }
     loadBalancer: { class: ip-pool }                   # an IP made for it, on the host it lands on
   network:
     egress: { source: sameAsService }

@@ -142,18 +142,11 @@ func (s *Server) ingressDesired(ctx context.Context, silo *v1.Silo) (ingress.Des
 	if err != nil {
 		return ingress.Desired{}, err
 	}
-	in := ingress.Inputs{Class: class, Ingresses: ings, Challenges: challenges,
-		Silo: func(ns, name string) *v1.Silo {
-			o, err := s.store.Get(ctx, store.Key{Kind: "Silo", Namespace: ns, Name: name})
-			if err != nil {
-				return nil
-			}
-			obj, _, err := v1.Decode(o.Data)
-			if err != nil {
-				return nil
-			}
-			return obj.(*v1.Silo)
-		},
+	silos, svcs, err := s.silosAndServices(ctx, "")
+	if err != nil {
+		return ingress.Desired{}, err
+	}
+	in := ingress.Inputs{Class: class, Ingresses: ings, Challenges: challenges, Silos: silos, Services: svcs,
 		// A backend takes traffic when it runs and its routeWhen isn't holding it (design §0.6).
 		Routed: func(silo *v1.Silo) bool { return ingress.Routed(silo) && routing.Routed(silo) },
 	}
@@ -178,4 +171,29 @@ func (s *Server) ingressDesired(ctx context.Context, silo *v1.Silo) (ingress.Des
 		}
 	}
 	return ingress.Desire(in), nil
+}
+
+// silosAndServices are the silos and standalone Services in namespace ("": all).
+func (s *Server) silosAndServices(ctx context.Context, namespace string) ([]*v1.Silo, []*v1.Service, error) {
+	var silos []*v1.Silo
+	var svcs []*v1.Service
+	for _, kind := range []string{"Silo", "Service"} {
+		objs, _, err := s.store.List(ctx, store.Selector{Kind: kind, Namespace: namespace})
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, o := range objs {
+			obj, _, err := v1.Decode(o.Data)
+			if err != nil {
+				continue
+			}
+			switch x := obj.(type) {
+			case *v1.Silo:
+				silos = append(silos, x)
+			case *v1.Service:
+				svcs = append(svcs, x)
+			}
+		}
+	}
+	return silos, svcs, nil
 }

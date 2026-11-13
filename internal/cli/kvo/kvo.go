@@ -652,8 +652,8 @@ func summary(obj meta.Object) string {
 			}
 			parts = append(parts, fmt.Sprintf("init=%d/%d", done, n))
 		}
-		if o.Status.Address != "" {
-			parts = append(parts, "address="+o.Status.Address)
+		if o.Status.SiloIP != "" {
+			parts = append(parts, "address="+o.Status.SiloIP)
 		}
 		conds = o.Status.Conditions
 	case *v1.Unstructured:
@@ -843,7 +843,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 				}
 				ps = append(ps, fmt.Sprintf("%d/%s", p.Port, proto))
 			}
-			row = append(row, typ, dash(o.Status.ClusterIP), dash(o.Status.PublicIP), strings.Join(ps, ","), fmt.Sprint(len(o.Status.Endpoints)))
+			row = append(row, typ, dash(o.Status.ClusterIP), dash(o.Status.LoadBalancerIP), strings.Join(ps, ","), fmt.Sprint(len(o.Status.Endpoints)))
 		case *v1.IP:
 			row = append(row, ipRow(o)...)
 		case *v1.Image:

@@ -103,7 +103,8 @@ func TestIPs(t *testing.T) {
 		}
 		return &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "web3"},
 			Spec: v1.SiloSpec{Runtime: "docker", Image: "geth", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-				Service: &v1.SiloService{Expose: v1.ExposeLoadBalancer, Ports: []v1.ServicePort{{Name: "p2p", Port: p}},
+				Ports: []v1.SiloPort{{Name: "p2p", Port: p}},
+				Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "p2p", LoadBalancer: true}},
 					LoadBalancer: &v1.LoadBalancerSpec{Class: class, IP: ip}},
 				Network: v1.SiloNetwork{Egress: v1.Egress{Source: source}}}}
 	}
@@ -134,7 +135,7 @@ func TestIPs(t *testing.T) {
 		x, _ := getIP("eth")
 		s := getSilo("node-1")
 		st := s.Status.Service
-		return holders(x) == "silo/node-1" && s.Status.Host == "w1" && st.PublicIP == addr && st.EgressIP == addr && st.IP == "eth" && st.Announce,
+		return holders(x) == "silo/node-1" && s.Status.Host == "w1" && st.LoadBalancerIP == addr && st.EgressIP == addr && st.IP == "eth" && st.Announce,
 			holders(x) + " " + st.AddressesLine() + " " + condMsgs(s.Status.Conditions)
 	})
 	if line := getSilo("node-1").Status.Service.AddressesLine(); line != "same address in and out: "+addr {
@@ -162,7 +163,7 @@ func TestIPs(t *testing.T) {
 	}
 	eventually("node-3 holds eth: the same address", func() (bool, string) {
 		s := getSilo("node-3")
-		return s.Status.Service.PublicIP == addr && s.Status.Service.EgressIP == addr, s.Status.Service.AddressesLine() + " " + condMsgs(s.Status.Conditions)
+		return s.Status.Service.LoadBalancerIP == addr && s.Status.Service.EgressIP == addr, s.Status.Service.AddressesLine() + " " + condMsgs(s.Status.Conditions)
 	})
 
 	// ── Shared by default: two silos naming no IP, one address, one balancer, their own ports ──
@@ -185,7 +186,7 @@ func TestIPs(t *testing.T) {
 			svcs[p.Service] = len(p.Backends) == 1
 		}
 		return err == nil && !x.Kept() && x.Labels[v1.LabelDefaultIP] == kplugintest.ClassLB && len(x.Status.BoundTo) == 2 && shared != "" &&
-				w.PublicIP == shared && r.PublicIP == shared && w.IP == def && len(lb.Ports) == 2 && svcs["silo/web"] && svcs["silo/rpc"] &&
+				w.LoadBalancerIP == shared && r.LoadBalancerIP == shared && w.IP == def && len(lb.Ports) == 2 && svcs["silo/web"] && svcs["silo/rpc"] &&
 				strings.Contains(w.EgressNote, "on no host"),
 			holders(x) + " " + condMsgs(x.Status.Conditions) + " | " + w.AddressesLine() + " | " + r.AddressesLine()
 	})
@@ -202,7 +203,7 @@ func TestIPs(t *testing.T) {
 	eventually("own on an IP of its own, another address", func() (bool, string) {
 		x, _ := getIP("own")
 		st := getSilo("own").Status.Service
-		return holders(x) == "silo/own" && len(x.OwnerReferences) == 1 && x.Status.Address != "" && x.Status.Address != shared && st.PublicIP == x.Status.Address,
+		return holders(x) == "silo/own" && len(x.OwnerReferences) == 1 && x.Status.Address != "" && x.Status.Address != shared && st.LoadBalancerIP == x.Status.Address,
 			holders(x) + " " + condMsgs(x.Status.Conditions)
 	})
 	// sameAsService behind a balancer: refused, the address is on no host.
@@ -286,8 +287,8 @@ func TestIPs(t *testing.T) {
 	}
 	eventually("pooled on mine's address in and out; pooled-2 on the next one, out the host's", func() (bool, string) {
 		a, b := getSilo("pooled").Status.Service, getSilo("pooled-2").Status.Service
-		return a.PublicIP == "192.0.2.17" && a.EgressIP == "192.0.2.17" && len(a.HostAddresses) == 1 &&
-				b.PublicIP == "192.0.2.18" && b.EgressIP == "203.0.113.5" && strings.Contains(b.EgressNote, "sameAsService sends from 192.0.2.18"),
+		return a.LoadBalancerIP == "192.0.2.17" && a.EgressIP == "192.0.2.17" && len(a.HostAddresses) == 1 &&
+				b.LoadBalancerIP == "192.0.2.18" && b.EgressIP == "203.0.113.5" && strings.Contains(b.EgressNote, "sameAsService sends from 192.0.2.18"),
 			a.AddressesLine() + " | " + b.AddressesLine()
 	})
 	// An address in use stays on the host.

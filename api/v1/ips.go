@@ -130,7 +130,7 @@ type IPWay int
 
 // The ways.
 const (
-	IPNone    IPWay = iota // no IP: not a load balancer, or worker-ip (the host's address)
+	IPNone    IPWay = iota // no IP: no port on a load balancer
 	IPNamed                // it names one (loadBalancer.ip)
 	IPMade                 // one of its own, made for it and named after it (dedicated, or an exclusive class)
 	IPDefault              // the namespace's shared one for its class (DefaultIPName)
@@ -142,7 +142,7 @@ func DefaultIPName(class string) string { return "default-" + class }
 
 func ipOf(class, named, self string, dedicated, exclusive bool) (string, IPWay) {
 	switch {
-	case class == "" || class == LBWorkerIP:
+	case class == "":
 		return "", IPNone
 	case named != "":
 		return named, IPNamed
@@ -156,7 +156,7 @@ func ipOf(class, named, self string, dedicated, exclusive bool) (string, IPWay) 
 // class's address is one host's at a time (ip-pool, an announced shared IP), so it's never shared.
 func SiloServiceIP(s *Silo, exclusive bool) (string, IPWay) {
 	sv := s.Spec.Service
-	if sv == nil || sv.Expose != ExposeLoadBalancer || sv.LoadBalancer == nil {
+	if !s.Spec.LoadBalanced() || sv.LoadBalancer == nil {
 		return "", IPNone
 	}
 	// A SiloSet's instances have the same ports, so they'd clash on one address: each has its own.
@@ -203,15 +203,14 @@ func SiloIPs(s *Silo, exclusive func(class string) bool) []string {
 	return out
 }
 
-// SiloPorts are the ports a silo's load balancer takes on its address (PORT/PROTO), leased ones
-// included: a closed port still has its number on the address.
+// SiloPorts are the ports a silo's load balancer takes on its address (PORT/PROTO: their as),
+// leased ones included: a closed port still has its number on the address.
 func SiloPorts(s *Silo) []string {
-	if s.Spec.Service == nil {
-		return nil
-	}
 	var out []string
-	for _, p := range s.Spec.Service.Ports {
-		out = append(out, portKey(p.Port, p.Protocol))
+	for _, p := range s.Spec.Open() {
+		if p.LoadBalancer {
+			out = append(out, portKey(p.HostNumber(), p.Protocol))
+		}
 	}
 	return out
 }
@@ -232,9 +231,44 @@ func portKey(port int, proto string) string {
 	return fmt.Sprintf("%d/TCP", port)
 }
 
+// OutsideIPs are the addresses its ports are reachable on outside the cluster (its host's
+// internal and external IPs, its load-balancer address), each once, in port order.
+func (st SiloServiceStatus) OutsideIPs() []string {
+	var out []string
+	for _, p := range st.Ports {
+		for _, a := range []string{p.Internal, p.External, p.LoadBalancer} {
+			if h, _, ok := strings.Cut(a, ":"); ok && !slices.Contains(out, h) {
+				out = append(out, h)
+			}
+		}
+	}
+	return out
+}
+
+// Front is the address the outside reaches the service on, for one name to point at (an
+// Ingress host's DNS record): its load-balancer address, else its host's external IP, else its
+// internal IP ("" if no port opens outside).
+func (st SiloServiceStatus) Front() string {
+	if st.LoadBalancerIP != "" {
+		return st.LoadBalancerIP
+	}
+	for _, pick := range []func(ServicePortStatus) string{
+		func(p ServicePortStatus) string { return p.External },
+		func(p ServicePortStatus) string { return p.Internal },
+	} {
+		for _, p := range st.Ports {
+			if h, _, ok := strings.Cut(pick(p), ":"); ok {
+				return h
+			}
+		}
+	}
+	return ""
+}
+
 // AddressesLine says in one line whether a silo's address out is its address in, and why not.
 func (st SiloServiceStatus) AddressesLine() string {
-	in, out := st.PublicIP, st.EgressIP
+	ins := st.OutsideIPs()
+	in, out := strings.Join(ins, ", "), st.EgressIP
 	why := ""
 	if st.EgressNote != "" {
 		why = ": " + st.EgressNote
@@ -244,7 +278,10 @@ func (st SiloServiceStatus) AddressesLine() string {
 		return "no outside address in or out" + why
 	case in == "":
 		return "out " + out + ", nothing in" + why
-	case in == out:
+	case in == out || (out != "" && slices.Contains(ins, out)):
+		if len(ins) > 1 {
+			return "in " + in + ", out " + out + " (the same as one in)"
+		}
 		return "same address in and out: " + in
 	case out == "":
 		return "in " + in + ", out through the host's NAT" + why

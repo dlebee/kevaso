@@ -332,7 +332,8 @@ func TestExposePublicNeedsItsOwnPermission(t *testing.T) {
 	}
 	node := func(name string) *v1.Silo {
 		s := silo(name, "web3")
-		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}}, Expose: v1.ExposeHostPort}
+		s.Spec.Ports = []v1.SiloPort{{Name: "p2p", Port: 30303}}
+		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "p2p", HostPort: []string{v1.NetworkExternal}}}}
 		return s
 	}
 	ed, ada := as("ed"), as("ada")
@@ -342,7 +343,8 @@ func TestExposePublicNeedsItsOwnPermission(t *testing.T) {
 		t.Fatalf("editor exposing: %v", err)
 	}
 	private := silo("private", "web3")
-	private.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}}
+	private.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 8080}}
+	private.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}}
 	if err := ed.Create(c.ctx, private); err != nil {
 		t.Fatalf("editor, private service: %v", err)
 	}
@@ -364,7 +366,7 @@ func TestExposePublicNeedsItsOwnPermission(t *testing.T) {
 	if err := ed.Create(c.ctx, set); !errors.As(err, &ce) || ce.Code != http.StatusForbidden {
 		t.Fatalf("editor, an exposed set: %v", err)
 	}
-	set.Spec.Template.Service = private.Spec.Service
+	set.Spec.Template.Ports, set.Spec.Template.Service = private.Spec.Ports, private.Spec.Service
 	if err := ed.Create(c.ctx, set); err != nil {
 		t.Fatalf("editor, a private set: %v", err)
 	}

@@ -98,12 +98,55 @@ func writeServiceTraffic(w io.Writer, s *v1.Silo) {
 	_, _ = fmt.Fprintf(w, "Route when:\t%s\n", routeWhenText(*r))
 	_, _ = fmt.Fprintln(w, "Traffic:")
 	_, _ = fmt.Fprintln(w, "  PORT\tTRAFFIC")
-	for _, p := range s.Spec.Service.Ports {
-		_, _ = fmt.Fprintf(w, "  %s %d\t%s\n", p.Name, p.Port, traffic(*r))
+	for _, p := range s.Spec.Open() {
+		_, _ = fmt.Fprintf(w, "  %s %d\t%s\n", p.Name, p.Number, traffic(*r))
 	}
 }
 
 // heldText is a held endpoint's state, for people.
 func heldText(ep v1.ServiceEndpoint) string {
 	return traffic(v1.Routing{Reason: ep.Reason, Since: ep.Since})
+}
+
+// writeSiloPorts is a silo's declared ports and where each is reachable (design §7.0): its silo IP
+// for the silos allowFrom names, its host's internal and external IPs, its load-balancer address;
+// a declared port no service port opens is reachable nowhere.
+func writeSiloPorts(w io.Writer, s *v1.Silo) {
+	where := map[string]v1.ServicePortStatus{}
+	for _, p := range s.Status.Service.Ports {
+		where[p.Port] = p
+	}
+	at := func(addr, fallback string) string {
+		if addr != "" {
+			return addr
+		}
+		return fallback
+	}
+	_, _ = fmt.Fprintln(w, "Ports:")
+	_, _ = fmt.Fprintln(w, "  PORT\tNUMBER\tSILO IP (MESH)\tINTERNAL IP\tEXTERNAL IP\tLOAD BALANCER\tALLOW FROM\tSOURCES")
+	for _, d := range s.Spec.Ports {
+		num := fmt.Sprintf("%d/%s", d.Port, d.Proto())
+		op, ok := s.Spec.OpenPort(d.Name)
+		if !ok {
+			_, _ = fmt.Fprintf(w, "  %s\t%s\tnot opened: reachable nowhere\t\t\t\t\t\n", d.Name, num)
+			continue
+		}
+		ws := where[d.Name]
+		want := func(on bool, got string) string {
+			switch {
+			case !on:
+				return "-"
+			case got == "":
+				return fmt.Sprintf("(when placed) :%d", op.HostNumber())
+			}
+			return got
+		}
+		mesh := at(ws.Mesh, "(when running)")
+		if len(op.AllowFrom) == 0 {
+			mesh += " (no silo allowed)"
+		}
+		_, _ = fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.Name, num, mesh,
+			want(op.On(v1.NetworkInternal), ws.Internal), want(op.On(v1.NetworkExternal), ws.External), want(op.LoadBalancer, ws.LoadBalancer),
+			dash(strings.Join(op.AllowFrom, ", ")), dash(strings.Join(op.Sources, ", ")))
+	}
 }

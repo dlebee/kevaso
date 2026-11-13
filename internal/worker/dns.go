@@ -49,7 +49,7 @@ func LookupIn(name string, silos []*v1.Silo, svcs []*v1.Service) (ip netip.Addr,
 				// Held by its routeWhen (design §0.6): the name exists, with no address now.
 				return netip.Addr{}, true, true
 			}
-			if a, err := netip.ParseAddr(s.Status.Address); err == nil {
+			if a, err := netip.ParseAddr(s.Status.SiloIP); err == nil {
 				return a, true, true
 			}
 		}

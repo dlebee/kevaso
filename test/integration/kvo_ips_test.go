@@ -48,9 +48,9 @@ spec:
   runtime: cloud-hypervisor
   image: ubuntu-24.04
   resources: { cpu: 2, memory: 4Gi }
+  ports: [{ name: p2p, port: 30303 }]
   service:
-    ports: [{ name: p2p, port: 30303 }]
-    expose: loadBalancer
+    ports: [{ port: p2p, loadBalancer: true }]
     loadBalancer: { class: linode-shared-ip, ip: eth-node-1 }
   network: { egress: { source: sameAsService } }
 `, "apply", "-f", "-")
@@ -65,9 +65,9 @@ spec:
   runtime: cloud-hypervisor
   image: ubuntu-24.04
   resources: { cpu: 2, memory: 4Gi }
+  ports: [{ name: p2p, port: 30303 }]
   service:
-    ports: [{ name: p2p, port: 30303 }]
-    expose: loadBalancer
+    ports: [{ port: p2p, loadBalancer: true }]
     loadBalancer: { class: ip-pool, ip: eth-node-1 }
 `, "apply", "-f", "-"); code == 0 || !strings.Contains(errs, "class linode-shared-ip, not ip-pool") {
 		t.Fatalf("naming an IP of another class: %d %s", code, errs)

@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,20 +16,22 @@ import (
 	"kevaso.com/core/builtin/kni"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/gate"
+	"kevaso.com/core/internal/ingress"
 	"kevaso.com/core/internal/routing"
 	"kevaso.com/core/sdk/kri"
 )
 
-// NetworkView builds this host's KNI view from the API: its silos (with their taps, addresses and
-// what their grants open) and every running silo (allowFrom sources). Pure.
-func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Grant) kni.Host {
+// NetworkView builds this host's KNI view from the API: its silos (with their taps, addresses,
+// what their grants open and the Ingress paths to them) and every running silo (allowFrom
+// sources). Pure.
+func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Grant, paths map[string]map[string][]string) kni.Host {
 	view := kni.Host{Bridge: cloudhypervisor.Bridge, Subnet: cloudhypervisor.Network, Gateway: cloudhypervisor.Gateway}
 	if h != nil {
 		view.InternalIP, _ = netip.ParseAddr(h.Internal())
 		view.ExternalIP, _ = netip.ParseAddr(h.External())
 	}
 	for _, s := range silos {
-		ip, err := netip.ParseAddr(s.Status.Address)
+		ip, err := netip.ParseAddr(s.Status.SiloIP)
 		if err != nil {
 			continue
 		}
@@ -38,10 +41,10 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 			continue
 		}
 		ks.Tap = cloudhypervisor.NamesFor(kri.ID{Namespace: s.Namespace, Name: s.Name, UID: s.UID}).Tap
-		ks.PublicIP, _ = netip.ParseAddr(s.Status.Service.PublicIP)
+		ks.LoadBalancerIP, _ = netip.ParseAddr(s.Status.Service.LoadBalancerIP)
 		if len(s.Status.Service.NodePorts) > 0 {
 			// Reached through the load balancer's node ports, not on its address.
-			ks.PublicIP = netip.Addr{}
+			ks.LoadBalancerIP = netip.Addr{}
 			ks.NodePorts, ks.SourceRanges = s.Status.Service.NodePorts, s.Status.Service.SourceRanges
 		}
 		if src := s.Spec.Network.Egress.Source; src == v1.EgressSameAsService || src == v1.EgressPool {
@@ -56,6 +59,7 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 		}
 		ks.GatePorts = gate.PolicyFor(s, grants).Ports()
 		ks.Held = !routing.Routed(s) // routeWhen (design §0.6): no outside rule while held
+		ks.Paths = paths[ks.Key]
 		view.Local = append(view.Local, ks)
 	}
 	return view
@@ -81,7 +85,7 @@ func ServiceView(hostName string, svcs []*v1.Service) []kni.Service {
 				kp.Proto = "udp"
 			}
 			for _, ep := range sv.Status.Endpoints {
-				ip, err := netip.ParseAddr(ep.Address)
+				ip, err := netip.ParseAddr(ep.SiloIP)
 				if err != nil {
 					continue
 				}
@@ -115,8 +119,8 @@ func PoolAddresses(hostName string, silos []*v1.Silo) []string {
 func AnnouncedAddresses(hostName string, silos []*v1.Silo) []string {
 	var out []string
 	for _, s := range silos {
-		if s.Status.Host == hostName && s.Status.Service.Announce && s.Status.Service.PublicIP != "" && s.DeletionTimestamp == nil {
-			out = append(out, s.Status.Service.PublicIP)
+		if s.Status.Host == hostName && s.Status.Service.Announce && s.Status.Service.LoadBalancerIP != "" && s.DeletionTimestamp == nil {
+			out = append(out, s.Status.Service.LoadBalancerIP)
 		}
 	}
 	return out
@@ -214,9 +218,10 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		for _, o := range classInf.List() {
 			classes = append(classes, o.(*v1.IngressClass))
 		}
-		view := NetworkView(hostName, me, WithIngressPaths(all, ings, classes), currentGrants())
+		svcs := currentServices()
+		view := NetworkView(hostName, me, all, currentGrants(), WithIngressPaths(all, svcs, ings, classes))
 		view.GatePort = gatePort
-		view.Services = ServiceView(hostName, currentServices())
+		view.Services = ServiceView(hostName, svcs)
 		now, ls := time.Now(), currentLeases()
 		view = WithLeases(view, all, ls, now)
 		leaseEnd, stopLeaseEnd := leaseTimer(ls, now)
@@ -344,15 +349,16 @@ func uplink(addr string) string {
 	return ""
 }
 
-// WithIngressPaths returns the silos with the paths Ingresses open (design §7.2b: "an Ingress opens
-// its own path, visibly"): each Ingress's target port, reachable from its class's controller silos,
-// as if the target's allowFrom said so. The silos given aren't changed. Pure.
-func WithIngressPaths(silos []*v1.Silo, ingresses []*v1.Ingress, classes []*v1.IngressClass) []*v1.Silo {
+// WithIngressPaths returns the silos with the paths Ingresses open (design §7.3: "an Ingress opens
+// its own path, visibly"): each rule's service port, reachable from its class's controller silos,
+// as if that port's allowFrom named them (kni.Silo.Paths). For a standalone Service, every silo it
+// selects, on the port it targets. Pure.
+func WithIngressPaths(silos []*v1.Silo, svcs []*v1.Service, ingresses []*v1.Ingress, classes []*v1.IngressClass) map[string]map[string][]string {
 	byClass := map[string]*v1.IngressClass{}
 	for _, c := range classes {
 		byClass[c.Name] = c
 	}
-	extra := map[string][]v1.AllowFrom{}
+	out := map[string]map[string][]string{} // silo NAMESPACE/NAME → port → callers
 	for _, ing := range ingresses {
 		c, ok := byClass[ing.Spec.IngressClass]
 		if !ok || ing.DeletionTimestamp != nil {
@@ -364,21 +370,16 @@ func WithIngressPaths(silos []*v1.Silo, ingresses []*v1.Ingress, classes []*v1.I
 			}
 			from := ctl.Namespace + "/" + ctl.Name
 			for _, r := range ing.Spec.Rules {
-				key := ing.Namespace + "/" + r.Silo.Name
-				extra[key] = append(extra[key], v1.AllowFrom{Silo: from, Ports: []string{r.Silo.Port}})
+				for t, port := range ingress.Targets(silos, svcs, ing.Namespace, r.Service) {
+					key := t.Namespace + "/" + t.Name
+					if out[key] == nil {
+						out[key] = map[string][]string{}
+					}
+					if !slices.Contains(out[key][port], from) {
+						out[key][port] = append(out[key][port], from)
+					}
+				}
 			}
-		}
-	}
-	if len(extra) == 0 {
-		return silos
-	}
-	out := make([]*v1.Silo, len(silos))
-	for i, s := range silos {
-		out[i] = s
-		if add := extra[s.Namespace+"/"+s.Name]; len(add) > 0 {
-			cp := *s
-			cp.Spec.AllowFrom = append(append([]v1.AllowFrom(nil), s.Spec.AllowFrom...), add...)
-			out[i] = &cp
 		}
 	}
 	return out

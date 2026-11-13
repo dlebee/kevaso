@@ -136,7 +136,7 @@ func (a *Agent) runProbe(ctx context.Context, rt kri.Runtime, s *v1.Silo, addres
 		}
 		num, ok := probes.ResolvePort(port, s.Spec)
 		if !ok {
-			return probes.Outcome{Result: v1.ResultCantRun, Reason: fmt.Sprintf("port %q isn't one of the service's ports", port)}
+			return probes.Outcome{Result: v1.ResultCantRun, Reason: fmt.Sprintf("port %q isn't one of the silo's declared ports", port)}
 		}
 		if address == "" {
 			return probes.Outcome{Result: v1.ResultCantRun, Reason: "the silo has no address its host can reach (runtime " + s.Spec.Runtime + ")"}

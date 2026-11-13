@@ -281,46 +281,43 @@ func TestServiceAndPoolValidation(t *testing.T) {
 	c, ctx := setup(t)
 	svc := func(f func(*v1.Silo)) *v1.Silo {
 		s := newSilo("p2p")
-		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}}}
+		s.Spec.Ports = []v1.SiloPort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}}
+		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "p2p"}, {Port: "disc"}}}
 		f(s)
 		return s
 	}
 	good := svc(func(s *v1.Silo) {
-		s.Spec.Service.Expose = "hostPort"
-		s.Spec.Service.HostPort = &v1.HostPortSpec{Ports: []string{"p2p", "disc"}, AllowFrom: []string{"203.0.113.0/24", "198.51.100.7"}}
+		srcs := []string{"203.0.113.0/24", "198.51.100.7"}
+		s.Spec.Service.Ports = []v1.ServicePort{
+			{Port: "p2p", HostPort: []string{"external"}, Sources: srcs, AllowFrom: []string{"ops/grafana"}},
+			{Port: "disc", HostPort: []string{"external"}, Sources: srcs},
+		}
 		s.Spec.Network.Egress.Source = "sameAsService"
-		s.Spec.AllowFrom = []v1.AllowFrom{{Silo: "ops/grafana", Ports: []string{"p2p"}}}
 	})
 	if err := c.Create(ctx, good); err != nil {
 		t.Fatal(err)
 	}
 	for name, s := range map[string]*v1.Silo{
-		"unknown expose":          svc(func(s *v1.Silo) { s.Spec.Service.Expose = "public" }),
-		"port 0":                  svc(func(s *v1.Silo) { s.Spec.Service.Ports[0].Port = 0 }),
-		"SCTP":                    svc(func(s *v1.Silo) { s.Spec.Service.Ports[0].Protocol = "SCTP" }),
-		"duplicate port names":    svc(func(s *v1.Silo) { s.Spec.Service.Ports[1].Name = "p2p" }),
-		"hostPort without expose": svc(func(s *v1.Silo) { s.Spec.Service.HostPort = &v1.HostPortSpec{} }),
-		"hostPort names a ghost": svc(func(s *v1.Silo) {
-			s.Spec.Service.Expose = "hostPort"
-			s.Spec.Service.HostPort = &v1.HostPortSpec{Ports: []string{"rpc"}}
-		}),
+		"unknown hostPort":     svc(func(s *v1.Silo) { s.Spec.Service.Ports[0].HostPort = []string{"public"} }),
+		"port 0":               svc(func(s *v1.Silo) { s.Spec.Ports[0].Port = 0 }),
+		"SCTP":                 svc(func(s *v1.Silo) { s.Spec.Ports[0].Protocol = "SCTP" }),
+		"duplicate port names": svc(func(s *v1.Silo) { s.Spec.Ports[1].Name = "p2p" }),
+		"sources without host": svc(func(s *v1.Silo) { s.Spec.Service.Ports[0].Sources = []string{"10.0.0.0/8"} }),
+		"service port a ghost": svc(func(s *v1.Silo) { s.Spec.Service.Ports[0].Port = "rpc" }),
 		"bad CIDR": svc(func(s *v1.Silo) {
-			s.Spec.Service.Expose = "hostPort"
-			s.Spec.Service.HostPort = &v1.HostPortSpec{AllowFrom: []string{"10.0.0.0/33"}}
+			s.Spec.Service.Ports[0].HostPort = []string{"external"}
+			s.Spec.Service.Ports[0].Sources = []string{"10.0.0.0/33"}
 		}),
 		"LB class with bad characters": svc(func(s *v1.Silo) {
-			s.Spec.Service.Expose = "loadBalancer"
+			s.Spec.Service.Ports[0].LoadBalancer = true
 			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "Linode_NB"}
-		}),
-		"an IP on worker-ip": svc(func(s *v1.Silo) {
-			s.Spec.Service.Expose = "loadBalancer"
-			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "worker-ip", IP: "eth"}
 		}),
 		"egress.ip without source pool": svc(func(s *v1.Silo) { s.Spec.Network.Egress.IP = "eth" }),
 		"sameAsService, private":        svc(func(s *v1.Silo) { s.Spec.Network.Egress.Source = "sameAsService" }),
 		"egress pool without pool":      svc(func(s *v1.Silo) { s.Spec.Network.Egress.Source = "pool" }),
-		"allowFrom a/b/c":               svc(func(s *v1.Silo) { s.Spec.AllowFrom = []v1.AllowFrom{{Silo: "a/b/c"}} }),
+		"allowFrom a/b/c":               svc(func(s *v1.Silo) { s.Spec.Service.Ports[0].AllowFrom = []string{"a/b/c"} }),
 	} {
+
 		s.Name = "bad"
 		if err := c.Create(ctx, s); !client.IsInvalid(err) {
 			t.Errorf("%s: want Invalid, got %v", name, err)
@@ -335,7 +332,6 @@ func TestServiceAndPoolValidation(t *testing.T) {
 	}
 	for name, x := range map[string]*v1.IP{
 		"no class":           mkIP(func(x *v1.IP) { x.Spec.Class = "" }),
-		"worker-ip":          mkIP(func(x *v1.IP) { x.Spec.Class = v1.LBWorkerIP }),
 		"unknown reclaim":    mkIP(func(x *v1.IP) { x.Spec.Reclaim = "Forever" }),
 		"region on ip-pool":  mkIP(func(x *v1.IP) { x.Spec.Region = "ca-central" }),
 		"host on a plugin's": mkIP(func(x *v1.IP) { x.Spec.Class, x.Spec.Host = "linode-shared-ip", "metal-1" }),

@@ -269,16 +269,12 @@ func (c *Balancers) siloPorts(s *v1.Silo, p *plugins.Plugin, pc kplugin.Class, u
 		nps[np.Name] = np.NodePort
 	}
 	closed, end := c.leased(s)
-	from := sources(s)
 	ann := annotations(s.Annotations, p.Info.Name)
-	for _, sp := range s.Spec.Service.Ports {
-		if slices.Contains(closed, sp.Name) {
+	for _, sp := range s.Spec.Open() {
+		if !sp.LoadBalancer || slices.Contains(closed, sp.Name) {
 			continue
 		}
-		src := from[sp.Name]
-		if src != nil && len(src) == 0 {
-			continue // no source may reach it
-		}
+		src := sp.Sources
 		// An announced address arrives at the silo's host with the client's own source, and the
 		// host's rules check it. Otherwise only the balancer sees clients.
 		if !pc.Announce {
@@ -289,11 +285,7 @@ func (c *Balancers) siloPorts(s *v1.Silo, p *plugins.Plugin, pc kplugin.Class, u
 		} else {
 			src = nil
 		}
-		proto := "TCP"
-		if strings.EqualFold(sp.Protocol, "UDP") {
-			proto = "UDP"
-		}
-		ports = append(ports, kplugin.Port{Name: sp.Name, Protocol: proto, Port: sp.Port, NodePort: nps[sp.Name], Sources: src,
+		ports = append(ports, kplugin.Port{Name: sp.Name, Protocol: sp.Protocol, Port: sp.HostNumber(), NodePort: nps[sp.Name], Sources: src,
 			Service: v1.HolderSiloPrefix + s.Name, Backends: []kplugin.HostInfo{info(h)}, Annotations: ann})
 	}
 	return ports, h, end, "", ""
@@ -366,9 +358,9 @@ func (c *Balancers) done(ctx context.Context, x *v1.IP, st *holderState, plugin,
 			if st.why != "" {
 				cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, st.reason, st.why
 			} else {
-				ss.Service.PublicIP, ss.Service.SourceRanges, ss.Service.Announce = x.Status.Address, ranges, announce
+				ss.Service.LoadBalancerIP, ss.Service.SourceRanges, ss.Service.Announce = x.Status.Address, ranges, announce
 				if res := addr; !strings.HasPrefix(res, "no address") {
-					ss.Service.PublicIP = res
+					ss.Service.LoadBalancerIP = res
 				}
 				if len(st.unenforced) > 0 {
 					cond.Status, cond.Reason = meta.ConditionFalse, "SourcesNotEnforced"
@@ -387,9 +379,9 @@ func (c *Balancers) done(ctx context.Context, x *v1.IP, st *holderState, plugin,
 			if st.why != "" {
 				cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, st.reason, st.why
 			} else {
-				ss.PublicIP, ss.IP, ss.SourceRanges = x.Status.Address, x.Name, ranges
+				ss.LoadBalancerIP, ss.IP, ss.SourceRanges = x.Status.Address, x.Name, ranges
 				if !strings.HasPrefix(addr, "no address") {
-					ss.PublicIP = addr
+					ss.LoadBalancerIP = addr
 				}
 				if len(st.off) > 0 {
 					cond.Message += "; endpoints on " + strings.Join(st.off, ", ") + " aren't " + plugin + " machines, so it can't reach them"
@@ -428,7 +420,7 @@ func (c *Balancers) tellWaiting(ctx context.Context, x *v1.IP) {
 				s := so.(*v1.Silo)
 				cond.ObservedGeneration = s.Generation
 				_ = updateStatus(ctx, c.Client, s, func(ss *v1.SiloStatus) {
-					ss.Service.PublicIP, ss.Service.SourceRanges, ss.Service.Announce = "", nil, false
+					ss.Service.LoadBalancerIP, ss.Service.SourceRanges, ss.Service.Announce = "", nil, false
 					meta.SetCondition(&ss.Conditions, cond, c.now())
 				})
 			}
@@ -437,7 +429,7 @@ func (c *Balancers) tellWaiting(ctx context.Context, x *v1.IP) {
 				svc := vo.(*v1.Service)
 				cond.ObservedGeneration = svc.Generation
 				_ = c.serviceStatus(ctx, svc, func(ss *v1.ServiceStatus) {
-					ss.PublicIP, ss.IP, ss.SourceRanges = "", "", nil
+					ss.LoadBalancerIP, ss.IP, ss.SourceRanges = "", "", nil
 					meta.SetCondition(&ss.Conditions, cond, c.now())
 				})
 			}

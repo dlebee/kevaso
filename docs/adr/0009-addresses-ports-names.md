@@ -34,3 +34,46 @@ refused with what to say instead): kvoadm can't know an address is reachable fro
 "internal" claims the least. `kvoadm host list` and `kvo get hosts` show both columns; `kvo describe
 host` shows internal, external and mesh IPs. `kevasod control-plane` takes `--internal-ip` and
 `--external-ip`.
+
+## 2. Silos: declare, then open, port by port
+
+```go
+SiloSpec.Ports   []SiloPort       // {name, port, protocol}: what exists
+SiloSpec.Service *SiloService     // {name, ports, loadBalancer{class, ip, dedicated}, routeWhen}
+ServicePort      {port, allowFrom, hostPort, as, sources, lease, loadBalancer}
+```
+
+- `expose`, the `hostPort` block, `spec.allowFrom`, `loadBalancer.allowFrom` and `lease.allowFrom`
+  are gone. Who may connect on the silo IP is the port's `allowFrom` (silos only); network ranges
+  are the port's `sources`, and apply wherever it opens outside the silo IP (host addresses, the
+  load balancer); a leased port's sources are the port's own (the narrowing `lease.allowFrom` did
+  is now just `sources` on that port).
+- **The `worker-ip` class is gone.** It was "the host's own address, the service's ports": that is
+  `hostPort` now, with the address named (`[external]`, `[internal]`). `kvoadm ingress install`
+  opens the proxy's ports with `--host-port external` (the default) or `--lb-class CLASS`.
+- `loadBalancer: true` puts one port on the service's load-balancer address, at its `as` number;
+  the class, `ip` and `dedicated` stay on `service.loadBalancer`, which is refused when no port has
+  `loadBalancer: true`. A port may be both on the host and on the load balancer.
+- Admission (`internal/apiserver/ports.go`, pure): declared names are labels and unique, a number
+  and protocol declared once; every service port names a declared port, once; `allowFrom` entries
+  are `NAME` or `NAMESPACE/NAME` (a CIDR there is refused, pointing at `sources`); `hostPort` is
+  `internal`/`external`; `as` and `sources` only with `hostPort` or `loadBalancer`; the same number
+  on the same network twice in one silo is refused; leases only on a port that opens outside.
+- A standalone `Service`'s `targetPort` names the instances' declared port (default: the port's
+  own name); an endpoint whose declared port has another protocol isn't sent that port. Probes'
+  `tcp`/`http` name a declared port (no numbers).
+- A SiloSet's `template.service.name` is refused: each instance's service is named after it.
+- The firewall (`builtin/kni`): per service port, a DNAT on each address it opens on (the host's
+  internal and/or external IP, its ip-pool address) at its `as` number, and a forward rule matching
+  that original address and the port's `sources`, so traffic translated elsewhere (a Service's
+  cluster IP) never rides on it. `allowFrom` (plus an Ingress's generated path, `kni.Silo.Paths`)
+  opens the silo IP to the named silos only, port by port.
+
+## 3. Placement
+
+A port with `hostPort` needs its host to have that address: a host without an external IP is
+excluded for a `[external]` port, with the reason ("no external IP, which port 443/TCP asks for
+(hostPort: [external])"). And no other silo on that host may hold the same address, number (its
+`as`) and protocol ("port 443/TCP on the external IP (51.38.10.20) is held by web/api-blue"). Both
+reasons are the scheduler's, so `kvo describe silo` lists them per host as before. A leased port
+holds its number while closed.

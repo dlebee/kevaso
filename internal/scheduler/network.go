@@ -2,72 +2,55 @@ package scheduler
 
 import (
 	"fmt"
+	"net"
 	"slices"
-	"strings"
+	"strconv"
 
 	v1 "kevaso.com/core/api/v1"
 )
 
-// UsesHostAddress: the silo's exposed ports open on its host's own address (hostPort, worker-ip).
-func UsesHostAddress(s *v1.Silo) bool {
-	sv := s.Spec.Service
-	if sv == nil {
-		return false
-	}
-	return sv.Expose == v1.ExposeHostPort ||
-		(sv.Expose == v1.ExposeLoadBalancer && sv.LoadBalancer != nil && sv.LoadBalancer.Class == v1.LBWorkerIP)
+// HostPort is one number a silo holds on one of its host's addresses: its network (internal or
+// external), the protocol and the number (as).
+type HostPort struct {
+	Network string
+	Proto   string
+	Port    int
 }
 
-type hostPort struct {
-	proto string
-	port  int
+func (p HostPort) String() string {
+	return fmt.Sprintf("%d/%s on the %s IP", p.Port, p.Proto, p.Network)
 }
 
-// openedPorts are the host-address ports a silo claims.
-func openedPorts(s *v1.Silo) []hostPort {
-	if !UsesHostAddress(s) {
-		return nil
-	}
-	var names []string
-	if s.Spec.Service.Expose == v1.ExposeHostPort && s.Spec.Service.HostPort != nil {
-		names = s.Spec.Service.HostPort.Ports
-	}
-	var out []hostPort
-	for _, p := range s.Spec.Service.Ports {
-		if len(names) > 0 && !contains(names, p.Name) {
-			continue
+// HostPorts are the numbers a silo holds on its host's addresses (design §7.0: hostPort, as),
+// leased ones included (a closed port still has its number).
+func HostPorts(s *v1.Silo) []HostPort {
+	var out []HostPort
+	for _, p := range s.Spec.Open() {
+		for _, n := range p.HostPort {
+			out = append(out, HostPort{n, p.Protocol, p.HostNumber()})
 		}
-		proto := "TCP"
-		if strings.EqualFold(p.Protocol, "UDP") {
-			proto = "UDP"
-		}
-		out = append(out, hostPort{proto, p.Port})
 	}
 	return out
 }
 
-func contains(l []string, v string) bool {
-	for _, x := range l {
-		if x == v {
-			return true
+// netFilter: the network rules a host must meet for the silo (empty: fine). A port with
+// hostPort needs the host to have that address, and no other silo there holding the same address
+// and number.
+func netFilter(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) string {
+	want := HostPorts(s)
+	for _, w := range want {
+		if h.IPOn(w.Network) == "" {
+			return fmt.Sprintf("no %s IP, which port %d/%s asks for (hostPort: [%s])", w.Network, w.Port, w.Proto, w.Network)
 		}
 	}
-	return false
-}
-
-// netFilter: the network rules a host must meet for the silo (empty: fine).
-func netFilter(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) string {
-	if UsesHostAddress(s) { // any host will do: its ports answer on whatever addresses it has (§7.2a)
-		want := openedPorts(s)
+	if len(want) > 0 {
 		for _, o := range placed {
-			if o.Status.Host != h.Name || (o.Namespace == s.Namespace && o.Name == s.Name) {
+			if o.Status.Host != h.Name || (o.Namespace == s.Namespace && o.Name == s.Name) || o.DeletionTimestamp != nil {
 				continue
 			}
-			for _, a := range openedPorts(o) {
-				for _, b := range want {
-					if a == b {
-						return fmt.Sprintf("port %d/%s already open for %s/%s", b.port, b.proto, o.Namespace, o.Name)
-					}
+			for _, a := range HostPorts(o) {
+				if slices.Contains(want, a) {
+					return fmt.Sprintf("port %s (%s) is held by %s/%s", a, h.IPOn(a.Network), o.Namespace, o.Name)
 				}
 			}
 		}
@@ -83,7 +66,10 @@ func netFilter(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) string {
 // (the load-balancer controller writes it; kept here), and node ports, if the class uses them,
 // are allocated on h. The address out follows the table of §7.2b (Egress). Pure.
 func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloServiceStatus, error) {
-	st := v1.SiloServiceStatus{Name: s.Name + "." + s.Namespace + ".kevaso"}
+	var st v1.SiloServiceStatus
+	if s.Spec.Service != nil { // no service, no name: only where its own traffic comes from
+		st.Name = v1.ServiceDNSName(v1.ServiceName(s), s.Namespace, "", env.Suffix)
+	}
 	svcName, _ := svcIPName(s, env)
 	svcIP, egIP := heldIP(s, svcName, env), heldIP(s, v1.SiloEgressIP(s), env)
 	if svcIP != nil {
@@ -92,7 +78,7 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloS
 	if class := v1.PluginLB(s); class != "" {
 		if svcIP != nil { // the balancer writes the address; a silo waiting for its IP has none
 			cur := s.Status.Service
-			st.PublicIP, st.SourceRanges, st.Announce = cur.PublicIP, cur.SourceRanges, cur.Announce
+			st.LoadBalancerIP, st.SourceRanges, st.Announce = cur.LoadBalancerIP, cur.SourceRanges, cur.Announce
 		}
 		if c, ok := env.Classes[class]; ok && c.NodePorts {
 			np, err := NodePorts(s, h.Name, placed)
@@ -107,34 +93,37 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloS
 			st.HostAddresses = append(st.HostAddresses, x.Status.Address)
 		}
 	}
-	switch {
-	case UsesHostAddress(s):
-		st.PublicIP = h.Reach()
-	case svcIP != nil && svcIP.Spec.Class == v1.LBIPPool:
-		if svcIP.Status.Host == h.Name {
-			st.PublicIP = svcIP.Status.Address
-		}
+	if svcIP != nil && svcIP.Spec.Class == v1.LBIPPool && svcIP.Status.Host == h.Name {
+		st.LoadBalancerIP = svcIP.Status.Address
 	}
-	st.AnswersOn = AnswersOn(s, h, st.PublicIP)
-	st.EgressIP, st.EgressNote = Egress(s, h, st.PublicIP, svcIP, egIP, env.Classes)
+	st.Ports = PortStatus(s, h, st.LoadBalancerIP)
+	st.EgressIP, st.EgressNote = Egress(s, h, st, svcIP, egIP, env.Classes)
 	return st, nil
 }
 
-// AnswersOn are the addresses s's exposed ports answer on, placed on h: for hostPort and worker-ip
-// every address the host has (its main one first, then what its agent reports: LAN, behind NAT),
-// whether public or not; otherwise the address it's reached on (its IP's), if any.
-func AnswersOn(s *v1.Silo, h *v1.Host, in string) []string {
-	if !UsesHostAddress(s) {
-		if in == "" {
-			return nil
+// PortStatus is where each of s's service ports is reachable, placed on h: its silo IP (when it
+// has one), the host's internal and external IPs its hostPort asks for, the load-balancer
+// address lb. Pure.
+func PortStatus(s *v1.Silo, h *v1.Host, lb string) []v1.ServicePortStatus {
+	var out []v1.ServicePortStatus
+	at := func(ip string, port int) string {
+		if ip == "" {
+			return ""
 		}
-		return []string{in}
+		return net.JoinHostPort(ip, strconv.Itoa(port))
 	}
-	var out []string
-	for _, a := range []string{h.Internal(), h.External()} {
-		if a != "" && !slices.Contains(out, a) {
-			out = append(out, a)
+	for _, p := range s.Spec.Open() {
+		ps := v1.ServicePortStatus{Port: p.Name, Mesh: at(s.Status.SiloIP, p.Number)}
+		if p.On(v1.NetworkInternal) {
+			ps.Internal = at(h.Internal(), p.HostNumber())
 		}
+		if p.On(v1.NetworkExternal) {
+			ps.External = at(h.External(), p.HostNumber())
+		}
+		if p.LoadBalancer {
+			ps.LoadBalancer = at(lb, p.HostNumber())
+		}
+		out = append(out, ps)
 	}
 	return out
 }
@@ -167,7 +156,10 @@ func NodePorts(s *v1.Silo, host string, placed []*v1.Silo) ([]v1.NodePort, error
 	}
 	var out []v1.NodePort
 	next := v1.NodePortMin
-	for _, p := range s.Spec.Service.Ports {
+	for _, p := range s.Spec.Open() {
+		if !p.LoadBalancer {
+			continue
+		}
 		np, ok := had[p.Name]
 		if !ok {
 			for next <= v1.NodePortSiloMax && taken[next] {
@@ -179,7 +171,7 @@ func NodePorts(s *v1.Silo, host string, placed []*v1.Silo) ([]v1.NodePort, error
 			np = next
 			taken[np] = true
 		}
-		out = append(out, v1.NodePort{Name: p.Name, Port: p.Port, NodePort: np})
+		out = append(out, v1.NodePort{Name: p.Name, Port: p.Number, NodePort: np})
 	}
 	return out, nil
 }

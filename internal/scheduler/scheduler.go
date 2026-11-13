@@ -83,6 +83,8 @@ type Env struct {
 	Classes map[string]Class
 	// Images are the Image objects, for resolving silos' spec.image.
 	Images []*v1.Image
+	// Suffix is the cluster's names' last label ("": kevaso).
+	Suffix string
 }
 
 // Schedule picks a host for silo. placed are all silos already assigned (status.host set); ips,

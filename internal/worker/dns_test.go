@@ -14,7 +14,7 @@ import (
 
 func silosForDNS() []*v1.Silo {
 	api := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "payments"}}
-	api.Status.Address = "10.64.3.7"
+	api.Status.SiloIP = "10.64.3.7"
 	pending := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "new", Namespace: "payments"}}
 	return []*v1.Silo{api, pending}
 }

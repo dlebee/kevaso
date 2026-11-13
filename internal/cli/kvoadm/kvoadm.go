@@ -136,7 +136,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
   kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--credential NAME=FILE]… [--side controller|node]
   kvoadm plugin remove [USER@]ADDRESS --name NAME
-  kvoadm ingress install [--class public] [--driver nginx|caddy|kong] [--public] [--lb-class worker-ip] [--image REF] [--option K=V]…
+  kvoadm ingress install [--class public] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --lb-class CLASS] [--image REF] [--option K=V]…
 The step-by-step guide: https://dlebee.github.io/kevaso-docs/setup/prepare/`)
 		return 2
 	}

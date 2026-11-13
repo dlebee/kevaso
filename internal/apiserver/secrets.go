@@ -460,9 +460,6 @@ func (s *Server) checkRuntimeFit(ctx context.Context, t target, obj meta.Object)
 	if silo.Spec.Service != nil {
 		problems = append(problems, rt+" has no network interface, so no service: reach it with kvo exec")
 	}
-	if len(silo.Spec.AllowFrom) > 0 {
-		problems = append(problems, rt+" takes no inbound connections: allowFrom has nothing to open")
-	}
 	if src := silo.Spec.Network.Egress.Source; src != "" && src != v1.EgressHost {
 		problems = append(problems, rt+"'s traffic leaves from the host's address only (egress.source: host)")
 	}

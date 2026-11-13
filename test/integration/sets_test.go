@@ -117,7 +117,7 @@ func TestSiloSetAndService(t *testing.T) {
 						addrs[s.UID] = fmt.Sprintf("10.64.%d.%d", map[string]int{"w1": 1, "w2": 2}[s.Status.Host], 1+addr)
 						addr++
 					}
-					s.Status.Phase, s.Status.Address = "Running", addrs[s.UID]
+					s.Status.Phase, s.Status.SiloIP = "Running", addrs[s.UID]
 					s.Status.Image.Running, s.Status.Image.Reset = s.Status.Image.Ref, s.Spec.Reset
 					meta.SetCondition(&s.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "Running", ObservedGeneration: s.Generation}, now)
 					_ = admin.UpdateStatus(ctx, s)
@@ -154,7 +154,8 @@ func TestSiloSetAndService(t *testing.T) {
 		Spec: v1.SiloSetSpec{Image: "docker.io/ethereum/client-go:v1.14.0", Instances: 3, Spread: "host", UpgradePolicy: v1.UpgradeRolling,
 			Template: v1.SiloTemplate{Labels: map[string]string{"app": "rpc"}, SiloSpec: v1.SiloSpec{Runtime: "docker",
 				Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-				Service:   &v1.SiloService{Ports: []v1.ServicePort{{Name: "rpc", Port: 8545}}}}}}}
+				Ports:     []v1.SiloPort{{Name: "rpc", Port: 8545}},
+				Service:   &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc"}}}}}}}
 	if err := admin.Create(ctx, set); err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +209,7 @@ func TestSiloSetAndService(t *testing.T) {
 		_ = admin.Get(ctx, "Service", "web3", "rpc", &s)
 		lb, ok := fake.LBOf("web3", "service/rpc")
 		return s.Status.ClusterIP == "10.65.0.1" && len(s.Status.Endpoints) == 3 && len(s.Status.NodePorts) == 1 &&
-				s.Status.NodePorts[0].NodePort == v1.NodePortSiloMax+1 && s.Status.PublicIP != "" && ok && len(lb.Backends) == 2 &&
+				s.Status.NodePorts[0].NodePort == v1.NodePortSiloMax+1 && s.Status.LoadBalancerIP != "" && ok && len(lb.Backends) == 2 &&
 				lb.Ports[0].NodePort == v1.NodePortSiloMax+1,
 			fmt.Sprintf("%+v lb=%+v", s.Status, lb)
 	})

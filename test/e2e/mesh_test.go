@@ -251,7 +251,7 @@ spec:
 		kvo.Run(ctx, []string{"get", "silo", "hello", "-n", "demo", "-o", "yaml"}, nil, &o, io.Discard)
 		y := o.String()
 		if strings.Contains(y, "phase: Running") {
-			if !strings.Contains(y, "host: worker-1") || !strings.Contains(y, "address: "+strings.TrimSuffix(hostsByName["worker-1"].Status.Network.SiloSubnet, "0/24")) {
+			if !strings.Contains(y, "host: worker-1") || !strings.Contains(y, "siloIP: "+strings.TrimSuffix(hostsByName["worker-1"].Status.Network.SiloSubnet, "0/24")) {
 				t.Fatalf("ran, but not as expected:\n%s", y)
 			}
 			break

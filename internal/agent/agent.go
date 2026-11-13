@@ -485,7 +485,7 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	}
 	if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		a.volumesResponding(s, st, bad, dirs)
-		st.Phase, st.Address = PhaseRunning, rs.Address
+		st.Phase, st.SiloIP = PhaseRunning, rs.Address
 		if st.Image == nil || st.Image.Running == "" {
 			st.Image = running(st.Image, s, image) // created before images were recorded
 		}
@@ -609,7 +609,7 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 	a.guestMounted.Delete(s.UID)
 	a.log("silo %s/%s: reset onto %s (%s)", s.Namespace, s.Name, image, what)
 	return true, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
-		st.Image, st.Init, st.Address = running(st.Image, s, image), nil, ""
+		st.Image, st.Init, st.SiloIP = running(st.Image, s, image), nil, ""
 		st.Image.Digest = digest
 		setCond(st, "Updated", meta.ConditionTrue, "Reset", "reset onto "+image+" (stop-first, volumes kept)", s.Generation, a.now())
 	})

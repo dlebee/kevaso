@@ -471,7 +471,7 @@ func hostDrain(ctx context.Context, name, kctx string, uncordon bool, out io.Wri
 	move, stay := DrainPlan(name, silos)
 	now := time.Now().UTC().Truncate(time.Second)
 	for _, s := range move {
-		s.Status.Host, s.Status.Phase, s.Status.Address, s.Status.Init = "", "Pending", "", nil
+		s.Status.Host, s.Status.Phase, s.Status.SiloIP, s.Status.Init = "", "Pending", "", nil
 		meta.SetCondition(&s.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Drained",
 			Message: "moved off " + name + " by kvoadm host drain: a fresh instance from its image (onHostLoss: Recreate)", ObservedGeneration: s.Generation}, now)
 		if err := c.UpdateStatus(ctx, s); err != nil {

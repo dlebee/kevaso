@@ -5,56 +5,37 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
-	"strconv"
 	"strings"
 	"time"
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/ips"
+	"kevaso.com/core/internal/names"
 	"kevaso.com/core/internal/probes"
 )
 
 // semantic checks what CEL can't say well: addresses and ranges.
 func semantic(obj meta.Object) []string {
 	var errs []string
-	cidrs := func(field string, list []string) {
-		for _, c := range list {
-			if _, err := netip.ParsePrefix(c); err != nil {
-				if _, err := netip.ParseAddr(c); err != nil {
-					errs = append(errs, fmt.Sprintf("%s: %q isn't an address or CIDR", field, c))
-				}
-			}
-		}
-	}
 	switch o := obj.(type) {
 	case *v1.Silo:
-		if sv := o.Spec.Service; sv != nil {
-			if sv.HostPort != nil {
-				cidrs("service.hostPort.allowFrom", sv.HostPort.AllowFrom)
-			}
-			if sv.LoadBalancer != nil {
-				cidrs("service.loadBalancer.allowFrom", sv.LoadBalancer.AllowFrom)
-			}
-		}
+		errs = append(errs, checkPorts(o.Spec)...)
 		for _, u := range o.Spec.Upkeep {
 			if d, err := time.ParseDuration(u.Every); err != nil || d < time.Minute {
 				errs = append(errs, fmt.Sprintf("upkeep %s: every %q: want a duration of at least 1m (e.g. 6h)", u.Name, u.Every))
 			}
 		}
-		for _, a := range o.Spec.AllowFrom {
-			if strings.Count(a.Silo, "/") > 1 {
-				errs = append(errs, fmt.Sprintf("allowFrom: %q: want NAME or NAMESPACE/NAME", a.Silo))
-			}
-		}
 		errs = append(errs, probes.Validate(o.Spec)...)
 	case *v1.Service:
 		for _, p := range o.Spec.Ports {
-			if t := p.TargetPort; t != "" {
-				if n, err := strconv.Atoi(t); err == nil && (n < 1 || n > 65535) {
-					errs = append(errs, fmt.Sprintf("port %s: targetPort %d isn't from 1 to 65535", p.Name, n))
-				}
+			if t := p.TargetPort; t != "" && !label.MatchString(t) {
+				errs = append(errs, fmt.Sprintf("port %s: targetPort %q: the name of a port the silos declare (spec.ports)", p.Name, t))
 			}
+		}
+	case *v1.Namespace:
+		if names.Reserved(o.Name) {
+			errs = append(errs, fmt.Sprintf("%q is a network's name (mesh, internal, external), which names use as a label of their own: pick another", o.Name))
 		}
 	case *v1.Grant:
 		for _, r := range o.Spec.Egress {

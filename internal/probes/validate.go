@@ -2,7 +2,6 @@ package probes
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -81,32 +80,17 @@ func Validate(spec v1.SiloSpec) []string {
 
 func checkPort(field, port string, spec v1.SiloSpec) []string {
 	if port == "" {
-		return []string{field + ": needed (a number, or a service port's name)"}
-	}
-	if n, err := strconv.Atoi(port); err == nil {
-		if n < 1 || n > 65535 {
-			return []string{fmt.Sprintf("%s: %d isn't from 1 to 65535", field, n)}
-		}
-		return nil
+		return []string{field + ": needed (a declared port's name, from spec.ports)"}
 	}
 	if _, ok := ResolvePort(port, spec); !ok {
-		return []string{fmt.Sprintf("%s: %q isn't one of the service's ports", field, port)}
+		return []string{fmt.Sprintf("%s: %q isn't one of the silo's declared ports (spec.ports)", field, port)}
 	}
 	return nil
 }
 
-// ResolvePort is a tcp or http probe's port number: the number itself, or the service port of
-// that name (ok false: it names no service port, so the probe can't run).
+// ResolvePort is a tcp or http probe's port number: the declared port of that name (ok false: no
+// such port, so the probe can't run).
 func ResolvePort(port string, spec v1.SiloSpec) (int, bool) {
-	if n, err := strconv.Atoi(port); err == nil {
-		return n, n >= 1 && n <= 65535
-	}
-	if spec.Service != nil {
-		for _, p := range spec.Service.Ports {
-			if p.Name == port {
-				return p.Port, true
-			}
-		}
-	}
-	return 0, false
+	d, ok := spec.Declared(port)
+	return d.Port, ok
 }
