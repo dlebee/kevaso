@@ -1,0 +1,29 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+const dims=()=>[outerWidth,outerHeight,screenX,screenY].join(',');
+</script></head><body style="margin:0">
+<input id=i style="position:absolute;left:4px;top:4px;width:60px">
+<div id=b style="width:100vw;height:100vh;background:#232;color:#eee">t17 click</div>
+<script>
+async function attempts(tag){
+ R(tag+'dims-before',dims());
+ await T(tag+'resizeTo',()=>{window.resizeTo(4000,4000);return dims()});
+ await T(tag+'resizeBy',()=>{window.resizeBy(2000,2000);return dims()});
+ await T(tag+'moveTo',()=>{window.moveTo(0,0);return dims()});
+ await T(tag+'moveBy',()=>{window.moveBy(-500,-500);return dims()});
+ await T(tag+'focus',()=>{window.focus();return document.hasFocus()});
+ await T(tag+'input.focus',()=>{document.getElementById('i').focus();return document.activeElement&&document.activeElement.id});
+ await T(tag+'blur',()=>{window.blur();return 'called'});
+ await T(tag+'requestFullscreen',()=>{const el=document.documentElement;const f=el.requestFullscreen||el.webkitRequestFullscreen;if(!f)return 'no fullscreen API';const r=f.call(el);return r&&r.then?r.then(()=>'fullscreen'):'called fullscreenElement='+document.fullscreenElement});
+ await T(tag+'Notification',async()=>{if(!window.Notification)return 'no Notification API';const p=await Notification.requestPermission();new Notification('Your Mac needs your password');return p});
+ await T(tag+'open-sized',()=>String(window.open('about:blank','_blank','width=4000,height=4000,left=0,top=0')));
+ R(tag+'dims-after',dims());
+}
+// window.close() last: a page that closes itself only silences itself (asserted by the test).
+attempts('nogesture.');
+document.getElementById('b').addEventListener('click',async()=>{R('click','user click');await attempts('gesture.');R('done','t17');
+  R('close','called');window.close();R('closed',String(window.closed))},{once:true});
+</script></body></html>
