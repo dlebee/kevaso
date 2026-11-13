@@ -33,16 +33,22 @@ func TestDrainWaitsForTheOldHostToLetGo(t *testing.T) {
 		t.Fatalf("drain moves %d silos", len(move))
 	}
 	// What hostDrain writes (internal/cli/kvoadm/hosts.go).
-	s.Status.Host, s.Status.Phase, s.Status.SiloIP, s.Status.Init = "", "Pending", "", nil
+	s.Status = kvoadm.DrainStatus(s, "hv1", time.Now())
 	st, _, _, err := siloctl.Decide(s, []*v1.Host{old, next}, nil, time.Now())
 	if err != nil || st.Host != "hv2" {
 		t.Fatalf("placed on %q: %v", st.Host, err)
 	}
 	s.Status = st
 	if moves.MayStart(s, "hv2") {
-		t.Skip("KNOWN BUG (reported; kvoadm is phase/metal's): kvoadm host drain clears status.host of a Recreate " +
-			"silo without status.movingFrom, so hv2 may start the new copy while hv1, alive, still runs the old one " +
-			"until its agent notices: two copies at once. Drain should hand off like kvo move (movingFrom: hv1), or " +
-			"wait for hv1 to report it stopped.")
+		t.Fatalf("hv2 may start the new copy while hv1 still runs the old one: %+v", s.Status)
+	}
+	// hv1's agent stops its copy and lets go; only then may hv2 start it.
+	released, ok := moves.Released(s.Status, "hv1")
+	if !ok {
+		t.Fatalf("hv1 can't release it: %+v", s.Status)
+	}
+	s.Status = released
+	if !moves.MayStart(s, "hv2") {
+		t.Fatalf("released by hv1, yet hv2 may not start it: %+v", s.Status)
 	}
 }

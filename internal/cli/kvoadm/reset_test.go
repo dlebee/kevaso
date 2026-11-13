@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	v1 "kevaso.com/core/api/v1"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"kevaso.com/core/internal/hostreset"
 )
@@ -267,4 +269,18 @@ func (a answerRunner) Run(_ context.Context, cmd string, _ []byte) ([]byte, erro
 		return nil, errors.New("not the record script")
 	}
 	return []byte(a), nil
+}
+
+// Found by test-gaps: drain cleared a Recreate silo's host without a handoff, so the host it
+// landed on could start it while the old one still ran it.
+func TestDrainHandsOff(t *testing.T) {
+	s := &v1.Silo{}
+	s.Status.Host, s.Status.Phase, s.Status.SiloIP = "hv1", "Running", "10.64.1.2"
+	st := DrainStatus(s, "hv1", time.Now())
+	if st.Host != "" || st.Phase != "Pending" || st.SiloIP != "" || st.MovingFrom != "hv1" {
+		t.Fatalf("drained: %+v", st)
+	}
+	if s.Status.Host != "hv1" || len(s.Status.Conditions) != 0 {
+		t.Error("DrainStatus changed the silo it was given")
+	}
 }
