@@ -225,6 +225,13 @@ spec: { engine: postgres, size: 10Gi, replicas: 1 }
 `, "apply", "-f", "-"); !strings.Contains(out, "unchanged") { // replicas: the default, now stored
 		t.Errorf("apply again:\n%s", out)
 	}
+	if out := h.ok(`apiVersion: acme.dev/v1
+kind: Database
+metadata: { name: orders, namespace: demo }
+spec: { engine: postgres, size: 10Gi }
+`, "apply", "-f", "-"); !strings.Contains(out, "databases.acme.dev/orders unchanged") { // replicas left out: the server's default
+		t.Errorf("apply again without the defaulted field:\n%s", out)
+	}
 
 	out = h.ok("", "get", "kinds")
 	for _, want := range []string{"databases.acme.dev", "acme.dev/v1", "Database", "silos", "kevaso/v1", "kinddefinitions"} {
@@ -263,5 +270,41 @@ spec: { engine: postgres, size: 10Gi, replicas: 1 }
 	h.ok("", "delete", "kd", "databases.acme.dev")
 	if _, errs, code := h.kvo(context.Background(), "", "get", "db"); code == 0 || !strings.Contains(errs, "unknown kind") {
 		t.Errorf("get after the definition went: %d %s", code, errs)
+	}
+}
+
+// kvo apply compares what the server would store (a dry run): a manifest that leaves out what a
+// mutation policy sets on a built-in kind is "unchanged" the second time, and a real change is
+// still "configured".
+func TestApplyUnchangedAfterServerDefaults(t *testing.T) {
+	h := newHarness(t)
+	h.ok(`apiVersion: kevaso/v1
+kind: Namespace
+metadata: { name: demo }
+---
+apiVersion: kevaso/v1
+kind: MutationPolicy
+metadata: { name: team-label }
+spec:
+  match: { kinds: [Silo] }
+  mutations:
+  - { field: metadata.labels.team, value: "'core'" }
+`, "apply", "-f", "-")
+	manifest := `apiVersion: kevaso/v1
+kind: Silo
+metadata: { name: web, namespace: demo }
+spec: { runtime: cloud-hypervisor, image: ubuntu-24.04, resources: { cpu: 1, memory: 1Gi } }
+`
+	if out := h.ok(manifest, "apply", "-f", "-"); !strings.Contains(out, "silo/web created") {
+		t.Fatalf("first apply:\n%s", out)
+	}
+	if out := h.ok(manifest, "apply", "-f", "-"); !strings.Contains(out, "silo/web unchanged") {
+		t.Errorf("second apply, label set by the server:\n%s", out)
+	}
+	if out := h.ok(strings.Replace(manifest, "cpu: 1", "cpu: 2", 1), "apply", "-f", "-"); !strings.Contains(out, "silo/web configured") {
+		t.Errorf("a real change:\n%s", out)
+	}
+	if y := h.ok("", "get", "silo", "web", "-n", "demo", "-o", "yaml"); !strings.Contains(y, "generation: 2") || !strings.Contains(y, "team: core") {
+		t.Errorf("stored:\n%s", y)
 	}
 }

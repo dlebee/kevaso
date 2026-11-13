@@ -47,6 +47,7 @@ func init() {
 	register(KindInfo{Kind: "KindDefinition", Plural: "kinddefinitions", ShortNames: []string{"kd"}, Scope: Cluster, HasSpec: true, New: func() meta.Object { return &KindDefinition{} }})
 	register(KindInfo{Kind: "ValidationPolicy", Plural: "validationpolicies", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &ValidationPolicy{} }})
 	register(KindInfo{Kind: "MutationPolicy", Plural: "mutationpolicies", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &MutationPolicy{} }})
+	register(KindInfo{Kind: "Plugin", Plural: "plugins", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &Plugin{} }})
 	register(KindInfo{Kind: "ServiceAccount", Plural: "serviceaccounts", ShortNames: []string{"sa"}, Scope: Namespaced, New: func() meta.Object { return &ServiceAccount{} }})
 }
 

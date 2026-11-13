@@ -60,6 +60,7 @@ func CheckDefinition(d, old *v1.KindDefinition, others []*v1.KindDefinition) []s
 	if _, err := Compile(s.Schema); err != nil {
 		add("spec.%v", err)
 	}
+	errs = append(errs, checkScale(s)...)
 	for i, c := range s.PrinterColumns {
 		if c.Name == "" {
 			add("spec.printerColumns[%d]: needs a name", i)

@@ -1,0 +1,70 @@
+# The two kinds the plugin owns. Uninstalling it removes them (refused while sessions exist).
+apiVersion: kevaso/v1
+kind: KindDefinition
+metadata: { name: sessiontemplates.example.dev }
+spec:
+  group: example.dev
+  version: v1
+  names: { kind: SessionTemplate, plural: sessiontemplates, singular: sessiontemplate, shortNames: [stpl] }
+  scope: Namespaced
+  schema:
+    type: object
+    required: [spec]
+    properties:
+      spec:
+        type: object
+        required: [silo]
+        properties:
+          silo:
+            description: a Silo's spec; each of a session's silos is made from it
+            type: object
+            x-kevaso-preserve-unknown: true
+---
+apiVersion: kevaso/v1
+kind: KindDefinition
+metadata: { name: sessions.example.dev }
+spec:
+  group: example.dev
+  version: v1
+  names: { kind: Session, plural: sessions, singular: session, shortNames: [sess] }
+  scope: Namespaced
+  schema:
+    type: object
+    required: [spec]
+    properties:
+      spec:
+        type: object
+        required: [template]
+        properties:
+          template:
+            description: the SessionTemplate (in the session's namespace) its silos are made from
+            type: string
+            minLength: 1
+            x-kevaso-validations:
+              - { rule: "self == oldSelf", message: "a session's template can't change: start a new session" }
+          replicas: { description: how many silos, type: integer, minimum: 0, maximum: 10, default: 1 }
+          prompt: { description: what the session is for (on each silo as an annotation), type: string, maxLength: 4096 }
+      status:
+        type: object
+        properties:
+          observedGeneration: { type: integer }
+          replicas: { description: silos that exist, type: integer }
+          phase: { type: string, enum: [Waiting, Creating, Starting, Running] }
+          silos:
+            type: array
+            items:
+              type: object
+              properties:
+                name: { type: string }
+                phase: { type: string }
+          conditions:
+            type: array
+            items: { type: object, x-kevaso-preserve-unknown: true }
+  subresources:
+    status: {}
+    scale: { specReplicasPath: .spec.replicas, statusReplicasPath: .status.replicas }
+  printerColumns:
+    - { name: Template, jsonPath: .spec.template }
+    - { name: Want, jsonPath: .spec.replicas }
+    - { name: Have, jsonPath: .status.replicas }
+    - { name: Phase, jsonPath: .status.phase }

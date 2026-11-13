@@ -123,6 +123,8 @@ func (s *Server) parseDefined(ctx context.Context, path string) (target, error) 
 	switch {
 	case len(parts) == 3 && parts[2] == "status" && dk.res.Status:
 		t.status = true
+	case len(parts) == 3 && parts[2] == "scale" && dk.res.Scale:
+		t.scale = true
 	case len(parts) > 2:
 		return t, errf(http.StatusNotFound, "NotFound", "unknown path %q", path)
 	}
@@ -164,6 +166,8 @@ func (s *Server) routeDefined(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case t.scale:
+		s.serveScale(ctx, w, r, t)
 	case r.Method == http.MethodGet && t.name == "" && r.URL.Query().Get("watch") == "true":
 		s.watch(ctx, w, r, t)
 	case r.Method == http.MethodGet && t.name == "":
@@ -234,6 +238,7 @@ func decodeDefined(body []byte, dk *definedKind) (*v1.Unstructured, error) {
 type definedWrite func(ctx context.Context, t target, u *v1.Unstructured) (store.Object, error)
 
 func (s *Server) writeDefined(ctx context.Context, w http.ResponseWriter, r *http.Request, t target, fn definedWrite, okCode int) {
+	ctx = withDryRun(ctx, r)
 	body, err := readBody(r)
 	if err != nil {
 		writeErr(w, err)
@@ -320,7 +325,7 @@ func (s *Server) createDefined(ctx context.Context, t target, u *v1.Unstructured
 	if err != nil {
 		return store.Object{}, err
 	}
-	return s.store.Create(ctx, t.key(), data)
+	return s.commitCreate(ctx, t.key(), data)
 }
 
 func (s *Server) updateDefined(ctx context.Context, t target, u *v1.Unstructured) (store.Object, error) {
@@ -365,7 +370,7 @@ func (s *Server) updateDefined(ctx context.Context, t target, u *v1.Unstructured
 		nm.UID, nm.CreationTimestamp, nm.DeletionTimestamp = om.UID, om.CreationTimestamp, om.DeletionTimestamp
 		if om.DeletionTimestamp != nil {
 			if len(nm.Finalizers) == 0 {
-				d, err := s.store.Delete(ctx, t.key(), expected)
+				d, err := s.commitDelete(ctx, t.key(), expected)
 				return store.Object{Key: d.Key}, err
 			}
 			if !isSubset(nm.Finalizers, om.Finalizers) {
@@ -384,7 +389,7 @@ func (s *Server) updateDefined(ctx context.Context, t target, u *v1.Unstructured
 	if err != nil {
 		return store.Object{}, err
 	}
-	return s.store.Update(ctx, t.key(), data, expected)
+	return s.commitUpdate(ctx, t.key(), data, expected)
 }
 
 // specPart is what bumps generation: every field but metadata and status.
@@ -463,13 +468,15 @@ func (s *Server) admitDefined(ctx context.Context, t target, old, u *v1.Unstruct
 		return nil, err
 	}
 	full := v.(map[string]any)
-	fields := map[string]any{}
-	for k, v := range full {
-		if k != "apiVersion" && k != "kind" && k != "metadata" {
-			fields[k] = v
+	fields := withoutTypeAndMeta(full)
+	var oldFields, oldFull map[string]any
+	if old != nil {
+		if oldFull, err = plainOf(old); err != nil {
+			return nil, err
 		}
+		oldFields = withoutTypeAndMeta(oldFull)
 	}
-	failed := t.def.schema.Validate(fields, full, t.part())
+	failed := t.def.schema.ValidateUpdate(fields, full, oldFields, oldFull, t.part())
 	if !t.status && len(failed) == 0 {
 		pf, err := s.validatePolicies(ctx, t, old, full, t.def.res.Kind)
 		if err != nil {
@@ -528,6 +535,9 @@ func (s *Server) checkDeleteDefinition(ctx context.Context, t target) error {
 		return err
 	}
 	d := obj.(*v1.KindDefinition)
+	if err := s.checkOwnerPlugin(ctx, d); err != nil {
+		return err
+	}
 	left, _, err := s.store.List(ctx, store.Selector{Kind: d.Spec.Resource()})
 	if err != nil {
 		return err
@@ -539,6 +549,30 @@ func (s *Server) checkDeleteDefinition(ctx context.Context, t target) error {
 		}
 		return errf(http.StatusConflict, "Conflict", "KindDefinition %s still has %d object(s) (%s%s): delete them first",
 			d.Name, n, strings.Join(names, ", "), map[bool]string{true: ", …", false: ""}[n > 3])
+	}
+	return nil
+}
+
+// checkOwnerPlugin: a definition a plugin installed goes with the plugin (kvoadm plugin uninstall
+// marks the Plugin as being deleted first), not on its own while the plugin is installed.
+func (s *Server) checkOwnerPlugin(ctx context.Context, d *v1.KindDefinition) error {
+	owner := v1.OwnerPlugin(&d.ObjectMeta)
+	if owner == "" {
+		return nil
+	}
+	o, err := s.store.Get(ctx, store.Key{Kind: "Plugin", Name: owner})
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	p, _, err := v1.Decode(o.Data)
+	if err != nil {
+		return err
+	}
+	if p.GetObjectMeta().DeletionTimestamp == nil {
+		return errf(http.StatusConflict, "Conflict", "KindDefinition %s belongs to plugin %s: kvoadm plugin uninstall %s removes it", d.Name, owner, owner)
 	}
 	return nil
 }

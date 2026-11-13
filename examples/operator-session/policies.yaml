@@ -1,0 +1,9 @@
+# A plugin's policies apply to its own kinds only.
+apiVersion: kevaso/v1
+kind: ValidationPolicy
+metadata: { name: sessions-not-in-system }
+spec:
+  match: { kinds: [sessions.example.dev], operations: [CREATE] }
+  validations:
+    - expression: "object.metadata.namespace != 'kevaso-system'"
+      message: sessions run in people's namespaces, not kevaso-system

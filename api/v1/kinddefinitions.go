@@ -44,9 +44,19 @@ type KindNames struct {
 }
 
 // KindSubresources: with Status, status is written through /status only (controllers), and the main
-// resource (people) never changes it.
+// resource (people) never changes it. With Scale, …/NAME/scale reads and sets a replica count
+// (`kvo scale`), so tools that scale things needn't know the kind's schema.
 type KindSubresources struct {
-	Status *struct{} `json:"status,omitempty"`
+	Status *struct{}         `json:"status,omitempty"`
+	Scale  *ScaleSubresource `json:"scale,omitempty"`
+}
+
+// ScaleSubresource says where a kind keeps its replica counts: dotted paths into the object, the
+// wanted count under .spec and (optionally) the current one under .status, both integers in the
+// schema.
+type ScaleSubresource struct {
+	SpecReplicasPath   string `json:"specReplicasPath"`             // .spec.replicas
+	StatusReplicasPath string `json:"statusReplicasPath,omitempty"` // .status.replicas
 }
 
 // PrinterColumn is one column of `kvo get`.
@@ -60,6 +70,11 @@ type PrinterColumn struct {
 // HasStatus reports whether the kind has the status subresource.
 func (s KindDefinitionSpec) HasStatus() bool {
 	return s.Subresources != nil && s.Subresources.Status != nil
+}
+
+// HasScale reports whether the kind has the scale subresource.
+func (s KindDefinitionSpec) HasScale() bool {
+	return s.Subresources != nil && s.Subresources.Scale != nil
 }
 
 // Resource is PLURAL.GROUP.
@@ -178,6 +193,7 @@ type APIResource struct {
 	// Resource is what RBAC and policies call it: the plural for built-ins, PLURAL.GROUP otherwise.
 	Resource       string          `json:"resource"`
 	Status         bool            `json:"status,omitempty"`
+	Scale          bool            `json:"scale,omitempty"`
 	BuiltIn        bool            `json:"builtIn,omitempty"`
 	PrinterColumns []PrinterColumn `json:"printerColumns,omitempty"`
 }
@@ -220,5 +236,5 @@ func DefinedResource(d *KindDefinition) APIResource {
 		sing = strings.ToLower(s.Names.Kind)
 	}
 	return APIResource{Group: s.Group, Version: s.Version, Kind: s.Names.Kind, Plural: s.Names.Plural, Singular: sing,
-		ShortNames: s.Names.ShortNames, Scope: s.Scope, Resource: s.Resource(), Status: s.HasStatus(), PrinterColumns: s.PrinterColumns}
+		ShortNames: s.Names.ShortNames, Scope: s.Scope, Resource: s.Resource(), Status: s.HasStatus(), Scale: s.HasScale(), PrinterColumns: s.PrinterColumns}
 }

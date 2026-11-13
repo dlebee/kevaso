@@ -47,9 +47,30 @@ defined. The product built on Kevaso (its `Session` and `Task` kinds, §10) is t
    node). The root lists the object's top-level fields other than `apiVersion`, `kind` and
    `metadata`. Anything else in a schema is refused when the definition is written, and so is a
    CEL rule that doesn't compile.
+8a. **Transition rules.** A rule in `x-kevaso-validations` may use `oldSelf`, the node's value in
+    the stored object, as in Kubernetes: `self == oldSelf` (immutable), `self >= oldSelf` (only
+    grows). A rule that compiles only with `oldSelf` is a transition rule; it's checked on updates,
+    and skipped on creates and when the old object didn't have the node (so a field can be set
+    for the first time). Object properties and a map's values keep their old values by name and
+    key; a list's items have none, so a transition rule inside `items` is refused when the
+    definition is written (put it on the list).
 9. **Writes, in order:** decode (metadata strictly) → system metadata (uid, timestamps, generation)
    → schema defaults → mutation policies → schema and CEL rules → validation policies → store.
    `generation` moves when anything outside `metadata` and `status` changes.
+   A built-in kind's write: decode strictly → system metadata → the secret's value taken out (to
+   seal) → mutation policies → **the built-in guards** → the kind's CEL rules and semantic checks
+   → validation policies → store.
+9a. **The built-in guards run on the object as it will be stored**, after mutation policies: the
+    checks that stand for a privilege (exposing silos with `hostPort` or `loadBalancer`, a
+    `LoadBalancer` Service, publishing an Ingress on a public class, giving a silo a grant or
+    naming secrets in a grant, each needing its own permission) and the ones that refuse what a
+    runtime or its storage can't do (runtime fit, `onHostLoss` against storage). Whatever a policy
+    changed is checked as if the writer had sent it. Two more rules close what that leaves: on a
+    write by a caller the guards don't ask RBAC about (the admin socket, kevasod's own controllers
+    such as the SiloSet controller, hosts), a mutation that changes what the object exposes, its
+    ingress class, its grants or a grant's secrets is refused (403: "policies can't grant
+    privileges"); and a policy can never set a Secret's `spec.value` (it would be stored in the
+    clear). Status writes skip the guards, as policies skip them.
 10. **The status subresource.** With `subresources.status`, people write the main resource, whose
     `status` is ignored (kept as stored), and controllers write `/status`, which changes only
     `status`; the main write is checked against the schema without `status`, a `/status` write
@@ -57,10 +78,25 @@ defined. The product built on Kevaso (its `Session` and `Task` kinds, §10) is t
 11. **Changing a definition never makes objects unreadable.** Reads return what's stored and are
     never checked against the schema; the new schema applies from the next write of each object.
 12. **Deleting a definition that still has objects is refused** (409, with how many are left).
-    Delete them first. (Owner references to the plugin that installed a definition come with
-    `kvoadm plugin install`.)
+    Delete them first. A definition a plugin installed belongs to its `Plugin` and goes with
+    `kvoadm plugin uninstall` (ADR 0006).
 13. **Built-in roles don't reach defined kinds**, except cluster-admin's `*`: an operator grants
     them explicitly (a plugin's controller gets a role on its own resources).
+
+10b. **The scale subresource.** `subresources.scale` names `specReplicasPath` (under `.spec`) and
+     optionally `statusReplicasPath` (under `.status`), dotted paths to integers in the schema,
+     checked when the definition is written. `GET …/NAME/scale` answers a `Scale`
+     (`kevaso/v1`, `spec.replicas`, `status.replicas`, the object's resourceVersion); `PUT` sets the
+     wanted count as an update of the main resource, so defaults, mutation policies, the schema
+     (its bounds), rules and validation policies all apply and generation moves. Without a
+     resourceVersion it scales what's stored now. RBAC calls it `PLURAL.GROUP/scale` (`get`,
+     `update`); `GET /apis` says `scale: true`, and `kvo scale KIND NAME --replicas N` uses it.
+10a. **Dry runs.** A create or update with `?dryRun=All` goes through every step above, including
+     the resourceVersion check, and answers with the object it would store, storing nothing.
+     `kvo apply` dry-runs an update and compares that answer with what's stored (every top-level
+     field but `status`, and the user-owned metadata), so a manifest that leaves out what the
+     server defaults or a policy sets is `unchanged`; a Secret whose manifest carries a value is
+     always written.
 
 ### Admission policies
 
@@ -86,6 +122,6 @@ defined. The product built on Kevaso (its `Session` and `Task` kinds, §10) is t
 
 ## Left for later
 
-Plugin-installed definitions (`kvoadm plugin install`, owner references, forced uninstall), the
-scale subresource, transition rules (`oldSelf`) in schemas, server-side apply's field managers for
-defined kinds, more than one served version and conversion, and policy parameters.
+Server-side apply's field managers for defined kinds, more than one served version and
+conversion, policy parameters, a label selector in `Scale` (for autoscalers), and transition rules
+on list items (lists keyed by a field, Kubernetes' `listType: map`).

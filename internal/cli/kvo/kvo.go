@@ -151,7 +151,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.secret.labels = append(o.secret.labels, v)
 		case "--reveal":
 			o.secret.reveal = true
-		case "--instances":
+		case "--instances", "--replicas":
 			var v string
 			if v, err = val(); err == nil {
 				o.sets.instances, err = strconv.Atoi(v)
@@ -444,15 +444,15 @@ func apply(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdou
 		case err != nil:
 			return fmt.Errorf("%s: %w", what, err)
 		default:
-			same, err := sameDeclared(obj, cur)
+			m.ResourceVersion = cur.GetObjectMeta().ResourceVersion
+			same, err := wouldStore(ctx, c, obj, cur) // apply.go
 			if err != nil {
-				return err
+				return fmt.Errorf("%s: %w", what, err)
 			}
 			if same {
 				_, _ = fmt.Fprintln(stdout, what, "unchanged")
 				continue
 			}
-			m.ResourceVersion = cur.GetObjectMeta().ResourceVersion
 			if err := c.Update(ctx, obj); err != nil {
 				return fmt.Errorf("%s: %w", what, err)
 			}
@@ -460,40 +460,6 @@ func apply(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdou
 		}
 	}
 	return nil
-}
-
-// sameDeclared reports whether the stored object already matches what's declared: the spec and the
-// user-owned metadata (labels, annotations, finalizers, owners). Status and system fields are ignored.
-func sameDeclared(declared, stored meta.Object) (bool, error) {
-	a, err := declaredPart(declared)
-	if err != nil {
-		return false, err
-	}
-	b, err := declaredPart(stored)
-	if err != nil {
-		return false, err
-	}
-	return a == b, nil
-}
-
-func declaredPart(obj meta.Object) (string, error) {
-	b, err := json.Marshal(obj)
-	if err != nil {
-		return "", err
-	}
-	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		return "", err
-	}
-	md, _ := m["metadata"].(map[string]any)
-	keep := map[string]any{}
-	for _, f := range []string{"labels", "annotations", "finalizers", "ownerReferences"} {
-		if v, ok := md[f]; ok {
-			keep[f] = v
-		}
-	}
-	out, err := json.Marshal(map[string]any{"spec": m["spec"], "metadata": keep})
-	return string(out), err
 }
 
 // ── get ──────────────────────────────────────────────────────────────────────
