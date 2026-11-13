@@ -104,7 +104,7 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 		want(t, "Move on local disks", ed.Create(c.ctx, silo("m1", "web3")), http.StatusUnprocessableEntity, "onHostLoss: Move")
 	})
 	t.Run("lease", func(t *testing.T) {
-		policy(t, "Silo", "spec.service.lease", `{'max': '9999h'}`)
+		policy(t, "Silo", "spec.service.ports", `[{'name': 'http', 'port': 8080, 'lease': {'max': '9999h'}}]`)
 		s := silo("l1", "web3")
 		s.Spec.Service = &v1.SiloService{Expose: v1.ExposeHostPort, Ports: []v1.ServicePort{{Name: "http", Port: 8080}}}
 		want(t, "a lease past the cluster's limit", ada.Create(c.ctx, s), http.StatusUnprocessableEntity, "more than this cluster allows")

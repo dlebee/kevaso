@@ -25,7 +25,7 @@ func TestPortCommand(t *testing.T) {
 		t.Fatalf("requests %+v", f.got)
 	}
 	if !strings.HasPrefix(out.String(), "port debug open until ") || !strings.Contains(errs.String(), "kvo approve api-ab12cd34 -n dev") ||
-		!strings.Contains(errs.String(), "more than its lease's max") {
+		!strings.Contains(errs.String(), "more than this port's lease max") {
 		t.Fatalf("out %q, err %q", out.String(), errs.String())
 	}
 	f = &fakeBroker{answers: []client.BrokerResponse{{Until: &until}}}

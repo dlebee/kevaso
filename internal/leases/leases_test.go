@@ -14,17 +14,28 @@ import (
 
 var t0 = time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 
-func svc(lease *v1.ServiceLease) *v1.SiloService {
+// svc is a service with web always open, debug leased on the given terms (nil: not leased) and
+// disc not exposed (hostPort.ports leaves it out).
+func svc(debug *v1.PortLease) *v1.SiloService {
 	return &v1.SiloService{
-		Ports:    []v1.ServicePort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}, {Name: "disc", Port: 30303, Protocol: "UDP"}},
+		Ports:    []v1.ServicePort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229, Lease: debug}, {Name: "disc", Port: 30303, Protocol: "UDP"}},
 		Expose:   v1.ExposeHostPort,
 		HostPort: &v1.HostPortSpec{Ports: []string{"web", "debug"}, AllowFrom: []string{"203.0.113.0/24"}},
-		Lease:    lease,
 	}
 }
 
-func siloWith(lease *v1.ServiceLease) *v1.Silo {
-	return &v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "api", UID: "u1"}, Spec: v1.SiloSpec{Service: svc(lease)}}
+// withLease gives one more port of sv a lease.
+func withLease(sv *v1.SiloService, port string, pl *v1.PortLease) *v1.SiloService {
+	for i := range sv.Ports {
+		if sv.Ports[i].Name == port {
+			sv.Ports[i].Lease = pl
+		}
+	}
+	return sv
+}
+
+func siloWith(debug *v1.PortLease) *v1.Silo {
+	return &v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "api", UID: "u1"}, Spec: v1.SiloSpec{Service: svc(debug)}}
 }
 
 func TestValidate(t *testing.T) {
@@ -35,16 +46,18 @@ func TestValidate(t *testing.T) {
 		wants []string // substrings; none = valid
 	}{
 		{"no lease", svc(nil), nil},
-		{"good", svc(&v1.ServiceLease{Ports: []string{"debug"}, Default: "30m", Max: "2h", AllowFrom: []string{"203.0.113.7"}}), nil},
-		{"all exposed ports", svc(&v1.ServiceLease{}), nil},
-		{"private", &v1.SiloService{Ports: []v1.ServicePort{{Name: "web", Port: 80}}, Lease: &v1.ServiceLease{}}, []string{"only with expose: hostPort or loadBalancer"}},
-		{"unknown port", svc(&v1.ServiceLease{Ports: []string{"ssh"}}), []string{`"ssh" isn't a port of the service`}},
-		{"port not exposed", svc(&v1.ServiceLease{Ports: []string{"disc"}}), []string{`"disc" isn't exposed`}},
-		{"bad durations", svc(&v1.ServiceLease{Default: "soon", Max: "0s"}), []string{"service.lease.max 0s: at least 1s", "default \"soon\" isn't a duration"}},
-		{"max over the cluster's", svc(&v1.ServiceLease{Max: "5h"}), []string{"max 5h0m0s is more than this cluster allows (4h0m0s)"}},
-		{"default over max", svc(&v1.ServiceLease{Default: "3h", Max: "2h"}), []string{"default 3h0m0s is more than its max (2h0m0s)"}},
-		{"default over the cluster's default max", svc(&v1.ServiceLease{Default: "90m"}), []string{"more than its max (1h0m0s)"}},
-		{"bad source", svc(&v1.ServiceLease{AllowFrom: []string{"office"}}), []string{`allowFrom: "office"`}},
+		{"good", svc(&v1.PortLease{Default: "30m", Max: "2h", AllowFrom: []string{"203.0.113.7"}}), nil},
+		{"empty lease: closed until leased", svc(&v1.PortLease{}), nil},
+		{"two ports, their own terms", withLease(svc(&v1.PortLease{Max: "2h", Approval: &v1.ApprovalRule{Required: true}}), "web", &v1.PortLease{Max: "4h"}), nil},
+		{"private", &v1.SiloService{Ports: []v1.ServicePort{{Name: "web", Port: 80, Lease: &v1.PortLease{}}}}, []string{"service.ports[web].lease: only with expose: hostPort or loadBalancer"}},
+		{"port not exposed", withLease(svc(nil), "disc", &v1.PortLease{}), []string{`service.ports[disc].lease: "disc" isn't exposed`}},
+		{"bad durations", svc(&v1.PortLease{Default: "soon", Max: "0s"}), []string{"service.ports[debug].lease.max 0s: at least 1s", "default \"soon\" isn't a duration"}},
+		{"max over the cluster's", svc(&v1.PortLease{Max: "5h"}), []string{"max 5h0m0s is more than this cluster allows (4h0m0s)"}},
+		{"default over max", svc(&v1.PortLease{Default: "3h", Max: "2h"}), []string{"default 3h0m0s is more than its max (2h0m0s)"}},
+		{"default over the cluster's default max", svc(&v1.PortLease{Default: "90m"}), []string{"more than its max (1h0m0s)"}},
+		{"bad source", svc(&v1.PortLease{AllowFrom: []string{"office"}}), []string{`allowFrom: "office"`}},
+		{"each port checked on its own", withLease(svc(&v1.PortLease{Max: "2h"}), "web", &v1.PortLease{Max: "5h"}),
+			[]string{"service.ports[web].lease.max 5h0m0s is more than this cluster allows"}},
 	} {
 		errs := Validate(c.sv, l)
 		if len(c.wants) == 0 && len(errs) > 0 {
@@ -55,6 +68,9 @@ func TestValidate(t *testing.T) {
 				t.Errorf("%s: %v, want %q", c.name, errs, w)
 			}
 		}
+		if c.name == "each port checked on its own" && len(errs) != 1 {
+			t.Errorf("%s: only web's max is wrong: %v", c.name, errs)
+		}
 	}
 }
 
@@ -62,23 +78,23 @@ func TestDuration(t *testing.T) {
 	l := Limits{Max: 3 * time.Hour, DefaultMax: time.Hour}
 	for _, c := range []struct {
 		name    string
-		lease   *v1.ServiceLease
+		lease   *v1.PortLease
 		ask     string
 		want    time.Duration
 		clamped bool
 		err     string
 	}{
-		{"the silo's default", &v1.ServiceLease{Default: "10m", Max: "2h"}, "", 10 * time.Minute, false, ""},
-		{"no default: 30m", &v1.ServiceLease{Max: "2h"}, "", 30 * time.Minute, false, ""},
-		{"no default, short max", &v1.ServiceLease{Max: "5m"}, "", 5 * time.Minute, false, ""},
-		{"as asked", &v1.ServiceLease{Max: "2h"}, "1h", time.Hour, false, ""},
-		{"cut to the silo's max", &v1.ServiceLease{Max: "2h"}, "5h", 2 * time.Hour, true, ""},
-		{"no max: the cluster's default max", &v1.ServiceLease{}, "5h", time.Hour, true, ""},
-		{"a max the cluster lowered since", &v1.ServiceLease{Max: "8h"}, "8h", 3 * time.Hour, true, ""},
-		{"not a duration", &v1.ServiceLease{}, "a while", 0, false, "isn't a duration"},
-		{"too short", &v1.ServiceLease{}, "10ms", 0, false, "at least 1s"},
+		{"the port's default", &v1.PortLease{Default: "10m", Max: "2h"}, "", 10 * time.Minute, false, ""},
+		{"no default: 30m", &v1.PortLease{Max: "2h"}, "", 30 * time.Minute, false, ""},
+		{"no default, short max", &v1.PortLease{Max: "5m"}, "", 5 * time.Minute, false, ""},
+		{"as asked", &v1.PortLease{Max: "2h"}, "1h", time.Hour, false, ""},
+		{"cut to the port's max", &v1.PortLease{Max: "2h"}, "5h", 2 * time.Hour, true, ""},
+		{"no max: the cluster's default max", &v1.PortLease{}, "5h", time.Hour, true, ""},
+		{"a max the cluster lowered since", &v1.PortLease{Max: "8h"}, "8h", 3 * time.Hour, true, ""},
+		{"not a duration", &v1.PortLease{}, "a while", 0, false, "isn't a duration"},
+		{"too short", &v1.PortLease{}, "10ms", 0, false, "at least 1s"},
 	} {
-		d, clamped, err := Duration(c.ask, svc(c.lease), l)
+		d, clamped, err := Duration(c.ask, c.lease, l)
 		if c.err != "" {
 			if err == nil || !strings.Contains(err.Error(), c.err) {
 				t.Errorf("%s: %v, want %q", c.name, err, c.err)
@@ -111,19 +127,102 @@ func TestSources(t *testing.T) {
 }
 
 func TestLeased(t *testing.T) {
-	if got := Leased(svc(&v1.ServiceLease{})); !slices.Equal(got, []string{"web", "debug"}) {
-		t.Errorf("default: %v", got)
+	if got := Leased(svc(&v1.PortLease{})); !slices.Equal(got, []string{"debug"}) {
+		t.Errorf("debug: %v", got)
 	}
-	if got := Leased(svc(&v1.ServiceLease{Ports: []string{"debug"}})); !slices.Equal(got, []string{"debug"}) {
-		t.Errorf("listed: %v", got)
+	if got := Leased(withLease(svc(&v1.PortLease{}), "web", &v1.PortLease{})); !slices.Equal(got, []string{"web", "debug"}) {
+		t.Errorf("web and debug: %v", got)
 	}
-	lb := svc(&v1.ServiceLease{})
+	// A lease on a port the service doesn't expose leases nothing (admission refuses it anyway).
+	if got := Leased(withLease(svc(nil), "disc", &v1.PortLease{})); got != nil {
+		t.Errorf("disc isn't exposed: %v", got)
+	}
+	lb := withLease(svc(&v1.PortLease{}), "disc", &v1.PortLease{})
 	lb.Expose, lb.HostPort = v1.ExposeLoadBalancer, nil
-	if got := Leased(lb); len(got) != 3 {
-		t.Errorf("load balancer: every port: %v", got)
+	if got := Leased(lb); !slices.Equal(got, []string{"debug", "disc"}) {
+		t.Errorf("load balancer: every port is exposed: %v", got)
 	}
-	if Leased(svc(nil)) != nil {
+	if Leased(svc(nil)) != nil || Any(svc(nil)) || !Any(svc(&v1.PortLease{})) {
 		t.Error("no lease, no leased ports")
+	}
+	if Of(svc(&v1.PortLease{Max: "2h"}), "web") != nil || Of(svc(&v1.PortLease{Max: "2h"}), "debug").Max != "2h" {
+		t.Error("Of")
+	}
+}
+
+// Each leased port has its own terms and its own lease: different maxes, one needs a yes and one
+// doesn't, its own sources, its own clock; the port without a lease is always open.
+func TestTwoLeasedPorts(t *testing.T) {
+	sv := svc(&v1.PortLease{Max: "2h", Approval: &v1.ApprovalRule{Required: true}, AllowFrom: []string{"203.0.113.7"}})
+	sv.Ports = append(sv.Ports, v1.ServicePort{Name: "preview", Port: 3000, Lease: &v1.PortLease{Max: "8h", Default: "1h"}})
+	sv.HostPort.Ports = append(sv.HostPort.Ports, "preview")
+	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "api", UID: "u1"}, Spec: v1.SiloSpec{Service: sv}}
+	lim := Limits{Max: 24 * time.Hour, DefaultMax: time.Hour}
+	if errs := Validate(sv, lim); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if got := Leased(sv); !slices.Equal(got, []string{"debug", "preview"}) {
+		t.Fatalf("leased %v", got)
+	}
+	if got := Closed(s, nil, t0); !slices.Equal(got, []string{"debug", "preview"}) {
+		t.Fatalf("closed until leased: %v", got)
+	}
+	// The web port is always open: nobody leases it.
+	if o := Decide(Ask{Namespace: "dev", Silo: "api", SiloUID: "u1", Port: "web", By: "ada"}, s, nil, nil, lim, alim, t0); !errors.Is(o.Err, ErrNotLeased) ||
+		!strings.Contains(o.Err.Error(), "leased: debug, preview") {
+		t.Errorf("web: %v", o.Err)
+	}
+	// preview: no approval, its own default and max.
+	pa := Ask{Namespace: "dev", Silo: "api", SiloUID: "u1", Port: "preview", By: "system:silo:dev:api"}
+	pv := Decide(pa, s, nil, nil, lim, alim, t0)
+	if !pv.Open || !pv.Until.Equal(t0.Add(time.Hour)) || pv.Lease.Name != Name("api", "preview") {
+		t.Fatalf("preview by default: %+v", pv)
+	}
+	pa.For = "6h"
+	if pv = Decide(pa, s, pv.Lease, nil, lim, alim, t0); !pv.Open || pv.Clamped || !pv.Until.Equal(t0.Add(6*time.Hour)) {
+		t.Fatalf("preview for 6h (under its own max): %+v", pv)
+	}
+	// debug: the same 6h is cut to its own max, and waits for a yes.
+	da := Ask{Namespace: "dev", Silo: "api", SiloUID: "u1", Port: "debug", For: "6h", By: "system:silo:dev:api"}
+	dbg := Decide(da, s, nil, nil, lim, alim, t0)
+	if dbg.Open || dbg.Wait == nil || !dbg.Clamped || dbg.Approval.Spec.For != "2h0m0s" || dbg.Approval.Spec.Port != "debug" {
+		t.Fatalf("debug: %+v", dbg)
+	}
+	if sum := dbg.Approval.Spec.Summary; !strings.Contains(sum, "open port debug (9229/TCP) to the outside from 203.0.113.7 for 2h0m0s (this port's max 2h0m0s)") {
+		t.Errorf("summary: %s", sum)
+	}
+	all := []*v1.Lease{pv.Lease, dbg.Lease}
+	// Opening preview didn't open debug.
+	if got := Closed(s, all, t0); !slices.Equal(got, []string{"debug"}) {
+		t.Fatalf("closed: %v", got)
+	}
+	st := States(s, all, t0)
+	if len(st) != 2 || st[0].Port != "debug" || st[0].Phase != v1.LeasePending || st[1].Port != "preview" || st[1].Phase != v1.LeaseOpen {
+		t.Fatalf("states %+v", st)
+	}
+	// Approved, debug opens on its own clock (2h from the yes); preview keeps its 6h.
+	yes, _ := approvals.Answer(dbg.Approval, true, "ada", "", t0.Add(time.Minute))
+	all[1] = Answered(dbg.Lease, yes, t0.Add(time.Minute))
+	if got := Closed(s, all, t0.Add(time.Minute)); len(got) != 0 {
+		t.Fatalf("both open: %v", got)
+	}
+	if n := Next(all, t0.Add(time.Minute)); !n.Equal(t0.Add(121 * time.Minute)) {
+		t.Errorf("next end: debug's: %v", n)
+	}
+	if got := Closed(s, all, t0.Add(3*time.Hour)); !slices.Equal(got, []string{"debug"}) {
+		t.Errorf("at 3h: only debug's time is up: %v", got)
+	}
+	// Closing one leaves the other.
+	c, _, err := Close(all[1], nil, "u1", "ed", t0.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Closed(s, []*v1.Lease{all[0], c}, t0.Add(2*time.Minute)); !slices.Equal(got, []string{"debug"}) {
+		t.Errorf("after closing debug: %v", got)
+	}
+	// Sources: only debug narrows them.
+	if got := PortSources(sv); len(got) != 1 || !slices.Equal(got["debug"], []string{"203.0.113.7"}) {
+		t.Errorf("sources %v", got)
 	}
 }
 
@@ -137,7 +236,7 @@ func ask(by, f string) Ask {
 }
 
 func TestOpenWithoutApproval(t *testing.T) {
-	s := siloWith(&v1.ServiceLease{Ports: []string{"debug"}, Max: "2h"})
+	s := siloWith(&v1.PortLease{Max: "2h"})
 	out := Decide(ask("system:silo:dev:api", "5h"), s, nil, nil, limits, alim, t0)
 	if out.Err != nil || !out.Open || !out.Clamped || out.Lease == nil || out.Event != "lease-opened" {
 		t.Fatalf("outcome %+v", out)
@@ -166,7 +265,7 @@ func TestOpenWithoutApproval(t *testing.T) {
 }
 
 func TestApprovalFlow(t *testing.T) {
-	s := siloWith(&v1.ServiceLease{Ports: []string{"debug"}, Max: "2h", Approval: &v1.ApprovalRule{Required: true}})
+	s := siloWith(&v1.PortLease{Max: "2h", Approval: &v1.ApprovalRule{Required: true}})
 	a := ask("system:silo:dev:api", "1h")
 	a.Wait = "5m"
 	out := Decide(a, s, nil, nil, limits, alim, t0)
@@ -247,7 +346,7 @@ func TestApprovalFlow(t *testing.T) {
 }
 
 func TestApprovalExpires(t *testing.T) {
-	s := siloWith(&v1.ServiceLease{Approval: &v1.ApprovalRule{Required: true}})
+	s := siloWith(&v1.PortLease{Approval: &v1.ApprovalRule{Required: true}})
 	a := ask("system:silo:dev:api", "")
 	out := Decide(a, s, nil, nil, limits, alim, t0)
 	if !out.Approval.Spec.ExpiresAt.Equal(t0.Add(10 * time.Minute)) {
@@ -270,7 +369,7 @@ func TestApprovalExpires(t *testing.T) {
 }
 
 func TestApproverOpensDirectly(t *testing.T) {
-	s := siloWith(&v1.ServiceLease{Approval: &v1.ApprovalRule{Required: true}})
+	s := siloWith(&v1.PortLease{Approval: &v1.ApprovalRule{Required: true}})
 	// Someone else's ask is pending; an approver's own ask opens it, and ends that one.
 	pending := Decide(ask("ed", "10m"), s, nil, nil, limits, alim, t0)
 	a := ask("ada", "20m")
@@ -285,7 +384,7 @@ func TestApproverOpensDirectly(t *testing.T) {
 }
 
 func TestCloseAndSweep(t *testing.T) {
-	s := siloWith(&v1.ServiceLease{Max: "2h"})
+	s := siloWith(&v1.PortLease{Max: "2h"})
 	out := Decide(ask("ada", "1h"), s, nil, nil, limits, alim, t0)
 	closed, _, err := Close(out.Lease, nil, "u1", "ed", t0.Add(10*time.Minute))
 	if err != nil || closed.IsOpen("u1", t0.Add(10*time.Minute)) || closed.Status.Phase != v1.LeaseClosed ||
@@ -296,7 +395,7 @@ func TestCloseAndSweep(t *testing.T) {
 		t.Fatalf("close twice: %v", err)
 	}
 	// Closing drops a pending ask, so a late yes opens nothing.
-	sa := siloWith(&v1.ServiceLease{Approval: &v1.ApprovalRule{Required: true}})
+	sa := siloWith(&v1.PortLease{Approval: &v1.ApprovalRule{Required: true}})
 	p := Decide(ask("ed", ""), sa, nil, nil, limits, alim, t0)
 	c, ended, err := Close(p.Lease, p.Approval, "u1", "ed", t0.Add(time.Minute))
 	if err != nil || c.Status.Pending != nil || ended == nil || ended.Status.Phase != v1.ApprovalExpired {
@@ -316,7 +415,8 @@ func TestCloseAndSweep(t *testing.T) {
 }
 
 func TestOpenAtAMoment(t *testing.T) {
-	s := siloWith(&v1.ServiceLease{})
+	s := siloWith(&v1.PortLease{})
+	withLease(s.Spec.Service, "web", &v1.PortLease{})
 	web := Decide(Ask{Namespace: "dev", Silo: "api", SiloUID: "u1", Port: "web", For: "10m", By: "ada"}, s, nil, nil, limits, alim, t0).Lease
 	debug := Decide(ask("ada", "40m"), s, nil, nil, limits, alim, t0).Lease
 	other := Decide(Ask{Namespace: "dev", Silo: "api", SiloUID: "old", Port: "debug", For: "1h", By: "ada"}, s, nil, nil, limits, alim, t0).Lease
