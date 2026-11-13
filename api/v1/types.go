@@ -64,6 +64,10 @@ type HostNetwork struct {
 	BehindNAT bool `json:"behindNAT,omitempty"`
 	// ListenPort is the WireGuard port on Address (default 51820), for public hosts.
 	ListenPort int `json:"listenPort,omitempty"`
+	// Addresses are extra addresses routed to this machine (IPv4 CIDRs or single addresses), which
+	// the built-in ip-pool class hands out as IP objects (design §7.2c-1). The operator declares
+	// them: kvoadm host addresses HOST add CIDR.
+	Addresses []string `json:"addresses,omitempty"`
 }
 
 // HostComponents are installed explicitly; there's no hidden all-in-one mode.

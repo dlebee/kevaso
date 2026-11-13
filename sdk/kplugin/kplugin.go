@@ -61,6 +61,19 @@ type Class struct {
 	// hosts see only the load balancer's addresses (SourceRanges), never the clients'. Without it,
 	// such ports are left out of the load balancer (design §7.2d: never open wider than asked).
 	FiltersSources bool `json:"filtersSources,omitempty"`
+	// Reserve (load balancers): the class can hold an address apart from any load balancer
+	// (ReserveAddress, ReleaseAddress), so an IP of the class exists before its service and outlives
+	// it. Without it, an IP's address is its load balancer's: the balancer is keyed by the IP and
+	// lives as long as the IP does.
+	Reserve bool `json:"reserve,omitempty"`
+	// Follows (load balancers): where an address can go with the silo holding it: host (it stays on
+	// the host first given it), region (the default: any of the plugin's hosts in its region), or
+	// global.
+	Follows string `json:"follows,omitempty"`
+	// SendsFrom (load balancers): the address is on the silo's host while the silo is there, so the
+	// silo's outgoing traffic can leave from it (egress.source: sameAsService). A balancer in front
+	// (node ports) can't: its address is on no host.
+	SendsFrom bool `json:"sendsFrom,omitempty"`
 	// Topology (storage): from where a volume can be attached, which is what lets a silo move
 	// with its data (design §0.3, §6): host (pinned, the default), zone, region, or global (any
 	// host anywhere).
@@ -79,6 +92,13 @@ func (c Class) Mounted() bool { return c.Reach == ReachMount }
 const (
 	ReachDevice = "device"
 	ReachMount  = "mount"
+)
+
+// Where an address can follow its silo (Class.Follows).
+const (
+	FollowsHost   = "host"
+	FollowsRegion = "region"
+	FollowsGlobal = "global"
 )
 
 // Storage topologies.
@@ -106,10 +126,10 @@ type HostInfo struct {
 // LoadBalancer is an address from a load-balancer class for one silo's service.
 type LoadBalancer struct {
 	Class     string `json:"class"`
-	ID        string `json:"id"` // stable: the silo's UID
+	ID        string `json:"id"` // stable: the UID of the IP object it serves
 	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-	// Address asks for a specific address (classes that let you pick one, e.g. a shared IP).
+	Name      string `json:"name"` // the silo's or Service's
+	// Address is the IP's reserved address, for classes that reserve (Class.Reserve).
 	Address string `json:"address,omitempty"`
 	Ports   []Port `json:"ports"`
 	// Backends are where traffic goes: the silo's host. Hosts are every host of the plugin's in
@@ -142,6 +162,35 @@ type LoadBalancerRef struct {
 	Class   string `json:"class"`
 	ID      string `json:"id"`
 	Address string `json:"address,omitempty"`
+}
+
+// AddressReservation is an address held apart from any load balancer, for one IP object.
+type AddressReservation struct {
+	Class     string `json:"class"`
+	ID        string `json:"id"` // stable: the IP's UID
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Region    string `json:"region"` // where to reserve it
+	// Address asks for this one (an address you already own at the provider); empty: any.
+	Address string `json:"address,omitempty"`
+}
+
+// AddressStatus is a reserved address.
+type AddressStatus struct {
+	Address string `json:"address"`
+	Region  string `json:"region"`
+	// Handle is the plugin's for it, given back on release (it may say whether the plugin reserved
+	// the address or was given one that was already yours, which it then never gives up).
+	Handle string `json:"handle,omitempty"`
+}
+
+// AddressRef names a reserved address to release, or, for a class that can't reserve, the load
+// balancer that is an IP's address (ID: the IP's UID).
+type AddressRef struct {
+	Class   string `json:"class"`
+	ID      string `json:"id"`
+	Address string `json:"address,omitempty"`
+	Handle  string `json:"handle,omitempty"`
 }
 
 // Volume is a block volume for one silo's volume.
@@ -214,10 +263,24 @@ type HostDescriber interface {
 	DescribeHosts(ctx context.Context, hosts []Host) ([]HostInfo, error)
 }
 
-// LoadBalancers serves load-balancer classes.
+// LoadBalancers serves load-balancer classes. A load balancer is keyed by the IP object it serves
+// (LoadBalancer.ID), not by the silo: it follows the IP from holder to holder. For a class that
+// reserves, DeleteLoadBalancer unshares the address from the hosts and keeps the reservation.
+// For one that doesn't, the balancer is the IP's address and is never deleted while the IP lives:
+// with no backends and no ports it is parked (it keeps its address and sends nowhere, answering
+// ErrNotFound if there's none to park), and ReleaseAddress deletes it with the IP.
 type LoadBalancers interface {
 	EnsureLoadBalancer(ctx context.Context, lb LoadBalancer) (LoadBalancerStatus, error)
 	DeleteLoadBalancer(ctx context.Context, ref LoadBalancerRef) error
+}
+
+// Addresses serves load-balancer classes that can hold an address apart from a load balancer
+// (Class.Reserve): reserve it before any service, release it when its IP is deleted. Both are
+// idempotent by ID. For the classes that can't reserve, ReleaseAddress deletes the load balancer
+// that is the IP's address (EnsureLoadBalancer keyed it by the IP's UID).
+type Addresses interface {
+	ReserveAddress(ctx context.Context, r AddressReservation) (AddressStatus, error)
+	ReleaseAddress(ctx context.Context, ref AddressRef) error
 }
 
 // Volumes serves storage classes (the controller side: create, attach through the API). For device

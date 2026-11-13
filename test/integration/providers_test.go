@@ -131,8 +131,8 @@ func TestProviderPlugin(t *testing.T) {
 	if extra := fake.CallLog()[before:]; len(extra) > 0 {
 		t.Fatalf("plugin called with nothing changed: %v", extra)
 	}
-	lbs, vols, _ := fake.Snapshot()
-	if lb := lbs[s.UID]; len(lb.Backends) != 1 || lb.Backends[0].ID != "42" || lb.Ports[0].NodePort != v1.NodePortMin {
+	_, vols, _ := fake.Snapshot()
+	if lb, _ := fake.LBOf("payments", "db"); len(lb.Backends) != 1 || lb.Backends[0].ID != "42" || lb.Ports[0].NodePort != v1.NodePortMin {
 		t.Fatalf("load balancer the plugin got: %+v", lb)
 	}
 	if len(vols) != 1 {
@@ -221,12 +221,15 @@ func TestProviderPlugin(t *testing.T) {
 		t.Fatalf("while mounted: %s", volMsgs(held.Status.Volumes))
 	}
 	setMounted(false) // the agent removed the container and unmounted
-	eventually("volume detached (slowly) and deleted, load balancer deleted, silo gone", func() (bool, string) {
-		lbs, vols, _ := fake.Snapshot()
+	eventually("volume detached (slowly) and deleted, silo gone, and its IP (made for it) with its load balancer", func() (bool, string) {
+		_, vols, _ := fake.Snapshot()
 		var x v1.Silo
 		err := admin.Get(ctx, "Silo", "payments", "db", &x)
-		_, gone := lbs[s.UID]
-		return len(vols) == 0 && !gone && client.IsNotFound(err), volMsgs(x.Status.Volumes) + strings.Join(x.Finalizers, ",")
+		_, there := fake.LBOf("payments", "db")
+		var ip v1.IP
+		ipErr := admin.Get(ctx, "IP", "payments", "db", &ip)
+		return len(vols) == 0 && !there && client.IsNotFound(err) && client.IsNotFound(ipErr),
+			volMsgs(x.Status.Volumes) + strings.Join(x.Finalizers, ",") + " ip " + ip.Status.BoundTo
 	})
 	detaches := 0
 	for _, c := range fake.CallLog() {

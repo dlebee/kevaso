@@ -89,6 +89,22 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 		}
 		want(t, "dev", dev.Update(c.ctx, &g), http.StatusForbidden, "may not use secret root-key")
 	})
+	t.Run("ip use", func(t *testing.T) {
+		// Naming an IP needs use on it (editors and admins have it; dev's role doesn't), and only
+		// admins reserve addresses.
+		policy(t, "Silo", "spec.network", `{'egress': {'source': 'pool', 'ip': 'kept'}}`)
+		want(t, "dev", dev.Create(c.ctx, silo("p1", "web3")), http.StatusForbidden, "may not use IP kept")
+		want(t, "admin socket", c.admin.Create(c.ctx, silo("p2", "web3")), http.StatusForbidden, "policies can't grant privileges")
+		if err := ed.Create(c.ctx, silo("p3", "web3")); err != nil {
+			t.Errorf("editor, who may use IPs: %v", err)
+		}
+		ip := &v1.IP{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IP"}, ObjectMeta: meta.ObjectMeta{Name: "mine", Namespace: "web3"},
+			Spec: v1.IPSpec{Class: v1.LBIPPool}}
+		want(t, "editor reserving an address", ed.Create(c.ctx, ip), http.StatusForbidden, "")
+		if err := ada.Create(c.ctx, ip); err != nil {
+			t.Errorf("admin reserving an address: %v", err)
+		}
+	})
 	t.Run("runtime fit", func(t *testing.T) {
 		policy(t, "Silo", "spec.runtime", `'openshell'`)
 		s := silo("r1", "web3")

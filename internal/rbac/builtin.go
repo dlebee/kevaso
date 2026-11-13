@@ -40,6 +40,15 @@ var (
 	exposureAdmin  = v1.PolicyRule{Verbs: []string{v1.VerbOpen, v1.VerbApprove}, Resources: []string{v1.ResourceExposure}}
 )
 
+// IPs (design §7.2c-1): an address costs money and is what peers point at, so admins reserve
+// and release them (and use them); editors may put a silo they edit on one an admin made (use),
+// and see them; viewers see them. Naming an IP in a service needs use on it, like a secret.
+var (
+	ipsAdmin  = v1.PolicyRule{Verbs: append(slices.Clone(write), v1.VerbUse), Resources: []string{"ips"}}
+	ipsEditor = v1.PolicyRule{Verbs: append(slices.Clone(read), v1.VerbUse), Resources: []string{"ips"}}
+	ipsViewer = v1.PolicyRule{Verbs: read, Resources: []string{"ips"}}
+)
+
 // siloShell is a terminal in a silo (create silos/ssh, kvo ssh) and its files (get silos/files to
 // read, create to write: kvo cp, kvo ui): as strong as exec, so the same roles have it.
 var (
@@ -60,12 +69,12 @@ func BuiltinRoles() []*v1.ClusterRole {
 		mk("admin",
 			v1.PolicyRule{Verbs: write, Resources: slices.Concat(workloads, []string{"roles", "rolebindings"})},
 			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "silos/move", "serviceaccounts/token", "services/expose-public", "ingresses/publish-public"}},
-			siloShell, siloFiles, secretsAdmin, approvalsAdmin, exposureAdmin),
+			siloShell, siloFiles, secretsAdmin, approvalsAdmin, exposureAdmin, ipsAdmin),
 		mk("editor",
 			v1.PolicyRule{Verbs: write, Resources: workloads},
 			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "silos/move", "serviceaccounts/token"}},
-			siloShell, siloFiles, secretsEditor, approvalsRead, exposureEditor),
-		mk("viewer", v1.PolicyRule{Verbs: read, Resources: workloads}, secretsViewer, approvalsRead),
+			siloShell, siloFiles, secretsEditor, approvalsRead, exposureEditor, ipsEditor),
+		mk("viewer", v1.PolicyRule{Verbs: read, Resources: workloads}, secretsViewer, approvalsRead, ipsViewer),
 		mk("runner", v1.PolicyRule{Verbs: []string{"get", "list", "watch", "create"}, Resources: []string{"runs"}}),
 	}
 }

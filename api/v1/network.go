@@ -1,6 +1,6 @@
 package v1
 
-import "kevaso.com/core/api/meta"
+import "slices"
 
 // Services and exposure (design §7.1–7.2b). Every silo can carry its own service: a stable private
 // name on the mesh, ports, and optionally an outside address. Silo ↔ silo traffic is denied until
@@ -16,14 +16,14 @@ const (
 // Load-balancer classes built in.
 const (
 	LBWorkerIP = "worker-ip" // the host's own address, the service's ports
-	LBIPPool   = "ip-pool"   // an address of its own from an IPPool routed to the host
+	LBIPPool   = "ip-pool"   // an address of its own: an IP from the host's extra addresses (spec.network.addresses)
 )
 
 // Egress sources: which address a silo's outgoing traffic leaves from.
 const (
 	EgressHost          = "host"          // the host's main address (default)
 	EgressSameAsService = "sameAsService" // the address the silo is reached on
-	EgressPool          = "pool"          // an address of its own from an IPPool
+	EgressPool          = "pool"          // an address of its own: an IP of class ip-pool (egress.ip)
 )
 
 // SiloService is a silo's own service.
@@ -51,11 +51,11 @@ type HostPortSpec struct {
 
 // LoadBalancerSpec asks for an outside address from a class.
 type LoadBalancerSpec struct {
-	Class    string `json:"class"`
-	Pool     string `json:"pool,omitempty"` // ip-pool: which IPPool
-	StableIP bool   `json:"stableIP,omitempty"`
-	// Address asks for a specific address, for classes that let you pick one (a shared IP you own).
-	Address   string   `json:"address,omitempty"`
+	Class string `json:"class"`
+	// IP names the IP object (design §7.2c-1) whose address this is. Empty: one is made for the
+	// service, named after the silo, that goes with it unless kept (kvo ip keep). worker-ip has none:
+	// its address is the host's.
+	IP        string   `json:"ip,omitempty"`
 	AllowFrom []string `json:"allowFrom,omitempty"`
 }
 
@@ -73,15 +73,23 @@ type SiloNetwork struct {
 // Egress picks the source address.
 type Egress struct {
 	Source string `json:"source,omitempty"` // host (default) | sameAsService | pool
-	Pool   string `json:"pool,omitempty"`   // source: pool
+	// IP is the IP (class ip-pool) to send from with source pool; empty: the service's, when its
+	// load balancer is ip-pool.
+	IP string `json:"ip,omitempty"`
 }
 
 // SiloServiceStatus says where the service is reachable.
 type SiloServiceStatus struct {
 	Name     string `json:"name,omitempty"`     // its private name, e.g. api.payments.kevaso
-	PublicIP string `json:"publicIP,omitempty"` // the outside address, if exposed
-	EgressIP string `json:"egressIP,omitempty"` // where its outgoing traffic comes from
-	PoolIP   string `json:"poolIP,omitempty"`   // the address it holds from an IPPool (stable)
+	PublicIP string `json:"publicIP,omitempty"` // the outside address, if exposed: the address in
+	EgressIP string `json:"egressIP,omitempty"` // where its outgoing traffic comes from: the address out
+	// EgressNote says why the address out isn't the address in, when it isn't (design §7.2b).
+	EgressNote string `json:"egressNote,omitempty"`
+	// IP is the IP object the service's address is, when it has one (design §7.2c-1).
+	IP string `json:"ip,omitempty"`
+	// HostAddresses are the host's own extra addresses this silo holds (IPs of class ip-pool, in or
+	// out): the host puts them on its uplink.
+	HostAddresses []string `json:"hostAddresses,omitempty"`
 	// NodePorts: for load-balancer classes that send to the host on ports of their own, which
 	// host port each service port arrives on (the host forwards it to the silo), and from where.
 	NodePorts    []NodePort `json:"nodePorts,omitempty"`
@@ -100,8 +108,8 @@ type NodePort struct {
 
 // Equal reports whether two service statuses are the same.
 func (a SiloServiceStatus) Equal(b SiloServiceStatus) bool {
-	if a.Name != b.Name || a.PublicIP != b.PublicIP || a.EgressIP != b.EgressIP || a.PoolIP != b.PoolIP || a.Announce != b.Announce ||
-		len(a.NodePorts) != len(b.NodePorts) || len(a.SourceRanges) != len(b.SourceRanges) {
+	if a.Name != b.Name || a.PublicIP != b.PublicIP || a.EgressIP != b.EgressIP || a.EgressNote != b.EgressNote || a.IP != b.IP || a.Announce != b.Announce ||
+		len(a.NodePorts) != len(b.NodePorts) || len(a.SourceRanges) != len(b.SourceRanges) || !slices.Equal(a.HostAddresses, b.HostAddresses) {
 		return false
 	}
 	for i := range a.NodePorts {
@@ -166,19 +174,3 @@ func DiskVolume(s *Silo) (Volume, bool) {
 	}
 	return Volume{Name: RootDiskVolume, Class: c, Size: s.Spec.Disk.Size, Important: true}, true
 }
-
-// IPPool is addresses routed to one host, for silos to have their own (design §7.2b).
-type IPPool struct {
-	meta.TypeMeta   `json:",inline"`
-	meta.ObjectMeta `json:"metadata"`
-	Spec            IPPoolSpec `json:"spec"`
-}
-
-// IPPoolSpec lists the addresses and where they're routed.
-type IPPoolSpec struct {
-	Host      string   `json:"host"`
-	Addresses []string `json:"addresses"` // IPv4 CIDRs or single addresses (IPv6 comes later)
-}
-
-// Which silo holds which address is on the silo (status.service.poolIP): kvo describe ippool
-// lists them.

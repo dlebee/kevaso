@@ -22,12 +22,14 @@ import (
 // ServiceLoadBalancers gives standalone Services of type LoadBalancer their outside address from
 // a plugin's class: one load balancer whose backends are the hosts with endpoints, on the
 // service's node ports (each such host sends them to its own endpoints, so client addresses are
-// kept). The finalizer lb.kevaso.com/CLASS on the Service deletes it first. Only node-port classes
-// fit: an address announced to one host can't spread over several.
+// kept). The load balancer is the IP's the Service holds (design §7.2c-1), keyed by the IP's UID;
+// the IP controller lets go of it when the Service goes. Only node-port classes fit: an address
+// announced to one host can't spread over several.
 type ServiceLoadBalancers struct {
 	Client   *client.Client
 	Services *informer.Informer
 	Hosts    *informer.Informer
+	IPs      *informer.Informer
 	Plugins  *plugins.Registry
 	Clock    clock.Clock
 	Resync   time.Duration // default 10m
@@ -42,15 +44,6 @@ func (c *ServiceLoadBalancers) Name() string { return "service-load-balancers" }
 // Kind implements engine.Controller.
 func (c *ServiceLoadBalancers) Kind() string { return "Service" }
 
-func svcLBFinalizer(s *v1.Service) string {
-	for _, f := range s.Finalizers {
-		if strings.HasPrefix(f, FinalizerLBPrefix) {
-			return f
-		}
-	}
-	return ""
-}
-
 // Reconcile implements engine.Controller.
 func (c *ServiceLoadBalancers) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
 	o, ok := c.Services.Get(k.Namespace, k.Name)
@@ -62,30 +55,11 @@ func (c *ServiceLoadBalancers) Reconcile(ctx context.Context, k engine.Key) (eng
 	if svc.Spec.Type == v1.ServiceLoadBalancer && svc.DeletionTimestamp == nil {
 		class = svc.Spec.LoadBalancerClass
 	}
-	fin := svcLBFinalizer(svc)
-	if fin != "" && fin != FinalizerLBPrefix+class {
-		old := strings.TrimPrefix(fin, FinalizerLBPrefix)
-		p, _, ok := c.Plugins.LoadBalancer(old)
-		if !ok {
-			return c.condition(ctx, svc, meta.ConditionFalse, "PluginMissing", "deleting its "+old+" load balancer needs the plugin serving "+old, 30*time.Second)
-		}
-		forget(&c.mu, &c.ensured, svc.UID)
-		err := p.Conn.DeleteLoadBalancer(ctx, kplugin.LoadBalancerRef{Class: old, ID: svc.UID, Address: svc.Status.PublicIP})
-		if err != nil && !errors.Is(err, kplugin.ErrNotFound) {
-			return engine.Result{}, fmt.Errorf("delete %s load balancer: %w", old, err)
-		}
-		if class == "" && svc.DeletionTimestamp == nil {
-			if err := c.status(ctx, svc, func(st *v1.ServiceStatus) { st.PublicIP, st.SourceRanges = "", nil }); err != nil {
-				return engine.Result{}, err
-			}
-		}
-		return engine.Result{}, c.finalizers(ctx, svc, fin, "")
-	}
 	if class == "" {
+		if svc.Status.PublicIP != "" && svc.DeletionTimestamp == nil { // no longer a load balancer: the IP lets go of it
+			return engine.Result{}, c.status(ctx, svc, func(st *v1.ServiceStatus) { st.PublicIP, st.IP, st.SourceRanges = "", "", nil })
+		}
 		return engine.Result{}, nil
-	}
-	if fin == "" {
-		return engine.Result{}, c.finalizers(ctx, svc, "", FinalizerLBPrefix+class)
 	}
 	p, pc, ok := c.Plugins.LoadBalancer(class)
 	if !ok {
@@ -97,7 +71,15 @@ func (c *ServiceLoadBalancers) Reconcile(ctx context.Context, k engine.Key) (eng
 	if len(svc.Status.NodePorts) < len(svc.Spec.Ports) {
 		return engine.Result{}, nil // the service controller gives node ports first
 	}
-	lb := kplugin.LoadBalancer{Class: class, ID: svc.UID, Namespace: svc.Namespace, Name: svc.Name}
+	name, _ := v1.ServiceIP(svc)
+	ip, why := heldIP(c.IPs, svc.Namespace, name, v1.HolderServicePrefix+svc.Name, svc.UID, pc.Reserve)
+	if why != "" {
+		return c.condition(ctx, svc, meta.ConditionFalse, "WaitingForIP", why, 0)
+	}
+	lb := kplugin.LoadBalancer{Class: class, ID: ip.UID, Namespace: svc.Namespace, Name: svc.Name}
+	if pc.Reserve {
+		lb.Address = ip.Status.Address
+	}
 	seen := map[string]bool{}
 	var off []string
 	for _, ep := range svc.Status.Endpoints {
@@ -158,12 +140,17 @@ func (c *ServiceLoadBalancers) Reconcile(ctx context.Context, k engine.Key) (eng
 		_, _ = c.condition(ctx, svc, meta.ConditionFalse, "Failed", err.Error(), 0)
 		return engine.Result{}, err
 	}
+	if !pc.Reserve {
+		if err := ipAddress(ctx, c.Client, ip, st.Address, nil); err != nil {
+			return engine.Result{}, err
+		}
+	}
 	msg := class + " at " + st.Address
 	if len(off) > 0 {
 		msg += "; endpoints on " + strings.Join(off, ", ") + " aren't " + p.Info.Name + " machines, so it can't reach them"
 	}
 	if err := c.status(ctx, svc, func(ss *v1.ServiceStatus) {
-		ss.PublicIP, ss.SourceRanges = st.Address, st.SourceRanges
+		ss.PublicIP, ss.IP, ss.SourceRanges = st.Address, ip.Name, st.SourceRanges
 		meta.SetCondition(&ss.Conditions, meta.Condition{Type: "LoadBalancer", Status: meta.ConditionTrue, Reason: "Ready",
 			Message: msg, ObservedGeneration: svc.Generation}, c.now())
 	}); err != nil {
@@ -207,43 +194,22 @@ func (c *ServiceLoadBalancers) status(ctx context.Context, svc *v1.Service, muta
 	return errors.New("service kept changing; will retry")
 }
 
-func (c *ServiceLoadBalancers) finalizers(ctx context.Context, svc *v1.Service, remove, add string) error {
-	for attempt := 0; attempt < 5; attempt++ {
-		var cur v1.Service
-		if err := c.Client.Get(ctx, "Service", svc.Namespace, svc.Name, &cur); err != nil {
-			return client.IgnoreNotFound(err)
-		}
-		var fs []string
-		has := false
-		for _, f := range cur.Finalizers {
-			if f == remove {
-				continue
-			}
-			has = has || f == add
-			fs = append(fs, f)
-		}
-		if add != "" && !has {
-			if cur.DeletionTimestamp != nil {
-				return nil
-			}
-			fs = append(fs, add)
-		}
-		cur.Finalizers = fs
-		err := c.Client.Update(ctx, &cur)
-		if client.IsConflict(err) {
-			continue
-		}
-		return client.IgnoreNotFound(err)
-	}
-	return errors.New("service kept changing; will retry")
-}
-
 // Map implements engine.Mapper: a host's provider details reach the services with endpoints on it.
 func (c *ServiceLoadBalancers) Map(changed engine.Key) []engine.Key {
+	var keys []engine.Key
+	if changed.Kind == "IP" {
+		for _, o := range c.Services.List() {
+			if svc := o.(*v1.Service); svc.Namespace == changed.Namespace {
+				if n, _ := v1.ServiceIP(svc); n == changed.Name {
+					keys = append(keys, engine.Key{Kind: "Service", Namespace: svc.Namespace, Name: svc.Name})
+				}
+			}
+		}
+		return keys
+	}
 	if changed.Kind != "Host" {
 		return nil
 	}
-	var keys []engine.Key
 	for _, o := range c.Services.List() {
 		svc := o.(*v1.Service)
 		if svc.Spec.Type != v1.ServiceLoadBalancer {

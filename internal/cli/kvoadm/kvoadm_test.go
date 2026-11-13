@@ -302,3 +302,23 @@ func TestUnitsFor(t *testing.T) {
 		t.Fatalf("fence of init --worker:\n%s", us[1].Text)
 	}
 }
+
+func TestEditAddresses(t *testing.T) {
+	got, err := EditAddresses(nil, "add", []string{"203.0.113.21/30", "203.0.113.9/32", "198.51.100.7"})
+	if err != nil || strings.Join(got, " ") != "203.0.113.20/30 203.0.113.9 198.51.100.7" {
+		t.Fatalf("add: %v %v", got, err)
+	}
+	if again, _ := EditAddresses(got, "add", []string{"203.0.113.20/30"}); len(again) != 3 {
+		t.Fatalf("adding twice: %v", again)
+	}
+	got, err = EditAddresses(got, "remove", []string{"203.0.113.9"})
+	if err != nil || strings.Join(got, " ") != "203.0.113.20/30 198.51.100.7" {
+		t.Fatalf("remove: %v %v", got, err)
+	}
+	if _, err := EditAddresses(got, "remove", []string{"192.0.2.1"}); err == nil {
+		t.Fatal("removing one it doesn't have")
+	}
+	if _, err := EditAddresses(got, "add", []string{"2001:db8::/64"}); err == nil {
+		t.Fatal("IPv6")
+	}
+}

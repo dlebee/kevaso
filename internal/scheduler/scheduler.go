@@ -8,8 +8,9 @@
 //  3. carry every label in the silo's hostSelector;
 //  4. have no NoSchedule taint the silo doesn't tolerate;
 //  5. have room: allocatable CPU and memory minus what silos already placed there ask for;
-//  6. for exposure: a public address (not behind NAT) with the silo's host ports free, and for an
-//     IPPool address, be the pool's host with one free;
+//  6. for exposure: a public address (not behind NAT) with the silo's host ports free, and for its
+//     IPs (design §7.2c-1): held by the silo, and on the host that has the address (ip-pool), or in
+//     the region the address is in (a plugin's class);
 //  7. for a plugin's class (a load balancer, a volume): be one of that plugin's machines, in the
 //     region the silo's volumes already are.
 //
@@ -64,27 +65,36 @@ type Class struct {
 	Plugin       string // the plugin serving it
 	OwnHostsOnly bool   // only the plugin's own machines can use it
 	NodePorts    bool   // load balancers: the host gets node ports
+	Reserve      bool   // load balancers: it holds an address apart from a load balancer
+	Follows      string // load balancers: where an address goes with its silo (host | region | global)
+	SendsFrom    bool   // load balancers: the address is on the silo's host, so it can send from it
 	Topology     string // storage: host (default) | zone | region | global
 	Mount        bool   // storage: the plugin's node side mounts it, so only hosts running that can take it
 }
 
 // Env is the rest of the cluster a decision depends on.
 type Env struct {
-	Pools []*v1.IPPool
+	// IPs are the IP objects (design §7.2c-1); Hosts every host, for the ip-pool addresses they
+	// have free (default: the hosts scheduled onto).
+	IPs   []*v1.IP
+	Hosts []*v1.Host
 	// Classes are the plugins' load-balancer and storage classes, by name.
 	Classes map[string]Class
 	// Images are the Image objects, for resolving silos' spec.image.
 	Images []*v1.Image
 }
 
-// Schedule picks a host for silo. placed are all silos already assigned (status.host set); pools,
-// the IPPools (for silos that take an address from one).
-func Schedule(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, pools ...*v1.IPPool) (Decision, error) {
-	return ScheduleIn(silo, hosts, placed, Env{Pools: pools})
+// Schedule picks a host for silo. placed are all silos already assigned (status.host set); ips,
+// the IP objects (for silos whose addresses are IPs).
+func Schedule(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, ips ...*v1.IP) (Decision, error) {
+	return ScheduleIn(silo, hosts, placed, Env{IPs: ips})
 }
 
 // ScheduleIn is Schedule with plugins' classes.
 func ScheduleIn(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, env Env) (Decision, error) {
+	if env.Hosts == nil {
+		env.Hosts = hosts
+	}
 	needMem, err := v1.ParseBytes(silo.Spec.Resources.Memory)
 	if err != nil {
 		return Decision{}, err
@@ -120,7 +130,7 @@ func ScheduleIn(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, env Env) (De
 		}
 		reason := filter(silo, h, w, used[h.Name], needMem)
 		if reason == "" {
-			reason = netFilter(silo, h, placed, env.Pools)
+			reason = netFilter(silo, h, placed, env)
 		}
 		if reason == "" {
 			reason = classFilter(silo, h, env.Classes)

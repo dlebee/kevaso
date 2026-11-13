@@ -34,8 +34,11 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   leases, `onHostLoss: Wait | Recreate` with agent-side fencing, `kvoadm host drain / uncordon / list`;
 - services: every silo can carry its own (`spec.service`): a private name
   (`NAME.NAMESPACE.kevaso`, served on each worker), and exposure with `hostPort` or a load balancer
-  (`worker-ip`, `ip-pool` from an `IPPool`), raw TCP/UDP with the client's IP kept. Its outbound
-  address can be the host's, the service's, or its own pool address. Silo-to-silo traffic is denied
+  (`worker-ip`, `ip-pool` from a host's extra addresses, or a plugin's class), raw TCP/UDP with the
+  client's IP kept. An outside address is an `IP` object you keep (`kvo create ip`, `kvo get ips`,
+  `kvo ip keep`): a service names one or gets one made for it, and it outlives the silo using it.
+  Its outbound address can be the host's, the service's (where the address is on the host; never a
+  balancer's), or an IP of its own; `kvo describe silo` says whether in and out match, and why not. Silo-to-silo traffic is denied
   until the receiving silo's `allowFrom` opens it; exposing publicly needs its own permission;
 - secrets: `Secret` values sealed with envelope encryption under a local KMS (a recovery key printed
   once by `kvoadm init`), never returned by reads; `Grant`s say what a silo may reach and use.

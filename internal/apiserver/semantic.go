@@ -11,6 +11,7 @@ import (
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/ips"
 )
 
 // semantic checks what CEL can't say well: addresses and ranges.
@@ -101,19 +102,16 @@ func semantic(obj meta.Object) []string {
 		if len(o.Spec.Value) > 64<<10 {
 			errs = append(errs, "spec.value: at most 64 KiB")
 		}
-	case *v1.IPPool:
-		for _, a := range o.Spec.Addresses {
-			p, err := netip.ParsePrefix(a)
-			if err != nil {
-				addr, aerr := netip.ParseAddr(a)
-				if aerr != nil {
-					errs = append(errs, fmt.Sprintf("spec.addresses: %q isn't an address or CIDR", a))
-					continue
-				}
-				p = netip.PrefixFrom(addr, addr.BitLen())
+	case *v1.IP:
+		if a := o.Spec.Address; a != "" {
+			if _, err := netip.ParseAddr(a); err != nil {
+				errs = append(errs, fmt.Sprintf("spec.address: %q isn't an address", a))
 			}
-			if !p.Addr().Is4() {
-				errs = append(errs, fmt.Sprintf("spec.addresses: %q: IPv6 pools come later; IPv4 for now", a))
+		}
+	case *v1.Host:
+		for _, a := range o.Spec.Network.Addresses {
+			if _, err := ips.Parse(a); err != nil {
+				errs = append(errs, "spec.network.addresses: "+err.Error())
 			}
 		}
 	}

@@ -70,6 +70,7 @@ type opts struct {
 	sets                                     setOpts
 	term                                     termOpts  // exec -it, cp, ui (terminal.go, copy.go)
 	lease                                    leaseOpts // kvo open / close (leases.go)
+	ip                                       ipOpts    // kvo create ip (ips.go)
 	args                                     []string
 	command                                  []string // after --
 	ctxNamespace                             string   // the context's default namespace
@@ -169,6 +170,16 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.term.tty = true
 		case "--max-size":
 			o.term.maxSize, err = val()
+		case "--class":
+			o.ip.class, err = val()
+		case "--host":
+			o.ip.host, err = val()
+		case "--region":
+			o.ip.region, err = val()
+		case "--address":
+			o.ip.address, err = val()
+		case "--reclaim":
+			o.ip.reclaim, err = val()
 		default:
 			if strings.HasPrefix(a, "-") && a != "-" {
 				return o, fmt.Errorf("unknown flag %s", a)
@@ -185,7 +196,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|pane|create|secret|approve|deny|open|close|login|logout|ctx|ns|auth …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|pane|create|secret|ip|approve|deny|open|close|login|logout|ctx|ns|auth …")
 		return 2
 	}
 	o, err := parse(args[1:], os.Getenv)
@@ -220,13 +231,22 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "describe":
 		err = describe(ctx, c, o, stdout)
 	case "create":
-		if len(o.args) > 0 && o.args[0] == "secret" {
+		what := ""
+		if len(o.args) > 0 {
+			what = o.args[0]
+		}
+		switch what {
+		case "secret":
 			err = createSecret(ctx, c, o, stdin, stdout)
-		} else {
+		case "ip":
+			err = createIP(ctx, c, o, stdout)
+		default:
 			err = createToken(ctx, c, o, stdout)
 		}
 	case "secret":
 		err = secretCommand(ctx, c, o, stdin, stdout)
+	case "ip":
+		err = ipCommand(ctx, c, o, stdout)
 	case "move":
 		err = move(ctx, c, o, stdout)
 	case "pane":
@@ -680,6 +700,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 		head = append(head, "IMAGE", "INSTANCES", "READY", "UPDATED")
 	case "Service":
 		head = append(head, "TYPE", "CLUSTER-IP", "PUBLIC-IP", "PORTS", "ENDPOINTS")
+	case "IP":
+		head = append(head, ipHead...)
 	case "Image":
 		head = append(head, "VERSIONS")
 	case "Approval":
@@ -805,6 +827,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 				ps = append(ps, fmt.Sprintf("%d/%s", p.Port, proto))
 			}
 			row = append(row, typ, dash(o.Status.ClusterIP), dash(o.Status.PublicIP), strings.Join(ps, ","), fmt.Sprint(len(o.Status.Endpoints)))
+		case *v1.IP:
+			row = append(row, ipRow(o)...)
 		case *v1.Image:
 			var vs []string
 			for _, v := range o.Spec.Versions {

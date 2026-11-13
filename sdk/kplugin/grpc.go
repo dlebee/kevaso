@@ -84,7 +84,8 @@ func trimSuffix(s, suf string) string {
 func classesTo(cs []Class) []*pb.Class {
 	out := make([]*pb.Class, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, &pb.Class{Name: c.Name, Description: c.Description, OwnHostsOnly: c.OwnHostsOnly, Announce: c.Announce, NodePorts: c.NodePorts, Topology: c.Topology, Reach: c.Reach, FiltersSources: c.FiltersSources})
+		out = append(out, &pb.Class{Name: c.Name, Description: c.Description, OwnHostsOnly: c.OwnHostsOnly, Announce: c.Announce, NodePorts: c.NodePorts, Topology: c.Topology, Reach: c.Reach, FiltersSources: c.FiltersSources,
+			Reserve: c.Reserve, Follows: c.Follows, SendsFrom: c.SendsFrom})
 	}
 	return out
 }
@@ -92,7 +93,8 @@ func classesTo(cs []Class) []*pb.Class {
 func classesFrom(cs []*pb.Class) []Class {
 	out := make([]Class, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, Class{Name: c.GetName(), Description: c.GetDescription(), OwnHostsOnly: c.GetOwnHostsOnly(), Announce: c.GetAnnounce(), NodePorts: c.GetNodePorts(), Topology: c.GetTopology(), Reach: c.GetReach(), FiltersSources: c.GetFiltersSources()})
+		out = append(out, Class{Name: c.GetName(), Description: c.GetDescription(), OwnHostsOnly: c.GetOwnHostsOnly(), Announce: c.GetAnnounce(), NodePorts: c.GetNodePorts(), Topology: c.GetTopology(), Reach: c.GetReach(), FiltersSources: c.GetFiltersSources(),
+			Reserve: c.GetReserve(), Follows: c.GetFollows(), SendsFrom: c.GetSendsFrom()})
 	}
 	return out
 }
@@ -202,6 +204,25 @@ func (s lbServer) DeleteLoadBalancer(ctx context.Context, r *pb.LoadBalancerRef)
 	return &pb.DeleteLoadBalancerResponse{}, toStatus(err)
 }
 
+type addressesServer struct {
+	pb.UnimplementedAddressesServer
+	p Addresses
+}
+
+func (s addressesServer) ReserveAddress(ctx context.Context, r *pb.AddressReservation) (*pb.AddressStatus, error) {
+	st, err := s.p.ReserveAddress(ctx, AddressReservation{Class: r.GetClass(), ID: r.GetId(), Namespace: r.GetNamespace(),
+		Name: r.GetName(), Region: r.GetRegion(), Address: r.GetAddress()})
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.AddressStatus{Address: st.Address, Region: st.Region, Handle: st.Handle}, nil
+}
+
+func (s addressesServer) ReleaseAddress(ctx context.Context, r *pb.AddressRef) (*pb.ReleaseAddressResponse, error) {
+	err := s.p.ReleaseAddress(ctx, AddressRef{Class: r.GetClass(), ID: r.GetId(), Address: r.GetAddress(), Handle: r.GetHandle()})
+	return &pb.ReleaseAddressResponse{}, toStatus(err)
+}
+
 type volumesServer struct {
 	pb.UnimplementedVolumesServer
 	p Volumes
@@ -276,6 +297,9 @@ func Server(p Plugin) *grpc.Server {
 	if x, ok := p.(LoadBalancers); ok {
 		pb.RegisterLoadBalancersServer(s, lbServer{p: x})
 	}
+	if x, ok := p.(Addresses); ok {
+		pb.RegisterAddressesServer(s, addressesServer{p: x})
+	}
 	if x, ok := p.(Volumes); ok {
 		pb.RegisterVolumesServer(s, volumesServer{p: x})
 	}
@@ -325,6 +349,7 @@ type Client struct {
 	id     pb.IdentityClient
 	hosts  pb.HostsClient
 	lbs    pb.LoadBalancersClient
+	addrs  pb.AddressesClient
 	vols   pb.VolumesClient
 	dns    pb.DNSClient
 	node   pb.NodeClient
@@ -338,7 +363,7 @@ func Dial(socket string) *Client {
 		panic(err)
 	}
 	return &Client{Socket: socket, conn: conn, id: pb.NewIdentityClient(conn), hosts: pb.NewHostsClient(conn),
-		lbs: pb.NewLoadBalancersClient(conn), vols: pb.NewVolumesClient(conn), dns: pb.NewDNSClient(conn), node: pb.NewNodeClient(conn), health: healthpb.NewHealthClient(conn)}
+		lbs: pb.NewLoadBalancersClient(conn), addrs: pb.NewAddressesClient(conn), vols: pb.NewVolumesClient(conn), dns: pb.NewDNSClient(conn), node: pb.NewNodeClient(conn), health: healthpb.NewHealthClient(conn)}
 }
 
 // Close closes the connection.
@@ -448,7 +473,24 @@ func (c *Client) UnmountVolume(ctx context.Context, m NodeMount) error {
 	return fromStatus(err)
 }
 
+// ReserveAddress implements Addresses.
+func (c *Client) ReserveAddress(ctx context.Context, r AddressReservation) (AddressStatus, error) {
+	st, err := c.addrs.ReserveAddress(ctx, &pb.AddressReservation{Class: r.Class, Id: r.ID, Namespace: r.Namespace,
+		Name: r.Name, Region: r.Region, Address: r.Address})
+	if err != nil {
+		return AddressStatus{}, fromStatus(err)
+	}
+	return AddressStatus{Address: st.GetAddress(), Region: st.GetRegion(), Handle: st.GetHandle()}, nil
+}
+
+// ReleaseAddress implements Addresses.
+func (c *Client) ReleaseAddress(ctx context.Context, ref AddressRef) error {
+	_, err := c.addrs.ReleaseAddress(ctx, &pb.AddressRef{Class: ref.Class, Id: ref.ID, Address: ref.Address, Handle: ref.Handle})
+	return fromStatus(err)
+}
+
 var (
+	_ Addresses     = (*Client)(nil)
 	_ Node          = (*Client)(nil)
 	_ Plugin        = (*Client)(nil)
 	_ HostDescriber = (*Client)(nil)

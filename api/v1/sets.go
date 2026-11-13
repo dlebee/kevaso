@@ -246,6 +246,9 @@ type ServiceSpec struct {
 	Type     string            `json:"type,omitempty"` // ClusterIP (default) | LoadBalancer
 	// LoadBalancerClass: a plugin's class (e.g. linode-nodebalancer) for type LoadBalancer.
 	LoadBalancerClass string `json:"loadBalancerClass,omitempty"`
+	// LoadBalancerIP names the IP object (design §7.2c-1) whose address it's reached on. Empty: one
+	// is made for it, named after it, that goes with it unless kept.
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
 }
 
 // ServicePortSpec is one port: Port on the virtual IP goes to TargetPort on each endpoint (a
@@ -266,6 +269,7 @@ type ServiceStatus struct {
 	// For type LoadBalancer: the outside address, the node port each port arrives on at the
 	// endpoints' hosts, and where the load balancer's traffic comes from.
 	PublicIP     string           `json:"publicIP,omitempty"`
+	IP           string           `json:"ip,omitempty"` // the IP object PublicIP is
 	NodePorts    []NodePort       `json:"nodePorts,omitempty"`
 	SourceRanges []string         `json:"sourceRanges,omitempty"`
 	Conditions   []meta.Condition `json:"conditions,omitempty"`

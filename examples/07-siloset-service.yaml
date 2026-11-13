@@ -61,3 +61,5 @@ spec:
     - { name: rpc, port: 8545, targetPort: rpc, protocol: TCP }
   type: LoadBalancer
   loadBalancerClass: linode-nodebalancer
+  # No loadBalancerIP: an IP named rpc is made for it (the NodeBalancer's address), and goes with
+  # the Service unless kept (kvo ip keep rpc). Name a kept one here to reuse its address.

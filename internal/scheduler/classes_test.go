@@ -34,7 +34,8 @@ func mounts(classes ...string) hostOpt {
 }
 
 func TestPluginClasses(t *testing.T) {
-	env := Env{Classes: linodeClasses}
+	// The silo holds its load balancer's IP (made for it): the IP must be its before it's placed.
+	env := Env{Classes: linodeClasses, IPs: []*v1.IP{ipObj("a", "linode-nodebalancer", func(x *v1.IP) { x.Status.BoundTo, x.Status.BoundUID = "silo/a", "uid-a" })}}
 	for _, tc := range []struct {
 		name  string
 		silo  *v1.Silo
@@ -44,7 +45,7 @@ func TestPluginClasses(t *testing.T) {
 	}{
 		{"a volume goes to the plugin's machine", silo("a", volume("linode-block")),
 			hosts(host("home", mem("64Gi")), host("tor", provider("linode", "ca-central"))), "tor", ""},
-		{"a load balancer too", silo("a", lb("linode-nodebalancer", v1.ServicePort{Name: "web", Port: 80})),
+		{"a load balancer too", silo("a", lb("linode-nodebalancer", v1.ServicePort{Name: "web", Port: 80}), func(s *v1.Silo) { s.UID = "uid-a" }),
 			hosts(host("home", mem("64Gi")), host("tor", provider("linode", "ca-central"))), "tor", ""},
 		{"another provider's machine won't do", silo("a", volume("linode-block")),
 			hosts(host("fra", provider("hetzner", "fsn1"))), "", "fra: class linode-block needs a linode machine"},

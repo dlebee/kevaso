@@ -2,8 +2,7 @@ package scheduler
 
 import (
 	"fmt"
-	"net/netip"
-
+	"slices"
 	"strings"
 
 	v1 "kevaso.com/core/api/v1"
@@ -17,18 +16,6 @@ func UsesHostAddress(s *v1.Silo) bool {
 	}
 	return sv.Expose == v1.ExposeHostPort ||
 		(sv.Expose == v1.ExposeLoadBalancer && sv.LoadBalancer != nil && sv.LoadBalancer.Class == v1.LBWorkerIP)
-}
-
-// PoolOf is the IPPool the silo takes an address from ("" if none): its load balancer's, or its
-// egress's (admission makes them the same when both are set).
-func PoolOf(s *v1.Silo) string {
-	if sv := s.Spec.Service; sv != nil && sv.Expose == v1.ExposeLoadBalancer && sv.LoadBalancer != nil && sv.LoadBalancer.Class == v1.LBIPPool {
-		return sv.LoadBalancer.Pool
-	}
-	if s.Spec.Network.Egress.Source == v1.EgressPool {
-		return s.Spec.Network.Egress.Pool
-	}
-	return ""
 }
 
 type hostPort struct {
@@ -68,66 +55,8 @@ func contains(l []string, v string) bool {
 	return false
 }
 
-// PoolAddresses lists a pool's addresses, in order.
-func PoolAddresses(p *v1.IPPool) []netip.Addr {
-	var out []netip.Addr
-	for _, a := range p.Spec.Addresses {
-		if addr, err := netip.ParseAddr(a); err == nil {
-			out = append(out, addr)
-			continue
-		}
-		pfx, err := netip.ParsePrefix(a)
-		if err != nil {
-			continue
-		}
-		pfx = pfx.Masked()
-		if pfx.Bits() >= 31 { // /31, /32: every address is usable
-			for x := pfx.Addr(); pfx.Contains(x); x = x.Next() {
-				out = append(out, x)
-			}
-			continue
-		}
-		last := pfx.Addr()
-		for x := pfx.Addr(); pfx.Contains(x); x = x.Next() {
-			last = x
-		}
-		for x := pfx.Addr().Next(); x.Compare(last) < 0; x = x.Next() { // skip network and broadcast
-			out = append(out, x)
-		}
-	}
-	return out
-}
-
-// FreePoolAddress is the lowest address of pool no other silo holds.
-func FreePoolAddress(pool *v1.IPPool, self *v1.Silo, placed []*v1.Silo) (netip.Addr, bool) {
-	held := map[string]bool{}
-	for _, s := range placed {
-		if s.Namespace == self.Namespace && s.Name == self.Name {
-			continue
-		}
-		if ip := s.Status.Service.PoolIP; ip != "" {
-			held[ip] = true
-		}
-	}
-	for _, a := range PoolAddresses(pool) {
-		if !held[a.String()] {
-			return a, true
-		}
-	}
-	return netip.Addr{}, false
-}
-
-func poolByName(pools []*v1.IPPool, name string) *v1.IPPool {
-	for _, p := range pools {
-		if p.Name == name {
-			return p
-		}
-	}
-	return nil
-}
-
 // netFilter: the network rules a host must meet for the silo (empty: fine).
-func netFilter(s *v1.Silo, h *v1.Host, placed []*v1.Silo, pools []*v1.IPPool) string {
+func netFilter(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) string {
 	if UsesHostAddress(s) {
 		if h.Spec.Network.BehindNAT {
 			return "behind NAT: no public address to open ports on"
@@ -146,28 +75,22 @@ func netFilter(s *v1.Silo, h *v1.Host, placed []*v1.Silo, pools []*v1.IPPool) st
 			}
 		}
 	}
-	if name := PoolOf(s); name != "" {
-		p := poolByName(pools, name)
-		switch {
-		case p == nil:
-			return "IPPool " + name + " doesn't exist"
-		case p.Spec.Host != h.Name:
-			return "IPPool " + name + " is routed to " + p.Spec.Host
-		}
-		if _, ok := FreePoolAddress(p, s, placed); !ok && s.Status.Service.PoolIP == "" {
-			return "IPPool " + name + " has no free address"
-		}
+	if why := ipFilter(s, h, env); why != "" {
+		return why
 	}
 	return ""
 }
 
-// ServiceStatus is where a silo placed on h is reached and sends from, and its name. A pool address
-// it already holds stays its own (stableIP). For a plugin's load-balancer class, the address is the
-// plugin's (the load-balancer controller writes it; kept here), and node ports, if the class uses
-// them, are allocated on h. Pure.
+// ServiceStatus is where a silo placed on h is reached and sends from, and its name. An IP's
+// address is the IP's (design §7.2c-1): ip-pool's is set here; a plugin's class's is the plugin's
+// (the load-balancer controller writes it; kept here), and node ports, if the class uses them,
+// are allocated on h. The address out follows the table of §7.2b (Egress). Pure.
 func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloServiceStatus, error) {
-	pools := env.Pools
 	st := v1.SiloServiceStatus{Name: s.Name + "." + s.Namespace + ".kevaso"}
+	svcIP, egIP := heldIP(s, svcIPName(s), env), heldIP(s, v1.SiloEgressIP(s), env)
+	if svcIP != nil {
+		st.IP = svcIP.Name
+	}
 	if class := v1.PluginLB(s); class != "" {
 		cur := s.Status.Service
 		st.PublicIP, st.SourceRanges, st.Announce = cur.PublicIP, cur.SourceRanges, cur.Announce
@@ -179,35 +102,20 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloS
 			st.NodePorts = np
 		}
 	}
-	if name := PoolOf(s); name != "" {
-		p := poolByName(pools, name)
-		if p == nil {
-			return st, fmt.Errorf("IPPool %s doesn't exist", name)
-		}
-		if cur := s.Status.Service.PoolIP; cur != "" && containsAddr(PoolAddresses(p), cur) {
-			st.PoolIP = cur
-		} else if a, ok := FreePoolAddress(p, s, placed); ok {
-			st.PoolIP = a.String()
-		} else {
-			return st, fmt.Errorf("IPPool %s has no free address", name)
+	for _, x := range []*v1.IP{svcIP, egIP} {
+		if x != nil && x.Spec.Class == v1.LBIPPool && x.Status.Address != "" && x.Status.Host == h.Name && !slices.Contains(st.HostAddresses, x.Status.Address) {
+			st.HostAddresses = append(st.HostAddresses, x.Status.Address)
 		}
 	}
 	switch {
 	case UsesHostAddress(s):
 		st.PublicIP = h.Spec.Address
-	case s.Spec.Service != nil && s.Spec.Service.Expose == v1.ExposeLoadBalancer && st.PoolIP != "":
-		st.PublicIP = st.PoolIP
-	}
-	switch s.Spec.Network.Egress.Source {
-	case v1.EgressSameAsService:
-		st.EgressIP = st.PublicIP
-	case v1.EgressPool:
-		st.EgressIP = st.PoolIP
-	default:
-		if !h.Spec.Network.BehindNAT {
-			st.EgressIP = h.Spec.Address
+	case svcIP != nil && svcIP.Spec.Class == v1.LBIPPool:
+		if svcIP.Status.Host == h.Name {
+			st.PublicIP = svcIP.Status.Address
 		}
 	}
+	st.EgressIP, st.EgressNote = Egress(s, h, st.PublicIP, svcIP, egIP, env.Classes)
 	return st, nil
 }
 
@@ -254,13 +162,4 @@ func NodePorts(s *v1.Silo, host string, placed []*v1.Silo) ([]v1.NodePort, error
 		out = append(out, v1.NodePort{Name: p.Name, Port: p.Port, NodePort: np})
 	}
 	return out, nil
-}
-
-func containsAddr(l []netip.Addr, s string) bool {
-	for _, a := range l {
-		if a.String() == s {
-			return true
-		}
-	}
-	return false
 }

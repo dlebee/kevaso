@@ -24,7 +24,7 @@ func TestNetworkView(t *testing.T) {
 		s.Status.Service = v1.SiloServiceStatus{PublicIP: "198.51.100.10", EgressIP: "198.51.100.10"}
 	})
 	plain := mk("plain", "metal-1", "10.64.0.3", func(s *v1.Silo) { s.Status.Service.EgressIP = "198.51.100.10" })
-	pooled := mk("pooled", "metal-1", "10.64.0.4", func(s *v1.Silo) { s.Status.Service.PoolIP = "198.51.100.17" })
+	pooled := mk("pooled", "metal-1", "10.64.0.4", func(s *v1.Silo) { s.Status.Service.HostAddresses = []string{"198.51.100.17"} })
 	elsewhere := mk("far", "metal-2", "10.64.9.2", nil)
 	pending := mk("pending", "", "", nil)
 	node.Spec.Grants = []string{"p2p-anywhere", "missing"}
