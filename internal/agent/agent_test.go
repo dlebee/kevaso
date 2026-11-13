@@ -261,10 +261,16 @@ func TestImageChangeAndResetAreStopFirst(t *testing.T) {
 	if err := e.c.Update(e.ctx, s); err != nil {
 		t.Fatal(err)
 	}
-	_ = e.c.Get(e.ctx, "Silo", "dev", "node", s)
-	s.Status.Image = &v1.SiloImage{From: "geth:v2", Ref: "docker.io/ethereum/client-go:v1.15.0", Running: "ubuntu-24.04"}
-	if err := e.c.UpdateStatus(e.ctx, s); err != nil {
-		t.Fatal(err)
+	for attempt := 0; ; attempt++ { // the agent writes the silo's status too (it saw the new spec)
+		_ = e.c.Get(e.ctx, "Silo", "dev", "node", s)
+		s.Status.Image = &v1.SiloImage{From: "geth:v2", Ref: "docker.io/ethereum/client-go:v1.15.0", Running: "ubuntu-24.04"}
+		err := e.c.UpdateStatus(e.ctx, s)
+		if err == nil {
+			break
+		}
+		if !client.IsConflict(err) || attempt > 20 {
+			t.Fatal(err)
+		}
 	}
 	s = e.wait(t, "node", func(s *v1.Silo) bool {
 		c := meta.FindCondition(s.Status.Conditions, "Ready")
