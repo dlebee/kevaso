@@ -108,9 +108,7 @@ func repoManifests(t *testing.T) []manifest {
 // stale are manifests known to be out of date, by file, with who fixes them: reported, not failed,
 // so a fix elsewhere lands without a conflict here. Remove an entry once its file is fixed (the
 // test says when).
-var stale = map[string]string{
-	"docs/notes/virtiofs-real-machine-checklist.md": "Silo spec.image predates ADR 0011 (vm: { image }): phase/lima-2 owns this file",
-}
+var stale = map[string]string{}
 
 func TestEveryRepoManifestIsAdmitted(t *testing.T) {
 	v, err := newValidator(builtinRules)

@@ -59,11 +59,7 @@ var sites = map[string]string{
 // unlocked are package-manager calls known to run without the shared lock, by file, and who
 // fixes them (reported, not fixed here: these files are another branch's). Once fixed, the
 // entry is only logged.
-var unlocked = map[string]string{
-	"builtin/kri/cloudhypervisor/install.go": "phase/metal (builtin/kri/hostpkg)",
-	"builtin/kri/container/install.go":       "phase/metal (builtin/kri/hostpkg)",
-	"builtin/kri/openshell/install.go":       "phase/metal (builtin/kri/hostpkg)",
-}
+var unlocked = map[string]string{}
 
 type snippet struct {
 	site, pos, script string
