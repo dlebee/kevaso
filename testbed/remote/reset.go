@@ -231,7 +231,7 @@ func Plan(in PlanInput) []Step {
 done
 for f in /etc/systemd/system/kevaso*.service; do [ -e "$f" ] && systemctl disable "$(basename "$f")" 2>/dev/null; done
 true`)
-	add("kill what is left", `for p in kevasod cloud-hypervisor ch-remote virtiofsd; do pkill -KILL -x "$p"; done; sleep 1; true`)
+	add("kill what is left", `for p in kevasod cloud-hypervisor ch-remote virtiofsd; do pkill -KILL -x "$(printf %.15s "$p")"; done; sleep 1; true`)
 
 	// 2. Containers and images, while Docker still runs.
 	add("remove containers, volumes and images", `if command -v docker >/dev/null && systemctl is-active -q docker; then
@@ -331,7 +331,7 @@ func Checklist(ports []int) []Check {
 	}
 	return []Check{
 		{"no Kevaso unit is loaded", `systemctl list-units --all --plain --no-legend 'kevaso*' '` + UnitPrefix + `*' | awk '{print $1}'`},
-		{"no Kevaso process runs", `for p in ` + strings.Join(Processes, " ") + `; do pgrep -x "$p" >/dev/null && echo "$p"; done; true`},
+		{"no Kevaso process runs", `for p in ` + strings.Join(Processes, " ") + `; do pgrep -x "$(printf %.15s "$p")" >/dev/null && echo "$p"; done; true`},
 		{"no Kevaso file is left", `for f in ` + strings.Join(Paths, " ") + `; do [ -e "$f" ] && echo "$f"; done; true`},
 		{"nothing is mounted under Kevaso's paths", `awk '{print $2}' /proc/mounts | grep -E '` + mountPattern + `'; true`},
 		{"no Kevaso link is left", `ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -E '^(kvbr|kvt|kevaso|docker0)'; true`},
