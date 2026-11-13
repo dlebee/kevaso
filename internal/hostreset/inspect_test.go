@@ -99,7 +99,7 @@ func TestDecideFromARecord(t *testing.T) {
 	// Docker was there before: it stays, its daemon.json comes back.
 	before := Record{State: State{Packages: append(slices.Clone(fresh.Packages), "docker.io", "containerd"), Tables: fresh.Tables, IPForward: "1"}, DockerJSONBefore: true}
 	d, err = Decide(Inspection{Record: &before, Installed: true, Now: afterInstall}, Flags{})
-	if err != nil || d.Plan.DockerOurs || !d.Plan.RestoreDockerJSON || d.Checks.DockerGone || slices.Contains(d.Plan.Purge, "docker.io") || d.Plan.IPForward != "1" {
+	if err != nil || d.Plan.DockerOurs || d.Plan.DockerJSON != DockerJSONRestore || d.Checks.DockerGone || slices.Contains(d.Plan.Purge, "docker.io") || d.Plan.IPForward != "1" {
 		t.Fatalf("docker before: %+v %v", d.Plan, err)
 	}
 }
@@ -114,6 +114,17 @@ func TestDecidePodmanOurs(t *testing.T) {
 	}
 	if d, _ := Decide(Inspection{Record: &Record{State: now}, Now: now}, Flags{}); d.Plan.PodmanOurs {
 		t.Error("a podman that was there before is treated as Kevaso's")
+	}
+}
+
+func TestDecideRemovesTheDaemonJSONKevasoMade(t *testing.T) {
+	before := Record{State: State{Packages: append(slices.Clone(fresh.Packages), "docker.io"), Tables: fresh.Tables, IPForward: "0"}}
+	d, err := Decide(Inspection{Record: &before, Now: afterInstall}, Flags{})
+	if err != nil || d.Plan.DockerOurs || d.Plan.DockerJSON != DockerJSONRemove {
+		t.Fatalf("docker before, no daemon.json before: %+v %v", d.Plan, err)
+	}
+	if d, _ := Decide(Inspection{Now: afterInstall}, Flags{}); d.Plan.DockerJSON != DockerJSONIfKevasos {
+		t.Errorf("no record: %+v", d.Plan)
 	}
 }
 

@@ -56,6 +56,10 @@ type Runtime struct {
 
 	mu     sync.Mutex
 	execMu sync.Mutex // one exec at a time is being found (ExecRoot tells them apart by elimination)
+	envMu  sync.Mutex
+	// How env secrets reach this host's containers, decided by Install (secrets.go, envPath).
+	envPlanned, envShim bool
+	envWhy              string
 }
 
 type state struct {
@@ -147,8 +151,10 @@ func (r *Runtime) engine() string {
 
 // Info implements kri.Runtime.
 func (r *Runtime) Info() kri.Info {
+	shim, _ := r.envShimNow()
 	return kri.Info{Name: r.engine(), Version: r.Version, Capabilities: kri.Capabilities{
 		Isolation: "container", Network: "netns", UDP: true, InboundServices: true, Persistence: "volume", Injection: true, Exec: true,
+		EnvOutsideEngine: shim,
 	}}
 }
 
@@ -459,12 +465,13 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 		}
 		args = append(args, ref)
 		args = append(args, cmd...)
-		if _, err = r.eng(ctx, nil, args...); err == nil && s.Secrets != nil {
-			s.Secrets.MainDirs, s.Secrets.MainEnv = s.Secrets.Dirs, s.Secrets.Env
-			err = r.save(s)
-		}
+		_, err = r.eng(ctx, nil, args...)
 	default:
 		_, err = r.eng(ctx, nil, "start", n.Main)
+	}
+	if err == nil && s.Secrets != nil {
+		s.Secrets.started()
+		err = r.save(s)
 	}
 	return err
 }
@@ -553,7 +560,7 @@ func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
 	}
 	s.Image, s.Command, s.Volumes, s.CPU, s.Memory = spec.Image, spec.Command, spec.Volumes, spec.CPU, spec.Memory
 	if s.Secrets != nil { // no main container any more: the next one gets the secrets as they are
-		s.Secrets.MainDirs, s.Secrets.MainEnv = nil, nil
+		s.Secrets.MainDirs, s.Secrets.MainEnv, s.Secrets.MainVia = nil, nil, ""
 	}
 	err := r.save(s)
 	r.mu.Unlock()
@@ -728,4 +735,5 @@ var (
 	_ kri.Runtime        = (*Runtime)(nil)
 	_ kri.InitContainers = (*Runtime)(nil)
 	_ kri.HostSecrets    = (*Runtime)(nil)
+	_ kri.EnvPath        = (*Runtime)(nil)
 )

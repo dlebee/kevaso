@@ -52,7 +52,7 @@ const VG = cloudhypervisor.VG
 
 // Paths are Kevaso's own files, removed by every reset. Each is under one of AllowedRoots.
 var Paths = []string{
-	"/usr/local/bin/kevasod", "/usr/local/bin/kevaso-plugin-*",
+	"/usr/local/bin/kevasod", "/usr/local/bin/kevaso-plugin-*", "/usr/local/lib/kevaso",
 	"/etc/kevaso", "/etc/kevaso-silos.nft", "/etc/profile.d/kevaso-secrets.sh",
 	"/etc/systemd/system/kevasod.service", "/etc/systemd/system/kevaso-*.service", "/etc/systemd/system/kevaso-*.d",
 	"/opt/kevaso",
@@ -68,7 +68,7 @@ var DockerPaths = []string{"/var/lib/docker", "/var/lib/containerd", "/etc/docke
 var PodmanPaths = []string{"/var/lib/containers"}
 
 // AllowedRoots are the only places the plan removes files under.
-var AllowedRoots = []string{"/usr/local/bin/kevaso", "/etc/kevaso", "/etc/docker", "/etc/profile.d/kevaso-", "/etc/systemd/system/kevaso",
+var AllowedRoots = []string{"/usr/local/bin/kevaso", "/usr/local/lib/kevaso", "/etc/kevaso", "/etc/docker", "/etc/profile.d/kevaso-", "/etc/systemd/system/kevaso",
 	"/opt/kevaso", "/var/lib/kevaso", "/var/cache/kevaso", "/run/kevaso", "/var/lib/docker", "/var/lib/containerd", "/var/lib/containers"}
 
 // mountPattern matches mount points under Kevaso's paths (an extended regular expression).
@@ -336,6 +336,19 @@ const (
 	StorageWipe
 )
 
+// DockerJSON is what a reset does with Docker's daemon.json when Docker stays.
+type DockerJSON int
+
+const (
+	// DockerJSONIfKevasos removes it only when it is exactly what Kevaso writes on a host that had
+	// none (no record: nothing says what was there).
+	DockerJSONIfKevasos DockerJSON = iota
+	// DockerJSONRestore puts back the one Docker had before (the record saved it).
+	DockerJSONRestore
+	// DockerJSONRemove removes it: the record says there was none before.
+	DockerJSONRemove
+)
+
 // Step is one thing a reset does: a root shell script. A failed step doesn't stop the reset
 // (everything is tried); the checklist decides whether the host is clean.
 type Step struct {
@@ -350,9 +363,9 @@ type PlanInput struct {
 	IPForward  string   // the record's value; "" leaves it as it is
 	DockerOurs bool     // Kevaso installed Docker: every container and image goes, then Docker itself
 	PodmanOurs bool     // Kevaso installed podman: every container, image and its storage go
-	// RestoreDockerJSON puts back the daemon.json Docker had before (when Docker stays).
-	RestoreDockerJSON bool
-	Storage           Storage
+	// DockerJSON is what happens to Docker's daemon.json when Docker stays.
+	DockerJSON DockerJSON
+	Storage    Storage
 }
 
 // Plan is the reset, in order. Pure.
@@ -466,10 +479,19 @@ rm -f `+StorageImage)
 
 	// 6. Docker's configuration, files, the tests' /etc/hosts lines, users.
 	if !in.DockerOurs {
-		if in.RestoreDockerJSON {
-			add("restore Docker's daemon.json", `[ -f `+SavedDockerJSON+` ] && cp `+SavedDockerJSON+` `+DockerDaemonJSONPath+` && (systemctl try-restart docker || true)`)
-		} else {
-			add("remove Kevaso's daemon.json (only if it is still Kevaso's)", `[ -f `+DockerDaemonJSONPath+` ] && printf '%s' `+shQuote(container.DockerDaemonJSON)+` | cmp -s - `+DockerDaemonJSONPath+` && rm -f `+DockerDaemonJSONPath+` && (systemctl try-restart docker || true); true`)
+		restart := ` && (systemctl try-restart docker || true)`
+		switch in.DockerJSON {
+		case DockerJSONRestore:
+			add("restore Docker's daemon.json", `[ -f `+SavedDockerJSON+` ] && cp `+SavedDockerJSON+` `+DockerDaemonJSONPath+restart)
+		case DockerJSONRemove:
+			add("remove the daemon.json Kevaso made", `[ -f `+DockerDaemonJSONPath+` ] && rm -f `+DockerDaemonJSONPath+restart+`; true`)
+		default:
+			var cmp []string
+			for _, shim := range []bool{false, true} {
+				mine, _ := container.DockerDaemonConfig(nil, shim)
+				cmp = append(cmp, `printf '%s' `+shQuote(string(mine))+` | cmp -s - `+DockerDaemonJSONPath)
+			}
+			add("remove Kevaso's daemon.json (only if it is still Kevaso's)", `[ -f `+DockerDaemonJSONPath+` ] && { `+strings.Join(cmp, " || ")+`; } && rm -f `+DockerDaemonJSONPath+restart+`; true`)
 		}
 	}
 	add("unmount what is mounted under Kevaso's paths", `awk '{print $2}' /proc/mounts | grep -E '`+mountPattern+`' | sort -r | while read m; do umount -l "$m"; done; true`)

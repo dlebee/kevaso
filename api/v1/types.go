@@ -223,6 +223,9 @@ type RuntimeStatus struct {
 	State   string `json:"state"` // Installing | Ready | Failed
 	Version string `json:"version,omitempty"`
 	Message string `json:"message,omitempty"` // the install step while Installing, the error if Failed
+	// EnvOutsideEngine: env secrets reach this runtime's silos without the engine keeping their
+	// values (containers through Kevaso's OCI runtime, ADR 0009 addendum).
+	EnvOutsideEngine bool `json:"envOutsideEngine,omitempty"`
 }
 
 // ── Silo ─────────────────────────────────────────────────────────────────────

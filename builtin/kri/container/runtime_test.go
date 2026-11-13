@@ -29,6 +29,7 @@ type fake struct {
 	pid1       map[string]string                                // image → its inspected entrypoint and command
 	digests    map[string]string                                // image → its RepoDigests (JSON)
 	onPull     func(engine string, args []string) (int, error)  // a pull, if set (pull_test.go)
+	replies    map[string]string                                // command line prefix → its stdout (envshim_test.go)
 }
 
 func newFake() *fake {
@@ -48,6 +49,13 @@ func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
 			_, _ = io.WriteString(c.Stderr, s)
 		}
 		return 1, nil
+	}
+	line := c.Name + " " + strings.Join(a, " ")
+	for prefix, reply := range f.replies {
+		if strings.HasPrefix(line, prefix) {
+			out(reply)
+			return 0, nil
+		}
 	}
 	switch {
 	case c.Name == "mount" && len(a) > 0 && a[len(a)-1] != "":

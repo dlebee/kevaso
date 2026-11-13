@@ -160,7 +160,9 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 		d.Plan.Tables = ExtraTables(r.State, in.Now)
 		d.Plan.IPForward = r.IPForward
 		d.Plan.DockerOurs = slices.Contains(d.Plan.Purge, "docker.io")
-		d.Plan.RestoreDockerJSON = r.DockerJSONBefore && !d.Plan.DockerOurs
+		if d.Plan.DockerJSON = DockerJSONRemove; r.DockerJSONBefore {
+			d.Plan.DockerJSON = DockerJSONRestore
+		}
 		say("from the install record: purge %s; delete nftables tables %s; set net.ipv4.ip_forward back to %s",
 			orNone(d.Plan.Purge), orNone(d.Plan.Tables), r.IPForward)
 	} else {
@@ -179,8 +181,10 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 	case d.Plan.DockerOurs:
 		say("Docker was installed by Kevaso: every container, volume and image goes, then Docker itself")
 		d.Checks.DockerGone = true
-	case d.Plan.RestoreDockerJSON:
+	case d.Plan.DockerJSON == DockerJSONRestore:
 		say("Docker stays (it was there before): Kevaso's containers and volumes go; its daemon.json is put back as it was")
+	case d.Plan.DockerJSON == DockerJSONRemove:
+		say("Docker stays (it was there before): Kevaso's containers and volumes go, and the daemon.json Kevaso made")
 	default:
 		say("Docker stays, if it's there: Kevaso's containers and volumes go (by label); daemon.json goes only if it is still Kevaso's")
 	}

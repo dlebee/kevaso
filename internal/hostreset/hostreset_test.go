@@ -147,7 +147,7 @@ func TestPlanOrder(t *testing.T) {
 }
 
 func TestPlanLeavesDockerThatWasThereBefore(t *testing.T) {
-	steps := Plan(PlanInput{IPForward: "0", RestoreDockerJSON: true})
+	steps := Plan(PlanInput{IPForward: "0", DockerJSON: DockerJSONRestore})
 	for _, bad := range []string{"remove containers, volumes and images", "stop docker", "delete docker0", "purge"} {
 		if hasStep(steps, bad) {
 			t.Errorf("Docker isn't Kevaso's, but the plan has %q", bad)
@@ -169,8 +169,12 @@ func TestPlanLeavesDockerThatWasThereBefore(t *testing.T) {
 	// Without a saved daemon.json, Kevaso's own is removed only if unchanged.
 	steps = Plan(PlanInput{})
 	s := steps[stepIndex(t, steps, "remove Kevaso's daemon.json")].Script
-	if !strings.Contains(s, "cmp -s - "+DockerDaemonJSONPath+" && rm -f "+DockerDaemonJSONPath) {
-		t.Errorf("daemon.json step: %q", s)
+	if strings.Count(s, "cmp -s - "+DockerDaemonJSONPath) != 2 || !strings.Contains(s, "kevaso-oci") || !strings.Contains(s, "} && rm -f "+DockerDaemonJSONPath) {
+		t.Errorf("daemon.json step (Kevaso's, with and without its OCI runtime): %q", s)
+	}
+	steps = Plan(PlanInput{DockerJSON: DockerJSONRemove})
+	if s := steps[stepIndex(t, steps, "remove the daemon.json Kevaso made")].Script; strings.Contains(s, "cmp") {
+		t.Errorf("remove step: %q", s)
 	}
 	if hasStep(steps, "restore net.ipv4") {
 		t.Error("no record: IP forwarding must be left as it is")

@@ -232,6 +232,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 					cfg.Log("runtime %s: %v (trying again in a minute)", name, err)
 					st.State, st.Message = "Failed", err.Error()
 				} else {
+					st.EnvOutsideEngine = rt.Info().Capabilities.EnvOutsideEngine
 					cfg.Log("runtime %s ready", name)
 					if usesBridge(rt) { // the bridge is there now: keep its firewall current (once)
 						networkOnce.Do(func() { go RunNetwork(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log) })

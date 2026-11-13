@@ -253,6 +253,9 @@ func (a *Agent) asker(ctx context.Context, s *v1.Silo) func(op string) (client.B
 // engine holds their values (ADR 0009 addendum).
 const EnvInEngineNote = "environment variables are in the engine's container config: anyone with the host's docker or podman sees their values (inspect)"
 
+// EnvOutsideEngineNote is what it adds when they go through Kevaso's OCI runtime instead.
+const EnvOutsideEngineNote = "environment variables set by Kevaso's OCI runtime as the container starts: not in the engine's config, inspect or its disk"
+
 // deliverFromHost gives a HostSecrets runtime the silo's file and env deliveries: always before it
 // starts (its values went with its last stop), and while it runs when they changed since.
 func (a *Agent) deliverFromHost(ctx context.Context, hs kri.HostSecrets, s *v1.Silo, starting bool) error {
@@ -317,7 +320,18 @@ func (a *Agent) setHostSecrets(ctx context.Context, hs kri.HostSecrets, s *v1.Si
 	}
 	note := fmt.Sprintf("%d files (a tmpfs of the host's, mounted read-only), %d environment variables", len(sec.Files), len(sec.Env))
 	if len(sec.Env) > 0 {
-		note += "; " + EnvInEngineNote
+		inEngine, why := true, ""
+		if p, ok := hs.(kri.EnvPath); ok {
+			inEngine, why = p.EnvInEngine(idOf(s))
+		}
+		switch {
+		case !inEngine:
+			note += "; " + EnvOutsideEngineNote
+		case why != "":
+			note += "; " + EnvInEngineNote + " (" + why + ")"
+		default:
+			note += "; " + EnvInEngineNote
+		}
 	}
 	if pending != "" {
 		note += "; " + pending
