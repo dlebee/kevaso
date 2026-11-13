@@ -58,6 +58,9 @@ func DockerDaemonConfig(cur []byte, register bool) (next []byte, changed bool) {
 
 const daemonJSON = "/etc/docker/daemon.json"
 
+// dockerRestartPending is there while daemon.json was written and dockerd not restarted yet.
+const dockerRestartPending = "/var/lib/kevaso/docker-restart-pending"
+
 // Install readies the host: the engine, and the silo bridge with its baseline firewall (shared with
 // the VM runtime).
 func (r *Runtime) Install(ctx context.Context, progress func(string)) error {
@@ -128,14 +131,26 @@ func (r *Runtime) installDocker(ctx context.Context) error {
 	// undo, and every silo's forwarded traffic (VMs too) would stop.
 	// Install runs at every kevasod start: dockerd restarts only when its configuration changed,
 	// never just because the agent did, so silos keep running.
-	if next, changed := DockerDaemonConfig(cur, real != ""); changed {
-		if err := r.Host.WriteFile(daemonJSON, next, 0o644); err != nil {
-			return err
+	// A start stopped between the write and the restart: the file says what's wanted and dockerd
+	// still runs the old one. The marker, written first and removed once dockerd restarted, says so.
+	_, pendErr := r.Host.ReadFile(dockerRestartPending)
+	next, changed := DockerDaemonConfig(cur, real != "")
+	if changed || pendErr == nil {
+		if changed {
+			if err := r.Host.WriteFile(dockerRestartPending, nil, 0o600); err != nil {
+				return err
+			}
+			if err := r.Host.WriteFile(daemonJSON, next, 0o644); err != nil {
+				return err
+			}
 		}
 		if _, err := r.cmd(ctx, nil, "systemctl", "enable", "docker"); err != nil {
 			return err
 		}
 		if _, err := r.cmd(ctx, nil, "systemctl", "restart", "docker"); err != nil {
+			return err
+		}
+		if err := r.Host.RemoveAll(dockerRestartPending); err != nil {
 			return err
 		}
 	}
