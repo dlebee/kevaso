@@ -51,8 +51,8 @@ type Agent struct {
 	// silos are neither made nor started: a microVM started before its runtime's storage is up
 	// fails, and a failed one stays failed.
 	RuntimeReady func(name string) bool
-	Clock    clock.Clock
-	Log      func(format string, args ...any)
+	Clock        clock.Clock
+	Log          func(format string, args ...any)
 	// LastContact, if set, says when this host last reached the control plane. Past FenceAfter
 	// without contact, the agent fences: it stops the silos the control plane may recreate
 	// elsewhere (onHostLoss: Recreate) and starts nothing, so two copies never run.

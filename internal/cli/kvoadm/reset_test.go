@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	v1 "kevaso.com/core/api/v1"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/hostreset"
 )
 
