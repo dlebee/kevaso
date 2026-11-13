@@ -10,7 +10,7 @@ import (
 )
 
 // workerFlags are the control-plane unit's worker settings (replaced as a whole by enable-worker).
-var workerFlags = map[string]bool{"--worker": false, "--runtime": true, "--loop-storage": true, "--loop-size": true, "--storage-device": true,
+var workerFlags = map[string]bool{"--worker": false, "--runtime": true, "--loop-storage": true, "--loop-size": true,
 	"--egress-extra-ca": true, "--openshell-gateway-scope": true} // flag → takes a value
 
 // WithWorker rewrites a control-plane unit so that host also runs silos: the worker flags in its
@@ -56,9 +56,6 @@ func workerArgs(o InitOptions) []string {
 	}
 	if o.LoopStorage != "" {
 		args = append(args, "--loop-storage", "/var/lib/kevaso-storage.img", "--loop-size", o.LoopStorage)
-	}
-	if o.StorageDevice != "" {
-		args = append(args, "--storage-device", o.StorageDevice)
 	}
 	if o.EgressExtraCA != "" {
 		args = append(args, "--egress-extra-ca", o.EgressExtraCA)

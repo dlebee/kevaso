@@ -2,7 +2,6 @@ package cloudhypervisor
 
 import (
 	"bufio"
-	"errors"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -69,38 +68,6 @@ type StorageOptions struct {
 	// (development and test machines; production hosts get a real disk). Empty: require the VG.
 	LoopFile string
 	LoopSize string // e.g. 64G
-	// Device is a whole, empty disk the volume group is made on when there's none yet
-	// (/dev/nvme1n1): refused unless it has no partitions, no signatures, no mounts and no holders.
-	Device string
-}
-
-// DiskEmpty decides whether a disk may become the volume group's: lsblk is
-// "lsblk -nr -o NAME,TYPE,MOUNTPOINT DEV" (one line: the disk itself, unmounted), wipefs is
-// "wipefs -n DEV" (nothing: no filesystem, RAID, LVM or partition-table signature). Pure.
-func DiskEmpty(dev, lsblk, wipefs string) error {
-	var lines []string
-	for _, l := range strings.Split(strings.TrimSpace(lsblk), "\n") {
-		if strings.TrimSpace(l) != "" {
-			lines = append(lines, l)
-		}
-	}
-	switch {
-	case len(lines) == 0:
-		return fmt.Errorf("%s: no such disk", dev)
-	case len(lines) > 1:
-		return fmt.Errorf("%s has partitions or holders (%s): Kevaso takes a whole, empty disk only", dev, strings.Join(lines[1:], "; "))
-	}
-	f := strings.Fields(lines[0])
-	if len(f) < 2 || f[1] != "disk" {
-		return fmt.Errorf("%s is %q, not a whole disk", dev, lines[0])
-	}
-	if len(f) > 2 {
-		return fmt.Errorf("%s is mounted on %s", dev, f[2])
-	}
-	if strings.TrimSpace(wipefs) != "" {
-		return fmt.Errorf("%s isn't empty (wipefs found: %s): Kevaso never writes over a disk with anything on it", dev, strings.Join(strings.Fields(wipefs), " "))
-	}
-	return nil
 }
 
 // Install prepares the host: packages, the VMM user, pinned binaries and the image, the silo
@@ -229,35 +196,9 @@ func (r *Runtime) setupStorage(ctx context.Context, o StorageOptions) error {
 			}
 		}
 	}
-	if vgErr != nil && o.Device != "" {
-		if o.LoopFile != "" {
-			return errors.New("a storage device or a loop file, not both")
-		}
-		if !strings.HasPrefix(o.Device, "/dev/") {
-			return fmt.Errorf("storage device %q: give its /dev path", o.Device)
-		}
-		lsblk, err := r.Host.Run(ctx, "lsblk", "-nr", "-o", "NAME,TYPE,MOUNTPOINT", o.Device)
-		if err != nil {
-			return fmt.Errorf("storage device %s: %w", o.Device, err)
-		}
-		wipe, err := r.Host.Run(ctx, "wipefs", "-n", o.Device)
-		if err != nil {
-			return fmt.Errorf("storage device %s: %w", o.Device, err)
-		}
-		if err := DiskEmpty(o.Device, string(lsblk), string(wipe)); err != nil {
-			return err
-		}
-		if err := r.run(ctx, "pvcreate", "-q", o.Device); err != nil {
-			return err
-		}
-		if err := r.run(ctx, "vgcreate", "-q", VG, o.Device); err != nil {
-			return err
-		}
-		vgErr = nil
-	}
 	if vgErr != nil {
 		if o.LoopFile == "" {
-			return fmt.Errorf("volume group %q missing: name an empty disk for it (--storage-device), create it yourself, or allow a loop file for development", VG)
+			return fmt.Errorf("volume group %q missing: create it on a disk, or allow a loop file for development", VG)
 		}
 		size := o.LoopSize
 		if size == "" {

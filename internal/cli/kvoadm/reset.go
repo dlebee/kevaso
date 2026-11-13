@@ -34,7 +34,7 @@ func parseReset(args []string) (ResetOptions, error) {
 			o.Force = true
 		case "--wipe-storage":
 			o.WipeStorage = true
-		case "--kevasod", "--worker", "--restore", "--loop-storage", "--storage-device", "--runtime", "--password",
+		case "--kevasod", "--worker", "--restore", "--loop-storage", "--runtime", "--password",
 			"--disable-password-login", "--change-root-password", "--internal-ip", "--external-ip":
 			return o, fmt.Errorf("%s isn't a reset flag\n%s", a, resetUsage)
 		default:
