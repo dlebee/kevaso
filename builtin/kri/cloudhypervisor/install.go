@@ -363,9 +363,32 @@ func (Local) Run(ctx context.Context, name string, args ...string) ([]byte, erro
 	return cmd.CombinedOutput()
 }
 
-// WriteFile implements Host.
+// WriteFile implements Host: atomically (a temporary file, synced, renamed over it), so a kill or
+// a crash leaves the old file or the new one. A truncated silo.json read as no silo, and Create
+// then put a fresh root disk over the old one.
 func (Local) WriteFile(path string, data []byte, mode os.FileMode) error {
-	return os.WriteFile(path, data, mode)
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Chmod(mode)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
 }
 
 // ReadFile implements Host.
