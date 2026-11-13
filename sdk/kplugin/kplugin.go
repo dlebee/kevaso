@@ -4,8 +4,8 @@
 // /run/kevaso-plugins/NAME/plugin.sock, asks Info, and from then on calls it for the classes it
 // provides.
 //
-// A plugin implements Plugin plus any of HostDescriber, LoadBalancers, Volumes and DNS, and serves
-// them with Serve. The control plane uses Client. Every call is idempotent and keyed by an ID the
+// A plugin implements Plugin plus any of HostDescriber, LoadBalancers, Volumes, DNS and (its node
+// side, on workers, at NAME/node.sock) Node, and serves them with Serve. kevasod uses Client. Every call is idempotent and keyed by an ID the
 // control plane chooses (a silo's UID and a name), so it may repeat any call after a crash.
 //
 // Long operations (a volume detaching) never block a call for long: the plugin starts them, waits a
@@ -20,8 +20,15 @@ import (
 // Protocol is the protocol version this package speaks.
 const Protocol = "kevaso.plugin/v1"
 
-// Dir is where plugins put their sockets: Dir/NAME/plugin.sock.
+// Dir is where plugins put their sockets: Dir/NAME/plugin.sock for the controller side (on control
+// planes), Dir/NAME/node.sock for the node side (on workers).
 const Dir = "/run/kevaso-plugins"
+
+// Socket names in Dir/NAME.
+const (
+	ControllerSocket = "plugin.sock"
+	NodeSocket       = "node.sock"
+)
 
 // Info is what a plugin is and provides.
 type Info struct {
@@ -53,7 +60,21 @@ type Class struct {
 	// with its data (design §0.3, §6): host (pinned, the default), zone, region, or global (any
 	// host anywhere).
 	Topology string `json:"topology,omitempty"`
+	// Reach (storage): how a volume gets to the host. device (the default): the controller side
+	// attaches a block device, which kevasod formats once and mounts. mount: nothing is attached;
+	// the plugin's node side on the host mounts it (Node.MountVolume) where kevasod says, holding
+	// whatever credentials that takes, so a network filesystem's keys never reach the silo.
+	Reach string `json:"reach,omitempty"`
 }
+
+// Mounted reports whether the class's volumes are mounted by the plugin's node side.
+func (c Class) Mounted() bool { return c.Reach == ReachMount }
+
+// How storage reaches a host.
+const (
+	ReachDevice = "device"
+	ReachMount  = "mount"
+)
 
 // Storage topologies.
 const (
@@ -149,6 +170,16 @@ type VolumeRef struct {
 	Handle string `json:"handle"`
 }
 
+// NodeMount is a volume of a mount-reach class on one host: the node side mounts it at Path, or
+// unmounts what is at Path.
+type NodeMount struct {
+	Class  string `json:"class"`
+	Handle string `json:"handle"` // from EnsureVolume
+	ID     string `json:"id"`     // the silo's UID and the volume's name
+	// Path is where on the host: kevasod made its parent folder; the node side makes the rest.
+	Path string `json:"path"`
+}
+
 // Record is a DNS record set: every value of one name and type.
 type Record struct {
 	Provider string   `json:"provider"`
@@ -177,13 +208,22 @@ type LoadBalancers interface {
 	DeleteLoadBalancer(ctx context.Context, ref LoadBalancerRef) error
 }
 
-// Volumes serves storage classes (the controller side: create, attach through the API). The host
-// side (format once, mount) is the worker's.
+// Volumes serves storage classes (the controller side: create, attach through the API). For device
+// classes the host side (format once, mount) is the worker's; mount classes don't attach (the
+// control plane never calls Attach or Detach for them) and their host side is the plugin's Node.
 type Volumes interface {
 	EnsureVolume(ctx context.Context, v Volume) (VolumeStatus, error)
 	AttachVolume(ctx context.Context, a Attachment) (AttachmentStatus, error)
 	DetachVolume(ctx context.Context, a Attachment) error
 	DeleteVolume(ctx context.Context, ref VolumeRef) error
+}
+
+// Node is a plugin's node side for mount-reach storage classes, on each worker. Both calls are
+// idempotent: mounting what is already mounted there, or unmounting what isn't, is done. A mount
+// that takes a while answers ErrInProgress.
+type Node interface {
+	MountVolume(ctx context.Context, m NodeMount) error
+	UnmountVolume(ctx context.Context, m NodeMount) error
 }
 
 // DNS serves DNS providers.

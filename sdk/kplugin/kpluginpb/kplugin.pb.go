@@ -168,6 +168,7 @@ type Class struct {
 	Announce      bool                   `protobuf:"varint,4,opt,name=announce,proto3" json:"announce,omitempty"`                               // load balancers: the silo's host announces the address
 	NodePorts     bool                   `protobuf:"varint,5,opt,name=node_ports,json=nodePorts,proto3" json:"node_ports,omitempty"`            // load balancers: the host gets a node port per service port
 	Topology      string                 `protobuf:"bytes,6,opt,name=topology,proto3" json:"topology,omitempty"`                                // storage: host | zone | region | global (where it can attach from)
+	Reach         string                 `protobuf:"bytes,7,opt,name=reach,proto3" json:"reach,omitempty"`                                      // storage: device (attached, the host mounts it; the default) | mount (the node side mounts it)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -240,6 +241,13 @@ func (x *Class) GetNodePorts() bool {
 func (x *Class) GetTopology() string {
 	if x != nil {
 		return x.Topology
+	}
+	return ""
+}
+
+func (x *Class) GetReach() string {
+	if x != nil {
+		return x.Reach
 	}
 	return ""
 }
@@ -1132,6 +1140,146 @@ func (*DeleteVolumeResponse) Descriptor() ([]byte, []int) {
 	return file_kplugin_proto_rawDescGZIP(), []int{18}
 }
 
+type NodeMount struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Class         string                 `protobuf:"bytes,1,opt,name=class,proto3" json:"class,omitempty"`
+	Handle        string                 `protobuf:"bytes,2,opt,name=handle,proto3" json:"handle,omitempty"` // from EnsureVolume
+	Id            string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`         // the silo's UID and the volume's name
+	Path          string                 `protobuf:"bytes,4,opt,name=path,proto3" json:"path,omitempty"`     // where on the host: kevasod made the parent, the plugin makes the rest
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeMount) Reset() {
+	*x = NodeMount{}
+	mi := &file_kplugin_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeMount) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeMount) ProtoMessage() {}
+
+func (x *NodeMount) ProtoReflect() protoreflect.Message {
+	mi := &file_kplugin_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeMount.ProtoReflect.Descriptor instead.
+func (*NodeMount) Descriptor() ([]byte, []int) {
+	return file_kplugin_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *NodeMount) GetClass() string {
+	if x != nil {
+		return x.Class
+	}
+	return ""
+}
+
+func (x *NodeMount) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
+
+func (x *NodeMount) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *NodeMount) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+type NodeMountResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeMountResponse) Reset() {
+	*x = NodeMountResponse{}
+	mi := &file_kplugin_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeMountResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeMountResponse) ProtoMessage() {}
+
+func (x *NodeMountResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_kplugin_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeMountResponse.ProtoReflect.Descriptor instead.
+func (*NodeMountResponse) Descriptor() ([]byte, []int) {
+	return file_kplugin_proto_rawDescGZIP(), []int{20}
+}
+
+type NodeUnmountResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeUnmountResponse) Reset() {
+	*x = NodeUnmountResponse{}
+	mi := &file_kplugin_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeUnmountResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeUnmountResponse) ProtoMessage() {}
+
+func (x *NodeUnmountResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_kplugin_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeUnmountResponse.ProtoReflect.Descriptor instead.
+func (*NodeUnmountResponse) Descriptor() ([]byte, []int) {
+	return file_kplugin_proto_rawDescGZIP(), []int{21}
+}
+
 type Record struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Provider      string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
@@ -1146,7 +1294,7 @@ type Record struct {
 
 func (x *Record) Reset() {
 	*x = Record{}
-	mi := &file_kplugin_proto_msgTypes[19]
+	mi := &file_kplugin_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1158,7 +1306,7 @@ func (x *Record) String() string {
 func (*Record) ProtoMessage() {}
 
 func (x *Record) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[19]
+	mi := &file_kplugin_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1171,7 +1319,7 @@ func (x *Record) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Record.ProtoReflect.Descriptor instead.
 func (*Record) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{19}
+	return file_kplugin_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *Record) GetProvider() string {
@@ -1224,7 +1372,7 @@ type EnsureRecordResponse struct {
 
 func (x *EnsureRecordResponse) Reset() {
 	*x = EnsureRecordResponse{}
-	mi := &file_kplugin_proto_msgTypes[20]
+	mi := &file_kplugin_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1236,7 +1384,7 @@ func (x *EnsureRecordResponse) String() string {
 func (*EnsureRecordResponse) ProtoMessage() {}
 
 func (x *EnsureRecordResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[20]
+	mi := &file_kplugin_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1249,7 +1397,7 @@ func (x *EnsureRecordResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnsureRecordResponse.ProtoReflect.Descriptor instead.
 func (*EnsureRecordResponse) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{20}
+	return file_kplugin_proto_rawDescGZIP(), []int{23}
 }
 
 type DeleteRecordResponse struct {
@@ -1260,7 +1408,7 @@ type DeleteRecordResponse struct {
 
 func (x *DeleteRecordResponse) Reset() {
 	*x = DeleteRecordResponse{}
-	mi := &file_kplugin_proto_msgTypes[21]
+	mi := &file_kplugin_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1272,7 +1420,7 @@ func (x *DeleteRecordResponse) String() string {
 func (*DeleteRecordResponse) ProtoMessage() {}
 
 func (x *DeleteRecordResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[21]
+	mi := &file_kplugin_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1285,7 +1433,7 @@ func (x *DeleteRecordResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRecordResponse.ProtoReflect.Descriptor instead.
 func (*DeleteRecordResponse) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{21}
+	return file_kplugin_proto_rawDescGZIP(), []int{24}
 }
 
 var File_kplugin_proto protoreflect.FileDescriptor
@@ -1302,7 +1450,7 @@ const file_kplugin_proto_rawDesc = "" +
 	"\x05hosts\x18\x04 \x01(\bR\x05hosts\x12>\n" +
 	"\x0eload_balancers\x18\x05 \x03(\v2\x17.kevaso.plugin.v1.ClassR\rloadBalancers\x121\n" +
 	"\astorage\x18\x06 \x03(\v2\x17.kevaso.plugin.v1.ClassR\astorage\x12\x10\n" +
-	"\x03dns\x18\a \x03(\tR\x03dns\"\xba\x01\n" +
+	"\x03dns\x18\a \x03(\tR\x03dns\"\xd0\x01\n" +
 	"\x05Class\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +
@@ -1310,7 +1458,8 @@ const file_kplugin_proto_rawDesc = "" +
 	"\bannounce\x18\x04 \x01(\bR\bannounce\x12\x1d\n" +
 	"\n" +
 	"node_ports\x18\x05 \x01(\bR\tnodePorts\x12\x1a\n" +
-	"\btopology\x18\x06 \x01(\tR\btopology\"4\n" +
+	"\btopology\x18\x06 \x01(\tR\btopology\x12\x14\n" +
+	"\x05reach\x18\a \x01(\tR\x05reach\"4\n" +
 	"\x04Host\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\"o\n" +
@@ -1368,7 +1517,14 @@ const file_kplugin_proto_rawDesc = "" +
 	"\tVolumeRef\x12\x14\n" +
 	"\x05class\x18\x01 \x01(\tR\x05class\x12\x16\n" +
 	"\x06handle\x18\x02 \x01(\tR\x06handle\"\x16\n" +
-	"\x14DeleteVolumeResponse\"\x8c\x01\n" +
+	"\x14DeleteVolumeResponse\"]\n" +
+	"\tNodeMount\x12\x14\n" +
+	"\x05class\x18\x01 \x01(\tR\x05class\x12\x16\n" +
+	"\x06handle\x18\x02 \x01(\tR\x06handle\x12\x0e\n" +
+	"\x02id\x18\x03 \x01(\tR\x02id\x12\x12\n" +
+	"\x04path\x18\x04 \x01(\tR\x04path\"\x13\n" +
+	"\x11NodeMountResponse\"\x15\n" +
+	"\x13NodeUnmountResponse\"\x8c\x01\n" +
 	"\x06Record\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -1389,7 +1545,10 @@ const file_kplugin_proto_rawDesc = "" +
 	"\fEnsureVolume\x12\x18.kevaso.plugin.v1.Volume\x1a\x1e.kevaso.plugin.v1.VolumeStatus\x12P\n" +
 	"\fAttachVolume\x12\x1c.kevaso.plugin.v1.Attachment\x1a\".kevaso.plugin.v1.AttachmentStatus\x12T\n" +
 	"\fDetachVolume\x12\x1c.kevaso.plugin.v1.Attachment\x1a&.kevaso.plugin.v1.DetachVolumeResponse\x12S\n" +
-	"\fDeleteVolume\x12\x1b.kevaso.plugin.v1.VolumeRef\x1a&.kevaso.plugin.v1.DeleteVolumeResponse2\xa9\x01\n" +
+	"\fDeleteVolume\x12\x1b.kevaso.plugin.v1.VolumeRef\x1a&.kevaso.plugin.v1.DeleteVolumeResponse2\xb4\x01\n" +
+	"\x04Node\x12S\n" +
+	"\x0fNodeMountVolume\x12\x1b.kevaso.plugin.v1.NodeMount\x1a#.kevaso.plugin.v1.NodeMountResponse\x12W\n" +
+	"\x11NodeUnmountVolume\x12\x1b.kevaso.plugin.v1.NodeMount\x1a%.kevaso.plugin.v1.NodeUnmountResponse2\xa9\x01\n" +
 	"\x03DNS\x12P\n" +
 	"\fEnsureRecord\x12\x18.kevaso.plugin.v1.Record\x1a&.kevaso.plugin.v1.EnsureRecordResponse\x12P\n" +
 	"\fDeleteRecord\x12\x18.kevaso.plugin.v1.Record\x1a&.kevaso.plugin.v1.DeleteRecordResponseB'Z%kevaso.com/core/sdk/kplugin/kpluginpbb\x06proto3"
@@ -1406,7 +1565,7 @@ func file_kplugin_proto_rawDescGZIP() []byte {
 	return file_kplugin_proto_rawDescData
 }
 
-var file_kplugin_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_kplugin_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_kplugin_proto_goTypes = []any{
 	(*GetPluginInfoRequest)(nil),       // 0: kevaso.plugin.v1.GetPluginInfoRequest
 	(*PluginInfo)(nil),                 // 1: kevaso.plugin.v1.PluginInfo
@@ -1427,9 +1586,12 @@ var file_kplugin_proto_goTypes = []any{
 	(*DetachVolumeResponse)(nil),       // 16: kevaso.plugin.v1.DetachVolumeResponse
 	(*VolumeRef)(nil),                  // 17: kevaso.plugin.v1.VolumeRef
 	(*DeleteVolumeResponse)(nil),       // 18: kevaso.plugin.v1.DeleteVolumeResponse
-	(*Record)(nil),                     // 19: kevaso.plugin.v1.Record
-	(*EnsureRecordResponse)(nil),       // 20: kevaso.plugin.v1.EnsureRecordResponse
-	(*DeleteRecordResponse)(nil),       // 21: kevaso.plugin.v1.DeleteRecordResponse
+	(*NodeMount)(nil),                  // 19: kevaso.plugin.v1.NodeMount
+	(*NodeMountResponse)(nil),          // 20: kevaso.plugin.v1.NodeMountResponse
+	(*NodeUnmountResponse)(nil),        // 21: kevaso.plugin.v1.NodeUnmountResponse
+	(*Record)(nil),                     // 22: kevaso.plugin.v1.Record
+	(*EnsureRecordResponse)(nil),       // 23: kevaso.plugin.v1.EnsureRecordResponse
+	(*DeleteRecordResponse)(nil),       // 24: kevaso.plugin.v1.DeleteRecordResponse
 }
 var file_kplugin_proto_depIdxs = []int32{
 	2,  // 0: kevaso.plugin.v1.PluginInfo.load_balancers:type_name -> kevaso.plugin.v1.Class
@@ -1448,20 +1610,24 @@ var file_kplugin_proto_depIdxs = []int32{
 	14, // 13: kevaso.plugin.v1.Volumes.AttachVolume:input_type -> kevaso.plugin.v1.Attachment
 	14, // 14: kevaso.plugin.v1.Volumes.DetachVolume:input_type -> kevaso.plugin.v1.Attachment
 	17, // 15: kevaso.plugin.v1.Volumes.DeleteVolume:input_type -> kevaso.plugin.v1.VolumeRef
-	19, // 16: kevaso.plugin.v1.DNS.EnsureRecord:input_type -> kevaso.plugin.v1.Record
-	19, // 17: kevaso.plugin.v1.DNS.DeleteRecord:input_type -> kevaso.plugin.v1.Record
-	1,  // 18: kevaso.plugin.v1.Identity.GetPluginInfo:output_type -> kevaso.plugin.v1.PluginInfo
-	6,  // 19: kevaso.plugin.v1.Hosts.DescribeHosts:output_type -> kevaso.plugin.v1.DescribeHostsResponse
-	9,  // 20: kevaso.plugin.v1.LoadBalancers.EnsureLoadBalancer:output_type -> kevaso.plugin.v1.LoadBalancerStatus
-	11, // 21: kevaso.plugin.v1.LoadBalancers.DeleteLoadBalancer:output_type -> kevaso.plugin.v1.DeleteLoadBalancerResponse
-	13, // 22: kevaso.plugin.v1.Volumes.EnsureVolume:output_type -> kevaso.plugin.v1.VolumeStatus
-	15, // 23: kevaso.plugin.v1.Volumes.AttachVolume:output_type -> kevaso.plugin.v1.AttachmentStatus
-	16, // 24: kevaso.plugin.v1.Volumes.DetachVolume:output_type -> kevaso.plugin.v1.DetachVolumeResponse
-	18, // 25: kevaso.plugin.v1.Volumes.DeleteVolume:output_type -> kevaso.plugin.v1.DeleteVolumeResponse
-	20, // 26: kevaso.plugin.v1.DNS.EnsureRecord:output_type -> kevaso.plugin.v1.EnsureRecordResponse
-	21, // 27: kevaso.plugin.v1.DNS.DeleteRecord:output_type -> kevaso.plugin.v1.DeleteRecordResponse
-	18, // [18:28] is the sub-list for method output_type
-	8,  // [8:18] is the sub-list for method input_type
+	19, // 16: kevaso.plugin.v1.Node.NodeMountVolume:input_type -> kevaso.plugin.v1.NodeMount
+	19, // 17: kevaso.plugin.v1.Node.NodeUnmountVolume:input_type -> kevaso.plugin.v1.NodeMount
+	22, // 18: kevaso.plugin.v1.DNS.EnsureRecord:input_type -> kevaso.plugin.v1.Record
+	22, // 19: kevaso.plugin.v1.DNS.DeleteRecord:input_type -> kevaso.plugin.v1.Record
+	1,  // 20: kevaso.plugin.v1.Identity.GetPluginInfo:output_type -> kevaso.plugin.v1.PluginInfo
+	6,  // 21: kevaso.plugin.v1.Hosts.DescribeHosts:output_type -> kevaso.plugin.v1.DescribeHostsResponse
+	9,  // 22: kevaso.plugin.v1.LoadBalancers.EnsureLoadBalancer:output_type -> kevaso.plugin.v1.LoadBalancerStatus
+	11, // 23: kevaso.plugin.v1.LoadBalancers.DeleteLoadBalancer:output_type -> kevaso.plugin.v1.DeleteLoadBalancerResponse
+	13, // 24: kevaso.plugin.v1.Volumes.EnsureVolume:output_type -> kevaso.plugin.v1.VolumeStatus
+	15, // 25: kevaso.plugin.v1.Volumes.AttachVolume:output_type -> kevaso.plugin.v1.AttachmentStatus
+	16, // 26: kevaso.plugin.v1.Volumes.DetachVolume:output_type -> kevaso.plugin.v1.DetachVolumeResponse
+	18, // 27: kevaso.plugin.v1.Volumes.DeleteVolume:output_type -> kevaso.plugin.v1.DeleteVolumeResponse
+	20, // 28: kevaso.plugin.v1.Node.NodeMountVolume:output_type -> kevaso.plugin.v1.NodeMountResponse
+	21, // 29: kevaso.plugin.v1.Node.NodeUnmountVolume:output_type -> kevaso.plugin.v1.NodeUnmountResponse
+	23, // 30: kevaso.plugin.v1.DNS.EnsureRecord:output_type -> kevaso.plugin.v1.EnsureRecordResponse
+	24, // 31: kevaso.plugin.v1.DNS.DeleteRecord:output_type -> kevaso.plugin.v1.DeleteRecordResponse
+	20, // [20:32] is the sub-list for method output_type
+	8,  // [8:20] is the sub-list for method input_type
 	8,  // [8:8] is the sub-list for extension type_name
 	8,  // [8:8] is the sub-list for extension extendee
 	0,  // [0:8] is the sub-list for field type_name
@@ -1478,9 +1644,9 @@ func file_kplugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_kplugin_proto_rawDesc), len(file_kplugin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   22,
+			NumMessages:   25,
 			NumExtensions: 0,
-			NumServices:   5,
+			NumServices:   6,
 		},
 		GoTypes:           file_kplugin_proto_goTypes,
 		DependencyIndexes: file_kplugin_proto_depIdxs,
