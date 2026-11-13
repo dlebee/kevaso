@@ -8,23 +8,23 @@ import (
 	v1 "kevaso.com/core/api/v1"
 )
 
-// Images in kvo (design §0.2): an Image is a bootable disk; a container silo's image is a registry
-// reference, which describe flags as mutable unless it's pinned by digest, next to the digest the
+// Images in kvo (design §0.2): a VMImage is a bootable disk; a container silo's container.image
+// is a registry reference, which describe flags as mutable unless it's pinned by digest, next to the digest the
 // host actually pulled.
 
 // describePull adds a silo's pull lines: whether its image is pinned, what was pulled, and which
 // secret pulls it.
 func describePull(kv func(int, string, any), o *v1.Silo) {
-	if !v1.RegistryRuntime(o.Spec.Runtime) || o.Spec.Image == "" {
+	if !v1.RegistryRuntime(o.Spec.Runtime) || o.Spec.From() == "" {
 		return
 	}
-	if note := MutableNote(o.Spec.Image); note != "" {
+	if note := MutableNote(o.Spec.From()); note != "" {
 		kv(0, "Pinned", note)
 	}
 	if im := o.Status.Image; im != nil && im.Digest != "" {
 		kv(0, "Pulled", im.Digest)
 	}
-	if p := o.Spec.ImagePull; p != nil && p.SecretRef != "" {
+	if p := o.Spec.Pull(); p != nil && p.SecretRef != "" {
 		kv(0, "Pull secret", p.SecretRef)
 	}
 }
@@ -46,8 +46,8 @@ func MutableNote(image string) string {
 	return "no: tag " + tag + " is mutable (it can move to another image); pin it by digest, " + r.Registry + "/" + r.Repository + "@sha256:…"
 }
 
-// diskOf is an Image version's disk, shortened.
-func diskOf(v v1.ImageVersion) string {
+// diskOf is a VMImage version's disk, shortened.
+func diskOf(v v1.VMImageVersion) string {
 	if v.Disk == nil {
 		return "-"
 	}
@@ -96,4 +96,18 @@ func registrySecret(s *v1.Secret, so secretOpts) error {
 		s.Labels[v1.LabelDefaultPull] = "true"
 	}
 	return nil
+}
+
+// sourceLabel names what a silo starts from, as its block says: a container image, a VM image (a
+// VMImage), or a VM disk stated inline.
+func sourceLabel(spec v1.SiloSpec) string {
+	switch {
+	case spec.VM != nil && spec.VM.Disk != nil:
+		return "VM disk"
+	case spec.VM != nil:
+		return "VM image"
+	case spec.Container != nil:
+		return "Container image"
+	}
+	return "Starts from"
 }

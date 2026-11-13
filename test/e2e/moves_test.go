@@ -49,7 +49,7 @@ kind: Silo
 metadata: { name: mover, namespace: mv }
 spec:
   runtime: docker
-  image: ubuntu-24.04
+  container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 256Mi }
 ---
 apiVersion: kevaso/v1
@@ -57,7 +57,7 @@ kind: Silo
 metadata: { name: stateless, namespace: mv }
 spec:
   runtime: docker
-  image: ubuntu-24.04
+  container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 256Mi }
   availability: { onHostLoss: Recreate }
 ---
@@ -66,7 +66,7 @@ kind: Silo
 metadata: { name: pinned, namespace: mv }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 768Mi }
   disk: { size: 5Gi }
 `, "apply", "-f", "-")

@@ -170,7 +170,7 @@ func (r *modelRig) rules(host string) string {
 func set(name, port string, number int, nets []string, site string) *v1.SiloSet {
 	return &v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "shop"},
 		Spec: v1.SiloSetSpec{Instances: 1, Template: v1.SiloTemplate{Labels: map[string]string{"app": name},
-			SiloSpec: v1.SiloSpec{Runtime: "docker", Image: "docker.io/library/nginx:1.27", Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
+			SiloSpec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "docker.io/library/nginx:1.27"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
 				Placement: v1.Placement{HostSelector: map[string]string{"site": site}},
 				Ports:     []v1.SiloPort{{Name: port, Port: number}},
 				Service:   &v1.SiloService{Ports: []v1.ServicePort{{Port: port, HostPort: nets, As: 443}}}}}}}
@@ -184,7 +184,7 @@ func set(name, port string, number int, nets []string, site string) *v1.SiloSet 
 func TestThreeWaysIn(t *testing.T) {
 	r := newModelRig(t)
 	api := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "api-blue", Namespace: "shop"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "docker.io/library/nginx:1.27", Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "docker.io/library/nginx:1.27"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
 			Placement: v1.Placement{HostSelector: map[string]string{"site": "lan"}},
 			Ports:     []v1.SiloPort{{Name: "http", Port: 8080}},
 			Service: &v1.SiloService{Name: "api", Ports: []v1.ServicePort{
@@ -284,7 +284,7 @@ func TestModelRefusals(t *testing.T) {
 	r := newModelRig(t)
 	mk := func(name, service string, nets []string, site string) *v1.Silo {
 		return &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "shop"},
-			Spec: v1.SiloSpec{Runtime: "docker", Image: "docker.io/library/nginx:1.27", Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
+			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "docker.io/library/nginx:1.27"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
 				Placement: v1.Placement{HostSelector: map[string]string{"site": site}},
 				Ports:     []v1.SiloPort{{Name: "https", Port: 8443}},
 				Service:   &v1.SiloService{Name: service, Ports: []v1.ServicePort{{Port: "https", HostPort: nets, As: 443}}}}}

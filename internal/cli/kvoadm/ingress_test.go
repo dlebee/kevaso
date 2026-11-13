@@ -20,7 +20,7 @@ func TestIngressObjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if silo.Namespace != "kevaso-system" || silo.Name != "ingress-public" || silo.Spec.Image != "docker.io/library/nginx:1.27" || silo.Spec.Runtime != "docker" {
+	if silo.Namespace != "kevaso-system" || silo.Name != "ingress-public" || silo.Spec.From() != "docker.io/library/nginx:1.27" || silo.Spec.Container == nil || silo.Spec.Runtime != "docker" {
 		t.Fatalf("silo %+v", silo.ObjectMeta)
 	}
 	if want := []v1.SiloPort{{Name: "http", Port: 80}, {Name: "https", Port: 443}}; !reflect.DeepEqual(silo.Spec.Ports, want) {

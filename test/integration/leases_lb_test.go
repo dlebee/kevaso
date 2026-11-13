@@ -84,7 +84,7 @@ func TestPortLeaseOnPluginLoadBalancer(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "app", Namespace: "dev"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "nginx", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "nginx"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Ports: []v1.SiloPort{{Name: "web", Port: 80}, {Name: "debug", Port: 9229}, {Name: "preview", Port: 3000}},
 			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", LoadBalancer: true},
 				{Port: "debug", LoadBalancer: true, Lease: &v1.PortLease{}}, {Port: "preview", LoadBalancer: true, Lease: &v1.PortLease{Max: "2h"}}},
@@ -189,7 +189,7 @@ func TestLeaseSourcesOnPluginLoadBalancer(t *testing.T) {
 	}
 	silo := func(name, class string) *v1.Silo {
 		return &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev"},
-			Spec: v1.SiloSpec{Runtime: "docker", Image: "nginx", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "nginx"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 				Ports: []v1.SiloPort{{Name: "web", Port: 80}, {Name: "debug", Port: 9229}, {Name: "metrics", Port: 9100}},
 				Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", LoadBalancer: true, Sources: []string{"203.0.113.0/24"}},
 					{Port: "debug", LoadBalancer: true, Sources: []string{"203.0.113.7"}, Lease: &v1.PortLease{}},

@@ -75,7 +75,7 @@ func TestKvoLoginAndRBACFromTheCLI(t *testing.T) {
 		t.Fatalf("whoami: %s", out)
 	}
 	ok(kvoCmd, "", "ns", "payments")
-	ok(kvoCmd, `{"apiVersion":"kevaso/v1","kind":"Silo","metadata":{"name":"api"},"spec":{"runtime":"cloud-hypervisor","image":"ubuntu-24.04","resources":{"cpu":1,"memory":"1Gi"}}}`, "apply", "-f", "-")
+	ok(kvoCmd, `{"apiVersion":"kevaso/v1","kind":"Silo","metadata":{"name":"api"},"spec":{"runtime":"cloud-hypervisor","vm":{"image":"ubuntu-24.04"},"resources":{"cpu":1,"memory":"1Gi"}}}`, "apply", "-f", "-")
 	if out := ok(kvoCmd, "", "get", "silos"); !strings.Contains(out, "api") {
 		t.Fatalf("get silos (default ns from kvo ns): %s", out)
 	}
@@ -161,7 +161,7 @@ subjects: [{ kind: ServiceAccount, name: deployer }]
 	if out := ok("", "auth", "whoami"); !strings.HasPrefix(out, "serviceaccount system:serviceaccount:payments:deployer") {
 		t.Fatalf("whoami: %s", out)
 	}
-	ok(`{"apiVersion":"kevaso/v1","kind":"Silo","metadata":{"name":"api","namespace":"payments"},"spec":{"runtime":"cloud-hypervisor","image":"ubuntu-24.04","resources":{"cpu":1,"memory":"1Gi"}}}`, "apply", "-f", "-")
+	ok(`{"apiVersion":"kevaso/v1","kind":"Silo","metadata":{"name":"api","namespace":"payments"},"spec":{"runtime":"cloud-hypervisor","vm":{"image":"ubuntu-24.04"},"resources":{"cpu":1,"memory":"1Gi"}}}`, "apply", "-f", "-")
 	if _, errs, code := run(c.ctx, kvoCmd, "", "get", "silos", "-n", "other"); code == 0 || !strings.Contains(errs, "Forbidden") {
 		t.Errorf("SA in another namespace: %d %s", code, errs)
 	}

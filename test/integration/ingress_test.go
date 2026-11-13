@@ -107,8 +107,7 @@ func TestIngress(t *testing.T) {
 	go a.Run(ctx)
 	place := func(name, ns string, ports []v1.SiloPort, svc *v1.SiloService) {
 		t.Helper()
-		s := silo(name, ns)
-		s.Spec.Runtime = "docker"
+		s := containerSilo(name, ns, "docker")
 		s.Spec.Ports = ports
 		s.Spec.Service = svc
 		if err := c.admin.Create(c.ctx, s); err != nil {

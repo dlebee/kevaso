@@ -67,7 +67,7 @@ kind: Silo
 metadata: { name: vm, namespace: ops }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 768Mi }
   disk: { size: 5Gi }
   grants: [careful]
@@ -77,7 +77,7 @@ kind: Silo
 metadata: { name: box, namespace: ops }
 spec:
   runtime: docker
-  image: ubuntu-24.04
+  container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 512Mi }
   grants: [careful]
 `, "apply", "-f", "-")

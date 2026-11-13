@@ -109,7 +109,7 @@ func TestMountClassFollowsTheSilo(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "pad", Namespace: "notes"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "busybox", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "busybox"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Placement:    v1.Placement{HostSelector: map[string]string{}},
 			Availability: v1.Availability{OnHostLoss: v1.OnHostLossMove}, // admitted: the class can go anywhere
 			Volumes:      []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"}}}}

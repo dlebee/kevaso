@@ -5,7 +5,7 @@ metadata: { name: claude }
 spec:
   silo:
     runtime: cloud-hypervisor
-    image: ubuntu-24.04
+    vm: { image: ubuntu-24.04 }
     resources: { cpu: 2, memory: 4Gi }
 ---
 apiVersion: example.dev/v1

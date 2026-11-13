@@ -55,19 +55,20 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 	if m := moves.Summary(s, moves.Of(s, env.Classes)); m != st.Movable {
 		st.Movable, movableChanged = m, true
 	}
-	// The image: resolved when the silo is new, and again only when spec.image changes (an Image's
-	// versions never change, so a resolved one stays right). Unresolvable: a new silo waits; a
+	// The image: resolved when the silo is new, and again only when what it starts from changes
+	// (container.image, vm.image, vm.disk; a VMImage's versions never change, so a resolved one
+	// stays right). Unresolvable: a new silo waits; a
 	// placed one keeps running what it has.
 	imgCond := meta.Condition{Type: "Image", ObservedGeneration: s.Generation}
 	imageChanged := false
-	if st.Image == nil || st.Image.From != s.Spec.Image {
-		var images []*v1.Image
+	if st.Image == nil || st.Image.From != s.Spec.From() {
+		var images []*v1.VMImage
 		for _, i := range env.Images {
 			if i.Namespace == s.Namespace {
 				images = append(images, i)
 			}
 		}
-		ref, err := v1.ResolveImage(s.Spec.Image, s.Spec.Runtime, images)
+		ref, err := v1.ResolveImage(s.Spec, images)
 		if err != nil {
 			imgCond.Status, imgCond.Reason, imgCond.Message = meta.ConditionFalse, "ImageMissing", err.Error()
 			changed := meta.SetCondition(&st.Conditions, imgCond, now)
@@ -78,12 +79,12 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 				return st, changed || st.Phase != s.Status.Phase, 0, nil
 			}
 		} else {
-			next := &v1.SiloImage{From: s.Spec.Image, Ref: ref}
+			next := &v1.SiloImage{From: s.Spec.From(), Ref: ref}
 			if st.Image != nil {
 				next.Running, next.Reset = st.Image.Running, st.Image.Reset
 			}
 			st.Image = next
-			imgCond.Status, imgCond.Reason, imgCond.Message = meta.ConditionTrue, "Resolved", s.Spec.Image+" → "+ref
+			imgCond.Status, imgCond.Reason, imgCond.Message = meta.ConditionTrue, "Resolved", s.Spec.From()+" → "+ref
 			meta.SetCondition(&st.Conditions, imgCond, now)
 			imageChanged = true
 		}
@@ -202,7 +203,7 @@ type Controller struct {
 	Silos  *informer.Informer
 	Hosts  *informer.Informer
 	IPs    *informer.Informer // IP objects; nil: none
-	Images *informer.Informer // Images; nil: none
+	Images *informer.Informer // VMImages; nil: none
 	Clock  clock.Clock
 	// Classes returns the plugins' classes now (nil: none).
 	Classes func() map[string]scheduler.Class
@@ -267,7 +268,7 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	}
 	if c.Images != nil {
 		for _, o := range c.Images.List() {
-			env.Images = append(env.Images, o.(*v1.Image))
+			env.Images = append(env.Images, o.(*v1.VMImage))
 		}
 	}
 	if c.Classes != nil {
@@ -301,7 +302,7 @@ func (c *Controller) classes() map[string]scheduler.Class {
 // silo's change (freed capacity) may let pending silos fit now, and a host change concerns the
 // silos on it.
 func (c *Controller) Map(changed engine.Key) []engine.Key {
-	if changed.Kind != "Host" && changed.Kind != "Silo" && changed.Kind != "IP" && changed.Kind != "Image" {
+	if changed.Kind != "Host" && changed.Kind != "Silo" && changed.Kind != "IP" && changed.Kind != "VMImage" {
 		return nil
 	}
 	var keys []engine.Key
@@ -310,9 +311,9 @@ func (c *Controller) Map(changed engine.Key) []engine.Key {
 		self := changed.Kind == "Silo" && changed.Namespace == s.Namespace && changed.Name == s.Name
 		onIt := (changed.Kind == "Host" && s.Status.Host == changed.Name) ||
 			(changed.Kind == "IP" && s.Namespace == changed.Namespace && slices.Contains(v1.SiloIPs(s, scheduler.ExclusiveIn(c.classes())), changed.Name))
-		if changed.Kind == "Image" {
-			name, _ := v1.SplitImage(s.Spec.Image)
-			onIt = s.Namespace == changed.Namespace && name == changed.Name
+		if changed.Kind == "VMImage" {
+			name, _ := v1.SplitImage(s.Spec.From())
+			onIt = s.Spec.VM != nil && s.Namespace == changed.Namespace && name == changed.Name
 		}
 		if (s.Status.Host == "" && !self) || onIt {
 			keys = append(keys, engine.Key{Kind: "Silo", Namespace: s.Namespace, Name: s.Name})

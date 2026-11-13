@@ -217,7 +217,7 @@ func TestDecideOnHostLossMove(t *testing.T) {
 		return h
 	}
 	s := moving()
-	s.Spec.Image = "app"
+	s.Spec.Container = &v1.ContainerSource{Image: "app"}
 	st, _, again, _ := silo.DecideIn(s, []*v1.Host{docker(lostHost("hv1", now.Add(-10*time.Second))), docker(readyHost("hv2"))}, nil, now, env)
 	if c := meta.FindCondition(st.Conditions, "HostLost"); st.Host != "hv1" || c.Reason != "Fencing" || !strings.Contains(c.Message, "with its data") || again == 0 {
 		t.Fatalf("Move early: %+v", st)

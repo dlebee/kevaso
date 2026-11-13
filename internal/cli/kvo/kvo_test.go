@@ -28,7 +28,7 @@ func silo() *v1.Silo {
 	zero := 0
 	return &v1.Silo{
 		ObjectMeta: meta.ObjectMeta{Name: "hello", Namespace: "demo", CreationTimestamp: &created, Labels: map[string]string{"b": "2", "a": "1"}},
-		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 1, Memory: "1Gi"}, Disk: v1.Disk{Size: "10Gi"},
+		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}, Disk: v1.Disk{Size: "10Gi"},
 			Init: &v1.Init{Steps: []v1.InitStep{{Name: "one", Run: "x"}, {Name: "two", Run: "y"}, {Name: "three", Run: "z"}}}},
 		Status: v1.SiloStatus{Phase: "Starting", Host: "hv1",
 			Init:       []v1.StepStatus{{Name: "one", State: "Done", ExitCode: &zero, Duration: "27s"}, {Name: "two", State: "Running"}},

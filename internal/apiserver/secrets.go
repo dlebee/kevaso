@@ -489,7 +489,7 @@ func (s *Server) checkContainerFit(ctx context.Context, t target, silo *v1.Silo)
 	rt := silo.Spec.Runtime
 	var problems []string
 	if !containerRuntime(rt) {
-		if len(silo.Spec.Command) > 0 {
+		if len(silo.Spec.Command()) > 0 {
 			problems = append(problems, "command is for container silos (docker, podman); "+rt+" boots its image")
 		}
 		if rt == "cloud-hypervisor" {

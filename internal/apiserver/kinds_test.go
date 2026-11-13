@@ -213,7 +213,7 @@ func TestDefinitionsCantShadowBuiltins(t *testing.T) {
 		t.Errorf("a definition in kevaso: %v", err)
 	}
 	// Built-ins keep strict decoding.
-	raw := `{"apiVersion": "kevaso/v1", "kind": "Silo", "metadata": {"name": "s", "namespace": "dev"}, "spec": {"runtime": "docker", "image": "x", "colour": "red"}}`
+	raw := `{"apiVersion": "kevaso/v1", "kind": "Silo", "metadata": {"name": "s", "namespace": "dev"}, "spec": {"runtime": "docker", "container": {"image": "x"}, "colour": "red"}}`
 	if err := c.Call(ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/dev/silos", json.RawMessage(raw), nil); !client.IsInvalid(err) {
 		t.Errorf("unknown field on a built-in: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestPoliciesOnBuiltinKinds(t *testing.T) {
 		t.Fatalf("a silo the policy forbids: %v", err)
 	}
 	s := newSilo("ok")
-	s.Spec.Runtime = "podman"
+	s.Spec.Runtime, s.Spec.VM, s.Spec.Container = "podman", nil, &v1.ContainerSource{Image: "ubuntu-24.04"}
 	if err := c.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}

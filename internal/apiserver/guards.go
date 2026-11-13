@@ -18,7 +18,7 @@ import (
 // had sent it.
 
 // The same holds for the checks on what can't change and on a KindDefinition's names: a policy
-// could otherwise rewrite an Image's version or shadow a built-in kind after they were checked.
+// could otherwise rewrite a VMImage's version or shadow a built-in kind after they were checked.
 
 // guard runs every built-in guard on a main-resource write (status writes don't change the spec).
 // old is nil on create.
@@ -64,11 +64,11 @@ func privileges(obj meta.Object) string {
 	case *v1.Silo:
 		g := slices.Clone(o.Spec.Grants)
 		slices.Sort(g)
-		p += fmt.Sprint("|grants:", g) + pullOf(o.Spec.ImagePull)
+		p += fmt.Sprint("|grants:", g) + pullOf(o.Spec.Pull())
 	case *v1.SiloSet:
 		g := slices.Clone(o.Spec.Template.Grants)
 		slices.Sort(g)
-		p += fmt.Sprint("|grants:", g) + pullOf(o.Spec.Template.ImagePull)
+		p += fmt.Sprint("|grants:", g) + pullOf(o.Spec.Template.Pull())
 	case *v1.Grant:
 		p += "|uses:" + fmt.Sprint(grantUses(o))
 	case *v1.Ingress:

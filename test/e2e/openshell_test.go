@@ -179,7 +179,7 @@ kind: Silo
 metadata: { name: %s, namespace: agents }
 spec:
   runtime: %s
-  image: ubuntu-24.04
+  container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 1Gi }
   grants: [api]
 `, name, runtime)

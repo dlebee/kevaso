@@ -50,8 +50,7 @@ func TestMoves(t *testing.T) {
 		t.Fatalf("Move on a local disk: %v", err)
 	}
 	// …and a Recreate silo with a host-local volume (a volume is kept data), naming it.
-	rec := silo("rec", "web3")
-	rec.Spec.Runtime = "docker"
+	rec := containerSilo("rec", "web3", "docker")
 	rec.Spec.Availability.OnHostLoss = v1.OnHostLossRecreate
 	rec.Spec.Volumes = []v1.Volume{{Name: "keys", MountPath: "/keys"}}
 	if err := c.admin.Create(c.ctx, rec); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "leave volume keys behind") {
@@ -70,8 +69,7 @@ func TestMoves(t *testing.T) {
 		}
 		return s
 	}
-	web := silo("web", "web3")
-	web.Spec.Runtime = "docker"
+	web := containerSilo("web", "web3", "docker")
 	place(web, "hv1")
 	pinned := place(silo("pinned", "web3"), "hv1")
 	place(rec, "hv1") // no volume: Recreate is fine

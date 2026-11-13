@@ -47,7 +47,7 @@ func TestNodeSideMountsAVolume(t *testing.T) {
 
 		vs, _ := share.EnsureVolume(ctx, kplugintestVolume())
 		s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "pad", Namespace: "dev"},
-			Spec: v1.SiloSpec{Runtime: "docker", Image: "busybox", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "busybox"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 				Volumes: []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"}}}}
 		if err := c.Create(ctx, s); err != nil {
 			t.Fatal(err)
@@ -148,7 +148,7 @@ func TestVolumeNotAnsweringIsSaid(t *testing.T) {
 	go a.Run(ctx)
 	vs, _ := share.EnsureVolume(ctx, kplugintestVolume())
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "pad", Namespace: "dev"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "busybox", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "busybox"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Volumes: []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "1Gi", MountPath: "/home"}}}}
 	if err := c.Create(ctx, s); err != nil {
 		t.Fatal(err)

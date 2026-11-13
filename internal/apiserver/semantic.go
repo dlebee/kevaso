@@ -107,15 +107,15 @@ func semantic(obj meta.Object) []string {
 	return errs
 }
 
-// transition checks what may change on an update: an Image's versions are immutable once added
+// transition checks what may change on an update: a VMImage's versions are immutable once added
 // (an instance on v1 must always run the same thing), though old ones may be dropped.
 func transition(old, next meta.Object) []string {
 	var errs []string
 	if o, ok := old.(*v1.IP); ok {
 		errs = append(errs, ipTransition(o, next.(*v1.IP))...)
 	}
-	if o, ok := old.(*v1.Image); ok {
-		n := next.(*v1.Image)
+	if o, ok := old.(*v1.VMImage); ok {
+		n := next.(*v1.VMImage)
 		for _, ov := range o.Spec.Versions {
 			for _, nv := range n.Spec.Versions {
 				if nv.Name == ov.Name && !reflect.DeepEqual(nv, ov) {

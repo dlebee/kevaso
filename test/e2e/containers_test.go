@@ -150,7 +150,7 @@ kind: Silo
 metadata: { name: %[1]s, namespace: shop }
 spec:
   runtime: %[2]s
-  image: ubuntu-24.04
+  container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 512Mi }
   volumes: [{ name: data, mountPath: /data }]
   grants: [app]
@@ -175,8 +175,7 @@ kind: Silo
 metadata: { name: web, namespace: shop }
 spec:
   runtime: docker
-  image: docker.io/library/python:3.12-slim
-  command: [python3, -m, http.server, "8080"]
+  container: { image: docker.io/library/python:3.12-slim, command: [python3, -m, http.server, "8080"] }
   ports: [{ name: http, port: 8080 }]
   service:
     ports: [{ port: http, hostPort: [internal] }]

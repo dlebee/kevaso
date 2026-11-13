@@ -25,7 +25,7 @@ eval "$(awk '/^ *(Hostname|Port|User|IdentityFile) /{gsub(/"/,"",$2); print "SSH
 ## 2. Two namespaces, a secret in one
 
 ```bash
-printf 'apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: payments }\n---\napiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: secret-project }\n---\napiVersion: kevaso/v1\nkind: Silo\nmetadata: { name: ledger, namespace: secret-project }\nspec: { runtime: cloud-hypervisor, image: ubuntu-24.04, resources: { cpu: 1, memory: 1Gi } }\n' | bin/kvo apply -f -
+printf 'apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: payments }\n---\napiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: secret-project }\n---\napiVersion: kevaso/v1\nkind: Silo\nmetadata: { name: ledger, namespace: secret-project }\nspec: { runtime: cloud-hypervisor, vm: { image: ubuntu-24.04 }, resources: { cpu: 1, memory: 1Gi } }\n' | bin/kvo apply -f -
 ```
 
 ## 3. Invite bob
@@ -64,7 +64,7 @@ bin/kvo ns payments
 ```
 
 ```bash
-printf '{"apiVersion":"kevaso/v1","kind":"Silo","metadata":{"name":"api"},"spec":{"runtime":"cloud-hypervisor","image":"ubuntu-24.04","resources":{"cpu":1,"memory":"1Gi"}}}' | bin/kvo apply -f -
+printf '{"apiVersion":"kevaso/v1","kind":"Silo","metadata":{"name":"api"},"spec":{"runtime":"cloud-hypervisor","vm":{"image":"ubuntu-24.04"},"resources":{"cpu":1,"memory":"1Gi"}}}' | bin/kvo apply -f -
 ```
 
 ```bash

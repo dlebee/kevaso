@@ -147,7 +147,7 @@ func TestPluginOperator(t *testing.T) {
 kind: SessionTemplate
 metadata: { name: claude, namespace: dev }
 spec:
-  silo: { runtime: cloud-hypervisor, image: ubuntu-24.04, resources: { cpu: 2, memory: 4Gi } }
+  silo: { runtime: cloud-hypervisor, vm: { image: ubuntu-24.04 }, resources: { cpu: 2, memory: 4Gi } }
 `)); err != nil {
 		t.Fatal(err)
 	}

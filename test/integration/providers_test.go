@@ -102,7 +102,7 @@ func TestProviderPlugin(t *testing.T) {
 		}
 	}
 	db := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "db", Namespace: "payments"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "postgres:17", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "postgres:17"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Ports: []v1.SiloPort{{Name: "pg", Port: 5432}},
 			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "pg", LoadBalancer: true}},
 				LoadBalancer: &v1.LoadBalancerSpec{Class: "fake-lb"}},
@@ -142,7 +142,7 @@ func TestProviderPlugin(t *testing.T) {
 
 	// A silo on a class only the plugin's machines serve, held to home by a label: no host fits.
 	stray := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "stray", Namespace: "payments"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "busybox", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "busybox"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Placement: v1.Placement{HostSelector: map[string]string{"site": "home"}},
 			Volumes:   []v1.Volume{{Name: "x", Class: "fake-block", Size: "1Gi", MountPath: "/x"}}}}
 	if err := admin.Create(ctx, stray); err != nil {
@@ -157,7 +157,7 @@ func TestProviderPlugin(t *testing.T) {
 
 	// Ingress host names published through the class's DNS provider, at the controller's address.
 	ingress := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "ingress", Namespace: "kevaso-system"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "caddy", Resources: v1.Resources{CPU: 1, Memory: "512Mi"},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "caddy"}, Resources: v1.Resources{CPU: 1, Memory: "512Mi"},
 			Ports: []v1.SiloPort{{Name: "https", Port: 443}},
 			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "https", LoadBalancer: true}},
 				LoadBalancer: &v1.LoadBalancerSpec{Class: "fake-lb"}}}}

@@ -76,16 +76,19 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		})
 	case *v1.Silo:
 		kv(0, "Runtime", o.Spec.Runtime)
-		img := dash(o.Spec.Image)
+		img := dash(o.Spec.From())
 		if im := o.Status.Image; im != nil {
-			if im.Ref != "" && im.Ref != o.Spec.Image {
+			if im.Ref != "" && im.Ref != o.Spec.From() {
 				img += " → " + im.Ref
 			}
 			if im.Running != "" && im.Running != im.Ref {
 				img += " (running " + im.Running + ": the update is on its way)"
 			}
 		}
-		kv(0, "Image", img)
+		kv(0, sourceLabel(o.Spec), img)
+		if c := o.Spec.Command(); len(c) > 0 {
+			kv(0, "Command", strings.Join(c, " "))
+		}
 		describePull(kv, o)
 		if o.Spec.Exclusive {
 			kv(0, "Exclusive", "at most one copy ever runs: updates stop-first, no automatic failover")
@@ -471,7 +474,7 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		}
 	case *v1.SiloSet:
 		conds = o.Status.Conditions
-		kv(0, "Image", dash(o.InstanceSpec().Image))
+		kv(0, sourceLabel(o.InstanceSpec()), dash(o.InstanceSpec().From()))
 		kv(0, "Runtime", o.Spec.Template.Runtime)
 		kv(0, "Instances", fmt.Sprintf("%d wanted, %d ready, %d on revision %s", o.Spec.Instances, o.Status.Ready, o.Status.Updated, dash(o.Status.Revision)))
 		if o.Spec.Standby > 0 || o.Status.Standby > 0 {
@@ -559,7 +562,7 @@ func describeObject(w io.Writer, obj meta.Object) error {
 				}
 			}
 		})
-	case *v1.Image:
+	case *v1.VMImage:
 		vs := o.Spec.Versions
 		tables = append(tables, func() {
 			_, _ = fmt.Fprintln(tw, "Versions:")

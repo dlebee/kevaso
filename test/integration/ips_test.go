@@ -102,7 +102,7 @@ func TestIPs(t *testing.T) {
 			p = port[0]
 		}
 		return &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "web3"},
-			Spec: v1.SiloSpec{Runtime: "docker", Image: "geth", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "geth"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 				Ports: []v1.SiloPort{{Name: "p2p", Port: p}},
 				Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "p2p", LoadBalancer: true}},
 					LoadBalancer: &v1.LoadBalancerSpec{Class: class, IP: ip}},

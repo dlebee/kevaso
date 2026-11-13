@@ -136,7 +136,7 @@ func IngressObjects(o IngressOptions, drivers kic.Registry) (*v1.Silo, *v1.Ingre
 	}
 	silo := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"},
 		ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "kevaso-system", Labels: map[string]string{"kevaso.com/ingress-class": o.Class}},
-		Spec: v1.SiloSpec{Runtime: o.Runtime, Image: image, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
+		Spec: v1.SiloSpec{Runtime: o.Runtime, Container: &v1.ContainerSource{Image: image}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
 			Ports: declared, Service: svc}}
 	class := &v1.IngressClass{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IngressClass"}, ObjectMeta: meta.ObjectMeta{Name: o.Class},
 		Spec: v1.IngressClassSpec{Public: o.Public, Controller: v1.IngressController{Driver: o.Driver, Options: o.Options, Namespace: "kevaso-system", Silo: name}}}
@@ -176,8 +176,12 @@ func ingressCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		_, _ = fmt.Fprintf(stdout, "→ %s %s\n", obj.GetTypeMeta().Kind, obj.GetObjectMeta().Name)
 	}
-	_, _ = fmt.Fprintf(stdout, "Ingress class %s: %s (%s) in silo kevaso-system/%s, behind a %s address. Kevaso writes its config from outside;\n",
-		class.Name, o.Driver, silo.Spec.Image, silo.Name, o.LBClass)
+	where := "on its host's " + o.HostPort + " IP"
+	if o.LBClass != "" {
+		where = "behind a " + o.LBClass + " address"
+	}
+	_, _ = fmt.Fprintf(stdout, "Ingress class %s: %s (%s) in silo kevaso-system/%s, %s. Kevaso writes its config from outside;\n",
+		class.Name, o.Driver, silo.Spec.From(), silo.Name, where)
 	_, _ = fmt.Fprintf(stdout, "see it with: kvo get ingressclass %s -o yaml\n", class.Name)
 	return nil
 }

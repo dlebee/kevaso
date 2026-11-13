@@ -238,16 +238,16 @@ type Silo struct {
 // SiloSpec is what the user declares.
 type SiloSpec struct {
 	Runtime string `json:"runtime"`
-	// Image: on cloud-hypervisor an Image name (NAME[:VERSION]) or a built-in OS image; on docker,
-	// podman and OpenShell a registry reference, used as it is (pin it by digest: a tag can move).
-	Image string `json:"image,omitempty"`
-	// ImagePull says how a registry image is pulled (a private registry's credential).
-	ImagePull   *ImagePull   `json:"imagePull,omitempty"`
-	Resources   Resources    `json:"resources,omitempty"`
-	Disk        Disk         `json:"disk,omitempty"`
-	Placement   Placement    `json:"placement,omitempty"`
-	Tolerations []Toleration `json:"tolerations,omitempty"`
-	Init        *Init        `json:"init,omitempty"`
+	// What the silo starts from (design §0.2), in a block named for what the image is: Container
+	// for docker, podman and both OpenShell runtimes (an OCI image), VM for cloud-hypervisor (a
+	// virtual machine's disk). Exactly the one its runtime takes.
+	Container   *ContainerSource `json:"container,omitempty"`
+	VM          *VMSource        `json:"vm,omitempty"`
+	Resources   Resources        `json:"resources,omitempty"`
+	Disk        Disk             `json:"disk,omitempty"`
+	Placement   Placement        `json:"placement,omitempty"`
+	Tolerations []Toleration     `json:"tolerations,omitempty"`
+	Init        *Init            `json:"init,omitempty"`
 	// Daemons and Upkeep keep the inside in its desired state after init (design §0.5).
 	Daemons []Daemon `json:"daemons,omitempty"`
 	Upkeep  []Upkeep `json:"upkeep,omitempty"`
@@ -266,9 +266,6 @@ type SiloSpec struct {
 	// Volumes are extra storage, kept across stops and restarts; on containers they're what
 	// persists (design §6).
 	Volumes []Volume `json:"volumes,omitempty"`
-	// Command is a container silo's main process (default: the image's own; for the ubuntu-24.04
-	// image, which has none that stays up, a process that sleeps, so the silo is a machine to exec into).
-	Command []string `json:"command,omitempty"`
 	// Exclusive: at most one copy of this silo may ever run (validators, single-writer things,
 	// design §0.4). It forces StopFirst updates and forbids automatic failover (onHostLoss: Wait).
 	Exclusive bool `json:"exclusive,omitempty"`
@@ -407,7 +404,8 @@ type SiloStatus struct {
 	// Volumes are its volumes from a provider's storage class: where each is and whether it's
 	// attached and mounted.
 	Volumes []VolumeStatus `json:"volumes,omitempty"`
-	// Image is what spec.image resolved to, and what the silo runs now.
+	// Image is what the silo's source (container.image, vm.image or vm.disk) resolved to, and
+	// what the silo runs now.
 	Image *SiloImage `json:"image,omitempty"`
 	// MovingFrom is the host a move is taking the silo away from (design §0.3): until that host
 	// says it has stopped it and let go of its volumes, the new host starts nothing, so two copies
@@ -426,10 +424,11 @@ type SiloStatus struct {
 	Routing *Routing `json:"routing,omitempty"`
 }
 
-// SiloImage is a silo's image: resolved by the control plane (an Image's version, or the name as
-// it is), run by the host's agent. Ref differing from Running means an update is due.
+// SiloImage is a silo's image: resolved by the control plane (a VMImage's version, an inline
+// disk, or a registry reference as it is), run by the host's agent. Ref differing from Running
+// means an update is due.
 type SiloImage struct {
-	From    string `json:"from"`              // spec.image it was resolved from
+	From    string `json:"from"`              // what the spec said it starts from (SiloSpec.From)
 	Ref     string `json:"ref"`               // what the runtime is given
 	Running string `json:"running,omitempty"` // the ref the silo was created or last reset with
 	Reset   string `json:"reset,omitempty"`   // the spec.reset last applied

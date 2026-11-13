@@ -112,7 +112,7 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 	})
 	t.Run("runtime fit", func(t *testing.T) {
 		policy(t, "Silo", "spec.runtime", `'openshell'`)
-		s := silo("r1", "web3")
+		s := containerSilo("r1", "web3", "docker")
 		s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 8080}}
 		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}}
 		want(t, "a service on openshell", ed.Create(c.ctx, s), http.StatusUnprocessableEntity, "no network interface")
@@ -137,13 +137,13 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 		want(t, "a defined kind shadowing a built-in", c.admin.Create(c.ctx, fromYAML(t, databasesManifest)), http.StatusUnprocessableEntity, "can't shadow a built-in")
 	})
 	t.Run("image versions", func(t *testing.T) {
-		img := &v1.Image{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Image"}, ObjectMeta: meta.ObjectMeta{Name: "app", Namespace: "web3"},
-			Spec: v1.ImageSpec{Versions: []v1.ImageVersion{{Name: "v1", Disk: &v1.ImageDisk{URL: "https://images.example.com/app.img", SHA256: strings.Repeat("ab", 32)}}}}}
+		img := &v1.VMImage{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "VMImage"}, ObjectMeta: meta.ObjectMeta{Name: "app", Namespace: "web3"},
+			Spec: v1.VMImageSpec{Versions: []v1.VMImageVersion{{Name: "v1", Disk: &v1.VMDisk{URL: "https://images.example.com/app.img", SHA256: strings.Repeat("ab", 32)}}}}}
 		if err := ada.Create(c.ctx, img); err != nil {
 			t.Fatal(err)
 		}
-		policy(t, "Image", "spec.versions", `[{'name': 'v1', 'disk': {'url': 'https://evil.example.com/app.img', 'sha256': '`+strings.Repeat("ab", 32)+`'}}]`)
-		if err := ada.Get(c.ctx, "Image", "web3", "app", img); err != nil {
+		policy(t, "VMImage", "spec.versions", `[{'name': 'v1', 'disk': {'url': 'https://evil.example.com/app.img', 'sha256': '`+strings.Repeat("ab", 32)+`'}}]`)
+		if err := ada.Get(c.ctx, "VMImage", "web3", "app", img); err != nil {
 			t.Fatal(err)
 		}
 		want(t, "a policy rewriting a version", ada.Update(c.ctx, img), http.StatusUnprocessableEntity, "can't change once added")

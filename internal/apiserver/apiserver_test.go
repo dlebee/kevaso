@@ -38,7 +38,7 @@ func newSilo(name string) *v1.Silo {
 	return &v1.Silo{
 		TypeMeta:   meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"},
 		ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev"},
-		Spec:       v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 2, Memory: "4Gi"}},
+		Spec:       v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 2, Memory: "4Gi"}},
 	}
 }
 
@@ -68,7 +68,7 @@ func TestStaleUpdateIsAConflict(t *testing.T) {
 	s := newSilo("hello")
 	_ = c.Create(ctx, s)
 	a, b := *s, *s // two clients read the same version
-	a.Spec.Image = "ubuntu-26.04"
+	a.Spec.VM = &v1.VMSource{Image: "ubuntu-26.04"}
 	if err := c.Update(ctx, &a); err != nil {
 		t.Fatal(err)
 	}
@@ -104,11 +104,11 @@ func TestStatusIsASubresource(t *testing.T) {
 	_ = c.Create(ctx, s)
 	// A controller writes status; the spec it sends is ignored.
 	s.Status = v1.SiloStatus{Phase: "Scheduled", Host: "hv1"}
-	s.Spec.Image = "sneaky"
+	s.Spec.VM = &v1.VMSource{Image: "sneaky"}
 	if err := c.UpdateStatus(ctx, s); err != nil {
 		t.Fatal(err)
 	}
-	if s.Status.Host != "hv1" || s.Spec.Image != "ubuntu-24.04" || s.Generation != 1 {
+	if s.Status.Host != "hv1" || s.Spec.From() != "ubuntu-24.04" || s.Generation != 1 {
 		t.Fatalf("after status update: spec %+v status %+v gen %d", s.Spec, s.Status, s.Generation)
 	}
 	// A user writes spec; the status they send is ignored.

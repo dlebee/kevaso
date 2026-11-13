@@ -81,8 +81,8 @@ type Env struct {
 	Hosts []*v1.Host
 	// Classes are the plugins' load-balancer and storage classes, by name.
 	Classes map[string]Class
-	// Images are the Image objects, for resolving silos' spec.image.
-	Images []*v1.Image
+	// Images are the VMImage objects, for resolving silos' vm.image.
+	Images []*v1.VMImage
 	// Suffix is the cluster's names' last label ("": kevaso).
 	Suffix string
 }

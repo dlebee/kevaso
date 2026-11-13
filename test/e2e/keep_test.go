@@ -32,13 +32,17 @@ func TestDaemonsAndUpkeep(t *testing.T) {
 		"--runtime", "cloud-hypervisor", "--runtime", "docker", "--loop-storage", "30G")...)
 	r.must(kvo.Run, "apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: keep }\n", "apply", "-f", "-")
 	silo := func(name, runtime, extra string) string {
+		from := "container"
+		if runtime == "cloud-hypervisor" {
+			from = "vm"
+		}
 		return fmt.Sprintf(`---
 apiVersion: kevaso/v1
 kind: Silo
 metadata: { name: %s, namespace: keep }
 spec:
   runtime: %s
-  image: ubuntu-24.04
+  %s: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 768Mi }
 %s  daemons:
     - name: ticker
@@ -55,7 +59,7 @@ spec:
       every: 1m
       check: test -f /tmp/fixed-by-hand
       fix: echo this fix cannot help >&2; exit 3
-`, name, runtime, extra)
+`, name, runtime, from, extra)
 	}
 	r.must(kvo.Run, silo("vm", "cloud-hypervisor", "  disk: { size: 5Gi }\n")+silo("box", "docker", ""), "apply", "-f", "-")
 	r.waitRunning("keep", 30*time.Minute, "metal", "vm", "box")

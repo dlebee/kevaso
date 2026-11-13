@@ -46,7 +46,7 @@ kind: Silo
 metadata: { name: eth-node-1, namespace: demo }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 2, memory: 4Gi }
   ports: [{ name: p2p, port: 30303 }]
   service:
@@ -63,7 +63,7 @@ kind: Silo
 metadata: { name: other, namespace: demo }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 2, memory: 4Gi }
   ports: [{ name: p2p, port: 30303 }]
   service:

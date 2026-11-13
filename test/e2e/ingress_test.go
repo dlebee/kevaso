@@ -197,8 +197,7 @@ kind: Silo
 metadata: { name: %[1]s, namespace: %[2]s }
 spec:
   runtime: docker
-  image: docker.io/library/python:3.12-slim
-  command: [python3, -m, http.server, "%[3]s", --directory, /site]
+  container: { image: docker.io/library/python:3.12-slim, command: [python3, -m, http.server, "%[3]s", --directory, /site] }
   volumes: [{ name: site, mountPath: /site }]
   ports: [{ name: http, port: %[3]s }]
   service:
@@ -240,7 +239,7 @@ kind: Silo
 metadata: { name: ingress-public, namespace: kevaso-system }
 spec:
   runtime: docker
-  image: docker.io/library/nginx:1.27   # the vendor's image as shipped: driven from outside
+  container: { image: docker.io/library/nginx:1.27 }   # the vendor's image as shipped: driven from outside
   ports: [{ name: http, port: 80 }, { name: https, port: 443 }]
   service:
     ports: [{ port: http, hostPort: [internal] }, { port: https, hostPort: [internal] }]

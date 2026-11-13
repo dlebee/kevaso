@@ -214,7 +214,7 @@ func TestInformerRecoversAfterMigration(t *testing.T) {
 	}
 	silo := func(name string) *v1.Silo {
 		return &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev"},
-			Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
+			Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
 	}
 	for _, n := range []string{"a", "b"} {
 		if err := c.Create(ctx, silo(n)); err != nil {

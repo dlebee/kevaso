@@ -164,7 +164,7 @@ func TestPrivateRegistryPull(t *testing.T) {
 	}
 
 	api := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "web3"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "ghcr.io/acme/api:v1", ImagePull: &v1.ImagePull{SecretRef: "ghcr-pull"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ghcr.io/acme/api:v1", Pull: &v1.ImagePull{SecretRef: "ghcr-pull"}}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
 	if err := ed.Create(ctx, api); status(err) != http.StatusForbidden || !strings.Contains(err.Error(), "may not use secret ghcr-pull") {
 		t.Fatalf("naming a pull secret without use on it: %v", err)
 	}
@@ -177,10 +177,10 @@ func TestPrivateRegistryPull(t *testing.T) {
 		spec v1.SiloSpec
 		msg  string
 	}{
-		"openshell":  {v1.SiloSpec{Runtime: "openshell-container", Image: "ghcr.io/acme/api:v1", ImagePull: &v1.ImagePull{SecretRef: "ghcr-pull"}}, "isn't available on openshell-container"},
-		"wrong host": {v1.SiloSpec{Runtime: "docker", Image: "quay.io/acme/api:v1", ImagePull: &v1.ImagePull{SecretRef: "ghcr-pull"}}, "is for ghcr.io; the image is on quay.io"},
-		"a disk":     {v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", ImagePull: &v1.ImagePull{SecretRef: "ghcr-pull"}}, "boots an Image's disk"},
-		"missing":    {v1.SiloSpec{Runtime: "docker", Image: "ghcr.io/acme/api:v1", ImagePull: &v1.ImagePull{SecretRef: "nope"}}, `no secret "nope"`},
+		"openshell":  {v1.SiloSpec{Runtime: "openshell-container", Container: &v1.ContainerSource{Image: "ghcr.io/acme/api:v1", Pull: &v1.ImagePull{SecretRef: "ghcr-pull"}}}, "isn't available on openshell-container"},
+		"wrong host": {v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "quay.io/acme/api:v1", Pull: &v1.ImagePull{SecretRef: "ghcr-pull"}}}, "is for ghcr.io; the image is on quay.io"},
+		"a disk":     {v1.SiloSpec{Runtime: "cloud-hypervisor", Container: &v1.ContainerSource{Image: "ubuntu-24.04", Pull: &v1.ImagePull{SecretRef: "ghcr-pull"}}}, "runs a virtual machine"},
+		"missing":    {v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ghcr.io/acme/api:v1", Pull: &v1.ImagePull{SecretRef: "nope"}}}, `no secret "nope"`},
 	} {
 		s := &v1.Silo{TypeMeta: api.TypeMeta, ObjectMeta: meta.ObjectMeta{Name: "bad", Namespace: "web3"}, Spec: bad.spec}
 		if err := ada.Create(ctx, s); !client.IsInvalid(err) || !strings.Contains(err.Error(), bad.msg) {
@@ -219,9 +219,9 @@ func TestPrivateRegistryPull(t *testing.T) {
 	}
 	place(api, "hv1")
 	web := &v1.Silo{TypeMeta: api.TypeMeta, ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "web3"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "nginx:1.27", Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "nginx:1.27"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
 	denied := &v1.Silo{TypeMeta: api.TypeMeta, ObjectMeta: meta.ObjectMeta{Name: "denied", Namespace: "web3"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "ghcr.io/acme/denied:v1", ImagePull: &v1.ImagePull{SecretRef: "ghcr-pull"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ghcr.io/acme/denied:v1", Pull: &v1.ImagePull{SecretRef: "ghcr-pull"}}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
 	for _, s := range []*v1.Silo{web, denied} {
 		if err := ada.Create(ctx, s); err != nil {
 			t.Fatal(err)

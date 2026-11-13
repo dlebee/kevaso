@@ -302,8 +302,7 @@ func TestOpenShellAdmission(t *testing.T) {
 		}
 	}
 	mk := func(name string, f func(*v1.Silo)) error {
-		s := silo(name, "web3")
-		s.Spec.Runtime = "openshell"
+		s := containerSilo(name, "web3", "openshell")
 		f(s)
 		return c.admin.Create(c.ctx, s)
 	}

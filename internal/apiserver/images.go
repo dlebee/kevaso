@@ -11,8 +11,8 @@ import (
 	"kevaso.com/core/internal/store"
 )
 
-// Images and pulls (design §0.2): a silo's image fits its runtime's family (an Image or a built-in
-// OS image for cloud-hypervisor, a registry reference for the rest), and a pull secret is named
+// Images and pulls (design §0.2): a silo's source fits its runtime (vm: a VMImage, an inline disk
+// or a built-in OS image for cloud-hypervisor; container: a registry reference for the rest), and a pull secret is named
 // only by someone with use on it, only where Kevaso pulls the image itself, and only for the
 // image's own registry. The credential reaches a host's agent alone (brokerPull), for silos placed
 // on that host.
@@ -27,13 +27,13 @@ func (s *Server) checkImages(ctx context.Context, t target, obj meta.Object) err
 	case *v1.Silo:
 		var had *v1.ImagePull
 		if prev, ok := s.stored(ctx, t).(*v1.Silo); ok {
-			had = prev.Spec.ImagePull
+			had = prev.Spec.Pull()
 		}
 		return s.checkSiloImage(ctx, t.namespace, "Silo "+o.Name, o.Spec, had)
 	case *v1.SiloSet:
 		var had *v1.ImagePull
 		if prev, ok := s.stored(ctx, t).(*v1.SiloSet); ok {
-			had = prev.Spec.Template.ImagePull
+			had = prev.Spec.Template.Pull()
 		}
 		return s.checkSiloImage(ctx, t.namespace, "SiloSet "+o.Name, o.InstanceSpec(), had)
 	case *v1.Secret:
@@ -60,37 +60,37 @@ func (s *Server) stored(ctx context.Context, t target) meta.Object {
 
 func (s *Server) checkSiloImage(ctx context.Context, ns, what string, spec v1.SiloSpec, had *v1.ImagePull) error {
 	isImage := func(name string) bool {
-		_, err := s.store.Get(ctx, store.Key{Kind: "Image", Namespace: ns, Name: name})
+		_, err := s.store.Get(ctx, store.Key{Kind: "VMImage", Namespace: ns, Name: name})
 		return err == nil
 	}
-	if p := v1.ImageProblem(spec.Runtime, spec.Image, isImage); p != "" {
-		return errf(http.StatusUnprocessableEntity, "Invalid", "%s: %s", what, p)
+	if p := v1.SourceProblems(spec, isImage); len(p) > 0 {
+		return errf(http.StatusUnprocessableEntity, "Invalid", "%s: %s", what, joinMessages(p))
 	}
-	pull := spec.ImagePull
+	pull := spec.Pull()
 	if pull == nil || pull.SecretRef == "" {
 		return nil
 	}
 	rt := spec.Runtime
 	switch {
 	case v1.DiskRuntime(rt):
-		return errf(http.StatusUnprocessableEntity, "Invalid", "%s: imagePull is for registry images; %s boots an Image's disk", what, rt)
+		return errf(http.StatusUnprocessableEntity, "Invalid", "%s: container.pull is for registry images; %s boots a VM disk", what, rt)
 	case !v1.PullRuntime(rt):
 		return errf(http.StatusUnprocessableEntity, "Invalid",
-			"%s: imagePull isn't available on %s: OpenShell pulls images through its own gateway, whose CLI takes no registry credential, so Kevaso can't hand it one for a pull without leaving it in OpenShell's config (use a public image, or docker or podman)", what, rt)
+			"%s: container.pull isn't available on %s: OpenShell pulls images through its own gateway, whose CLI takes no registry credential, so Kevaso can't hand it one for a pull without leaving it in OpenShell's config (use a public image, or docker or podman)", what, rt)
 	}
 	sec := s.secretNamed(ctx, ns, pull.SecretRef)
 	if sec == nil {
-		return errf(http.StatusUnprocessableEntity, "Invalid", "%s: imagePull.secretRef: no secret %q in namespace %s (kvo create secret %s --type registry …)", what, pull.SecretRef, ns, pull.SecretRef)
+		return errf(http.StatusUnprocessableEntity, "Invalid", "%s: container.pull.secretRef: no secret %q in namespace %s (kvo create secret %s --type registry …)", what, pull.SecretRef, ns, pull.SecretRef)
 	}
 	if sec.Spec.Type != v1.SecretRegistry {
-		return errf(http.StatusUnprocessableEntity, "Invalid", "%s: imagePull.secretRef: secret %s is type %s, not registry", what, sec.Name, dash(sec.Spec.Type, v1.SecretOpaque))
+		return errf(http.StatusUnprocessableEntity, "Invalid", "%s: container.pull.secretRef: secret %s is type %s, not registry", what, sec.Name, dash(sec.Spec.Type, v1.SecretOpaque))
 	}
-	ref, err := v1.ParseImageRef(v1.PullRef(spec.Image))
+	ref, err := v1.ParseImageRef(v1.PullRef(spec.From()))
 	if err != nil {
-		return errf(http.StatusUnprocessableEntity, "Invalid", "%s: imagePull: %v", what, err)
+		return errf(http.StatusUnprocessableEntity, "Invalid", "%s: container.pull: %v", what, err)
 	}
 	if h, _ := v1.RegistryHost(sec.Spec.Server); h != ref.Registry {
-		return errf(http.StatusUnprocessableEntity, "Invalid", "%s: imagePull.secretRef: secret %s is for %s; the image is on %s", what, sec.Name, h, ref.Registry)
+		return errf(http.StatusUnprocessableEntity, "Invalid", "%s: container.pull.secretRef: secret %s is for %s; the image is on %s", what, sec.Name, h, ref.Registry)
 	}
 	if had != nil && had.SecretRef == pull.SecretRef {
 		return nil // named already: the writer changes something else
@@ -142,14 +142,14 @@ func (s *Server) checkDefaultPull(ctx context.Context, t target, sec *v1.Secret)
 // No credential applies: an empty answer.
 func (s *Server) brokerPull(ctx context.Context, call *brokerCall, op client.BrokerRequest) (client.BrokerResponse, string, bool) {
 	silo := call.silo
-	if op.Name == "" || (op.Name != silo.Spec.Image && (silo.Status.Image == nil || op.Name != silo.Status.Image.Ref)) {
+	if op.Name == "" || (op.Name != silo.Spec.From() && (silo.Status.Image == nil || op.Name != silo.Status.Image.Ref)) {
 		return client.BrokerResponse{Error: "not this silo's image"}, "pull of " + op.Name + ": not the silo's image", false
 	}
 	if !v1.PullRuntime(silo.Spec.Runtime) {
 		return client.BrokerResponse{}, "no pull credential: " + silo.Spec.Runtime + " pulls by itself", true
 	}
 	var all []*v1.Secret
-	if silo.Spec.ImagePull == nil || silo.Spec.ImagePull.SecretRef == "" {
+	if silo.Spec.Pull() == nil || silo.Spec.Pull().SecretRef == "" {
 		objs, _, err := s.store.List(ctx, store.Selector{Kind: "Secret", Namespace: silo.Namespace})
 		if err != nil {
 			return client.BrokerResponse{Error: "try again"}, err.Error(), false
@@ -160,7 +160,7 @@ func (s *Server) brokerPull(ctx context.Context, call *brokerCall, op client.Bro
 			}
 		}
 	}
-	name := v1.PullSecretFor(silo.Spec.ImagePull, op.Name, all)
+	name := v1.PullSecretFor(silo.Spec.Pull(), op.Name, all)
 	if name == "" {
 		return client.BrokerResponse{}, "no pull secret for " + op.Name, true
 	}

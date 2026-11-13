@@ -134,7 +134,14 @@ func ns(name string) *v1.Namespace {
 
 func silo(name, namespace string) *v1.Silo {
 	return &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: namespace},
-		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
+		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
+}
+
+// containerSilo is silo on a container runtime: the same OS image, in a container: block.
+func containerSilo(name, namespace, runtime string) *v1.Silo {
+	s := silo(name, namespace)
+	s.Spec.Runtime, s.Spec.VM, s.Spec.Container = runtime, nil, &v1.ContainerSource{Image: "ubuntu-24.04"}
+	return s
 }
 
 // M4's "done when", in one process: a second user signs in with an invite and only sees their

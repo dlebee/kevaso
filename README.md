@@ -80,9 +80,12 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   cloud token alone. The first is [Linode](https://github.com/dlebee/kevaso-provider-linode):
   NodeBalancers, Block Storage volumes (formatted once, deleted with the silo), shared IPs announced
   over BGP that follow their silo to another Linode, and Linode DNS for Ingress host names;
-- sets and images: an `Image` is a bootable disk for VMs, with versions that never change (a URL
-  and its SHA-256, checked by every host); a container silo's image is just its registry reference,
-  pulled from a private registry with a `registry` secret only its host's agent ever gets. A `SiloSet` is a scale set of stateful
+- sets and images: a silo says what it starts from in a block named for what the image is:
+  `container: { image, pull, command }` for docker, podman and OpenShell, where the image is just a
+  registry reference, pulled from a private registry with a `registry` secret only its host's agent
+  ever gets; `vm: { image }` or `vm: { disk: { url, sha256 } }` for cloud-hypervisor, where a
+  `VMImage` is a bootable disk with versions that never change (a URL and its SHA-256, checked by
+  every host). A `SiloSet` is a scale set of stateful
   silos with stable names (`rpc-0`, `rpc-1`, …), spread over hosts, with booted standby instances,
   protected ones scale-in never removes (`kvo protect`), and rollouts that reset instances onto a new
   image a few at a time (or start extra ones first), volumes kept. `exclusive: true` guarantees one

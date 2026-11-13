@@ -161,7 +161,7 @@ kind: Silo
 metadata: { name: %s, namespace: %s }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 768Mi }
   disk: { size: 5Gi }
 %s

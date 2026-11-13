@@ -20,7 +20,7 @@ import (
 	"kevaso.com/core/sdk/kplugin/kplugintest"
 )
 
-// Example 07 in a real control plane (M12): an Image, a SiloSet of three instances from it spread
+// Example 07 in a real control plane (M12): a SiloSet of three container instances spread
 // over two hosts, and a Service of type LoadBalancer in front of them through a plugin's class.
 // Then a rolling upgrade to v2 (never more than one instance down), admission refusing what would
 // run two copies, a scale-in that spares a protected instance, and deleting the set deleting its
@@ -142,17 +142,18 @@ func TestSiloSetAndService(t *testing.T) {
 	if err := admin.Create(ctx, ns("web3")); err != nil {
 		t.Fatal(err)
 	}
-	// A set of containers: its image is a registry reference, and it rolls when that changes. (Images
+	// A set of containers: its image is a registry reference, and it rolls when that changes. (VMImages
 	// are machine disks, for cloud-hypervisor: a version can't change once added.)
 	sum := strings.Repeat("ab", 32)
-	img := &v1.Image{TypeMeta: tm("Image"), ObjectMeta: meta.ObjectMeta{Name: "geth-disk", Namespace: "web3"},
-		Spec: v1.ImageSpec{Versions: []v1.ImageVersion{{Name: "v1", Disk: &v1.ImageDisk{URL: "https://images.example.com/geth-1.img", SHA256: sum}}}}}
+	img := &v1.VMImage{TypeMeta: tm("VMImage"), ObjectMeta: meta.ObjectMeta{Name: "geth-disk", Namespace: "web3"},
+		Spec: v1.VMImageSpec{Versions: []v1.VMImageVersion{{Name: "v1", Disk: &v1.VMDisk{URL: "https://images.example.com/geth-1.img", SHA256: sum}}}}}
 	if err := admin.Create(ctx, img); err != nil {
 		t.Fatal(err)
 	}
 	set := &v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: "rpc-pool", Namespace: "web3"},
-		Spec: v1.SiloSetSpec{Image: "docker.io/ethereum/client-go:v1.14.0", Instances: 3, Spread: "host", UpgradePolicy: v1.UpgradeRolling,
+		Spec: v1.SiloSetSpec{Instances: 3, Spread: "host", UpgradePolicy: v1.UpgradeRolling,
 			Template: v1.SiloTemplate{Labels: map[string]string{"app": "rpc"}, SiloSpec: v1.SiloSpec{Runtime: "docker",
+				Container: &v1.ContainerSource{Image: "docker.io/ethereum/client-go:v1.14.0"},
 				Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 				Ports:     []v1.SiloPort{{Name: "rpc", Port: 8545}},
 				Service:   &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc"}}}}}}}
@@ -236,16 +237,16 @@ func TestSiloSetAndService(t *testing.T) {
 	if err := admin.Create(ctx, one); !client.IsInvalid(err) || !strings.Contains(err.Error(), "M14") {
 		t.Fatalf("StartFirst on one silo: %v", err)
 	}
-	_ = admin.Get(ctx, "Image", "web3", "geth-disk", img)
+	_ = admin.Get(ctx, "VMImage", "web3", "geth-disk", img)
 	img.Spec.Versions[0].Disk.URL = "https://images.example.com/geth-1b.img"
 	if err := admin.Update(ctx, img); !client.IsInvalid(err) || !strings.Contains(err.Error(), "can't change once added") {
 		t.Fatalf("changing a version: %v", err)
 	}
 	wrong := *set
 	wrong.ObjectMeta = meta.ObjectMeta{Name: "from-a-disk", Namespace: "web3"}
-	wrong.Spec.Image = "geth-disk:v1"
-	if err := admin.Create(ctx, &wrong); !client.IsInvalid(err) || !strings.Contains(err.Error(), "geth-disk is an Image, a disk image for cloud-hypervisor") {
-		t.Fatalf("a set of containers from an Image: %v", err)
+	wrong.Spec.Template.Container = &v1.ContainerSource{Image: "geth-disk:v1"}
+	if err := admin.Create(ctx, &wrong); !client.IsInvalid(err) || !strings.Contains(err.Error(), "geth-disk is a VMImage, a disk for cloud-hypervisor") {
+		t.Fatalf("a set of containers from a VMImage: %v", err)
 	}
 
 	// v2, rolled out by changing the reference: one instance down at a time, the service following.
@@ -253,7 +254,7 @@ func TestSiloSetAndService(t *testing.T) {
 	maxDown = 0
 	mu.Unlock()
 	_ = admin.Get(ctx, "SiloSet", "web3", "rpc-pool", set)
-	set.Spec.Image = "docker.io/ethereum/client-go:v1.15.0"
+	set.Spec.Template.Container.Image = "docker.io/ethereum/client-go:v1.15.0"
 	if err := admin.Update(ctx, set); err != nil {
 		t.Fatal(err)
 	}

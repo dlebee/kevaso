@@ -392,7 +392,7 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		digest, err := a.pull(ctx, rt, s, image)
 		if err == nil {
 			err = rt.Create(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
-				Volumes: vols, Command: s.Spec.Command, DiskHostPath: diskPath})
+				Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath})
 		}
 		if err != nil {
 			_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
@@ -518,15 +518,16 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	return engine.Result{RequeueAfter: again}, nil
 }
 
-// imageOf is what the silo's runtime gets: what the control plane resolved spec.image to (an
-// Image's version). resolved is false while a changed spec.image waits for the control plane: the
+// imageOf is what the silo's runtime gets: what the control plane resolved its source to (a
+// VMImage's version, an inline disk, a registry reference). resolved is false while a changed
+// source waits for the control plane: the
 // silo keeps what it has until then.
 func imageOf(s *v1.Silo) (image string, resolved bool) {
 	im := s.Status.Image
 	switch {
 	case im == nil || im.Ref == "":
-		return s.Spec.Image, true // nothing resolved yet: the name as it is
-	case im.From == s.Spec.Image:
+		return s.Spec.From(), true // nothing resolved yet: the name as it is
+	case im.From == s.Spec.From():
 		return im.Ref, true
 	}
 	return im.Ref, false
@@ -534,11 +535,11 @@ func imageOf(s *v1.Silo) (image string, resolved bool) {
 
 // running records that the silo now runs image, with its current reset applied.
 func running(cur *v1.SiloImage, s *v1.Silo, image string) *v1.SiloImage {
-	next := &v1.SiloImage{From: s.Spec.Image, Ref: image}
+	next := &v1.SiloImage{From: s.Spec.From(), Ref: image}
 	if cur != nil {
 		next.From, next.Ref = cur.From, cur.Ref
 		if next.Ref == "" {
-			next.From, next.Ref = s.Spec.Image, image
+			next.From, next.Ref = s.Spec.From(), image
 		}
 	}
 	if cur != nil && cur.Running == image {
@@ -607,7 +608,7 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		return true, err
 	}
 	if err := rr.Reset(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
-		Volumes: vols, Command: s.Spec.Command, DiskHostPath: diskPath}); err != nil {
+		Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath}); err != nil {
 		_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 			setCond(st, "Updated", meta.ConditionFalse, failReason(err, "ResetFailed"), err.Error(), s.Generation, a.now())
 		})

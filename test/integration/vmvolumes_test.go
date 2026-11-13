@@ -103,7 +103,7 @@ func TestVMVolumesFollowTheSilo(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "vm", Namespace: "notes"},
-		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Disk:         v1.Disk{Class: kplugintest.ClassShare, Size: "20Gi"},
 			Availability: v1.Availability{OnHostLoss: v1.OnHostLossMove}, // admitted: disk and volume go anywhere
 			Volumes:      []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"}}}}
