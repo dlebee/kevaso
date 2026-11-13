@@ -470,16 +470,17 @@ func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int
 		}
 		r.sleep(2 * time.Second)
 	}
-	// The command carries a marker in its environment (through env, which every image with a
-	// shell has), so that when the client goes away whatever it started is killed inside the
-	// sandbox: killing the CLI isn't known to stop it. With a terminal the CLI runs on one of the
-	// agent's own and picks the sandbox's terminal itself (no --no-tty).
+	// The command runs under a shell holding a marker (hostexec.Held: on its command line, and in
+	// the command's environment), so that when the client goes away whatever it started is swept
+	// inside the sandbox, even if it cleared its environment: killing the CLI isn't known to stop
+	// it. With a terminal the CLI runs on one of the agent's own and picks the sandbox's terminal
+	// itself (no --no-tty).
 	marker := hostexec.NewMarker()
 	args := []string{"sandbox", "exec", "-n", SandboxName(id)}
 	if req.TTY == nil {
 		args = append(args, "--no-tty")
 	}
-	args = append(append(args, "--", "env", kri.ExecMarkerEnv+"="+marker), req.Command...)
+	args = append(append(args, "--"), hostexec.Held(marker, req.Command)...)
 	code, err := r.Host.Run(ctx, Cmd{Name: "openshell", Args: args, Env: s.Gateway.Env(), Stdin: req.Stdin, Stdout: orDiscard(req.Stdout), Stderr: orDiscard(req.Stderr), TTY: req.TTY})
 	if ctx.Err() != nil {
 		kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)

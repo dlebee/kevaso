@@ -19,5 +19,7 @@ var ErrNoTTY = errors.New("this runtime can't run commands on a terminal")
 
 // ExecMarkerEnv is set, with a value unique to one Exec, in the environment of the command a
 // runtime starts in a silo, so the runtime can find and stop everything that command started when
-// its client goes away (the runtime's own client, docker exec or ssh, doesn't do that).
+// its client goes away (the runtime's own client, docker exec or ssh, doesn't do that). The
+// built-in runtimes don't rely on it alone: a command may clear its environment, so they also
+// sweep the exec's process tree and session (builtin/kri/hostexec).
 const ExecMarkerEnv = "KEVASO_EXEC"

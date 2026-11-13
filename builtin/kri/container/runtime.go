@@ -51,8 +51,12 @@ type Runtime struct {
 	// CABundle is the host's trusted CAs plus its egress CA, mounted into every silo.
 	CABundle []byte
 	Version  string
+	// ExecFind is how long Exec looks for the first process of its command, from the host (default
+	// 3s); a command that ends sooner isn't looked for any longer.
+	ExecFind time.Duration
 
-	mu sync.Mutex
+	mu     sync.Mutex
+	execMu sync.Mutex // one exec at a time is being found (ExecRoot tells them apart by elimination)
 }
 
 type state struct {
@@ -543,13 +547,16 @@ func (r *Runtime) List(context.Context) ([]kri.ID, error) {
 // Exec implements kri.Runtime: `docker exec -i`, stdin, stdout, stderr and the exit code passed
 // through; with a terminal, `docker exec -it` on a pseudo-terminal of the agent's own, which the
 // engine's CLI resizes in the container. Killing the CLI doesn't stop the command in the container,
-// so the command carries a marker in its environment and, when ctx is cancelled, every process
-// that has it is killed from the host.
+// so when ctx is cancelled the host sweeps it (hostexec.Sweep): the command's session, which the
+// engine's runc or crun made it the leader of, found from the host as it starts, plus anything
+// still carrying the marker in its environment. A command that clears its environment at once
+// (env -i) is still found by its session.
 func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int, error) {
 	if _, ok := r.load(id); !ok {
 		return -1, fmt.Errorf("%s: %w", id, kri.ErrNotFound)
 	}
-	if st, _, err := r.inspect(ctx, NamesFor(id).Main); err != nil || st != "running" {
+	st, initPID, err := r.inspect(ctx, NamesFor(id).Main)
+	if err != nil || st != "running" {
 		return -1, fmt.Errorf("%s is not running (%s) %v", id, st, err)
 	}
 	marker := hostexec.NewMarker()
@@ -562,11 +569,47 @@ func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int
 	}
 	args = append(args, "-e", kri.ExecMarkerEnv+"="+marker)
 	args = append(append(args, NamesFor(id).Main), req.Command...)
+	// Its first process, found while it starts: the session leader that wasn't there before.
+	r.execMu.Lock()
+	before := hostexec.SessionLeaders(r.Host, initPID)
+	done := make(chan struct{})
+	found := make(chan int, 1)
+	go func() {
+		defer r.execMu.Unlock()
+		find := r.ExecFind
+		if find <= 0 {
+			find = 3 * time.Second
+		}
+		deadline := time.After(find)
+		tick := time.NewTicker(20 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			if root := hostexec.ExecRoot(r.Host, initPID, before, marker); root > 0 {
+				found <- root
+				return
+			}
+			select {
+			case <-done: // a last look: it may have started since
+				found <- hostexec.ExecRoot(r.Host, initPID, before, marker)
+				return
+			case <-deadline:
+				found <- 0
+				return
+			case <-tick.C:
+			}
+		}
+	}()
 	code, err := r.Host.Run(ctx, hostexec.Cmd{Name: r.engine(), Args: args, Stdin: req.Stdin, Stdout: orDiscard(req.Stdout), Stderr: orDiscard(req.Stderr), TTY: req.TTY})
+	close(done)
+	root := <-found
 	if ctx.Err() != nil {
 		kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		hostexec.KillMarked(kctx, r.Host, marker)
+		var roots []int
+		if root > 0 {
+			roots = []int{root}
+		}
+		hostexec.Sweep(kctx, r.Host, marker, roots)
 		return -1, ctx.Err()
 	}
 	return code, err
