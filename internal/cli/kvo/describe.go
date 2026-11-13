@@ -259,11 +259,16 @@ func describeObject(w io.Writer, obj meta.Object) error {
 	case *v1.Ingress:
 		kv(0, "Class", o.Spec.IngressClass)
 		kv(0, "Hosts", strings.Join(o.Spec.Hosts, ", "))
-		tls := o.Spec.TLS.Mode
-		if tls == "" {
-			tls = "the class's default (acme on public classes, internal-ca otherwise)"
+		switch t := o.Spec.TLS; {
+		case t.None:
+			kv(0, "TLS", "none: plain HTTP")
+		case t.SecretName != "":
+			kv(0, "TLS", "your certificate, in secret "+t.SecretName)
+		case t.Issuer != "":
+			kv(0, "TLS", "a certificate from issuer "+t.Issuer+" ("+dash(o.Status.Certificate)+")")
+		default:
+			kv(0, "TLS", "a certificate from the cluster's default issuer for the class ("+dash(o.Status.Certificate)+")")
 		}
-		kv(0, "TLS", tls)
 		for i, r := range o.Spec.Rules {
 			label := ""
 			if i == 0 {

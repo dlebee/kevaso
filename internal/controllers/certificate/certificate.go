@@ -77,6 +77,8 @@ type Controller struct {
 	Log          func(string, ...any)
 	// CertControllers are the cert-controllers Issuers may name (built in: acme, internal-ca).
 	CertControllers kcc.Registry
+	// Defaults are the issuers of Ingresses that name none.
+	Defaults Defaults
 }
 
 func (c *Controller) log(f string, a ...any) {
@@ -129,29 +131,37 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 
 // ── Ingress → Certificate ────────────────────────────────────────────────────
 
-// TLSMode is an Ingress's TLS mode: as set, or acme on a public class and internal-ca otherwise.
-func TLSMode(ing *v1.Ingress, class *v1.IngressClass) string {
-	if ing.Spec.TLS.Mode != "" {
-		return ing.Spec.TLS.Mode
-	}
-	if class != nil && class.Spec.Public {
-		return v1.TLSAcme
-	}
-	return v1.TLSInternalCA
+// Defaults are the cluster's issuers for Ingresses that name none (the control plane's config).
+type Defaults struct {
+	Public  string // default letsencrypt
+	Private string // default internal-ca
 }
 
-// DesiredCertificate is the Certificate an Ingress needs (nil: none, tls.mode none). Pure.
-func DesiredCertificate(ing *v1.Ingress, class *v1.IngressClass) *v1.Certificate {
-	mode := TLSMode(ing, class)
-	if mode == v1.TLSNone {
-		return nil
-	}
-	issuer := IssuerInternal
-	if mode == v1.TLSAcme {
-		issuer = IssuerLetsEncrypt
-		if class != nil && class.Spec.Issuer != "" {
-			issuer = class.Spec.Issuer
+// IssuerFor is the Issuer an Ingress's certificate comes from ("" if Kevaso makes none for it:
+// tls.none, or its own secretName). Pure.
+func IssuerFor(ing *v1.Ingress, class *v1.IngressClass, d Defaults) string {
+	switch t := ing.Spec.TLS; {
+	case t.None || t.SecretName != "":
+		return ""
+	case t.Issuer != "":
+		return t.Issuer
+	case class != nil && class.Spec.Public:
+		if d.Public != "" {
+			return d.Public
 		}
+		return IssuerLetsEncrypt
+	}
+	if d.Private != "" {
+		return d.Private
+	}
+	return IssuerInternal
+}
+
+// DesiredCertificate is the Certificate an Ingress needs (nil: none). Pure.
+func DesiredCertificate(ing *v1.Ingress, class *v1.IngressClass, d Defaults) *v1.Certificate {
+	issuer := IssuerFor(ing, class, d)
+	if issuer == "" {
+		return nil
 	}
 	hosts := append([]string(nil), ing.Spec.Hosts...)
 	slices.Sort(hosts)
@@ -185,7 +195,7 @@ func (c *Controller) reconcileIngress(ctx context.Context, k engine.Key) error {
 	if co, ok := c.Classes.Get("", ing.Spec.IngressClass); ok {
 		class = co.(*v1.IngressClass)
 	}
-	want := DesiredCertificate(ing, class)
+	want := DesiredCertificate(ing, class, c.Defaults)
 	if want != nil {
 		var cur v1.Certificate
 		err := c.Client.Get(ctx, "Certificate", want.Namespace, want.Name, &cur)

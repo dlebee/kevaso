@@ -8,16 +8,10 @@ import (
 )
 
 // Ingress (design §7.3): HTTP(S) from outside to private silos, by host name and path, through an
-// ingress controller that is an ordinary silo. Certificates are automated, cert-manager style:
-// an Ingress with tls.mode acme gets a Certificate, whose certificate and key land in a Secret,
-// renewed before they expire.
-
-// TLS modes of an Ingress.
-const (
-	TLSAcme       = "acme"        // a certificate from the class's ACME issuer (HTTP-01)
-	TLSInternalCA = "internal-ca" // a certificate from the cluster's own CA (private hosts)
-	TLSNone       = "none"        // plain HTTP (private classes only)
-)
+// ingress controller that is an ordinary silo. Certificates are automated, cert-manager style: an
+// Ingress names the Issuer its certificate comes from (or gets the cluster's default for its class:
+// letsencrypt on public classes, internal-ca on private ones), and a Certificate is made for it,
+// whose certificate and key land in a Secret, renewed before they expire.
 
 // IngressClass is a set of ingress controllers: which silo serves Ingresses of this class. Cluster
 // scope.
@@ -33,8 +27,6 @@ type IngressClassSpec struct {
 	// Public: reachable from the internet. Publishing an Ingress on a public class needs create on
 	// ingresses/publish-public in its namespace.
 	Public bool `json:"public,omitempty"`
-	// Issuer is the Issuer certificates for tls.mode acme come from (default: letsencrypt).
-	Issuer string `json:"issuer,omitempty"`
 	// DNS, when set, publishes every Ingress host name of this class through a DNS provider,
 	// pointing at the controller's public address.
 	DNS *IngressDNS `json:"dns,omitempty"`
@@ -68,9 +60,25 @@ type IngressSpec struct {
 	Rules        []IngressRule `json:"rules"`
 }
 
-// IngressTLS says where the certificate comes from.
+// IngressTLS says where the certificate comes from; at most one is set. None of them: a
+// certificate from the cluster's default issuer for the class (letsencrypt on public classes,
+// internal-ca on private ones).
 type IngressTLS struct {
-	Mode string `json:"mode,omitempty"` // acme (default on public classes) | internal-ca | none
+	// Issuer is the Issuer its certificate comes from (any: acme, internal-ca, a cert-controller's).
+	Issuer string `json:"issuer,omitempty"`
+	// SecretName uses a certificate you keep yourself, in this Secret of the namespace (the chain
+	// and key, PEM): no Certificate is made.
+	SecretName string `json:"secretName,omitempty"`
+	// None is plain HTTP, on private classes only.
+	None bool `json:"none,omitempty"`
+}
+
+// TLSSecret is the Secret an Ingress's certificate is in: its own, or the one made for it.
+func TLSSecret(ing *Ingress) string {
+	if ing.Spec.TLS.SecretName != "" {
+		return ing.Spec.TLS.SecretName
+	}
+	return CertificateFor(ing)
 }
 
 // IngressRule sends a path (prefix) to a silo's port, in the Ingress's namespace.

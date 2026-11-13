@@ -18,22 +18,35 @@ import (
 )
 
 func TestDesiredCertificate(t *testing.T) {
-	public := &v1.IngressClass{ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{Public: true, Issuer: "pebble"}}
+	public := &v1.IngressClass{ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{Public: true}}
 	private := &v1.IngressClass{ObjectMeta: meta.ObjectMeta{Name: "private"}}
-	ing := &v1.Ingress{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "payments"}, Spec: v1.IngressSpec{Hosts: []string{"b.example.com", "a.example.com"}}}
+	ing := &v1.Ingress{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "payments"}, Spec: v1.IngressSpec{Hosts: []string{"b.example.com", "a.example.com"},
+		TLS: v1.IngressTLS{Issuer: "pebble"}}}
 
-	c := DesiredCertificate(ing, public)
+	// The Ingress names its issuer.
+	c := DesiredCertificate(ing, public, Defaults{})
 	if c.Name != "api-tls" || c.Spec.SecretName != "api-tls" || c.Spec.Issuer != "pebble" || c.Spec.Hosts[0] != "a.example.com" || c.Labels[LabelIngress] != "api" {
-		t.Fatalf("public: %+v", c)
+		t.Fatalf("named issuer: %+v", c)
 	}
-	if c := DesiredCertificate(ing, &v1.IngressClass{Spec: v1.IngressClassSpec{Public: true}}); c.Spec.Issuer != IssuerLetsEncrypt {
-		t.Errorf("public without an issuer: %s", c.Spec.Issuer)
+	// None named: the cluster's default for the class.
+	ing.Spec.TLS = v1.IngressTLS{}
+	if c := DesiredCertificate(ing, public, Defaults{}); c.Spec.Issuer != IssuerLetsEncrypt {
+		t.Errorf("public, no issuer: %s, want letsencrypt", c.Spec.Issuer)
 	}
-	if c := DesiredCertificate(ing, private); c.Spec.Issuer != IssuerInternal {
-		t.Errorf("private class: %s, want internal-ca", c.Spec.Issuer)
+	if c := DesiredCertificate(ing, private, Defaults{}); c.Spec.Issuer != IssuerInternal {
+		t.Errorf("private, no issuer: %s, want internal-ca", c.Spec.Issuer)
 	}
-	ing.Spec.TLS.Mode = v1.TLSNone
-	if DesiredCertificate(ing, private) != nil {
+	d := Defaults{Public: "zerossl", Private: "corp-ca"}
+	if a, b := DesiredCertificate(ing, public, d), DesiredCertificate(ing, private, d); a.Spec.Issuer != "zerossl" || b.Spec.Issuer != "corp-ca" {
+		t.Errorf("cluster defaults: %s %s", a.Spec.Issuer, b.Spec.Issuer)
+	}
+	// Its own secret, or plain HTTP: no Certificate.
+	ing.Spec.TLS = v1.IngressTLS{SecretName: "my-cert"}
+	if DesiredCertificate(ing, public, d) != nil || v1.TLSSecret(ing) != "my-cert" {
+		t.Error("secretName got a certificate, or isn't used")
+	}
+	ing.Spec.TLS = v1.IngressTLS{None: true}
+	if DesiredCertificate(ing, private, d) != nil {
 		t.Error("tls none got a certificate")
 	}
 }

@@ -64,6 +64,9 @@ type Config struct {
 	// (acme, internal-ca), and DNSProviders the DNS providers acme's dns01 solvers may name.
 	CertControllers kcc.Registry
 	DNSProviders    map[string]acme.DNSProvider
+	// DefaultIssuers are the Issuers of Ingresses that name none: Public for public classes
+	// (default letsencrypt), Private for private ones (default internal-ca).
+	DefaultIssuers certificate.Defaults
 	// Plugins are the provider plugins (load balancers, volumes, DNS); nil: none. kevasod watches
 	// kplugin.Dir for them.
 	Plugins *plugins.Registry
@@ -288,7 +291,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	images.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Image", Namespace: k.Namespace, Name: k.Name}) })
 	sets.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "SiloSet", Namespace: k.Namespace, Name: k.Name}) })
 	services.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Service", Namespace: k.Namespace, Name: k.Name}) })
-	cc := &certificate.Controller{Client: c, Store: cd.store, KMS: cd.kms, Clock: cfg.Clock,
+	cc := &certificate.Controller{Client: c, Store: cd.store, KMS: cd.kms, Clock: cfg.Clock, Defaults: cfg.DefaultIssuers,
 		CertControllers: certControllers(cfg, cd),
 		Certificates:    certs, Ingresses: ingresses, Classes: classes, Issuers: issuers, Log: cfg.Log}
 	e.Register(cc, engine.Options{Workers: 2})

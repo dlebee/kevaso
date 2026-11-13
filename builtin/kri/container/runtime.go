@@ -9,8 +9,10 @@
 // nothing is pulled for it.
 //
 // The broker reaches a container through a unix socket of its own, mounted at /run/kevaso: the
-// socket a connection arrives on says which silo it is, as vsock does for VMs. kvo-guest (kevasod)
-// and the host's CA bundle with the egress CA are mounted in read-only.
+// socket a connection arrives on says which silo it is, as vsock does for VMs. The host's CA bundle
+// with the egress CA is mounted in read-only. Nothing else of Kevaso's goes into a user's container
+// (design §12: Kevaso's own pieces are built and isolated properly): Kevaso's own silos, like the
+// ingress controller, run from images of their own (Images below), with the same isolation.
 package container
 
 import (
@@ -44,7 +46,7 @@ var Images = map[string]string{"ubuntu-24.04": "docker.io/library/ubuntu:24.04"}
 type Runtime struct {
 	Host   hostexec.Runner
 	Engine string // docker | podman
-	// Self is kevasod's own binary: the pause container's process, and kvo-guest in every silo.
+	// Self is kevasod's own binary: what the pause image and Kevaso's own images are built from.
 	Self string
 	// CABundle is the host's trusted CAs plus its egress CA, mounted into every silo.
 	CABundle []byte
@@ -77,6 +79,13 @@ func NamesFor(id kri.ID) Names {
 
 // VolumeName is a silo volume's name in the engine.
 func VolumeName(id kri.ID, vol string) string { return "kv-" + NamesFor(id).Short + "-" + vol }
+
+// KevasoImages are Kevaso's own images, by name: built on the host from kevasod itself (its only
+// file, /usr/local/bin/kvo-guest, with this entrypoint), never pulled. Their tag is the binary's
+// hash, so a new kevasod makes a new image.
+var KevasoImages = map[string][]string{
+	"kevaso-ingress": {"/usr/local/bin/kvo-guest", "ingress"}, // the ingress controller (design §7.3)
+}
 
 // ImageRef is the reference an image name pulls.
 func ImageRef(image string) string {
@@ -172,18 +181,41 @@ func (r *Runtime) inspect(ctx context.Context, name string) (string, int, error)
 
 // pauseImage builds (once per kevasod build) an image whose only file is kevasod, run as kevaso-pause.
 func (r *Runtime) pauseImage(ctx context.Context) (string, error) {
+	return r.selfImage(ctx, "kevaso-pause", "kevaso-pause", []string{"/kevaso-pause"})
+}
+
+// ref is what the engine runs for an image name: one of Kevaso's own (built here), or what it pulls.
+func (r *Runtime) ref(ctx context.Context, image string) (string, bool, error) {
+	if ep, ok := KevasoImages[image]; ok {
+		tag, err := r.selfImage(ctx, image, "usr/local/bin/kvo-guest", ep)
+		return tag, true, err
+	}
+	return ImageRef(image), false, nil
+}
+
+// selfImage builds (once per kevasod build) an image named name whose only file is kevasod at
+// path, with entrypoint.
+func (r *Runtime) selfImage(ctx context.Context, name, path string, entrypoint []string) (string, error) {
 	bin, err := os.ReadFile(r.Self)
 	if err != nil {
-		return "", fmt.Errorf("pause image: %w", err)
+		return "", fmt.Errorf("%s image: %w", name, err)
 	}
 	sum := sha256.Sum256(bin)
-	tag := "localhost/kevaso-pause:" + hex.EncodeToString(sum[:6])
+	tag := "localhost/" + name + ":" + hex.EncodeToString(sum[:6])
 	if _, err := r.eng(ctx, nil, "image", "inspect", tag); err == nil {
 		return tag, nil
 	}
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	if err := tw.WriteHeader(&tar.Header{Name: "kevaso-pause", Mode: 0o755, Size: int64(len(bin)), ModTime: time.Unix(0, 0)}); err != nil {
+	if strings.Contains(path, "/") {
+		dirs := strings.Split(path, "/")
+		for i := 1; i < len(dirs); i++ {
+			if err := tw.WriteHeader(&tar.Header{Name: strings.Join(dirs[:i], "/") + "/", Typeflag: tar.TypeDir, Mode: 0o755, ModTime: time.Unix(0, 0)}); err != nil {
+				return "", err
+			}
+		}
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: path, Mode: 0o755, Size: int64(len(bin)), ModTime: time.Unix(0, 0)}); err != nil {
 		return "", err
 	}
 	if _, err := tw.Write(bin); err != nil {
@@ -192,7 +224,8 @@ func (r *Runtime) pauseImage(ctx context.Context) (string, error) {
 	if err := tw.Close(); err != nil {
 		return "", err
 	}
-	if _, err := r.eng(ctx, &buf, "import", "--change", `ENTRYPOINT ["/kevaso-pause"]`, "-", tag); err != nil {
+	ep, _ := json.Marshal(entrypoint)
+	if _, err := r.eng(ctx, &buf, "import", "--change", "ENTRYPOINT "+string(ep), "-", tag); err != nil {
 		return "", err
 	}
 	return tag, nil
@@ -289,8 +322,12 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	if _, err := r.cmd(ctx, nil, "install", "-d", "-m", "0700", n.Dir+"/broker"); err != nil {
 		return err
 	}
-	if _, err := r.eng(ctx, nil, "pull", "--quiet", ImageRef(s.Image)); err != nil {
+	if ref, own, err := r.ref(ctx, s.Image); err != nil {
 		return err
+	} else if !own {
+		if _, err := r.eng(ctx, nil, "pull", "--quiet", ref); err != nil {
+			return err
+		}
 	}
 	for _, v := range s.Volumes {
 		if v.HostPath != "" {
@@ -308,7 +345,7 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 }
 
 // runArgs are a silo container's settings: the pause container's network, the volumes, the
-// broker, kvo-guest and the CA bundle, limits, no new privileges.
+// broker socket and the CA bundle, limits, no new privileges.
 func (r *Runtime) runArgs(s state, name string) []string {
 	n := NamesFor(s.ID)
 	args := []string{"--name", name, "--network", "container:" + n.Pause,
@@ -319,9 +356,6 @@ func (r *Runtime) runArgs(s state, name string) []string {
 		"-e", "KVO_GUEST_BROKER=unix:/run/kevaso/broker.sock"}
 	if r.engine() == "podman" { // docker shares the hostname with the network; podman needs asking
 		args = append(args, "--uts", "container:"+n.Pause)
-	}
-	if r.Self != "" {
-		args = append(args, "-v", r.Self+":/usr/local/bin/kvo-guest:ro")
 	}
 	if len(r.CABundle) > 0 {
 		const ca = "/etc/ssl/certs/kevaso-ca-bundle.crt"
@@ -365,8 +399,12 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 	case "running":
 		return nil
 	case "":
+		ref, _, rerr := r.ref(ctx, s.Image)
+		if rerr != nil {
+			return rerr
+		}
 		args := append([]string{"run", "-d"}, r.runArgs(s, n.Main)...)
-		args = append(args, ImageRef(s.Image))
+		args = append(args, ref)
 		args = append(args, MainCommand(s.Image, s.Command)...)
 		_, err = r.eng(ctx, nil, args...)
 	default:
@@ -391,8 +429,12 @@ func (r *Runtime) RunInit(ctx context.Context, id kri.ID, step kri.InitStep, out
 	if shell == "" {
 		shell = "sh"
 	}
+	ref, _, err := r.ref(ctx, s.Image)
+	if err != nil {
+		return -1, err
+	}
 	args := append([]string{"run", "--rm"}, r.runArgs(s, n.Init)...)
-	args = append(args, "--entrypoint", shell, ImageRef(s.Image), "-c", step.Run)
+	args = append(args, "--entrypoint", shell, ref, "-c", step.Run)
 	return r.Host.Run(ctx, hostexec.Cmd{Name: r.engine(), Args: args, Stdout: out, Stderr: out})
 }
 

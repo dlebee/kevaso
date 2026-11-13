@@ -147,6 +147,8 @@ func runControlPlane(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.DataDir, "data", "/var/lib/kevaso", "data directory (store, CA)")
 	fs.StringVar(&cfg.AdminSocket, "admin-socket", defaultAdminSocket, "admin unix socket")
 	fs.StringVar(&cfg.ClusterName, "cluster", "kevaso", "cluster name")
+	fs.StringVar(&cfg.DefaultIssuers.Public, "default-issuer-public", "letsencrypt", "the Issuer of Ingresses on public classes that name none")
+	fs.StringVar(&cfg.DefaultIssuers.Private, "default-issuer-private", "internal-ca", "the Issuer of Ingresses on private classes that name none")
 	fs.Var(&extra, "extra-name", "more names or IPs for the API certificate (repeatable)")
 	fs.BoolVar(&cfg.Mesh, "mesh", true, "put this host on the WireGuard mesh")
 	var runtimes, labels multi

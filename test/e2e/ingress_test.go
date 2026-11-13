@@ -238,8 +238,7 @@ kind: Silo
 metadata: { name: ingress-public, namespace: kevaso-system }
 spec:
   runtime: docker
-  image: ubuntu-24.04
-  command: [kvo-guest, ingress]
+  image: kevaso-ingress              # Kevaso's own image, built on the host: kvo-guest ingress
   service:
     ports: [{ name: http, port: 80 }, { name: https, port: 443 }]
     expose: hostPort
@@ -250,7 +249,6 @@ metadata: { name: public }
 spec:
   controller: { silo: ingress-public, namespace: kevaso-system }
   public: true
-  issuer: pebble
 ` + app("api", "payments", "8080", "hello from the api") + app("web", "shop", "3000", "hello from the shop") + `---
 apiVersion: kevaso/v1
 kind: Ingress
@@ -258,6 +256,7 @@ metadata: { name: api, namespace: payments }
 spec:
   ingressClass: public
   hosts: [` + apiHost + `]
+  tls: { issuer: pebble }
   rules: [{ path: /, silo: { name: api, port: http } }]
 ---
 apiVersion: kevaso/v1
@@ -266,7 +265,7 @@ metadata: { name: shop, namespace: shop }
 spec:
   ingressClass: public
   hosts: [` + shopHost + `]
-  tls: { mode: acme }
+  tls: { issuer: pebble }
   rules: [{ path: /, silo: { name: web, port: http } }]
 ---
 apiVersion: kevaso/v1
@@ -275,6 +274,7 @@ metadata: { name: docs, namespace: shop }
 spec:
   ingressClass: public
   hosts: [` + docsHost + `]
+  tls: { issuer: pebble }
   rules: [{ path: /, silo: { name: web, port: http } }]
 ---
 apiVersion: kevaso/v1

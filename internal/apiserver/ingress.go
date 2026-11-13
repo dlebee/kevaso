@@ -27,13 +27,17 @@ func (s *Server) checkPublishPublic(ctx context.Context, t target, obj meta.Obje
 	if err != nil {
 		return errf(http.StatusUnprocessableEntity, "Invalid", "Ingress %s: ingress class %q doesn't exist", ing.Name, ing.Spec.IngressClass)
 	}
-	user, isPerson := person(ctx)
-	if !isPerson || s.auth == nil {
-		return nil
-	}
 	c, _, err := v1.Decode(o.Data)
-	if err != nil || !c.(*v1.IngressClass).Spec.Public {
+	if err != nil {
 		return err
+	}
+	public := c.(*v1.IngressClass).Spec.Public
+	if public && ing.Spec.TLS.None {
+		return errf(http.StatusUnprocessableEntity, "Invalid", "Ingress %s: tls.none (plain HTTP) is for private classes; %s is public", ing.Name, ing.Spec.IngressClass)
+	}
+	user, isPerson := person(ctx)
+	if !isPerson || s.auth == nil || !public {
+		return nil
 	}
 	if old, err := s.store.Get(ctx, t.key()); err == nil { // already on this class: nothing new
 		if prev, _, err := v1.Decode(old.Data); err == nil && prev.(*v1.Ingress).Spec.IngressClass == ing.Spec.IngressClass {
@@ -82,11 +86,10 @@ func (s *Server) ingressConfig(ctx context.Context, silo *v1.Silo) (*client.Ingr
 			continue
 		}
 		ing := obj.(*v1.Ingress)
-		class, ok := mine[ing.Spec.IngressClass]
-		if !ok || ing.DeletionTimestamp != nil {
+		if _, ok := mine[ing.Spec.IngressClass]; !ok || ing.DeletionTimestamp != nil {
 			continue
 		}
-		tls := certificate.TLSMode(ing, class) != v1.TLSNone
+		tls := !ing.Spec.TLS.None
 		for _, r := range ing.Spec.Rules {
 			backend, ok := s.backend(ctx, ing.Namespace, r.Silo)
 			if !ok {
@@ -103,7 +106,7 @@ func (s *Server) ingressConfig(ctx context.Context, silo *v1.Silo) (*client.Ingr
 		if !tls || s.vault == nil {
 			continue
 		}
-		cert := s.secretNamed(ctx, ing.Namespace, v1.CertificateFor(ing))
+		cert := s.secretNamed(ctx, ing.Namespace, v1.TLSSecret(ing))
 		if cert == nil {
 			continue
 		}

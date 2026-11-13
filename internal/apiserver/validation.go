@@ -154,8 +154,8 @@ var builtinRules = map[string][]Rule{
 		{`has(self.spec.rules) && self.spec.rules.size() > 0 && self.spec.rules.all(r, r.silo.name != '' && r.silo.port != '')`,
 			"every rule needs a silo name and a port name"},
 		{`self.spec.rules.all(r, !has(r.path) || r.path.startsWith('/'))`, "paths start with /"},
-		{`!has(self.spec.tls) || !has(self.spec.tls.mode) || self.spec.tls.mode in ['acme', 'internal-ca', 'none']`,
-			"tls.mode must be acme, internal-ca or none"},
+		{`!has(self.spec.tls) || (has(self.spec.tls.issuer) ? 1 : 0) + (has(self.spec.tls.secretName) ? 1 : 0) + (has(self.spec.tls.none) && self.spec.tls.none ? 1 : 0) <= 1`,
+			"tls: at most one of issuer, secretName or none (none of them: the cluster's default issuer for the class)"},
 	},
 	"Issuer": {
 		{`(has(self.spec.acme) ? 1 : 0) + (has(self.spec.internalCA) && self.spec.internalCA ? 1 : 0) + (has(self.spec.controller) && self.spec.controller != '' ? 1 : 0) == 1`,

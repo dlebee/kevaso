@@ -167,7 +167,7 @@ func TestProviderPlugin(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := admin.Create(ctx, &v1.Ingress{TypeMeta: tm("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "shop", Namespace: "payments"},
-		Spec: v1.IngressSpec{IngressClass: "web", Hosts: []string{"shop.example.com"}, TLS: v1.IngressTLS{Mode: v1.TLSInternalCA},
+		Spec: v1.IngressSpec{IngressClass: "web", Hosts: []string{"shop.example.com"}, TLS: v1.IngressTLS{Issuer: "internal-ca"},
 			Rules: []v1.IngressRule{{Path: "/", Silo: v1.IngressTarget{Name: "db", Port: "pg"}}}}}); err != nil {
 		t.Fatal(err)
 	}

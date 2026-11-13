@@ -332,7 +332,7 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		if err := a.broker.Ensure(ctx, br, id); err != nil {
 			return engine.Result{}, fmt.Errorf("broker channel: %w", err)
 		}
-		if rt.Info().Capabilities.Isolation == "vm" { // containers get kvo-guest and the CA mounted in
+		if rt.Info().Capabilities.Isolation == "vm" { // containers get only the broker socket and the CA bundle
 			if err := a.prepareGuest(ctx, rt, s); err != nil {
 				return engine.Result{}, err
 			}

@@ -199,11 +199,14 @@ func TestLifecycle(t *testing.T) {
 	}
 	main := f.last("docker run -d --name " + n.Main)
 	for _, want := range []string{"--network container:" + n.Pause, "--security-opt no-new-privileges", "-v " + n.Dir + "/broker:/run/kevaso",
-		"-v " + r.Self + ":/usr/local/bin/kvo-guest:ro", "SSL_CERT_FILE=/etc/ssl/certs/kevaso-ca-bundle.crt", "--cpus 2", "--memory 536870912",
+		"SSL_CERT_FILE=/etc/ssl/certs/kevaso-ca-bundle.crt", "--cpus 2", "--memory 536870912",
 		"-v " + n.Dir + "/resolv.conf:/etc/resolv.conf:ro", "docker.io/library/ubuntu:24.04 sleep infinity"} {
 		if !strings.Contains(main, want) {
 			t.Errorf("main container %q missing %q", main, want)
 		}
+	}
+	if strings.Contains(main, "kvo-guest") || strings.Contains(main, r.Self) {
+		t.Errorf("something of Kevaso's in a user's container: %s", main)
 	}
 	if strings.Contains(main, "--hostname") || strings.Contains(main, "--uts") {
 		t.Error("--hostname or --uts with a container network: Docker refuses both")
@@ -253,5 +256,32 @@ func TestMainCommandAndImages(t *testing.T) {
 	}
 	if NamesFor(silo).Veth != cloudhypervisor.NamesFor(silo).Tap {
 		t.Error("the veth must be named like a VM's tap: the firewall's anti-spoofing rules use it")
+	}
+}
+
+// Kevaso's own silos run from images of their own, built from kevasod on the host: never pulled,
+// nothing mounted into them beyond what any silo gets.
+func TestKevasoImages(t *testing.T) {
+	ctx := context.Background()
+	f := newFake()
+	r := runtime(t, f)
+	id := kri.ID{Namespace: "kevaso-system", Name: "ingress", UID: "u9"}
+	if err := r.Create(ctx, kri.Spec{ID: id, Image: "kevaso-ingress"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(f.cmds, "\n")
+	if strings.Contains(all, "pull") && strings.Contains(all, "kevaso-ingress") {
+		t.Fatalf("pulled Kevaso's own image:\n%s", all)
+	}
+	imp := f.last("docker import --change ENTRYPOINT [\"/usr/local/bin/kvo-guest\",\"ingress\"]")
+	if !strings.Contains(imp, "localhost/kevaso-ingress:") {
+		t.Fatalf("ingress image not built: %s", imp)
+	}
+	main := f.last("docker run -d --name " + NamesFor(id).Main)
+	if !strings.HasSuffix(main, strings.Fields(imp)[len(strings.Fields(imp))-1]) || strings.Contains(main, "kvo-guest:ro") {
+		t.Fatalf("main container: %s", main)
 	}
 }

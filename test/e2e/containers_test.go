@@ -205,6 +205,7 @@ spec:
 	}
 
 	hgetBin, _ := os.ReadFile(hget)
+	guestBin, _ := os.ReadFile(bin)
 	in := func(silo, script string) string {
 		var o bytes.Buffer
 		kvo.Run(ctx, []string{"exec", "silo", silo, "-n", "shop", "--", "sh", "-c", script}, nil, &o, &o)
@@ -225,13 +226,23 @@ spec:
 			if code := kvo.Run(ctx, []string{"exec", "silo", s, "-n", "shop", "--", "sh", "-c", "cat > /data/hget && chmod +x /data/hget"}, bytes.NewReader(hgetBin), &o, &e); code != 0 {
 				t.Fatalf("upload: %d %s", code, e.String())
 			}
+			// Nothing of Kevaso's is in a user's container: it brings its own broker client (here,
+			// kvo-guest itself, copied in like any program).
+			if got := in(s, "command -v kvo-guest || echo none"); got != "none" {
+				t.Errorf("kvo-guest is in a user's container: %q", got)
+			}
+			o.Reset()
+			e.Reset()
+			if code := kvo.Run(ctx, []string{"exec", "silo", s, "-n", "shop", "--", "sh", "-c", "cat > /data/kvo-guest && chmod +x /data/kvo-guest"}, bytes.NewReader(guestBin), &o, &e); code != 0 {
+				t.Fatalf("upload kvo-guest: %d %s", code, e.String())
+			}
 			expect("the egress gate injects the key", in(s, "/data/hget https://"+apiHost+"/v1"), `"auth": "`+authHash("Bearer "+apiKey)+`"`)
 			if got := in(s, "/data/hget https://"+otherHost+"/"); strings.Contains(got, `"host"`) {
 				t.Errorf("a host no grant names answered: %q", got)
 			}
 			expect("default deny (plain HTTP out)", in(s, "/data/hget http://"+clientIP+":80/ 2>&1 | head -c 200"), "error")
-			expect("broker over the container's own socket", in(s, "kvo-guest secret get db-password"), dbPassword)
-			if got := in(s, "kvo-guest secret get api-key"); !strings.Contains(got, "no secret") {
+			expect("broker over the container's own socket", in(s, "/data/kvo-guest secret get db-password"), dbPassword)
+			if got := in(s, "/data/kvo-guest secret get api-key"); !strings.Contains(got, "no secret") {
 				t.Errorf("an inject-only key reached the container: %q", got)
 			}
 			if n := in(s, fmt.Sprintf("grep -rl -F -e '%s' / --exclude-dir=proc --exclude-dir=sys 2>/dev/null | wc -l", apiKey)); n != "0" {
