@@ -323,3 +323,30 @@ func (s *SQLite) Snapshot(ctx context.Context, path string) error {
 	_, err := s.db.ExecContext(ctx, "VACUUM INTO ?", path)
 	return err
 }
+
+// all returns every object of every kind in key order (kind, namespace, name), and the revision.
+func (s *SQLite) all(ctx context.Context) ([]Object, int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.check(ctx); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT kind, ns, name, rev, data FROM objects ORDER BY kind, ns, name`)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Object
+	for rows.Next() {
+		var o Object
+		if err := rows.Scan(&o.Kind, &o.Namespace, &o.Name, &o.Revision, &o.Data); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	rev, err := s.meta(ctx, s.db, "revision")
+	return out, rev, err
+}
