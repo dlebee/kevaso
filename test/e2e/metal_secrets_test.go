@@ -7,6 +7,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,6 +18,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/sdk/kri"
+	"kevaso.com/core/testbed"
 )
 
 // metalShell is a container image with curl and a shell that runs as root.
@@ -188,12 +192,47 @@ spec:
 		if code != 0 {
 			t.Fatalf("file and env deliveries into a docker silo: %s", strings.TrimSpace(out))
 		}
-		c.expect("admission warns about env in a container", out, "Warning:")
+		// Docker here takes Kevaso's OCI runtime (envOutsideEngine): nothing to warn about.
+		if strings.Contains(out, "Warning:") {
+			t.Errorf("admission warned although the host's docker keeps env secrets out of the engine: %s", out)
+		}
 		c.waitRunning(ns, 10*time.Minute, "boxdel")
 		in := func(script string) string { o, _ := c.in(ns, "boxdel", script); return o }
 		c.expect("a file the host wrote, in tmpfs", in("cat /run/secrets/tls.pem; echo; stat -c '%a %U' /run/secrets/tls.pem; grep -E ' /run(/secrets)? ' /proc/mounts | awk '{print $3}'"),
 			tlsValue+"\n400 root\ntmpfs")
-		c.expect("an env delivery, in the container's environment", in(`printf '%s' "$APP_TOKEN"`), envToken)
+		// Env through kevaso-oci: in the main process's environment, never in the engine's records.
+		c.expect("an env delivery, in the container's main process", in(`tr '\0' '\n' < /proc/1/environ | sed -n 's/^APP_TOKEN=//p'`), envToken)
+		if got := in(`printf '%s' "${APP_TOKEN:-unset}"`); got != "unset" {
+			t.Errorf("kvo exec sees the env secret (the engine built the exec's environment from its config): %q", got)
+		}
+		uid := c.silo(ns, "boxdel").UID
+		main := strings.TrimSpace(c.mustSh("docker ps -q --no-trunc --filter label=kevaso.com/uid=" + uid + " --filter label=kevaso.com/name=boxdel"))
+		if main == "" {
+			t.Fatal("no main container for boxdel")
+		}
+		h := len(envToken) / 2
+		needle := `k='` + envToken[:h] + `''` + envToken[h:] + `'`
+		if out := c.mustSh(needle + `; docker inspect ` + main + ` | grep -c -F -e "$k"; grep -rl -F -e "$k" /var/lib/docker/containers/` + main + ` 2>/dev/null | head -3; true`); strings.TrimSpace(out) != "0" {
+			t.Errorf("the env secret is in docker inspect or under /var/lib/docker/containers: %q", out)
+		} else {
+			t.Log("the env secret is in neither docker inspect nor /var/lib/docker/containers/ID")
+		}
+		c.expect("boxdel starts through kevaso-oci", c.mustSh("docker inspect -f '{{.HostConfig.Runtime}}' "+main), "kevaso-oci")
+		plainUID := c.silo(ns, "box").UID
+		c.expect("a silo without env deliveries keeps the default runtime",
+			c.mustSh("docker ps -q --filter label=kevaso.com/uid="+plainUID+" --filter label=kevaso.com/name=box | xargs -r docker inspect -f '{{.HostConfig.Runtime}}'"), "runc")
+		c.expect("an ordinary container on the host starts with the default runtime",
+			c.mustSh("docker run --rm --network none docker.io/library/busybox:1.36 sh -c 'echo plain' 2>&1"), "plain")
+		for _, cd := range c.silo(ns, "boxdel").Status.Conditions {
+			if cd.Type == "SecretsDelivered" {
+				c.expect("SecretsDelivered says which way env went", cd.Message, "Kevaso's OCI runtime")
+			}
+		}
+		if n, _ := strconv.Atoi(strings.TrimSpace(c.mustSh(`since=$(grep -h ' install docker.io' /var/log/dpkg.log | tail -1 | cut -d' ' -f1,2); journalctl -u docker.service --no-pager --since "$since" | grep -c 'Started docker.service' || true`))); n < 1 || n > 2 {
+			t.Errorf("docker.service started %d times since it was installed (the package's start, and one restart for its configuration)", n)
+		} else {
+			t.Logf("docker.service started %d times since it was installed", n)
+		}
 		c.expect("the file's folder is read-only", in("touch /run/secrets/x 2>&1; echo rc=$?"), "rc=1")
 		// Rotation: a file is rewritten in place, no restart.
 		rotated := "-----TLS " + randomValue(t, "") + "-----"
@@ -203,12 +242,31 @@ spec:
 			return got == rotated, got
 		})
 		// Nothing left in the host's tmpfs once the silo is gone.
-		uid := c.silo(ns, "boxdel").UID
 		c.must("", "delete", "silo", "boxdel", "-n", ns)
 		c.eventually("deleted: the host's tmpfs for it is gone", 3*time.Minute, func() (bool, string) {
 			out, _ := c.sh("grep -c ' /run/kevaso-secrets/' /proc/mounts; docker ps -aq --filter label=kevaso.com/uid=" + uid)
 			return strings.TrimSpace(out) == "0", out
 		})
+	})
+
+	// The container runtime's own opt-in tests against the real engine (KEVASO_DOCKER_TEST=1):
+	// built here for the machine, run there as root.
+	t.Run("engine-tests", func(t *testing.T) {
+		c := &mt{metalSuite: c.metalSuite, t: t, ctx: c.ctx}
+		bin := filepath.Join(t.TempDir(), "container.test")
+		build := exec.CommandContext(c.ctx, "go", "test", "-c", "-o", bin, "kevaso.com/core/builtin/kri/container")
+		build.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+c.arch, "CGO_ENABLED=0")
+		if b, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("build: %v\n%s", err, b)
+		}
+		if err := c.d.CopyTo(c.ctx, testbed.Machine{}, bin, "/tmp/kvt-container.test"); err != nil {
+			t.Fatal(err)
+		}
+		out, err := c.sh("cd /tmp && KEVASO_DOCKER_TEST=1 /tmp/kvt-container.test -test.run 'OnARealEngine|OnRealDocker' -test.v 2>&1; rc=$?; rm -f /tmp/kvt-container.test; exit $rc")
+		t.Logf("the container runtime's real-engine tests on the machine:\n%s", out)
+		if err != nil || strings.Contains(out, "--- SKIP") || !strings.Contains(out, "--- PASS") {
+			t.Errorf("real-engine tests: %v (a skip counts as a failure here: the machine has the engine)", err)
+		}
 	})
 
 	// The key never reached the microVM's disk either (read from the host).

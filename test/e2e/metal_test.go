@@ -465,7 +465,9 @@ func (c *mt) namespace(ns string, extra ...string) {
 	c.t.Helper()
 	c.apply("apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: " + ns + " }\n")
 	c.t.Cleanup(func() {
-		if os.Getenv("KEVASO_E2E_KEEP") != "" {
+		// KEVASO_E2E_KEEP keeps the cluster; a whole run that kept every test's silos too would
+		// run the machine out of CPU, so namespaces have their own switch.
+		if os.Getenv("KEVASO_METAL_KEEP_NAMESPACES") != "" {
 			c.t.Logf("KEEPING namespace %s", ns)
 			return
 		}

@@ -153,8 +153,10 @@ go test -tags metal -run '^TestMetal' -v -count=1 -timeout 5h ./test/e2e/ 2>&1 |
 Don't add `-parallel` or `t.Parallel`: the tests share the machine's ports and its one kevasod,
 and TestMetalFence stops kevasod.
 
-To keep the cluster and the namespaces after a run (for looking around with the kvo context the
-run wrote under its temporary HOME, printed in the log), set `KEVASO_E2E_KEEP=1`. Reset the
+To keep the cluster after a run (for looking around with the kvo context the run wrote under
+its temporary HOME, printed in the log), set `KEVASO_E2E_KEEP=1`. Each test still removes its
+namespace; `KEVASO_METAL_KEEP_NAMESPACES=1` keeps those too. Only use that with one test: a whole
+run that keeps every test's silos runs the machine out of CPU. Reset the
 machine afterwards:
 
 ```bash
