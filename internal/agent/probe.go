@@ -51,6 +51,7 @@ const probeName = ".kevaso-probe"
 type probe struct {
 	started time.Time
 	done    chan struct{}
+	err     error // set before done is closed
 }
 
 // defaultProbe looks up a name in dir: an answer, even "no such file", means it's answering.
@@ -76,27 +77,37 @@ func (a *Agent) mountVolumeDirs(s *v1.Silo) map[string]string {
 	return dirs
 }
 
-// probeVolumes looks at each of the silo's mount-reach volumes: stuck are the ones whose folder has
-// not answered for the probe timeout (with how long), and pending says a probe is still going.
-func (a *Agent) probeVolumes(dirs map[string]string) (stuck map[string]time.Duration, pending bool) {
+// trouble is what a volume's probe found wrong: it hasn't answered (hung), or it answered with an
+// error other than "no such file" (a JuiceFS client gives up after its retries and fails calls).
+type trouble struct {
+	hung bool
+	err  string
+}
+
+// probeVolumes looks at each of the silo's mount-reach volumes: bad are the ones whose folder has
+// not answered for the probe timeout, or answered with an error; pending says a probe is still going.
+func (a *Agent) probeVolumes(dirs map[string]string) (bad map[string]trouble, pending bool) {
 	look := a.Probe
 	if look == nil {
 		look = defaultProbe
 	}
-	stuck = map[string]time.Duration{}
+	bad = map[string]trouble{}
 	for name, dir := range dirs {
 		p := &probe{started: a.Clock.Now(), done: make(chan struct{})}
 		if o, loaded := a.probes.LoadOrStore(dir, p); loaded {
 			old := o.(*probe)
 			select {
-			case <-old.done: // the last one answered: look again
+			case <-old.done: // the last one answered: what it said holds until this one answers
+				if old.err != nil {
+					bad[name] = trouble{err: old.err.Error()}
+				}
 				a.probes.CompareAndDelete(dir, old)
 				if _, loaded := a.probes.LoadOrStore(dir, p); loaded {
 					continue // another pass started one just now
 				}
 			default:
 				if d := a.Clock.Now().Sub(old.started); d >= a.probeTimeout() {
-					stuck[name] = d
+					bad[name] = trouble{hung: true}
 				} else {
 					pending = true
 				}
@@ -104,24 +115,28 @@ func (a *Agent) probeVolumes(dirs map[string]string) (stuck map[string]time.Dura
 			}
 		}
 		go func() {
-			_ = look(dir) // an error is an answer too: only silence is "not answering"
+			p.err = look(dir)
 			close(p.done)
 		}()
 		select {
 		case <-p.done:
+			delete(bad, name)
+			if p.err != nil {
+				bad[name] = trouble{err: p.err.Error()}
+			}
 		case <-time.After(min(probeWait, a.probeTimeout())):
 			pending = true
 		}
 	}
-	return stuck, pending
+	return bad, pending
 }
 
 // volumesResponding sets the VolumesResponding condition on a running silo with mount-reach volumes.
-func (a *Agent) volumesResponding(s *v1.Silo, st *v1.SiloStatus, stuck map[string]time.Duration, dirs map[string]string) {
+func (a *Agent) volumesResponding(s *v1.Silo, st *v1.SiloStatus, bad map[string]trouble, dirs map[string]string) {
 	if len(dirs) == 0 {
 		return
 	}
-	if len(stuck) == 0 {
+	if len(bad) == 0 {
 		if c := meta.FindCondition(st.Conditions, "VolumesResponding"); c == nil || c.Status != meta.ConditionTrue {
 			setCond(st, "VolumesResponding", meta.ConditionTrue, "Answering", "its volumes answer", s.Generation, a.now())
 		}
@@ -132,12 +147,20 @@ func (a *Agent) volumesResponding(s *v1.Silo, st *v1.SiloStatus, stuck map[strin
 		classes[v.Name] = v.Class
 	}
 	var names []string
-	for n := range stuck {
-		names = append(names, n+" ("+classes[n]+")")
+	reason := "Failing"
+	for n, tr := range bad {
+		what := n + " (" + classes[n] + ")"
+		if tr.hung {
+			reason = "NotAnswering"
+			what += " hasn't answered in " + a.probeTimeout().String()
+		} else {
+			what += " fails: " + tr.err
+		}
+		names = append(names, what)
 	}
 	sort.Strings(names)
-	setCond(st, "VolumesResponding", meta.ConditionFalse, "NotAnswering",
-		"volume "+strings.Join(names, ", ")+" hasn't answered in "+a.probeTimeout().String()+
-			": the storage behind it may be down (for juicefs, its metadata database); I/O in the silo waits, and goes on when it's back",
+	setCond(st, "VolumesResponding", meta.ConditionFalse, reason,
+		"volume "+strings.Join(names, "; volume ")+
+			". The storage behind it may be down (for juicefs, its metadata database): I/O in the silo waits for it, and fails once its client gives up",
 		s.Generation, a.now())
 }

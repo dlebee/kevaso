@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -103,8 +104,9 @@ func kplugintestVolume() kplugin.Volume {
 }
 
 // A mount-reach volume that stops answering (a JuiceFS mount whose metadata database is down:
-// calls into it wait, nothing fails) is said on the silo, VolumesResponding=False, while the silo
-// stays Running; and back to True once it answers again.
+// calls into it wait), or answers with errors (its client gave up after its retries, ~40s on
+// Linodes), is said on the silo, VolumesResponding=False, while the silo stays Running; and back
+// to True once it answers again.
 func TestVolumeNotAnsweringIsSaid(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
@@ -115,18 +117,27 @@ func TestVolumeNotAnsweringIsSaid(t *testing.T) {
 	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
 	share := kplugintest.New()
 	var mu sync.Mutex
-	down := make(chan struct{}) // closed: the backend is back
-	hanging := false
+	mode := "ok"                // ok | hang | fail
+	back := make(chan struct{}) // closed: hanging calls return
 	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": fake.New()}, Clock: clock.Real{},
 		Nodes: &plugins.Registry{}, ProbeTimeout: 300 * time.Millisecond, ProbeEvery: 100 * time.Millisecond, Probe: func(string) error {
 			mu.Lock()
-			h := hanging
+			m := mode
 			mu.Unlock()
-			if h {
-				<-down
+			switch m {
+			case "hang":
+				<-back
+				return errors.New("lstat: input/output error")
+			case "fail":
+				return errors.New("lstat /var/lib/kevaso/volumes/u/home/.kevaso-probe: input/output error")
 			}
 			return nil
 		}}
+	set := func(m string) {
+		mu.Lock()
+		mode = m
+		mu.Unlock()
+	}
 	if err := a.Nodes.Add(ctx, share.Node("hv1")); err != nil {
 		t.Fatal(err)
 	}
@@ -157,16 +168,17 @@ func TestVolumeNotAnsweringIsSaid(t *testing.T) {
 	wait("running, its volume answering", func(x *v1.Silo, c *meta.Condition) bool {
 		return x.Status.Phase == agent.PhaseRunning && c != nil && c.Status == meta.ConditionTrue
 	})
-	mu.Lock()
-	hanging = true
-	mu.Unlock()
+	set("hang")
 	wait("said not answering, still Running", func(x *v1.Silo, c *meta.Condition) bool {
 		return c != nil && c.Status == meta.ConditionFalse && c.Reason == "NotAnswering" &&
-			strings.Contains(c.Message, "home ("+kplugintest.ClassShare+")") && x.Status.Phase == agent.PhaseRunning
+			strings.Contains(c.Message, "home ("+kplugintest.ClassShare+") hasn't answered") && x.Status.Phase == agent.PhaseRunning
 	})
-	mu.Lock()
-	hanging = false
-	mu.Unlock()
-	close(down)
+	set("fail")
+	close(back) // the hung call returns an error, and so does every later one
+	wait("said failing, still Running", func(x *v1.Silo, c *meta.Condition) bool {
+		return c != nil && c.Status == meta.ConditionFalse && c.Reason == "Failing" &&
+			strings.Contains(c.Message, "input/output error") && x.Status.Phase == agent.PhaseRunning
+	})
+	set("ok")
 	wait("answering again", func(x *v1.Silo, c *meta.Condition) bool { return c != nil && c.Status == meta.ConditionTrue })
 }

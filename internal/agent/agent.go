@@ -403,7 +403,7 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	}
 	// Its mount-reach volumes answering, or not (a JuiceFS volume whose database is down hangs).
 	dirs := a.mountVolumeDirs(s)
-	stuck, pending := a.probeVolumes(dirs)
+	bad, pending := a.probeVolumes(dirs)
 	if len(dirs) > 0 {
 		next := a.probeEvery()
 		if pending {
@@ -414,7 +414,7 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		}
 	}
 	if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
-		a.volumesResponding(s, st, stuck, dirs)
+		a.volumesResponding(s, st, bad, dirs)
 		st.Phase, st.Address = PhaseRunning, rs.Address
 		if st.Image == nil || st.Image.Running == "" {
 			st.Image = running(st.Image, s, image) // created before images were recorded
