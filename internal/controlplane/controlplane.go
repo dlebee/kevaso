@@ -206,8 +206,18 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		_ = st.Close()
 		return nil, err
 	}
-	// The master key for secrets: a root-only file next to the store (design §8.4a).
-	localKMS, err := kms.OpenLocal(filepath.Join(cfg.DataDir, "kms", "local.json"))
+	// The master key for secrets: a root-only file next to the store (design §8.4a). A new one
+	// only for a store that holds nothing sealed yet: over sealed secrets it'd open none of them,
+	// and seal the next ones under a key no backup's escrow has.
+	keyFile := filepath.Join(cfg.DataDir, "kms", "local.json")
+	if _, err := os.Stat(keyFile); errors.Is(err, os.ErrNotExist) {
+		if what := sealedData(ctx, st); what != "" {
+			_ = st.Close()
+			return nil, fmt.Errorf("kms: the master key (%s) is missing, but the store holds %s sealed with one: not making a new key. "+
+				"Restore the key file, or run kevasod admin restore again onto an empty data dir", keyFile, what)
+		}
+	}
+	localKMS, err := kms.OpenLocal(keyFile)
 	if err != nil {
 		_ = st.Close()
 		return nil, fmt.Errorf("kms: %w", err)
@@ -573,4 +583,16 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport
 func setHeartbeat(h *v1.Host, now time.Time) {
 	t := now.UTC().Truncate(time.Second)
 	h.Status.LastHeartbeat = &t
+}
+
+// sealedData says what the store holds that a master key sealed ("": nothing): the recovery
+// escrow, or secret values.
+func sealedData(ctx context.Context, st store.Store) string {
+	if _, err := st.Get(ctx, store.Key{Kind: secrets.KindEscrow, Name: "local"}); err == nil {
+		return "the recovery escrow"
+	}
+	if l, _, err := st.List(ctx, store.Selector{Kind: secrets.KindValue}); err == nil && len(l) > 0 {
+		return fmt.Sprintf("%d secret value(s)", len(l))
+	}
+	return ""
 }
