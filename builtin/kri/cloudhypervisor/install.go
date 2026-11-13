@@ -59,7 +59,7 @@ var Images = map[string]map[string]Asset{
 }
 
 // Packages the host needs (Ubuntu/Debian names).
-var Packages = []string{"qemu-utils", "cloud-image-utils", "lvm2", "thin-provisioning-tools", "nftables", "iproute2", "iputils-arping"}
+var Packages = []string{"qemu-utils", "cloud-image-utils", "lvm2", "thin-provisioning-tools", "nftables", "iproute2", "iputils-arping", "virtiofsd"}
 
 // StorageOptions say where silo disks live.
 type StorageOptions struct {
@@ -83,6 +83,12 @@ func (r *Runtime) Install(ctx context.Context, store StorageOptions, progress fu
 				return nil
 			}
 			return r.run(ctx, "useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "--groups", "kvm", VMMUser)
+		}},
+		{"virtiofsd user", func() error { // serves volume folders to VMs (ADR 0006); in no group of its own that matters
+			if _, err := r.Host.Run(ctx, "id", VFSUser); err == nil {
+				return nil
+			}
+			return r.run(ctx, "useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "--user-group", VFSUser)
 		}},
 		{"directories", func() error {
 			if err := r.run(ctx, "install", "-d", "-m", "0755", BinDir, SilosDir); err != nil {

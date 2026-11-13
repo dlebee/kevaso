@@ -136,7 +136,8 @@ func PluginLB(s *Silo) string {
 // VolumeLocal is the built-in storage class (the host's own disk).
 const VolumeLocal = "local"
 
-// PluginVolumes are the silo's volumes on a plugin's storage class.
+// PluginVolumes are the silo's volumes on a plugin's storage class, and its root disk's volume
+// when spec.disk.class is one (DiskVolume).
 func PluginVolumes(s *Silo) []Volume {
 	var out []Volume
 	for _, v := range s.Spec.Volumes {
@@ -144,7 +145,24 @@ func PluginVolumes(s *Silo) []Volume {
 			out = append(out, v)
 		}
 	}
+	if d, ok := DiskVolume(s); ok {
+		out = append(out, d)
+	}
 	return out
+}
+
+// RootDiskVolume names the volume that keeps a VM silo's own disk (an image file) when its
+// spec.disk.class is a plugin's mount class. No volume a person names can be called that.
+const RootDiskVolume = "disk.root"
+
+// DiskVolume is the volume holding a cloud-hypervisor silo's root disk on a plugin's class
+// (spec.disk.class), sized like the disk; ok is false for a local disk.
+func DiskVolume(s *Silo) (Volume, bool) {
+	c := s.Spec.Disk.Class
+	if s.Spec.Runtime != "cloud-hypervisor" || c == "" || c == VolumeLocal {
+		return Volume{}, false
+	}
+	return Volume{Name: RootDiskVolume, Class: c, Size: s.Spec.Disk.Size, Important: true}, true
 }
 
 // IPPool is addresses routed to one host, for silos to have their own (design §7.2b).

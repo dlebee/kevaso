@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -133,12 +134,22 @@ ssh_keys:
 ` + indent(hostPriv) + `
   ed25519_public: ` + strings.TrimSpace(hostPub) + `
 growpart: { mode: auto, devices: ["/"] }
+write_files:
+  # Only this host's exec key, also on a disk that moved here (cloud-init only adds keys).
+  - path: /home/` + GuestUser + `/.ssh/authorized_keys
+    content: "` + strings.TrimSpace(execPub) + `\n"
+    owner: ` + GuestUser + `:` + GuestUser + `
+    permissions: "0600"
+    defer: true
 `
 }
 
-// MetaData is cloud-init's instance identity.
-func MetaData(id kri.ID) string {
-	return "instance-id: " + id.UID + "\nlocal-hostname: " + id.Name + "\n"
+// MetaData is cloud-init's instance identity. Each new seed (a create, a reset, a create on
+// another host for a disk that moved) is a new instance, so cloud-init applies this host's keys,
+// address and host key to a disk that has booted before.
+func MetaData(id kri.ID, hostPub string) string {
+	h := sha256.Sum256([]byte(hostPub))
+	return "instance-id: " + id.UID + "-" + hex.EncodeToString(h[:4]) + "\nlocal-hostname: " + id.Name + "\n"
 }
 
 // NetworkConfig gives the guest its static address on the bridge, and the host's DNS on the
@@ -155,58 +166,72 @@ ethernets:
 `, mac, ip, Network.Bits(), Gateway, Gateway, namespace)
 }
 
-// Unit is the VMM's systemd unit: Cloud Hypervisor as an unprivileged user, with the lockdown
-// research E010 proved (no capabilities, NoNewPrivileges, system-call filter, only /dev/kvm,
-// /dev/net/tun and its own disk, nothing of the control plane reachable).
+// Unit is the VMM's systemd unit for a silo with no volumes and its disk on a thin LV.
 func Unit(n Names, cpus int, memMiB int64, firmware, mac string) string {
-	disk := "/dev/" + VG + "/" + n.LV
-	return `[Unit]
-Description=Kevaso silo ` + n.Short + ` (Cloud Hypervisor)
-After=network-online.target
+	return UnitFor(n, cpus, memMiB, firmware, mac, Layout{})
+}
 
-[Service]
-User=` + VMMUser + `
-Group=` + VMMUser + `
-SupplementaryGroups=kvm
-RuntimeDirectory=` + strings.TrimSuffix(n.Unit, ".service") + `
-RuntimeDirectoryMode=0700
-ExecStartPre=+/bin/chown ` + VMMUser + ` ` + disk + `
-ExecStart=` + BinDir + `/cloud-hypervisor --api-socket ` + n.Socket + ` --firmware ` + firmware + ` \
-  --cpus boot=` + fmt.Sprint(cpus) + ` --memory size=` + fmt.Sprint(memMiB) + `M \
-  --disk path=` + disk + `,image_type=raw --disk path=` + n.Dir + `/seed.img,readonly=on,image_type=raw \
-  --net tap=` + n.Tap + `,mac=` + mac + ` --vsock cid=3,socket=` + n.Vsock + ` \
-  --serial file=` + n.Dir + `/serial.log --console off
-Restart=no
-NoNewPrivileges=yes
-CapabilityBoundingSet=
-AmbientCapabilities=
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
-# Only its own silo directory: another silo's broker socket can't even be seen (connecting to a
-# unix socket works on a read-only mount, so hiding them is what keeps a VMM from posing as another).
-TemporaryFileSystem=` + SilosDir + `
-BindPaths=` + n.Dir + `
-InaccessiblePaths=/var/lib/kevaso /root -` + ImagesDir + `
-DevicePolicy=closed
-DeviceAllow=/dev/kvm rw
-DeviceAllow=/dev/net/tun rw
-DeviceAllow=` + disk + ` rw
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectKernelLogs=yes
-ProtectControlGroups=yes
-ProtectClock=yes
-ProtectHostname=yes
-ProtectProc=invisible
-ProcSubset=pid
-RestrictSUIDSGID=yes
-RestrictRealtime=yes
-LockPersonality=yes
-RestrictNamespaces=yes
-RestrictAddressFamilies=AF_UNIX AF_NETLINK
-UMask=0077
-`
+// UnitFor is the VMM's systemd unit: Cloud Hypervisor as an unprivileged user, with the lockdown
+// research E010 proved (no capabilities, NoNewPrivileges, system-call filter, only /dev/kvm,
+// /dev/net/tun and its own disks, nothing of the control plane reachable). Its volumes (ADR 0006)
+// add their LVs (and nothing else of the host's devices) and their virtiofsd sockets, which sit in
+// its own directory; a root disk on a mount class's folder adds that one folder.
+func UnitFor(n Names, cpus int, memMiB int64, firmware, mac string, l Layout) string {
+	disk := l.RootDisk(n)
+	var b strings.Builder
+	w := func(s string) { b.WriteString(s + "\n") }
+	w("[Unit]")
+	w("Description=Kevaso silo " + n.Short + " (Cloud Hypervisor)")
+	w("After=network-online.target")
+	w("")
+	w("[Service]")
+	w("User=" + VMMUser)
+	w("Group=" + VMMUser)
+	w("SupplementaryGroups=kvm")
+	w("RuntimeDirectory=" + strings.TrimSuffix(n.Unit, ".service"))
+	w("RuntimeDirectoryMode=0700")
+	w("ExecStartPre=+/bin/chown " + VMMUser + " " + disk)
+	for _, d := range l.Disks {
+		w("ExecStartPre=+/bin/chown " + VMMUser + " " + d.Device())
+	}
+	args := []string{"--api-socket", n.Socket, "--firmware", firmware, "--cpus", "boot=" + fmt.Sprint(cpus)}
+	args = append(args, VMMArgs(n, l, memMiB)...)
+	args = append(args, "--net", "tap="+n.Tap+",mac="+mac, "--vsock", "cid=3,socket="+n.Vsock, "--serial", "file="+n.Dir+"/serial.log", "--console", "off")
+	w("ExecStart=" + BinDir + "/cloud-hypervisor " + strings.Join(args, " "))
+	w("Restart=no")
+	w("NoNewPrivileges=yes")
+	w("CapabilityBoundingSet=")
+	w("AmbientCapabilities=")
+	w("ProtectSystem=strict")
+	w("ProtectHome=yes")
+	w("PrivateTmp=yes")
+	w("# Only its own silo directory: another silo's broker socket can't even be seen (connecting to a")
+	w("# unix socket works on a read-only mount, so hiding them is what keeps a VMM from posing as another).")
+	w("TemporaryFileSystem=" + SilosDir)
+	w("BindPaths=" + n.Dir)
+	if l.RootFile != "" {
+		// Of kevasod's folder only the root disk's (a mount class's volume): the rest stays empty.
+		w("TemporaryFileSystem=/var/lib/kevaso:ro")
+		w("BindPaths=" + path.Dir(l.RootFile))
+		w("InaccessiblePaths=/root -" + ImagesDir)
+	} else {
+		w("InaccessiblePaths=/var/lib/kevaso /root -" + ImagesDir)
+	}
+	w("DevicePolicy=closed")
+	w("DeviceAllow=/dev/kvm rw")
+	w("DeviceAllow=/dev/net/tun rw")
+	if l.RootFile == "" {
+		w("DeviceAllow=" + disk + " rw")
+	}
+	for _, d := range l.Disks {
+		w("DeviceAllow=" + d.Device() + " rw")
+	}
+	for _, line := range []string{"ProtectKernelTunables=yes", "ProtectKernelModules=yes", "ProtectKernelLogs=yes", "ProtectControlGroups=yes",
+		"ProtectClock=yes", "ProtectHostname=yes", "ProtectProc=invisible", "ProcSubset=pid", "RestrictSUIDSGID=yes", "RestrictRealtime=yes",
+		"LockPersonality=yes", "RestrictNamespaces=yes", "RestrictAddressFamilies=AF_UNIX AF_NETLINK", "UMask=0077"} {
+		w(line)
+	}
+	return b.String()
 }
 
 // shellQuote quotes argv for the guest's shell (Exec runs `sudo -n -- argv`).
