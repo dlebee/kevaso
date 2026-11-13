@@ -20,6 +20,7 @@ package scheduler
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -64,6 +65,7 @@ type Class struct {
 	OwnHostsOnly bool   // only the plugin's own machines can use it
 	NodePorts    bool   // load balancers: the host gets node ports
 	Topology     string // storage: host (default) | zone | region | global
+	Mount        bool   // storage: the plugin's node side mounts it, so only hosts running that can take it
 }
 
 // Env is the rest of the cluster a decision depends on.
@@ -216,6 +218,9 @@ func classFilter(silo *v1.Silo, h *v1.Host, classes map[string]Class) string {
 		}
 		if c.OwnHostsOnly && (h.Status.Provider == nil || h.Status.Provider.Name != c.Plugin) {
 			return "class " + name + " needs a " + c.Plugin + " machine"
+		}
+		if c.Mount && !slices.Contains(h.Status.MountClasses, name) {
+			return "class " + name + " needs the " + c.Plugin + " plugin's node side on the host"
 		}
 	}
 	for _, v := range silo.Status.Volumes {

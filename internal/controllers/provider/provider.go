@@ -41,7 +41,7 @@ func Classes(r *plugins.Registry) map[string]scheduler.Class {
 			out[c.Name] = scheduler.Class{Plugin: p.Info.Name, OwnHostsOnly: c.OwnHostsOnly, NodePorts: c.NodePorts}
 		}
 		for _, c := range p.Info.Storage {
-			out[c.Name] = scheduler.Class{Plugin: p.Info.Name, OwnHostsOnly: c.OwnHostsOnly, Topology: c.Topology}
+			out[c.Name] = scheduler.Class{Plugin: p.Info.Name, OwnHostsOnly: c.OwnHostsOnly, Topology: c.Topology, Mount: c.Mounted()}
 		}
 	}
 	return out

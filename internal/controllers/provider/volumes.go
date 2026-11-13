@@ -22,6 +22,10 @@ import (
 // host's agent formats each once and mounts it. Removing one (from the spec, or deleting the silo)
 // waits until the host has unmounted it, then detaches it (polled: a detach can take minutes,
 // E032) and deletes it.
+//
+// A mount-reach class (juicefs) attaches nothing: the volume is created once, and status says
+// which host should mount it (attachedTo); that host's agent asks the plugin's node side to mount
+// it. When the silo moves, the old host unmounts it first, then attachedTo moves on.
 type Volumes struct {
 	Client  *client.Client
 	Silos   *informer.Informer
@@ -164,7 +168,7 @@ func find(vs []v1.VolumeStatus, name string) int {
 // ensure creates the volume (in the host's region) and attaches it to the silo's host.
 func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Volume, vs v1.VolumeStatus) (v1.VolumeStatus, time.Duration, error) {
 	vs.Class, vs.Message = spec.Class, ""
-	p, _, ok := c.Plugins.Storage(spec.Class)
+	p, cls, ok := c.Plugins.Storage(spec.Class)
 	if !ok {
 		vs.Message = "no plugin serves storage class " + spec.Class
 		return vs, 30 * time.Second, nil
@@ -172,6 +176,9 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 	if h == nil {
 		vs.Message = "waiting for a host"
 		return vs, 0, nil
+	}
+	if cls.Mounted() {
+		return c.ensureMounted(ctx, s, h, p, cls, spec, vs)
 	}
 	if h.Status.Provider == nil || h.Status.Provider.Name != p.Info.Name {
 		vs.Message = h.Name + " isn't a " + p.Info.Name + " machine"
@@ -238,12 +245,70 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 	return vs, 0, nil
 }
 
+// ensureMounted creates a mount-reach volume and points it at the silo's host once the host it
+// was on has let go.
+func (c *Volumes) ensureMounted(ctx context.Context, s *v1.Silo, h *v1.Host, p *plugins.Plugin, cls kplugin.Class, spec v1.Volume, vs v1.VolumeStatus) (v1.VolumeStatus, time.Duration, error) {
+	if vs.Handle == "" {
+		var size int64
+		if spec.Size != "" {
+			var err error
+			if size, err = v1.ParseBytes(spec.Size); err != nil || size < 0 {
+				return vs, 0, fmt.Errorf("size %q: %v", spec.Size, err)
+			}
+		}
+		region := ""
+		if cls.Topology != kplugin.TopologyGlobal && h.Status.Provider != nil {
+			region = h.Status.Provider.Region
+		}
+		st, err := p.Conn.EnsureVolume(ctx, kplugin.Volume{Class: spec.Class, ID: VolumeID(s, spec.Name),
+			Name: VolumeLabel(s, spec.Name), SizeBytes: size, Region: region})
+		if errors.Is(err, kplugin.ErrInProgress) {
+			vs.Message = err.Error()
+			return vs, c.poll(), nil
+		}
+		if err != nil {
+			return vs, 0, err
+		}
+		vs.Handle, vs.Region = st.Handle, st.Region
+		if cls.Topology == kplugin.TopologyGlobal {
+			vs.Region = "" // anywhere: nothing holds the silo to a region
+		}
+	}
+	attachedLost := false
+	if vs.AttachedTo != "" && vs.AttachedTo != h.Name {
+		if oh, ok := c.Hosts.Get("", vs.AttachedTo); ok {
+			attachedLost, _ = hostctl.Lost(oh.(*v1.Host))
+		}
+	}
+	next, wait := PlaceMounted(s, vs, h.Name, attachedLost)
+	if wait != "" {
+		next.Message = wait
+		return next, c.poll(), nil
+	}
+	return next, 0, nil
+}
+
+// PlaceMounted decides where a mount-reach volume should be mounted: on host (the silo's), once
+// the host it was on has unmounted it, or right away if that host is lost and the silo was fenced
+// there. wait says why not yet. Pure.
+func PlaceMounted(s *v1.Silo, vs v1.VolumeStatus, host string, attachedLost bool) (v1.VolumeStatus, string) {
+	vs.Device = ""
+	switch {
+	case vs.AttachedTo == host:
+	case vs.AttachedTo != "" && vs.Mounted && !moves.ForceRelease(s, vs, attachedLost):
+		return vs, "waiting for " + vs.AttachedTo + " to unmount it"
+	default:
+		vs.AttachedTo = host
+	}
+	return vs, ""
+}
+
 // remove detaches (once unmounted) and deletes a volume; done when it's gone.
 func (c *Volumes) remove(ctx context.Context, s *v1.Silo, vs v1.VolumeStatus) (v1.VolumeStatus, bool, time.Duration, error) {
 	if vs.Handle == "" {
 		return vs, true, 0, nil
 	}
-	p, _, ok := c.Plugins.Storage(vs.Class)
+	p, cls, ok := c.Plugins.Storage(vs.Class)
 	if !ok {
 		vs.Message = "deleting it needs the plugin serving " + vs.Class
 		return vs, false, 30 * time.Second, nil
@@ -251,6 +316,9 @@ func (c *Volumes) remove(ctx context.Context, s *v1.Silo, vs v1.VolumeStatus) (v
 	if vs.Mounted {
 		vs.Message = "waiting for " + vs.AttachedTo + " to unmount it"
 		return vs, false, c.poll(), nil
+	}
+	if cls.Mounted() {
+		vs.AttachedTo, vs.Device = "", "" // nothing attached: unmounted is let go
 	}
 	if vs.AttachedTo != "" {
 		hi := kplugin.HostInfo{Name: vs.AttachedTo}

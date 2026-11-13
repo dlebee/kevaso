@@ -26,6 +26,11 @@ func volume(class string) siloOpt {
 var linodeClasses = map[string]Class{
 	"linode-nodebalancer": {Plugin: "linode", OwnHostsOnly: true, NodePorts: true},
 	"linode-block":        {Plugin: "linode", OwnHostsOnly: true},
+	"juicefs":             {Plugin: "juicefs", Topology: "global", Mount: true},
+}
+
+func mounts(classes ...string) hostOpt {
+	return func(h *v1.Host) { h.Status.MountClasses = classes }
 }
 
 func TestPluginClasses(t *testing.T) {
@@ -49,6 +54,13 @@ func TestPluginClasses(t *testing.T) {
 			s.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "linode-block", Handle: "9", Region: "us-ord"}}
 		}), hosts(host("tor", provider("linode", "ca-central")), host("chi", provider("linode", "us-ord"))), "chi", ""},
 		{"local volumes need nothing", silo("a", volume("local")), hosts(host("home")), "home", ""},
+		{"a mount class needs its node side on the host, any provider or none", silo("a", volume("juicefs")),
+			hosts(host("tor", provider("linode", "ca-central"), mem("64Gi")), host("home", mounts("juicefs"))), "home", ""},
+		{"no node side anywhere: nothing fits, saying why", silo("a", volume("juicefs")),
+			hosts(host("home", mounts("other"))), "", "home: class juicefs needs the juicefs plugin's node side on the host"},
+		{"a global volume holds no region", silo("a", volume("juicefs"), func(s *v1.Silo) {
+			s.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "juicefs", Handle: "volumes/u/data"}}
+		}), hosts(host("fra", provider("hetzner", "fsn1"), mounts("juicefs"))), "fra", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, err := ScheduleIn(tc.silo, tc.hosts, nil, env)

@@ -120,6 +120,9 @@ type HostStatus struct {
 	// Provider is what a provider plugin knows about this machine, if it's one of its own (a
 	// Linode): the plugin's classes (volumes, load balancers) only reach such hosts.
 	Provider *HostProvider `json:"provider,omitempty"`
+	// MountClasses are the storage classes whose plugin's node side runs on this host (reach
+	// mount, e.g. juicefs): only such hosts can take a silo with a volume on one.
+	MountClasses []string `json:"mountClasses,omitempty"`
 }
 
 // HostProvider is a machine as its provider sees it.
