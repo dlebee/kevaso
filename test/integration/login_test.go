@@ -232,7 +232,7 @@ func TestASecondUserOnlySeesTheirNamespace(t *testing.T) {
 		},
 		"denied admin": func(e audit.Entry) bool { return e.User == "bob" && e.Resource == "invites" && !e.Allowed },
 		"admin socket": func(e audit.Entry) bool {
-			return e.User == "root" && e.Resource == "namespaces" && e.Reason == "local admin socket"
+			return e.User == apiserver.LocalAdmin.Name && e.Resource == "namespaces" && e.Reason == "local admin socket"
 		},
 	} {
 		if !find(pred) {

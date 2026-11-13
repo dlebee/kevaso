@@ -108,3 +108,19 @@ func TestServiceAccountsNeverMintInvitesOrJoinTokens(t *testing.T) {
 		t.Errorf("join token by a service account: %v (token issued: %v), want 403", err, jt.Token != "")
 	}
 }
+
+// K-011: a user certificate is never the admin socket, whatever its name (root is what kvoadm
+// init names the first one when run as root).
+func TestUserCertificateNamedRootIsNotTheAdminSocket(t *testing.T) {
+	e := setupAccess(t)
+	cred, err := e.admin.IssueUserCert(e.ctx, "root")
+	if err == nil {
+		root := e.tlsClient(t, &cred)
+		if _, err := root.IssueUserCert(e.ctx, "mallory"); code(err) != http.StatusForbidden {
+			t.Errorf("a certificate named root minting a certificate over TLS: %v, want 403", err)
+		}
+	}
+	if apiserver.LocalAdmin.Validate() == nil || apiserver.Component.Validate() == nil {
+		t.Errorf("%v could be written into a certificate", apiserver.LocalAdmin)
+	}
+}

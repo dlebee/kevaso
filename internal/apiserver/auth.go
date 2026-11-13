@@ -62,8 +62,10 @@ const (
 	secretFilterKey
 )
 
-// LocalAdmin is the identity of whoever reaches the admin socket (root on the host).
-var LocalAdmin = pki.Identity{Type: "user", Name: "root", Role: "cluster-admin"}
+// LocalAdmin is the identity of whoever reaches the admin socket (root on the host). Its name has
+// a colon, which no certificate can carry (pki.Identity.Validate): a user certificate, whatever
+// it is named, is never this identity.
+var LocalAdmin = pki.Identity{Type: "user", Name: "local:admin-socket", Role: "cluster-admin"}
 
 // IdentityFrom returns the authenticated identity of a request, if any.
 func IdentityFrom(ctx context.Context) (pki.Identity, bool) {
@@ -81,6 +83,9 @@ func (s *Server) authenticate(r *http.Request) (pki.Identity, []string, error) {
 	}
 	if r.TLS != nil && len(r.TLS.VerifiedChains) > 0 { // verified against the cluster CA by TLS
 		id, err := pki.IdentityOf(r.TLS.PeerCertificates[0])
+		if err == nil && (id == LocalAdmin || id == Component) {
+			err = errors.New("certificate names a built-in identity")
+		}
 		return id, groupsOf(id), err
 	}
 	if raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
