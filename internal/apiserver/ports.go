@@ -40,6 +40,9 @@ func checkPorts(spec v1.SiloSpec) []string {
 		}
 		numbers[k] = p.Name
 	}
+	if spec.Network.Egress.Source == v1.EgressPool && spec.Network.Egress.IP == "" && spec.LBClass() != v1.LBIPPool {
+		add("network.egress.source pool needs egress.ip: an IP of class ip-pool (or ports on a load balancer of class ip-pool, whose IP it then sends from)")
+	}
 	sv := spec.Service
 	if sv == nil {
 		if spec.Network.Egress.Source == v1.EgressSameAsService {
@@ -123,9 +126,6 @@ func checkPorts(spec v1.SiloSpec) []string {
 	}
 	if spec.Network.Egress.Source == v1.EgressSameAsService && !outside {
 		add("network.egress.source sameAsService needs a port on the host or a load balancer: there's no address in to send from otherwise")
-	}
-	if spec.Network.Egress.Source == v1.EgressPool && spec.Network.Egress.IP == "" && spec.LBClass() != v1.LBIPPool {
-		add("network.egress.source pool needs egress.ip: an IP of class ip-pool (or ports on a load balancer of class ip-pool, whose IP it then sends from)")
 	}
 	return errs
 }

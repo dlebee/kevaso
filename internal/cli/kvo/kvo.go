@@ -458,7 +458,7 @@ func apply(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdou
 		return fmt.Errorf("%s: %w", o.file, err)
 	}
 	for _, doc := range docs {
-		obj, k, err := v1.Decode(doc)
+		obj, k, err := v1.DecodeStrict(doc)
 		if err != nil {
 			return err
 		}
