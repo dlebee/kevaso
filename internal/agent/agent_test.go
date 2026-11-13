@@ -476,7 +476,7 @@ func TestAFailedSiloIsStartedAgainWithBackoff(t *testing.T) {
 		}
 	}
 	poke()
-	s := e.wait(t, "web", func(s *v1.Silo) bool {
+	e.wait(t, "web", func(s *v1.Silo) bool {
 		return s.Status.Restarts != nil && s.Status.Restarts.Count == 1 && s.Status.Phase == agent.PhaseRunning
 	})
 	if rt.starts.Load() != before+1 {
