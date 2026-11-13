@@ -57,7 +57,11 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
 - container runtimes: `runtime: docker` / `podman` on the same silo bridge as the VMs (firewall,
   default-deny egress, exposure and the egress gate apply unchanged), init steps as init containers,
   volumes that persist, the broker over a socket of their own;
-- HTTPS: an ingress controller is a silo (`kvo-guest ingress`); `IngressClass` and `Ingress` route
+- HTTPS: an ingress controller is a silo running a stock proxy (nginx, Caddy, Kong) exactly as its
+  vendor ships it, driven from outside: an **ingress driver** (`sdk/kic`) renders the routes,
+  certificates and ACME challenges into that proxy's config, and the host's agent writes it in,
+  runs the proxy's own check and only then reloads (`kvoadm ingress install` makes a class with a
+  stock nginx behind a load balancer); `IngressClass` and `Ingress` route
   host names and paths to private silos, each Ingress opening exactly one path through the
   firewall. Certificates are automatic and renewed: Kevaso makes the key and keeps the lifecycle,
   and a **cert-controller** (`sdk/kcc`) turns a CSR into a chain. Built in: `acme` (Let's Encrypt or

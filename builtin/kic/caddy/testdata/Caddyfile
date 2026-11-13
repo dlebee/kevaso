@@ -1,0 +1,94 @@
+# Rendered by Kevaso's caddy ingress driver for class public: rewritten on every change.
+{
+	auto_https off
+	admin localhost:2019
+	persist_config off
+	servers {
+		timeouts {
+			read_header 30s
+			idle 2m
+		}
+	}
+}
+# Any other host: ACME challenges, else nothing.
+:80 {
+	handle /.well-known/acme-challenge/tok-123_abc {
+		respond "tok-123_abc.thumbprint-XYZ" 200
+	}
+	handle /.well-known/acme-challenge/* {
+		respond 404
+	}
+	handle {
+		respond 404
+	}
+}
+http://api.example.com {
+	handle /.well-known/acme-challenge/tok-123_abc {
+		respond "tok-123_abc.thumbprint-XYZ" 200
+	}
+	handle /.well-known/acme-challenge/* {
+		respond 404
+	}
+	handle /ws* {
+		redir https://{host}{uri} 308
+	}
+	handle {
+		redir https://{host}{uri} 308
+	}
+}
+https://api.example.com {
+	# ingress payments/api
+	tls /etc/caddy/ingress/4e9c0aea20ce4bb6.pem /etc/caddy/ingress/4e9c0aea20ce4bb6.pem
+	# -
+	# ingress payments/api
+	handle /ws* {
+		reverse_proxy 10.64.0.5:9000 {
+			header_up X-Real-IP {remote_host}
+			flush_interval -1
+			transport http {
+				dial_timeout 2s
+			}
+		}
+	}
+	# -
+	# ingress payments/api
+	handle {
+		reverse_proxy 10.64.0.4:8080 {
+			header_up X-Real-IP {remote_host}
+			flush_interval -1
+			transport http {
+				dial_timeout 2s
+			}
+		}
+	}
+	# -
+}
+http://pending.example.com {
+	handle /.well-known/acme-challenge/tok-123_abc {
+		respond "tok-123_abc.thumbprint-XYZ" 200
+	}
+	handle /.well-known/acme-challenge/* {
+		respond 404
+	}
+	handle {
+		redir https://{host}{uri} 308
+	}
+}
+http://plain.example.com {
+	handle /.well-known/acme-challenge/tok-123_abc {
+		respond "tok-123_abc.thumbprint-XYZ" 200
+	}
+	handle /.well-known/acme-challenge/* {
+		respond 404
+	}
+	# ingress shop/plain
+	handle {
+		reverse_proxy 10.64.0.6:3000 {
+			header_up X-Real-IP {remote_host}
+			transport http {
+				dial_timeout 5s
+			}
+		}
+	}
+	# -
+}

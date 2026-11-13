@@ -28,7 +28,7 @@ type Broker struct {
 	ids       map[string]kri.ID                   // by uid
 }
 
-var siloOps = []string{client.OpGetSecret, client.OpSign, client.OpPublicKey, client.OpDeliveries, client.OpWatch, client.OpIngress,
+var siloOps = []string{client.OpGetSecret, client.OpSign, client.OpPublicKey, client.OpDeliveries, client.OpWatch,
 	client.OpPane, client.OpPaneBundle, client.OpPortOpen, client.OpPortClose}
 
 func (b *Broker) log(f string, a ...any) {

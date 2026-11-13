@@ -53,9 +53,6 @@ func PullArgs(engine, dir, ref string) []string {
 
 // Pull implements kri.Puller.
 func (r *Runtime) Pull(ctx context.Context, id kri.ID, image string, auth *kri.RegistryAuth) (string, error) {
-	if _, own := KevasoImages[image]; own {
-		return "", nil // built here from kevasod, never pulled
-	}
 	ref := ImageRef(image)
 	dir := ""
 	if auth != nil {

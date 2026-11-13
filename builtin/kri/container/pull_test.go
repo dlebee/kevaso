@@ -93,17 +93,13 @@ func TestPullRefused(t *testing.T) {
 	}
 }
 
-// Without a credential, a plain pull; Kevaso's own images are never pulled; Docker Hub has its
-// own key in docker's config.
-func TestPullAnonymousAndOwn(t *testing.T) {
+// Without a credential, a plain pull; Docker Hub has its own key in docker's config.
+func TestPullAnonymous(t *testing.T) {
 	f := newFake()
 	r := runtime(t, f)
 	var lines []string
 	f.onPull = func(_ string, a []string) (int, error) { lines = append(lines, strings.Join(a, " ")); return 0, nil }
 	if _, err := r.Pull(context.Background(), silo, "ubuntu-24.04", nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.Pull(context.Background(), silo, "kevaso-ingress", nil); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(lines, "|") != "pull --quiet docker.io/library/ubuntu:24.04" {

@@ -11,8 +11,8 @@
 // The broker reaches a container through a unix socket of its own, mounted at /run/kevaso: the
 // socket a connection arrives on says which silo it is, as vsock does for VMs. The host's CA bundle
 // with the egress CA is mounted in read-only. Nothing else of Kevaso's goes into a user's container
-// (design §12: Kevaso's own pieces are built and isolated properly): Kevaso's own silos, like the
-// ingress controller, run from images of their own (KevasoImages below), with the same isolation.
+// (design §12: Kevaso's own pieces are built and isolated properly); an ingress controller is a
+// vendor's proxy image, driven from outside (design §7.3).
 package container
 
 import (
@@ -82,13 +82,6 @@ func NamesFor(id kri.ID) Names {
 
 // VolumeName is a silo volume's name in the engine.
 func VolumeName(id kri.ID, vol string) string { return "kv-" + NamesFor(id).Short + "-" + vol }
-
-// KevasoImages are Kevaso's own images, by name: built on the host from kevasod itself (its only
-// file, /usr/local/bin/kvo-guest, with this entrypoint), never pulled. Their tag is the binary's
-// hash, so a new kevasod makes a new image.
-var KevasoImages = map[string][]string{
-	"kevaso-ingress": {"/usr/local/bin/kvo-guest", "ingress"}, // the ingress controller (design §7.3)
-}
 
 // ImageRef is the reference an image pulls: a silo's image is a registry reference, used as it
 // is; only Kevaso's built-in OS image (ubuntu-24.04) has a name of its own (design §0.2).
@@ -221,12 +214,9 @@ func (r *Runtime) pauseImage(ctx context.Context) (string, error) {
 	return r.selfImage(ctx, "kevaso-pause", "kevaso-pause", []string{"/kevaso-pause"})
 }
 
-// ref is what the engine runs for an image name: one of Kevaso's own (built here), or what it pulls.
-func (r *Runtime) ref(ctx context.Context, image string) (string, bool, error) {
-	if ep, ok := KevasoImages[image]; ok {
-		tag, err := r.selfImage(ctx, image, "usr/local/bin/kvo-guest", ep)
-		return tag, true, err
-	}
+// ref is what the engine runs for an image name: what it pulls. (own: an image built here; none
+// is any more, since ingress controllers run their vendors' images, design §7.3.)
+func (r *Runtime) ref(_ context.Context, image string) (string, bool, error) {
 	return ImageRef(image), false, nil
 }
 

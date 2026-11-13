@@ -162,12 +162,6 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 		return s.brokerPane(ctx, call, op)
 	case client.OpPortOpen, client.OpPortClose:
 		return s.brokerPort(ctx, call, op)
-	case client.OpIngress:
-		cfg, n, err := s.ingressConfig(ctx, call.silo)
-		if err != nil {
-			return client.BrokerResponse{Error: err.Error()}, err.Error(), false
-		}
-		return client.BrokerResponse{Ingress: cfg}, fmt.Sprintf("ingress controller for %d classes: %d routes, %d certificates", n, len(cfg.Routes), len(cfg.Certs)), true
 	case client.OpInjections:
 		var out []client.Injection
 		for _, g := range call.grants {
