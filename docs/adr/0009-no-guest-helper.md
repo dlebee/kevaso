@@ -255,29 +255,73 @@ main container and its init containers (`--mount type=bind,…,readonly`). So:
   a deletion unmounts the tmpfs. A silo placed on another host gets them there; the old host's
   delete leaves nothing.
 
-**Variables.** The engine sets a container's environment when the container is made and keeps
-it; with nothing of ours inside, there is no other way to give the command a variable. They go
-in through `--env-file`, a file in the same tmpfs (0600): never on a command line, so never in
-the host's process listing. **What Docker and podman can't avoid:** the engine keeps the values
-in the container's config, so `docker inspect` / `podman inspect` shows them (`Config.Env`) to
-anyone with access to the host's engine, and the engine stores that config on the host's disk
-(docker: `/var/lib/docker/containers/ID/config.v2.json`; podman: its containers database).
-Admission accepts such a silo with a warning (an HTTP `Warning` header that `kvo` prints), and
-`SecretsDelivered` says it too. A rotated variable takes effect at the next start, when the main
-container is made afresh from its image (volumes kept, its writable layer not); on microVMs the
-env file is rewritten at once and read by the next login shell, and a running process sees neither
-change. Values with a newline or NUL are refused (the env-file format can't carry them; deliver
-as a file), and so, on podman, are values starting with a quote (its env-file reader unquotes).
+**Variables.** Each silo's variables are in an env file in the same tmpfs (0600: never on a
+command line, so never in the host's process listing). How they reach the container depends on
+what the host's engine allows; the runtime decides at install, and `SecretsDelivered` says which
+way a silo got.
+
+*Through Kevaso's OCI runtime* (Docker, rootful, runc its default runtime, API 1.43 / Docker 24
+or later). The install links kevasod as `/usr/local/lib/kevaso/kevaso-oci`, writes the real
+runtime's path (runc, where dockerd finds it) to `/etc/kevaso/oci-runtime.json`, and registers
+it under `runtimes` in `/etc/docker/daemon.json` (merged: other keys and runtimes kept; dockerd
+restarted only when the file changed). A silo with env deliveries is made with
+`--runtime kevaso-oci --annotation kevaso.com/env-secrets=SHORT` and no variable; one without
+keeps the engine's default runtime. containerd's runc shim calls kevaso-oci exactly as it would
+runc; for `create` and `run` it reads the bundle's `config.json`, and, only when the annotation is
+there, reads `/run/kevaso-secrets/SHORT/env` (folders and file root's, not links, the file 0600
+with one link, opened without following links), sets those variables in `process.env` (a secret
+wins over the same name from the image or Kevaso's CA variables; every other byte of the file is
+kept), writes it back, and execs runc with the same arguments and environment. Every other
+action, and every container without the annotation, goes straight to runc. It fails closed: an
+annotated container whose env file can't be read, or whose bundle isn't on tmpfs/ramfs, isn't
+started, and the error (no value, ever) is on stderr and in the runtime's log, which Docker
+shows. Nothing of it runs inside the container. A rotated variable takes effect at the next
+start, without the container being made afresh: each start reads the file again.
+
+- Protected: `docker inspect` and anything else reading the engine's API (`Config.Env` doesn't
+  have the values), the engine's records on disk (`/var/lib/docker/containers/ID/`,
+  `config.v2.json` among them; containerd's metadata database, which holds Docker's spec).
+- Not protected: root on the host (it can read the tmpfs, the bundle and any process's memory);
+  the container's processes' `/proc/PID/environ`, readable by root on the host and by the same
+  user inside the silo; the bundle's `config.json` under
+  `/run/containerd/io.containerd.runtime.v2.task/moby/ID/` (tmpfs, root-only folder) while the
+  container exists; any process inside the same silo that can read its PID 1's environment.
+- `docker exec` (and `kvo exec`) processes don't get the variables: the engine makes an exec's
+  environment from its own config, which doesn't have them. Read them from the process that
+  has them (`/proc/1/environ` inside the silo) or deliver the secret as a file.
+- Values must be UTF-8 text (the OCI config is JSON); others are refused, deliver as a file.
+
+*Through `--env-file`* everywhere else, as before, with admission's warning: **podman** (it
+writes the bundle's `config.json` to its storage on the host's disk, under the graph root, so a
+runtime in front of crun would put the values on disk just the same), rootless Docker, a
+default runtime that isn't runc (gVisor's runsc, Kata: not runc's bundles and processes), Docker
+older than 24 (no annotations), and an install where the registration didn't take. The engine
+then keeps the values in the container's config, so `docker inspect` / `podman inspect` shows
+them (`Config.Env`) to anyone with access to the host's engine, and the engine stores that config
+on the host's disk (docker: `/var/lib/docker/containers/ID/config.v2.json`; podman: its
+containers database). A rotated variable takes effect at the next start, when the main container
+is made afresh from its image (volumes kept, its writable layer not). Admission warns (an HTTP
+`Warning` header that `kvo` prints) unless every Ready host of the silo's runtime (its own, once
+placed) reports `envOutsideEngine` in its runtime status; `SecretsDelivered` says which way, and
+why when it's this one. A silo whose way changes (the runtime set up on its host, or gone) is
+made afresh at its next start.
+
+On microVMs the env file is rewritten at once and read by the next login shell, and a running
+process sees neither change. Values with a newline or NUL are refused (the env-file format
+can't carry them; deliver as a file), and so, on podman, are values starting with a quote (its
+env-file reader unquotes).
 
 **What someone with the host's engine (or root on the host) can see:** the folders mounted and
-the env file's path (`inspect`, the process listing); the variables' values (`inspect`, the
-engine's state on disk). They can't see a file's value through the engine; root on the host
-can read the tmpfs, as it can a microVM's memory.
+the env file's path (`inspect`, the process listing); with `--env-file` only, the variables'
+values (`inspect`, the engine's state on disk). They can't see a file's value through the
+engine, nor, through Kevaso's runtime, a variable's; root on the host can read the tmpfs and the
+processes' environments, as it can a microVM's memory.
 
 **Differs from microVMs:** files only in a folder under `/run`; a new folder and a rotated
 variable wait for the next start; variables are the command's own environment (on a VM only
-login shells read them) and visible to the engine's users; a stopped container silo has no
-value in the host's tmpfs (its variables stay in the engine's config). If the engine remaps users (docker `userns-remap`), root in the container isn't
+login shells read them): through Kevaso's runtime not an exec's, with `--env-file` visible to
+the engine's users; a stopped container silo has no value in the host's tmpfs (with
+`--env-file` its variables stay in the engine's config). If the engine remaps users (docker `userns-remap`), root in the container isn't
 the host's root, and a 0400 root file is unreadable inside: not supported yet.
 
 **OpenShell** still refuses `file` and `env`, saying why: its exec runs as the sandbox's own user,

@@ -10,8 +10,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/builtin/kri/container/ocienv"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -29,17 +31,30 @@ import (
 // file in a folder the running container doesn't have mounted waits for its next start (a mount
 // can't be added to a running container). docker inspect shows the mounts' folders, never a value.
 //
-// Variables. The engine sets a container's environment when the container is made, and keeps it:
-// there's no way to give the silo's command a variable without the engine knowing its value, and
-// nothing of ours may run inside to read it from a file. So env secrets go in the container's own
-// environment, from an env file in the same tmpfs (FILES' sibling env, 0600: never on a command
-// line, so never in the host's process listing). What Docker and podman can't avoid, and the
-// admission warning and SecretsDelivered say: the engine keeps the values in the container's
-// config, so `docker inspect` shows them (Config.Env) to anyone with the host's engine, and the
-// engine stores that config on the host's disk (docker: /var/lib/docker/containers/ID/
-// config.v2.json; podman: its containers database). A rotated variable takes effect at the next
-// start: Start makes the main container afresh (from its image, volumes kept, its writable layer
-// not) when its variables changed since it was made.
+// Variables. Each silo's go in an env file in the same tmpfs (FILES' sibling env, 0600: never on a
+// command line, so never in the host's process listing), and reach its containers one of two ways:
+//
+//   - Through Kevaso's OCI runtime (viaRuntime; ocienv), where Install could put it in front of the
+//     engine's runc (docker, rootful, runc its default, API 1.43+). The container is made with
+//     `--runtime kevaso-oci --annotation kevaso.com/env-secrets=SHORT` and no variable: at each
+//     start the engine's shim calls kevaso-oci as it would runc, which reads the env file and sets
+//     the variables in the bundle's process.env (in memory, under /run) before handing over to
+//     runc. The engine's records (inspect, config.v2.json, containerd's metadata) never have the
+//     values. A rotated variable takes effect at the next start, without the container being made
+//     afresh (each start reads the file). `docker exec` (kvo exec) processes don't get them: the
+//     engine makes an exec's environment from its own config.
+//   - Through --env-file (viaEnvFile), everywhere else (podman, whose bundle config.json is on the
+//     host's disk; rootless docker; a non-runc default; a failed registration). The engine keeps
+//     the values in the container's config, so `docker inspect` shows them (Config.Env) to anyone
+//     with the host's engine, and the engine stores that config on the host's disk (docker:
+//     /var/lib/docker/containers/ID/config.v2.json; podman: its containers database). The admission
+//     warning and SecretsDelivered say so. A rotated variable takes effect at the next start: Start
+//     makes the main container afresh (from its image, volumes kept, its writable layer not).
+//
+// Either way a variable set by a secret wins over the same name from the image (the engine puts a
+// container's variables over its image's; kevaso-oci replaces the name in process.env, the image's
+// and Kevaso's own CA variables alike). A silo whose way changes (the host's runtime set up, or gone) is made afresh at its
+// next start.
 //
 // Stop and Kill take every value out of the tmpfs (the files and the env file; folders stay,
 // empty, for the stopped container's mounts; the engine keeps the variables it was made with); the agent sets them again before the next start. Delete
@@ -58,9 +73,73 @@ type secretState struct {
 	Files []string `json:"files,omitempty"` // paths in the silo
 	Dirs  []string `json:"dirs,omitempty"`  // the folders those need mounted
 	Env   []string `json:"env,omitempty"`   // NAME=secret@version, sorted
-	// What the main container was made with (it keeps them until it's made again).
+	// EnvVia is how the variables reach the next container made: viaRuntime or viaEnvFile.
+	EnvVia string `json:"envVia,omitempty"`
+	// What the main container was made with (it keeps its mounts, and with an env file its
+	// variables, until it's made again; through the runtime it gets the variables at each start).
 	MainDirs []string `json:"mainDirs,omitempty"`
 	MainEnv  []string `json:"mainEnv,omitempty"`
+	MainVia  string   `json:"mainVia,omitempty"`
+}
+
+// How env secrets reach a container.
+const (
+	// viaRuntime: Kevaso's OCI runtime (ocienv) puts them in the process's environment as the
+	// container starts, from the host's tmpfs; the engine never has them.
+	viaRuntime = "runtime"
+	// viaEnvFile: --env-file; the engine keeps them in the container's config (inspect, its disk).
+	viaEnvFile = "env-file"
+)
+
+// setEnvPath is Install's decision for this host: through Kevaso's OCI runtime, or (why) not.
+func (r *Runtime) setEnvPath(shim bool, why string) {
+	r.envMu.Lock()
+	defer r.envMu.Unlock()
+	r.envPlanned, r.envShim, r.envWhy = true, shim, why
+}
+
+func (r *Runtime) envShimNow() (shim bool, why string) {
+	r.envMu.Lock()
+	defer r.envMu.Unlock()
+	if !r.envPlanned {
+		return false, "the runtime isn't installed yet"
+	}
+	return r.envShim, r.envWhy
+}
+
+// viaFor is how a silo's variables are to reach its next container. Before Install has decided
+// (kevasod just started), a silo keeps the way it had, so it isn't made afresh for nothing.
+func (r *Runtime) viaFor(cur secretState) string {
+	r.envMu.Lock()
+	defer r.envMu.Unlock()
+	switch {
+	case !r.envPlanned && cur.EnvVia != "":
+		return cur.EnvVia
+	case r.envPlanned && r.envShim:
+		return viaRuntime
+	}
+	return viaEnvFile
+}
+
+// EnvInEngine implements kri.EnvPath: whether the engine has the silo's variables, and why.
+func (r *Runtime) EnvInEngine(id kri.ID) (bool, string) {
+	s, ok := r.load(id)
+	if ok && s.Secrets != nil && s.Secrets.EnvVia == viaRuntime {
+		return false, ""
+	}
+	_, why := r.envShimNow()
+	if why == "" {
+		why = "the silo's container was made before Kevaso's OCI runtime was set up here"
+	}
+	return true, why
+}
+
+// mainVia is how the main container got its variables ("" with none).
+func (s secretState) mainVia() string {
+	if s.MainVia == "" && len(s.MainEnv) > 0 {
+		return viaEnvFile
+	}
+	return s.MainVia
 }
 
 // SecretsPaths are a silo's secrets folders on the host: the tmpfs, the files' tree, the env file.
@@ -100,13 +179,16 @@ func covered(want, have []string) bool {
 	return true
 }
 
-// checkEnv says why a variable can't go in the engine's env file.
-func (r *Runtime) checkEnv(e kri.SecretEnv) error {
+// checkEnv says why a variable can't go in the env file (and, via, to the container).
+func (r *Runtime) checkEnv(e kri.SecretEnv, via string) error {
 	if !validEnvName(e.Name) {
 		return fmt.Errorf("secret %s: %q isn't a variable name", e.Secret, e.Name)
 	}
 	if bytes.ContainsAny(e.Value, "\n\x00") {
 		return fmt.Errorf("secret %s: its value has a newline or a NUL, which %s can't take as an environment variable: deliver it as a file", e.Secret, r.engine())
+	}
+	if via == viaRuntime && !utf8.Valid(e.Value) {
+		return fmt.Errorf("secret %s: its value isn't UTF-8 text, which an OCI config (JSON) can't carry: deliver it as a file", e.Secret)
 	}
 	// podman's env-file reader takes a quoted value as quoted (and unquotes it): refused rather
 	// than changed on the way.
@@ -148,20 +230,24 @@ func (r *Runtime) SetSecrets(ctx context.Context, id kri.ID, sec kri.Secrets) (s
 		seen[f.Path] = true
 		paths = append(paths, f.Path)
 	}
+	cur := secretState{}
+	if s.Secrets != nil {
+		cur = *s.Secrets
+	}
+	via := ""
+	if len(sec.Env) > 0 {
+		via = r.viaFor(cur)
+	}
 	var env []string
 	for _, e := range sec.Env {
-		if err := r.checkEnv(e); err != nil {
+		if err := r.checkEnv(e, via); err != nil {
 			return "", err
 		}
 		env = append(env, e.Name+"="+e.Secret+"@"+strconv.FormatInt(e.Version, 10))
 	}
 	sort.Strings(paths)
 	sort.Strings(env)
-	cur := secretState{}
-	if s.Secrets != nil {
-		cur = *s.Secrets
-	}
-	next := secretState{Files: paths, Dirs: SecretDirs(paths), Env: env, MainDirs: cur.MainDirs, MainEnv: cur.MainEnv}
+	next := secretState{Files: paths, Dirs: SecretDirs(paths), Env: env, EnvVia: via, MainDirs: cur.MainDirs, MainEnv: cur.MainEnv, MainVia: cur.MainVia}
 	tmpfs, files, envFile := SecretsPaths(id)
 	if len(paths) > 0 || len(env) > 0 || len(cur.MainDirs) > 0 {
 		if err := r.mountSecrets(ctx, tmpfs); err != nil {
@@ -198,7 +284,7 @@ func (r *Runtime) SetSecrets(ctx context.Context, id kri.ID, sec kri.Secrets) (s
 			return "", err
 		}
 	}
-	if len(next.Files)+len(next.Env)+len(next.MainDirs)+len(next.MainEnv) == 0 {
+	if len(next.Files)+len(next.Env)+len(next.MainDirs)+len(next.MainEnv) == 0 && next.MainVia == "" {
 		s.Secrets = nil
 	} else {
 		s.Secrets = &next
@@ -216,7 +302,7 @@ func (r *Runtime) SetSecrets(ctx context.Context, id kri.ID, sec kri.Secrets) (s
 // pending says what the main container doesn't have yet, which waits for its next start.
 func (s secretState) pending() string {
 	var waits []string
-	if !slices.Equal(s.Env, s.MainEnv) {
+	if !slices.Equal(s.Env, s.MainEnv) || s.EnvVia != s.mainVia() {
 		waits = append(waits, "environment variables")
 	}
 	if !covered(s.Dirs, s.MainDirs) {
@@ -228,9 +314,22 @@ func (s secretState) pending() string {
 	return strings.Join(waits, " and ") + " take effect at the next start"
 }
 
-// remake reports whether the main container must be made afresh for its secrets.
+// remake reports whether the main container must be made afresh for its secrets: a folder it
+// doesn't have mounted, its variables going another way (an env file, Kevaso's runtime, none:
+// the runtime and its annotation are set when it's made), or with an env file, changed variables.
+// Through the runtime, changed variables need no remake: every start reads them afresh.
 func (s *secretState) remake() bool {
-	return s != nil && s.pending() != ""
+	if s == nil {
+		return false
+	}
+	return !covered(s.Dirs, s.MainDirs) || s.EnvVia != s.mainVia() || s.EnvVia == viaEnvFile && !slices.Equal(s.Env, s.MainEnv)
+}
+
+// started records what the main container has now that it started.
+func (s *secretState) started() {
+	if s != nil {
+		s.MainDirs, s.MainEnv, s.MainVia = s.Dirs, s.Env, s.EnvVia
+	}
 }
 
 func fileMode(m uint32) os.FileMode {
@@ -333,7 +432,13 @@ func secretArgs(s state) []string {
 	for _, d := range s.Secrets.Dirs {
 		args = append(args, "--mount", "type=bind,src="+files+d+",dst="+d+",readonly")
 	}
-	if len(s.Secrets.Env) > 0 {
+	switch {
+	case len(s.Secrets.Env) == 0:
+	case s.Secrets.EnvVia == viaRuntime:
+		// Kevaso's OCI runtime reads the variables from the host's tmpfs at each start: the
+		// annotation names whose, never a value.
+		args = append(args, "--runtime", ocienv.RuntimeName, "--annotation", ocienv.Annotation+"="+NamesFor(s.ID).Short)
+	default:
 		args = append(args, "--env-file", envFile)
 	}
 	return args
@@ -364,7 +469,8 @@ func (r *Runtime) prepareSecrets(ctx context.Context, s state, making bool) erro
 			return fmt.Errorf("%s: its secret %s isn't on the host (its secrets are set before it starts): %w", s.ID, p, err)
 		}
 	}
-	if making && len(s.Secrets.Env) > 0 {
+	// Through Kevaso's runtime the variables are read at every start, not only when it's made.
+	if len(s.Secrets.Env) > 0 && (making || s.Secrets.EnvVia == viaRuntime) {
 		if err := there(envFile); err != nil {
 			return fmt.Errorf("%s: its env secrets aren't on the host (its secrets are set before it starts): %w", s.ID, err)
 		}

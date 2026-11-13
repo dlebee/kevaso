@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"os"
 	"os/exec"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"kevaso.com/core/builtin/kri/container/ocienv"
 	"kevaso.com/core/builtin/kri/hostexec"
 	"kevaso.com/core/sdk/kri"
 )
@@ -107,5 +109,28 @@ func TestSecretArgsOnARealEngine(t *testing.T) {
 	}
 	if !strings.Contains(inspect, "LEGACY_TOKEN=tok en=1") {
 		t.Fatal("docker inspect no longer shows env values: the ADR 0009 addendum and the admission warning can say less")
+	}
+}
+
+// TestEnvRuntimeOnRealDocker is the real thing, on a Linux host as root whose Docker has
+// kevaso-oci registered (this runtime's Install did it): a container started through it has the
+// variable in its process's environment, and neither `docker inspect` nor any file under the
+// engine's container folder or containerd's metadata has its value (ocienv.VerifyDocker, which
+// the bare-metal suite calls too). Opt in with KEVASO_DOCKER_TEST=1.
+func TestEnvRuntimeOnRealDocker(t *testing.T) {
+	if os.Getenv("KEVASO_DOCKER_TEST") != "1" {
+		t.Skip("KEVASO_DOCKER_TEST=1 runs it against the local docker")
+	}
+	if goruntime.GOOS != "linux" || os.Geteuid() != 0 {
+		t.Skip("needs a Linux host's own Docker, as root (Docker Desktop's daemon can't register a runtime)")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "info", "--format", "{{json .Runtimes}}").Output()
+	if err != nil || !strings.Contains(string(out), `"`+ocienv.RuntimeName+`"`) {
+		t.Skipf("Docker here doesn't have %s registered (kevasod's docker runtime installs it): %s %v", ocienv.RuntimeName, out, err)
+	}
+	if err := ocienv.VerifyDocker(ctx, ocienv.Check{}); err != nil {
+		t.Fatal(err)
 	}
 }
