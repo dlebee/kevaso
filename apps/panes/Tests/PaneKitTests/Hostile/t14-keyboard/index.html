@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script>
+</head><body style="margin:0">
+<!-- Not covered by E034: a pane that tries to log keys and read a paste once the person clicks into it. -->
+<textarea id=t autofocus style="width:100vw;height:100vh;background:#123;color:#eee">t14 type here</textarea>
+<script>
+window.__keys=0;window.__pastes=0;window.__inputs=0;
+for(const t of ['keydown','keyup','keypress'])document.addEventListener(t,()=>window.__keys++,true);
+document.addEventListener('paste',e=>{window.__pastes++;try{R('paste-len',String((e.clipboardData&&e.clipboardData.getData('text/plain')||'').length))}catch(x){}},true);
+document.getElementById('t').addEventListener('input',()=>window.__inputs++);
+document.getElementById('t').focus();
+setInterval(()=>{window.__report=['keys: '+window.__keys,'pastes: '+window.__pastes,'inputs: '+window.__inputs,
+ 'value-changed: '+(document.getElementById('t').value!=='t14 type here'),'active: '+(document.activeElement&&document.activeElement.id)]},100);
+</script></body></html>

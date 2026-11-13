@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script>
+</head><body style="margin:0">
+<!-- Not covered by E034: a pane that tries to save a file on the person's disk. -->
+<div id=b style="width:100vw;height:100vh;background:#313;color:#eee">t15 click</div>
+<script>
+const name='__DLNAME__';
+const dl=(href)=>{const a=document.createElement('a');a.href=href;a.download=name;document.body.append(a);a.click();return 'clicked'};
+(async()=>{
+await T('a.download-blob',()=>dl(URL.createObjectURL(new Blob(['kevaso hostile download'],{type:'text/plain'}))));
+await T('a.download-data',()=>dl('data:application/octet-stream,kevaso%20hostile'));
+await T('a.download-own',()=>dl('index.html'));
+await T('location-blob',()=>{location.href=URL.createObjectURL(new Blob(['x'],{type:'application/octet-stream'}));return 'set'});
+await T('window.open-blob',()=>String(window.open(URL.createObjectURL(new Blob(['x'],{type:'application/octet-stream'})))));
+document.getElementById('b').addEventListener('click',()=>{R('click','user click');try{dl(URL.createObjectURL(new Blob(['kevaso hostile download'])))}catch(e){R('gesture-dl','blocked '+e)}});
+setTimeout(()=>{R('still-here',location.href);R('done','t15')},3000);
+})();
+</script></body></html>

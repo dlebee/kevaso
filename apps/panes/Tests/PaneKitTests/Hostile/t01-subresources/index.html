@@ -1,0 +1,34 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script>
+<link rel="stylesheet" href="__C__/t01/link-css">
+<link rel="prefetch" href="__C__/t01/link-prefetch">
+<link rel="preload" as="fetch" href="__C__/t01/link-preload">
+<link rel="icon" href="__C__/t01/favicon">
+<style>@import url("__C__/t01/css-import");@font-face{font-family:x;src:url("__C__/t01/css-font")}
+body{background:url("__C__/t01/css-bg");font-family:x;color:#eee}</style>
+<script src="__C__/t01/script-src"></script>
+</head><body>t01 subresources
+<img src="__C__/t01/img"><img src="__L__/t01/img-lan"><img srcset="__C__/t01/srcset 2x">
+<iframe src="__C__/t01/iframe"></iframe><object data="__C__/t01/object"></object><embed src="__C__/t01/embed">
+<video src="__C__/t01/video" autoplay muted></video><audio src="__C__/t01/audio"></audio>
+<svg width=1 height=1><image href="__C__/t01/svg-image"/></svg>
+<script>
+(async()=>{
+await T('fetch',()=>fetch('__C__/t01/fetch').then(r=>r.status));
+await T('fetch-lan',()=>fetch('__L__/t01/fetch-lan').then(r=>r.status));
+await T('fetch-no-cors',()=>fetch('__C__/t01/fetch-nocors',{mode:'no-cors'}).then(r=>r.type));
+await T('xhr',()=>new Promise((ok,no)=>{const x=new XMLHttpRequest();x.open('GET','__C__/t01/xhr');x.onload=()=>ok(x.status);x.onerror=()=>no(new Error('xhr error'));x.send()}));
+await T('sendBeacon',()=>navigator.sendBeacon('__C__/t01/beacon','x'));
+await T('new-Image',()=>new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok('loaded');i.onerror=()=>no(new Error('img error'));i.src='__C__/t01/new-image'}));
+await T('dynamic-import',()=>import('__C__/t01/dyn-import.js'));
+await T('worker',()=>{const w=new Worker(URL.createObjectURL(new Blob(["fetch('__C__/t01/worker-fetch')"])));return 'created'});
+await T('service-worker',()=>navigator.serviceWorker?navigator.serviceWorker.register('/sw.js'):'no serviceWorker API');
+await T('blob-url-img',()=>new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok('blob ok (local only)');i.onerror=()=>no(new Error('blob img error'));i.src=URL.createObjectURL(new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'],{type:'image/svg+xml'}))}));
+R('done','t01');
+})();
+</script></body></html>

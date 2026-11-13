@@ -1,0 +1,32 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script></head><body style="margin:0">
+<div id=b style="width:100vw;height:100vh;background:#330;color:#eee">t07 click</div>
+<script>
+async function attempts(tag){
+ await T(tag+'clipboard.writeText',()=>navigator.clipboard.writeText('E034-clipboard-write').then(()=>'written'));
+ await T(tag+'clipboard.readText',()=>navigator.clipboard.readText().then(t=>'read len='+t.length));
+ await T(tag+'execCommand-copy',()=>{const t=document.createElement('textarea');t.value='E034-exec';document.body.append(t);t.select();return document.execCommand('copy')});
+ await T(tag+'Notification',async()=>window.Notification?await Notification.requestPermission():'no Notification API');
+ await T(tag+'geolocation',()=>new Promise((ok,no)=>navigator.geolocation?navigator.geolocation.getCurrentPosition(p=>ok('pos'),e=>no(new Error('geo '+e.code+' '+e.message)),{timeout:2000}):ok('no geolocation API')));
+ await T(tag+'getUserMedia',()=>navigator.mediaDevices?navigator.mediaDevices.getUserMedia({audio:true,video:true}).then(()=>'granted'):'no mediaDevices');
+ await T(tag+'getDisplayMedia',()=>navigator.mediaDevices&&navigator.mediaDevices.getDisplayMedia?navigator.mediaDevices.getDisplayMedia().then(()=>'granted'):'no getDisplayMedia');
+ await T(tag+'requestFullscreen',()=>{const el=document.documentElement;const f=el.requestFullscreen||el.webkitRequestFullscreen;if(!f)return 'no fullscreen API';const r=f.call(el);return r&&r.then?r.then(()=>'fullscreen'):'called (no promise) fullscreenElement='+document.fullscreenElement});
+ await T(tag+'share',()=>navigator.share?navigator.share({text:'x'}).then(()=>'shared'):'no share API');
+ await T(tag+'print',()=>{window.print();return 'called'});
+ await T(tag+'alert',()=>{alert('fake OS: enter your password');return 'returned'});
+ await T(tag+'prompt',()=>String(prompt('password?')));
+ await T(tag+'file-input',()=>{const i=document.createElement('input');i.type='file';document.body.append(i);i.click();return 'clicked'});
+}
+attempts('nogesture.');
+document.getElementById('b').addEventListener('click',()=>{R('click','user click');
+ const f=document.createElement('iframe');document.body.append(f);const w=f.contentWindow;
+ T('gesture.iframe-realm.clipboard.writeText',()=>w&&w.navigator.clipboard?w.navigator.clipboard.writeText('E034-iframe-write').then(()=>'written'):'no clipboard in iframe realm');
+ T('gesture.iframe-realm.execCommand-copy',()=>{if(!w)return 'no window';const t=w.document.createElement('textarea');w.document.body.append(t);t.value='E034-iframe-exec';t.select();return w.document.execCommand('copy')});
+ attempts('gesture.')},{once:true});
+setTimeout(()=>R('done','t07'),3500);
+</script></body></html>

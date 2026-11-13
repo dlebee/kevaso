@@ -1,0 +1,24 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script></head><body>t08<script>
+(async()=>{
+const get=u=>fetch(u).then(r=>r.text()).then(t=>'got '+t.length+' bytes: '+t.slice(0,30).replace(/\n/g,' '));
+await T('fetch-file-etc-passwd',()=>get('file:///etc/passwd'));
+await T('fetch-traversal-dots',()=>get('kvpane://p-t08-files/../../../../../../etc/passwd'));
+await T('fetch-traversal-encoded',()=>get('kvpane://p-t08-files/%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd'));
+await T('fetch-sibling-prefix',()=>get('kvpane://p-t08-files/../t08-files-secret/secret.txt'));
+await T('fetch-other-pane',()=>get('kvpane://p-t09-message-handlers/index.html'));
+await T('fetch-own-file',()=>get('kvpane://p-t08-files/own.txt'));
+await T('fetch-relative-own',()=>get('own.txt'));
+await T('fetch-symlink-out',()=>get('kvpane://p-t08-files/link-to-passwd'));
+await T('img-file',()=>new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok('loaded');i.onerror=()=>no(new Error('img error'));i.src='file:///System/Library/CoreServices/Finder.app/Contents/Resources/Finder.icns'}));
+const f=document.createElement('iframe');f.src='file:///etc/passwd';document.body.append(f);
+await new Promise(r=>setTimeout(r,500));
+await T('iframe-file-readable',()=>f.contentDocument?('doc '+f.contentDocument.body.innerText.slice(0,20)):'no access');
+R('done','t08');
+})();
+</script></body></html>
