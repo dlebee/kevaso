@@ -245,6 +245,16 @@ func Released(st v1.SiloStatus, host string) (v1.SiloStatus, bool) {
 		return st, false
 	}
 	st.MovingFrom = ""
+	if len(st.Volumes) > 0 {
+		vols := make([]v1.VolumeStatus, len(st.Volumes))
+		copy(vols, st.Volumes)
+		for i := range vols {
+			if vols[i].AttachedTo == host {
+				vols[i].Mounted = false
+			}
+		}
+		st.Volumes = vols
+	}
 	return st, true
 }
 

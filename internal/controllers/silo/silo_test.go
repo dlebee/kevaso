@@ -233,3 +233,47 @@ func TestDecideOnHostLossMove(t *testing.T) {
 		t.Fatalf("Move without a movable class: %+v", st)
 	}
 }
+
+// The only silo in the cluster, placed by the controller: when its host is lost the controller
+// still looks at it (on real machines a lone onHostLoss: Move silo stayed "Running" on a powered-off
+// host forever: the controller skipped it as "placed by us, cache not caught up" once and for all).
+func TestControllerSeesItsOwnPlacementsHostLost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
+	ts := httptest.NewServer(srv)
+	defer func() { cancel(); ts.Close() }()
+	c := client.New(ts.URL)
+	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
+	silos, hosts := informer.New(c, "Silo"), informer.New(c, "Host")
+	ctrl := &silo.Controller{Client: c, Silos: silos, Hosts: hosts, Clock: clock.Real{}}
+	e := engine.New(clock.Real{})
+	e.Register(ctrl, engine.Options{Workers: 2})
+	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
+	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
+	go silos.Run(ctx)
+	go hosts.Run(ctx)
+	go e.Run(ctx)
+
+	h := readyHost("hv1")
+	st := h.Status
+	_ = c.Create(ctx, h)
+	h.Status = st
+	if err := c.UpdateStatus(ctx, h); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(ctx, newSilo("web")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(ctx, t, c, "web", func(s *v1.Silo) bool { return s.Status.Host == "hv1" })
+	time.Sleep(200 * time.Millisecond) // the controller has seen its own placement come back
+	var lost v1.Host
+	_ = c.Get(ctx, "Host", "", "hv1", &lost)
+	meta.SetCondition(&lost.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionUnknown, Reason: "HostLost", Message: "no heartbeat for 41s"}, time.Now())
+	if err := c.UpdateStatus(ctx, &lost); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(ctx, t, c, "web", func(s *v1.Silo) bool {
+		c := meta.FindCondition(s.Status.Conditions, "HostLost")
+		return c != nil && c.Status == meta.ConditionTrue
+	})
+}

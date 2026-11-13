@@ -253,7 +253,10 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	}
 	key := informer.Key{Namespace: s.Namespace, Name: s.Name}
 	if _, ok := c.assumed[key]; ok {
-		return engine.Result{}, nil // already placed by us; the cache just hasn't caught up
+		if s.Status.Host == "" {
+			return engine.Result{}, nil // already placed by us; the cache just hasn't caught up
+		}
+		delete(c.assumed, key) // it has: from now on the cache is what's true (a lost host, a move)
 	}
 	hosts, silos := c.lists()
 	env := scheduler.Env{Hosts: hosts}

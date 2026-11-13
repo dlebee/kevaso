@@ -11,6 +11,7 @@ import (
 
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kri/hostexec"
+	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/sdk/kplugin"
 	"kevaso.com/core/sdk/kri"
 )
@@ -216,6 +217,9 @@ func (a *Agent) unmountVolumes(ctx context.Context, uid string, s *v1.Silo) erro
 	}
 	if s == nil || s.UID != uid {
 		return nil
+	}
+	if _, moving := moves.Released(s.Status, a.HostName); moving {
+		return nil // moving away: the release says they're unmounted, in the one write it may make
 	}
 	mine := false
 	for _, vs := range s.Status.Volumes {
