@@ -540,7 +540,11 @@ func (r *Runtime) List(context.Context) ([]kri.ID, error) {
 	return ids, nil
 }
 
-// Exec implements kri.Runtime: `docker exec -i`, stdin, stdout, stderr and the exit code passed through.
+// Exec implements kri.Runtime: `docker exec -i`, stdin, stdout, stderr and the exit code passed
+// through; with a terminal, `docker exec -it` on a pseudo-terminal of the agent's own, which the
+// engine's CLI resizes in the container. Killing the CLI doesn't stop the command in the container,
+// so the command carries a marker in its environment and, when ctx is cancelled, every process
+// that has it is killed from the host.
 func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int, error) {
 	if _, ok := r.load(id); !ok {
 		return -1, fmt.Errorf("%s: %w", id, kri.ErrNotFound)
@@ -548,12 +552,24 @@ func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int
 	if st, _, err := r.inspect(ctx, NamesFor(id).Main); err != nil || st != "running" {
 		return -1, fmt.Errorf("%s is not running (%s) %v", id, st, err)
 	}
+	marker := hostexec.NewMarker()
 	args := []string{"exec"}
-	if req.Stdin != nil {
+	switch {
+	case req.TTY != nil:
+		args = append(args, "-i", "-t", "-e", "TERM=xterm-256color")
+	case req.Stdin != nil:
 		args = append(args, "-i")
 	}
+	args = append(args, "-e", kri.ExecMarkerEnv+"="+marker)
 	args = append(append(args, NamesFor(id).Main), req.Command...)
-	return r.Host.Run(ctx, hostexec.Cmd{Name: r.engine(), Args: args, Stdin: req.Stdin, Stdout: orDiscard(req.Stdout), Stderr: orDiscard(req.Stderr)})
+	code, err := r.Host.Run(ctx, hostexec.Cmd{Name: r.engine(), Args: args, Stdin: req.Stdin, Stdout: orDiscard(req.Stdout), Stderr: orDiscard(req.Stderr), TTY: req.TTY})
+	if ctx.Err() != nil {
+		kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		hostexec.KillMarked(kctx, r.Host, marker)
+		return -1, ctx.Err()
+	}
+	return code, err
 }
 
 func orDiscard(w io.Writer) io.Writer {

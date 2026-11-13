@@ -100,6 +100,9 @@ type ExecRequest struct {
 	Stdin   io.Reader
 	Stdout  io.Writer
 	Stderr  io.Writer
+	// TTY, if set, runs the command on a terminal: Stdout gets everything it prints, Stderr isn't
+	// used, and the window follows TTY.Resize. Runtimes that can't make one return ErrNoTTY.
+	TTY *TTY
 }
 
 // ErrNotFound: the silo isn't on this host.
@@ -122,6 +125,8 @@ type Runtime interface {
 	// List returns every silo this runtime has on this host.
 	List(ctx context.Context) ([]ID, error)
 	// Exec runs a command inside a running silo and returns its exit code. ErrNotFound if absent.
+	// When ctx is cancelled (the client went away) Exec stops the command inside the silo, not
+	// only the runtime's own client, before it returns.
 	Exec(ctx context.Context, id ID, req ExecRequest) (int, error)
 }
 

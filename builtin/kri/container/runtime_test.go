@@ -22,13 +22,14 @@ type fake struct {
 	images     map[string]bool
 	pid        int
 	wired      map[int]bool
+	execHook   func(context.Context, hostexec.Cmd) (int, error) // docker exec, if set
 }
 
 func newFake() *fake {
 	return &fake{files: map[string][]byte{}, containers: map[string]string{}, images: map[string]bool{}, pid: 100, wired: map[int]bool{}}
 }
 
-func (f *fake) Run(_ context.Context, c hostexec.Cmd) (int, error) {
+func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
 	f.cmds = append(f.cmds, c.Name+" "+strings.Join(c.Args, " "))
 	a := c.Args
 	out := func(s string) {
@@ -83,6 +84,9 @@ func (f *fake) Run(_ context.Context, c hostexec.Cmd) (int, error) {
 		case "rm":
 			delete(f.containers, a[len(a)-1])
 		case "exec":
+			if f.execHook != nil {
+				return f.execHook(ctx, c)
+			}
 			return 5, nil
 		case "volume":
 			if a[1] == "inspect" {
@@ -214,7 +218,7 @@ func TestLifecycle(t *testing.T) {
 	if st, _ := r.Status(ctx, silo); st.State != kri.Running || st.Address != "10.64.0.3" {
 		t.Fatalf("running: %+v", st)
 	}
-	if code, _ := r.Exec(ctx, silo, kri.ExecRequest{Command: []string{"false"}}); code != 5 || !strings.HasPrefix(f.last("docker exec"), "docker exec "+n.Main+" false") {
+	if code, _ := r.Exec(ctx, silo, kri.ExecRequest{Command: []string{"false"}}); code != 5 || !strings.HasSuffix(f.last("docker exec"), " "+n.Main+" false") {
 		t.Fatalf("exec: %d %s", code, f.last("docker exec"))
 	}
 	// A host reboot: the pause container is gone with its namespace; Start brings both back, rewired.

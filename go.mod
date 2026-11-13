@@ -7,6 +7,8 @@ toolchain go1.27.4
 require (
 	cel.dev/cel-go v0.33.2
 	github.com/charmbracelet/huh v1.0.0
+	github.com/coder/websocket v1.8.14
+	github.com/creack/pty v1.1.24
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/hashicorp/yamux v0.1.2
 	github.com/miekg/dns v1.1.68
