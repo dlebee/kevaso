@@ -44,6 +44,7 @@ func (s *Server) guard(ctx context.Context, t target, old, obj meta.Object) erro
 		s.checkRuntimeFit,
 		func(_ context.Context, t target, obj meta.Object) error { return s.checkMovability(t, obj) },
 		func(_ context.Context, t target, obj meta.Object) error { return s.checkLease(t, obj) },
+		s.checkRouting,
 	} {
 		if err := check(ctx, t, obj); err != nil {
 			return err

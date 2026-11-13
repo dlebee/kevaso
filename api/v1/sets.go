@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"kevaso.com/core/api/meta"
 )
@@ -246,6 +247,9 @@ type ServiceSpec struct {
 	Type     string            `json:"type,omitempty"` // ClusterIP (default) | LoadBalancer
 	// LoadBalancerClass: a plugin's class (e.g. linode-nodebalancer) for type LoadBalancer.
 	LoadBalancerClass string `json:"loadBalancerClass,omitempty"`
+	// RouteWhen: ready (an endpoint only while its readiness probe passes) or running (as soon as
+	// it runs). Required when it selects silos with a readiness probe (design §0.6).
+	RouteWhen string `json:"routeWhen,omitempty"`
 }
 
 // ServicePortSpec is one port: Port on the virtual IP goes to TargetPort on each endpoint (a
@@ -261,8 +265,10 @@ type ServicePortSpec struct {
 type ServiceStatus struct {
 	ClusterIP string `json:"clusterIP,omitempty"`
 	Name      string `json:"name,omitempty"` // NAME.NAMESPACE.kevaso
-	// Endpoints are the Ready silos it sends to now.
+	// Endpoints are the silos it sends to now (routed); Held the ones it selects but holds back,
+	// each with why and since when (routeWhen: ready and not ready, say).
 	Endpoints []ServiceEndpoint `json:"endpoints,omitempty"`
+	Held      []ServiceEndpoint `json:"held,omitempty"`
 	// For type LoadBalancer: the outside address, the node port each port arrives on at the
 	// endpoints' hosts, and where the load balancer's traffic comes from.
 	PublicIP     string           `json:"publicIP,omitempty"`
@@ -277,6 +283,9 @@ type ServiceEndpoint struct {
 	Host    string     `json:"host"`
 	Address string     `json:"address"`
 	Ports   []NodePort `json:"ports"` // Name: the service port, Port: the service's, NodePort: the silo's target
+	// Reason and Since: why a held endpoint is held, and since when.
+	Reason string     `json:"reason,omitempty"`
+	Since  *time.Time `json:"since,omitempty"`
 }
 
 // Selects reports whether a selector picks these labels (an empty selector picks nothing).

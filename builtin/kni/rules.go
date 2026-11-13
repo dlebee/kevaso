@@ -47,6 +47,21 @@ type Silo struct {
 	Leased    []string
 	Closed    []string
 	LeaseFrom []string
+	// Held (design §0.6): its service's routeWhen holds traffic back now (ready, and it isn't).
+	// Its exposed ports and node ports get no outside rule, as if closed, but nothing is cut:
+	// connections it has stay (a lease is access, readiness is load). Private access (allowFrom)
+	// stays too: the private name is held where names are answered (no DNS record).
+	Held bool
+}
+
+// Outside is what one exposed port's outside rule is now: open (a rule) only when its lease, if
+// it's leased, is open and its routing isn't held; cut (end what a lease let in) only when its
+// lease is closed. The two decisions stay apart: either one closes it.
+func Outside(s Silo, port string) (open, cut bool) {
+	if contains(s.Closed, port) {
+		return false, true
+	}
+	return !s.Held, false
 }
 
 // Service is a standalone Service as the rules need it (design §7.1): its virtual IP, sent to its
@@ -215,9 +230,13 @@ func Rules(h Host) string {
 					sources = s.LeaseFrom
 				}
 				// Leased with no lease now (or a lease no source may use): no rule; cut what a
-				// lease let in.
-				if contains(s.Closed, r.name) || (sources != nil && len(sources) == 0) {
+				// lease let in. Held by routing: no rule, nothing cut.
+				open, closed := Outside(s, r.name)
+				if closed || (sources != nil && len(sources) == 0) {
 					cut = append(cut, cutRules(h.Bridge, s.IP, r.proto, r.port, fmt.Sprintf("ct original ip daddr %s", s.PublicIP))...)
+					continue
+				}
+				if !open {
 					continue
 				}
 				dnat = append(dnat, fmt.Sprintf("ip daddr %s %s dport %d dnat ip to %s:%d", s.PublicIP, r.proto, r.port, s.IP, r.port))
@@ -242,8 +261,12 @@ func Rules(h Host) string {
 				if proto == "" {
 					continue
 				}
-				if contains(s.Closed, np.Name) {
+				open, closed := Outside(s, np.Name)
+				if closed {
 					cut = append(cut, cutRules(h.Bridge, s.IP, proto, np.Port, fmt.Sprintf("ct original proto-dst %d", np.NodePort))...)
+					continue
+				}
+				if !open {
 					continue
 				}
 				dnat = append(dnat, fmt.Sprintf("%s%s dport %d dnat ip to %s:%d", src, proto, np.NodePort, s.IP, np.Port))

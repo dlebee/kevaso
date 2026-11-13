@@ -11,6 +11,7 @@ import (
 	"github.com/miekg/dns"
 
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/routing"
 )
 
 // Zone is the private names' domain (design §7.1): NAME.NAMESPACE.kevaso.
@@ -18,7 +19,8 @@ const Zone = "kevaso."
 
 // Lookup answers a private name from the silos: NAME.NAMESPACE.kevaso → the silo's address. ok
 // is false for names outside the zone (forward them); found is false for an unknown silo (NXDOMAIN).
-// Resolving a name grants no connection: allowFrom does. Pure.
+// Resolving a name grants no connection: allowFrom does. A silo its service's routeWhen holds is
+// found with no address (ip invalid): the name exists, but has no record while held. Pure.
 func Lookup(name string, silos []*v1.Silo) (ip netip.Addr, inZone, found bool) {
 	return LookupIn(name, silos, nil)
 }
@@ -43,6 +45,10 @@ func LookupIn(name string, silos []*v1.Silo, svcs []*v1.Service) (ip netip.Addr,
 	}
 	for _, s := range silos {
 		if s.Name == labels[0] && s.Namespace == labels[1] && s.DeletionTimestamp == nil {
+			if !routing.Routed(s) {
+				// Held by its routeWhen (design §0.6): the name exists, with no address now.
+				return netip.Addr{}, true, true
+			}
 			if a, err := netip.ParseAddr(s.Status.Address); err == nil {
 				return a, true, true
 			}
@@ -108,6 +114,7 @@ func (d *DNS) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		switch {
 		case !found:
 			m.Rcode = dns.RcodeNameError
+		case !ip.IsValid(): // held: no record now (NODATA), short-lived
 		case q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY:
 			m.Answer = append(m.Answer, &dns.A{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 5}, A: ip.AsSlice()})
 		}

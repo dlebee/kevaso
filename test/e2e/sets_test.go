@@ -177,12 +177,12 @@ func TestSiloSetsAndServices(t *testing.T) {
 					Command:   []string{"python3", "-c", echoServer},
 					Volumes:   []v1.Volume{{Name: "data", MountPath: "/data"}},
 					Init:      &v1.Init{Steps: []v1.InitStep{{Name: "first", Run: "test -s /data/first || date +%s%N > /data/first"}}},
-					Service:   &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}},
+					Service:   &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}, RouteWhen: v1.RouteWhenReady},
 					AllowFrom: []v1.AllowFrom{{Silo: "client"}},
-					Readiness: &v1.Readiness{Command: []string{"python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/')"}, Period: "3s"},
+					Probes:    &v1.Probes{Readiness: &v1.Probe{HTTP: &v1.HTTPProbe{Port: "http"}, Period: "3s"}},
 				}}}},
 		v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "echo", Namespace: "web3"},
-			Spec: v1.ServiceSpec{Selector: map[string]string{"app": "echo"}, Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "http"}}}},
+			Spec: v1.ServiceSpec{Selector: map[string]string{"app": "echo"}, Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "http"}}, RouteWhen: v1.RouteWhenReady}},
 	}
 	for _, n := range []string{"client", "stranger"} {
 		objs = append(objs, v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: n, Namespace: "web3"},

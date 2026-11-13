@@ -1,7 +1,8 @@
 // Package service is the controller of standalone Services (design §7.1): it gives each one a
 // virtual IP from v1.ServiceCIDR and, for type LoadBalancer, a node port per port (cluster-wide,
-// above the silos' own range), and keeps its endpoints: the Ready silos its selector picks in its
-// namespace, standby instances excluded, each with every port's target there. Every worker turns
+// above the silos' own range), and keeps its endpoints: the silos its selector picks in its
+// namespace, standby instances excluded, each with every port's target there; the ones routeWhen
+// holds back are listed apart (held), with why (design §0.6). Every worker turns
 // that status into rules (builtin/kni); the provider controllers give it its outside address.
 package service
 
@@ -19,15 +20,23 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/routing"
 )
 
 // Endpoints are the silos svc sends to now. Pure.
 func Endpoints(svc *v1.Service, silos []*v1.Silo) []v1.ServiceEndpoint {
-	var out []v1.ServiceEndpoint
+	routed, _ := Split(svc, silos)
+	return routed
+}
+
+// Split is the silos svc selects, routed (its endpoints: what every path to it sends to) and held
+// (selected, running somewhere, but routeWhen says no, or routeWhen isn't stated where it must
+// be), each held one with why and since when (design §0.6). A held endpoint has no rule on any
+// host and is no load-balancer backend; connections it already has are left alone. Pure.
+func Split(svc *v1.Service, silos []*v1.Silo) (routed, held []v1.ServiceEndpoint) {
 	for _, s := range silos {
 		if s.Namespace != svc.Namespace || s.DeletionTimestamp != nil || s.Labels[v1.LabelStandby] == "true" ||
-			!v1.Selects(svc.Spec.Selector, s.Labels) || s.Status.Address == "" || s.Status.Host == "" ||
-			!meta.IsTrue(s.Status.Conditions, "Ready") {
+			!v1.Selects(svc.Spec.Selector, s.Labels) || s.Status.Address == "" || s.Status.Host == "" {
 			continue
 		}
 		ep := v1.ServiceEndpoint{Silo: s.Name, Host: s.Status.Host, Address: s.Status.Address}
@@ -36,12 +45,19 @@ func Endpoints(svc *v1.Service, silos []*v1.Silo) []v1.ServiceEndpoint {
 				ep.Ports = append(ep.Ports, v1.NodePort{Name: p.Name, Port: p.Port, NodePort: t})
 			}
 		}
-		if len(ep.Ports) > 0 {
-			out = append(out, ep)
+		if len(ep.Ports) == 0 {
+			continue
+		}
+		if r := routing.Endpoint(svc, s); r.Routed {
+			routed = append(routed, ep)
+		} else {
+			ep.Reason, ep.Since = r.Reason, r.Since
+			held = append(held, ep)
 		}
 	}
-	v1.SortEndpoints(out)
-	return out
+	v1.SortEndpoints(routed)
+	v1.SortEndpoints(held)
+	return routed, held
 }
 
 // ClusterIP keeps svc's virtual IP, or gives it the lowest free one. Pure.
@@ -155,11 +171,17 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	if err != nil {
 		return engine.Result{}, err
 	}
-	eps := Endpoints(svc, silos)
+	eps, held := Split(svc, silos)
 	cond := meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "Endpoints", ObservedGeneration: svc.Generation,
 		Message: fmt.Sprintf("%d endpoint(s) at %s", len(eps), ip)}
+	if len(held) > 0 {
+		cond.Message += fmt.Sprintf(", %d held", len(held))
+	}
 	if len(eps) == 0 {
-		cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "NoEndpoints", "no Ready silo matches the selector"
+		cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "NoEndpoints", "no running silo matches the selector"
+		if len(held) > 0 {
+			cond.Message = fmt.Sprintf("every selected silo is held (%d): %s", len(held), held[0].Reason)
+		}
 	}
 	for attempt := 0; attempt < 5; attempt++ {
 		var cur v1.Service
@@ -167,7 +189,7 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 			return engine.Result{}, client.IgnoreNotFound(err)
 		}
 		before := jsonOf(cur.Status)
-		cur.Status.ClusterIP, cur.Status.Name, cur.Status.Endpoints, cur.Status.NodePorts = ip, svc.Name+"."+svc.Namespace+".kevaso", eps, nps
+		cur.Status.ClusterIP, cur.Status.Name, cur.Status.Endpoints, cur.Status.Held, cur.Status.NodePorts = ip, svc.Name+"."+svc.Namespace+".kevaso", eps, held, nps
 		if svc.Spec.Type != v1.ServiceLoadBalancer {
 			cur.Status.PublicIP, cur.Status.SourceRanges = "", nil
 		}
@@ -205,7 +227,7 @@ func (c *Controller) Map(changed engine.Key) []engine.Key {
 			continue
 		}
 		was := false
-		for _, ep := range svc.Status.Endpoints {
+		for _, ep := range append(append([]v1.ServiceEndpoint(nil), svc.Status.Endpoints...), svc.Status.Held...) {
 			was = was || ep.Silo == changed.Name
 		}
 		if was || v1.Selects(svc.Spec.Selector, labels) {

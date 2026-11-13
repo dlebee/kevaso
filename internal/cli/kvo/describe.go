@@ -86,9 +86,6 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		if o.Spec.Exclusive {
 			kv(0, "Exclusive", "at most one copy ever runs: updates stop-first, no automatic failover")
 		}
-		if r := o.Spec.Readiness; r != nil {
-			kv(0, "Readiness", strings.Join(r.Command, " ")+" every "+dash(r.Period)+" (default 10s)")
-		}
 		if set := ownerSet(o); set != "" {
 			kv(0, "SiloSet", set+" (revision "+dash(o.Labels[v1.LabelRevision])+")")
 		}
@@ -156,7 +153,9 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			if st.Announce {
 				kv(0, "Announced", "the public IP is routed to the silo's host (BGP)")
 			}
+			tables = append(tables, func() { writeServiceTraffic(tw, o) })
 		}
+		tables = append(tables, func() { writeProbes(tw, o) })
 		if len(o.Spec.Volumes) > 0 {
 			got := map[string]v1.VolumeStatus{}
 			for _, vs := range o.Status.Volumes {
@@ -520,17 +519,28 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			ps = append(ps, x)
 		}
 		kv(0, "Ports", strings.Join(ps, ", "))
-		eps := o.Status.Endpoints
+		rw := o.Spec.RouteWhen
+		if rw == "" {
+			rw = "not stated (running, for silos without a readiness probe)"
+		}
+		kv(0, "Route when", rw)
+		eps, held := o.Status.Endpoints, o.Status.Held
 		tables = append(tables, func() {
-			_, _ = fmt.Fprintf(tw, "Endpoints:\t%d\n", len(eps))
-			if len(eps) > 0 {
-				_, _ = fmt.Fprintln(tw, "  SILO\tHOST\tADDRESS\tPORTS")
-				for _, ep := range eps {
+			_, _ = fmt.Fprintf(tw, "Endpoints:\t%d routed, %d held\n", len(eps), len(held))
+			if len(eps)+len(held) > 0 {
+				_, _ = fmt.Fprintln(tw, "  SILO\tHOST\tADDRESS\tPORTS\tTRAFFIC")
+				row := func(ep v1.ServiceEndpoint, state string) {
 					var tp []string
 					for _, p := range ep.Ports {
 						tp = append(tp, fmt.Sprintf("%s→%d", p.Name, p.NodePort))
 					}
-					_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", ep.Silo, ep.Host, ep.Address, strings.Join(tp, ","))
+					_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", ep.Silo, ep.Host, ep.Address, strings.Join(tp, ","), state)
+				}
+				for _, ep := range eps {
+					row(ep, "routed")
+				}
+				for _, ep := range held {
+					row(ep, heldText(ep))
 				}
 			}
 		})
