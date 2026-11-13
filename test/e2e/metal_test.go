@@ -69,7 +69,7 @@ var metalState struct {
 	s       *metalSuite
 	err     error
 	skip    string
-	touched bool // the machine was reached: the final reset runs
+	touched bool           // the machine was reached: the final reset runs
 	d       *remote.Driver // set with touched, so the reset runs even when setup failed
 }
 
