@@ -13,12 +13,14 @@ import (
 	"net/netip"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"go.yaml.in/yaml/v3"
 	"golang.org/x/crypto/ssh"
 
 	"kevaso.com/core/sdk/kri"
@@ -156,6 +158,24 @@ func TestRenderedFiles(t *testing.T) {
 		if !strings.Contains(ud, want) {
 			t.Errorf("user-data missing %q", want)
 		}
+	}
+	// A disk that moved here kept the old host's exec key until cloud-init's final stage (seen on
+	// Lima: two keys in authorized_keys once the silo was Running on the new host). bootcmd runs
+	// first at every boot, before users (which only adds keys) and before ssh.
+	if b, u := strings.Index(ud, "bootcmd:"), strings.Index(ud, "users:"); b < 0 {
+		t.Errorf("no bootcmd replacing the exec key:\n%s", ud)
+	} else if !strings.Contains(ud[b:], `printf '%s\\n' 'ssh-ed25519 AAAA exec' > /home/kevaso/.ssh/authorized_keys.new`) || u < 0 {
+		t.Errorf("bootcmd:\n%s", ud[b:])
+	}
+	var parsed struct {
+		Bootcmd [][]string `yaml:"bootcmd"`
+	}
+	if err := yaml.Unmarshal([]byte(ud), &parsed); err != nil || len(parsed.Bootcmd) != 1 ||
+		!slices.Equal(parsed.Bootcmd[0], []string{"sh", "-c", BootKeysScript("ssh-ed25519 AAAA exec")}) {
+		t.Errorf("user-data's bootcmd: %v %q", err, parsed.Bootcmd)
+	}
+	if !strings.Contains(BootKeysScript("k"), "mv -f /home/kevaso/.ssh/authorized_keys.new /home/kevaso/.ssh/authorized_keys") {
+		t.Error(BootKeysScript("k"))
 	}
 	n := NamesFor(id("web"))
 	u := Unit(n, 2, 4096, BinDir+"/CLOUDHV_EFI.fd", MAC(id("web")))
