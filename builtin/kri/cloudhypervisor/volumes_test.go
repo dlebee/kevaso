@@ -448,3 +448,23 @@ func TestRootDiskFile(t *testing.T) {
 		}
 	}
 }
+
+// A root disk image on a mount class's folder was -rw-r--r-- on a real host (qemu-img under
+// kevasod's umask): the guest's whole disk, readable by every user on the host and on every host
+// sharing the class. It's the VMM's alone before it's put in place.
+func TestRootFileIsTheVMMsAlone(t *testing.T) {
+	p := RootFilePlan("/img", "/d/root.raw.new", "/d/root.raw", 1<<30)
+	at := func(cmd ...string) int {
+		for i, c := range p {
+			if slices.Equal(c, cmd) {
+				return i
+			}
+		}
+		return -1
+	}
+	mv := at("mv", "-f", "/d/root.raw.new", "/d/root.raw")
+	mode, own := at("chmod", "0600", "/d/root.raw.new"), at("chown", VMMUser+":"+VMMUser, "/d/root.raw.new")
+	if mode < 0 || own < 0 || mv < 0 || mode > mv || own > mv {
+		t.Errorf("root file plan: %v", p)
+	}
+}
