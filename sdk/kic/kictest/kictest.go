@@ -118,10 +118,14 @@ func Conformance(t *testing.T, d kic.Driver, goodAnnotations map[string]string) 
 		{Ingress: "x/y", Host: "a.example.com; evil", Path: "/", Backend: kic.Backend{Address: "10.0.0.1", Port: 80}},
 		{Ingress: "x/y", Host: "a.example.com", Path: "/ { evil", Backend: kic.Backend{Address: "10.0.0.1", Port: 80}},
 		{Ingress: "x/y", Host: "a.example.com", Path: "/", Backend: kic.Backend{Address: "10.0.0.1;", Port: 80}},
+		{Ingress: "x/y\nevil;", Host: "a.example.com", Path: "/", Backend: kic.Backend{Address: "10.0.0.1", Port: 80}},
 	} {
 		if _, err := d.Render(kic.State{Routes: []kic.Route{evil}}); err == nil {
 			t.Errorf("rendered %+v", evil)
 		}
+	}
+	if _, err := d.Render(kic.State{Class: "c\nevil;"}); err == nil {
+		t.Error("rendered a class name with a newline in it")
 	}
 	if _, err := d.Render(kic.State{Challenges: []kic.Challenge{{Token: "t\"; evil", KeyAuthorization: "k"}}}); err == nil {
 		t.Error("rendered a challenge with a quote in it")

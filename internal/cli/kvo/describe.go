@@ -46,7 +46,7 @@ func describe(ctx context.Context, c *client.Client, o opts, stdout io.Writer) e
 
 // describeObject writes an object for people: what it is, what it wants, how it's doing and why.
 func describeObject(w io.Writer, obj meta.Object) error {
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	tw := tabwriter.NewWriter(safeTerminal(w), 0, 0, 2, ' ', 0)
 	kv := func(indent int, k string, v any) {
 		_, _ = fmt.Fprintf(tw, "%s%s:\t%v\n", strings.Repeat("  ", indent), k, v)
 	}

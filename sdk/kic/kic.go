@@ -208,13 +208,21 @@ var (
 	safeToken = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 	safeKA    = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 	safeAddr  = regexp.MustCompile(`^[A-Za-z0-9.:-]+$`)
+	// safeName is an object's name (an IngressClass's) or NAMESPACE/NAME (an Ingress's): drivers
+	// write them into comments and names, where a newline would start a directive.
+	safeName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]([-a-z0-9.]*[a-z0-9])?)?$`)
 )
 
-// CheckState refuses a State whose host names, paths, addresses or challenges hold anything but
-// the characters they are made of, so no driver can be made to paste configuration in.
+// CheckState refuses a State whose host names, paths, addresses, challenges or names hold anything
+// but the characters they are made of, so no driver can be made to paste configuration in.
 func CheckState(s State) error {
+	if s.Class != "" && !safeName.MatchString(s.Class) {
+		return fmt.Errorf("class %q", s.Class)
+	}
 	for _, r := range s.Routes {
 		switch {
+		case !safeName.MatchString(r.Ingress):
+			return fmt.Errorf("ingress %q: not NAMESPACE/NAME", r.Ingress)
 		case !safeHost.MatchString(r.Host):
 			return fmt.Errorf("ingress %s: host %q", r.Ingress, r.Host)
 		case !safePath.MatchString(r.Path):
@@ -224,6 +232,9 @@ func CheckState(s State) error {
 		}
 	}
 	for _, c := range s.Certificates {
+		if c.Ingress != "" && !safeName.MatchString(c.Ingress) {
+			return fmt.Errorf("certificate %s: ingress %q: not NAMESPACE/NAME", c.Name, c.Ingress)
+		}
 		for _, h := range c.Hosts {
 			if !safeHost.MatchString(h) {
 				return fmt.Errorf("certificate %s: host %q", c.Name, h)

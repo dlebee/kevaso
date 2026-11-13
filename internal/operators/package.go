@@ -198,8 +198,8 @@ func ValidName(n string) bool { return pluginNameRE.MatchString(n) }
 var forbidden = []string{"roles", "rolebindings", "clusterroles", "clusterrolebindings", "serviceaccounts/token",
 	"kinddefinitions", "validationpolicies", "mutationpolicies", "plugins", "plugins/status"}
 
-// forbiddenVerbs on a resource: secrets' values and approvals are people's.
-var forbiddenVerbs = map[string][]string{"secrets": {v1.VerbReadValue, v1.VerbApprove}}
+// forbiddenVerbs on a resource: secrets' values and every approval are people's.
+var forbiddenVerbs = map[string][]string{"secrets": {v1.VerbReadValue, v1.VerbApprove}, v1.ResourceExposure: {v1.VerbApprove}}
 
 // Check says everything wrong with a package: its manifest, its objects' names, policies that
 // reach beyond the package's own kinds, and roles that would give its controller powers no

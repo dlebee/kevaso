@@ -1,0 +1,14 @@
+NAME                           AGE
+sessions.example.dev           -
+sessiontemplates.example.dev   -
+
+NAME                           AGE
+sessions.example.dev           -
+sessiontemplates.example.dev   -
+
+Name:    sessions.example.dev
+Labels:  -
+---
+Name:    sessiontemplates.example.dev
+Labels:  -
+---

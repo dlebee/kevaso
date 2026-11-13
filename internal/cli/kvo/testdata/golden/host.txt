@@ -1,0 +1,28 @@
+NAME   INTERNAL IP   EXTERNAL IP    REGION       COMPONENTS             RUNTIMES                                   AGE
+hv1    10.0.0.5      203.0.113.10   ca-central   control-plane,worker   cloud-hypervisor:Ready,docker:Installing   <age>
+
+NAME   INTERNAL IP   EXTERNAL IP    REGION       COMPONENTS             RUNTIMES                                   AGE
+hv1    10.0.0.5      203.0.113.10   ca-central   control-plane,worker   cloud-hypervisor:Ready,docker:Installing   <age>
+
+Name:               hv1
+Labels:             -
+Created:            YYYY-MM-DD hh:mm:ss (<age> ago)
+Internal IP:        10.0.0.5
+External IP:        203.0.113.10
+Mesh IP:            10.63.0.2
+Names answered on:  its silos and the mesh
+Region:             ca-central
+Zone:               -
+Components:         control-plane, worker
+Worker labels:      -
+Taints:             gpu=yes:NoSchedule
+Allocatable:        3 CPU, 4886Mi memory
+Last heartbeat:     <age> ago
+Runtimes:
+  NAME              STATE       VERSION  MESSAGE
+  cloud-hypervisor  Ready       v54.1    -
+  docker            Installing  -        3/5 engine
+Conditions:
+  TYPE   STATUS  REASON    SINCE  MESSAGE
+  Ready  True    WorkerUp  <age>     -
+---
