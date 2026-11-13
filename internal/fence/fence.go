@@ -81,8 +81,10 @@ type Silo struct {
 }
 
 // Stops reports whether a silo with this policy is stopped by a fence: only those the control
-// plane may start elsewhere. Wait silos stay put, and so does anything with no policy recorded
-// (an unrecorded silo can't be proven to run elsewhere).
+// plane may start elsewhere. Wait silos stay put. A silo with no policy recorded isn't stopped
+// either (stopping what may be a Wait silo is its own harm); the agent records a silo before it
+// starts it and keeps it until its runtime no longer has it, so a running silo without a record is
+// a fault, which the watcher logs and the agent reports once in contact (Faults).
 func Stops(policy string) bool {
 	return policy == v1.OnHostLossRecreate || policy == v1.OnHostLossMove
 }
@@ -174,6 +176,69 @@ func Read(dir string) (Record, error) {
 	return r, json.Unmarshal(b, &r)
 }
 
+// FaultsFile is the watcher's report of its last fence, for the agent to pick up.
+const FaultsFile = "faults.json"
+
+// ConditionFaults is the Host condition the agent reports a fence's faults with.
+const ConditionFaults = "FenceFaults"
+
+// Faults is what the watcher found during a fence: running silos it has no record of (and so left
+// running). Empty Silos: a clean fence.
+type Faults struct {
+	At    time.Time `json:"at"`
+	Silos []Silo    `json:"silos"` // OnHostLoss empty: not recorded
+}
+
+// WriteFaults saves the report atomically.
+func WriteFaults(dir string, f Faults) error {
+	b, err := json.Marshal(f)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, "."+FaultsFile+".tmp")
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, FaultsFile))
+}
+
+// ReadFaults loads the report; ok false when there's none.
+func ReadFaults(dir string) (f Faults, ok bool, err error) {
+	b, err := os.ReadFile(filepath.Join(dir, FaultsFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return f, false, nil
+	}
+	if err != nil {
+		return f, false, err
+	}
+	return f, true, json.Unmarshal(b, &f)
+}
+
+// RemoveFaults removes the report once reported.
+func RemoveFaults(dir string) error {
+	err := os.Remove(filepath.Join(dir, FaultsFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// Unrecorded is, of the silos the runtimes have running, those the record doesn't name. Pure.
+func Unrecorded(r Record, running []Silo) []Silo {
+	known := map[string]bool{}
+	for _, s := range r.Silos {
+		known[s.ID.UID] = true
+	}
+	var out []Silo
+	for _, s := range running {
+		if !known[s.ID.UID] {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID.UID < out[j].ID.UID })
+	return out
+}
+
 // Watcher stops silos when the record says the agent lost its contact.
 type Watcher struct {
 	Dir        string
@@ -185,6 +250,7 @@ type Watcher struct {
 
 	done    map[string]bool // stopped in this fence, by silo UID
 	fencing bool
+	faults  Faults // this fence's
 }
 
 // Check reads the record once and stops what must be stopped.
@@ -201,10 +267,12 @@ func (w *Watcher) Check(ctx context.Context) {
 	stop := Decide(r, now, w.FenceAfter, w.done)
 	cut := !r.LastContact.IsZero() && now.Sub(r.LastContact) > w.FenceAfter
 	switch {
-	case cut && !w.fencing:
+	case cut && r.Fence && !w.fencing:
 		w.fencing = true
+		w.faults = Faults{At: now}
 		w.log("fence: no contact with the control plane recorded for %s (over %s): stopping silos with onHostLoss Recreate or Move",
 			now.Sub(r.LastContact).Round(time.Second), w.FenceAfter)
+		w.writeFaults()
 	case !cut && w.fencing:
 		w.fencing, w.done = false, map[string]bool{}
 		w.log("fence: contact is back: the agent takes over again")
@@ -235,6 +303,50 @@ func (w *Watcher) Check(ctx context.Context) {
 		default:
 			w.log("fence: killing %s/%s: %v (trying again)", s.ID.Namespace, s.ID.Name, err)
 		}
+	}
+	if w.fencing {
+		w.findUnrecorded(ctx, r)
+	}
+}
+
+// findUnrecorded looks, during a fence, for running silos the record doesn't name: a fault (the
+// agent records every silo before starting it). Each is logged loudly once and reported.
+func (w *Watcher) findUnrecorded(ctx context.Context, r Record) {
+	var running []Silo
+	for name, rt := range w.Runtimes {
+		ids, err := rt.List(ctx)
+		if err != nil {
+			w.log("fence: listing %s: %v", name, err)
+			continue
+		}
+		for _, id := range ids {
+			if st, err := rt.Status(ctx, id); err == nil && st.State == kri.Running {
+				running = append(running, Silo{ID: id, Runtime: name})
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for _, s := range w.faults.Silos {
+		seen[s.ID.UID] = true
+	}
+	added := false
+	for _, s := range Unrecorded(r, running) {
+		if seen[s.ID.UID] {
+			continue
+		}
+		w.log("fence: FAULT: %s/%s (uid %s, %s) is running with no recorded policy: left running, it may also be started elsewhere",
+			s.ID.Namespace, s.ID.Name, s.ID.UID, s.Runtime)
+		w.faults.Silos = append(w.faults.Silos, s)
+		added = true
+	}
+	if added {
+		w.writeFaults()
+	}
+}
+
+func (w *Watcher) writeFaults() {
+	if err := WriteFaults(w.Dir, w.faults); err != nil {
+		w.log("fence: writing the faults report: %v", err)
 	}
 }
 

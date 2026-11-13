@@ -2,6 +2,7 @@ package fence
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -181,5 +182,48 @@ func TestUnit(t *testing.T) {
 		if strings.Contains(u, never) {
 			t.Errorf("unit has %q:\n%s", never, u)
 		}
+	}
+}
+
+// A running silo with no record is a fault: the fence leaves it running (it may be a Wait silo),
+// logs it loudly once, and leaves a report for the agent.
+func TestWatcherReportsUnrecordedSilos(t *testing.T) {
+	ctx := context.Background()
+	rt := fake.New()
+	stray := silo("stray", "")
+	for _, s := range []Silo{silo("recreate", v1.OnHostLossRecreate), stray} {
+		_ = rt.Create(ctx, kri.Spec{ID: s.ID})
+		_ = rt.Start(ctx, s.ID)
+	}
+	dir := t.TempDir()
+	now := t0
+	var logs []string
+	w := &Watcher{Dir: dir, Runtimes: map[string]kri.Runtime{"docker": rt}, FenceAfter: 30 * time.Second,
+		Now: func() time.Time { return now }, Log: func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }}
+	_ = Write(dir, Record{LastContact: t0, Fence: true, Silos: []Silo{silo("recreate", v1.OnHostLossRecreate)}})
+	now = t0.Add(10 * time.Second)
+	w.Check(ctx)
+	if _, ok, _ := ReadFaults(dir); ok {
+		t.Fatal("a report before any fence")
+	}
+	now = t0.Add(35 * time.Second)
+	w.Check(ctx)
+	now = t0.Add(36 * time.Second)
+	w.Check(ctx)
+	if st, _ := rt.Status(ctx, stray.ID); st.State != kri.Running {
+		t.Fatalf("the unrecorded silo was stopped: %s", st.State)
+	}
+	f, ok, err := ReadFaults(dir)
+	if err != nil || !ok || len(f.Silos) != 1 || f.Silos[0].ID.UID != stray.ID.UID || !f.At.Equal(t0.Add(35*time.Second)) {
+		t.Fatalf("report: %+v %v %v", f, ok, err)
+	}
+	n := 0
+	for _, l := range logs {
+		if strings.Contains(l, "FAULT") && strings.Contains(l, "dev/stray") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("logged %d times:\n%s", n, strings.Join(logs, "\n"))
 	}
 }

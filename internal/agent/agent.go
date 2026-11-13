@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -85,6 +84,9 @@ type Agent struct {
 	fenced      atomic.Bool
 	silosSynced atomic.Bool
 	fencePrev   fence.Record // the fence record as an earlier run left it (FenceDir)
+	fenceMu     sync.Mutex   // the record: built and written by one at a time
+	recorded    map[string]fence.Silo
+	goneChecked time.Time
 	broker      *Broker
 	prepared    sync.Map // silo uid → struct{}: the guest helper is in place for this agent's run
 	kept        sync.Map // silo uid → keptState: its daemons and upkeep as this agent last decided
@@ -126,39 +128,6 @@ func (a *Agent) fenceApplies() bool {
 	return a.fencePrev.Fence
 }
 
-// fenceRecord is what the fence watcher gets: the last contact, and this host's silos' policies
-// (once the silos are known; until then, what an earlier run recorded).
-func (a *Agent) fenceRecord() fence.Record {
-	r := fence.Record{Written: a.now().UTC(), LastContact: a.fencePrev.LastContact, Fence: a.fenceApplies(), Silos: a.fencePrev.Silos}
-	if a.LastContact != nil {
-		if last := a.LastContact(); last.After(r.LastContact) {
-			r.LastContact = last.UTC()
-		}
-	}
-	if a.silos == nil || !a.silosSynced.Load() {
-		return r
-	}
-	r.Silos = nil
-	for _, o := range a.silos.List() {
-		s := o.(*v1.Silo)
-		if s.Status.Host != a.HostName || s.DeletionTimestamp != nil {
-			continue
-		}
-		r.Silos = append(r.Silos, fence.Silo{ID: idOf(s), Runtime: s.Spec.Runtime, OnHostLoss: s.Policy()})
-	}
-	sort.Slice(r.Silos, func(i, j int) bool { return r.Silos[i].ID.UID < r.Silos[j].ID.UID })
-	return r
-}
-
-func (a *Agent) writeFenceRecord() {
-	if a.FenceDir == "" {
-		return
-	}
-	if err := fence.Write(a.FenceDir, a.fenceRecord()); err != nil {
-		a.log("fence record: %v", err)
-	}
-}
-
 // fence runs while the agent runs: on losing contact it stops Recreate silos; on getting it back
 // it looks at every silo again (the ones recreated elsewhere get removed).
 func (a *Agent) fence(ctx context.Context, e *engine.Engine) {
@@ -170,7 +139,10 @@ func (a *Agent) fence(ctx context.Context, e *engine.Engine) {
 			return
 		case <-t.C:
 		}
-		a.writeFenceRecord()
+		a.writeFenceRecord(ctx)
+		if !a.cutOff() {
+			a.reportFenceFaults(ctx)
+		}
 		switch cut := a.cutOff(); {
 		case cut && !a.fenced.Load():
 			a.fenced.Store(true)
@@ -385,6 +357,9 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		}); err != nil {
 			return engine.Result{}, err
 		}
+		if err := a.recordForFence(s); err != nil {
+			return engine.Result{}, err
+		}
 		if err := rt.Create(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
 			Volumes: vols, Command: s.Spec.Command, DiskHostPath: diskPath}); err != nil {
 			_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
@@ -411,6 +386,10 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			if err != nil || !done {
 				return engine.Result{}, err
 			}
+		}
+		// Its policy is in the fence record before it runs, never after: a fence must know it.
+		if err := a.recordForFence(s); err != nil {
+			return engine.Result{}, err
 		}
 		if err := rt.Start(ctx, id); err != nil {
 			return engine.Result{}, err
