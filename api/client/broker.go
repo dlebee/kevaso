@@ -22,7 +22,7 @@ const (
 	OpWatch      = "watch"       // a stream of events: a secret or grant changed, re-read
 	OpIngress    = "ingress"     // an ingress controller silo's routes, certificates and ACME answers
 	OpPane       = "pane"        // report a pane's latest state (design §10.1); nothing comes back
-	OpPaneBundle = "pane-bundle" // upload an HTML pane's bundle (Payload), named by its digest
+	OpPaneBundle = "pane-bundle" // upload an HTML pane's bundle (Payload; format: v1.PaneBundleMaxBytes), named by its digest
 	OpPortOpen   = "port-open"   // open a leased port (Name) for a while (For) (design §7.2d)
 	OpPortClose  = "port-close"  // close a leased port early
 )

@@ -95,16 +95,12 @@ func isNil(o meta.Object) bool {
 }
 
 // admitBuiltin is admit for a built-in kind's create or update, with what's new in M17 around it:
-// checks of KindDefinitions and policies themselves, mutation policies first, then the built-in
-// guards (guards.go) on the object as mutated, the kind's rules, and validation policies last.
+// checks of policies themselves (no policy applies to them), mutation policies first, then the
+// built-in guards (guards.go, which check KindDefinitions too) on the object as mutated, the
+// kind's rules, and validation policies last.
 // old is nil on create.
 func (s *Server) admitBuiltin(ctx context.Context, t target, old, obj meta.Object) ([]byte, error) {
 	switch o := obj.(type) {
-	case *v1.KindDefinition:
-		prev, _ := old.(*v1.KindDefinition)
-		if err := s.checkDefinition(ctx, o, prev); err != nil {
-			return nil, err
-		}
 	case *v1.ValidationPolicy:
 		if err := admission.CheckValidationPolicy(o); err != nil {
 			return nil, errf(http.StatusUnprocessableEntity, "Invalid", "ValidationPolicy %s: %v", o.Name, err)
@@ -123,7 +119,7 @@ func (s *Server) admitBuiltin(ctx context.Context, t target, old, obj meta.Objec
 	}
 	req := s.admissionRequest(ctx, t, isNil(old), t.kind.Kind)
 	if !set.Applies(req) {
-		if err := s.guard(ctx, t, obj); err != nil {
+		if err := s.guard(ctx, t, old, obj); err != nil {
 			return nil, err
 		}
 		return s.admit(t.kind.Kind, obj)
@@ -138,7 +134,7 @@ func (s *Server) admitBuiltin(ctx context.Context, t target, old, obj meta.Objec
 	if err := s.checkMutatedPrivileges(ctx, t, before, obj); err != nil {
 		return nil, err
 	}
-	if err := s.guard(ctx, t, obj); err != nil { // on the object as mutated: policies can't get past them
+	if err := s.guard(ctx, t, old, obj); err != nil { // on the object as mutated: policies can't get past them
 		return nil, err
 	}
 	data, err := s.admit(t.kind.Kind, obj)

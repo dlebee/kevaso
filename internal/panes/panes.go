@@ -29,7 +29,7 @@ type Limits struct {
 }
 
 // Defaults: a few updates a second, a few hundred KiB per pane.
-var Defaults = Limits{MaxReport: 16 << 10, MaxData: 64 << 10, MaxBundle: 512 << 10, Rate: 4, Burst: 8, MaxTTL: time.Hour}
+var Defaults = Limits{MaxReport: 16 << 10, MaxData: 64 << 10, MaxBundle: v1.PaneBundleMaxBytes, Rate: 4, Burst: 8, MaxTTL: time.Hour}
 
 const defaultMaxPanes = 4
 

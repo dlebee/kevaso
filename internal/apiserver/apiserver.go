@@ -595,10 +595,7 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		}
 	}
 	next.GetObjectMeta().ResourceVersion = om.ResourceVersion
-	if errs := transition(old, next); len(errs) > 0 && !t.status {
-		return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %s", t.kind.Kind, om.Name, joinMessages(errs))
-	}
-	data, err := s.admitBuiltin(ctx, t, old, next)
+	data, err := s.admitBuiltin(ctx, t, old, next) // transition: a guard, after mutation policies
 	if err != nil {
 		return store.Object{}, err
 	}

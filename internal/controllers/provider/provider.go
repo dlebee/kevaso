@@ -267,18 +267,34 @@ func (c *LoadBalancers) Reconcile(ctx context.Context, k engine.Key) (engine.Res
 		nps[np.Name] = np.NodePort
 	}
 	closed, leaseEnd := c.leased(s)
+	from := sources(s)
+	var unenforced []string // ports with sources this class can't limit: left out
 	for _, sp := range s.Spec.Service.Ports {
 		if slices.Contains(closed, sp.Name) {
 			continue
+		}
+		src := from[sp.Name]
+		if src != nil && len(src) == 0 {
+			continue // no source may reach it
+		}
+		// An announced address arrives at the silo's host with the client's own source, and the
+		// host's rules check it. Otherwise only the load balancer sees clients.
+		if !pc.Announce {
+			if src != nil && !pc.FiltersSources {
+				unenforced = append(unenforced, sp.Name)
+				continue
+			}
+		} else {
+			src = nil
 		}
 		proto := "TCP"
 		if strings.EqualFold(sp.Protocol, "UDP") {
 			proto = "UDP"
 		}
-		lb.Ports = append(lb.Ports, kplugin.Port{Name: sp.Name, Protocol: proto, Port: sp.Port, NodePort: nps[sp.Name]})
+		lb.Ports = append(lb.Ports, kplugin.Port{Name: sp.Name, Protocol: proto, Port: sp.Port, NodePort: nps[sp.Name], AllowFrom: src})
 	}
 	// Silos and hosts change all the time (status, heartbeats); the cloud only when this does.
-	reqKey := fmt.Sprintf("%+v", lb)
+	reqKey := fmt.Sprintf("%+v %v", lb, unenforced) // what's left out shows in its condition
 	resync := c.Resync
 	if resync <= 0 {
 		resync = 10 * time.Minute
@@ -304,8 +320,14 @@ func (c *LoadBalancers) Reconcile(ctx context.Context, k engine.Key) (engine.Res
 		if s.Spec.Network.Egress.Source == v1.EgressSameAsService {
 			ss.Service.EgressIP = st.Address
 		}
-		meta.SetCondition(&ss.Conditions, meta.Condition{Type: "LoadBalancer", Status: meta.ConditionTrue, Reason: "Ready",
-			Message: class + " at " + st.Address, ObservedGeneration: s.Generation}, c.now())
+		cond := meta.Condition{Type: "LoadBalancer", Status: meta.ConditionTrue, Reason: "Ready",
+			Message: class + " at " + st.Address, ObservedGeneration: s.Generation}
+		if len(unenforced) > 0 {
+			cond.Status, cond.Reason = meta.ConditionFalse, "SourcesNotEnforced"
+			cond.Message = fmt.Sprintf("%s at %s without %s: class %s can't limit client sources (allowFrom), and its hosts only see the load balancer's; use an announced class or hostPort, or drop allowFrom",
+				class, st.Address, strings.Join(unenforced, ", "), class)
+		}
+		meta.SetCondition(&ss.Conditions, cond, c.now())
 	}); err != nil {
 		return engine.Result{}, err
 	}

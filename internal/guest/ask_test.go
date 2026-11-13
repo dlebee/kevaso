@@ -69,12 +69,18 @@ func TestAskReportsADenial(t *testing.T) {
 	}
 }
 
+// The context ends while Ask waits between polls (cancelled once the broker said "pending", with
+// a poll interval it would never reach): no deadline racing the calls themselves.
 func TestAskStopsWithTheContext(t *testing.T) {
 	f := &fakeBroker{answers: []client.BrokerResponse{{Pending: &client.ApprovalWait{Name: "a"}}}}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, err := Ask(ctx, f.dial, client.BrokerRequest{Op: client.OpGetSecret, Name: "x"}, 5*time.Millisecond, nil); err == nil || !strings.Contains(err.Error(), "stopped waiting") {
+	_, err := Ask(ctx, f.dial, client.BrokerRequest{Op: client.OpGetSecret, Name: "x"}, time.Hour, func(client.ApprovalWait) { cancel() })
+	if err == nil || !strings.Contains(err.Error(), "stopped waiting") {
 		t.Fatalf("Ask = %v", err)
+	}
+	if len(f.got) != 1 {
+		t.Fatalf("%d requests, want the one", len(f.got))
 	}
 }
 

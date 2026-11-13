@@ -22,6 +22,8 @@ import (
 // from the channel, as for secrets); the control plane checks the limits, keeps the latest report
 // per pane as a Pane object, and keeps HTML bundles as opaque blobs: weighed and hashed, never
 // read. A bundle leaves only through GET …/panes/NAME/bundle, as a download no browser renders.
+// Its format (ADR 0007, v1.PaneBundleMaxBytes) is between the silo and the panes app: nothing
+// here parses it, and nothing should.
 
 // bundleKind is where bundles are stored: not an API kind, so the generic API never serves one.
 const bundleKind = "PaneBundle"

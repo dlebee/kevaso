@@ -481,9 +481,11 @@ func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int
 }
 
 // runGuest runs req on the guest over ssh, as root through sudo. The command carries a marker in
-// its environment; if ctx is cancelled (the client went away) the session is signalled and closed,
-// and a second session kills whatever still has the marker, since sshd doesn't kill a command
-// without a terminal when its channel closes.
+// its environment, and sudo, which waits for it, on its command line; if ctx is cancelled (the
+// client went away) the session is signalled and closed, and a second session sweeps it
+// (hostexec.SweepScript), since sshd doesn't kill a command without a terminal when its channel
+// closes: everything below sudo and in the ssh session (sshd makes each one a session), so a
+// command that cleared its environment goes too.
 func runGuest(ctx context.Context, c *ssh.Client, req kri.ExecRequest) (int, error) {
 	sess, err := c.NewSession()
 	if err != nil {

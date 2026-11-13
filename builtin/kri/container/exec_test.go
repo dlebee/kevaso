@@ -3,6 +3,7 @@ package container
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -42,11 +43,34 @@ func TestExecWithATerminal(t *testing.T) {
 	}
 }
 
-// The client goes away mid-command: killing docker exec leaves the command running in the
-// container, so everything carrying the exec's marker is killed from the host.
-func TestExecCancelledKillsTheCommandInTheContainer(t *testing.T) {
+// proc puts one process in the fake host's /proc: its stat (parent, session), cgroup, environment.
+func proc(f *fake, pid, ppid, sid int, cgroup string, env ...string) {
+	stat := fmt.Sprintf("%d (some (odd) name) S %d %d %d 0 -1", pid, ppid, sid, sid)
+	_ = f.WriteFile(fmt.Sprintf("/proc/%d/stat", pid), []byte(stat), 0o644)
+	_ = f.WriteFile(fmt.Sprintf("/proc/%d/cgroup", pid), []byte(cgroup), 0o644)
+	e := ""
+	for _, v := range env {
+		e += v + "\x00"
+	}
+	_ = f.WriteFile(fmt.Sprintf("/proc/%d/environ", pid), []byte(e), 0o644)
+}
+
+const (
+	inSilo  = "0::/system.slice/docker-abc.scope\n"
+	outside = "0::/system.slice/containerd.service\n"
+)
+
+// cancelled runs a command that start lays out in /proc, cancels it once it's found, and returns
+// the sweep's signals.
+func cancelled(t *testing.T, start func(f *fake, marker string)) (stop, kill string) {
+	t.Helper()
 	r, f := runningSilo(t)
-	started := make(chan string, 1)
+	r.ExecFind = 2 * time.Second
+	initPID := f.pid
+	proc(f, 50, 1, 50, outside)                        // the engine's shim
+	proc(f, initPID, 50, initPID, inSilo, "PATH=/bin") // the silo's own init
+	proc(f, 200, 50, 200, inSilo, "PATH=/bin")         // an exec that was there before
+	started := make(chan struct{})
 	f.execHook = func(ctx context.Context, c hostexec.Cmd) (int, error) {
 		var marker string
 		for i, a := range c.Args {
@@ -54,11 +78,11 @@ func TestExecCancelledKillsTheCommandInTheContainer(t *testing.T) {
 				marker = v
 			}
 		}
-		// What the host's /proc shows: the command and a child it started, and an unrelated process.
-		f.files["/proc/4242/environ"] = []byte("PATH=/bin\x00" + kri.ExecMarkerEnv + "=" + marker + "\x00HOME=/root\x00")
-		f.files["/proc/4243/environ"] = []byte(kri.ExecMarkerEnv + "=" + marker + "\x00")
-		f.files["/proc/77/environ"] = []byte("PATH=/bin\x00" + kri.ExecMarkerEnv + "=someone-else\x00")
-		started <- marker
+		if marker == "" {
+			t.Error("no marker in the exec's environment")
+		}
+		start(f, marker)
+		close(started)
 		<-ctx.Done() // the CLI is killed; the container's processes aren't
 		return -1, ctx.Err()
 	}
@@ -68,9 +92,7 @@ func TestExecCancelledKillsTheCommandInTheContainer(t *testing.T) {
 		_, err := r.Exec(ctx, silo, kri.ExecRequest{Command: []string{"sleep", "1000"}})
 		errc <- err
 	}()
-	if m := <-started; m == "" {
-		t.Fatal("no marker in the exec's environment")
-	}
+	<-started
 	cancel()
 	select {
 	case err := <-errc:
@@ -80,15 +102,44 @@ func TestExecCancelledKillsTheCommandInTheContainer(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("exec didn't return after its context was cancelled")
 	}
-	kill := f.last("kill ")
-	if kill != "kill -KILL 4242 4243" && kill != "kill -KILL 4243 4242" {
-		t.Fatalf("want both marked processes killed and nothing else, ran %q", kill)
+	return f.last("kill -STOP"), f.last("kill -KILL")
+}
+
+// The client goes away mid-command: killing docker exec leaves the command running in the
+// container, so the host sweeps it: what carries the exec's marker, and its session.
+func TestExecCancelledKillsTheCommandInTheContainer(t *testing.T) {
+	_, kill := cancelled(t, func(f *fake, m string) {
+		proc(f, 4242, 50, 4242, inSilo, "PATH=/bin", kri.ExecMarkerEnv+"="+m, "HOME=/root")
+		proc(f, 4243, 4242, 4242, inSilo, kri.ExecMarkerEnv+"="+m)
+		proc(f, 77, 50, 77, inSilo, "PATH=/bin", kri.ExecMarkerEnv+"=someone-else")
+	})
+	if kill != "kill -KILL 4242 4243" {
+		t.Fatalf("want both of its processes killed and nothing else, ran %q", kill)
+	}
+}
+
+// `kvo exec -- env -i sh -c 'sleep 1000 & sleep 1000'`: nothing carries the marker by the time
+// the client goes, but the host saw the exec's first process start: its whole session goes,
+// including a child that left the tree (reparented to the silo's init).
+func TestExecCancelledKillsACommandThatClearedItsEnvironment(t *testing.T) {
+	stop, kill := cancelled(t, func(f *fake, _ string) {
+		proc(f, 4300, 50, 4300, inSilo)         // env -i … : its environment is empty now
+		proc(f, 4301, 4300, 4300, inSilo)       // sleep, its child
+		proc(f, 4302, 100, 4300, inSilo)        // a background sleep, reparented to init
+		proc(f, 4400, 100, 4400, inSilo, "A=b") // something the silo started itself (setsid)
+		proc(f, 4500, 4499, 4500, outside, "")  // not in the silo at all
+	})
+	if kill != "kill -KILL 4300 4301 4302" {
+		t.Fatalf("want the exec's session killed and nothing else, ran %q", kill)
+	}
+	if stop != "kill -STOP 4300 4301 4302" {
+		t.Fatalf("want it stopped first, ran %q", stop)
 	}
 }
 
 func TestExecFinishedKillsNothing(t *testing.T) {
 	r, f := runningSilo(t)
-	f.files["/proc/9/environ"] = []byte(kri.ExecMarkerEnv + "=x\x00")
+	_ = f.WriteFile("/proc/9/environ", []byte(kri.ExecMarkerEnv+"=x\x00"), 0o644)
 	if code, err := r.Exec(context.Background(), silo, kri.ExecRequest{Command: []string{"false"}}); code != 5 || err != nil {
 		t.Fatalf("exec: %d %v", code, err)
 	}

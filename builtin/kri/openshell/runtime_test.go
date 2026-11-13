@@ -176,7 +176,7 @@ func TestLifecycle(t *testing.T) {
 	f.execCode = 7
 	var out strings.Builder
 	code, err := r.Exec(ctx, silo, kri.ExecRequest{Command: []string{"sh", "-c", "cat; exit 7"}, Stdin: strings.NewReader("hi"), Stdout: &out})
-	if err != nil || code != 7 || out.String() != "hi" || !strings.Contains(f.cmds[len(f.cmds)-1], "sandbox exec -n "+SandboxName(silo)+" --no-tty -- env KEVASO_EXEC=") ||
+	if err != nil || code != 7 || out.String() != "hi" || !strings.Contains(f.cmds[len(f.cmds)-1], "sandbox exec -n "+SandboxName(silo)+" --no-tty -- sh -c ") ||
 		!strings.HasSuffix(f.cmds[len(f.cmds)-1], " sh -c cat; exit 7") {
 		t.Fatalf("exec: %d %q %v %s", code, out.String(), err, f.cmds[len(f.cmds)-1])
 	}

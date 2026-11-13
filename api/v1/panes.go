@@ -47,7 +47,8 @@ type PaneReport struct {
 	Progress *float64    `json:"progress,omitempty"` // 0…1
 	Message  string      `json:"message,omitempty"`
 	Fields   []PaneField `json:"fields,omitempty"`
-	// HTML: the bundle's digest (sha256:…, uploaded once) and the data pushed to it.
+	// HTML: the bundle's digest (sha256:…, uploaded once) and the data pushed to it. The bundle's
+	// format is ADR 0007's (see PaneBundleMaxBytes); the control plane never opens it.
 	Bundle string          `json:"bundle,omitempty"`
 	Data   json.RawMessage `json:"data,omitempty"`
 	TTL    string          `json:"ttl,omitempty"` // past it without an update, the pane is stale
@@ -73,3 +74,21 @@ func (p *Pane) Stale(now time.Time) bool {
 	}
 	return now.Sub(*p.Status.UpdatedAt) > ttl
 }
+
+// An HTML pane's bundle (ADR 0007) is one of:
+//
+//   - a POSIX ustar archive of regular files and folders only, holding index.html at its root:
+//     relative names (no leading /, no empty, . or .. parts, no backslash or control characters,
+//     under 256 bytes), at most PaneBundleMaxFiles files unpacking to at most
+//     PaneBundleMaxUnpacked bytes;
+//   - anything else: the pane's index.html, as it is.
+//
+// Either way it's at most PaneBundleMaxBytes, and named by its sha256 digest. The control plane
+// only weighs and hashes it: it's opened by the panes app, which refuses anything else, and built
+// by `kvo-guest pane html --bundle DIR` (sorted names, zeroed times and owners, modes 0644 and
+// 0755, so the same files give the same digest).
+const (
+	PaneBundleMaxBytes    = 512 << 10
+	PaneBundleMaxFiles    = 256
+	PaneBundleMaxUnpacked = 8 << 20
+)

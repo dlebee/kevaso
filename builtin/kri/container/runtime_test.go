@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
@@ -16,6 +17,7 @@ import (
 
 // fake is a host with a container engine that keeps containers in memory.
 type fake struct {
+	fmu        sync.Mutex // files: Exec looks for its command from another goroutine
 	files      map[string][]byte
 	cmds       []string
 	containers map[string]string // name → status
@@ -106,14 +108,23 @@ func indexOf(l []string, v string) int {
 	return -1
 }
 
-func (f *fake) WriteFile(p string, d []byte, _ os.FileMode) error { f.files[p] = d; return nil }
+func (f *fake) WriteFile(p string, d []byte, _ os.FileMode) error {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	f.files[p] = d
+	return nil
+}
 func (f *fake) ReadFile(p string) ([]byte, error) {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
 	if b, ok := f.files[p]; ok {
 		return b, nil
 	}
 	return nil, os.ErrNotExist
 }
 func (f *fake) RemoveAll(p string) error {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
 	for k := range f.files {
 		if k == p || strings.HasPrefix(k, p+"/") {
 			delete(f.files, k)
@@ -122,6 +133,8 @@ func (f *fake) RemoveAll(p string) error {
 	return nil
 }
 func (f *fake) Glob(pattern string) ([]string, error) {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
 	var out []string
 	for k := range f.files {
 		if ok, _ := filepath.Match(pattern, k); ok {
