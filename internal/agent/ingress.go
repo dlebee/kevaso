@@ -42,11 +42,14 @@ type ingressLoop struct {
 	a       *Agent
 	classes *informer.Informer
 	applied map[string]string // silo uid → the plan in effect ("?": unknown, the last try failed midway)
+	// lastGood is the state last applied in full to each controller silo. While the class is held
+	// (an Ingress refused), it's what keeps serving, with the current ACME challenges in it.
+	lastGood map[string]kic.State
 	kick    chan struct{}
 }
 
 func (a *Agent) runIngress(ctx context.Context) {
-	l := &ingressLoop{a: a, classes: informer.New(a.Client, "IngressClass"), applied: map[string]string{}, kick: make(chan struct{}, 1)}
+	l := &ingressLoop{a: a, classes: informer.New(a.Client, "IngressClass"), applied: map[string]string{}, lastGood: map[string]kic.State{}, kick: make(chan struct{}, 1)}
 	l.classes.AddHandler(func(informer.Key) { l.poke() })
 	go l.classes.Run(ctx)
 	if !l.classes.WaitSynced(ctx) || !a.silos.WaitSynced(ctx) {
@@ -106,6 +109,7 @@ func (l *ingressLoop) once(ctx context.Context) {
 	for uid := range l.applied {
 		if !seen[uid] {
 			delete(l.applied, uid) // not a controller here any more: a new one starts from what's there
+			delete(l.lastGood, uid)
 		}
 	}
 }
@@ -123,6 +127,7 @@ func (l *ingressLoop) apply(ctx context.Context, s *v1.Silo, classes []*v1.Ingre
 	}
 	report := ingressReport{silo: s, class: d.Class}
 	drv, err := IngressDrivers.Get(d.Driver)
+	state, held := d.State, false
 	switch {
 	case d.Problem != "":
 		report.rejected = d.Problem
@@ -138,19 +143,26 @@ func (l *ingressLoop) apply(ctx context.Context, s *v1.Silo, classes []*v1.Ingre
 			}
 		}
 		report.applied = l.applied[s.UID]
+		// The class holds its last good configuration, but ACME challenges aren't anyone's
+		// configuration: one refused Ingress mustn't stop every certificate in the class from
+		// being issued or renewed. Serve the last good state with today's challenges in it.
+		if lg, ok := l.lastGood[s.UID]; ok && err == nil {
+			state, held = lg, true
+			state.Challenges = d.State.Challenges
+		}
 	}
 	if report.rejected == "" {
-		if err := kic.Validate(drv, d.State); err != nil {
+		if err := kic.Validate(drv, state); err != nil {
 			report.rejected = err.Error()
 		}
 	}
 	var plan kic.Plan
-	if report.rejected == "" {
-		if plan, err = drv.Render(d.State); err != nil {
-			report.rejected = "render: " + err.Error()
+	if report.rejected == "" || held {
+		if plan, err = drv.Render(state); err != nil {
+			report.rejected, held = "render: "+err.Error(), false
 		}
 	}
-	if report.rejected == "" {
+	if report.rejected == "" || held {
 		id := idOf(s)
 		exec := func(ctx context.Context, argv []string, stdin []byte) (int, string, error) {
 			var out bytes.Buffer
@@ -179,7 +191,18 @@ func (l *ingressLoop) apply(ctx context.Context, s *v1.Silo, classes []*v1.Ingre
 			return err
 		}
 		l.applied[s.UID] = res.Hash
-		report.applied, report.rejected, report.blamed = res.Hash, res.Rejected, res.Blamed
+		if held {
+			// Still held: say so, whatever the challenges did.
+			report.applied = res.Hash
+			if res.Rejected != "" {
+				report.rejected, report.blamed = res.Rejected, res.Blamed
+			}
+		} else {
+			report.applied, report.rejected, report.blamed = res.Hash, res.Rejected, res.Blamed
+			if res.Rejected == "" {
+				l.lastGood[s.UID] = d.State
+			}
+		}
 		switch {
 		case res.Changed:
 			a.log("ingress controller %s/%s: class %s applied (%s: %d routes, %d certificates, %d challenges)",

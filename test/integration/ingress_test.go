@@ -21,6 +21,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kic/nginx"
 	"kevaso.com/core/internal/agent"
+	"kevaso.com/core/internal/controllers/certificate"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/ingress/ingresstest"
 	"kevaso.com/core/sdk/kri"
@@ -220,6 +221,29 @@ func TestIngress(t *testing.T) {
 	if _, w, r := proxy.Snapshot(); r != 1 || len(w) != len(writes) {
 		t.Fatalf("a refused annotation touched the proxy: reloads %d, writes %v", r, w)
 	}
+	// Held, an ACME challenge still gets served (one refused Ingress mustn't stop every
+	// certificate in the class): the last good config plus the challenge, and the class still
+	// says why it's held. Found on the metal machine: Let's Encrypt's HTTP-01 got a 404.
+	chal := certificate.HTTP01Solver{Store: c.store, Now: time.Now}
+	token := "tok-held-0123456789abcdefABCDEF_-"
+	if err := chal.Present(c.ctx, "other.example.com", token, token+".thumb"); err != nil {
+		t.Fatal(err)
+	}
+	wait("a challenge served while held", func(files map[string][]byte, _ []string, reloads int) bool {
+		return reloads == 2 && strings.Contains(string(files[nginx.ConfigPath]), token)
+	})
+	waitClass("still refused", func(cl *v1.IngressClass) bool {
+		cd := meta.FindCondition(cl.Status.Conditions, "Applied")
+		return cd != nil && cd.Status == meta.ConditionFalse && len(cl.Status.Controllers) == 1 && len(cl.Status.Controllers[0].Blamed) == 1
+	})
+	if err := chal.CleanUp(c.ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	wait("the challenge gone, held", func(files map[string][]byte, _ []string, reloads int) bool {
+		return reloads == 3 && !strings.Contains(string(files[nginx.ConfigPath]), token)
+	})
+	_, writes, _ = proxy.Snapshot()
+
 	// Fixed (the annotation dropped): the same config as before, so still nothing to do.
 	if err := c.admin.Get(c.ctx, "Ingress", "payments", "api", &cur); err != nil {
 		t.Fatal(err)
@@ -232,7 +256,7 @@ func TestIngress(t *testing.T) {
 		cd := meta.FindCondition(cl.Status.Conditions, "Applied")
 		return cd != nil && cd.Status == meta.ConditionTrue
 	})
-	if _, w, r := proxy.Snapshot(); r != 1 || len(w) != len(writes) {
+	if _, w, r := proxy.Snapshot(); r != 3 || len(w) != len(writes) {
 		t.Fatalf("back to the running config, yet touched: reloads %d, writes %v", r, w)
 	}
 
@@ -250,7 +274,7 @@ func TestIngress(t *testing.T) {
 	}
 	wait("renewal", func(files map[string][]byte, _ []string, reloads int) bool {
 		cs := certFiles(files)
-		return reloads == 2 && len(cs) == 1 && cs[0] != firstCert
+		return reloads == 4 && len(cs) == 1 && cs[0] != firstCert
 	})
 	files, w2, _ := proxy.Snapshot()
 	newCert := certFiles(files)[0]
@@ -266,7 +290,7 @@ func TestIngress(t *testing.T) {
 		t.Fatal(err)
 	}
 	wait("deleted", func(files map[string][]byte, _ []string, reloads int) bool {
-		return reloads == 3 && !strings.Contains(string(files[nginx.ConfigPath]), "api.example.com") && len(certFiles(files)) == 0
+		return reloads == 5 && !strings.Contains(string(files[nginx.ConfigPath]), "api.example.com") && len(certFiles(files)) == 0
 	})
 
 	// Keys never reach a log.
