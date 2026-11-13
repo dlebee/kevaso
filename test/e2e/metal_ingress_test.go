@@ -42,6 +42,7 @@ func TestMetalIngress(t *testing.T) {
 			}
 		}
 	})
+	since := strings.TrimSpace(c.mustSh("date -u '+%Y-%m-%d %H:%M:%S'"))
 	var o strings.Builder
 	if code := kvoadm.Run(c.ctx, []string{"ingress", "install", "--host-port", "external", "--context", metalCluster}, strings.NewReader(""), &o, &o); code != 0 {
 		t.Fatalf("kvoadm ingress install: exit %d\n%s", code, o.String())
@@ -131,7 +132,7 @@ spec:
 	if pid == "" {
 		t.Error("nginx's pid file is empty after the reloads: the next config change can't be loaded")
 	}
-	if n := strings.TrimSpace(c.mustSh(`journalctl -u kevasod --no-pager --since '-15min' | grep -c 'ingress-public: reload' || true`)); n != "0" {
+	if n := strings.TrimSpace(c.mustSh(`journalctl -u kevasod --no-pager --since '`+since+`' | grep -c 'ingress-public: reload' || true`)); n != "0" {
 		t.Errorf("%s failed reloads of the ingress controller in kevasod's log", n)
 	}
 
@@ -166,6 +167,9 @@ spec:
 		out, _ := c.kvo("", "get", "certificate", "secure-tls", "-n", ns)
 		return strings.Contains(out, " yes"), out
 	})
+	// Issued while the broken Ingress holds the class (challenges are served anyway); the new
+	// route and its certificate wait for the class to be good again, by design.
+	c.must("", "delete", "ingress", "broken", "-n", ns)
 	c.eventually("443 serves it", 2*time.Minute, func() (bool, string) {
 		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", net.JoinHostPort(c.cfg.ExternalIP, "443"),
 			&tls.Config{ServerName: host, InsecureSkipVerify: true}) // staging roots are untrusted by design; the issuer is checked instead
