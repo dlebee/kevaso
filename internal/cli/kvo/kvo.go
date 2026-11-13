@@ -5,7 +5,10 @@
 //	kvo describe KIND NAME [-n NS]   everything about one object, for people
 //	kvo delete KIND NAME [-n NS]
 //	kvo watch KIND [-n NS|-A]
-//	kvo exec silo NAME [-n NS] -- CMD [ARGS…]   run a command in a silo; exits with its code
+//	kvo exec silo NAME [-n NS] [-it] -- CMD [ARGS…]   run a command in a silo (-t: on a terminal); exits with its code
+//	kvo ssh silo NAME [-n NS]     a login shell in the silo, on a terminal (through the relay; no SSH)
+//	kvo cp SRC DST [--max-size 1GiB]   copy a file or folder in or out: one side is silo/NAME:/PATH
+//	kvo ui silo NAME [--no-browser]   a small local web page for one silo: a terminal and its files
 //	kvo move silo NAME --to HOST [--recreate] [--confirm-fenced]   move it (with its data if it can)
 //	kvo login [SERVER --ca sha256:…] [--context NAME] [--no-browser]   sign in (browser + invite code)
 //	kvo logout                    forget this context's session
@@ -65,6 +68,7 @@ type opts struct {
 	all, noBrowser                           bool
 	secret                                   secretOpts
 	sets                                     setOpts
+	term                                     termOpts // exec -it, cp, ui (terminal.go, copy.go)
 	args                                     []string
 	command                                  []string // after --
 	ctxNamespace                             string   // the context's default namespace
@@ -152,6 +156,12 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.sets.off = true
 		case "--yes":
 			o.sets.yes = true
+		case "-i", "--stdin":
+			// stdin always reaches the command; accepted for people used to docker and kubectl
+		case "-t", "--tty", "-it", "-ti":
+			o.term.tty = true
+		case "--max-size":
+			o.term.maxSize, err = val()
 		default:
 			if strings.HasPrefix(a, "-") && a != "-" {
 				return o, fmt.Errorf("unknown flag %s", a)
@@ -168,7 +178,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|scale|reset|protect|move|pane|create|secret|approve|deny|login|logout|ctx|ns|auth …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|pane|create|secret|approve|deny|login|logout|ctx|ns|auth …")
 		return 2
 	}
 	o, err := parse(args[1:], os.Getenv)
@@ -226,12 +236,20 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		err = reset(ctx, c, o, stdout)
 	case "protect":
 		err = protect(ctx, c, o, stdout)
-	case "exec":
+	case "exec", "ssh":
 		var code int
-		code, err = execIn(ctx, c, o, stdin, stdout, stderr)
+		if args[0] == "ssh" || o.term.tty {
+			code, err = terminal(ctx, c, o, args[0], stdin, stdout)
+		} else {
+			code, err = execIn(ctx, c, o, stdin, stdout, stderr)
+		}
 		if err == nil {
 			return code
 		}
+	case "cp":
+		err = copyFiles(ctx, c, o, stdout, stderr)
+	case "ui":
+		err = siloUI(ctx, c, o, stdout, stderr)
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}

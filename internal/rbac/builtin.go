@@ -33,6 +33,13 @@ var (
 	approvalsAdmin = v1.PolicyRule{Verbs: []string{"get", "list", "watch", "delete"}, Resources: []string{"approvals", "panes"}}
 )
 
+// siloShell is a terminal in a silo (create silos/ssh, kvo ssh) and its files (get silos/files to
+// read, create to write: kvo cp, kvo ui): as strong as exec, so the same roles have it.
+var (
+	siloShell = v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/ssh"}}
+	siloFiles = v1.PolicyRule{Verbs: []string{"get", "create"}, Resources: []string{"silos/files"}}
+)
+
 // BuiltinRoles are the roles of design §9.3: cluster-admin (everything), admin (a namespace, its
 // roles included, and exposing silos publicly), editor (workloads, exec; not public exposure),
 // viewer (read workloads), runner (runs).
@@ -46,11 +53,11 @@ func BuiltinRoles() []*v1.ClusterRole {
 		mk("admin",
 			v1.PolicyRule{Verbs: write, Resources: slices.Concat(workloads, []string{"roles", "rolebindings"})},
 			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "silos/move", "serviceaccounts/token", "services/expose-public", "ingresses/publish-public"}},
-			secretsAdmin, approvalsAdmin),
+			siloShell, siloFiles, secretsAdmin, approvalsAdmin),
 		mk("editor",
 			v1.PolicyRule{Verbs: write, Resources: workloads},
 			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "silos/move", "serviceaccounts/token"}},
-			secretsEditor, approvalsRead),
+			siloShell, siloFiles, secretsEditor, approvalsRead),
 		mk("viewer", v1.PolicyRule{Verbs: read, Resources: workloads}, secretsViewer, approvalsRead),
 		mk("runner", v1.PolicyRule{Verbs: []string{"get", "list", "watch", "create"}, Resources: []string{"runs"}}),
 	}

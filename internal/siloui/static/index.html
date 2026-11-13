@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kvo ui</title>
+<link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <span class="brand">kvo ui</span>
+  <span id="silo" class="silo"></span>
+  <span id="status" class="status">connecting…</span>
+</header>
+<main>
+  <section class="pane term-pane">
+    <div class="pane-head">
+      <span>Shell</span>
+      <button id="reconnect" type="button" hidden>Reconnect</button>
+    </div>
+    <div id="term"></div>
+  </section>
+  <section class="pane files-pane">
+    <div class="pane-head">
+      <span>Files</span>
+      <span class="actions">
+        <button id="up" type="button" title="Parent folder">↑</button>
+        <button id="refresh" type="button" title="Refresh">⟳</button>
+        <label class="button" title="Upload files into this folder">Upload<input id="upload" type="file" multiple hidden></label>
+      </span>
+    </div>
+    <form id="goto" class="path-bar"><input id="path" spellcheck="false" autocomplete="off" aria-label="Folder in the silo"></form>
+    <div id="message" class="message" hidden></div>
+    <table class="files">
+      <thead><tr><th>Name</th><th class="num">Size</th><th>Modified</th><th></th></tr></thead>
+      <tbody id="entries"></tbody>
+    </table>
+  </section>
+</main>
+<script src="/static/vendor/xterm/xterm.js"></script>
+<script src="/static/vendor/xterm/addon-fit.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

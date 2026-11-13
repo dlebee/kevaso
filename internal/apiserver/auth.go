@@ -122,6 +122,10 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 	switch {
 	case t.exec:
 		a.Verb, a.Resource = "create", t.kind.Plural+"/exec"
+	case t.stream == "files" && r.Method == http.MethodGet:
+		a.Verb, a.Resource = "get", t.kind.Plural+"/files" // read, list, stat
+	case t.stream != "":
+		a.Verb, a.Resource = "create", t.kind.Plural+"/"+t.stream // ssh; files: write
 	case t.move:
 		a.Verb, a.Resource = "create", t.kind.Plural+"/move"
 	case t.token:
@@ -200,7 +204,7 @@ func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
 	case id.Role == "control-plane" && id.Type == "host":
 		return true
 	case id.Role == "worker" && id.Type == "host":
-		if t.exec || t.token || t.move {
+		if t.exec || t.token || t.move || t.stream != "" {
 			return false
 		}
 		if r.Method == http.MethodGet {
