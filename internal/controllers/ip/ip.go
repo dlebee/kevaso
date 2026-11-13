@@ -1,9 +1,11 @@
 // Package ip holds the controllers of IP objects (design §7.2c-1). Controller gives each IP its
 // address (from a host's extra addresses for ip-pool, from the plugin for a class that reserves),
-// binds it to the one silo or Service holding it, lets go when that goes (a plugin's address is
-// unshared from the host, a balancer that is the IP's address parked), deletes it when its reclaim
-// says so, and releases the address when the IP is deleted (finalizer kevaso.com/ip). Made makes
-// the IP of a load-balancer service that names none: named after it, owned by it, reclaim Delete.
+// binds it to the services on it (any number, each on its own ports; one silo for an exclusive
+// class), lets go when the last goes (a plugin's address is unshared from the host, a balancer
+// that is the IP's address parked), deletes it when its reclaim says so, and releases the address
+// when the IP is deleted (finalizer kevaso.com/ip). The balancer itself is provider.Balancers'.
+// Made makes the IPs services need: the namespace's default for a class (shared), or one of a
+// service's own (dedicated, or an exclusive class), named after it and owned by it.
 //
 // The decisions are internal/ips's; this only reads and writes the API and calls the plugins.
 package ip
@@ -57,6 +59,18 @@ func (c *Controller) plugin(class string) (*plugins.Plugin, kplugin.Class, bool)
 	return c.Plugins.LoadBalancer(class)
 }
 
+// exclusive reports whether class's address is one host's at a time (never shared).
+func exclusive(reg *plugins.Registry, class string) bool {
+	if class == v1.LBIPPool {
+		return true
+	}
+	if reg == nil {
+		return false
+	}
+	_, pc, ok := reg.LoadBalancer(class)
+	return ok && pc.Exclusive
+}
+
 func (c *Controller) lists(ns string) ([]*v1.Silo, []*v1.Service) {
 	var silos []*v1.Silo
 	for _, o := range c.Silos.List() {
@@ -83,7 +97,8 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	}
 	x := o.(*v1.IP)
 	silos, svcs := c.lists(x.Namespace)
-	claims := ips.Claims(x, silos, svcs)
+	excl := exclusive(c.Plugins, x.Spec.Class)
+	claims := ips.Claims(x, excl, silos, svcs)
 
 	if x.DeletionTimestamp != nil {
 		return c.release(ctx, x)
@@ -92,34 +107,37 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		x.Finalizers = append(x.Finalizers, v1.FinalizerIP)
 		return engine.Result{}, c.Client.Update(ctx, x) // and here again, with the new version
 	}
-	d := ips.Decide(x, claims)
+	d := ips.Decide(x, excl, claims)
 	st := x.Status
 	st.Conditions = slices.Clone(st.Conditions)
 
-	// Let go of the old holder first: the address leaves its host before anyone else gets it.
-	if st.BoundUID != "" && (!d.Bound || d.Holder.UID != st.BoundUID) {
+	// Let go first (the address leaves its old host before anyone else gets it): when the last
+	// holder goes, or an exclusive address's holder changes.
+	now := map[string]bool{}
+	for _, h := range d.Holders {
+		now[h.UID] = true
+	}
+	if len(st.BoundTo) > 0 && (len(d.Holders) == 0 || (excl && !now[st.BoundTo[0].UID])) {
 		if again, err := c.letGo(ctx, x); err != nil || again > 0 {
 			return engine.Result{RequeueAfter: again}, err
 		}
-		st.BoundTo, st.BoundUID = "", ""
+		st.BoundTo = nil
 	}
 	if d.Delete {
-		if x.Status.BoundUID != "" || x.Status.BoundTo != "" {
-			x.Status.BoundTo, x.Status.BoundUID = "", ""
+		if len(x.Status.BoundTo) > 0 {
+			x.Status.BoundTo, x.Status.Waiting = nil, nil
 			if err := c.Client.UpdateStatus(ctx, x); err != nil {
 				return engine.Result{}, err
 			}
 		}
 		return engine.Result{}, client.IgnoreNotFound(c.Client.Delete(ctx, "IP", x.Namespace, x.Name))
 	}
-	if d.Bound {
-		st.BoundTo, st.BoundUID = d.Holder.Holder, d.Holder.UID
-	}
+	st.BoundTo, st.Waiting = d.BoundTo(), d.Waiting
 	bound := meta.Condition{Type: "Bound", Status: meta.ConditionFalse, Reason: "Reserved", Message: "held by nobody", ObservedGeneration: x.Generation}
-	if d.Bound {
-		bound.Status, bound.Reason, bound.Message = meta.ConditionTrue, "Bound", "held by "+st.BoundTo
-		if waiting := len(claims) - 1; waiting > 0 {
-			bound.Message += fmt.Sprintf(" (%d more name it and wait)", waiting)
+	if len(d.Holders) > 0 {
+		bound.Status, bound.Reason, bound.Message = meta.ConditionTrue, "Bound", "held by "+st.Holders()
+		if len(d.Waiting) > 0 {
+			bound.Message += fmt.Sprintf(" (%d more name it and wait)", len(d.Waiting))
 		}
 	}
 	meta.SetCondition(&st.Conditions, bound, c.now())
@@ -144,16 +162,16 @@ func (c *Controller) reserve(ctx context.Context, x *v1.IP, st *v1.IPStatus, d i
 		meta.SetCondition(&st.Conditions, cond, c.now())
 	}()
 	placed := ""
-	if d.Bound {
-		placed = d.Holder.Host
+	if len(d.Holders) > 0 {
+		placed = d.Holders[0].Host
 	}
 	if x.Spec.Class == v1.LBIPPool {
 		st.Follows = kplugin.FollowsHost
 		if st.Address != "" {
 			return 0
 		}
-		if x.Spec.Host == "" && d.Bound && placed == "" {
-			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "WaitingForPlacement", "reserved on the host "+st.BoundTo+" lands on"
+		if x.Spec.Host == "" && len(d.Holders) > 0 && placed == "" {
+			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "WaitingForPlacement", "reserved on the host "+d.Holders[0].Holder+" lands on"
 			return 0
 		}
 		var hosts []*v1.Host
@@ -230,7 +248,7 @@ func (c *Controller) letGo(ctx context.Context, x *v1.IP) (time.Duration, error)
 	}
 	p, pc, ok := c.plugin(x.Spec.Class)
 	if !ok {
-		return 30 * time.Second, c.condition(ctx, x, "Bound", meta.ConditionFalse, "PluginMissing", "letting go of "+x.Status.BoundTo+" needs the plugin serving "+x.Spec.Class)
+		return 30 * time.Second, c.condition(ctx, x, "Bound", meta.ConditionFalse, "PluginMissing", "letting go of "+x.Status.Holders()+" needs the plugin serving "+x.Spec.Class)
 	}
 	var err error
 	if pc.Reserve {
@@ -244,7 +262,7 @@ func (c *Controller) letGo(ctx context.Context, x *v1.IP) (time.Duration, error)
 	case errors.Is(err, kplugin.ErrInProgress):
 		return 10 * time.Second, nil
 	}
-	return 0, fmt.Errorf("IP %s/%s: letting go of %s: %w", x.Namespace, x.Name, x.Status.BoundTo, err)
+	return 0, fmt.Errorf("IP %s/%s: letting go of %s: %w", x.Namespace, x.Name, x.Status.Holders(), err)
 }
 
 // release gives the address back (the IP is being deleted, and nothing holds it).
@@ -279,8 +297,8 @@ func (c *Controller) condition(ctx context.Context, x *v1.IP, typ string, status
 }
 
 func statusEqual(a, b v1.IPStatus) bool {
-	if a.Address != b.Address || a.Host != b.Host || a.Region != b.Region || a.Handle != b.Handle || a.BoundTo != b.BoundTo ||
-		a.BoundUID != b.BoundUID || a.Follows != b.Follows || len(a.Conditions) != len(b.Conditions) {
+	if a.Address != b.Address || a.Host != b.Host || a.Region != b.Region || a.Handle != b.Handle || a.Follows != b.Follows ||
+		len(a.Conditions) != len(b.Conditions) || fmt.Sprint(a.BoundTo) != fmt.Sprint(b.BoundTo) || fmt.Sprint(a.Waiting) != fmt.Sprint(b.Waiting) {
 		return false
 	}
 	for i := range a.Conditions {
@@ -304,7 +322,7 @@ func (c *Controller) Map(changed engine.Key) []engine.Key {
 	switch changed.Kind {
 	case "Silo":
 		if o, ok := c.Silos.Get(changed.Namespace, changed.Name); ok {
-			for _, n := range v1.SiloIPs(o.(*v1.Silo)) {
+			for _, n := range v1.SiloIPs(o.(*v1.Silo), func(cl string) bool { return exclusive(c.Plugins, cl) }) {
 				add(changed.Namespace, n)
 			}
 		}
@@ -312,7 +330,8 @@ func (c *Controller) Map(changed engine.Key) []engine.Key {
 	case "Service":
 		if c.Services != nil {
 			if o, ok := c.Services.Get(changed.Namespace, changed.Name); ok {
-				n, _ := v1.ServiceIP(o.(*v1.Service))
+				svc := o.(*v1.Service)
+				n, _ := v1.ServiceIP(svc, exclusive(c.Plugins, svc.Spec.LoadBalancerClass))
 				add(changed.Namespace, n)
 			}
 		}
@@ -337,22 +356,27 @@ func (c *Controller) heldBy(ns, holder string, add func(ns, name string)) {
 		owned := slices.ContainsFunc(x.OwnerReferences, func(r meta.OwnerReference) bool {
 			return (r.Kind == "Silo" && v1.HolderSiloPrefix+r.Name == holder) || (r.Kind == "Service" && v1.HolderServicePrefix+r.Name == holder)
 		})
-		if x.Status.BoundTo == holder || owned {
+		held := slices.ContainsFunc(x.Status.BoundTo, func(h v1.IPHolder) bool { return h.Holder == holder }) ||
+			slices.ContainsFunc(x.Status.Waiting, func(h v1.IPWaiting) bool { return h.Holder == holder })
+		if held || owned {
 			add(x.Namespace, x.Name)
 		}
 	}
 }
 
-// ── Made: the IP of a service that names none ────────────────────────────────
+// ── Made: the IPs services need ──────────────────────────────────────────────
 
-// Made makes the IP a load-balancer service needs when it names none: named after it, of its
-// class, owned by it, with reclaim Delete (so it goes when the service goes, unless kept). One
-// for silos (Kind Silo) and one for Services (Kind Service).
+// Made makes the IP a load-balancer service needs when it names none: the namespace's default for
+// its class (DefaultIPName: shared by every such service, reclaim Delete, gone with the last one
+// unless kept), or with dedicated (or an exclusive class) one of its own, named after it, owned by
+// it, reclaim Delete. One for silos (ForKind Silo) and one for Services (ForKind Service). A class
+// no plugin serves yet waits: whether its address can be shared is the plugin's to say.
 type Made struct {
 	Client  *client.Client
 	IPs     *informer.Informer
 	For     *informer.Informer // Silos or Services
 	ForKind string             // Silo | Service
+	Plugins *plugins.Registry  // nil: only ip-pool
 }
 
 // Name implements engine.Controller.
@@ -372,32 +396,44 @@ func (m *Made) Reconcile(ctx context.Context, k engine.Key) (engine.Result, erro
 		return engine.Result{}, nil
 	}
 	var name, class string
-	var made bool
+	way := v1.IPNone
 	switch x := o.(type) {
 	case *v1.Silo:
-		name, made = v1.SiloServiceIP(x)
-		if made {
-			class = x.Spec.Service.LoadBalancer.Class
+		if sv := x.Spec.Service; sv != nil && sv.LoadBalancer != nil {
+			class = sv.LoadBalancer.Class
+			name, way = v1.SiloServiceIP(x, exclusive(m.Plugins, class))
 		}
 	case *v1.Service:
-		name, made = v1.ServiceIP(x)
 		class = x.Spec.LoadBalancerClass
+		name, way = v1.ServiceIP(x, exclusive(m.Plugins, class))
 	}
-	if !made {
+	if way != v1.IPMade && way != v1.IPDefault {
 		return engine.Result{}, nil
 	}
+	if class != v1.LBIPPool && (m.Plugins == nil || !known(m.Plugins, class)) {
+		return engine.Result{}, nil // the plugin says whether it's shared; it's looked at again when one comes
+	}
 	if _, exists := m.IPs.Get(om.Namespace, name); exists {
-		return engine.Result{}, nil // its own (or someone else's, which it won't take: the scheduler says so)
+		return engine.Result{}, nil // its own, the default, or someone else's (which it won't take: the scheduler says so)
 	}
 	ip := &v1.IP{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IP"},
-		ObjectMeta: meta.ObjectMeta{Name: name, Namespace: om.Namespace,
-			OwnerReferences: []meta.OwnerReference{{APIVersion: v1.APIVersion, Kind: m.ForKind, Name: om.Name, UID: om.UID, Controller: true}}},
-		Spec: v1.IPSpec{Class: class, Reclaim: v1.ReclaimDelete}}
+		ObjectMeta: meta.ObjectMeta{Name: name, Namespace: om.Namespace},
+		Spec:       v1.IPSpec{Class: class, Reclaim: v1.ReclaimDelete}}
+	if way == v1.IPDefault {
+		ip.Labels = map[string]string{v1.LabelDefaultIP: class}
+	} else {
+		ip.OwnerReferences = []meta.OwnerReference{{APIVersion: v1.APIVersion, Kind: m.ForKind, Name: om.Name, UID: om.UID, Controller: true}}
+	}
 	err := m.Client.Create(ctx, ip)
 	if client.IsAlreadyExists(err) {
 		return engine.Result{}, nil
 	}
 	return engine.Result{}, err
+}
+
+func known(reg *plugins.Registry, class string) bool {
+	_, _, ok := reg.LoadBalancer(class)
+	return ok
 }
 
 var (

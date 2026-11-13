@@ -16,12 +16,14 @@ import (
 // IP objects (design §7.2c-1) at admission. A guard, so it runs on the object as stored (after
 // mutation policies):
 //   - naming an IP (a silo's loadBalancer.ip or egress.ip, a Service's loadBalancerIP) needs use on
-//     ips/NAME, like a secret, the first time an object names it; an IP held by someone else is
-//     refused, saying who holds it; and its class must be the service's;
+//     ips/NAME, like a secret, the first time an object names it, and its class must be the
+//     service's; on any IP a service would be on (named, or the namespace's default for its class),
+//     a port another holder has there is refused, saying who has it, and so is an exclusive address
+//     (one host's at a time) someone else holds;
 //   - egress.source sameAsService is refused for a class whose address is on no host (a balancer
 //     in front), when the class is known (otherwise the silo says so and it's never applied);
-//   - an IP's class, and its placement once it has an address, never change; an IP of a class
-//     that can't hold an address apart from a balancer is never made by hand;
+//   - an IP's class, and its placement once it has an address, never change (one of a class that
+//     can't reserve gets its address from the balancer when a service first holds it);
 //   - a host's extra addresses in use by an IP stay, and no address is routed to two hosts.
 //
 // Deleting a bound IP is refused in delete (checkDeleteIP).
@@ -30,36 +32,46 @@ func (s *Server) checkIPs(ctx context.Context, t target, obj meta.Object) error 
 	if t.status {
 		return nil
 	}
+	classes := s.classMap()
+	excl := func(class string) bool { return class == v1.LBIPPool || classes[class].Exclusive }
 	switch o := obj.(type) {
 	case *v1.Silo:
 		if err := s.checkSameAsService(t, o); err != nil {
 			return err
 		}
 		var named []namedIP
-		if sv := o.Spec.Service; sv != nil && sv.Expose == v1.ExposeLoadBalancer && sv.LoadBalancer != nil && sv.LoadBalancer.IP != "" {
-			named = append(named, namedIP{sv.LoadBalancer.IP, sv.LoadBalancer.Class, "service.loadBalancer.ip"})
+		if sv := o.Spec.Service; sv != nil && sv.LoadBalancer != nil {
+			class := sv.LoadBalancer.Class
+			if n, way := v1.SiloServiceIP(o, excl(class)); way == v1.IPNamed || way == v1.IPDefault {
+				named = append(named, namedIP{n, class, "service.loadBalancer.ip", way == v1.IPNamed, excl(class), v1.SiloPorts(o)})
+			}
 		}
 		if n := o.Spec.Network.Egress.IP; n != "" {
-			named = append(named, namedIP{n, v1.LBIPPool, "network.egress.ip"})
+			named = append(named, namedIP{n, v1.LBIPPool, "network.egress.ip", true, true, nil})
 		}
 		return s.checkNamedIPs(ctx, t, v1.HolderSiloPrefix+o.Name, o.UID, named)
 	case *v1.SiloSet:
 		return s.checkSameAsService(t, o.Instance(0, false))
 	case *v1.Service:
-		if o.Spec.Type != v1.ServiceLoadBalancer || o.Spec.LoadBalancerIP == "" {
+		class := o.Spec.LoadBalancerClass
+		n, way := v1.ServiceIP(o, excl(class))
+		if way != v1.IPNamed && way != v1.IPDefault {
 			return nil
 		}
 		return s.checkNamedIPs(ctx, t, v1.HolderServicePrefix+o.Name, o.UID,
-			[]namedIP{{o.Spec.LoadBalancerIP, o.Spec.LoadBalancerClass, "spec.loadBalancerIP"}})
-	case *v1.IP:
-		return s.checkIP(ctx, t, o)
+			[]namedIP{{n, class, "spec.loadBalancerIP", way == v1.IPNamed, excl(class), v1.ServicePorts(o)}})
 	case *v1.Host:
 		return s.checkHostAddresses(ctx, t, o)
 	}
 	return nil
 }
 
-type namedIP struct{ name, class, field string }
+// namedIP is an IP a service would be on: named (needs use), or its class's default.
+type namedIP struct {
+	name, class, field string
+	named, exclusive   bool
+	ports              []string
+}
 
 // previousIPs are the IP names the stored version of the object already names.
 func (s *Server) previousIPs(ctx context.Context, t target) []string {
@@ -101,7 +113,7 @@ func (s *Server) checkNamedIPs(ctx context.Context, t target, holder, uid string
 		}
 	}
 	for _, n := range named {
-		if p != nil && !slices.Contains(had, n.name) {
+		if p != nil && n.named && !slices.Contains(had, n.name) {
 			d := p.Authorize(rbac.Attributes{User: user, Groups: GroupsFrom(ctx), Verb: v1.VerbUse, Resource: "ips", Namespace: t.namespace, Name: n.name})
 			if !d.Allowed {
 				return errf(http.StatusForbidden, "Forbidden", "%s may not use IP %s (needs use on ips): %s", user, n.name, d.Reason)
@@ -122,7 +134,7 @@ func (s *Server) checkNamedIPs(ctx context.Context, t target, holder, uid string
 		if x.Spec.Class != n.class {
 			return errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %s %s is IP of class %s, not %s", t.kind.Kind, t.name, n.field, n.name, x.Spec.Class, n.class)
 		}
-		if why := ips.CanName(x, holder, uid); why != "" {
+		if why := ips.CanName(x, n.exclusive, holder, uid, n.ports); why != "" {
 			return errf(http.StatusConflict, "Conflict", "%s %s: %s", t.kind.Kind, t.name, why)
 		}
 	}
@@ -149,31 +161,13 @@ func (s *Server) checkSameAsService(t target, silo *v1.Silo) error {
 		t.kind.Kind, t.name, class)
 }
 
-func (s *Server) checkIP(ctx context.Context, t target, x *v1.IP) error {
-	cur, err := s.store.Get(ctx, t.key())
-	switch {
-	case err == nil:
-		prev, _, err := v1.Decode(cur.Data)
-		if err != nil {
-			return err
-		}
-		o := prev.(*v1.IP)
-		if o.Spec.Class != x.Spec.Class {
-			return errf(http.StatusUnprocessableEntity, "Invalid", "IP %s: spec.class can't change (it's %s): make another IP", x.Name, o.Spec.Class)
-		}
-		if o.Status.Address != "" && (o.Spec.Host != x.Spec.Host || o.Spec.Region != x.Spec.Region || o.Spec.Address != x.Spec.Address) {
-			return errf(http.StatusUnprocessableEntity, "Invalid", "IP %s: spec.host, spec.region and spec.address can't change once it has its address (%s)", x.Name, o.Status.Address)
-		}
-		return nil
-	case !errors.Is(err, store.ErrNotFound):
-		return err
+// ipTransition: an IP's class, and its placement once it has an address, never change.
+func ipTransition(o, x *v1.IP) []string {
+	if o.Spec.Class != x.Spec.Class {
+		return []string{"spec.class can't change (it's " + o.Spec.Class + "): make another IP"}
 	}
-	if id, _ := IdentityFrom(ctx); id == Component || x.Spec.Class == v1.LBIPPool {
-		return nil // kevasod makes IPs for services; ip-pool always reserves
-	}
-	if c, ok := s.classMap()[x.Spec.Class]; ok && !c.Reserve {
-		return errf(http.StatusUnprocessableEntity, "Invalid",
-			"IP %s: class %s can't hold an address apart from its load balancer: make the service (it gets an IP made for it, named after it) and keep that one with kvo ip keep", x.Name, x.Spec.Class)
+	if o.Status.Address != "" && (o.Spec.Host != x.Spec.Host || o.Spec.Region != x.Spec.Region || o.Spec.Address != x.Spec.Address) {
+		return []string{"spec.host, spec.region and spec.address can't change once it has its address (" + o.Status.Address + ")"}
 	}
 	return nil
 }

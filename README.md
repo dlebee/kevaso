@@ -36,7 +36,8 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   (`NAME.NAMESPACE.kevaso`, served on each worker), and exposure with `hostPort` or a load balancer
   (`worker-ip`, `ip-pool` from a host's extra addresses, or a plugin's class), raw TCP/UDP with the
   client's IP kept. An outside address is an `IP` object you keep (`kvo create ip`, `kvo get ips`,
-  `kvo ip keep`): a service names one or gets one made for it, and it outlives the silo using it.
+  `kvo ip keep`), and there's no load-balancer object: a namespace's services of a class share one
+  address and balancer on their own ports unless they name an `IP` or ask for a `dedicated` one.
   Its outbound address can be the host's, the service's (where the address is on the host; never a
   balancer's), or an IP of its own; `kvo describe silo` says whether in and out match, and why not. Silo-to-silo traffic is denied
   until the receiving silo's `allowFrom` opens it; exposing publicly needs its own permission;

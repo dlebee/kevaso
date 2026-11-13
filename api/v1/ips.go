@@ -1,15 +1,19 @@
 package v1
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 
 	"kevaso.com/core/api/meta"
 )
 
 // IP is an outside address kept as its own object (design §7.2c-1): peers, allowlists and DNS
-// records point at an address, so it outlives the service using it today. A service refers to one
-// (loadBalancer.ip); a load-balancer service that names none gets one made for it, which goes with
-// it unless kept. An IP serves one silo or one Service at a time.
+// records point at an address, so it outlives the services using it today. There is no load
+// balancer object: a balancer is what a plugin runs behind an address. Load-balancer services of a
+// class in a namespace share one IP (DefaultIPName) and its balancer, each on its own ports, unless
+// they name one (loadBalancer.ip) or ask for their own (dedicated). An address only one host can
+// have at a time (ip-pool, an announced shared IP) is never shared: one silo holds it.
 type IP struct {
 	meta.TypeMeta   `json:",inline"`
 	meta.ObjectMeta `json:"metadata"`
@@ -41,13 +45,63 @@ type IPStatus struct {
 	Region  string `json:"region,omitempty"` // a plugin's: the provider's region it's in
 	// Handle is the plugin's for the reservation, given back when it's released.
 	Handle string `json:"handle,omitempty"`
-	// BoundTo is who holds it: silo/NAME or service/NAME; empty: reserved, held by nobody.
-	BoundTo  string `json:"boundTo,omitempty"`
-	BoundUID string `json:"boundUID,omitempty"`
+	// BoundTo are who hold it, each with its ports: one silo for an address only one host can have
+	// at a time (ip-pool, an announced shared IP), any number of silos and Services on their own
+	// ports for a balancer's. Empty: reserved, held by nobody.
+	BoundTo []IPHolder `json:"boundTo,omitempty"`
+	// Waiting are the services that name it and can't have it yet, and why.
+	Waiting []IPWaiting `json:"waiting,omitempty"`
 	// Follows says where the address can go with its holder (the class's scope): host, region or
 	// global.
 	Follows    string           `json:"follows,omitempty"`
 	Conditions []meta.Condition `json:"conditions,omitempty"`
+}
+
+// IPHolder is a silo or Service holding an IP, on its ports (PORT/PROTO).
+type IPHolder struct {
+	Holder string   `json:"holder"` // silo/NAME | service/NAME
+	UID    string   `json:"uid"`
+	Ports  []string `json:"ports,omitempty"`
+}
+
+// IPWaiting is a service that names an IP it can't have now.
+type IPWaiting struct {
+	Holder string `json:"holder"`
+	UID    string `json:"uid"`
+	Reason string `json:"reason"`
+}
+
+// Holds reports whether the object with uid holds the IP.
+func (st IPStatus) Holds(uid string) bool {
+	for _, h := range st.BoundTo {
+		if uid != "" && h.UID == uid {
+			return true
+		}
+	}
+	return false
+}
+
+// WaitingReason is why the object with uid can't have the IP yet ("" if it isn't waiting).
+func (st IPStatus) WaitingReason(uid string) string {
+	for _, w := range st.Waiting {
+		if w.UID == uid {
+			return w.Reason
+		}
+	}
+	return ""
+}
+
+// Holders lists who hold it, with their ports, for people.
+func (st IPStatus) Holders() string {
+	var out []string
+	for _, h := range st.BoundTo {
+		s := h.Holder
+		if len(h.Ports) > 0 {
+			s += " (" + strings.Join(h.Ports, ",") + ")"
+		}
+		out = append(out, s)
+	}
+	return strings.Join(out, ", ")
 }
 
 // Reclaim policies.
@@ -59,6 +113,9 @@ const (
 // FinalizerIP holds an IP until its address is released.
 const FinalizerIP = "kevaso.com/ip"
 
+// LabelDefaultIP marks a namespace's default IP of a class (its value: the class).
+const LabelDefaultIP = "kevaso.com/default-ip"
+
 // Kept reports whether the IP stays when nothing holds it.
 func (ip *IP) Kept() bool { return ip.Spec.Reclaim != ReclaimDelete }
 
@@ -68,17 +125,51 @@ const (
 	HolderServicePrefix = "service/"
 )
 
-// SiloServiceIP is the IP a silo's own service has its address from, and whether it's one made
-// for it (none named). "" when its exposure has none (private, hostPort, worker-ip).
-func SiloServiceIP(s *Silo) (name string, made bool) {
+// IPWay is how a load-balancer service comes by its IP.
+type IPWay int
+
+// The ways.
+const (
+	IPNone    IPWay = iota // no IP: not a load balancer, or worker-ip (the host's address)
+	IPNamed                // it names one (loadBalancer.ip)
+	IPMade                 // one of its own, made for it and named after it (dedicated, or an exclusive class)
+	IPDefault              // the namespace's shared one for its class (DefaultIPName)
+)
+
+// DefaultIPName is the name of a namespace's shared IP of a class: every load-balancer service of
+// that class there that names no IP and isn't dedicated is on it, each on its own ports.
+func DefaultIPName(class string) string { return "default-" + class }
+
+func ipOf(class, named, self string, dedicated, exclusive bool) (string, IPWay) {
+	switch {
+	case class == "" || class == LBWorkerIP:
+		return "", IPNone
+	case named != "":
+		return named, IPNamed
+	case dedicated || exclusive:
+		return self, IPMade
+	}
+	return DefaultIPName(class), IPDefault
+}
+
+// SiloServiceIP is the IP a silo's own service has its address from, and how. exclusive: its
+// class's address is one host's at a time (ip-pool, an announced shared IP), so it's never shared.
+func SiloServiceIP(s *Silo, exclusive bool) (string, IPWay) {
 	sv := s.Spec.Service
-	if sv == nil || sv.Expose != ExposeLoadBalancer || sv.LoadBalancer == nil || sv.LoadBalancer.Class == "" || sv.LoadBalancer.Class == LBWorkerIP {
-		return "", false
+	if sv == nil || sv.Expose != ExposeLoadBalancer || sv.LoadBalancer == nil {
+		return "", IPNone
 	}
-	if sv.LoadBalancer.IP != "" {
-		return sv.LoadBalancer.IP, false
+	// A SiloSet's instances have the same ports, so they'd clash on one address: each has its own.
+	dedicated := sv.LoadBalancer.Dedicated || slices.ContainsFunc(s.OwnerReferences, func(r meta.OwnerReference) bool { return r.Kind == "SiloSet" })
+	return ipOf(sv.LoadBalancer.Class, sv.LoadBalancer.IP, s.Name, dedicated, exclusive || sv.LoadBalancer.Class == LBIPPool)
+}
+
+// ServiceIP is the IP a standalone Service of type LoadBalancer has its address from, and how.
+func ServiceIP(svc *Service, exclusive bool) (string, IPWay) {
+	if svc.Spec.Type != ServiceLoadBalancer {
+		return "", IPNone
 	}
-	return s.Name, true
+	return ipOf(svc.Spec.LoadBalancerClass, svc.Spec.LoadBalancerIP, svc.Name, svc.Spec.LoadBalancerDedicated, exclusive)
 }
 
 // SiloEgressIP is the IP a silo with egress.source pool sends from ("" otherwise): egress.ip, or
@@ -91,17 +182,20 @@ func SiloEgressIP(s *Silo) string {
 		return n
 	}
 	if sv := s.Spec.Service; sv != nil && sv.LoadBalancer != nil && sv.LoadBalancer.Class == LBIPPool {
-		n, _ := SiloServiceIP(s)
+		n, _ := SiloServiceIP(s, true)
 		return n
 	}
 	return ""
 }
 
-// SiloIPs are the names of every IP a silo holds (its service's first).
-func SiloIPs(s *Silo) []string {
+// SiloIPs are the names of every IP a silo holds (its service's first); exclusive says which
+// classes' addresses are one host's at a time.
+func SiloIPs(s *Silo, exclusive func(class string) bool) []string {
 	var out []string
-	if n, _ := SiloServiceIP(s); n != "" {
-		out = append(out, n)
+	if sv := s.Spec.Service; sv != nil && sv.LoadBalancer != nil {
+		if n, _ := SiloServiceIP(s, exclusive(sv.LoadBalancer.Class)); n != "" {
+			out = append(out, n)
+		}
 	}
 	if n := SiloEgressIP(s); n != "" && !slices.Contains(out, n) {
 		out = append(out, n)
@@ -109,16 +203,33 @@ func SiloIPs(s *Silo) []string {
 	return out
 }
 
-// ServiceIP is the IP a standalone Service of type LoadBalancer has its address from, and whether
-// it's one made for it.
-func ServiceIP(svc *Service) (name string, made bool) {
-	if svc.Spec.Type != ServiceLoadBalancer || svc.Spec.LoadBalancerClass == "" {
-		return "", false
+// SiloPorts are the ports a silo's load balancer takes on its address (PORT/PROTO), leased ones
+// included: a closed port still has its number on the address.
+func SiloPorts(s *Silo) []string {
+	if s.Spec.Service == nil {
+		return nil
 	}
-	if svc.Spec.LoadBalancerIP != "" {
-		return svc.Spec.LoadBalancerIP, false
+	var out []string
+	for _, p := range s.Spec.Service.Ports {
+		out = append(out, portKey(p.Port, p.Protocol))
 	}
-	return svc.Name, true
+	return out
+}
+
+// ServicePorts are the ports a Service takes on its address.
+func ServicePorts(svc *Service) []string {
+	var out []string
+	for _, p := range svc.Spec.Ports {
+		out = append(out, portKey(p.Port, p.Protocol))
+	}
+	return out
+}
+
+func portKey(port int, proto string) string {
+	if strings.EqualFold(proto, "UDP") {
+		return fmt.Sprintf("%d/UDP", port)
+	}
+	return fmt.Sprintf("%d/TCP", port)
 }
 
 // AddressesLine says in one line whether a silo's address out is its address in, and why not.

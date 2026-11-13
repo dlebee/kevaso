@@ -19,9 +19,12 @@ import (
 
 // IP objects in a real control plane with the fake plugin (design §7.2c-1, §7.2b): an IP made by
 // hand is reserved before any service, a silo's service takes it, the silo goes and the address
-// stays, a new silo takes the same address; a service naming no IP gets one that goes with it
-// unless kept; a bound IP can't be deleted or taken; sameAsService behind a balancer is refused;
-// ip-pool hands out a host's own addresses, which can't be taken from the host while in use.
+// stays, a new silo takes the same address; an exclusive (announced) IP someone holds can't be
+// deleted or taken. Load-balancer services naming no IP share the namespace's default for their
+// class, one balancer with each one's ports; a port clash is refused; dedicated gets its own; the
+// default goes with its last service, a kept one stays (its balancer parked); an annotation the
+// plugin doesn't know shows as a condition; sameAsService behind a balancer is refused; ip-pool
+// hands out a host's own addresses, which can't be taken from the host while in use.
 func TestIPs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -93,12 +96,23 @@ func TestIPs(t *testing.T) {
 		_ = admin.Get(ctx, "Silo", "web3", name, &s)
 		return s
 	}
-	node := func(name, class, ip, source string) *v1.Silo {
+	node := func(name, class, ip, source string, port ...int) *v1.Silo {
+		p := 30303
+		if len(port) > 0 {
+			p = port[0]
+		}
 		return &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "web3"},
 			Spec: v1.SiloSpec{Runtime: "docker", Image: "geth", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-				Service: &v1.SiloService{Expose: v1.ExposeLoadBalancer, Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}},
+				Service: &v1.SiloService{Expose: v1.ExposeLoadBalancer, Ports: []v1.ServicePort{{Name: "p2p", Port: p}},
 					LoadBalancer: &v1.LoadBalancerSpec{Class: class, IP: ip}},
 				Network: v1.SiloNetwork{Egress: v1.Egress{Source: source}}}}
+	}
+	holders := func(x v1.IP) string {
+		var out []string
+		for _, h := range x.Status.BoundTo {
+			out = append(out, h.Holder)
+		}
+		return strings.Join(out, ",")
 	}
 
 	// ── An IP made by hand: reserved before any service ──
@@ -110,7 +124,7 @@ func TestIPs(t *testing.T) {
 	eventually("eth reserved, held by nobody", func() (bool, string) {
 		x, _ := getIP("eth")
 		addr = x.Status.Address
-		return addr != "" && x.Status.BoundTo == "" && x.Status.Region == "ca-central", condMsgs(x.Status.Conditions)
+		return addr != "" && len(x.Status.BoundTo) == 0 && x.Status.Region == "ca-central", condMsgs(x.Status.Conditions)
 	})
 	// A silo's service takes it, in and out.
 	if err := admin.Create(ctx, node("node-1", kplugintest.ClassIP, "eth", v1.EgressSameAsService)); err != nil {
@@ -120,17 +134,17 @@ func TestIPs(t *testing.T) {
 		x, _ := getIP("eth")
 		s := getSilo("node-1")
 		st := s.Status.Service
-		return x.Status.BoundTo == "silo/node-1" && s.Status.Host == "w1" && st.PublicIP == addr && st.EgressIP == addr && st.IP == "eth" && st.Announce,
-			x.Status.BoundTo + " " + st.AddressesLine() + " " + condMsgs(s.Status.Conditions)
+		return holders(x) == "silo/node-1" && s.Status.Host == "w1" && st.PublicIP == addr && st.EgressIP == addr && st.IP == "eth" && st.Announce,
+			holders(x) + " " + st.AddressesLine() + " " + condMsgs(s.Status.Conditions)
 	})
 	if line := getSilo("node-1").Status.Service.AddressesLine(); line != "same address in and out: "+addr {
 		t.Errorf("in and out: %q", line)
 	}
-	// Bound: it can't be deleted, nor taken by another.
+	// Held (and exclusive: one host announces it): it can't be deleted, nor taken by another.
 	if err := admin.Delete(ctx, "IP", "web3", "eth"); !client.IsConflict(err) || !strings.Contains(err.Error(), "held by silo/node-1") {
 		t.Fatalf("deleting a bound IP: %v", err)
 	}
-	if err := admin.Create(ctx, node("node-2", kplugintest.ClassIP, "eth", "")); !client.IsConflict(err) || !strings.Contains(err.Error(), "held by silo/node-1") {
+	if err := admin.Create(ctx, node("node-2", kplugintest.ClassIP, "eth", "", 9000)); !client.IsConflict(err) || !strings.Contains(err.Error(), "held by silo/node-1") {
 		t.Fatalf("naming a bound IP: %v", err)
 	}
 	// The silo goes; the address stays, unshared from the host, still reserved.
@@ -139,9 +153,8 @@ func TestIPs(t *testing.T) {
 	}
 	eventually("eth let go, still reserved with its address", func() (bool, string) {
 		x, err := getIP("eth")
-		_, shared := fake.LBOf("web3", "node-1")
-		_, _, _ = fake.Snapshot()
-		return err == nil && x.Status.BoundTo == "" && x.Status.Address == addr && !shared, x.Status.BoundTo
+		_, shared := fake.LBOf("web3", "silo/node-1")
+		return err == nil && len(x.Status.BoundTo) == 0 && x.Status.Address == addr && !shared, holders(x)
 	})
 	// A new silo takes it and gets the same address.
 	if err := admin.Create(ctx, node("node-3", kplugintest.ClassIP, "eth", v1.EgressSameAsService)); err != nil {
@@ -152,41 +165,90 @@ func TestIPs(t *testing.T) {
 		return s.Status.Service.PublicIP == addr && s.Status.Service.EgressIP == addr, s.Status.Service.AddressesLine() + " " + condMsgs(s.Status.Conditions)
 	})
 
-	// ── A service that names no IP gets one, named after it, that goes with it ──
-	if err := admin.Create(ctx, node("web", kplugintest.ClassLB, "", "")); err != nil {
+	// ── Shared by default: two silos naming no IP, one address, one balancer, their own ports ──
+	def := v1.DefaultIPName(kplugintest.ClassLB)
+	if err := admin.Create(ctx, node("web", kplugintest.ClassLB, "", "", 80)); err != nil {
 		t.Fatal(err)
 	}
-	var webAddr string
-	eventually("web's IP made for it, with the balancer's address", func() (bool, string) {
-		x, err := getIP("web")
-		s := getSilo("web")
-		webAddr = x.Status.Address
-		return err == nil && !x.Kept() && len(x.OwnerReferences) == 1 && x.Status.BoundTo == "silo/web" && webAddr != "" &&
-				s.Status.Service.PublicIP == webAddr && s.Status.Service.EgressIP == "203.0.113.5" && strings.Contains(s.Status.Service.EgressNote, "on no host"),
-			condMsgs(x.Status.Conditions) + " " + s.Status.Service.AddressesLine()
+	if err := admin.Create(ctx, node("rpc", kplugintest.ClassLB, "", "", 8545)); err != nil {
+		t.Fatal(err)
+	}
+	var shared string
+	eventually("web and rpc on the namespace's default IP, one balancer with both ports", func() (bool, string) {
+		x, err := getIP(def)
+		w, r := getSilo("web").Status.Service, getSilo("rpc").Status.Service
+		shared = x.Status.Address
+		lbs, _, _ := fake.Snapshot()
+		lb := lbs[x.UID]
+		svcs := map[string]bool{}
+		for _, p := range lb.Ports {
+			svcs[p.Service] = len(p.Backends) == 1
+		}
+		return err == nil && !x.Kept() && x.Labels[v1.LabelDefaultIP] == kplugintest.ClassLB && len(x.Status.BoundTo) == 2 && shared != "" &&
+				w.PublicIP == shared && r.PublicIP == shared && w.IP == def && len(lb.Ports) == 2 && svcs["silo/web"] && svcs["silo/rpc"] &&
+				strings.Contains(w.EgressNote, "on no host"),
+			holders(x) + " " + condMsgs(x.Status.Conditions) + " | " + w.AddressesLine() + " | " + r.AddressesLine()
 	})
+	// The one refusal: a port another service has on that address.
+	if err := admin.Create(ctx, node("web-2", kplugintest.ClassLB, "", "", 80)); !client.IsConflict(err) || !strings.Contains(err.Error(), "port 80/TCP on IP "+def+" is silo/web's") {
+		t.Fatalf("a port clash on the shared IP: %v", err)
+	}
+	// dedicated: an IP of its own, another address, even on the same port.
+	own := node("own", kplugintest.ClassLB, "", "", 80)
+	own.Spec.Service.LoadBalancer.Dedicated = true
+	if err := admin.Create(ctx, own); err != nil {
+		t.Fatal(err)
+	}
+	eventually("own on an IP of its own, another address", func() (bool, string) {
+		x, _ := getIP("own")
+		st := getSilo("own").Status.Service
+		return holders(x) == "silo/own" && len(x.OwnerReferences) == 1 && x.Status.Address != "" && x.Status.Address != shared && st.PublicIP == x.Status.Address,
+			holders(x) + " " + condMsgs(x.Status.Conditions)
+	})
+	// sameAsService behind a balancer: refused, the address is on no host.
+	if err := admin.Create(ctx, node("p2p", kplugintest.ClassLB, "", v1.EgressSameAsService, 9001)); !client.IsInvalid(err) || !strings.Contains(err.Error(), "on no host") {
+		t.Fatalf("sameAsService behind a balancer: %v", err)
+	}
+	// A knob the plugin doesn't know: refused by it, shown on the IP and the silo.
+	knobs := node("knobs", kplugintest.ClassLB, "", "", 81)
+	knobs.Spec.Service.LoadBalancer.Dedicated = true
+	knobs.Annotations = map[string]string{"fake.kevaso.com/no-such-knob": "on", "example.com/not-the-plugins": "ignored"}
+	if err := admin.Create(ctx, knobs); err != nil {
+		t.Fatal(err)
+	}
+	eventually("the unknown annotation refused, saying so", func() (bool, string) {
+		x, _ := getIP("knobs")
+		s := getSilo("knobs")
+		c := meta.FindCondition(s.Status.Conditions, "LoadBalancer")
+		ic := meta.FindCondition(x.Status.Conditions, "LoadBalancer")
+		return c != nil && c.Status == meta.ConditionFalse && strings.Contains(c.Message, "unknown annotation fake.kevaso.com/no-such-knob") &&
+			ic != nil && ic.Reason == "Failed", condMsgs(s.Status.Conditions)
+	})
+	// The shared IP stays while a service is on it, and goes with the last.
 	if err := admin.Delete(ctx, "Silo", "web3", "web"); err != nil {
 		t.Fatal(err)
 	}
-	eventually("web's IP gone with it, and its balancer", func() (bool, string) {
-		_, err := getIP("web")
-		_, there := fake.LBOf("web3", "web")
-		return client.IsNotFound(err) && !there, ""
+	eventually("rpc alone on the default, same address; web's port gone from the balancer", func() (bool, string) {
+		x, err := getIP(def)
+		_, webThere := fake.LBOf("web3", "silo/web")
+		return err == nil && holders(x) == "silo/rpc" && x.Status.Address == shared && !webThere, holders(x)
 	})
-	// Unless kept: kvo ip keep drops the ownership and keeps the address; the balancer stays, parked.
-	if err := admin.Create(ctx, node("keeper", kplugintest.ClassLB, "", "")); err != nil {
+	if err := admin.Delete(ctx, "Silo", "web3", "rpc"); err != nil {
 		t.Fatal(err)
 	}
-	var keptAddr string
-	eventually("keeper's IP made", func() (bool, string) {
-		x, _ := getIP("keeper")
-		keptAddr = x.Status.Address
-		return keptAddr != "" && x.Status.BoundTo == "silo/keeper", condMsgs(x.Status.Conditions)
+	eventually("the default IP gone with its last service, and its balancer", func() (bool, string) {
+		_, err := getIP(def)
+		_, there := fake.LBOf("web3", "silo/rpc")
+		return client.IsNotFound(err) && !there, ""
 	})
+	// Unless kept: kvo ip keep; the silo goes; the address stays, its balancer parked.
 	for i := 0; ; i++ {
-		x, _ := getIP("keeper")
+		x, err := getIP("own")
+		if err != nil {
+			t.Fatalf("own: %v", err)
+		}
 		x.Spec.Reclaim, x.OwnerReferences = v1.ReclaimRetain, nil
-		err := admin.Update(ctx, &x)
+		err = admin.Update(ctx, &x)
 		if err == nil {
 			break
 		}
@@ -194,44 +256,35 @@ func TestIPs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := admin.Delete(ctx, "Silo", "web3", "keeper"); err != nil {
+	ownIP, _ := getIP("own")
+	if err := admin.Delete(ctx, "Silo", "web3", "own"); err != nil {
 		t.Fatal(err)
 	}
-	eventually("keeper's IP kept, unbound, same address; its balancer parked", func() (bool, string) {
-		x, err := getIP("keeper")
+	eventually("own kept, held by nobody, same address; its balancer parked", func() (bool, string) {
+		x, err := getIP("own")
 		lbs, _, _ := fake.Snapshot()
 		lb, ok := lbs[x.UID]
-		_, gone := getSilo("keeper"), client.IsNotFound(admin.Get(ctx, "Silo", "web3", "keeper", &v1.Silo{}))
-		return err == nil && gone && x.Status.BoundTo == "" && x.Status.Address == keptAddr && ok && len(lb.Backends) == 0 && len(lb.Ports) == 0,
-			x.Status.BoundTo + " " + x.Status.Address
+		gone := client.IsNotFound(admin.Get(ctx, "Silo", "web3", "own", &v1.Silo{}))
+		return err == nil && gone && len(x.Status.BoundTo) == 0 && x.Status.Address == ownIP.Status.Address && ok && len(lb.Backends) == 0 && len(lb.Ports) == 0,
+			holders(x) + " " + x.Status.Address
 	})
 
-	// ── Same IP out as in: refused where the address is on no host ──
-	if err := admin.Create(ctx, node("p2p", kplugintest.ClassLB, "", v1.EgressSameAsService)); !client.IsInvalid(err) || !strings.Contains(err.Error(), "on no host") {
-		t.Fatalf("sameAsService behind a balancer: %v", err)
-	}
-	// An IP of a class that can't reserve isn't made by hand.
-	if err := admin.Create(ctx, &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: "nb", Namespace: "web3"},
-		Spec: v1.IPSpec{Class: kplugintest.ClassLB}}); !client.IsInvalid(err) || !strings.Contains(err.Error(), "kvo ip keep") {
-		t.Fatalf("an IP of fake-lb by hand: %v", err)
-	}
-
 	// ── ip-pool: a host's own addresses, one per silo, in and out ──
-	if err := admin.Create(ctx, &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: "own", Namespace: "web3"},
+	if err := admin.Create(ctx, &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: "mine", Namespace: "web3"},
 		Spec: v1.IPSpec{Class: v1.LBIPPool}}); err != nil {
 		t.Fatal(err)
 	}
-	eventually("own reserved on w1", func() (bool, string) {
-		x, _ := getIP("own")
+	eventually("mine reserved on w1", func() (bool, string) {
+		x, _ := getIP("mine")
 		return x.Status.Host == "w1" && x.Status.Address == "192.0.2.17", condMsgs(x.Status.Conditions)
 	})
-	if err := admin.Create(ctx, node("pooled", v1.LBIPPool, "own", v1.EgressSameAsService)); err != nil {
+	if err := admin.Create(ctx, node("pooled", v1.LBIPPool, "mine", v1.EgressSameAsService)); err != nil {
 		t.Fatal(err)
 	}
 	if err := admin.Create(ctx, node("pooled-2", v1.LBIPPool, "", "")); err != nil {
 		t.Fatal(err)
 	}
-	eventually("pooled on own's address in and out; pooled-2 on the next one, out the host's", func() (bool, string) {
+	eventually("pooled on mine's address in and out; pooled-2 on the next one, out the host's", func() (bool, string) {
 		a, b := getSilo("pooled").Status.Service, getSilo("pooled-2").Status.Service
 		return a.PublicIP == "192.0.2.17" && a.EgressIP == "192.0.2.17" && len(a.HostAddresses) == 1 &&
 				b.PublicIP == "192.0.2.18" && b.EgressIP == "203.0.113.5" && strings.Contains(b.EgressNote, "sameAsService sends from 192.0.2.18"),
@@ -243,7 +296,7 @@ func TestIPs(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Spec.Network.Addresses = []string{"192.0.2.18"}
-	if err := admin.Update(ctx, &h); !client.IsConflict(err) || !strings.Contains(err.Error(), "192.0.2.17 (IP web3/own)") {
+	if err := admin.Update(ctx, &h); !client.IsConflict(err) || !strings.Contains(err.Error(), "192.0.2.17 (IP web3/mine)") {
 		t.Fatalf("removing an address in use: %v", err)
 	}
 }

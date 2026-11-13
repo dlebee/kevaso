@@ -106,7 +106,7 @@ func namedIPs(obj meta.Object) string {
 	switch o := obj.(type) {
 	case *v1.Silo:
 		if sv := o.Spec.Service; sv != nil && sv.LoadBalancer != nil && sv.LoadBalancer.IP != "" || o.Spec.Network.Egress.IP != "" {
-			return "|ips:" + fmt.Sprint(v1.SiloIPs(o))
+			return "|ips:" + fmt.Sprint(v1.SiloIPs(o, func(string) bool { return false }), o.Spec.Service != nil && o.Spec.Service.LoadBalancer != nil && o.Spec.Service.LoadBalancer.Dedicated)
 		}
 	case *v1.Service:
 		if o.Spec.LoadBalancerIP != "" {

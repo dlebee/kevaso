@@ -68,6 +68,7 @@ type Class struct {
 	Reserve      bool   // load balancers: it holds an address apart from a load balancer
 	Follows      string // load balancers: where an address goes with its silo (host | region | global)
 	SendsFrom    bool   // load balancers: the address is on the silo's host, so it can send from it
+	Exclusive    bool   // load balancers: one host has the address at a time: never shared
 	Topology     string // storage: host (default) | zone | region | global
 	Mount        bool   // storage: the plugin's node side mounts it, so only hosts running that can take it
 }

@@ -83,6 +83,9 @@ func Conformance(t *testing.T, s Suite) {
 			if !follows[cl.Follows] {
 				t.Errorf("load-balancer class %s: follows %q", cl.Name, cl.Follows)
 			}
+			if cl.Exclusive && cl.NodePorts && !cl.Announce {
+				t.Errorf("load-balancer class %s is exclusive, yet a balancer in front (node ports) can serve many services on one address", cl.Name)
+			}
 			if cl.SendsFrom && cl.NodePorts && !cl.Announce {
 				t.Errorf("load-balancer class %s sends from its address, yet a balancer in front (node ports) has it on no host", cl.Name)
 			}
@@ -170,6 +173,48 @@ func Conformance(t *testing.T, s Suite) {
 				t.Fatalf("reserve again: %+v %v (want the same address %s)", st2, err, st.Address)
 			}
 			ref := kplugin.AddressRef{Class: cl.Name, ID: r.ID, Address: st.Address, Handle: st.Handle}
+			if err := again(func() error { return c.ReleaseAddress(ctx, ref) }); err != nil {
+				t.Fatalf("release: %v", err)
+			}
+			if err := again(func() error { return c.ReleaseAddress(ctx, ref) }); !errors.Is(err, kplugin.ErrNotFound) {
+				t.Fatalf("release again: %v (want NotFound)", err)
+			}
+		})
+	}
+
+	// A shared balancer behind one address: every service's ports on it, each with its own
+	// backends; the same address as ports come and go; parked with none; gone on release.
+	for _, cl := range info.LoadBalancers {
+		if cl.Exclusive || !cl.NodePorts || s.Host.ID == "" {
+			continue
+		}
+		cl := cl
+		t.Run("balancer "+cl.Name, func(t *testing.T) {
+			lb := kplugin.LoadBalancer{Class: cl.Name, ID: "c0nf0rmance-shared-ip-uid", Namespace: "conformance", Name: "default-" + cl.Name,
+				Backends: []kplugin.HostInfo{s.Host}, Ports: []kplugin.Port{
+					{Name: "http", Protocol: "TCP", Port: 80, NodePort: 30000, Service: "silo/a", Backends: []kplugin.HostInfo{s.Host}},
+					{Name: "rpc", Protocol: "TCP", Port: 8545, NodePort: 30001, Service: "silo/b", Backends: []kplugin.HostInfo{s.Host}}}}
+			var st kplugin.LoadBalancerStatus
+			if err := again(func() (err error) { st, err = c.EnsureLoadBalancer(ctx, lb); return }); err != nil || st.Address == "" {
+				t.Fatalf("ensure: %+v %v", st, err)
+			}
+			one := lb
+			one.Ports = lb.Ports[:1]
+			var st2 kplugin.LoadBalancerStatus
+			if err := again(func() (err error) { st2, err = c.EnsureLoadBalancer(ctx, one); return }); err != nil || st2.Address != st.Address {
+				t.Fatalf("a service gone: %+v %v (want the same address %s)", st2, err, st.Address)
+			}
+			bad := one
+			bad.Annotations = map[string]string{info.Name + ".kevaso.com/c0nf0rmance-no-such-knob": "x"}
+			if _, err := c.EnsureLoadBalancer(ctx, bad); err == nil {
+				t.Fatalf("an unknown annotation in its domain was taken")
+			}
+			parked := kplugin.LoadBalancer{Class: cl.Name, ID: lb.ID, Namespace: lb.Namespace, Name: lb.Name}
+			var st3 kplugin.LoadBalancerStatus
+			if err := again(func() (err error) { st3, err = c.EnsureLoadBalancer(ctx, parked); return }); err != nil || st3.Address != st.Address {
+				t.Fatalf("parked: %+v %v (want the address %s kept)", st3, err, st.Address)
+			}
+			ref := kplugin.AddressRef{Class: cl.Name, ID: lb.ID, Address: st.Address}
 			if err := again(func() error { return c.ReleaseAddress(ctx, ref) }); err != nil {
 				t.Fatalf("release: %v", err)
 			}

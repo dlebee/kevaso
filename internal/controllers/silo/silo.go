@@ -287,6 +287,13 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	return engine.Result{RequeueAfter: again}, nil
 }
 
+func (c *Controller) classes() map[string]scheduler.Class {
+	if c.Classes == nil {
+		return nil
+	}
+	return c.Classes()
+}
+
 // Map implements engine.Mapper: a host change (new, Ready, labels, capacity, lost) or another
 // silo's change (freed capacity) may let pending silos fit now, and a host change concerns the
 // silos on it.
@@ -299,7 +306,7 @@ func (c *Controller) Map(changed engine.Key) []engine.Key {
 		s := o.(*v1.Silo)
 		self := changed.Kind == "Silo" && changed.Namespace == s.Namespace && changed.Name == s.Name
 		onIt := (changed.Kind == "Host" && s.Status.Host == changed.Name) ||
-			(changed.Kind == "IP" && s.Namespace == changed.Namespace && slices.Contains(v1.SiloIPs(s), changed.Name))
+			(changed.Kind == "IP" && s.Namespace == changed.Namespace && slices.Contains(v1.SiloIPs(s, scheduler.ExclusiveIn(c.classes())), changed.Name))
 		if changed.Kind == "Image" {
 			name, _ := v1.SplitImage(s.Spec.Image)
 			onIt = s.Namespace == changed.Namespace && name == changed.Name

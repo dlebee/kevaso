@@ -6,10 +6,23 @@ import (
 	"kevaso.com/core/sdk/kplugin"
 )
 
-// svcIPName is the IP the silo's service has its address from ("" if none).
-func svcIPName(s *v1.Silo) string {
-	n, _ := v1.SiloServiceIP(s)
-	return n
+// Exclusive reports whether a load-balancer class's address is one host's at a time (ip-pool,
+// or a plugin's class that says so), so it's never shared between services.
+func Exclusive(class string, classes map[string]Class) bool {
+	return class == v1.LBIPPool || classes[class].Exclusive
+}
+
+// ExclusiveIn is Exclusive over classes, as a function (for v1.SiloIPs).
+func ExclusiveIn(classes map[string]Class) func(string) bool {
+	return func(c string) bool { return Exclusive(c, classes) }
+}
+
+// svcIPName is the IP the silo's service has its address from ("" if none), and how.
+func svcIPName(s *v1.Silo, env Env) (string, v1.IPWay) {
+	if sv := s.Spec.Service; sv != nil && sv.LoadBalancer != nil {
+		return v1.SiloServiceIP(s, Exclusive(sv.LoadBalancer.Class, env.Classes))
+	}
+	return "", v1.IPNone
 }
 
 func findIP(env Env, ns, name string) *v1.IP {
@@ -27,7 +40,7 @@ func heldIP(s *v1.Silo, name string, env Env) *v1.IP {
 	if name == "" {
 		return nil
 	}
-	if x := findIP(env, s.Namespace, name); x != nil && x.Status.BoundUID == s.UID && s.UID != "" {
+	if x := findIP(env, s.Namespace, name); x != nil && x.Status.Holds(s.UID) {
 		return x
 	}
 	return nil
@@ -37,19 +50,20 @@ func heldIP(s *v1.Silo, name string, env Env) *v1.IP {
 // IP first; an ip-pool address only goes on the host it's routed to (or, not reserved yet, a host
 // with one free); a plugin's address only where its class lets it follow (its region, by default).
 func ipFilter(s *v1.Silo, h *v1.Host, env Env) string {
-	for _, name := range v1.SiloIPs(s) {
+	for _, name := range v1.SiloIPs(s, ExclusiveIn(env.Classes)) {
 		x := findIP(env, s.Namespace, name)
+		n, way := svcIPName(s, env)
 		switch {
 		case x == nil:
-			if n, made := v1.SiloServiceIP(s); made && n == name {
-				return "waiting for IP " + name + " to be made for it"
+			if n == name && way != v1.IPNamed {
+				return "waiting for IP " + name + " to be made"
 			}
 			return "IP " + name + " doesn't exist"
-		case x.Status.BoundUID != s.UID || s.UID == "":
-			if x.Status.BoundTo != "" && x.Status.BoundTo != v1.HolderSiloPrefix+s.Name {
-				return "IP " + name + " is held by " + x.Status.BoundTo
+		case !x.Status.Holds(s.UID):
+			if why := x.Status.WaitingReason(s.UID); why != "" {
+				return why
 			}
-			if n, made := v1.SiloServiceIP(s); made && n == name && !ownedBy(x, s.UID) {
+			if n == name && way == v1.IPMade && !ownedBy(x, s.UID) {
 				return "IP " + name + " exists and wasn't made for it: name it in loadBalancer.ip to take it"
 			}
 			return "waiting for IP " + name + " to be bound to it"
@@ -115,7 +129,8 @@ func Egress(s *v1.Silo, h *v1.Host, in string, svcIP, egIP *v1.IP, classes map[s
 			return hostOut, ""
 		case class == v1.LBIPPool:
 			if in == "" {
-				return hostOut, "waiting for IP " + svcIPName(s) + "'s address: out is the host's meanwhile"
+				n, _ := v1.SiloServiceIP(s, true)
+				return hostOut, "waiting for IP " + n + "'s address: out is the host's meanwhile"
 			}
 			return in, ""
 		case !served:
@@ -123,7 +138,8 @@ func Egress(s *v1.Silo, h *v1.Host, in string, svcIP, egIP *v1.IP, classes map[s
 		case !c.SendsFrom:
 			return hostOut, class + "'s address is its balancer's, on no host, so nothing can send from it: out is the host's (sameAsService can't be honoured)"
 		case svcIP == nil || svcIP.Status.Address == "":
-			return hostOut, "waiting for IP " + svcIPName(s) + "'s address: out is the host's meanwhile"
+			n, _ := v1.SiloServiceIP(s, Exclusive(class, classes))
+			return hostOut, "waiting for IP " + n + "'s address: out is the host's meanwhile"
 		}
 		return svcIP.Status.Address, ""
 	}

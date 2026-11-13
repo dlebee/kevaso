@@ -74,6 +74,10 @@ type Class struct {
 	// silo's outgoing traffic can leave from it (egress.source: sameAsService). A balancer in front
 	// (node ports) can't: its address is on no host.
 	SendsFrom bool `json:"sendsFrom,omitempty"`
+	// Exclusive (load balancers): only one host can have the address at a time (an announced
+	// shared IP), so one silo holds it and it is never shared between services. Without it, every
+	// service of the class in a namespace that names no address shares one, each on its own ports.
+	Exclusive bool `json:"exclusive,omitempty"`
 	// Topology (storage): from where a volume can be attached, which is what lets a silo move
 	// with its data (design §0.3, §6): host (pinned, the default), zone, region, or global (any
 	// host anywhere).
@@ -123,22 +127,28 @@ type HostInfo struct {
 	PrivateAddress string `json:"privateAddress,omitempty"` // its private address in the region, if any
 }
 
-// LoadBalancer is an address from a load-balancer class for one silo's service.
+// LoadBalancer is the balancer behind one address (an IP object): every port of every service on
+// it, each with its own backends. There's no load-balancer object in the API; the plugin packs the
+// ports as it sees fit (one NodeBalancer with a config per port, say).
 type LoadBalancer struct {
 	Class     string `json:"class"`
-	ID        string `json:"id"` // stable: the UID of the IP object it serves
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"` // the silo's or Service's
+	ID        string `json:"id"`        // stable: the IP's UID
+	Namespace string `json:"namespace"` // the IP's
+	Name      string `json:"name"`      // the IP's
 	// Address is the IP's reserved address, for classes that reserve (Class.Reserve).
 	Address string `json:"address,omitempty"`
 	Ports   []Port `json:"ports"`
-	// Backends are where traffic goes: the silo's host. Hosts are every host of the plugin's in
-	// the cluster (an announced address is shared with all of them, so it can follow the silo).
+	// Backends are every port's backends together; Hosts every host of the plugin's in the cluster
+	// (an announced address is shared with all of them, so it can follow the silo).
 	Backends []HostInfo `json:"backends"`
 	Hosts    []HostInfo `json:"hosts,omitempty"`
+	// Annotations are the IP's annotations in the plugin's domain (NAME.kevaso.com/…), untouched:
+	// knobs core never reads. A plugin refuses ones it doesn't know.
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
-// Port is one service port and, for NodePorts classes, the backend port the host forwards.
+// Port is one service port on the address: where it goes (its service's hosts) and, for NodePorts
+// classes, the backend port the host forwards. A closed port (a lease not open) isn't in the list.
 type Port struct {
 	Name     string `json:"name"`
 	Protocol string `json:"protocol"` // TCP | UDP
@@ -147,6 +157,11 @@ type Port struct {
 	// AllowFrom are the client sources (CIDRs) the port accepts; nil: anywhere. Set only for
 	// classes with FiltersSources: the service's allowFrom, narrowed by an open lease's.
 	AllowFrom []string `json:"allowFrom,omitempty"`
+	// Service is who the port is for (silo/NAME or service/NAME); Backends where it goes.
+	Service  string     `json:"service,omitempty"`
+	Backends []HostInfo `json:"backends,omitempty"`
+	// Annotations are its service's annotations in the plugin's domain, untouched.
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 // LoadBalancerStatus is where the load balancer is.
@@ -173,6 +188,8 @@ type AddressReservation struct {
 	Region    string `json:"region"` // where to reserve it
 	// Address asks for this one (an address you already own at the provider); empty: any.
 	Address string `json:"address,omitempty"`
+	// Annotations are the IP's in the plugin's domain, untouched.
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 // AddressStatus is a reserved address.
@@ -264,7 +281,8 @@ type HostDescriber interface {
 }
 
 // LoadBalancers serves load-balancer classes. A load balancer is keyed by the IP object it serves
-// (LoadBalancer.ID), not by the silo: it follows the IP from holder to holder. For a class that
+// (LoadBalancer.ID), not by a silo: one EnsureLoadBalancer carries every port on the address, and
+// it follows the IP from holder to holder. For a class that
 // reserves, DeleteLoadBalancer unshares the address from the hosts and keeps the reservation.
 // For one that doesn't, the balancer is the IP's address and is never deleted while the IP lives:
 // with no backends and no ports it is parked (it keeps its address and sends nowhere, answering

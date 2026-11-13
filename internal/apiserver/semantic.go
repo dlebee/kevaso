@@ -122,6 +122,9 @@ func semantic(obj meta.Object) []string {
 // (an instance on v1 must always run the same thing), though old ones may be dropped.
 func transition(old, next meta.Object) []string {
 	var errs []string
+	if o, ok := old.(*v1.IP); ok {
+		errs = append(errs, ipTransition(o, next.(*v1.IP))...)
+	}
 	if o, ok := old.(*v1.Image); ok {
 		n := next.(*v1.Image)
 		for _, ov := range o.Spec.Versions {

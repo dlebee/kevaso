@@ -203,7 +203,7 @@ func TestSiloSetAndService(t *testing.T) {
 	eventually("the service: a virtual IP, three endpoints, a load balancer on both hosts", func() (bool, string) {
 		var s v1.Service
 		_ = admin.Get(ctx, "Service", "web3", "rpc", &s)
-		lb, ok := fake.LBOf("web3", "rpc")
+		lb, ok := fake.LBOf("web3", "service/rpc")
 		return s.Status.ClusterIP == "10.65.0.1" && len(s.Status.Endpoints) == 3 && len(s.Status.NodePorts) == 1 &&
 				s.Status.NodePorts[0].NodePort == v1.NodePortSiloMax+1 && s.Status.PublicIP != "" && ok && len(lb.Backends) == 2 &&
 				lb.Ports[0].NodePort == v1.NodePortSiloMax+1,
@@ -291,7 +291,7 @@ func TestSiloSetAndService(t *testing.T) {
 	eventually("the load balancer down to its host", func() (bool, string) {
 		var s v1.Service
 		_ = admin.Get(ctx, "Service", "web3", "rpc", &s)
-		lb, _ := fake.LBOf("web3", "rpc")
+		lb, _ := fake.LBOf("web3", "service/rpc")
 		return len(s.Status.Endpoints) == 1 && len(lb.Backends) == 1, fmt.Sprintf("%+v", lb)
 	})
 

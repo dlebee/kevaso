@@ -173,6 +173,7 @@ type Class struct {
 	Reserve        bool                   `protobuf:"varint,9,opt,name=reserve,proto3" json:"reserve,omitempty"`                                     // load balancers: it holds an address apart from a load balancer (Addresses)
 	Follows        string                 `protobuf:"bytes,10,opt,name=follows,proto3" json:"follows,omitempty"`                                     // load balancers: where an address goes with its silo: host | region (default) | global
 	SendsFrom      bool                   `protobuf:"varint,11,opt,name=sends_from,json=sendsFrom,proto3" json:"sends_from,omitempty"`               // load balancers: the address is on the silo's host, so the silo can send from it
+	Exclusive      bool                   `protobuf:"varint,12,opt,name=exclusive,proto3" json:"exclusive,omitempty"`                                // load balancers: one host has the address at a time, so it's never shared
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -280,6 +281,13 @@ func (x *Class) GetFollows() string {
 func (x *Class) GetSendsFrom() bool {
 	if x != nil {
 		return x.SendsFrom
+	}
+	return false
+}
+
+func (x *Class) GetExclusive() bool {
+	if x != nil {
+		return x.Exclusive
 	}
 	return false
 }
@@ -499,7 +507,10 @@ type Port struct {
 	Port     int32                  `protobuf:"varint,3,opt,name=port,proto3" json:"port,omitempty"`
 	NodePort int32                  `protobuf:"varint,4,opt,name=node_port,json=nodePort,proto3" json:"node_port,omitempty"`
 	// where clients may connect from (CIDRs); empty: anywhere. Only sent to classes that filter sources.
-	AllowFrom     []string `protobuf:"bytes,5,rep,name=allow_from,json=allowFrom,proto3" json:"allow_from,omitempty"`
+	AllowFrom     []string          `protobuf:"bytes,5,rep,name=allow_from,json=allowFrom,proto3" json:"allow_from,omitempty"`
+	Service       string            `protobuf:"bytes,6,opt,name=service,proto3" json:"service,omitempty"`                                                                                   // who it's for: silo/NAME | service/NAME
+	Backends      []*HostInfo       `protobuf:"bytes,7,rep,name=backends,proto3" json:"backends,omitempty"`                                                                                 // where it goes
+	Annotations   map[string]string `protobuf:"bytes,8,rep,name=annotations,proto3" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // its service's, in the plugin's domain, untouched
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -569,16 +580,39 @@ func (x *Port) GetAllowFrom() []string {
 	return nil
 }
 
+func (x *Port) GetService() string {
+	if x != nil {
+		return x.Service
+	}
+	return ""
+}
+
+func (x *Port) GetBackends() []*HostInfo {
+	if x != nil {
+		return x.Backends
+	}
+	return nil
+}
+
+func (x *Port) GetAnnotations() map[string]string {
+	if x != nil {
+		return x.Annotations
+	}
+	return nil
+}
+
+// The balancer behind one address (an IP): every port of every service on it.
 type LoadBalancer struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Class         string                 `protobuf:"bytes,1,opt,name=class,proto3" json:"class,omitempty"`
-	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"` // the UID of the IP object it serves
-	Namespace     string                 `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
-	Address       string                 `protobuf:"bytes,5,opt,name=address,proto3" json:"address,omitempty"` // the IP's reserved address, for classes that reserve
+	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`               // the UID of the IP object it serves
+	Namespace     string                 `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"` // the IP's
+	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`           // the IP's
+	Address       string                 `protobuf:"bytes,5,opt,name=address,proto3" json:"address,omitempty"`     // the IP's reserved address, for classes that reserve
 	Ports         []*Port                `protobuf:"bytes,6,rep,name=ports,proto3" json:"ports,omitempty"`
-	Backends      []*HostInfo            `protobuf:"bytes,7,rep,name=backends,proto3" json:"backends,omitempty"` // the silo's host
-	Hosts         []*HostInfo            `protobuf:"bytes,8,rep,name=hosts,proto3" json:"hosts,omitempty"`       // every host of the plugin's
+	Backends      []*HostInfo            `protobuf:"bytes,7,rep,name=backends,proto3" json:"backends,omitempty"`                                                                                 // every port's backends together
+	Hosts         []*HostInfo            `protobuf:"bytes,8,rep,name=hosts,proto3" json:"hosts,omitempty"`                                                                                       // every host of the plugin's
+	Annotations   map[string]string      `protobuf:"bytes,9,rep,name=annotations,proto3" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // the IP's, in the plugin's domain, untouched
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -665,6 +699,13 @@ func (x *LoadBalancer) GetBackends() []*HostInfo {
 func (x *LoadBalancer) GetHosts() []*HostInfo {
 	if x != nil {
 		return x.Hosts
+	}
+	return nil
+}
+
+func (x *LoadBalancer) GetAnnotations() map[string]string {
+	if x != nil {
+		return x.Annotations
 	}
 	return nil
 }
@@ -825,6 +866,7 @@ type AddressReservation struct {
 	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
 	Region        string                 `protobuf:"bytes,5,opt,name=region,proto3" json:"region,omitempty"`
 	Address       string                 `protobuf:"bytes,6,opt,name=address,proto3" json:"address,omitempty"` // one you already own; empty: any
+	Annotations   map[string]string      `protobuf:"bytes,7,rep,name=annotations,proto3" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -899,6 +941,13 @@ func (x *AddressReservation) GetAddress() string {
 		return x.Address
 	}
 	return ""
+}
+
+func (x *AddressReservation) GetAnnotations() map[string]string {
+	if x != nil {
+		return x.Annotations
+	}
+	return nil
 }
 
 type AddressStatus struct {
@@ -1749,7 +1798,7 @@ const file_kplugin_proto_rawDesc = "" +
 	"\x05hosts\x18\x04 \x01(\bR\x05hosts\x12>\n" +
 	"\x0eload_balancers\x18\x05 \x03(\v2\x17.kevaso.plugin.v1.ClassR\rloadBalancers\x121\n" +
 	"\astorage\x18\x06 \x03(\v2\x17.kevaso.plugin.v1.ClassR\astorage\x12\x10\n" +
-	"\x03dns\x18\a \x03(\tR\x03dns\"\xcc\x02\n" +
+	"\x03dns\x18\a \x03(\tR\x03dns\"\xea\x02\n" +
 	"\x05Class\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +
@@ -1764,7 +1813,8 @@ const file_kplugin_proto_rawDesc = "" +
 	"\afollows\x18\n" +
 	" \x01(\tR\afollows\x12\x1d\n" +
 	"\n" +
-	"sends_from\x18\v \x01(\bR\tsendsFrom\"4\n" +
+	"sends_from\x18\v \x01(\bR\tsendsFrom\x12\x1c\n" +
+	"\texclusive\x18\f \x01(\bR\texclusive\"4\n" +
 	"\x04Host\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\"o\n" +
@@ -1776,14 +1826,20 @@ const file_kplugin_proto_rawDesc = "" +
 	"\x14DescribeHostsRequest\x12,\n" +
 	"\x05hosts\x18\x01 \x03(\v2\x16.kevaso.plugin.v1.HostR\x05hosts\"I\n" +
 	"\x15DescribeHostsResponse\x120\n" +
-	"\x05hosts\x18\x01 \x03(\v2\x1a.kevaso.plugin.v1.HostInfoR\x05hosts\"\x86\x01\n" +
+	"\x05hosts\x18\x01 \x03(\v2\x1a.kevaso.plugin.v1.HostInfoR\x05hosts\"\xe3\x02\n" +
 	"\x04Port\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\bprotocol\x18\x02 \x01(\tR\bprotocol\x12\x12\n" +
 	"\x04port\x18\x03 \x01(\x05R\x04port\x12\x1b\n" +
 	"\tnode_port\x18\x04 \x01(\x05R\bnodePort\x12\x1d\n" +
 	"\n" +
-	"allow_from\x18\x05 \x03(\tR\tallowFrom\"\x98\x02\n" +
+	"allow_from\x18\x05 \x03(\tR\tallowFrom\x12\x18\n" +
+	"\aservice\x18\x06 \x01(\tR\aservice\x126\n" +
+	"\bbackends\x18\a \x03(\v2\x1a.kevaso.plugin.v1.HostInfoR\bbackends\x12I\n" +
+	"\vannotations\x18\b \x03(\v2'.kevaso.plugin.v1.Port.AnnotationsEntryR\vannotations\x1a>\n" +
+	"\x10AnnotationsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xab\x03\n" +
 	"\fLoadBalancer\x12\x14\n" +
 	"\x05class\x18\x01 \x01(\tR\x05class\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x1c\n" +
@@ -1792,7 +1848,11 @@ const file_kplugin_proto_rawDesc = "" +
 	"\aaddress\x18\x05 \x01(\tR\aaddress\x12,\n" +
 	"\x05ports\x18\x06 \x03(\v2\x16.kevaso.plugin.v1.PortR\x05ports\x126\n" +
 	"\bbackends\x18\a \x03(\v2\x1a.kevaso.plugin.v1.HostInfoR\bbackends\x120\n" +
-	"\x05hosts\x18\b \x03(\v2\x1a.kevaso.plugin.v1.HostInfoR\x05hosts\"S\n" +
+	"\x05hosts\x18\b \x03(\v2\x1a.kevaso.plugin.v1.HostInfoR\x05hosts\x12Q\n" +
+	"\vannotations\x18\t \x03(\v2/.kevaso.plugin.v1.LoadBalancer.AnnotationsEntryR\vannotations\x1a>\n" +
+	"\x10AnnotationsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"S\n" +
 	"\x12LoadBalancerStatus\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12#\n" +
 	"\rsource_ranges\x18\x02 \x03(\tR\fsourceRanges\"Q\n" +
@@ -1800,14 +1860,18 @@ const file_kplugin_proto_rawDesc = "" +
 	"\x05class\x18\x01 \x01(\tR\x05class\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x18\n" +
 	"\aaddress\x18\x03 \x01(\tR\aaddress\"\x1c\n" +
-	"\x1aDeleteLoadBalancerResponse\"\x9e\x01\n" +
+	"\x1aDeleteLoadBalancerResponse\"\xb7\x02\n" +
 	"\x12AddressReservation\x12\x14\n" +
 	"\x05class\x18\x01 \x01(\tR\x05class\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x1c\n" +
 	"\tnamespace\x18\x03 \x01(\tR\tnamespace\x12\x12\n" +
 	"\x04name\x18\x04 \x01(\tR\x04name\x12\x16\n" +
 	"\x06region\x18\x05 \x01(\tR\x06region\x12\x18\n" +
-	"\aaddress\x18\x06 \x01(\tR\aaddress\"Y\n" +
+	"\aaddress\x18\x06 \x01(\tR\aaddress\x12W\n" +
+	"\vannotations\x18\a \x03(\v25.kevaso.plugin.v1.AddressReservation.AnnotationsEntryR\vannotations\x1a>\n" +
+	"\x10AnnotationsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"Y\n" +
 	"\rAddressStatus\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12\x16\n" +
@@ -1894,7 +1958,7 @@ func file_kplugin_proto_rawDescGZIP() []byte {
 	return file_kplugin_proto_rawDescData
 }
 
-var file_kplugin_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_kplugin_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_kplugin_proto_goTypes = []any{
 	(*GetPluginInfoRequest)(nil),       // 0: kevaso.plugin.v1.GetPluginInfoRequest
 	(*PluginInfo)(nil),                 // 1: kevaso.plugin.v1.PluginInfo
@@ -1925,49 +1989,56 @@ var file_kplugin_proto_goTypes = []any{
 	(*Record)(nil),                     // 26: kevaso.plugin.v1.Record
 	(*EnsureRecordResponse)(nil),       // 27: kevaso.plugin.v1.EnsureRecordResponse
 	(*DeleteRecordResponse)(nil),       // 28: kevaso.plugin.v1.DeleteRecordResponse
+	nil,                                // 29: kevaso.plugin.v1.Port.AnnotationsEntry
+	nil,                                // 30: kevaso.plugin.v1.LoadBalancer.AnnotationsEntry
+	nil,                                // 31: kevaso.plugin.v1.AddressReservation.AnnotationsEntry
 }
 var file_kplugin_proto_depIdxs = []int32{
 	2,  // 0: kevaso.plugin.v1.PluginInfo.load_balancers:type_name -> kevaso.plugin.v1.Class
 	2,  // 1: kevaso.plugin.v1.PluginInfo.storage:type_name -> kevaso.plugin.v1.Class
 	3,  // 2: kevaso.plugin.v1.DescribeHostsRequest.hosts:type_name -> kevaso.plugin.v1.Host
 	4,  // 3: kevaso.plugin.v1.DescribeHostsResponse.hosts:type_name -> kevaso.plugin.v1.HostInfo
-	7,  // 4: kevaso.plugin.v1.LoadBalancer.ports:type_name -> kevaso.plugin.v1.Port
-	4,  // 5: kevaso.plugin.v1.LoadBalancer.backends:type_name -> kevaso.plugin.v1.HostInfo
-	4,  // 6: kevaso.plugin.v1.LoadBalancer.hosts:type_name -> kevaso.plugin.v1.HostInfo
-	4,  // 7: kevaso.plugin.v1.Attachment.host:type_name -> kevaso.plugin.v1.HostInfo
-	0,  // 8: kevaso.plugin.v1.Identity.GetPluginInfo:input_type -> kevaso.plugin.v1.GetPluginInfoRequest
-	5,  // 9: kevaso.plugin.v1.Hosts.DescribeHosts:input_type -> kevaso.plugin.v1.DescribeHostsRequest
-	8,  // 10: kevaso.plugin.v1.LoadBalancers.EnsureLoadBalancer:input_type -> kevaso.plugin.v1.LoadBalancer
-	10, // 11: kevaso.plugin.v1.LoadBalancers.DeleteLoadBalancer:input_type -> kevaso.plugin.v1.LoadBalancerRef
-	12, // 12: kevaso.plugin.v1.Addresses.ReserveAddress:input_type -> kevaso.plugin.v1.AddressReservation
-	14, // 13: kevaso.plugin.v1.Addresses.ReleaseAddress:input_type -> kevaso.plugin.v1.AddressRef
-	16, // 14: kevaso.plugin.v1.Volumes.EnsureVolume:input_type -> kevaso.plugin.v1.Volume
-	18, // 15: kevaso.plugin.v1.Volumes.AttachVolume:input_type -> kevaso.plugin.v1.Attachment
-	18, // 16: kevaso.plugin.v1.Volumes.DetachVolume:input_type -> kevaso.plugin.v1.Attachment
-	21, // 17: kevaso.plugin.v1.Volumes.DeleteVolume:input_type -> kevaso.plugin.v1.VolumeRef
-	23, // 18: kevaso.plugin.v1.Node.NodeMountVolume:input_type -> kevaso.plugin.v1.NodeMount
-	23, // 19: kevaso.plugin.v1.Node.NodeUnmountVolume:input_type -> kevaso.plugin.v1.NodeMount
-	26, // 20: kevaso.plugin.v1.DNS.EnsureRecord:input_type -> kevaso.plugin.v1.Record
-	26, // 21: kevaso.plugin.v1.DNS.DeleteRecord:input_type -> kevaso.plugin.v1.Record
-	1,  // 22: kevaso.plugin.v1.Identity.GetPluginInfo:output_type -> kevaso.plugin.v1.PluginInfo
-	6,  // 23: kevaso.plugin.v1.Hosts.DescribeHosts:output_type -> kevaso.plugin.v1.DescribeHostsResponse
-	9,  // 24: kevaso.plugin.v1.LoadBalancers.EnsureLoadBalancer:output_type -> kevaso.plugin.v1.LoadBalancerStatus
-	11, // 25: kevaso.plugin.v1.LoadBalancers.DeleteLoadBalancer:output_type -> kevaso.plugin.v1.DeleteLoadBalancerResponse
-	13, // 26: kevaso.plugin.v1.Addresses.ReserveAddress:output_type -> kevaso.plugin.v1.AddressStatus
-	15, // 27: kevaso.plugin.v1.Addresses.ReleaseAddress:output_type -> kevaso.plugin.v1.ReleaseAddressResponse
-	17, // 28: kevaso.plugin.v1.Volumes.EnsureVolume:output_type -> kevaso.plugin.v1.VolumeStatus
-	19, // 29: kevaso.plugin.v1.Volumes.AttachVolume:output_type -> kevaso.plugin.v1.AttachmentStatus
-	20, // 30: kevaso.plugin.v1.Volumes.DetachVolume:output_type -> kevaso.plugin.v1.DetachVolumeResponse
-	22, // 31: kevaso.plugin.v1.Volumes.DeleteVolume:output_type -> kevaso.plugin.v1.DeleteVolumeResponse
-	24, // 32: kevaso.plugin.v1.Node.NodeMountVolume:output_type -> kevaso.plugin.v1.NodeMountResponse
-	25, // 33: kevaso.plugin.v1.Node.NodeUnmountVolume:output_type -> kevaso.plugin.v1.NodeUnmountResponse
-	27, // 34: kevaso.plugin.v1.DNS.EnsureRecord:output_type -> kevaso.plugin.v1.EnsureRecordResponse
-	28, // 35: kevaso.plugin.v1.DNS.DeleteRecord:output_type -> kevaso.plugin.v1.DeleteRecordResponse
-	22, // [22:36] is the sub-list for method output_type
-	8,  // [8:22] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	4,  // 4: kevaso.plugin.v1.Port.backends:type_name -> kevaso.plugin.v1.HostInfo
+	29, // 5: kevaso.plugin.v1.Port.annotations:type_name -> kevaso.plugin.v1.Port.AnnotationsEntry
+	7,  // 6: kevaso.plugin.v1.LoadBalancer.ports:type_name -> kevaso.plugin.v1.Port
+	4,  // 7: kevaso.plugin.v1.LoadBalancer.backends:type_name -> kevaso.plugin.v1.HostInfo
+	4,  // 8: kevaso.plugin.v1.LoadBalancer.hosts:type_name -> kevaso.plugin.v1.HostInfo
+	30, // 9: kevaso.plugin.v1.LoadBalancer.annotations:type_name -> kevaso.plugin.v1.LoadBalancer.AnnotationsEntry
+	31, // 10: kevaso.plugin.v1.AddressReservation.annotations:type_name -> kevaso.plugin.v1.AddressReservation.AnnotationsEntry
+	4,  // 11: kevaso.plugin.v1.Attachment.host:type_name -> kevaso.plugin.v1.HostInfo
+	0,  // 12: kevaso.plugin.v1.Identity.GetPluginInfo:input_type -> kevaso.plugin.v1.GetPluginInfoRequest
+	5,  // 13: kevaso.plugin.v1.Hosts.DescribeHosts:input_type -> kevaso.plugin.v1.DescribeHostsRequest
+	8,  // 14: kevaso.plugin.v1.LoadBalancers.EnsureLoadBalancer:input_type -> kevaso.plugin.v1.LoadBalancer
+	10, // 15: kevaso.plugin.v1.LoadBalancers.DeleteLoadBalancer:input_type -> kevaso.plugin.v1.LoadBalancerRef
+	12, // 16: kevaso.plugin.v1.Addresses.ReserveAddress:input_type -> kevaso.plugin.v1.AddressReservation
+	14, // 17: kevaso.plugin.v1.Addresses.ReleaseAddress:input_type -> kevaso.plugin.v1.AddressRef
+	16, // 18: kevaso.plugin.v1.Volumes.EnsureVolume:input_type -> kevaso.plugin.v1.Volume
+	18, // 19: kevaso.plugin.v1.Volumes.AttachVolume:input_type -> kevaso.plugin.v1.Attachment
+	18, // 20: kevaso.plugin.v1.Volumes.DetachVolume:input_type -> kevaso.plugin.v1.Attachment
+	21, // 21: kevaso.plugin.v1.Volumes.DeleteVolume:input_type -> kevaso.plugin.v1.VolumeRef
+	23, // 22: kevaso.plugin.v1.Node.NodeMountVolume:input_type -> kevaso.plugin.v1.NodeMount
+	23, // 23: kevaso.plugin.v1.Node.NodeUnmountVolume:input_type -> kevaso.plugin.v1.NodeMount
+	26, // 24: kevaso.plugin.v1.DNS.EnsureRecord:input_type -> kevaso.plugin.v1.Record
+	26, // 25: kevaso.plugin.v1.DNS.DeleteRecord:input_type -> kevaso.plugin.v1.Record
+	1,  // 26: kevaso.plugin.v1.Identity.GetPluginInfo:output_type -> kevaso.plugin.v1.PluginInfo
+	6,  // 27: kevaso.plugin.v1.Hosts.DescribeHosts:output_type -> kevaso.plugin.v1.DescribeHostsResponse
+	9,  // 28: kevaso.plugin.v1.LoadBalancers.EnsureLoadBalancer:output_type -> kevaso.plugin.v1.LoadBalancerStatus
+	11, // 29: kevaso.plugin.v1.LoadBalancers.DeleteLoadBalancer:output_type -> kevaso.plugin.v1.DeleteLoadBalancerResponse
+	13, // 30: kevaso.plugin.v1.Addresses.ReserveAddress:output_type -> kevaso.plugin.v1.AddressStatus
+	15, // 31: kevaso.plugin.v1.Addresses.ReleaseAddress:output_type -> kevaso.plugin.v1.ReleaseAddressResponse
+	17, // 32: kevaso.plugin.v1.Volumes.EnsureVolume:output_type -> kevaso.plugin.v1.VolumeStatus
+	19, // 33: kevaso.plugin.v1.Volumes.AttachVolume:output_type -> kevaso.plugin.v1.AttachmentStatus
+	20, // 34: kevaso.plugin.v1.Volumes.DetachVolume:output_type -> kevaso.plugin.v1.DetachVolumeResponse
+	22, // 35: kevaso.plugin.v1.Volumes.DeleteVolume:output_type -> kevaso.plugin.v1.DeleteVolumeResponse
+	24, // 36: kevaso.plugin.v1.Node.NodeMountVolume:output_type -> kevaso.plugin.v1.NodeMountResponse
+	25, // 37: kevaso.plugin.v1.Node.NodeUnmountVolume:output_type -> kevaso.plugin.v1.NodeUnmountResponse
+	27, // 38: kevaso.plugin.v1.DNS.EnsureRecord:output_type -> kevaso.plugin.v1.EnsureRecordResponse
+	28, // 39: kevaso.plugin.v1.DNS.DeleteRecord:output_type -> kevaso.plugin.v1.DeleteRecordResponse
+	26, // [26:40] is the sub-list for method output_type
+	12, // [12:26] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_kplugin_proto_init() }
@@ -1981,7 +2052,7 @@ func file_kplugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_kplugin_proto_rawDesc), len(file_kplugin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   29,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   7,
 		},

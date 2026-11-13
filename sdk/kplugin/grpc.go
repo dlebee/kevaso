@@ -85,7 +85,7 @@ func classesTo(cs []Class) []*pb.Class {
 	out := make([]*pb.Class, 0, len(cs))
 	for _, c := range cs {
 		out = append(out, &pb.Class{Name: c.Name, Description: c.Description, OwnHostsOnly: c.OwnHostsOnly, Announce: c.Announce, NodePorts: c.NodePorts, Topology: c.Topology, Reach: c.Reach, FiltersSources: c.FiltersSources,
-			Reserve: c.Reserve, Follows: c.Follows, SendsFrom: c.SendsFrom})
+			Reserve: c.Reserve, Follows: c.Follows, SendsFrom: c.SendsFrom, Exclusive: c.Exclusive})
 	}
 	return out
 }
@@ -94,7 +94,7 @@ func classesFrom(cs []*pb.Class) []Class {
 	out := make([]Class, 0, len(cs))
 	for _, c := range cs {
 		out = append(out, Class{Name: c.GetName(), Description: c.GetDescription(), OwnHostsOnly: c.GetOwnHostsOnly(), Announce: c.GetAnnounce(), NodePorts: c.GetNodePorts(), Topology: c.GetTopology(), Reach: c.GetReach(), FiltersSources: c.GetFiltersSources(),
-			Reserve: c.GetReserve(), Follows: c.GetFollows(), SendsFrom: c.GetSendsFrom()})
+			Reserve: c.GetReserve(), Follows: c.GetFollows(), SendsFrom: c.GetSendsFrom(), Exclusive: c.GetExclusive()})
 	}
 	return out
 }
@@ -125,18 +125,20 @@ func hostInfosFrom(hs []*pb.HostInfo) []HostInfo {
 
 func lbTo(lb LoadBalancer) *pb.LoadBalancer {
 	m := &pb.LoadBalancer{Class: lb.Class, Id: lb.ID, Namespace: lb.Namespace, Name: lb.Name, Address: lb.Address,
-		Backends: hostInfosTo(lb.Backends), Hosts: hostInfosTo(lb.Hosts)}
+		Backends: hostInfosTo(lb.Backends), Hosts: hostInfosTo(lb.Hosts), Annotations: lb.Annotations}
 	for _, p := range lb.Ports {
-		m.Ports = append(m.Ports, &pb.Port{Name: p.Name, Protocol: p.Protocol, Port: int32(p.Port), NodePort: int32(p.NodePort), AllowFrom: p.AllowFrom})
+		m.Ports = append(m.Ports, &pb.Port{Name: p.Name, Protocol: p.Protocol, Port: int32(p.Port), NodePort: int32(p.NodePort), AllowFrom: p.AllowFrom,
+			Service: p.Service, Backends: hostInfosTo(p.Backends), Annotations: p.Annotations})
 	}
 	return m
 }
 
 func lbFrom(m *pb.LoadBalancer) LoadBalancer {
 	lb := LoadBalancer{Class: m.GetClass(), ID: m.GetId(), Namespace: m.GetNamespace(), Name: m.GetName(), Address: m.GetAddress(),
-		Backends: hostInfosFrom(m.GetBackends()), Hosts: hostInfosFrom(m.GetHosts())}
+		Backends: hostInfosFrom(m.GetBackends()), Hosts: hostInfosFrom(m.GetHosts()), Annotations: m.GetAnnotations()}
 	for _, p := range m.GetPorts() {
-		lb.Ports = append(lb.Ports, Port{Name: p.GetName(), Protocol: p.GetProtocol(), Port: int(p.GetPort()), NodePort: int(p.GetNodePort()), AllowFrom: p.GetAllowFrom()})
+		lb.Ports = append(lb.Ports, Port{Name: p.GetName(), Protocol: p.GetProtocol(), Port: int(p.GetPort()), NodePort: int(p.GetNodePort()), AllowFrom: p.GetAllowFrom(),
+			Service: p.GetService(), Backends: hostInfosFrom(p.GetBackends()), Annotations: p.GetAnnotations()})
 	}
 	return lb
 }
@@ -211,7 +213,7 @@ type addressesServer struct {
 
 func (s addressesServer) ReserveAddress(ctx context.Context, r *pb.AddressReservation) (*pb.AddressStatus, error) {
 	st, err := s.p.ReserveAddress(ctx, AddressReservation{Class: r.GetClass(), ID: r.GetId(), Namespace: r.GetNamespace(),
-		Name: r.GetName(), Region: r.GetRegion(), Address: r.GetAddress()})
+		Name: r.GetName(), Region: r.GetRegion(), Address: r.GetAddress(), Annotations: r.GetAnnotations()})
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -476,7 +478,7 @@ func (c *Client) UnmountVolume(ctx context.Context, m NodeMount) error {
 // ReserveAddress implements Addresses.
 func (c *Client) ReserveAddress(ctx context.Context, r AddressReservation) (AddressStatus, error) {
 	st, err := c.addrs.ReserveAddress(ctx, &pb.AddressReservation{Class: r.Class, Id: r.ID, Namespace: r.Namespace,
-		Name: r.Name, Region: r.Region, Address: r.Address})
+		Name: r.Name, Region: r.Region, Address: r.Address, Annotations: r.Annotations})
 	if err != nil {
 		return AddressStatus{}, fromStatus(err)
 	}

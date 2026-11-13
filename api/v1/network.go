@@ -52,10 +52,13 @@ type HostPortSpec struct {
 // LoadBalancerSpec asks for an outside address from a class.
 type LoadBalancerSpec struct {
 	Class string `json:"class"`
-	// IP names the IP object (design §7.2c-1) whose address this is. Empty: one is made for the
-	// service, named after the silo, that goes with it unless kept (kvo ip keep). worker-ip has none:
-	// its address is the host's.
-	IP        string   `json:"ip,omitempty"`
+	// IP names the IP object (design §7.2c-1) whose address this is. Empty: the namespace's shared
+	// one for the class (made on first use, gone with its last service unless kept), or with
+	// Dedicated one of its own. worker-ip has none: its address is the host's.
+	IP string `json:"ip,omitempty"`
+	// Dedicated: an IP of its own, made for it and named after it, instead of the namespace's
+	// shared one for the class. An address only one host can have at a time is always its own.
+	Dedicated bool     `json:"dedicated,omitempty"`
 	AllowFrom []string `json:"allowFrom,omitempty"`
 }
 

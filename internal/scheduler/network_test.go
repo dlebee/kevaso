@@ -28,7 +28,7 @@ func ipObj(name, class string, f func(*v1.IP)) *v1.IP {
 }
 
 func boundTo(s *v1.Silo) func(*v1.IP) {
-	return func(x *v1.IP) { x.Status.BoundTo, x.Status.BoundUID = v1.HolderSiloPrefix+s.Name, s.UID }
+	return func(x *v1.IP) { x.Status.BoundTo = []v1.IPHolder{{Holder: v1.HolderSiloPrefix + s.Name, UID: s.UID}} }
 }
 
 func TestHostPortScheduling(t *testing.T) {
@@ -78,7 +78,10 @@ func TestIPScheduling(t *testing.T) {
 	if d, _ := Schedule(a, hs, nil); !strings.Contains(d.Excluded["metal-1"], "IP eth doesn't exist") {
 		t.Fatalf("no IP: %+v", d)
 	}
-	other := ipObj("eth", v1.LBIPPool, func(x *v1.IP) { x.Status.BoundTo, x.Status.BoundUID = "silo/b", "uid-b" })
+	other := ipObj("eth", v1.LBIPPool, func(x *v1.IP) {
+		x.Status.BoundTo = []v1.IPHolder{{Holder: "silo/b", UID: "uid-b"}}
+		x.Status.Waiting = []v1.IPWaiting{{Holder: "silo/a", UID: "uid-a", Reason: "IP eth is held by silo/b"}}
+	})
 	if d, _ := Schedule(a, hs, nil, other); !strings.Contains(d.Excluded["metal-1"], "held by silo/b") {
 		t.Fatalf("held: %+v", d)
 	}
@@ -120,7 +123,7 @@ func TestIPScheduling(t *testing.T) {
 func TestEgressTable(t *testing.T) {
 	h := host("metal-1", func(h *v1.Host) { h.Spec.Address = "198.51.100.10" })
 	classes := map[string]Class{
-		"fake-ip": {Plugin: "fake", Reserve: true, SendsFrom: true},
+		"fake-ip": {Plugin: "fake", Reserve: true, SendsFrom: true, Exclusive: true},
 		"fake-lb": {Plugin: "fake", NodePorts: true},
 	}
 	mk := func(expose, class, source string) *v1.Silo {

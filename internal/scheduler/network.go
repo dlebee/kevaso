@@ -87,13 +87,16 @@ func netFilter(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) string {
 // are allocated on h. The address out follows the table of §7.2b (Egress). Pure.
 func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloServiceStatus, error) {
 	st := v1.SiloServiceStatus{Name: s.Name + "." + s.Namespace + ".kevaso"}
-	svcIP, egIP := heldIP(s, svcIPName(s), env), heldIP(s, v1.SiloEgressIP(s), env)
+	svcName, _ := svcIPName(s, env)
+	svcIP, egIP := heldIP(s, svcName, env), heldIP(s, v1.SiloEgressIP(s), env)
 	if svcIP != nil {
 		st.IP = svcIP.Name
 	}
 	if class := v1.PluginLB(s); class != "" {
-		cur := s.Status.Service
-		st.PublicIP, st.SourceRanges, st.Announce = cur.PublicIP, cur.SourceRanges, cur.Announce
+		if svcIP != nil { // the balancer writes the address; a silo waiting for its IP has none
+			cur := s.Status.Service
+			st.PublicIP, st.SourceRanges, st.Announce = cur.PublicIP, cur.SourceRanges, cur.Announce
+		}
 		if c, ok := env.Classes[class]; ok && c.NodePorts {
 			np, err := NodePorts(s, h.Name, placed)
 			if err != nil {

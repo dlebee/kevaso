@@ -7,7 +7,9 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 
 	"kevaso.com/core/sdk/kplugin"
@@ -76,7 +78,7 @@ func (f *Fake) Info(context.Context) (kplugin.Info, error) {
 		LoadBalancers: []kplugin.Class{
 			{Name: ClassLB, OwnHostsOnly: true, NodePorts: true, Follows: kplugin.FollowsRegion},
 			{Name: ClassFilteredLB, OwnHostsOnly: true, NodePorts: true, FiltersSources: true, Follows: kplugin.FollowsRegion},
-			{Name: ClassIP, OwnHostsOnly: true, Announce: true, Reserve: true, SendsFrom: true, Follows: kplugin.FollowsRegion},
+			{Name: ClassIP, OwnHostsOnly: true, Announce: true, Reserve: true, SendsFrom: true, Exclusive: true, Follows: kplugin.FollowsRegion},
 		},
 		Storage: []kplugin.Class{
 			{Name: ClassBlock, OwnHostsOnly: true},
@@ -113,6 +115,21 @@ func (f *Fake) EnsureLoadBalancer(_ context.Context, lb kplugin.LoadBalancer) (k
 		f.LBs[lb.ID] = lb
 		return kplugin.LoadBalancerStatus{Address: f.lbAddr[lb.ID]}, nil
 	}
+	for k := range lb.Annotations {
+		if err := fakeAnnotation(k); err != nil {
+			return kplugin.LoadBalancerStatus{}, err
+		}
+	}
+	for _, p := range lb.Ports {
+		for k := range p.Annotations {
+			if err := fakeAnnotation(k); err != nil {
+				return kplugin.LoadBalancerStatus{}, fmt.Errorf("port %s of %s: %w", p.Name, p.Service, err)
+			}
+		}
+		if lb.Class != ClassIP && len(p.Backends) == 0 {
+			return kplugin.LoadBalancerStatus{}, fmt.Errorf("port %s of %s has no backends", p.Name, p.Service)
+		}
+	}
 	if len(lb.Backends) == 0 {
 		return kplugin.LoadBalancerStatus{}, fmt.Errorf("no backends")
 	}
@@ -143,8 +160,19 @@ func (f *Fake) EnsureLoadBalancer(_ context.Context, lb kplugin.LoadBalancer) (k
 	return kplugin.LoadBalancerStatus{Address: f.lbAddr[lb.ID], SourceRanges: []string{"192.168.255.0/24"}}, nil
 }
 
-// LBOf is the load balancer serving the silo or Service ns/name (ok false if none).
-func (f *Fake) LBOf(ns, name string) (kplugin.LoadBalancer, bool) {
+// FakeAnnotations are the annotations the fake knows (it refuses others in its domain).
+var FakeAnnotations = []string{"fake.kevaso.com/algorithm"}
+
+func fakeAnnotation(k string) error {
+	if strings.HasPrefix(k, "fake.kevaso.com/") && !slices.Contains(FakeAnnotations, k) {
+		return fmt.Errorf("unknown annotation %s (the fake knows %s): %w", k, strings.Join(FakeAnnotations, ", "), kplugin.ErrUnsupported)
+	}
+	return nil
+}
+
+// LBOf is the load balancer in namespace ns with a port for holder (silo/NAME or service/NAME),
+// with only that holder's ports (ok false if none).
+func (f *Fake) LBOf(ns, holder string) (kplugin.LoadBalancer, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	ids := make([]string, 0, len(f.LBs))
@@ -153,7 +181,18 @@ func (f *Fake) LBOf(ns, name string) (kplugin.LoadBalancer, bool) {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		if lb := f.LBs[id]; lb.Namespace == ns && lb.Name == name {
+		lb := f.LBs[id]
+		if lb.Namespace != ns {
+			continue
+		}
+		var mine []kplugin.Port
+		for _, p := range lb.Ports {
+			if p.Service == holder {
+				mine = append(mine, p)
+			}
+		}
+		if len(mine) > 0 {
+			lb.Ports = mine
 			return lb, true
 		}
 	}

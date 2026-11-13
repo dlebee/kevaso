@@ -30,17 +30,20 @@ func ipRow(x *v1.IP) []string {
 	if !x.Kept() {
 		kept = "no, goes with " + dash(ownerOf(x))
 	}
-	return []string{dash(x.Status.Address), x.Spec.Class, dash(x.Status.BoundTo), kept}
+	return []string{dash(x.Status.Address), x.Spec.Class, dash(x.Status.Holders()), kept}
 }
 
 func ownerOf(x *v1.IP) string {
 	for _, r := range x.OwnerReferences {
 		return strings.ToLower(r.Kind) + "/" + r.Name
 	}
-	if x.Status.BoundTo != "" {
-		return x.Status.BoundTo
+	if x.Labels[v1.LabelDefaultIP] != "" {
+		return "its last service"
 	}
-	return ""
+	if len(x.Status.BoundTo) == 1 {
+		return x.Status.BoundTo[0].Holder
+	}
+	return "its last holder"
 }
 
 func createIP(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error {
@@ -79,7 +82,7 @@ func ipCommand(ctx context.Context, c *client.Client, o opts, stdout io.Writer) 
 			x.Spec.Reclaim, x.OwnerReferences = v1.ReclaimRetain, nil
 			msg = fmt.Sprintf("ip/%s kept: %s stays until you delete the IP", name, dash(x.Status.Address))
 		} else {
-			if x.Status.BoundTo == "" {
+			if len(x.Status.BoundTo) == 0 {
 				if err := c.Delete(ctx, "IP", ns, name); err != nil {
 					return err
 				}
@@ -87,7 +90,7 @@ func ipCommand(ctx context.Context, c *client.Client, o opts, stdout io.Writer) 
 				return nil
 			}
 			x.Spec.Reclaim = v1.ReclaimDelete
-			msg = fmt.Sprintf("ip/%s released: it goes when %s lets go of it", name, x.Status.BoundTo)
+			msg = fmt.Sprintf("ip/%s released: it goes when %s let go of it", name, x.Status.Holders())
 		}
 		err := c.Update(ctx, &x)
 		if client.IsConflict(err) {
@@ -132,12 +135,20 @@ func describeIP(ctx context.Context, c *client.Client, x *v1.IP, w io.Writer) er
 		kept = "no: reclaim Delete, it goes when " + dash(ownerOf(x)) + " lets go of it (kvo ip keep " + x.Name + " keeps it)"
 	}
 	kv("Kept", kept)
-	kv("Held by", dash(x.Status.BoundTo))
-	if strings.HasPrefix(x.Status.BoundTo, v1.HolderSiloPrefix) {
-		var s v1.Silo
-		if err := c.Get(ctx, "Silo", x.Namespace, strings.TrimPrefix(x.Status.BoundTo, v1.HolderSiloPrefix), &s); err == nil {
-			kv("In and out", s.Status.Service.AddressesLine())
+	if x.Labels[v1.LabelDefaultIP] != "" {
+		kv("Shared", "the namespace's default for "+x.Spec.Class+": every load-balancer service of the class naming no ip is on it, on its own ports")
+	}
+	kv("Held by", dash(x.Status.Holders()))
+	for _, h := range x.Status.BoundTo {
+		if strings.HasPrefix(h.Holder, v1.HolderSiloPrefix) {
+			var s v1.Silo
+			if err := c.Get(ctx, "Silo", x.Namespace, strings.TrimPrefix(h.Holder, v1.HolderSiloPrefix), &s); err == nil {
+				kv("  "+h.Holder+" in and out", s.Status.Service.AddressesLine())
+			}
 		}
+	}
+	for _, w := range x.Status.Waiting {
+		kv("Waiting", w.Holder+": "+w.Reason)
 	}
 	for _, cd := range x.Status.Conditions {
 		line := string(cd.Status) + " " + cd.Reason

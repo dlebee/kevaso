@@ -118,8 +118,8 @@ func listHostAddresses(ctx context.Context, c *client.Client, name string, out i
 		}
 		if x := obj.(*v1.IP); x.Spec.Class == v1.LBIPPool && x.Status.Host == name && x.Status.Address != "" {
 			who := "ip " + x.Namespace + "/" + x.Name
-			if x.Status.BoundTo != "" {
-				who += " (held by " + x.Status.BoundTo + ")"
+			if len(x.Status.BoundTo) > 0 {
+				who += " (held by " + x.Status.Holders() + ")"
 			}
 			holder[x.Status.Address] = who
 		}

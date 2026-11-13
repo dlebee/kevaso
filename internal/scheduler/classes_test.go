@@ -34,8 +34,8 @@ func mounts(classes ...string) hostOpt {
 }
 
 func TestPluginClasses(t *testing.T) {
-	// The silo holds its load balancer's IP (made for it): the IP must be its before it's placed.
-	env := Env{Classes: linodeClasses, IPs: []*v1.IP{ipObj("a", "linode-nodebalancer", func(x *v1.IP) { x.Status.BoundTo, x.Status.BoundUID = "silo/a", "uid-a" })}}
+	// The silo holds the namespace's shared IP for its class: it must be on it before it's placed.
+	env := Env{Classes: linodeClasses, IPs: []*v1.IP{ipObj(v1.DefaultIPName("linode-nodebalancer"), "linode-nodebalancer", func(x *v1.IP) { x.Status.BoundTo = []v1.IPHolder{{Holder: "silo/a", UID: "uid-a"}} })}}
 	for _, tc := range []struct {
 		name  string
 		silo  *v1.Silo
@@ -101,7 +101,9 @@ func TestNodePorts(t *testing.T) {
 	}
 	// …and they're through ServiceStatus, with the plugin's address kept.
 	a.Status.Service.PublicIP = "198.51.100.40"
-	st, err := ServiceStatus(a, host("tor", provider("linode", "ca-central")), nil, Env{Classes: linodeClasses})
+	a.UID = "uid-a"
+	held := ipObj(v1.DefaultIPName("linode-nodebalancer"), "linode-nodebalancer", func(x *v1.IP) { x.Status.BoundTo = []v1.IPHolder{{Holder: "silo/a", UID: "uid-a"}} })
+	st, err := ServiceStatus(a, host("tor", provider("linode", "ca-central")), nil, Env{Classes: linodeClasses, IPs: []*v1.IP{held}})
 	if err != nil || st.PublicIP != "198.51.100.40" || len(st.NodePorts) != 2 || st.NodePorts[0].NodePort != 30010 {
 		t.Fatalf("service status: %+v %v", st, err)
 	}

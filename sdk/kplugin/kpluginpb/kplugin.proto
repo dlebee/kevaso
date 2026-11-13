@@ -44,6 +44,7 @@ message Class {
   bool reserve = 9;         // load balancers: it holds an address apart from a load balancer (Addresses)
   string follows = 10;      // load balancers: where an address goes with its silo: host | region (default) | global
   bool sends_from = 11;     // load balancers: the address is on the silo's host, so the silo can send from it
+  bool exclusive = 12;      // load balancers: one host has the address at a time, so it's never shared
 }
 
 // ── Hosts ────────────────────────────────────────────────────────────────────
@@ -81,17 +82,22 @@ message Port {
   int32 node_port = 4;
   // where clients may connect from (CIDRs); empty: anywhere. Only sent to classes that filter sources.
   repeated string allow_from = 5;
+  string service = 6;              // who it's for: silo/NAME | service/NAME
+  repeated HostInfo backends = 7;  // where it goes
+  map<string, string> annotations = 8; // its service's, in the plugin's domain, untouched
 }
 
+// The balancer behind one address (an IP): every port of every service on it.
 message LoadBalancer {
   string class = 1;
   string id = 2; // the UID of the IP object it serves
-  string namespace = 3;
-  string name = 4;
+  string namespace = 3; // the IP's
+  string name = 4;      // the IP's
   string address = 5; // the IP's reserved address, for classes that reserve
   repeated Port ports = 6;
-  repeated HostInfo backends = 7; // the silo's host
+  repeated HostInfo backends = 7; // every port's backends together
   repeated HostInfo hosts = 8;    // every host of the plugin's
+  map<string, string> annotations = 9; // the IP's, in the plugin's domain, untouched
 }
 
 message LoadBalancerStatus {
@@ -124,6 +130,7 @@ message AddressReservation {
   string name = 4;
   string region = 5;
   string address = 6; // one you already own; empty: any
+  map<string, string> annotations = 7;
 }
 
 message AddressStatus {
