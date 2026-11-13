@@ -55,10 +55,16 @@ func StartCommand(d v1.Daemon) []string {
 	return []string{"sh", "-c", script}
 }
 
-// ProbeCommand prints running, exited CODE, or absent.
+// ProbeCommand prints running, exited CODE, or absent. A zombie isn't running: a killed wrapper
+// stays one where nothing reaps it (a container whose PID 1 is "sleep infinity"), and kill -0
+// still succeeds on it, so with /proc the process's state is read instead.
 func ProbeCommand(d v1.Daemon) []string {
 	pid, exit, _ := files(d.Name)
-	script := "if [ -f " + pid + " ] && kill -0 \"$(cat " + pid + ")\" 2>/dev/null; then echo running; " +
+	alive := "a=no; p=$(cat " + pid + " 2>/dev/null); if [ -n \"$p\" ]; then " +
+		"if [ -r /proc/$p/status ]; then s=; while read -r k v _; do if [ \"$k\" = State: ]; then s=$v; break; fi; done < /proc/$p/status 2>/dev/null; " +
+		"case $s in Z|X|'') ;; *) a=yes ;; esac; " +
+		"elif [ ! -d /proc/self ] && kill -0 \"$p\" 2>/dev/null; then a=yes; fi; fi; "
+	script := alive + "if [ $a = yes ]; then echo running; " +
 		"elif [ -f " + exit + " ]; then echo \"exited $(cat " + exit + ")\"; " +
 		"elif [ -f " + pid + " ]; then echo exited -1; else echo absent; fi"
 	return []string{"sh", "-c", script}

@@ -1,6 +1,7 @@
 package keep
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -217,5 +218,39 @@ func TestStopKillsTheGroupInEveryShell(t *testing.T) {
 			_ = exec.Command("kill", "-9", child).Run()
 			t.Fatalf("with %s, the daemon's child %s outlived the stop", shell, child)
 		})
+	}
+}
+
+// A daemon whose wrapper was killed and never reaped is a zombie (in a container whose PID 1 is
+// "sleep infinity", it stays one): kill -0 still succeeds on it, but it isn't running.
+func TestProbeSeesAZombieAsDead(t *testing.T) {
+	if _, err := os.Stat("/proc/self/status"); err != nil {
+		t.Skip("no /proc here")
+	}
+	Dir = t.TempDir()
+	pid, _, _ := files("z")
+	// The child exits at once; its parent becomes "sleep 3", which never reaps it.
+	parent := exec.Command("sh", "-c", "sh -c 'exit 0' & echo $! > "+pid+"; exec sleep 3")
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = parent.Process.Kill(); _ = parent.Wait() }()
+	zombie := false
+	for i := 0; i < 100 && !zombie; i++ {
+		time.Sleep(20 * time.Millisecond)
+		b, err := os.ReadFile(pid)
+		if err != nil || len(b) == 0 {
+			continue
+		}
+		st, _ := os.ReadFile("/proc/" + strings.TrimSpace(string(b)) + "/status")
+		zombie = strings.Contains(string(st), "State:\tZ")
+	}
+	if !zombie {
+		t.Fatal("couldn't make a zombie")
+	}
+	for _, shell := range shells(t) {
+		if p := ParseProbe(in(t, shell, ProbeCommand(v1.Daemon{Name: "z"}))); p.Running || p.Absent || p.Exit != -1 {
+			t.Errorf("%s: a zombie probed as %+v, want exited -1", filepath.Base(shell), p)
+		}
 	}
 }
