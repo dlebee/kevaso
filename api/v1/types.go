@@ -212,9 +212,10 @@ type SiloSpec struct {
 	Exclusive bool `json:"exclusive,omitempty"`
 	// Update says how a change that needs a fresh copy (a new image, a reset) is applied.
 	Update *UpdatePolicy `json:"update,omitempty"`
-	// Readiness is what "ready" means beyond running: a command run inside the silo now and then.
-	// Until it passes the silo isn't Ready, so it's no Service's endpoint and a rolling update waits.
-	Readiness *Readiness `json:"readiness,omitempty"`
+	// Probes say what started, ready and alive mean beyond running (design §0.6). None: the silo
+	// is Ready as soon as it runs. Until readiness passes it isn't Ready, so a rolling update
+	// waits, and a service with routeWhen: ready gets no traffic.
+	Probes *Probes `json:"probes,omitempty"`
 	// Reset, when it changes, puts the silo back onto its image (`kvo reset silo`): a fresh disk
 	// (or container) from the image, the same name, address and volumes. Any new value will do;
 	// kvo sets the time.
@@ -232,13 +233,6 @@ type UpdatePolicy struct {
 	// Strategy: StopFirst (the default). StartFirst on a single silo needs its disk cloned, which
 	// comes with moves (M14); in a SiloSet it means starting extra instances first (maxSurge).
 	Strategy string `json:"strategy,omitempty"`
-}
-
-// Readiness is a check run inside the silo.
-type Readiness struct {
-	Command []string `json:"command"`           // argv, run directly (use sh -c for a script)
-	Period  string   `json:"period,omitempty"`  // how often (default 10s)
-	Timeout string   `json:"timeout,omitempty"` // each run's limit (default 5s)
 }
 
 // Volume is a silo's extra storage. A volume is kept data, with no flag to say otherwise (design
@@ -360,6 +354,14 @@ type SiloStatus struct {
 	// Movable says where the silo could go with its data, from its storage: Pinned (HOST),
 	// Region (R), Anywhere; or Recreate when only a fresh copy can go elsewhere.
 	Movable string `json:"movable,omitempty"`
+	// Probes are its probes' states (design §0.6); Restarts what liveness onFailure: restart did.
+	// StartedAt is when its workload last came up (running, init done): startup's deadline
+	// counts from it, and every start begins the probes afresh.
+	Probes    []ProbeStatus     `json:"probes,omitempty"`
+	StartedAt *time.Time        `json:"startedAt,omitempty"`
+	Restarts  *LivenessRestarts `json:"restarts,omitempty"`
+	// Routing is whether its own service gets traffic now (routeWhen), and why not.
+	Routing *Routing `json:"routing,omitempty"`
 }
 
 // SiloImage is a silo's image: resolved by the control plane (an Image's version, or the name as

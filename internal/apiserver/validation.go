@@ -84,8 +84,6 @@ var builtinRules = map[string][]Rule{
 			"panes.allow: status, html"},
 		{`!has(self.spec.panes) || !has(self.spec.panes.maxPanes) || (self.spec.panes.maxPanes >= 0 && self.spec.panes.maxPanes <= 16)`,
 			"panes.maxPanes: 0 to 16"},
-		{`!has(self.spec.readiness) || (has(self.spec.readiness.command) && self.spec.readiness.command.size() > 0)`,
-			"readiness needs a command"},
 		{`!has(self.spec.imagePull) || (has(self.spec.imagePull.secretRef) && self.spec.imagePull.secretRef != '')`,
 			"imagePull needs secretRef: a registry secret in the namespace"},
 		{`!has(self.spec.placement) || !has(self.spec.placement.spread) || (self.spec.placement.spread.by in ['host', 'zone', 'region'] && has(self.spec.placement.spread.selector) && self.spec.placement.spread.selector.size() > 0)`,
@@ -126,6 +124,8 @@ var builtinRules = map[string][]Rule{
 			"type LoadBalancer needs loadBalancerClass: a plugin's class (e.g. linode-nodebalancer); worker-ip and ip-pool are one host's addresses, so they're for a single silo's own service"},
 		{`!has(self.spec.loadBalancerClass) || (has(self.spec.type) && self.spec.type == 'LoadBalancer')`,
 			"loadBalancerClass goes with type: LoadBalancer"},
+		{`!has(self.spec.routeWhen) || self.spec.routeWhen in ['ready', 'running']`,
+			"routeWhen must be ready or running"},
 	},
 	"Secret": {
 		{`!has(self.spec.type) || self.spec.type in ['opaque', 'ed25519', 'ecdsa-p256', 'registry']`,

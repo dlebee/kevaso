@@ -32,6 +32,9 @@ type SiloService struct {
 	Expose       string            `json:"expose,omitempty"` // private | hostPort | loadBalancer
 	HostPort     *HostPortSpec     `json:"hostPort,omitempty"`
 	LoadBalancer *LoadBalancerSpec `json:"loadBalancer,omitempty"`
+	// RouteWhen: ready (traffic only while the readiness probe passes) or running (as soon as the
+	// silo runs). Required with a readiness probe; without one it's running (design §0.6).
+	RouteWhen string `json:"routeWhen,omitempty"`
 }
 
 // ServicePort is one port of a service.

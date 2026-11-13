@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/policy"
+	"kevaso.com/core/internal/routing"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -73,6 +75,8 @@ type Agent struct {
 	Nodes *plugins.Registry
 	// TunnelRefresh is how often the agent looks for system nodes to hold a tunnel to (tunnels.go).
 	TunnelRefresh time.Duration
+	// ProbeDial, if set, dials tcp and http probes instead of the host's own dialer (tests).
+	ProbeDial func(ctx context.Context, network, addr string) (net.Conn, error)
 	// OnEndpoints, if set, hears the control planes the agent's client may use whenever it learns
 	// more from the system nodes (the worker keeps them for its next start).
 	OnEndpoints func([]string)
@@ -90,6 +94,7 @@ type Agent struct {
 	broker      *Broker
 	prepared    sync.Map // silo uid → struct{}: the guest helper is in place for this agent's run
 	kept        sync.Map // silo uid → keptState: its daemons and upkeep as this agent last decided
+	probed      sync.Map // silo uid → probeState: its probes as this agent last decided
 	// nodeMounts: volume path → handle, mounted here by a node side during this agent's run.
 	nodeMounts sync.Map
 	// guestMounted: silo uid → the volumes its guest last mounted (runtimes with kri.GuestVolumes).
@@ -399,6 +404,11 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		if err := a.recordForFence(s); err != nil {
 			return engine.Result{}, err
 		}
+		// Every start begins its probes afresh: startup's deadline counts from this boot.
+		a.probed.Delete(s.UID)
+		if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Probes, st.StartedAt = nil, nil }); err != nil {
+			return engine.Result{}, err
+		}
 		if err := rt.Start(ctx, id); err != nil {
 			return engine.Result{}, err
 		}
@@ -438,23 +448,29 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	if done, err := a.runInit(ctx, rt, s); err != nil || !done {
 		return engine.Result{}, err
 	}
-	reason, msg, again := "Running", "running on "+a.HostName, time.Duration(0)
-	status := meta.ConditionTrue
-	if r := s.Spec.Readiness; r != nil {
-		// Ready only while its check passes: looked at again every period.
-		again = duration(r.Period, 10*time.Second)
-		if ok, out := a.ready(ctx, rt, s); !ok {
-			status, reason, msg = meta.ConditionFalse, "NotReady", "readiness: "+out
-		} else {
-			msg += ", readiness passing"
-		}
+	// Probes (design §0.6), if it has any: Started, Ready and Degraded follow them. Without any,
+	// it's Started and Ready now, and nothing else is ensured.
+	startedAt := a.now()
+	if s.Status.StartedAt != nil {
+		startedAt = *s.Status.StartedAt
 	}
+	po := a.probe(ctx, rt, s, rs.Address, startedAt)
+	if po.restart {
+		return engine.Result{RequeueAfter: time.Millisecond}, a.restartForLiveness(ctx, rt, s, po)
+	}
+	again := po.next
 	if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		st.Phase, st.Address = PhaseRunning, rs.Address
 		if st.Image == nil || st.Image.Running == "" {
 			st.Image = running(st.Image, s, image) // created before images were recorded
 		}
-		setCond(st, "Ready", status, reason, msg, s.Generation, a.now())
+		if st.StartedAt == nil {
+			st.StartedAt = &startedAt
+		}
+		applyProbes(st, s, po, a.now())
+		if c := meta.FindCondition(st.Conditions, "Ready"); c != nil && c.Reason == "Running" {
+			c.Message = "running on " + a.HostName
+		}
 	}); err != nil {
 		return engine.Result{}, err
 	}
@@ -572,29 +588,6 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		st.Image.Digest = digest
 		setCond(st, "Updated", meta.ConditionTrue, "Reset", "reset onto "+image+" (stop-first, volumes kept)", s.Generation, a.now())
 	})
-}
-
-// ready runs the silo's readiness command once.
-func (a *Agent) ready(ctx context.Context, rt kri.Runtime, s *v1.Silo) (bool, string) {
-	r := s.Spec.Readiness
-	cctx, cancel := context.WithTimeout(ctx, duration(r.Timeout, 5*time.Second))
-	defer cancel()
-	var out bytes.Buffer
-	code, err := rt.Exec(cctx, idOf(s), kri.ExecRequest{Command: r.Command, Stdout: &out, Stderr: &out})
-	switch {
-	case err != nil:
-		return false, err.Error()
-	case code != 0:
-		return false, fmt.Sprintf("exit %d: %s", code, tail(out.String(), 200))
-	}
-	return true, ""
-}
-
-func duration(s string, def time.Duration) time.Duration {
-	if d, err := time.ParseDuration(s); err == nil && d > 0 {
-		return d
-	}
-	return def
 }
 
 // runInit runs the init steps that haven't run yet inside the running silo (through Exec).
@@ -718,6 +711,7 @@ func (a *Agent) setStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.SiloS
 		}
 		before := statusKey(cur.Status)
 		mutate(&cur.Status)
+		cur.Status.Routing = routing.Silo(cur.Spec, cur.Status) // always as its status says now
 		if statusKey(cur.Status) == before {
 			return nil
 		}

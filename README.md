@@ -75,7 +75,8 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   protected ones scale-in never removes (`kvo protect`), and rollouts that reset instances onto a new
   image a few at a time (or start extra ones first), volumes kept. `exclusive: true` guarantees one
   copy only. A standalone `Service` puts a virtual IP and a name in front of a set, on every worker,
-  sending to the instances whose `readiness` check passes, and can take an outside address from a
+  sending to the instances its `routeWhen` says (`ready`: while their readiness probe passes;
+  `running`: as soon as they run; probes are startup, readiness and liveness), and can take an outside address from a
   plugin's load balancer. `kvo scale`, `kvo reset`;
 - under the hood: a store with global revisions and resumable watches, CEL validation, a controller
   engine; the testbed and end-to-end loop (`make e2e`).

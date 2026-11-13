@@ -299,7 +299,7 @@ func TestImageChangeAndResetAreStopFirst(t *testing.T) {
 	}
 }
 
-// A readiness check keeps the silo from being Ready until it passes.
+// A readiness probe keeps the silo from being Ready until it passes.
 func TestReadiness(t *testing.T) {
 	e := setup(t)
 	var mu sync.Mutex
@@ -314,7 +314,7 @@ func TestReadiness(t *testing.T) {
 	}
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "rpc", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-			Readiness: &v1.Readiness{Command: []string{"check-synced"}, Period: "50ms"}}}
+			Probes: &v1.Probes{Readiness: &v1.Probe{Exec: &v1.ExecProbe{Command: []string{"check-synced"}}, Period: "50ms"}}}}
 	if err := e.c.Create(e.ctx, s); err != nil {
 		t.Fatal(err)
 	}

@@ -12,6 +12,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/controllers/certificate"
 	"kevaso.com/core/internal/rbac"
+	"kevaso.com/core/internal/routing"
 	"kevaso.com/core/internal/store"
 )
 
@@ -93,7 +94,7 @@ func (s *Server) ingressConfig(ctx context.Context, silo *v1.Silo) (*client.Ingr
 		for _, r := range ing.Spec.Rules {
 			backend, ok := s.backend(ctx, ing.Namespace, r.Silo)
 			if !ok {
-				continue // the target or its port isn't there (yet)
+				continue // the target or its port isn't there (yet), or its routeWhen holds it
 			}
 			path := r.Path
 			if path == "" {
@@ -126,7 +127,9 @@ func (s *Server) ingressConfig(ctx context.Context, silo *v1.Silo) (*client.Ingr
 	return cfg, len(mine), nil
 }
 
-// backend is a target silo's private name and the number of its named port.
+// backend is a target silo's private name and the number of its named port; none while its
+// service's routeWhen holds it (design §0.6): the route is left out, so the controller answers
+// for it as for any route it doesn't have. Requests it's already proxying finish.
 func (s *Server) backend(ctx context.Context, ns string, t v1.IngressTarget) (string, bool) {
 	o, err := s.store.Get(ctx, store.Key{Kind: "Silo", Namespace: ns, Name: t.Name})
 	if err != nil {
@@ -136,8 +139,9 @@ func (s *Server) backend(ctx context.Context, ns string, t v1.IngressTarget) (st
 	if err != nil {
 		return "", false
 	}
-	sv := obj.(*v1.Silo).Spec.Service
-	if sv == nil {
+	silo := obj.(*v1.Silo)
+	sv := silo.Spec.Service
+	if sv == nil || !routing.Routed(silo) {
 		return "", false
 	}
 	for _, p := range sv.Ports {

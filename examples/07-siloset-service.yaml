@@ -40,18 +40,22 @@ spec:
     placement:
       hostSelector: { provider: linode }   # a label on your Linode workers (kvoadm host add … --label provider=linode)
     volumes: [{ name: chain, mountPath: /root/.ethereum, size: 100Gi }]
-    readiness:                    # an endpoint only while it answers
-      command: [sh, -c, "geth attach --exec eth.blockNumber /root/.ethereum/geth.ipc"]
-      period: 15s
+    probes:
+      startup: { tcp: { port: rpc }, period: 5s, timeout: 10m }   # "it has come up"
+      readiness:                  # "it can take work now"
+        exec: { command: [sh, -c, "geth attach --exec eth.blockNumber /root/.ethereum/geth.ipc"] }
+        period: 15s
     service:
       ports: [{ name: rpc, port: 8545, protocol: TCP }]
       expose: private
+      routeWhen: ready            # stated, never assumed: its private name answers only while ready
 ---
 apiVersion: kevaso/v1
 kind: Service
 metadata: { name: rpc, namespace: web3 }
 spec:
-  selector: { app: rpc }          # every Ready rpc-pool instance (standby ones aren't)
+  selector: { app: rpc }          # every rpc-pool instance (standby ones aren't)
+  routeWhen: ready                # an endpoint only while its readiness passes; the others show as held
   ports:
     - { name: rpc, port: 8545, targetPort: rpc, protocol: TCP }
   type: LoadBalancer

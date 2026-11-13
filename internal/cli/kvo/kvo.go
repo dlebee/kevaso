@@ -677,7 +677,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 	head = append(head, "NAME")
 	switch k.Kind {
 	case "Silo":
-		head = append(head, "RUNTIME", "PHASE", "HOST")
+		head = append(head, "RUNTIME", "PHASE", "READY", "HOST")
 		if wide {
 			head = append(head, "MOVABLE")
 		}
@@ -721,7 +721,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 		row = append(row, m.Name)
 		switch o := obj.(type) {
 		case *v1.Silo:
-			row = append(row, o.Spec.Runtime, dash(o.Status.Phase), dash(o.Status.Host))
+			row = append(row, o.Spec.Runtime, dash(o.Status.Phase), readiness(o.Status.Conditions), dash(o.Status.Host))
 			if wide {
 				row = append(row, dash(o.Status.Movable))
 			}
