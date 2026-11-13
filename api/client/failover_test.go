@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSplitServers(t *testing.T) {
@@ -95,4 +96,27 @@ func TestAddEndpoints(t *testing.T) {
 	if one, _ := NewTLS(ts.URL, ca, nil, nil); one.AddEndpoints(dead) {
 		t.Fatal("a one-server client took another")
 	}
+}
+
+// A control plane that's powered off doesn't refuse, it says nothing: the dial gives up after
+// DialTimeout, and that counts as unreached (the next one gets the request).
+func TestDialTimeoutFailsOver(t *testing.T) {
+	c, err := NewTLS("https://192.0.2.1:6443", testCA(t), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := c.HTTP.Transport.(*http.Transport)
+	if tr.DialContext == nil || DialTimeout > 10*time.Second {
+		t.Fatalf("no bounded dial: %v", DialTimeout)
+	}
+	_, err = (&net.Dialer{Timeout: time.Millisecond}).Dial("tcp", "192.0.2.1:6443") // TEST-NET-1: nobody answers
+	if err == nil || !unreached(err) {
+		t.Fatalf("a dial timeout isn't unreached: %v", err)
+	}
+}
+
+func testCA(t *testing.T) []byte {
+	ts := httptest.NewTLSServer(http.NotFoundHandler())
+	defer ts.Close()
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ts.Certificate().Raw})
 }
