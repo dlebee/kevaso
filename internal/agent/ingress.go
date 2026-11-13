@@ -45,7 +45,7 @@ type ingressLoop struct {
 	// lastGood is the state last applied in full to each controller silo. While the class is held
 	// (an Ingress refused), it's what keeps serving, with the current ACME challenges in it.
 	lastGood map[string]kic.State
-	kick    chan struct{}
+	kick     chan struct{}
 }
 
 func (a *Agent) runIngress(ctx context.Context) {

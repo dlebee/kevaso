@@ -32,14 +32,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, "kvtsh:", err)
 		os.Exit(2)
 	}
+	if err := run(cfg, flag.Arg(0)); err != nil {
+		fmt.Fprintln(os.Stderr, "kvtsh:", err)
+		os.Exit(1)
+	}
+}
+
+func run(cfg remote.Config, script string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	d := remote.New(cfg)
 	defer func() { _ = d.Close() }()
-	out, err := d.Run(ctx, flag.Arg(0), nil)
+	out, err := d.Run(ctx, script, nil)
 	fmt.Print(out)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "kvtsh:", err)
-		os.Exit(1)
-	}
+	return err
 }
