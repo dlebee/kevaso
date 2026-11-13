@@ -63,13 +63,32 @@ func LoadOrCreateCA(dir, hostName string) (*CA, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ca.key"), keyPEM, 0o600); err != nil {
+	// Each file whole or not there: one cut short by a kill parsed on no later start, and the
+	// host ran without injection for good. A key without its certificate makes a new pair.
+	if err := writeWhole(filepath.Join(dir, "ca.key"), keyPEM, 0o600); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), certPEM, 0o644); err != nil {
+	if err := writeWhole(filepath.Join(dir, "ca.crt"), certPEM, 0o644); err != nil {
 		return nil, err
 	}
 	return parseCA(certPEM, keyPEM)
+}
+
+// writeFile writes a file (tests replace it).
+var writeFile = os.WriteFile
+
+// writeWhole writes p next to it, synced, then renames it into place.
+func writeWhole(p string, b []byte, mode os.FileMode) error {
+	tmp := filepath.Join(filepath.Dir(p), "."+filepath.Base(p)+".tmp")
+	if err := writeFile(tmp, b, mode); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if f, err := os.Open(tmp); err == nil {
+		_ = f.Sync()
+		_ = f.Close()
+	}
+	return os.Rename(tmp, p)
 }
 
 func parseCA(certPEM, keyPEM []byte) (*CA, error) {
