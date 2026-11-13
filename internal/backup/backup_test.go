@@ -8,8 +8,11 @@ import (
 	"testing"
 	"time"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
+
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/etcd"
 	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/secrets"
@@ -19,20 +22,85 @@ import (
 // A control plane's data directory with one secret, backed up, restored elsewhere: the secret
 // opens there with the rebuilt master key, after a rotation too.
 func TestBackupAndRestore(t *testing.T) {
-	ctx := context.Background()
 	src := t.TempDir()
-	ca, _ := pki.NewCA("c", time.Now())
-	if err := ca.Save(filepath.Join(src, "pki")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(src, "audit.log"), []byte("{}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	newCA(t, src)
 	st, err := store.OpenSQLite(filepath.Join(src, "store.db"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
+	roundTrip(t, src, st, st.Snapshot)
+}
+
+// The same with the etcd store: its snapshot is a SQLite store, so the backup and Restore are the
+// same; and the restored store.db migrates into a fresh etcd with the secret still opening.
+func TestBackupAndRestoreEtcd(t *testing.T) {
+	ctx := context.Background()
+	src := t.TempDir()
+	ca := newCA(t, src)
+	cli := startEtcd(t, ca)
+	st, err := store.OpenEtcd(ctx, cli, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	dst, sec := roundTrip(t, src, st, st.Snapshot)
+
+	// The restored data dir, started with --store etcd: the snapshot migrates into etcd.
+	e, res, err := store.MigrateSQLite(ctx, startEtcd(t, ca), filepath.Join(dst, "store.db"), 0)
+	if err != nil || !res.Ran {
+		t.Fatalf("migrating the restored store: %+v, %v", res, err)
+	}
+	defer func() { _ = e.Close() }()
+	k2, err := kms.OpenLocal(filepath.Join(dst, "kms", "local.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := (&secrets.Vault{Store: e, KMS: k2, Now: time.Now}).Value(ctx, sec); err != nil || string(got) != "hunter2-hunter2" {
+		t.Fatalf("secret in etcd after restore: %q %v", got, err)
+	}
+	// Revisions survive the snapshot, and the migration keeps them growing.
+	o, err := st.Get(ctx, store.Key{Kind: secrets.KindValue, Namespace: "payments", Name: "db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o2, err := e.Get(ctx, o.Key); err != nil || o2.Revision <= o.Revision {
+		t.Fatalf("restored at %d (%v), original at %d", o2.Revision, err, o.Revision)
+	}
+}
+
+func newCA(t *testing.T, dir string) *pki.CA {
+	t.Helper()
+	ca, _ := pki.NewCA("c", time.Now())
+	if err := ca.Save(filepath.Join(dir, "pki")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "audit.log"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return ca
+}
+
+func startEtcd(t *testing.T, ca *pki.CA) *clientv3.Client {
+	t.Helper()
+	srv, err := etcd.Start(context.Background(), etcd.Config{Name: "cp-1", Dir: filepath.Join(t.TempDir(), "etcd"), CA: ca,
+		ClientListen: "127.0.0.1:0", UnsafeNoFsync: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli, err := srv.Client()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cli.Close(); srv.Close() })
+	return cli
+}
+
+// roundTrip puts a secret in st, backs src up, restores it elsewhere and opens the secret there.
+// It returns the restored data dir and the secret.
+func roundTrip(t *testing.T, src string, st store.Store, snapshot func(context.Context, string) error) (string, *v1.Secret) {
+	t.Helper()
+	ctx := context.Background()
 	k, err := kms.OpenLocal(filepath.Join(src, "kms", "local.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +136,7 @@ func TestBackupAndRestore(t *testing.T) {
 	escrow()
 	status, _ := k.Status(ctx)
 
-	blob, err := Make(ctx, src, st.Snapshot, Manifest{Cluster: "prod", Host: "cp-1", Created: time.Now(), KMSKeyID: status.KeyID}, pub)
+	blob, err := Make(ctx, src, snapshot, Manifest{Cluster: "prod", Host: "cp-1", Created: time.Now(), KMSKeyID: status.KeyID}, pub)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +185,7 @@ func TestBackupAndRestore(t *testing.T) {
 	if _, err := Restore(ctx, blob, rk, dst); err == nil {
 		t.Fatal("restored over an existing control plane")
 	}
+	return dst, sec
 }
 
 func TestAllowed(t *testing.T) {

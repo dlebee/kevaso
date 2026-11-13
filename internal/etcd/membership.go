@@ -96,7 +96,9 @@ func NextStep(desired []Desired, current []Member) Step {
 		return Desired{}, false
 	}
 	cur := append([]Member(nil), current...)
-	sort.Slice(cur, func(i, j int) bool { return cur[i].Name < cur[j].Name || (cur[i].Name == cur[j].Name && cur[i].ID < cur[j].ID) })
+	sort.Slice(cur, func(i, j int) bool {
+		return cur[i].Name < cur[j].Name || (cur[i].Name == cur[j].Name && cur[i].ID < cur[j].ID)
+	})
 
 	voters, healthy := 0, 0
 	for _, m := range cur {

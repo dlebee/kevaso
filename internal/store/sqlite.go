@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 
 	_ "modernc.org/sqlite" // pure Go: no cgo, cross-compiles for every host
@@ -349,4 +350,44 @@ func (s *SQLite) all(ctx context.Context) ([]Object, int64, error) {
 	}
 	rev, err := s.meta(ctx, s.db, "revision")
 	return out, rev, err
+}
+
+// writeSQLite writes objects as a new SQLite store at path (which must not exist), keeping their
+// revisions, with the store at rev and no history: another store's snapshot.
+func writeSQLite(ctx context.Context, path string, objs []Object, rev int64) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%s exists", path)
+	}
+	s, err := OpenSQLite(path, 0)
+	if err != nil {
+		return err
+	}
+	err = func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		for _, o := range objs {
+			data := o.Data
+			if data == nil {
+				data = []byte{}
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO objects (kind, ns, name, rev, data) VALUES (?,?,?,?,?)`,
+				o.Kind, o.Namespace, o.Name, o.Revision, data); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE meta SET v=? WHERE k IN ('revision', 'compacted')`, rev); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}()
+	if cerr := s.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+	}
+	return err
 }

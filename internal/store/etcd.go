@@ -454,6 +454,21 @@ func (e *Etcd) Watch(ctx context.Context, sel Selector, from int64) (<-chan Even
 	return out, nil
 }
 
+// Snapshot writes a consistent copy of every object, with its revision, to a new SQLite store at
+// path (which must not exist), while the store keeps serving: a backup. It is the same format a
+// SQLite control plane's backup holds, so backup.Restore needs nothing new; a control plane started
+// with --store etcd on the restored data dir migrates it into etcd. Watch history isn't kept.
+func (e *Etcd) Snapshot(ctx context.Context, path string) error {
+	if err := e.check(ctx); err != nil {
+		return err
+	}
+	objs, rev, err := e.all(ctx) // one read: one revision
+	if err != nil {
+		return err
+	}
+	return writeSQLite(ctx, path, objs, rev)
+}
+
 // Close implements Store: open watches end. The client stays open (its owner closes it).
 func (e *Etcd) Close() error {
 	e.mu.Lock()
