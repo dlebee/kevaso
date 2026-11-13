@@ -75,7 +75,9 @@ type Agent struct {
 	kept        sync.Map // silo uid → keptState: its daemons and upkeep as this agent last decided
 	// nodeMounts: volume path → handle, mounted here by a node side during this agent's run.
 	nodeMounts sync.Map
-	engine     *engine.Engine
+	// guestMounted: silo uid → the volumes its guest last mounted (runtimes with kri.GuestVolumes).
+	guestMounted sync.Map
+	engine       *engine.Engine
 }
 
 // DefaultFenceAfter is under the host lease (40s), so a cut-off host has stopped its Recreate silos
@@ -274,15 +276,27 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			setCond(st, "Ready", meta.ConditionFalse, "VolumesPending", msg, s.Generation, a.now())
 		})
 	}
+	diskPath, ready, msg, err := a.mountRootDisk(ctx, s)
+	if err != nil {
+		return engine.Result{}, err
+	}
+	if !ready {
+		return engine.Result{RequeueAfter: volumeWait}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			setCond(st, "Ready", meta.ConditionFalse, "VolumesPending", msg, s.Generation, a.now())
+		})
+	}
 	id := idOf(s)
 	rs, err := rt.Status(ctx, id)
 	if err != nil {
 		return engine.Result{}, err
 	}
+	if restart, err := a.setVolumes(ctx, rt, s, rs.State, vols); err != nil || restart {
+		return engine.Result{RequeueAfter: time.Millisecond}, err
+	}
 	image, resolved := imageOf(s)
 	if rs.State != kri.Absent && resolved {
 		// A new image, or a reset asked for: put it back onto the image, stop-first (design §0.4).
-		if due, err := a.update(ctx, rt, s, image, vols); err != nil || due {
+		if due, err := a.update(ctx, rt, s, image, vols, diskPath); err != nil || due {
 			return engine.Result{RequeueAfter: time.Millisecond}, err
 		}
 	}
@@ -303,7 +317,7 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			return engine.Result{}, err
 		}
 		if err := rt.Create(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
-			Volumes: vols, Command: s.Spec.Command}); err != nil {
+			Volumes: vols, Command: s.Spec.Command, DiskHostPath: diskPath}); err != nil {
 			_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 				st.Phase = PhaseFailed
 				setCond(st, "Ready", meta.ConditionFalse, "CreateFailed", err.Error(), s.Generation, a.now())
@@ -345,8 +359,11 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		})
 	}
 
-	// Running: the silo's policy (runtimes that enforce grants themselves), the broker channel and
-	// the guest helper, then init steps, then Ready.
+	// Running: its guest mounts its volumes (VMs), the silo's policy (runtimes that enforce grants
+	// themselves), the broker channel and the guest helper, then init steps, then Ready.
+	if err := a.mountGuestVolumes(ctx, rt, s, vols); err != nil {
+		return engine.Result{}, err
+	}
 	if pr, ok := rt.(kri.Policied); ok {
 		if err := a.applyPolicy(ctx, pr, s); err != nil {
 			return engine.Result{}, err
@@ -427,7 +444,7 @@ func running(cur *v1.SiloImage, s *v1.Silo, image string) *v1.SiloImage {
 // stop-first: the old copy is stopped completely before the new one exists, so two never run
 // (StartFirst needs a disk clone, which comes with moves). Volumes are kept; the disk or container
 // is fresh from the image, so firstBoot init steps run again. due says it acted (or must wait).
-func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image string, vols []kri.Volume) (bool, error) {
+func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image string, vols []kri.Volume, diskPath string) (bool, error) {
 	due := func(s *v1.Silo) bool {
 		cur := s.Status.Image
 		return cur != nil && cur.Running != "" && (cur.Running != image || cur.Reset != s.Spec.Reset)
@@ -473,13 +490,14 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		return true, err
 	}
 	if err := rr.Reset(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
-		Volumes: vols, Command: s.Spec.Command}); err != nil {
+		Volumes: vols, Command: s.Spec.Command, DiskHostPath: diskPath}); err != nil {
 		_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 			setCond(st, "Updated", meta.ConditionFalse, "ResetFailed", err.Error(), s.Generation, a.now())
 		})
 		return true, fmt.Errorf("reset onto %s: %w", image, err)
 	}
-	a.prepared.Delete(s.UID) // a fresh disk: the guest helper goes in again
+	a.prepared.Delete(s.UID) // a fresh disk: the guest helper goes in again, and its mounts
+	a.guestMounted.Delete(s.UID)
 	a.log("silo %s/%s: reset onto %s (%s)", s.Namespace, s.Name, image, what)
 	return true, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		st.Image, st.Init, st.Address = running(st.Image, s, image), nil, ""
@@ -685,6 +703,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				a.broker.Close(id.UID)
 			}
 			a.prepared.Delete(id.UID)
+			a.guestMounted.Delete(id.UID)
 			a.kept.Delete(id.UID)
 			if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
 				return err

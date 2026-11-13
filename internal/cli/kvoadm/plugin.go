@@ -26,18 +26,26 @@ type PluginOptions struct {
 	Side   string            // controller (default: on a control plane, serving the API) | node (on a worker)
 	Creds  map[string]string // credential name → local file
 	Config string            // a local file: the plugin's settings (not secret)
+	// Manifest is the plugin's kevaso-plugin.json (a local file): what each side needs from the
+	// host. Without one, a side gets nothing beyond the default (PluginUnit). Needs is this side's.
+	Manifest string
+	Needs    kplugin.Needs
+	Yes      bool // the operator grants what the manifest asks (needed when it asks for privileges)
 }
 
 var pluginName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
 
-// PluginUnit is the systemd unit a plugin runs as: its own dynamic user, no capabilities, read-only
-// system, only the network and its own socket folder; its credentials (a cloud token) through
-// systemd's LoadCredential, readable by it alone.
+// PluginUnit is the systemd unit a plugin side runs as. By default: its own dynamic user, no
+// capabilities, read-only system, only the network and its own socket folder; its credentials (a
+// cloud token) through systemd's LoadCredential, readable by it alone. A side whose manifest asks
+// for more (o.Needs: root, capabilities, devices, the host's mount namespace, folders to write)
+// gets exactly that and keeps every other restriction that still applies.
 func PluginUnit(o PluginOptions) string {
+	n := o.Needs
 	bin := "/usr/local/bin/kevaso-plugin-" + o.Name
-	exec := bin + " serve --socket " + kplugin.Dir + "/" + o.Name + "/plugin.sock"
+	exec := bin + " serve --socket " + o.socket()
 	if o.Side == "node" {
-		exec = bin + " node"
+		exec = bin + " node --socket " + o.socket()
 	}
 	if o.Config != "" {
 		exec += " --config %d/config" // a credential too: the plugin's own user can't read /etc/kevaso
@@ -51,11 +59,13 @@ func PluginUnit(o PluginOptions) string {
 	w("")
 	w("[Service]")
 	w("ExecStart=%s", exec)
-	w("DynamicUser=yes")
-	if o.Side != "node" {
-		w("RuntimeDirectory=%s/%s", strings.TrimPrefix(kplugin.Dir, "/run/"), o.Name)
-		w("RuntimeDirectoryMode=0750")
+	if !n.Root {
+		w("DynamicUser=yes")
 	}
+	// Both sides on one host share the folder: neither removes it when it stops.
+	w("RuntimeDirectory=%s/%s", strings.TrimPrefix(kplugin.Dir, "/run/"), o.Name)
+	w("RuntimeDirectoryMode=0750")
+	w("RuntimeDirectoryPreserve=yes")
 	names := make([]string, 0, len(o.Creds))
 	for n := range o.Creds {
 		names = append(names, n)
@@ -67,22 +77,103 @@ func PluginUnit(o PluginOptions) string {
 	if o.Config != "" {
 		w("LoadCredential=config:%s/config.json", pluginEtc(o.Name))
 	}
-	for _, l := range []string{
-		"NoNewPrivileges=yes", "CapabilityBoundingSet=", "AmbientCapabilities=",
-		"ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes", "PrivateDevices=yes",
-		"ProtectKernelTunables=yes", "ProtectKernelModules=yes", "ProtectKernelLogs=yes", "ProtectControlGroups=yes",
-		"ProtectClock=yes", "ProtectHostname=yes", "ProtectProc=invisible", "ProcSubset=pid",
-		"RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK", "RestrictNamespaces=yes", "RestrictRealtime=yes",
-		"RestrictSUIDSGID=yes", "LockPersonality=yes", "MemoryDenyWriteExecute=yes",
-		"SystemCallArchitectures=native", "SystemCallFilter=@system-service", "SystemCallFilter=~@privileged",
-		"UMask=0077", "Restart=always", "RestartSec=2",
-	} {
+	caps := strings.Join(n.Capabilities, " ")
+	w("NoNewPrivileges=yes")
+	w("CapabilityBoundingSet=%s", caps)
+	if n.Root {
+		w("AmbientCapabilities=")
+	} else {
+		w("AmbientCapabilities=%s", caps)
+	}
+	if len(n.Devices) > 0 || n.HostMounts {
+		w("DevicePolicy=closed")
+		for _, d := range n.Devices {
+			w("DeviceAllow=%s rw", d)
+		}
+	}
+	if !n.HostMounts { // everything that needs a mount namespace of its own
+		for _, l := range []string{"ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes",
+			"ProtectKernelTunables=yes", "ProtectKernelModules=yes", "ProtectKernelLogs=yes", "ProtectControlGroups=yes",
+			"ProtectHostname=yes", "ProtectProc=invisible", "ProcSubset=pid"} {
+			w("%s", l)
+		}
+		if len(n.Devices) == 0 {
+			w("PrivateDevices=yes")
+		}
+		if len(n.WritePaths) > 0 {
+			w("ReadWritePaths=%s", strings.Join(n.WritePaths, " "))
+		}
+	}
+	filter := []string{"SystemCallFilter=@system-service", "SystemCallFilter=~@privileged"}
+	if n.Mounts() {
+		filter = []string{"SystemCallFilter=@system-service @mount"}
+	}
+	umask := "0077"
+	if n.HostMounts {
+		umask = "0022" // the folders it mounts on are entered by others (containers, virtiofsd)
+	}
+	for _, l := range append([]string{
+		"ProtectClock=yes", "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK", "RestrictNamespaces=yes", "RestrictRealtime=yes",
+		"RestrictSUIDSGID=yes", "LockPersonality=yes", "MemoryDenyWriteExecute=yes", "SystemCallArchitectures=native",
+	}, append(filter, "UMask="+umask, "Restart=always", "RestartSec=2")...) {
 		w("%s", l)
+	}
+	if n.HostMounts {
+		// The file-system daemons it started serve mounts the host's silos use: a restart of the
+		// plugin must not kill them (it finds its mounts again in the host's mount table).
+		w("KillMode=process")
 	}
 	w("")
 	w("[Install]")
 	w("WantedBy=multi-user.target")
 	return b.String()
+}
+
+// socket is where the side listens (the manifest may name it; kevasod looks in Dir/NAME).
+func (o PluginOptions) socket() string {
+	sock := o.Needs.Socket
+	if sock == "" {
+		sock = kplugin.ControllerSocket
+		if o.Side == "node" {
+			sock = kplugin.NodeSocket
+		}
+	}
+	return kplugin.Dir + "/" + o.Name + "/" + sock
+}
+
+// readManifest loads o.Manifest into o.Needs (this side's), checking it's this plugin's.
+func readManifest(o *PluginOptions) error {
+	if o.Manifest == "" {
+		return nil
+	}
+	b, err := os.ReadFile(o.Manifest)
+	if err != nil {
+		return err
+	}
+	m, err := kplugin.ParseManifest(b)
+	if err != nil {
+		return fmt.Errorf("%s: %w", o.Manifest, err)
+	}
+	if m.Name != o.Name {
+		return fmt.Errorf("%s is plugin %s's manifest, not %s's", o.Manifest, m.Name, o.Name)
+	}
+	o.Needs = m.Controller
+	if o.side() == "node" {
+		o.Needs = m.Node
+	}
+	return nil
+}
+
+// grantNeeds shows the operator what the side gets, and refuses privileges not granted (--yes).
+func grantNeeds(o PluginOptions, out io.Writer) error {
+	_, _ = fmt.Fprintf(out, "→ plugin %s, %s side:\n", o.Name, o.side())
+	for _, l := range o.Needs.Summary() {
+		_, _ = fmt.Fprintf(out, "    %s\n", l)
+	}
+	if o.Needs.Privileged() && !o.Yes {
+		return fmt.Errorf("plugin %s's %s side asks for the privileges above (manifest %s): add --yes to grant them", o.Name, o.side(), o.Manifest)
+	}
+	return nil
 }
 
 func (o PluginOptions) side() string {
@@ -116,6 +207,10 @@ func parsePlugin(args []string, needBinary bool) (PluginOptions, error) {
 			o.Side, err = next()
 		case "--config":
 			o.Config, err = next()
+		case "--manifest":
+			o.Manifest, err = next()
+		case "--yes":
+			o.Yes = true
 		case "--credential":
 			var v string
 			if v, err = next(); err == nil {
@@ -173,7 +268,7 @@ func parsePlugin(args []string, needBinary bool) (PluginOptions, error) {
 // pluginCmd: kvoadm plugin install | remove.
 func pluginCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	usage := errors.New(`usage:
-  kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--credential NAME=FILE]… [--config FILE] [--side controller|node]
+  kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--credential NAME=FILE]… [--config FILE] [--side controller|node] [--manifest kevaso-plugin.json [--yes]]
   kvoadm plugin remove [USER@]ADDRESS --name NAME [--side controller|node]`)
 	if len(args) == 0 {
 		return usage
@@ -197,6 +292,12 @@ func pluginCmd(ctx context.Context, args []string, stdin io.Reader, out io.Write
 
 func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io.Writer) error {
 	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
+	if err := readManifest(&o); err != nil {
+		return err
+	}
+	if err := grantNeeds(o, out); err != nil {
+		return err
+	}
 	bin, err := os.ReadFile(o.Binary)
 	if err != nil {
 		return err

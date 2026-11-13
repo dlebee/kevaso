@@ -171,8 +171,11 @@ func describeObject(w io.Writer, obj meta.Object) error {
 					if class == "" {
 						class = v1.VolumeLocal
 					}
-					where, state := "on the host", "-"
+					where, state, size := "on the host", "-", dash(v.Size)
 					if vs, ok := got[v.Name]; ok {
+						if vs.SizeNotEnforced {
+							size += " (not enforced)"
+						}
 						where = dash(vs.Region)
 						if vs.Handle != "" {
 							where += " #" + vs.Handle
@@ -186,7 +189,7 @@ func describeObject(w io.Writer, obj meta.Object) error {
 							state = vs.Message
 						}
 					}
-					_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n", v.Name, class, dash(v.Size), v.MountPath, where, state)
+					_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n", v.Name, class, size, v.MountPath, where, state)
 				}
 			})
 		}

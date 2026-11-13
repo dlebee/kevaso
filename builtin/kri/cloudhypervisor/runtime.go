@@ -48,6 +48,28 @@ type State struct {
 	MAC     string `json:"mac"`
 	HostKey string `json:"hostKey"` // the guest's SSH host key (public), pinned for Exec
 	Started bool   `json:"started"` // started at least once (Stopped vs Created)
+	CPUs    int    `json:"cpus,omitempty"`
+	MemMiB  int64  `json:"memMiB,omitempty"`
+	// Volumes are what its VMM gets (local disks, shared folders); RootDir, if set, is the mount
+	// class's folder holding its root disk image (spec.disk.class).
+	Volumes []kri.Volume `json:"volumes,omitempty"`
+	RootDir string       `json:"rootDir,omitempty"`
+}
+
+func (s State) layout() Layout { return LayoutFor(NamesFor(s.ID), s.Volumes, s.RootDir) }
+
+func (s State) cpus() int {
+	if s.CPUs > 0 {
+		return s.CPUs
+	}
+	return 1
+}
+
+func (s State) memMiB() int64 {
+	if s.MemMiB > 0 {
+		return s.MemMiB
+	}
+	return 1024
 }
 
 // Runtime is the cloud-hypervisor runtime.
@@ -167,7 +189,9 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	if err != nil {
 		return err
 	}
-	st := State{ID: spec.ID, IP: ip.String(), MAC: MAC(spec.ID), HostKey: hostPub}
+	st := State{ID: spec.ID, IP: ip.String(), MAC: MAC(spec.ID), HostKey: hostPub, CPUs: cpus, MemMiB: mem >> 20,
+		Volumes: spec.Volumes, RootDir: spec.DiskHostPath}
+	layout := st.layout()
 
 	if err := r.run(ctx, "install", "-d", "-m", "0700", "-o", VMMUser, "-g", VMMUser, n.Dir); err != nil {
 		return err
@@ -177,16 +201,11 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	}
 	unlockIP()
 	steps := []func() error{
-		func() error {
-			return r.run(ctx, "lvcreate", "-q", "-T", VG+"/"+ThinPool, "-V", strconv.FormatInt(disk>>20, 10)+"m", "-n", n.LV)
-		},
-		func() error {
-			return r.run(ctx, "qemu-img", "convert", "-n", "--target-is-zero", "-O", "raw", img, "/dev/"+VG+"/"+n.LV)
-		},
+		func() error { return r.rootDisk(ctx, n, layout, img, disk, false) },
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
 		},
-		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID)), 0o600) },
+		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID, hostPub)), 0o600) },
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, spec.ID.Namespace)), 0o600)
 		},
@@ -198,10 +217,7 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		func() error { return r.run(ctx, "chown", VMMUser+":"+VMMUser, n.Dir+"/seed.img") },
 		func() error { return r.run(ctx, "ip", "tuntap", "add", "dev", n.Tap, "mode", "tap", "user", VMMUser) },
 		func() error { return r.run(ctx, "ip", "link", "set", n.Tap, "master", Bridge, "up") },
-		func() error {
-			return r.Host.WriteFile("/etc/systemd/system/"+n.Unit, []byte(Unit(n, cpus, mem>>20, r.Firmware(), st.MAC)), 0o644)
-		},
-		func() error { return r.run(ctx, "systemctl", "daemon-reload") },
+		func() error { return r.applyLayout(ctx, st, Layout{}, layout) },
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {
@@ -235,11 +251,15 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
 	}
 	n := NamesFor(id)
-	if err := r.run(ctx, "ip", "link", "set", n.Tap, "up"); err != nil {
-		return err
-	}
-	if err := r.run(ctx, "systemctl", "start", n.Unit); err != nil {
-		return err
+	for _, step := range StartPlan(n, st.layout()) {
+		if err := r.run(ctx, step.Cmd[0], step.Cmd[1:]...); err != nil {
+			return err
+		}
+		if step.Socket != "" {
+			if err := r.waitFor(ctx, step.Socket); err != nil {
+				return err
+			}
+		}
 	}
 	if !st.Started {
 		st.Started = true
@@ -248,9 +268,28 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 	return nil
 }
 
-// Stop implements kri.Runtime: ask the guest to power off, then stop the unit if it doesn't.
+// waitFor waits for a virtiofsd's socket (it's up once it's there).
+func (r *Runtime) waitFor(ctx context.Context, socket string) error {
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		if m, _ := r.Host.Glob(socket); len(m) > 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("virtiofsd never made %s", socket)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// Stop implements kri.Runtime: ask the guest to power off, then stop the unit if it doesn't, then
+// its virtiofsd daemons (StopPlan).
 func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
-	if _, ok := r.state(id); !ok {
+	st, ok := r.state(id)
+	if !ok {
 		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
 	}
 	n := NamesFor(id)
@@ -265,8 +304,9 @@ func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
 			}
 		}
 	}
-	_, _ = r.Host.Run(ctx, "systemctl", "stop", n.Unit)
-	_, _ = r.Host.Run(ctx, "systemctl", "reset-failed", n.Unit)
+	for _, c := range StopPlan(n, st.layout()) {
+		_, _ = r.Host.Run(ctx, c[0], c[1:]...)
+	}
 	return nil
 }
 
@@ -282,22 +322,85 @@ func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 	return r.deleteLocked(ctx, id)
 }
 
+// deleteLocked removes what the silo owns on this host: its units (VMM first, then virtiofsd),
+// TAP, LVs (root and local volumes) and directory. A root disk image on a mount class's folder is
+// the volume's, not this host's: it stays (the silo may have moved; deleting the silo deletes the
+// volume through its plugin).
 func (r *Runtime) deleteLocked(ctx context.Context, id kri.ID) error {
-	if _, ok := r.state(id); !ok {
+	st, ok := r.state(id)
+	if !ok {
 		return nil
 	}
 	n := NamesFor(id)
-	_, _ = r.Host.Run(ctx, "systemctl", "stop", n.Unit)
-	_, _ = r.Host.Run(ctx, "systemctl", "reset-failed", n.Unit)
+	l := st.layout()
+	for _, c := range StopPlan(n, l) {
+		_, _ = r.Host.Run(ctx, c[0], c[1:]...)
+	}
 	_ = r.Host.RemoveAll("/etc/systemd/system/" + n.Unit)
+	for _, s := range l.Shares {
+		_ = r.Host.RemoveAll("/etc/systemd/system/" + s.Unit)
+	}
 	_, _ = r.Host.Run(ctx, "systemctl", "daemon-reload")
 	_, _ = r.Host.Run(ctx, "ip", "link", "del", n.Tap)
-	if out, err := r.Host.Run(ctx, "lvs", "--noheadings", VG+"/"+n.LV); err == nil && len(bytes.TrimSpace(out)) > 0 {
-		if err := r.run(ctx, "lvremove", "-q", "-y", VG+"/"+n.LV); err != nil {
-			return err
+	lvs := []string{}
+	if l.RootFile == "" {
+		lvs = append(lvs, n.LV)
+	}
+	// Every local volume it ever had (one dropped from the spec is kept until the silo goes).
+	if out, err := r.Host.Run(ctx, "lvs", "--noheadings", "-o", "lv_name", VG); err == nil {
+		for _, f := range strings.Fields(string(out)) {
+			if strings.HasPrefix(f, n.LV+"-") {
+				lvs = append(lvs, f)
+			}
+		}
+	}
+	for _, lv := range lvs {
+		if out, err := r.Host.Run(ctx, "lvs", "--noheadings", VG+"/"+lv); err == nil && len(bytes.TrimSpace(out)) > 0 {
+			if err := r.run(ctx, "lvremove", "-q", "-y", VG+"/"+lv); err != nil {
+				return err
+			}
 		}
 	}
 	return r.Host.RemoveAll(n.Dir)
+}
+
+// rootDisk makes the silo's root disk from its image: a thin LV, or an image file on a mount
+// class's folder. An image file already there is the silo's disk come from another host: it's
+// kept, unless fresh (a reset) asks for a new one.
+func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, size int64, fresh bool) error {
+	if l.RootFile == "" {
+		if r.lvExists(ctx, n.LV) {
+			if err := r.run(ctx, "lvremove", "-q", "-y", VG+"/"+n.LV); err != nil {
+				return err
+			}
+		}
+		if err := r.run(ctx, "lvcreate", "-q", "-T", VG+"/"+ThinPool, "-V", strconv.FormatInt(size>>20, 10)+"m", "-n", n.LV); err != nil {
+			return err
+		}
+		return r.run(ctx, "qemu-img", "convert", "-n", "--target-is-zero", "-O", "raw", img, "/dev/"+VG+"/"+n.LV)
+	}
+	if _, err := r.Host.Run(ctx, "test", "-e", l.RootFile); err == nil && !fresh {
+		return nil // moved here with its data
+	}
+	tmp := l.RootFile + ".new"
+	for _, c := range RootFilePlan(img, tmp, l.RootFile, size) {
+		if err := r.run(ctx, c[0], c[1:]...); err != nil {
+			_ = r.Host.RemoveAll(tmp)
+			return err
+		}
+	}
+	return nil
+}
+
+// RootFilePlan makes a root disk image file from an image: written next to it, grown to the disk's
+// size (never shrunk), then put in place, so a half-written image is never booted.
+func RootFilePlan(img, tmp, file string, size int64) [][]string {
+	return [][]string{
+		{"rm", "-f", tmp},
+		{"qemu-img", "convert", "-O", "raw", img, tmp},
+		{"qemu-img", "resize", "-f", "raw", tmp, strconv.FormatInt(size, 10)},
+		{"mv", "-f", tmp, file},
+	}
 }
 
 // Status implements kri.Runtime.
@@ -509,24 +612,21 @@ func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
 	if err != nil {
 		return err
 	}
+	old := st.layout()
+	st.CPUs, st.MemMiB, st.Volumes, st.RootDir = cpus, mem>>20, spec.Volumes, spec.DiskHostPath
+	layout := st.layout()
 	steps := []func() error{
-		func() error { return r.run(ctx, "systemctl", "stop", n.Unit) },
 		func() error {
-			if out, err := r.Host.Run(ctx, "lvs", "--noheadings", VG+"/"+n.LV); err == nil && len(bytes.TrimSpace(out)) > 0 {
-				return r.run(ctx, "lvremove", "-q", "-y", VG+"/"+n.LV)
+			for _, c := range StopPlan(n, old) {
+				_, _ = r.Host.Run(ctx, c[0], c[1:]...)
 			}
 			return nil
 		},
-		func() error {
-			return r.run(ctx, "lvcreate", "-q", "-T", VG+"/"+ThinPool, "-V", strconv.FormatInt(disk>>20, 10)+"m", "-n", n.LV)
-		},
-		func() error {
-			return r.run(ctx, "qemu-img", "convert", "-n", "--target-is-zero", "-O", "raw", img, "/dev/"+VG+"/"+n.LV)
-		},
+		func() error { return r.rootDisk(ctx, n, layout, img, disk, true) },
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
 		},
-		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID)), 0o600) },
+		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID, hostPub)), 0o600) },
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, spec.ID.Namespace)), 0o600)
 		},
@@ -535,10 +635,7 @@ func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
 		},
 		func() error { return r.run(ctx, "rm", "-f", n.Dir+"/user-data") },
 		func() error { return r.run(ctx, "chown", VMMUser+":"+VMMUser, n.Dir+"/seed.img") },
-		func() error {
-			return r.Host.WriteFile("/etc/systemd/system/"+n.Unit, []byte(Unit(n, cpus, mem>>20, r.Firmware(), st.MAC)), 0o644)
-		},
-		func() error { return r.run(ctx, "systemctl", "daemon-reload") },
+		func() error { return r.applyLayout(ctx, st, old, layout) },
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {

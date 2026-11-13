@@ -142,7 +142,10 @@ func (f *Fake) EnsureVolume(_ context.Context, v kplugin.Volume) (kplugin.Volume
 	}
 	for _, x := range f.Volumes {
 		if x.ID == v.ID {
-			return kplugin.VolumeStatus{Handle: x.Handle, Region: x.Region, SizeBytes: x.SizeBytes}, nil
+			if v.SizeBytes > x.SizeBytes { // grows (online); never shrinks
+				x.SizeBytes = v.SizeBytes
+			}
+			return kplugin.VolumeStatus{Handle: x.Handle, Region: x.Region, SizeBytes: x.SizeBytes, SizeEnforced: x.Class == ClassBlock}, nil
 		}
 	}
 	f.next++
@@ -155,7 +158,8 @@ func (f *Fake) EnsureVolume(_ context.Context, v kplugin.Volume) (kplugin.Volume
 		return kplugin.VolumeStatus{}, fmt.Errorf("storage class %s: %w", v.Class, kplugin.ErrUnsupported)
 	}
 	f.Volumes[h] = &FakeVolume{Volume: v, Handle: h}
-	return kplugin.VolumeStatus{Handle: h, Region: v.Region, SizeBytes: v.SizeBytes}, nil
+	// A block volume's size is its device's; the fake share enforces none (like a folder without a quota).
+	return kplugin.VolumeStatus{Handle: h, Region: v.Region, SizeBytes: v.SizeBytes, SizeEnforced: v.Class == ClassBlock}, nil
 }
 
 // AttachVolume implements kplugin.Volumes.

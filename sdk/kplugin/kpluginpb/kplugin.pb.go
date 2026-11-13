@@ -853,10 +853,13 @@ func (x *Volume) GetRegion() string {
 }
 
 type VolumeStatus struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Handle        string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	Region        string                 `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`
-	SizeBytes     int64                  `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Handle    string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	Region    string                 `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`
+	SizeBytes int64                  `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	// size_enforced: the volume can't grow past size_bytes (a block device's size, a directory
+	// quota). A mount class that can't enforce it says false.
+	SizeEnforced  bool `protobuf:"varint,4,opt,name=size_enforced,json=sizeEnforced,proto3" json:"size_enforced,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -910,6 +913,13 @@ func (x *VolumeStatus) GetSizeBytes() int64 {
 		return x.SizeBytes
 	}
 	return 0
+}
+
+func (x *VolumeStatus) GetSizeEnforced() bool {
+	if x != nil {
+		return x.SizeEnforced
+	}
+	return false
 }
 
 type Attachment struct {
@@ -1500,12 +1510,13 @@ const file_kplugin_proto_rawDesc = "" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
 	"size_bytes\x18\x04 \x01(\x03R\tsizeBytes\x12\x16\n" +
-	"\x06region\x18\x05 \x01(\tR\x06region\"]\n" +
+	"\x06region\x18\x05 \x01(\tR\x06region\"\x82\x01\n" +
 	"\fVolumeStatus\x12\x16\n" +
 	"\x06handle\x18\x01 \x01(\tR\x06handle\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12\x1d\n" +
 	"\n" +
-	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\"j\n" +
+	"size_bytes\x18\x03 \x01(\x03R\tsizeBytes\x12#\n" +
+	"\rsize_enforced\x18\x04 \x01(\bR\fsizeEnforced\"j\n" +
 	"\n" +
 	"Attachment\x12\x14\n" +
 	"\x05class\x18\x01 \x01(\tR\x05class\x12\x16\n" +

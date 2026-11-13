@@ -149,6 +149,16 @@ func Conformance(t *testing.T, s Suite) {
 			if err := again(func() (err error) { st2, err = c.EnsureVolume(ctx, v); return }); err != nil || st2.Handle != st.Handle {
 				t.Fatalf("ensure again: %+v %v (want the same handle %s)", st2, err, st.Handle)
 			}
+			// The silo's size grew: same volume, and a plugin that enforces sizes enforces the new one.
+			grown := v
+			grown.SizeBytes = 2 << 30
+			var st3 kplugin.VolumeStatus
+			if err := again(func() (err error) { st3, err = c.EnsureVolume(ctx, grown); return }); err != nil || st3.Handle != st.Handle {
+				t.Fatalf("ensure grown: %+v %v (want the same handle %s)", st3, err, st.Handle)
+			}
+			if st3.SizeEnforced && st3.SizeBytes < grown.SizeBytes {
+				t.Fatalf("ensure grown: enforces %d bytes, asked for %d", st3.SizeBytes, grown.SizeBytes)
+			}
 			if cl.Mounted() {
 				if cl.OwnHostsOnly {
 					t.Logf("%s is mounted by the node side yet only reaches the plugin's machines", cl.Name)

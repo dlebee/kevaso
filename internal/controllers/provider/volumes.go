@@ -248,14 +248,15 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 // ensureMounted creates a mount-reach volume and points it at the silo's host once the host it
 // was on has let go.
 func (c *Volumes) ensureMounted(ctx context.Context, s *v1.Silo, h *v1.Host, p *plugins.Plugin, cls kplugin.Class, spec v1.Volume, vs v1.VolumeStatus) (v1.VolumeStatus, time.Duration, error) {
-	if vs.Handle == "" {
-		var size int64
-		if spec.Size != "" {
-			var err error
-			if size, err = v1.ParseBytes(spec.Size); err != nil || size < 0 {
-				return vs, 0, fmt.Errorf("size %q: %v", spec.Size, err)
-			}
+	var size int64
+	if spec.Size != "" {
+		var err error
+		if size, err = v1.ParseBytes(spec.Size); err != nil || size < 0 {
+			return vs, 0, fmt.Errorf("size %q: %v", spec.Size, err)
 		}
+	}
+	// Created once; asked again when the size grows (a quota grows online).
+	if vs.Handle == "" || size > vs.SizeBytes {
 		region := ""
 		if cls.Topology != kplugin.TopologyGlobal && h.Status.Provider != nil {
 			region = h.Status.Provider.Region
@@ -269,7 +270,11 @@ func (c *Volumes) ensureMounted(ctx context.Context, s *v1.Silo, h *v1.Host, p *
 		if err != nil {
 			return vs, 0, err
 		}
+		if vs.Handle != "" && st.Handle != vs.Handle {
+			return vs, 0, fmt.Errorf("the plugin answered handle %s for a volume it called %s", st.Handle, vs.Handle)
+		}
 		vs.Handle, vs.Region = st.Handle, st.Region
+		vs.SizeBytes, vs.SizeNotEnforced = size, size > 0 && !st.SizeEnforced
 		if cls.Topology == kplugin.TopologyGlobal {
 			vs.Region = "" // anywhere: nothing holds the silo to a region
 		}
