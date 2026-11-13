@@ -131,3 +131,23 @@ func TestPluginManifestGrant(t *testing.T) {
 		}
 	}
 }
+
+// Both sides on one host (a control plane that is also a worker) each get a unit of their own:
+// installing the node side used to overwrite the controller side's unit, and removing either side
+// took the other's program and credentials with it.
+func TestPluginSidesHaveTheirOwnUnits(t *testing.T) {
+	c, n := PluginUnitName("hostdir", "controller"), PluginUnitName("hostdir", "node")
+	if c == n {
+		t.Fatalf("both sides are %s", c)
+	}
+	if c != "kevaso-plugin-hostdir.service" || n != "kevaso-plugin-hostdir-node.service" {
+		t.Errorf("units: %s %s", c, n)
+	}
+	rm := PluginRemoveScript("hostdir", "node")
+	if !strings.Contains(rm, "disable --now 'kevaso-plugin-hostdir-node.service'") || strings.Contains(rm, "disable --now 'kevaso-plugin-hostdir.service'") {
+		t.Errorf("removing the node side: %s", rm)
+	}
+	if !strings.Contains(rm, "if [ ! -e /etc/systemd/system/'kevaso-plugin-hostdir.service' ]; then rm -f /usr/local/bin/'kevaso-plugin-hostdir'") {
+		t.Errorf("the program goes while the controller side still runs: %s", rm)
+	}
+}
