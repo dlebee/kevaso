@@ -63,7 +63,10 @@ type Runtime struct {
 }
 
 type state struct {
-	ID      kri.ID       `json:"id"`
+	ID kri.ID `json:"id"`
+	// Engine is whose silo it is (docker | podman; empty: docker). Both engines' runtimes keep
+	// their silos' state in the same Dir, so each one only ever takes its own.
+	Engine  string       `json:"engine,omitempty"`
 	IP      string       `json:"ip"`
 	Image   string       `json:"image"`
 	Command []string     `json:"command,omitempty"`
@@ -166,13 +169,23 @@ func (r *Runtime) load(id kri.ID) (state, bool) {
 		return state{}, false
 	}
 	var s state
-	if json.Unmarshal(b, &s) != nil || s.ID != id {
+	if json.Unmarshal(b, &s) != nil || s.ID != id || !r.owns(s) {
 		return state{}, false
 	}
 	return s, true
 }
 
+// owns says whether a silo's state is this engine's.
+func (r *Runtime) owns(s state) bool {
+	e := s.Engine
+	if e == "" {
+		e = "docker"
+	}
+	return e == r.engine()
+}
+
 func (r *Runtime) save(s state) error {
+	s.Engine = r.engine()
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
@@ -630,7 +643,7 @@ func (r *Runtime) List(context.Context) ([]kri.ID, error) {
 			continue
 		}
 		var s state
-		if json.Unmarshal(b, &s) == nil {
+		if json.Unmarshal(b, &s) == nil && r.owns(s) {
 			ids = append(ids, s.ID)
 		}
 	}
