@@ -1,0 +1,56 @@
+# 06 · Addresses you keep: IP objects (design §7.2c-1), in and out (§7.2b).
+#
+#   kvoadm host addresses metal-1 add 203.0.113.20/30   # extra addresses routed to metal-1
+#   kvo apply -f examples/06-dedicated-ips.yaml
+#   kvo get ips                                         # address, class, who holds it, kept or not
+#   kvo describe silo eth-node-a -n web3                # "same address in and out: 203.0.113.21"
+#
+# Two P2P nodes on the same port on one host, each reached on and sending from an address of its
+# own. eth-node-a's is made by hand and kept for good; eth-node-b names none, so one is made for it
+# (named eth-node-b) that goes with it unless kept: kvo ip keep eth-node-b.
+
+apiVersion: kevaso/v1
+kind: Namespace
+metadata: { name: web3 }
+---
+apiVersion: kevaso/v1
+kind: IP
+metadata: { name: eth-node-a, namespace: web3 }
+spec:
+  class: ip-pool                  # one of a host's extra addresses
+  host: metal-1                   # optional: without it, the first host with one free
+  reclaim: Retain                 # the default for one made by hand
+---
+apiVersion: kevaso/v1
+kind: Silo
+metadata: { name: eth-node-a, namespace: web3 }
+spec:
+  runtime: cloud-hypervisor
+  image: ubuntu-24.04
+  resources: { cpu: 2, memory: 4Gi }
+  disk: { size: 100Gi }
+  service:
+    ports:
+      - { name: p2p,  port: 30303, protocol: TCP }
+      - { name: disc, port: 30303, protocol: UDP }
+    expose: loadBalancer
+    loadBalancer: { class: ip-pool, ip: eth-node-a }   # this address and no other
+  network:
+    egress: { source: sameAsService }                 # out from the same address
+---
+apiVersion: kevaso/v1
+kind: Silo
+metadata: { name: eth-node-b, namespace: web3 }
+spec:
+  runtime: cloud-hypervisor
+  image: ubuntu-24.04
+  resources: { cpu: 2, memory: 4Gi }
+  disk: { size: 100Gi }
+  service:
+    ports:
+      - { name: p2p,  port: 30303, protocol: TCP }
+      - { name: disc, port: 30303, protocol: UDP }
+    expose: loadBalancer
+    loadBalancer: { class: ip-pool }                   # an IP made for it, on the host it lands on
+  network:
+    egress: { source: sameAsService }

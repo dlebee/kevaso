@@ -94,9 +94,9 @@ func TestPortLeaseOnPluginLoadBalancer(t *testing.T) {
 	ports := func() []string {
 		var cur v1.Silo
 		_ = admin.Get(ctx, "Silo", "dev", "app", &cur)
-		lbs, _, _ := fake.Snapshot()
+		lb, _ := fake.LBOf("dev", "silo/app")
 		var out []string
-		for _, p := range lbs[cur.UID].Ports {
+		for _, p := range lb.Ports {
 			out = append(out, p.Name)
 		}
 		return out
@@ -203,8 +203,7 @@ func TestLeaseSourcesOnPluginLoadBalancer(t *testing.T) {
 	ports := func(name string) (map[string][]string, v1.Silo) {
 		var cur v1.Silo
 		_ = admin.Get(ctx, "Silo", "dev", name, &cur)
-		lbs, _, _ := fake.Snapshot()
-		lb, ok := lbs[cur.UID]
+		lb, ok := fake.LBOf("dev", "silo/"+name)
 		if !ok {
 			return nil, cur
 		}
@@ -223,7 +222,7 @@ func TestLeaseSourcesOnPluginLoadBalancer(t *testing.T) {
 	eventually("plain: nothing it can't limit", func() (bool, string) {
 		p, cur := ports("plain")
 		c := meta.FindCondition(cur.Status.Conditions, "LoadBalancer")
-		ok := p != nil && len(p) == 0 && c != nil && c.Reason == "SourcesNotEnforced" && strings.Contains(c.Message, "web")
+		ok := len(p) == 0 && c != nil && c.Reason == "SourcesNotEnforced" && strings.Contains(c.Message, "web") // no port on its IP's balancer
 		msg := ""
 		if c != nil {
 			msg = c.Reason + ": " + c.Message
@@ -245,6 +244,6 @@ func TestLeaseSourcesOnPluginLoadBalancer(t *testing.T) {
 	eventually("plain: the open lease adds nothing", func() (bool, string) {
 		p, cur := ports("plain")
 		c := meta.FindCondition(cur.Status.Conditions, "LoadBalancer")
-		return p != nil && len(p) == 0 && c != nil && c.Reason == "SourcesNotEnforced" && strings.Contains(c.Message, "debug"), show(p)
+		return len(p) == 0 && c != nil && c.Reason == "SourcesNotEnforced" && strings.Contains(c.Message, "debug"), show(p)
 	})
 }

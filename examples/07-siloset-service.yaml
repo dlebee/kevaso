@@ -60,3 +60,6 @@ spec:
     - { name: rpc, port: 8545, targetPort: rpc, protocol: TCP }
   type: LoadBalancer
   loadBalancerClass: linode-nodebalancer
+  # No loadBalancerIP: it's on the namespace's shared IP for the class (default-linode-nodebalancer,
+  # one NodeBalancer for every such service here, each on its own ports), made on first use and gone
+  # with the last unless kept. loadBalancerDedicated: true gives it one of its own.

@@ -312,33 +312,48 @@ func TestServiceAndPoolValidation(t *testing.T) {
 			s.Spec.Service.Expose = "loadBalancer"
 			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "Linode_NB"}
 		}),
-		"address on worker-ip": svc(func(s *v1.Silo) {
+		"an IP on worker-ip": svc(func(s *v1.Silo) {
 			s.Spec.Service.Expose = "loadBalancer"
-			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "worker-ip", Address: "203.0.113.9"}
+			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "worker-ip", IP: "eth"}
 		}),
-		"ip-pool without a pool": svc(func(s *v1.Silo) {
-			s.Spec.Service.Expose = "loadBalancer"
-			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "ip-pool"}
-		}),
-		"sameAsService, private":   svc(func(s *v1.Silo) { s.Spec.Network.Egress.Source = "sameAsService" }),
-		"egress pool without pool": svc(func(s *v1.Silo) { s.Spec.Network.Egress.Source = "pool" }),
-		"allowFrom a/b/c":          svc(func(s *v1.Silo) { s.Spec.AllowFrom = []v1.AllowFrom{{Silo: "a/b/c"}} }),
+		"egress.ip without source pool": svc(func(s *v1.Silo) { s.Spec.Network.Egress.IP = "eth" }),
+		"sameAsService, private":        svc(func(s *v1.Silo) { s.Spec.Network.Egress.Source = "sameAsService" }),
+		"egress pool without pool":      svc(func(s *v1.Silo) { s.Spec.Network.Egress.Source = "pool" }),
+		"allowFrom a/b/c":               svc(func(s *v1.Silo) { s.Spec.AllowFrom = []v1.AllowFrom{{Silo: "a/b/c"}} }),
 	} {
 		s.Name = "bad"
 		if err := c.Create(ctx, s); !client.IsInvalid(err) {
 			t.Errorf("%s: want Invalid, got %v", name, err)
 		}
 	}
-	pool := func(addrs ...string) *v1.IPPool {
-		return &v1.IPPool{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IPPool"}, ObjectMeta: meta.ObjectMeta{Name: "extra"},
-			Spec: v1.IPPoolSpec{Host: "metal-1", Addresses: addrs}}
+	// IPs: a class, a known reclaim, placement hints that fit the class.
+	mkIP := func(f func(*v1.IP)) *v1.IP {
+		x := &v1.IP{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IP"}, ObjectMeta: meta.ObjectMeta{Name: "eth", Namespace: "dev"},
+			Spec: v1.IPSpec{Class: v1.LBIPPool}}
+		f(x)
+		return x
 	}
-	for name, p := range map[string]*v1.IPPool{"empty": pool(), "garbage": pool("nope"), "IPv6 for now": pool("2001:db8:42::/64")} {
-		if err := c.Create(ctx, p); !client.IsInvalid(err) {
-			t.Errorf("pool %s: want Invalid, got %v", name, err)
+	for name, x := range map[string]*v1.IP{
+		"no class":           mkIP(func(x *v1.IP) { x.Spec.Class = "" }),
+		"worker-ip":          mkIP(func(x *v1.IP) { x.Spec.Class = v1.LBWorkerIP }),
+		"unknown reclaim":    mkIP(func(x *v1.IP) { x.Spec.Reclaim = "Forever" }),
+		"region on ip-pool":  mkIP(func(x *v1.IP) { x.Spec.Region = "ca-central" }),
+		"host on a plugin's": mkIP(func(x *v1.IP) { x.Spec.Class, x.Spec.Host = "linode-shared-ip", "metal-1" }),
+		"not an address":     mkIP(func(x *v1.IP) { x.Spec.Address = "nope" }),
+	} {
+		if err := c.Create(ctx, x); !client.IsInvalid(err) {
+			t.Errorf("IP %s: want Invalid, got %v", name, err)
 		}
 	}
-	if err := c.Create(ctx, pool("198.51.100.16/29", "198.51.100.30")); err != nil {
+	if err := c.Create(ctx, mkIP(func(x *v1.IP) { x.Spec.Host = "metal-1" })); err != nil {
 		t.Fatal(err)
+	}
+	// A host's extra addresses: IPv4 CIDRs and single addresses.
+	for name, addrs := range map[string][]string{"garbage": {"nope"}, "IPv6 for now": {"2001:db8:42::/64"}, "too wide": {"198.51.0.0/16"}} {
+		h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: "addr-" + strings.ReplaceAll(strings.ToLower(name), " ", "-")},
+			Spec: v1.HostSpec{Address: "198.51.100.9", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}, Network: v1.HostNetwork{Addresses: addrs}}}
+		if err := c.Create(ctx, h); !client.IsInvalid(err) {
+			t.Errorf("host addresses %s: want Invalid, got %v", name, err)
+		}
 	}
 }

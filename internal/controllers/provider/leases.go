@@ -26,7 +26,7 @@ func sources(s *v1.Silo) map[string][]string {
 
 // leased: which of s's leased ports are closed now (no backend on its load balancer), and when its
 // next lease ends (zero: none).
-func (c *LoadBalancers) leased(s *v1.Silo) ([]string, time.Time) {
+func (c *Balancers) leased(s *v1.Silo) ([]string, time.Time) {
 	if !leases.Any(s.Spec.Service) {
 		return nil, time.Time{}
 	}

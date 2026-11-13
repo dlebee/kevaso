@@ -97,12 +97,13 @@ func ServiceView(hostName string, svcs []*v1.Service) []kni.Service {
 	return out
 }
 
-// PoolAddresses are the IPPool addresses this host's silos hold: they go on its uplink.
+// PoolAddresses are the host's own extra addresses this host's silos hold (IPs of class ip-pool,
+// status.service.hostAddresses): they go on its uplink.
 func PoolAddresses(hostName string, silos []*v1.Silo) []string {
 	var out []string
 	for _, s := range silos {
-		if s.Status.Host == hostName && s.Status.Service.PoolIP != "" {
-			out = append(out, s.Status.Service.PoolIP)
+		if s.Status.Host == hostName {
+			out = append(out, s.Status.Service.HostAddresses...)
 		}
 	}
 	return out

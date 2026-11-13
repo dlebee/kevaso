@@ -374,6 +374,146 @@ var LoadBalancers_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
+	Addresses_ReserveAddress_FullMethodName = "/kevaso.plugin.v1.Addresses/ReserveAddress"
+	Addresses_ReleaseAddress_FullMethodName = "/kevaso.plugin.v1.Addresses/ReleaseAddress"
+)
+
+// AddressesClient is the client API for Addresses service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type AddressesClient interface {
+	ReserveAddress(ctx context.Context, in *AddressReservation, opts ...grpc.CallOption) (*AddressStatus, error)
+	ReleaseAddress(ctx context.Context, in *AddressRef, opts ...grpc.CallOption) (*ReleaseAddressResponse, error)
+}
+
+type addressesClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewAddressesClient(cc grpc.ClientConnInterface) AddressesClient {
+	return &addressesClient{cc}
+}
+
+func (c *addressesClient) ReserveAddress(ctx context.Context, in *AddressReservation, opts ...grpc.CallOption) (*AddressStatus, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddressStatus)
+	err := c.cc.Invoke(ctx, Addresses_ReserveAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *addressesClient) ReleaseAddress(ctx context.Context, in *AddressRef, opts ...grpc.CallOption) (*ReleaseAddressResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReleaseAddressResponse)
+	err := c.cc.Invoke(ctx, Addresses_ReleaseAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// AddressesServer is the server API for Addresses service.
+// All implementations must embed UnimplementedAddressesServer
+// for forward compatibility.
+type AddressesServer interface {
+	ReserveAddress(context.Context, *AddressReservation) (*AddressStatus, error)
+	ReleaseAddress(context.Context, *AddressRef) (*ReleaseAddressResponse, error)
+	mustEmbedUnimplementedAddressesServer()
+}
+
+// UnimplementedAddressesServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedAddressesServer struct{}
+
+func (UnimplementedAddressesServer) ReserveAddress(context.Context, *AddressReservation) (*AddressStatus, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReserveAddress not implemented")
+}
+func (UnimplementedAddressesServer) ReleaseAddress(context.Context, *AddressRef) (*ReleaseAddressResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReleaseAddress not implemented")
+}
+func (UnimplementedAddressesServer) mustEmbedUnimplementedAddressesServer() {}
+func (UnimplementedAddressesServer) testEmbeddedByValue()                   {}
+
+// UnsafeAddressesServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to AddressesServer will
+// result in compilation errors.
+type UnsafeAddressesServer interface {
+	mustEmbedUnimplementedAddressesServer()
+}
+
+func RegisterAddressesServer(s grpc.ServiceRegistrar, srv AddressesServer) {
+	// If the following call pancis, it indicates UnimplementedAddressesServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&Addresses_ServiceDesc, srv)
+}
+
+func _Addresses_ReserveAddress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddressReservation)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AddressesServer).ReserveAddress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Addresses_ReserveAddress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AddressesServer).ReserveAddress(ctx, req.(*AddressReservation))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Addresses_ReleaseAddress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddressRef)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AddressesServer).ReleaseAddress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Addresses_ReleaseAddress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AddressesServer).ReleaseAddress(ctx, req.(*AddressRef))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// Addresses_ServiceDesc is the grpc.ServiceDesc for Addresses service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var Addresses_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "kevaso.plugin.v1.Addresses",
+	HandlerType: (*AddressesServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "ReserveAddress",
+			Handler:    _Addresses_ReserveAddress_Handler,
+		},
+		{
+			MethodName: "ReleaseAddress",
+			Handler:    _Addresses_ReleaseAddress_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "kplugin.proto",
+}
+
+const (
 	Volumes_EnsureVolume_FullMethodName = "/kevaso.plugin.v1.Volumes/EnsureVolume"
 	Volumes_AttachVolume_FullMethodName = "/kevaso.plugin.v1.Volumes/AttachVolume"
 	Volumes_DetachVolume_FullMethodName = "/kevaso.plugin.v1.Volumes/DetachVolume"

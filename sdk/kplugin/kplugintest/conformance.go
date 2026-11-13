@@ -32,6 +32,7 @@ type Suite struct {
 
 var topologies = map[string]bool{"": true, kplugin.TopologyHost: true, kplugin.TopologyZone: true, kplugin.TopologyRegion: true, kplugin.TopologyGlobal: true}
 var reaches = map[string]bool{"": true, kplugin.ReachDevice: true, kplugin.ReachMount: true}
+var follows = map[string]bool{"": true, kplugin.FollowsHost: true, kplugin.FollowsRegion: true, kplugin.FollowsGlobal: true}
 
 // Conformance checks that a plugin keeps the protocol's promises: what Info says, services it
 // doesn't serve answering ErrUnsupported, and for each storage class the whole life of a volume,
@@ -77,6 +78,21 @@ func Conformance(t *testing.T, s Suite) {
 				t.Errorf("storage class %s: topology %q, reach %q", cl.Name, cl.Topology, cl.Reach)
 			}
 		}
+		_, addresses := s.Plugin.(kplugin.Addresses)
+		for _, cl := range info.LoadBalancers {
+			if !follows[cl.Follows] {
+				t.Errorf("load-balancer class %s: follows %q", cl.Name, cl.Follows)
+			}
+			if cl.Exclusive && cl.NodePorts && !cl.Announce {
+				t.Errorf("load-balancer class %s is exclusive, yet a balancer in front (node ports) can serve many services on one address", cl.Name)
+			}
+			if cl.SendsFrom && cl.NodePorts && !cl.Announce {
+				t.Errorf("load-balancer class %s sends from its address, yet a balancer in front (node ports) has it on no host", cl.Name)
+			}
+			if !addresses {
+				t.Errorf("load-balancer class %s: a plugin serving load balancers serves Addresses too (ReleaseAddress deletes an IP's balancer)", cl.Name)
+			}
+		}
 	})
 
 	t.Run("unserved services", func(t *testing.T) {
@@ -88,6 +104,11 @@ func Conformance(t *testing.T, s Suite) {
 		if _, ok := s.Plugin.(kplugin.LoadBalancers); !ok {
 			if err := c.DeleteLoadBalancer(ctx, kplugin.LoadBalancerRef{ID: "x"}); !errors.Is(err, kplugin.ErrUnsupported) {
 				t.Errorf("load balancers: %v", err)
+			}
+		}
+		if _, ok := s.Plugin.(kplugin.Addresses); !ok {
+			if err := c.ReleaseAddress(ctx, kplugin.AddressRef{ID: "x"}); !errors.Is(err, kplugin.ErrUnsupported) {
+				t.Errorf("addresses: %v", err)
 			}
 		}
 		if _, ok := s.Plugin.(kplugin.Volumes); !ok {
@@ -123,6 +144,82 @@ func Conformance(t *testing.T, s Suite) {
 				if m, ok := mounts[cl.Name]; !ok || !m {
 					t.Errorf("node side serves %s, which the controller side doesn't serve as a mount class", cl.Name)
 				}
+			}
+		})
+	}
+
+	// Every class that reserves: an address held apart from a load balancer, idempotent by ID,
+	// released once (again is NotFound). A class that can't says so (Unsupported).
+	for _, cl := range info.LoadBalancers {
+		if _, ok := s.Plugin.(kplugin.Addresses); !ok {
+			break
+		}
+		cl := cl
+		t.Run("address "+cl.Name, func(t *testing.T) {
+			r := kplugin.AddressReservation{Class: cl.Name, ID: "c0nf0rmance-ip-uid", Namespace: "conformance", Name: "ip", Region: s.Region}
+			var st kplugin.AddressStatus
+			err := again(func() (err error) { st, err = c.ReserveAddress(ctx, r); return })
+			if !cl.Reserve {
+				if !errors.Is(err, kplugin.ErrUnsupported) {
+					t.Fatalf("reserve on %s, which doesn't: %+v %v (want Unsupported)", cl.Name, st, err)
+				}
+				return
+			}
+			if err != nil || st.Address == "" {
+				t.Fatalf("reserve: %+v %v", st, err)
+			}
+			var st2 kplugin.AddressStatus
+			if err := again(func() (err error) { st2, err = c.ReserveAddress(ctx, r); return }); err != nil || st2.Address != st.Address {
+				t.Fatalf("reserve again: %+v %v (want the same address %s)", st2, err, st.Address)
+			}
+			ref := kplugin.AddressRef{Class: cl.Name, ID: r.ID, Address: st.Address, Handle: st.Handle}
+			if err := again(func() error { return c.ReleaseAddress(ctx, ref) }); err != nil {
+				t.Fatalf("release: %v", err)
+			}
+			if err := again(func() error { return c.ReleaseAddress(ctx, ref) }); !errors.Is(err, kplugin.ErrNotFound) {
+				t.Fatalf("release again: %v (want NotFound)", err)
+			}
+		})
+	}
+
+	// A shared balancer behind one address: every service's ports on it, each with its own
+	// backends; the same address as ports come and go; parked with none; gone on release.
+	for _, cl := range info.LoadBalancers {
+		if cl.Exclusive || !cl.NodePorts || s.Host.ID == "" {
+			continue
+		}
+		cl := cl
+		t.Run("balancer "+cl.Name, func(t *testing.T) {
+			lb := kplugin.LoadBalancer{Class: cl.Name, ID: "c0nf0rmance-shared-ip-uid", Namespace: "conformance", Name: "default-" + cl.Name,
+				Backends: []kplugin.HostInfo{s.Host}, Ports: []kplugin.Port{
+					{Name: "http", Protocol: "TCP", Port: 80, NodePort: 30000, Service: "silo/a", Backends: []kplugin.HostInfo{s.Host}},
+					{Name: "rpc", Protocol: "TCP", Port: 8545, NodePort: 30001, Service: "silo/b", Backends: []kplugin.HostInfo{s.Host}}}}
+			var st kplugin.LoadBalancerStatus
+			if err := again(func() (err error) { st, err = c.EnsureLoadBalancer(ctx, lb); return }); err != nil || st.Address == "" {
+				t.Fatalf("ensure: %+v %v", st, err)
+			}
+			one := lb
+			one.Ports = lb.Ports[:1]
+			var st2 kplugin.LoadBalancerStatus
+			if err := again(func() (err error) { st2, err = c.EnsureLoadBalancer(ctx, one); return }); err != nil || st2.Address != st.Address {
+				t.Fatalf("a service gone: %+v %v (want the same address %s)", st2, err, st.Address)
+			}
+			bad := one
+			bad.Annotations = map[string]string{info.Name + ".kevaso.com/c0nf0rmance-no-such-knob": "x"}
+			if _, err := c.EnsureLoadBalancer(ctx, bad); err == nil {
+				t.Fatalf("an unknown annotation in its domain was taken")
+			}
+			parked := kplugin.LoadBalancer{Class: cl.Name, ID: lb.ID, Namespace: lb.Namespace, Name: lb.Name}
+			var st3 kplugin.LoadBalancerStatus
+			if err := again(func() (err error) { st3, err = c.EnsureLoadBalancer(ctx, parked); return }); err != nil || st3.Address != st.Address {
+				t.Fatalf("parked: %+v %v (want the address %s kept)", st3, err, st.Address)
+			}
+			ref := kplugin.AddressRef{Class: cl.Name, ID: lb.ID, Address: st.Address}
+			if err := again(func() error { return c.ReleaseAddress(ctx, ref) }); err != nil {
+				t.Fatalf("release: %v", err)
+			}
+			if err := again(func() error { return c.ReleaseAddress(ctx, ref) }); !errors.Is(err, kplugin.ErrNotFound) {
+				t.Fatalf("release again: %v (want NotFound)", err)
 			}
 		})
 	}

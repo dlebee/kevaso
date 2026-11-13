@@ -631,6 +631,10 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, t target) {
 			writeErr(w, err)
 			return
 		}
+		if err := checkDeleteIP(obj); err != nil {
+			writeErr(w, err)
+			return
+		}
 		om := obj.GetObjectMeta()
 		if len(om.Finalizers) == 0 {
 			if _, err := s.store.Delete(ctx, t.key(), cur.Revision); errors.Is(err, store.ErrConflict) {

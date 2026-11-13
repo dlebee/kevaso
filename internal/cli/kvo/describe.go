@@ -32,6 +32,9 @@ func describe(ctx context.Context, c *client.Client, o opts, stdout io.Writer) e
 	if err := c.Get(ctx, k.Kind, ns, o.args[1], obj); err != nil {
 		return err
 	}
+	if x, ok := obj.(*v1.IP); ok {
+		return describeIP(ctx, c, x, stdout)
+	}
 	if err := describeObject(stdout, obj); err != nil {
 		return err
 	}
@@ -133,6 +136,13 @@ func describeObject(w io.Writer, obj meta.Object) error {
 				egress += " (" + src + ")"
 			}
 			kv(0, "Egress IP", egress)
+			if len(st.AnswersOn) > 0 {
+				kv(0, "Answers on", strings.Join(st.AnswersOn, ", "))
+			}
+			kv(0, "In and out", st.AddressesLine())
+			if st.IP != "" {
+				kv(0, "IP", st.IP+" (kvo describe ip "+st.IP+")")
+			}
 			if sv != nil && len(sv.Ports) > 0 {
 				var ps []string
 				for _, p := range sv.Ports {
