@@ -65,7 +65,10 @@ func TestPrivilegedPluginUnit(t *testing.T) {
 	// A root side that mounts privately (the JuiceFS controller side) keeps its own namespace.
 	ctl := kplugin.Needs{Root: true, Capabilities: []string{"CAP_SYS_ADMIN"}, Devices: []string{"/dev/fuse"}, WritePaths: []string{"/var/lib/kevaso-provider-juicefs"}}
 	c := PluginUnit(PluginOptions{Name: "juicefs", Needs: ctl})
-	for _, want := range []string{"ProtectSystem=strict", "ReadWritePaths=/var/lib/kevaso-provider-juicefs\n", "DeviceAllow=/dev/fuse rw", "UMask=0077"} {
+	// …and systemd makes its state folder before the namespace: a writable path that isn't there
+	// fails the unit (status 226/NAMESPACE, as on the first real install).
+	for _, want := range []string{"ProtectSystem=strict", "ReadWritePaths=/var/lib/kevaso-provider-juicefs\n", "DeviceAllow=/dev/fuse rw", "UMask=0077",
+		"StateDirectory=kevaso-provider-juicefs\n", "StateDirectoryMode=0700\n"} {
 		if !strings.Contains(c, want) {
 			t.Errorf("controller unit lacks %q:\n%s", want, c)
 		}

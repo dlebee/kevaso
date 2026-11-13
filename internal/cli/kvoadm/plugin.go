@@ -102,6 +102,15 @@ func PluginUnit(o PluginOptions) string {
 			w("PrivateDevices=yes")
 		}
 		if len(n.WritePaths) > 0 {
+			// systemd can't make a namespace with a writable folder that isn't there (the unit
+			// fails with 226/NAMESPACE): it creates the ones in its own places itself, every start;
+			// kvoadm creates the others at install.
+			for _, d := range n.WritePaths {
+				if kind, rel, ok := systemdDir(d); ok {
+					w("%sDirectory=%s", kind, rel)
+					w("%sDirectoryMode=0700", kind)
+				}
+			}
 			w("ReadWritePaths=%s", strings.Join(n.WritePaths, " "))
 		}
 	}
@@ -128,6 +137,17 @@ func PluginUnit(o PluginOptions) string {
 	w("[Install]")
 	w("WantedBy=multi-user.target")
 	return b.String()
+}
+
+// systemdDir says which of systemd's own folders (StateDirectory= and the like) p is in, if any,
+// and its name there.
+func systemdDir(p string) (kind, rel string, ok bool) {
+	for base, k := range map[string]string{"/var/lib/": "State", "/var/cache/": "Cache", "/var/log/": "Logs"} {
+		if r, found := strings.CutPrefix(p, base); found && r != "" {
+			return k, r, true
+		}
+	}
+	return "", "", false
 }
 
 // socket is where the side listens (the manifest may name it; kevasod looks in Dir/NAME).
@@ -358,6 +378,13 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 	say("%s installed (signature verified on the host)", name)
 	if _, err := conn.Run(ctx, "install -d -m 0700 "+sshboot.Quote(pluginEtc(o.Name)), nil); err != nil {
 		return err
+	}
+	if !o.Needs.HostMounts {
+		for _, d := range o.Needs.WritePaths { // the unit's namespace needs them there
+			if _, err := conn.Run(ctx, "install -d -m 0700 "+sshboot.Quote(d), nil); err != nil {
+				return err
+			}
+		}
 	}
 	names := make([]string, 0, len(creds))
 	for n := range creds {
