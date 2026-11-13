@@ -1,0 +1,13 @@
+{
+  "name": "hostdir",
+  "controller": {
+    "root": true,
+    "capabilities": ["CAP_DAC_OVERRIDE", "CAP_FOWNER"],
+    "writePaths": ["/srv/hostdir"]
+  },
+  "node": {
+    "root": true,
+    "capabilities": ["CAP_SYS_ADMIN"],
+    "hostMounts": true
+  }
+}
