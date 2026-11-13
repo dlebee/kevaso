@@ -190,6 +190,20 @@ func (d *Driver) Run(ctx context.Context, script string, stdin []byte) (string, 
 	return string(out), err
 }
 
+// RunAsLogin runs a script as the login user, without sudo (what sudo would drop, such as
+// SSH_CLIENT, is still there). For a root login it is the same as Run.
+func (d *Driver) RunAsLogin(ctx context.Context, script string) (string, error) {
+	c, err := d.connect(ctx)
+	if err != nil {
+		return "", err
+	}
+	plain := *c
+	plain.Sudo = false
+	out, err := plain.Run(ctx, script, nil)
+	d.drop(c, err)
+	return string(out), err
+}
+
 // Close closes the connection.
 func (d *Driver) Close() error {
 	d.mu.Lock()

@@ -313,8 +313,11 @@ func TestANonRootUserRunsThroughSudo(t *testing.T) {
 	if _, err := d.Run(ctxT(t), "id -u", nil); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := d.RunAsLogin(ctxT(t), "echo $SSH_CLIENT"); err != nil {
+		t.Fatal(err)
+	}
 	cmds, _, _ := m.seen()
-	if len(cmds) != 1 || cmds[0] != "sudo -n sh -c 'id -u'" {
+	if len(cmds) != 2 || cmds[0] != "sudo -n sh -c 'id -u'" || cmds[1] != "echo $SSH_CLIENT" {
 		t.Fatalf("sent %q", cmds)
 	}
 }
