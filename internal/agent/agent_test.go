@@ -485,14 +485,13 @@ func TestAFailedSiloIsStartedAgainWithBackoff(t *testing.T) {
 	// A second failure right away waits for the backoff (10s) before the next start.
 	rt.failed.Store(true)
 	poke()
-	s = e.wait(t, "web", func(s *v1.Silo) bool {
+	e.wait(t, "web", func(s *v1.Silo) bool {
 		c := meta.FindCondition(s.Status.Conditions, "Ready")
 		return s.Status.Phase == agent.PhaseFailed && c != nil && strings.Contains(c.Message, "starting it again in")
 	})
 	if rt.starts.Load() != before+1 {
 		t.Errorf("restarted again inside the backoff: starts %d", rt.starts.Load())
 	}
-	_ = s
 }
 
 // Found on the metal machine: right after a reboot the API said Running, from before, while
