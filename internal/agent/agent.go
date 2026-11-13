@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,7 @@ import (
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/policy"
+	"kevaso.com/core/internal/probes"
 	"kevaso.com/core/internal/routing"
 	"kevaso.com/core/sdk/kri"
 )
@@ -340,7 +342,17 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		})
 	}
 	if a.RuntimeReady != nil && !a.RuntimeReady(s.Spec.Runtime) {
-		return engine.Result{RequeueAfter: 2 * time.Second}, nil // still installing (a boot, a new host)
+		// Still installing (a boot, a new host): nothing starts yet, and the status says what's
+		// true. A silo that doesn't run isn't Running (after a reboot it said so from before).
+		if s.Status.Phase == PhaseRunning {
+			if rs, err := rt.Status(ctx, idOf(s)); err == nil && rs.State != kri.Running {
+				return engine.Result{RequeueAfter: 2 * time.Second}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+					st.Phase = PhaseStarting
+					setCond(st, "Ready", meta.ConditionFalse, "NotRunning", "not running on "+a.HostName+" ("+string(rs.State)+"): started once runtime "+s.Spec.Runtime+" is installed", s.Generation, a.now())
+				})
+			}
+		}
+		return engine.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 	// Provider volumes first: attached by the control plane, formatted once and mounted here. Also
 	// after a reboot, before the silo starts again.
@@ -413,6 +425,14 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			st.Image.Digest = digest
 		})
 	case kri.Created, kri.Stopped:
+		if s.Status.Phase == PhaseRunning { // it stopped (a reboot, a VMM stopped): say so first
+			if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+				st.Phase = PhaseStarting
+				setCond(st, "Ready", meta.ConditionFalse, "NotRunning", "not running on "+a.HostName+" ("+string(rs.State)+"): starting it again", s.Generation, a.now())
+			}); err != nil {
+				return engine.Result{}, err
+			}
+		}
 		hs, hostSecrets := rt.(kri.HostSecrets)
 		if hostSecrets {
 			// Its file and env secrets are there before anything of it starts (init containers too).
@@ -457,10 +477,31 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		}
 		return engine.Result{RequeueAfter: time.Millisecond}, nil
 	case kri.Failed:
-		return engine.Result{}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
-			st.Phase = PhaseFailed
-			setCond(st, "Ready", meta.ConditionFalse, "RuntimeFailed", rs.Message, s.Generation, a.now())
-		})
+		// Its machine failed (a VMM that exited, a dead container): started again, like a
+		// liveness restart, with the same backoff and count (status.restarts).
+		now := a.now()
+		if wait := probes.RestartWait(s.Status.Restarts, now); wait > 0 {
+			return engine.Result{RequeueAfter: wait}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+				st.Phase = PhaseFailed
+				setCond(st, "Ready", meta.ConditionFalse, "RuntimeFailed", rs.Message+" (starting it again in "+wait.Round(time.Second).String()+")", s.Generation, now)
+			})
+		}
+		r := probes.Restarted(s.Status.Restarts, now)
+		a.log("silo %s/%s failed (%s): starting it again (restart %d)", s.Namespace, s.Name, firstLineOf(rs.Message), r.Count)
+		if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			st.Restarts, st.Phase, st.StartedAt, st.Probes = r, PhaseStarting, nil, nil
+			setCond(st, "Ready", meta.ConditionFalse, "RuntimeFailed", rs.Message+" (starting it again: restart "+strconv.Itoa(r.Count)+")", s.Generation, now)
+		}); err != nil {
+			return engine.Result{}, err
+		}
+		a.probed.Delete(s.UID)
+		if err := rt.Start(ctx, id); err != nil {
+			return engine.Result{RequeueAfter: probes.Backoff(r.Backoff)}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+				st.Phase = PhaseFailed
+				setCond(st, "Ready", meta.ConditionFalse, "RuntimeFailed", "starting it again failed: "+err.Error(), s.Generation, a.now())
+			})
+		}
+		return engine.Result{RequeueAfter: time.Millisecond}, nil
 	}
 
 	// Running: its guest mounts its volumes (VMs), the silo's policy (runtimes that enforce grants
@@ -970,4 +1011,9 @@ func removeCondition(st *v1.SiloStatus, typ string) {
 		}
 	}
 	st.Conditions = out
+}
+
+func firstLineOf(s string) string {
+	l, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	return l
 }
