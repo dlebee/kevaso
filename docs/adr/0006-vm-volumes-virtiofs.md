@@ -37,38 +37,58 @@ A VM's own disk is a thin LV on its host, so the VM was pinned to it.
    other volumes is stopped, the layout applied, started again). A volume dropped from the spec
    keeps its LV until the silo is deleted: re-adding it gets the same data back.
 
-### virtiofsd: its own user, the least it needs
+### virtiofsd: root, bounded, then chrooted with the least it needs
 
-virtiofsd runs as **`kevaso-vfs`** (not root, not the VMM's user), in group `kevaso-vmm`, with
-exactly these capabilities, bounding and ambient:
+*Revised after the first real-machine run (Lima, Ubuntu 24.04, virtiofsd 1.10): the first design,
+virtiofsd as its own user `kevaso-vfs`, never started. virtiofsd refuses `--sandbox=chroot` for any
+user but root.*
+
+virtiofsd runs as **root** in group `kevaso-vmm`, its unit bounding it (and, because virtiofsd
+fails to apply its own capabilities otherwise, granting them ambient) to:
 
 | Capability | Why |
 |---|---|
 | `CAP_CHOWN`, `CAP_FOWNER`, `CAP_DAC_OVERRIDE` | the guest's root owns and changes files of every user in its volume; virtiofsd does that for it on the host |
 | `CAP_SETUID`, `CAP_SETGID` | it takes the guest caller's identity per request, so files get the guest's owners |
-| `CAP_SYS_CHROOT` | `--sandbox=chroot`: once started it sees nothing but the shared folder |
+| `CAP_SYS_CHROOT` | `--sandbox=chroot`: before serving anything it chroots into the shared folder |
+| `CAP_SETPCAP` | to drop its own capabilities and bounding set for serving |
+
+It's told to leave out of its serving set what it would ask for by default and isn't granted:
+`--modcaps=-fsetid:-mknod:-setfcap`. Once serving, chrooted into its share, it holds **only
+`chown, dac_override, fowner, setgid, setuid`**, with empty bounding and ambient sets: it can't
+chroot out again or get anything back (checked on the host, `TestVMVolumes`).
 
 Left out on purpose: `CAP_MKNOD` (no device nodes from a guest on the host's disks),
 `CAP_SETFCAP` and `CAP_FSETID` with `RestrictSUIDSGID=yes` (no file capabilities, no set-uid or
 set-gid files: a volume is data, never a way into the host), `CAP_SYS_ADMIN` (no namespaces, no
 mounts). The unit also has no network (`PrivateNetwork=yes`, only `AF_UNIX`), no devices, a
-read-only system, and of `/var/lib/kevaso` (the control plane's data, every silo's volumes) and
+read-only system, of `/var/lib/kevaso` (the control plane's data, every silo's volumes) and
 `/var/lib/kevaso-silos` only the shared folder and its socket's folder (`TemporaryFileSystem=…:ro`
-plus `BindPaths=`).
+plus `BindPaths=`), an empty `/run` (kevasod's admin socket, the plugins' sockets), and no
+`/root`, `/etc/kevaso`, `/etc/ssh` or images. No `ProcSubset=pid`: virtiofsd reads
+`/proc/sys/fs/nr_open` at start even with `--rlimit-nofile=0`.
 
-Why not root: virtiofsd parses everything a guest sends; a bug there should land in a user that
-owns nothing. Why not the VMM's user: then a guest that took over its VMM would be its own file
-server, with these capabilities. Why the VMM's group: its socket is `0770 kevaso-vfs:kevaso-vmm`
-in the silo's own directory (`SILO/vfs/KEY.sock`), which only that silo's VMM can see (the VMM
-already sees only its own silo directory), so only that VMM connects. Alternative left for later:
-unprivileged virtiofsd in a user namespace (`--sandbox=namespace` with uid maps); it needs subuid
-ranges per silo and changes the owners files have on the host.
+Why root is no worse than a user of its own: `CAP_SETUID`, which a file server acting for the
+guest's users needs, lets any user become root, so `kevaso-vfs` would have been root in all but
+name, and without the chroot. What contains it is the bounding set, the unit's namespace and the
+chroot. Why not the VMM's user: then a guest that took over its VMM would be its own file server.
+Its socket is a **socket unit's** (`kevaso-silo-SHORT-fs-KEY.socket`), `0660 root:kevaso-vmm`, in
+the silo's own directory (`SILO/vfs/KEY.sock`), which only that silo's VMM can see, so only that
+VMM connects; virtiofsd gets it as `--fd=3` and never sees the folder. virtiofsd serves one
+connection and exits when it ends, and a reboot inside the guest is the VMM reconnecting to the
+same socket: systemd holds the socket throughout and starts a virtiofsd for each connection. (Both
+simpler ways failed on a real host: with `Restart=no` the reconnect timed out; with virtiofsd
+restarted and making its own socket, which it binds `0700` and only then chowns, the VMM
+reconnected in between and died of `EACCES`.)
+
+Alternative left for later: unprivileged virtiofsd in a user namespace (`--sandbox=namespace` with
+uid maps); it needs subuid ranges per silo and changes the owners files have on the host.
 
 ### Order: start, stop, move
 
-- **Start:** each virtiofsd afresh (`systemctl restart`: one that served the last boot has exited
-  with its VMM), wait for its socket, then the TAP, then the VMM.
-- **Stop:** ask the guest to power off; then stop the VMM; then the virtiofsd units. Only then is
+- **Start:** each share's socket unit afresh (any virtiofsd left from the last boot stopped first),
+  wait for its socket, then the TAP, then the VMM, whose connection starts virtiofsd.
+- **Stop:** ask the guest to power off; then stop the VMM; then each share's socket unit (so nothing starts virtiofsd again) and virtiofsd. Only then is
   a shared folder free (virtiofsd holds it open). `kri.Runtime.Stop` and `Delete` both end there,
   and the agent unmounts volumes only after `Stop`/`Delete` returned, so the volume's `mounted:
   false`, which a move's handoff waits for (`internal/moves`, the volumes controller), is true when
@@ -105,7 +125,7 @@ block device instead of a folder); admission says so.
 
 - `kri` gains `VolumeSetter`, `GuestVolumes` and `Spec.DiskHostPath`; `sdk/kri/fake.VM` records
   what a VM was given and what its guest mounted.
-- The host needs Ubuntu's `virtiofsd` package and a `kevaso-vfs` user (`Install` adds both).
+- The host needs Ubuntu's `virtiofsd` package (`Install` adds it).
 - The real-machine checks this ADR depends on are in `docs/notes/virtiofs-real-machine-checklist.md`.
 - Still open: volume sizes on `local` VM disks don't grow (an LV is made once); hot-add; DAX; a
   device-class root disk; the node side's FUSE mounts vanishing under a running virtiofsd when the

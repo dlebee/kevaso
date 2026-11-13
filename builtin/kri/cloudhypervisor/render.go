@@ -134,6 +134,10 @@ ssh_keys:
 ` + indent(hostPriv) + `
   ed25519_public: ` + strings.TrimSpace(hostPub) + `
 growpart: { mode: auto, devices: ["/"] }
+# A disk that moved here holds the last host's exec key: replace it at every boot, before ssh lets
+# anyone in, instead of only in the final stage (write_files below, deferred).
+bootcmd:
+  - [sh, -c, ` + yamlQuote(BootKeysScript(execPub)) + `]
 write_files:
   # Root logs in with a key only, never a password.
   - path: /etc/ssh/sshd_config.d/10-kevaso.conf
@@ -146,6 +150,22 @@ write_files:
     permissions: "0600"
     defer: true
 `
+}
+
+// BootKeysScript leaves only execPub in root's authorized_keys.
+func BootKeysScript(execPub string) string {
+	f := "/root/.ssh/authorized_keys"
+	return "install -d -m 0700 /root/.ssh && printf '%s\\n' " + shellQuote([]string{strings.TrimSpace(execPub)}) +
+		" > " + f + ".new && chmod 0600 " + f + ".new && mv -f " + f + ".new " + f
+}
+
+// yamlQuote is s as a double-quoted YAML string.
+func yamlQuote(s string) string {
+	var b strings.Builder
+	enc := json.NewEncoder(&b) // JSON strings are YAML double-quoted strings
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(s)
+	return strings.TrimSpace(b.String())
 }
 
 // MetaData is cloud-init's instance identity. Each new seed (a create, a reset, a create on
