@@ -55,19 +55,26 @@ func StartCommand(d v1.Daemon) []string {
 	return []string{"sh", "-c", script}
 }
 
-// ProbeCommand prints running, exited CODE, or absent.
+// ProbeCommand prints running, exited CODE, or absent. A zombie isn't running: a killed wrapper
+// stays one where nothing reaps it (a container whose PID 1 is "sleep infinity"), and kill -0
+// still succeeds on it, so with /proc the process's state is read instead.
 func ProbeCommand(d v1.Daemon) []string {
 	pid, exit, _ := files(d.Name)
-	script := "if [ -f " + pid + " ] && kill -0 \"$(cat " + pid + ")\" 2>/dev/null; then echo running; " +
+	alive := "a=no; p=$(cat " + pid + " 2>/dev/null); if [ -n \"$p\" ]; then " +
+		"if [ -r /proc/$p/status ]; then s=; while read -r k v _; do if [ \"$k\" = State: ]; then s=$v; break; fi; done < /proc/$p/status 2>/dev/null; " +
+		"case $s in Z|X|'') ;; *) a=yes ;; esac; " +
+		"elif [ ! -d /proc/self ] && kill -0 \"$p\" 2>/dev/null; then a=yes; fi; fi; "
+	script := alive + "if [ $a = yes ]; then echo running; " +
 		"elif [ -f " + exit + " ]; then echo \"exited $(cat " + exit + ")\"; " +
 		"elif [ -f " + pid + " ]; then echo exited -1; else echo absent; fi"
 	return []string{"sh", "-c", script}
 }
 
-// StopCommand stops a daemon that's no longer in the spec (its whole process group).
+// StopCommand stops a daemon that's no longer in the spec (its whole process group). The signal
+// is given with -s: dash's kill reads "kill -TERM -- -PGID" as a bad number.
 func StopCommand(name string) []string {
 	pid, exit, _ := files(name)
-	return []string{"sh", "-c", "if [ -f " + pid + " ]; then p=$(cat " + pid + "); kill -TERM -- -\"$p\" 2>/dev/null || kill -TERM \"$p\" 2>/dev/null; fi; rm -f " + pid + " " + exit + "; true"}
+	return []string{"sh", "-c", "if [ -f " + pid + " ]; then p=$(cat " + pid + "); kill -s TERM -- -\"$p\" 2>/dev/null || kill -s TERM \"$p\" 2>/dev/null; fi; rm -f " + pid + " " + exit + "; true"}
 }
 
 // Probe is what ProbeCommand said.
@@ -75,6 +82,9 @@ type Probe struct {
 	Running bool
 	Absent  bool // never started here (a new silo, or after a reboot)
 	Exit    int  // exited: its code (-1: unknown, killed with the wrapper)
+	// Unknown: the probe said something else (an error, a warning, nothing): nothing is known, so
+	// nothing is started. Taking it for absent would start a second copy of a running daemon.
+	Unknown bool
 }
 
 // ParseProbe reads ProbeCommand's output.
@@ -89,8 +99,10 @@ func ParseProbe(out string) Probe {
 			code = -1
 		}
 		return Probe{Exit: code}
+	case len(f) == 1 && f[0] == "absent":
+		return Probe{Absent: true}
 	}
-	return Probe{Absent: true}
+	return Probe{Unknown: true}
 }
 
 // Backoff is the wait before restart number n+1: 10s, 20s, 40s, … at most 5m.
@@ -112,6 +124,9 @@ const ProbeEvery = 15 * time.Second
 // to look again.
 func DecideDaemon(d v1.Daemon, st v1.DaemonStatus, p Probe, now time.Time) (v1.DaemonStatus, bool, time.Duration) {
 	st.Name = d.Name
+	if p.Unknown { // look again soon; change nothing meanwhile
+		return st, false, ProbeEvery
+	}
 	if p.Running {
 		st.State, st.NextStart = v1.DaemonRunning, nil
 		if st.StartedAt == nil {
@@ -185,10 +200,10 @@ type Outcome struct {
 	Output     string // the end of what the failing part printed
 }
 
-// Result is the task's status after a run.
-func Result(u v1.Upkeep, o Outcome, now time.Time) v1.UpkeepStatus {
+// Result is the task's status after a run (prev: its status before).
+func Result(u v1.Upkeep, prev v1.UpkeepStatus, o Outcome, now time.Time) v1.UpkeepStatus {
 	t := now
-	st := v1.UpkeepStatus{Name: u.Name, LastCheck: &t}
+	st := v1.UpkeepStatus{Name: u.Name, LastCheck: &t, LastFix: prev.LastFix} // when the fix last ran stays known
 	switch {
 	case o.Check == 0:
 		st.State = v1.UpkeepOK

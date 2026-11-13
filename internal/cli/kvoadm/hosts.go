@@ -17,6 +17,7 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/kvoconfig"
 )
 
@@ -140,6 +141,9 @@ WantedBy=multi-user.target
 `
 }
 
+// FenceUnit is a worker-only host's fence (kevasod fence-watch), separate from kevasod.service.
+func FenceUnit(o HostAddOptions) string { return fence.Unit(o.Runtimes, fence.DefaultAfter) }
+
 func adminClient(kctx string) (*client.Client, kvoconfig.Context, error) {
 	path, err := kvoconfig.Path()
 	if err != nil {
@@ -224,6 +228,12 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 		return err
 	}
 	say("worker started (kevasod.service), joining %s", server)
+	// Its fence, a unit of its own: when this host's agent can no longer vouch for its silos (cut
+	// off, or not running), it stops those the control plane may start elsewhere.
+	if err := conn.InstallUnit(ctx, "kevaso-fence.service", []byte(FenceUnit(o))); err != nil {
+		return err
+	}
+	say("fence started (kevaso-fence.service)")
 	// How kvoadm reaches it, kept on its Host (and so in backups): kvoadm init --restore uses it to
 	// reconnect the worker to a restored control plane.
 	if err := annotateSSH(ctx, c, o.Name, fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))), conn.Fingerprint); err != nil {

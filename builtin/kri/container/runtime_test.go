@@ -289,3 +289,40 @@ func TestKevasoImages(t *testing.T) {
 		t.Fatalf("main container: %s", main)
 	}
 }
+
+// Install runs on every start of kevasod: Docker is restarted (which stops every container) only
+// the first time, or when its configuration changed, or when it isn't running; an agent restart
+// leaves the silos running.
+func TestInstallRestartsDockerOnlyWhenNeeded(t *testing.T) {
+	f := newFake()
+	r := &Runtime{Host: f, Engine: "docker"}
+	restarts := func() int {
+		n := 0
+		for _, c := range f.cmds {
+			if c == "systemctl restart docker" {
+				n++
+			}
+		}
+		return n
+	}
+	ctx := context.Background()
+	if err := r.Install(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if restarts() != 1 || string(f.files["/etc/docker/daemon.json"]) != DockerDaemonJSON {
+		t.Fatalf("first install: %d restarts, daemon.json %q", restarts(), f.files["/etc/docker/daemon.json"])
+	}
+	if err := r.Install(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if restarts() != 1 {
+		t.Fatalf("installing again restarted Docker (%d restarts): every container stops", restarts())
+	}
+	f.files["/etc/docker/daemon.json"] = []byte(`{"iptables": true}`)
+	if err := r.Install(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if restarts() != 2 {
+		t.Fatalf("a changed daemon.json: %d restarts", restarts())
+	}
+}

@@ -490,7 +490,11 @@ func runGuest(ctx context.Context, c *ssh.Client, req kri.ExecRequest) (int, err
 		return -1, err
 	}
 	defer func() { _ = sess.Close() }()
-	sess.Stdin, sess.Stdout, sess.Stderr = req.Stdin, orDiscard(req.Stdout), orDiscard(req.Stderr)
+	// The session copies stdout and stderr in two goroutines: one lock for both, and only Write
+	// (a bytes.Buffer's ReadFrom, used by io.Copy, isn't safe to share: given as both, as callers
+	// do, the stream that ended last cut off what the other had written).
+	var mu sync.Mutex
+	sess.Stdin, sess.Stdout, sess.Stderr = req.Stdin, &lockedWriter{mu: &mu, w: orDiscard(req.Stdout)}, &lockedWriter{mu: &mu, w: orDiscard(req.Stderr)}
 	if req.TTY != nil {
 		sz := req.TTY.Size
 		if sz.Rows == 0 || sz.Cols == 0 {
@@ -539,6 +543,18 @@ func runGuest(ctx context.Context, c *ssh.Client, req kri.ExecRequest) (int, err
 			return -1, ctx.Err()
 		}
 	}
+}
+
+// lockedWriter writes under a lock shared with the session's other output, and is only a Writer.
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 func orDiscard(w io.Writer) io.Writer {

@@ -1,7 +1,9 @@
 package keep
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -77,7 +79,9 @@ func TestAsUserWraps(t *testing.T) {
 func TestParseProbe(t *testing.T) {
 	for out, want := range map[string]Probe{
 		"running\n": {Running: true}, "exited 0\n": {Exit: 0}, "exited 137": {Exit: 137},
-		"exited x": {Exit: -1}, "absent\n": {Absent: true}, "": {Absent: true},
+		"exited x": {Exit: -1}, "absent\n": {Absent: true},
+		// Anything else is unknown, never absent: absent starts the daemon.
+		"": {Unknown: true}, "sudo: unable to resolve host vm\nrunning\n": {Unknown: true}, "sh: 1: Syntax error": {Unknown: true},
 	} {
 		if got := ParseProbe(out); got != want {
 			t.Errorf("ParseProbe(%q) = %+v, want %+v", out, got, want)
@@ -155,11 +159,132 @@ func TestUpkeep(t *testing.T) {
 		{Check: 1, FixRan: true, After: 1}:                    v1.UpkeepFailed,
 		{Check: 1, FixRan: true, Fix: 2, Output: "npm: E404"}: v1.UpkeepFailed,
 	} {
-		if st := Result(u, o, t0); st.State != want || st.Message != o.Output {
+		if st := Result(u, v1.UpkeepStatus{}, o, t0); st.State != want || st.Message != o.Output {
 			t.Errorf("%+v → %+v, want %s", o, st, want)
 		}
 	}
 	if got := Degraded([]v1.UpkeepStatus{{Name: "a", State: v1.UpkeepOK}, {Name: "b", State: v1.UpkeepFailed}}); len(got) != 1 || got[0] != "b" {
 		t.Fatalf("Degraded = %v", got)
+	}
+}
+
+// shells are the sh implementations silos have: dash (Debian, Ubuntu), bash, busybox (Alpine).
+func shells(t *testing.T) []string {
+	var out []string
+	for _, s := range []string{"dash", "bash", "busybox"} {
+		if p, err := exec.LookPath(s); err == nil {
+			if s == "busybox" {
+				p += " sh"
+			}
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		t.Skip("no dash, bash or busybox here")
+	}
+	return out
+}
+
+// in runs one of the commands with a given sh in place of "sh".
+func in(t *testing.T, shell string, argv []string) string {
+	t.Helper()
+	return sh(t, append(strings.Fields(shell), argv[1:]...))
+}
+
+// A stop takes the daemon's whole process group in every shell: dash's kill doesn't take
+// "kill -TERM -- -PGID" (Illegal number), which left the daemon running with only its wrapper gone.
+func TestStopKillsTheGroupInEveryShell(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("no setsid here: a stop only takes the wrapper")
+	}
+	for _, shell := range shells(t) {
+		t.Run(filepath.Base(shell), func(t *testing.T) {
+			Dir = t.TempDir()
+			d := v1.Daemon{Name: "long", Run: "sleep 30 & echo $! > " + Dir + "/child; wait"}
+			in(t, shell, StartCommand(d))
+			var child string
+			for i := 0; i < 100 && child == ""; i++ {
+				time.Sleep(20 * time.Millisecond)
+				child = strings.TrimSpace(sh(t, []string{"sh", "-c", "cat " + Dir + "/child 2>/dev/null || true"}))
+			}
+			if child == "" {
+				t.Fatal("the daemon never started")
+			}
+			in(t, shell, StopCommand("long"))
+			for i := 0; i < 100; i++ {
+				if exec.Command("kill", "-0", child).Run() != nil {
+					return
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			_ = exec.Command("kill", "-9", child).Run()
+			t.Fatalf("with %s, the daemon's child %s outlived the stop", shell, child)
+		})
+	}
+}
+
+// A daemon whose wrapper was killed and never reaped is a zombie (in a container whose PID 1 is
+// "sleep infinity", it stays one): kill -0 still succeeds on it, but it isn't running.
+func TestProbeSeesAZombieAsDead(t *testing.T) {
+	if _, err := os.Stat("/proc/self/status"); err != nil {
+		t.Skip("no /proc here")
+	}
+	Dir = t.TempDir()
+	pid, _, _ := files("z")
+	// The child exits at once; its parent becomes "sleep 3", which never reaps it.
+	parent := exec.Command("sh", "-c", "sh -c 'exit 0' & echo $! > "+pid+"; exec sleep 3")
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = parent.Process.Kill(); _ = parent.Wait() }()
+	zombie := false
+	for i := 0; i < 100 && !zombie; i++ {
+		time.Sleep(20 * time.Millisecond)
+		b, err := os.ReadFile(pid)
+		if err != nil || len(b) == 0 {
+			continue
+		}
+		st, _ := os.ReadFile("/proc/" + strings.TrimSpace(string(b)) + "/status")
+		zombie = strings.Contains(string(st), "State:\tZ")
+	}
+	if !zombie {
+		t.Fatal("couldn't make a zombie")
+	}
+	for _, shell := range shells(t) {
+		if p := ParseProbe(in(t, shell, ProbeCommand(v1.Daemon{Name: "z"}))); p.Running || p.Absent || p.Exit != -1 {
+			t.Errorf("%s: a zombie probed as %+v, want exited -1", filepath.Base(shell), p)
+		}
+	}
+}
+
+// When the fix last ran is kept: the next check that passes on its own doesn't forget it.
+func TestUpkeepKeepsLastFix(t *testing.T) {
+	u := v1.Upkeep{Name: "marker", Every: "1m"}
+	fixed := Result(u, v1.UpkeepStatus{}, Outcome{Check: 1, FixRan: true}, t0)
+	if fixed.State != v1.UpkeepFixed || fixed.LastFix == nil || !fixed.LastFix.Equal(t0) {
+		t.Fatalf("fixed: %+v", fixed)
+	}
+	later := t0.Add(time.Minute)
+	ok := Result(u, fixed, Outcome{Check: 0}, later)
+	if ok.State != v1.UpkeepOK || !ok.LastCheck.Equal(later) || ok.LastFix == nil || !ok.LastFix.Equal(t0) {
+		t.Fatalf("a passing check after a fix: %+v, want LastFix %s kept", ok, t0)
+	}
+	failed := Result(u, ok, Outcome{Check: 1, FixRan: true, Fix: 1, Output: "no"}, later.Add(time.Minute))
+	if failed.LastFix == nil || !failed.LastFix.Equal(later.Add(time.Minute)) {
+		t.Fatalf("a fix that ran and failed: %+v", failed)
+	}
+}
+
+// An unknown probe starts nothing and changes nothing: a running daemon isn't started twice.
+func TestDecideDaemonUnknownProbe(t *testing.T) {
+	d := v1.Daemon{Name: "w"}
+	started := t0
+	st := v1.DaemonStatus{Name: "w", State: v1.DaemonRunning, StartedAt: &started, Restarts: 2}
+	got, start, again := DecideDaemon(d, st, Probe{Unknown: true}, t0.Add(time.Minute))
+	if start || again != ProbeEvery || got.State != v1.DaemonRunning || got.Restarts != 2 || !got.StartedAt.Equal(started) {
+		t.Fatalf("unknown probe: %+v start=%v again=%v", got, start, again)
+	}
+	if _, start, _ := DecideDaemon(d, v1.DaemonStatus{}, Probe{Unknown: true}, t0); start {
+		t.Fatal("unknown probe of a new daemon started it")
 	}
 }

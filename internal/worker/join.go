@@ -80,6 +80,10 @@ func (c *Contact) Last() time.Time {
 	return time.Time{}
 }
 
+// DefaultHeartbeat is how often a worker reports (kevasod worker --heartbeat): well under the
+// agent's FenceAfter, so a healthy host never fences.
+const DefaultHeartbeat = 10 * time.Second
+
 // Heartbeat keeps this host's Ready condition and lastHeartbeat fresh: the control plane's host
 // lease reads them (a host that stops reporting is lost). Each success is marked on contact.
 func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Duration, clk clock.Clock, log func(string, ...any), contact *Contact) {

@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -108,4 +109,96 @@ func TestAgentKeepsDaemonsAndUpkeep(t *testing.T) {
 	if started["claude"] != 1 {
 		t.Fatalf("claude started %d times", started["claude"])
 	}
+}
+
+// A probe that prints something else (here a warning and nothing more) is unknown, not absent: a
+// started daemon isn't started again. Before, every such probe started another copy, and each
+// start changed the silo's status, which brought the next round, and the next copy.
+func TestAgentDoesntStartADaemonTwiceOnAnOddProbe(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
+	ts := httptest.NewServer(srv)
+	t.Cleanup(func() { cancel(); ts.Close() })
+	c := client.New(ts.URL)
+	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
+
+	var mu sync.Mutex
+	started, probes := 0, 0
+	rt := fake.New()
+	rt.Handler = func(_ kri.ID, cmd []string, _ []byte) (string, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		script := strings.Join(cmd, " ")
+		switch {
+		case strings.Contains(script, "kill -0"): // probe
+			probes++
+			if started == 0 {
+				return "absent\n", 0
+			}
+			return "sudo: unable to resolve host agent\n", 0
+		case strings.Contains(script, "setsid"): // start
+			started++
+		}
+		return "", 0
+	}
+	var logs safeLog
+	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}, Log: logs.printf}
+	go a.Run(ctx)
+	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "agent", Namespace: "dev"},
+		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+			Daemons: []v1.Daemon{{Name: "ticker", Run: "while true; do sleep 1; done"}}}}
+	if err := c.Create(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	s.Status.Host, s.Status.Phase = "hv1", "Scheduled"
+	if err := c.UpdateStatus(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		p := probes
+		mu.Unlock()
+		if p >= 3 {
+			break
+		}
+		// Changes to the silo bring rounds sooner than the probe period.
+		var got v1.Silo
+		if c.Get(ctx, "Silo", "dev", "agent", &got) == nil {
+			if got.Labels == nil {
+				got.Labels = map[string]string{}
+			}
+			got.Labels["poke"] = time.Now().Format("150405.000000")
+			_ = c.Update(ctx, &got)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if probes < 3 {
+		t.Fatalf("only %d probes", probes)
+	}
+	if started != 1 {
+		t.Fatalf("the daemon was started %d times after %d probes", started, probes)
+	}
+	if !strings.Contains(logs.String(), `the probe said "sudo: unable to resolve host agent"`) {
+		t.Errorf("the odd probe isn't logged:\n%s", logs.String())
+	}
+}
+
+type safeLog struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *safeLog) printf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	fmt.Fprintf(&l.b, format+"\n", args...)
+}
+
+func (l *safeLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }

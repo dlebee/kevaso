@@ -41,16 +41,22 @@ func (r *Runtime) Install(ctx context.Context, progress func(string)) error {
 		// Kevaso owns the host's firewall and networks its containers itself (the silo bridge), so
 		// Docker mustn't: left alone it sets the FORWARD policy to DROP, which no rule of ours can
 		// undo, and every silo's forwarded traffic (VMs too) would stop.
-		if err := r.Host.WriteFile("/etc/docker/daemon.json", []byte(DockerDaemonJSON), 0o644); err != nil {
-			return err
+		// Restarted only when that changes or Docker isn't running: a restart stops every container,
+		// and Install runs on each start of kevasod, which must leave running silos running.
+		cur, _ := r.Host.ReadFile("/etc/docker/daemon.json")
+		_, inactive := r.cmd(ctx, nil, "systemctl", "is-active", "--quiet", "docker")
+		if string(cur) != DockerDaemonJSON || inactive != nil {
+			if err := r.Host.WriteFile("/etc/docker/daemon.json", []byte(DockerDaemonJSON), 0o644); err != nil {
+				return err
+			}
+			if _, err := r.cmd(ctx, nil, "systemctl", "enable", "docker"); err != nil {
+				return err
+			}
+			if _, err := r.cmd(ctx, nil, "systemctl", "restart", "docker"); err != nil {
+				return err
+			}
+			_, _ = r.cmd(ctx, nil, "sh", "-c", "iptables -P FORWARD ACCEPT 2>/dev/null; ip link del docker0 2>/dev/null; true")
 		}
-		if _, err := r.cmd(ctx, nil, "systemctl", "enable", "docker"); err != nil {
-			return err
-		}
-		if _, err := r.cmd(ctx, nil, "systemctl", "restart", "docker"); err != nil {
-			return err
-		}
-		_, _ = r.cmd(ctx, nil, "sh", "-c", "iptables -P FORWARD ACCEPT 2>/dev/null; ip link del docker0 2>/dev/null; true")
 	}
 	progress("silo bridge")
 	if err := cloudhypervisor.SetupNetwork(ctx, chHost{r.Host}); err != nil {
