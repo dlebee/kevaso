@@ -1,6 +1,7 @@
 // Kevaso Panes (design §7, §10.1): sign in to your clusters like `kvo login`, pick a namespace, turn
 // panes on; each one floats in its own small always-on-top window with the identity drawn by the app.
 //
+//   kvo panes                      (installed as kvo's plugin: kvo's current context and tokens)
 //   swift run KevasoPanes
 //   KVO_SERVER=https://… KVO_CA_FILE=ca.pem KVO_TOKEN=… KVO_NAMESPACE=team swift run KevasoPanes   (CI)
 import AppKit
@@ -14,8 +15,10 @@ final class AppModel: ObservableObject {
     let vault = KeychainVault()
     let floating: FloatingPanes
     let notifier: NeedsYouNotifier
-    /// KVO_SERVER (and friends): a cluster from the environment, no sign-in.
+    /// Started by kvo (kvo panes): its current context, tokens from kvo. Else KVO_SERVER (and
+    /// friends): a cluster from the environment. Either way, no sign-in.
     let environment: ServerConfig?
+    let environmentLabel: String
     /// KVO_TOKEN: overrides any sign-in, for CI.
     let tokenOverride = ServerConfig.tokenOverride()
 
@@ -28,8 +31,10 @@ final class AppModel: ObservableObject {
     init() {
         var env: ServerConfig?
         var problem = ""
-        do { env = try ServerConfig.fromEnvironment() } catch { problem = "\(error)" }
+        let kvo = KvoPluginContext.fromEnvironment()
+        do { env = try kvo?.serverConfig() ?? ServerConfig.fromEnvironment() } catch { problem = "\(error)" }
         environment = env
+        environmentLabel = kvo.map { $0.context.isEmpty ? "From kvo" : "From kvo (\($0.context))" } ?? "From the environment (KVO_SERVER)"
         floating = FloatingPanes(store: store, places: WindowPlaces(file: ContextStore.defaultFolder.appendingPathComponent("windows.json")))
         let on = UserDefaults.standard.bool(forKey: "notifyNeedsYou")
         notifier = NeedsYouNotifier(enabled: on)
@@ -169,7 +174,7 @@ struct MainView: View {
             List(selection: Binding(get: { contexts.current?.id }, set: { model.select($0) })) {
                 Section("Clusters") {
                     if model.environment != nil {
-                        Label("From the environment (KVO_SERVER)", systemImage: "terminal").foregroundStyle(.secondary)
+                        Label(model.environmentLabel, systemImage: "terminal").foregroundStyle(.secondary)
                     }
                     ForEach(contexts.contexts) { c in
                         HStack(spacing: 7) {

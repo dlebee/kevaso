@@ -25,6 +25,7 @@
 //	kvo pane watch SILO                        follow a silo's panes (plain text; one way)
 //	kvo pane bundle PANE -o FILE               save an HTML pane's bundle (for the panes app)
 //	kvo approve NAME | kvo deny NAME [--reason R]   answer one (approve on that secret; people only)
+//	kvo plugin search|install|list|upgrade|remove|index …   client plugins; kvo NAME runs one (plugins.go)
 //
 // The cluster comes from --server or $KVO_SERVER (plain HTTP, for `kevasod dev`), otherwise from the
 // kvo config's current context (or --context): TLS with a pinned CA and a client certificate, as
@@ -187,6 +188,9 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if len(args) == 0 {
 		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|pane|create|secret|approve|deny|open|close|login|logout|ctx|ns|auth …")
 		return 2
+	}
+	if code, ok := pluginDispatch(ctx, args, stdin, stdout, stderr); ok { // kvo plugin …, kvo NAME (plugins.go)
+		return code
 	}
 	o, err := parse(args[1:], os.Getenv)
 	if err != nil {
