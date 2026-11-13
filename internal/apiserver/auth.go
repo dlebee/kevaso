@@ -126,6 +126,8 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 		a.Verb, a.Resource = "create", t.kind.Plural+"/token"
 	case t.value:
 		a.Verb = "read-value"
+	case t.answer != "":
+		a.Verb, a.Resource = "create", t.kind.Plural+"/"+t.answer
 	case r.Method == http.MethodGet && t.name == "" && r.URL.Query().Get("watch") == "true":
 		a.Verb = "watch"
 	case r.Method == http.MethodGet && t.name == "":
@@ -170,6 +172,9 @@ func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups [
 	}
 	a := attributes(id, groups, r, t)
 	a.Labels = s.secretLabels(ctx, t)
+	if t.answer != "" {
+		a = s.approvalAttributes(ctx, a, t)
+	}
 	d := p.Authorize(a)
 	if !d.Allowed && t.kind.Kind == "Namespace" && a.Verb == "list" {
 		return true, true, "namespaces you have a role in", nil
@@ -183,6 +188,8 @@ func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups [
 func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
 	switch {
 	case t.value: // values reach hosts only for their own silos, through the broker
+		return false
+	case t.answer != "": // only people answer approvals
 		return false
 	case id.Role == "control-plane" && id.Type == "host":
 		return true

@@ -164,6 +164,10 @@ func runControlPlane(ctx context.Context, args []string) error {
 	fs.Var(&dnsProviders, "dns-provider", "register a program as a DNS provider for acme dns01 solvers: NAME=/path/to/program (repeatable)")
 	certCtrlDir := fs.String("cert-controllers-dir", "/etc/kevaso/cert-controllers", "every program here is a cert-controller, named after its file")
 	dnsDir := fs.String("dns-providers-dir", "/etc/kevaso/dns-providers", "every program here is a DNS provider, named after its file")
+	fs.DurationVar(&cfg.Approvals.DefaultWait, "approval-wait", 10*time.Minute, "how long a silo's request for a person's yes waits when it asks for no time")
+	fs.DurationVar(&cfg.Approvals.MaxWait, "approval-max-wait", time.Hour, "the longest any request for a person's yes may wait")
+	fs.DurationVar(&cfg.Approvals.DefaultFor, "approval-access", 15*time.Minute, "how long approved access lasts when the silo asks for no time")
+	fs.DurationVar(&cfg.Approvals.MaxFor, "approval-max-access", 12*time.Hour, "the longest approved access a silo may ask for")
 	pluginsDir := fs.String("plugins-dir", kplugin.Dir, "provider plugins' sockets: DIR/NAME/plugin.sock (\"\": none)")
 	_ = fs.Parse(args)
 	cfg.ExtraNames = extra

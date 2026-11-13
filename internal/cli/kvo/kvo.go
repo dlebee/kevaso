@@ -17,6 +17,8 @@
 //	        [--write-only] [--allow broker,inject,file,env] [-l KEY=VALUE]…   values never on argv
 //	kvo secret set NAME --from-file F|-        rotate: every silo using it follows
 //	kvo get secret NAME --reveal               the value (read-value; never a write-only secret)
+//	kvo get approvals | kvo watch approvals    silos waiting for a person's yes to use a secret
+//	kvo approve NAME | kvo deny NAME [--reason R]   answer one (approve on that secret; people only)
 //
 // The cluster comes from --server or $KVO_SERVER (plain HTTP, for `kevasod dev`), otherwise from the
 // kvo config's current context (or --context): TLS with a pinned CA and a client certificate, as
@@ -54,6 +56,7 @@ type opts struct {
 	server, context, namespace, output, file string
 	ca                                       string // kvo login: the CA fingerprint to pin
 	duration                                 string // kvo create token
+	reason                                   string // kvo deny / approve
 	all, noBrowser                           bool
 	secret                                   secretOpts
 	sets                                     setOpts
@@ -101,6 +104,8 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.noBrowser = true
 		case "--duration":
 			o.duration, err = val()
+		case "--reason":
+			o.reason, err = val()
 		case "--from-file":
 			o.secret.fromFile, err = val()
 		case "--from-literal":
@@ -152,7 +157,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|scale|reset|protect|create|secret|login|logout|ctx|ns|auth …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|scale|reset|protect|create|secret|approve|deny|login|logout|ctx|ns|auth …")
 		return 2
 	}
 	o, err := parse(args[1:], os.Getenv)
@@ -194,6 +199,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 	case "secret":
 		err = secretCommand(ctx, c, o, stdin, stdout)
+	case "approve", "deny":
+		err = approve(ctx, c, o, args[0], stdout)
 	case "delete":
 		err = del(ctx, c, o, stdout)
 	case "watch":
@@ -582,6 +589,9 @@ func summary(obj meta.Object) string {
 			parts = append(parts, "address="+o.Status.Address)
 		}
 		conds = o.Status.Conditions
+	case *v1.Approval:
+		c := approvalColumns(o, time.Now())
+		parts = append(parts, "silo="+c[0], "secret="+c[1], "use="+c[2], "phase="+c[4], o.Spec.Summary)
 	case *v1.Host:
 		names := make([]string, 0, len(o.Status.Runtimes))
 		for n := range o.Status.Runtimes {
@@ -634,6 +644,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error 
 		head = append(head, "TYPE", "CLUSTER-IP", "PUBLIC-IP", "PORTS", "ENDPOINTS")
 	case "Image":
 		head = append(head, "VERSIONS")
+	case "Approval":
+		head = append(head, "SILO", "SECRET", "USE", "FOR", "PHASE", "WHEN", "ANSWERED-BY")
 	}
 	head = append(head, "AGE")
 	_, _ = fmt.Fprintln(tw, strings.Join(head, "\t"))
@@ -712,6 +724,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error 
 				exp = o.Status.NotAfter.Local().Format("2006-01-02")
 			}
 			row = append(row, strings.Join(o.Spec.Hosts, ","), o.Spec.Issuer, exp, readiness(o.Status.Conditions))
+		case *v1.Approval:
+			row = append(row, approvalColumns(o, time.Now())...)
 		case *v1.SiloSet:
 			inst := fmt.Sprint(o.Spec.Instances)
 			if o.Spec.Standby > 0 {

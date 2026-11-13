@@ -21,9 +21,16 @@ var workloads = []string{"silos", "silosets", "services", "images", "serviceacco
 // Secret powers by role: admins do everything a person can, editors can create and use secrets but
 // never read a value back, viewers see that they exist.
 var (
-	secretsAdmin  = v1.PolicyRule{Verbs: []string{"list", v1.VerbWrite, v1.VerbUse, v1.VerbReadValue}, Resources: []string{"secrets"}}
+	secretsAdmin  = v1.PolicyRule{Verbs: []string{"list", v1.VerbWrite, v1.VerbUse, v1.VerbReadValue, v1.VerbApprove}, Resources: []string{"secrets"}}
 	secretsEditor = v1.PolicyRule{Verbs: []string{"list", v1.VerbWrite, v1.VerbUse}, Resources: []string{"secrets"}}
 	secretsViewer = v1.PolicyRule{Verbs: []string{"list"}, Resources: []string{"secrets"}}
+)
+
+// Approvals (design §8.7): everyone with a role in the namespace sees the queue; admins also answer
+// (approve on secrets, above) and clear old ones. Nobody creates them: the broker does.
+var (
+	approvalsRead  = v1.PolicyRule{Verbs: read, Resources: []string{"approvals"}}
+	approvalsAdmin = v1.PolicyRule{Verbs: []string{"get", "list", "watch", "delete"}, Resources: []string{"approvals"}}
 )
 
 // BuiltinRoles are the roles of design §9.3: cluster-admin (everything), admin (a namespace, its
@@ -39,12 +46,12 @@ func BuiltinRoles() []*v1.ClusterRole {
 		mk("admin",
 			v1.PolicyRule{Verbs: write, Resources: slices.Concat(workloads, []string{"roles", "rolebindings"})},
 			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "serviceaccounts/token", "services/expose-public", "ingresses/publish-public"}},
-			secretsAdmin),
+			secretsAdmin, approvalsAdmin),
 		mk("editor",
 			v1.PolicyRule{Verbs: write, Resources: workloads},
 			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "serviceaccounts/token"}},
-			secretsEditor),
-		mk("viewer", v1.PolicyRule{Verbs: read, Resources: workloads}, secretsViewer),
+			secretsEditor, approvalsRead),
+		mk("viewer", v1.PolicyRule{Verbs: read, Resources: workloads}, secretsViewer, approvalsRead),
 		mk("runner", v1.PolicyRule{Verbs: []string{"get", "list", "watch", "create"}, Resources: []string{"runs"}}),
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -102,6 +103,9 @@ type env struct {
 	up     *upstream
 	dstMu  sync.Mutex
 	logged []string
+	// approval makes the injection need a person's yes; ask answers for it.
+	approval bool
+	ask      func(secret, host, method, path string) error
 }
 
 func setup(t *testing.T, cidrPort string) *env {
@@ -125,7 +129,15 @@ func setup(t *testing.T, cidrPort string) *env {
 			return pol, ip.IsLoopback()
 		},
 		Injections: func(context.Context, string) (map[string]Injection, error) {
-			return map[string]Injection{"api.allowed.test": {Header: "Authorization", Value: "Bearer sk-test-123"}}, nil
+			e.dstMu.Lock()
+			defer e.dstMu.Unlock()
+			return map[string]Injection{"api.allowed.test": {Header: "Authorization", Value: "Bearer sk-test-123", Approval: e.approval, Secret: "key"}}, nil
+		},
+		Ask: func(_ context.Context, key, secret, host, method, path string) error {
+			if key != "dev/claude-1" {
+				return fmt.Errorf("asked for %s", key)
+			}
+			return e.ask(secret, host, method, path)
 		},
 		OrigDst: func(net.Conn) (netip.AddrPort, error) {
 			e.dstMu.Lock()
@@ -302,5 +314,37 @@ func TestGateCIDRPassthrough(t *testing.T) {
 	line, err := bufio.NewReader(c).ReadString('\n')
 	if err != nil || line != "hello\n" {
 		t.Fatalf("CIDR passthrough: %q %v", line, err)
+	}
+}
+
+// An injection that needs a person's yes asks before each request, with what the request is, and
+// a no (or no answer) refuses that request without the secret (design §8.7).
+func TestGateAsksBeforeAGatedInjection(t *testing.T) {
+	e := setup(t, "9")
+	var asked []string
+	answer := errors.New("approval dev/claude-1-1234: denied by bob")
+	e.dstMu.Lock()
+	e.approval = true
+	e.ask = func(secret, host, method, path string) error {
+		asked = append(asked, secret+" "+method+" "+host+path)
+		return answer
+	}
+	e.dstMu.Unlock()
+	if _, code, err := e.get("api.allowed.test", e.silo, "", ""); err != nil || code != http.StatusForbidden {
+		t.Fatalf("denied request: %d %v", code, err)
+	}
+	answer = nil
+	got, code, err := e.get("api.allowed.test", e.silo, "", "")
+	if err != nil || code != 200 || got["auth"] != "Bearer sk-test-123" {
+		t.Fatalf("approved request: %v %d %v", got, code, err)
+	}
+	if len(asked) != 2 || asked[0] != "key GET api.allowed.test/v1/models" {
+		t.Fatalf("asked %v", asked)
+	}
+	e.dstMu.Lock()
+	log := strings.Join(e.logged, "\n")
+	e.dstMu.Unlock()
+	if !strings.Contains(log, "denied by bob") || strings.Contains(log, "sk-test-123") {
+		t.Fatalf("log:\n%s", log)
 	}
 }

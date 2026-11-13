@@ -47,6 +47,9 @@ type Policy struct {
 // Injection is a header to set for a host.
 type Injection struct {
 	Header, Value string
+	// Approval: every request first needs a person's yes (design §8.7); Secret names it.
+	Approval bool
+	Secret   string
 }
 
 // PolicyFor builds a silo's gate policy from its grants. Pure.
@@ -141,6 +144,9 @@ type Gate struct {
 	Silo func(ip netip.Addr) (Policy, bool)
 	// Injections gives the headers to add for a silo, by host (fetched from the control plane).
 	Injections func(ctx context.Context, siloKey string) (map[string]Injection, error)
+	// Ask, for an injection that needs a person's yes, waits until this request may have the
+	// secret: nil once approved, an error when denied, expired or not possible.
+	Ask func(ctx context.Context, siloKey, secret, host, method, path string) error
 	// OrigDst is where the client meant to go (SO_ORIGINAL_DST after an nftables redirect).
 	OrigDst func(net.Conn) (netip.AddrPort, error)
 	// Dial reaches the outside; Resolve is used for names (default: the system's).
@@ -303,6 +309,19 @@ func (g *Gate) inject(ctx context.Context, c net.Conn, hello []byte, p Policy, s
 			g.log("gate: BLOCKED %s: Host %q over TLS for %q", p.Key, r.Host, sni)
 			http.Error(w, "egress not allowed", http.StatusForbidden)
 			return
+		}
+		if in.Approval {
+			var err error
+			if g.Ask == nil {
+				err = errors.New("this gate can't ask for approvals")
+			} else {
+				err = g.Ask(r.Context(), p.Key, in.Secret, sni, r.Method, r.URL.Path)
+			}
+			if err != nil {
+				g.log("gate: BLOCKED %s %s %s%s: %v", p.Key, r.Method, sni, r.URL.Path, err)
+				http.Error(w, "egress needs a person's yes: "+err.Error(), http.StatusForbidden)
+				return
+			}
 		}
 		g.log("gate: ALLOWED %s %s %s%s (%s injected)", p.Key, r.Method, sni, r.URL.Path, in.Header)
 		proxy.ServeHTTP(w, r)

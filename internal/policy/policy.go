@@ -80,6 +80,10 @@ func For(s *v1.Silo, grants []*v1.Grant, injections []client.Injection) (kri.Pol
 		}
 	}
 	for _, in := range injections {
+		if in.Approval { // OpenShell holds the credential itself: no request could wait for a yes
+			problems = append(problems, fmt.Sprintf("secret %s: approval works through Kevaso's egress gate; %s injects by itself, so it can't ask before each use", in.Secret, s.Spec.Runtime))
+			continue
+		}
 		c := kri.Credential{Name: in.Secret, Env: in.Env, Host: in.Host, Header: in.Header, Value: in.Raw, Version: in.Version}
 		switch {
 		case strings.EqualFold(in.Header, "Authorization") && in.Format == "Bearer {{value}}":
@@ -127,7 +131,7 @@ func Check(s *v1.Silo, grants []*v1.Grant) []string {
 			if format == "" {
 				format = "Bearer {{value}}"
 			}
-			inj = append(inj, client.Injection{Host: sec.To.Host, Header: header, Format: format, Secret: sec.Name})
+			inj = append(inj, client.Injection{Host: sec.To.Host, Header: header, Format: format, Secret: sec.Name, Approval: sec.NeedsApproval()})
 		}
 	}
 	_, problems := For(s, grants, inj)

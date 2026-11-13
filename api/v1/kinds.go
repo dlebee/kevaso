@@ -41,6 +41,7 @@ func init() {
 	register(KindInfo{Kind: "Image", Plural: "images", ShortNames: []string{"img"}, Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Image{} }})
 	register(KindInfo{Kind: "SiloSet", Plural: "silosets", ShortNames: []string{"ss"}, Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &SiloSet{} }})
 	register(KindInfo{Kind: "Service", Plural: "services", ShortNames: []string{"svc"}, Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Service{} }})
+	register(KindInfo{Kind: "Approval", Plural: "approvals", Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Approval{} }})
 	register(KindInfo{Kind: "ServiceAccount", Plural: "serviceaccounts", ShortNames: []string{"sa"}, Scope: Namespaced, New: func() meta.Object { return &ServiceAccount{} }})
 }
 

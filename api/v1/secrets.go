@@ -137,6 +137,8 @@ type GrantSecret struct {
 	Path string `json:"path,omitempty"`
 	// Env: the variable name (default: the secret's name, upper-cased, - → _).
 	Env string `json:"env,omitempty"`
+	// Approval: each use waits for a person's yes (broker, inject; never file or env, §8.7).
+	Approval *ApprovalRule `json:"approval,omitempty"`
 }
 
 // InjectTarget is a destination the gate adds a secret to.
@@ -156,6 +158,8 @@ type SignOperation struct {
 	KeyRef string `json:"keyRef"`
 	// SlashingProtection refuses to sign a second, different payload for the same slot.
 	SlashingProtection bool `json:"slashingProtection,omitempty"`
+	// Approval: signing waits for a person's yes (§8.7).
+	Approval *ApprovalRule `json:"approval,omitempty"`
 }
 
 // GrantRequires is what the asking silo must prove.

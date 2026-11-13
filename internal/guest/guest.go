@@ -2,8 +2,13 @@
 // host's secret broker over vsock and nothing more: it can't raise what the silo may have, since
 // every decision is made on the host and the control plane.
 //
-//	kvo-guest secret get NAME           print a secret's value (grants with deliver: broker)
-//	kvo-guest sign KEY [--slot N]       sign stdin with a key that never enters the silo; prints hex
+//	kvo-guest secret get NAME [--for D] [--wait D]   print a secret's value (grants with deliver: broker)
+//	kvo-guest sign KEY [--slot N] [--for D] [--wait D]   sign stdin with a key that never enters the silo; prints hex
+//
+// When the grant says a use needs a person's yes (approval: required), the command waits, saying
+// which approval it waits on, until someone answers or the request expires: --for is the access
+// asked for once approved, --wait how long to wait (the cluster's defaults otherwise).
+//
 //	kvo-guest public-key KEY            the key's public half, hex
 //	kvo-guest sync [--once]             write file and env deliveries, and keep them up to date
 //	kvo-guest ingress [--install]       be an ingress controller (--install: as a service, in a VM)
@@ -76,9 +81,65 @@ func Call(ctx context.Context, dial Dialer, req client.BrokerRequest) (client.Br
 	return resp, nil
 }
 
+// PollEvery is how often a call waiting for a person's yes asks again.
+var PollEvery = 2 * time.Second
+
+// Ask sends a request and, while it waits for a person's yes, asks again every interval with the
+// pending approval's name (which doesn't replace it), until it's answered or expires. waiting is
+// told once which approval it waits on.
+func Ask(ctx context.Context, dial Dialer, req client.BrokerRequest, interval time.Duration, waiting func(client.ApprovalWait)) (client.BrokerResponse, error) {
+	told := ""
+	for {
+		resp, err := Call(ctx, dial, req)
+		if err != nil || resp.Pending == nil {
+			return resp, err
+		}
+		if resp.Pending.Name != told && waiting != nil {
+			waiting(*resp.Pending)
+			told = resp.Pending.Name
+		}
+		req.Approval = resp.Pending.Name
+		select {
+		case <-ctx.Done():
+			return client.BrokerResponse{}, fmt.Errorf("stopped waiting for approval %s: %w", resp.Pending.Name, ctx.Err())
+		case <-time.After(interval):
+		}
+	}
+}
+
+// waiting tells the person at the silo what to ask for.
+func waiting(w io.Writer) func(client.ApprovalWait) {
+	return func(a client.ApprovalWait) {
+		_, _ = fmt.Fprintf(w, "kvo-guest: waiting for a person's yes: kvo approve %s -n %s (expires %s)\n",
+			a.Name, a.Namespace, a.ExpiresAt.Local().Format(time.Kitchen))
+	}
+}
+
+// approvalFlags reads --for D and --wait D.
+func approvalFlags(req *client.BrokerRequest, args []string) error {
+	for len(args) > 0 {
+		if len(args) < 2 {
+			return fmt.Errorf("%s needs a value", args[0])
+		}
+		switch args[0] {
+		case "--for":
+			req.For = args[1]
+		case "--wait":
+			req.Wait = args[1]
+		default:
+			return fmt.Errorf("unknown flag %s", args[0])
+		}
+		if _, err := time.ParseDuration(args[1]); err != nil {
+			return fmt.Errorf("%s %q: %v", args[0], args[1], err)
+		}
+		args = args[2:]
+	}
+	return nil
+}
+
 // Main runs kvo-guest with its arguments (after the program name).
 func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	err := run(ctx, DefaultDialer, "/", args, stdin, stdout)
+	err := run(ctx, DefaultDialer, "/", args, stdin, stdout, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "kvo-guest:", err)
 		return 1
@@ -86,17 +147,21 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 	return 0
 }
 
-func run(ctx context.Context, dial Dialer, root string, args []string, stdin io.Reader, stdout io.Writer) error {
-	usage := errors.New("usage: kvo-guest secret get NAME | sign KEY [--slot N] < payload | public-key KEY | sync [--once] | ingress [--install]")
+func run(ctx context.Context, dial Dialer, root string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	usage := errors.New("usage: kvo-guest secret get NAME [--for D] [--wait D] | sign KEY [--slot N] [--for D] [--wait D] < payload | public-key KEY | sync [--once] | ingress [--install]")
 	if len(args) == 0 {
 		return usage
 	}
 	switch args[0] {
 	case "secret":
-		if len(args) != 3 || args[1] != "get" {
+		if len(args) < 3 || args[1] != "get" {
 			return usage
 		}
-		resp, err := Call(ctx, dial, client.BrokerRequest{Op: client.OpGetSecret, Name: args[2]})
+		req := client.BrokerRequest{Op: client.OpGetSecret, Name: args[2]}
+		if err := approvalFlags(&req, args[3:]); err != nil {
+			return err
+		}
+		resp, err := Ask(ctx, dial, req, PollEvery, waiting(stderr))
 		if err != nil {
 			return err
 		}
@@ -104,26 +169,27 @@ func run(ctx context.Context, dial Dialer, root string, args []string, stdin io.
 		_, err = stdout.Write(resp.Value)
 		return err
 	case "sign":
-		if len(args) != 2 && len(args) != 4 {
+		if len(args) < 2 {
 			return usage
 		}
 		req := client.BrokerRequest{Op: client.OpSign, Name: args[1]}
-		if len(args) == 4 {
-			if args[2] != "--slot" {
-				return usage
-			}
-			n, err := strconv.ParseInt(args[3], 10, 64)
+		rest := args[2:]
+		if len(rest) >= 2 && rest[0] == "--slot" {
+			n, err := strconv.ParseInt(rest[1], 10, 64)
 			if err != nil {
-				return fmt.Errorf("--slot %q: %w", args[3], err)
+				return fmt.Errorf("--slot %q: %w", rest[1], err)
 			}
-			req.Slot = &n
+			req.Slot, rest = &n, rest[2:]
+		}
+		if err := approvalFlags(&req, rest); err != nil {
+			return err
 		}
 		payload, err := io.ReadAll(io.LimitReader(stdin, 512<<10))
 		if err != nil {
 			return err
 		}
 		req.Payload = payload
-		resp, err := Call(ctx, dial, req)
+		resp, err := Ask(ctx, dial, req, PollEvery, waiting(stderr))
 		if err != nil {
 			return err
 		}

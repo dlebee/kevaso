@@ -1,0 +1,94 @@
+package guest
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"net"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"kevaso.com/core/api/client"
+)
+
+// fakeBroker answers each connection with the next of its answers, recording the requests.
+type fakeBroker struct {
+	mu      sync.Mutex
+	answers []client.BrokerResponse
+	got     []client.BrokerRequest
+}
+
+func (f *fakeBroker) dial(context.Context) (net.Conn, error) {
+	a, b := net.Pipe()
+	go func() {
+		defer func() { _ = b.Close() }()
+		sc := bufio.NewScanner(b)
+		if !sc.Scan() {
+			return
+		}
+		var req client.BrokerRequest
+		_ = json.Unmarshal(sc.Bytes(), &req)
+		f.mu.Lock()
+		f.got = append(f.got, req)
+		resp := f.answers[0]
+		if len(f.answers) > 1 {
+			f.answers = f.answers[1:]
+		}
+		f.mu.Unlock()
+		_ = json.NewEncoder(b).Encode(resp)
+	}()
+	return a, nil
+}
+
+func TestAskWaitsForTheYesWithoutReplacingTheRequest(t *testing.T) {
+	wait := &client.ApprovalWait{Namespace: "agents", Name: "claude-1-ab12cd34", ExpiresAt: time.Now().Add(time.Minute)}
+	f := &fakeBroker{answers: []client.BrokerResponse{{Pending: wait}, {Pending: wait}, {Value: []byte("tok")}}}
+	var told []string
+	resp, err := Ask(context.Background(), f.dial, client.BrokerRequest{Op: client.OpGetSecret, Name: "gh", For: "30m"}, time.Millisecond,
+		func(a client.ApprovalWait) { told = append(told, a.Name) })
+	if err != nil || string(resp.Value) != "tok" {
+		t.Fatalf("Ask = %q, %v", resp.Value, err)
+	}
+	if len(f.got) != 3 || f.got[0].Approval != "" || f.got[1].Approval != wait.Name || f.got[2].Approval != wait.Name || f.got[2].For != "30m" {
+		t.Fatalf("requests %+v: the first asks, the rest poll by name", f.got)
+	}
+	if len(told) != 1 {
+		t.Fatalf("told %v, want once", told)
+	}
+}
+
+func TestAskReportsADenial(t *testing.T) {
+	wait := &client.ApprovalWait{Namespace: "agents", Name: "a"}
+	f := &fakeBroker{answers: []client.BrokerResponse{{Pending: wait}, {Error: "approval a: denied by bob"}}}
+	if _, err := Ask(context.Background(), f.dial, client.BrokerRequest{Op: client.OpSign, Name: "k"}, time.Millisecond, nil); err == nil || !strings.Contains(err.Error(), "denied by bob") {
+		t.Fatalf("Ask = %v", err)
+	}
+}
+
+func TestAskStopsWithTheContext(t *testing.T) {
+	f := &fakeBroker{answers: []client.BrokerResponse{{Pending: &client.ApprovalWait{Name: "a"}}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := Ask(ctx, f.dial, client.BrokerRequest{Op: client.OpGetSecret, Name: "x"}, 5*time.Millisecond, nil); err == nil || !strings.Contains(err.Error(), "stopped waiting") {
+		t.Fatalf("Ask = %v", err)
+	}
+}
+
+func TestSecretGetFlags(t *testing.T) {
+	f := &fakeBroker{answers: []client.BrokerResponse{{Value: []byte("v")}}}
+	var out, errs bytes.Buffer
+	if err := run(context.Background(), f.dial, "/", []string{"secret", "get", "gh", "--for", "5m", "--wait", "2m"}, nil, &out, &errs); err != nil || out.String() != "v" {
+		t.Fatalf("run = %q, %v", out.String(), err)
+	}
+	if f.got[0].For != "5m" || f.got[0].Wait != "2m" {
+		t.Fatalf("request %+v", f.got[0])
+	}
+	for _, bad := range [][]string{{"secret", "get", "gh", "--for"}, {"secret", "get", "gh", "--for", "soon"}, {"secret", "get", "gh", "--nope", "1m"}} {
+		if err := run(context.Background(), f.dial, "/", bad, nil, &out, &errs); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
+	}
+}

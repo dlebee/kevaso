@@ -22,6 +22,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kcc/acme"
 	"kevaso.com/core/internal/apiserver"
+	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/audit"
 	"kevaso.com/core/internal/backup"
 	"kevaso.com/core/internal/clock"
@@ -70,7 +71,9 @@ type Config struct {
 	// Plugins are the provider plugins (load balancers, volumes, DNS); nil: none. kevasod watches
 	// kplugin.Dir for them.
 	Plugins *plugins.Registry
-	Log     func(format string, args ...any)
+	// Approvals: how long requests for a person's yes wait, and how long access may last (§8.7).
+	Approvals approvals.Limits
+	Log       func(format string, args ...any)
 }
 
 func (c *Config) defaults() {
@@ -149,6 +152,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("kms: %w", err)
 	}
+	srv.SetApprovalLimits(cfg.Approvals)
 	srv.SetVault(&secrets.Vault{Store: st, KMS: localKMS, Now: cfg.Clock.Now})
 	srv.SetKMSAdmin(localKMS)
 	srv.SetBackup(func(ctx context.Context, pub []byte) ([]byte, error) {
@@ -187,6 +191,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	hbCtx, stopHB := context.WithCancel(ctx)
 	go heartbeat(hbCtx, admin, cfg)
 	go runControllers(hbCtx, admin, cfg, certDeps{store: st, kms: localKMS, ca: ca})
+	go expireApprovals(hbCtx, srv, cfg)
 	if cfg.Mesh {
 		m := &mesh.Agent{Client: admin, HostName: cfg.HostName, Dir: filepath.Join(cfg.DataDir, "mesh"), Log: cfg.Log}
 		go func() {
@@ -229,6 +234,22 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	}()
 	cfg.Log("API on https://%s, admin socket %s", r.APIAddr, cfg.AdminSocket)
 	return r, nil
+}
+
+// expireApprovals marks requests for a person's yes that nobody answered in time.
+func expireApprovals(ctx context.Context, srv *apiserver.Server, cfg Config) {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := srv.ExpireApprovals(ctx); err != nil && ctx.Err() == nil {
+				cfg.Log("approvals: %v", err)
+			}
+		}
+	}
 }
 
 // runControllers starts the built-in controllers on informers fed through the admin socket.

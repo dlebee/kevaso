@@ -107,7 +107,7 @@ func (e *egress) injections(ctx context.Context, key string) (map[string]gate.In
 	}
 	byHost := map[string]gate.Injection{}
 	for _, in := range resp.Injections {
-		byHost[in.Host] = gate.Injection{Header: in.Header, Value: in.Value}
+		byHost[in.Host] = gate.Injection{Header: in.Header, Value: in.Value, Approval: in.Approval, Secret: in.Secret}
 	}
 	e.mu.Lock()
 	if e.injected == nil {
@@ -116,6 +116,49 @@ func (e *egress) injections(ctx context.Context, key string) (map[string]gate.In
 	e.injected[key] = cachedInjections{uid: silo.UID, at: time.Now(), byHost: byHost}
 	e.mu.Unlock()
 	return byHost, nil
+}
+
+// askEvery is how often a request waiting for a person's yes asks again.
+var askEvery = 2 * time.Second
+
+// ask waits until a request may have an injected secret that needs a person's yes (design §8.7):
+// it asks the control plane, then keeps asking with the pending approval's name until it's
+// answered, expires, or the silo gives up on the request.
+func (e *egress) ask(ctx context.Context, key, secret, host, method, path string) error {
+	var silo *v1.Silo
+	for _, s := range e.silos() {
+		if s.Namespace+"/"+s.Name == key && s.Status.Host == e.hostName {
+			silo = s
+		}
+	}
+	if silo == nil {
+		return fmt.Errorf("%s isn't on this host", key)
+	}
+	req := client.BrokerRequest{Op: client.OpAskInject, Name: secret, Host: host, Method: method, Path: path}
+	told := ""
+	for {
+		var resp client.BrokerResponse
+		err := e.c.Call(ctx, http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{
+			Namespace: silo.Namespace, Name: silo.Name, UID: silo.UID, Host: e.hostName, Request: req}, &resp)
+		switch {
+		case err != nil:
+			return err
+		case resp.Error != "":
+			return fmt.Errorf("%s", resp.Error)
+		case resp.Pending == nil:
+			return nil
+		}
+		if told != resp.Pending.Name {
+			e.log("egress gate: %s %s https://%s%s waits for approval %s/%s", key, method, host, path, resp.Pending.Namespace, resp.Pending.Name)
+			told = resp.Pending.Name
+		}
+		req.Approval = resp.Pending.Name
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("stopped waiting for approval %s: %w", resp.Pending.Name, ctx.Err())
+		case <-time.After(askEvery):
+		}
+	}
 }
 
 // run serves the gate on the bridge's gateway until ctx ends.
@@ -145,6 +188,7 @@ func (e *egress) run(ctx context.Context) {
 			return gate.PolicyFor(s, e.grants()), true
 		},
 		Injections: e.injections,
+		Ask:        e.ask,
 		OrigDst:    gate.OriginalDst,
 		Upstream:   e.upstream,
 		Log:        e.log,

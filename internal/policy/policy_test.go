@@ -70,3 +70,18 @@ func TestCheck(t *testing.T) {
 		t.Error("SelfEnforced")
 	}
 }
+
+// A credential that needs a person's yes can't be handed to a runtime that injects by itself: it's
+// left out, and the problem says why (design §8.7).
+func TestApprovalInjectionsStayOutOfSelfEnforcedPolicies(t *testing.T) {
+	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "agent"}, Spec: v1.SiloSpec{Runtime: "openshell", Grants: []string{"admin"}}}
+	grants := []*v1.Grant{grant("admin", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "gh-admin", Deliver: v1.DeliverInject,
+		To: &v1.InjectTarget{Host: "api.github.com"}, Approval: &v1.ApprovalRule{Required: true}}}})}
+	p, problems := For(s, grants, []client.Injection{{Host: "api.github.com", Header: "Authorization", Format: "Bearer {{value}}", Raw: []byte("x"), Secret: "gh-admin", Approval: true}})
+	if len(p.Credentials) != 0 || len(problems) != 1 || !strings.Contains(problems[0], "approval") {
+		t.Fatalf("credentials %v, problems %v", p.Credentials, problems)
+	}
+	if got := Check(s, grants); len(got) != 1 || !strings.Contains(got[0], "approval") {
+		t.Fatalf("Check = %v", got)
+	}
+}

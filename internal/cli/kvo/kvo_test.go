@@ -79,3 +79,23 @@ func TestDescribeHost(t *testing.T) {
 		}
 	}
 }
+
+func TestApprovalColumns(t *testing.T) {
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	a := &v1.Approval{Spec: v1.ApprovalSpec{Silo: "claude-1", Secret: "gh-admin", Use: v1.ApprovalForInject, For: "30m0s", ExpiresAt: now.Add(5 * time.Minute)},
+		Status: v1.ApprovalStatus{Phase: v1.ApprovalPending}}
+	if got := strings.Join(approvalColumns(a, now), "|"); got != "claude-1|gh-admin|inject|30m0s|Pending|expires in 5m0s|-" {
+		t.Fatalf("pending: %s", got)
+	}
+	if got := approvalColumns(a, now.Add(5*time.Minute)); got[4] != v1.ApprovalExpired {
+		t.Fatalf("pending past its time shows %s", got[4])
+	}
+	until := now.Add(30 * time.Minute)
+	a.Status = v1.ApprovalStatus{Phase: v1.ApprovalApproved, AnsweredBy: "alice", AccessUntil: &until}
+	if got := approvalColumns(a, now); got[4] != v1.ApprovalApproved || got[6] != "alice" || !strings.HasPrefix(got[5], "until ") {
+		t.Fatalf("approved: %v", got)
+	}
+	if got := approvalColumns(a, until); got[4] != "Used" {
+		t.Fatalf("after access: %v", got)
+	}
+}

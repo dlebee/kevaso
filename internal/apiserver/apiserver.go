@@ -30,6 +30,7 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/rbac"
 	"kevaso.com/core/internal/secrets"
@@ -52,6 +53,8 @@ type Server struct {
 	vault    *secrets.Vault // nil: no KMS, secrets can't hold values
 	kmsAdmin KMSAdmin
 	backup   func(context.Context, []byte) ([]byte, error)
+
+	approvalLimits approvals.Limits
 }
 
 // New returns a server over a store, without authentication (kevasod dev, tests).
@@ -63,7 +66,7 @@ func NewWithAuth(s store.Store, c clock.Clock, auth *Auth) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	srv := &Server{store: s, clock: c, valid: v, mux: http.NewServeMux(), auth: auth}
+	srv := &Server{store: s, clock: c, valid: v, mux: http.NewServeMux(), auth: auth, approvalLimits: approvals.Limits{}.WithDefaults()}
 	srv.tunnels.sess = map[string]*yamux.Session{}
 	srv.policy = &rbac.Source{Store: s}
 	if auth != nil {
@@ -131,9 +134,10 @@ type target struct {
 	namespace string
 	name      string
 	status    bool
-	exec      bool // a silo's /exec
-	token     bool // a service account's /token
-	value     bool // a secret's /value
+	exec      bool   // a silo's /exec
+	token     bool   // a service account's /token
+	value     bool   // a secret's /value
+	answer    string // an approval's /approve or /deny
 }
 
 func parsePath(path string) (target, error) {
@@ -165,6 +169,8 @@ func parsePath(path string) (target, error) {
 		t.token = true
 	case len(parts) == 3 && parts[2] == "value" && k.Kind == "Secret":
 		t.value = true
+	case len(parts) == 3 && (parts[2] == "approve" || parts[2] == "deny") && k.Kind == "Approval":
+		t.answer = parts[2]
 	case len(parts) > 2:
 		return t, errf(http.StatusNotFound, "NotFound", "unknown path %q", path)
 	}
@@ -189,6 +195,10 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.serviceAccountToken(w, r, t)
 	case t.value && r.Method == http.MethodGet:
 		s.secretValue(ctx, w, t)
+	case t.answer != "":
+		s.answerApproval(w, r, t)
+	case t.kind.Kind == "Approval" && (r.Method == http.MethodPost || r.Method == http.MethodPut) && !internal(ctx):
+		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "approvals are made by the broker when a silo asks; answer one with kvo approve or kvo deny"))
 	case t.value:
 		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "%s %s: set a value with an update of the secret", r.Method, r.URL.Path))
 	case r.Method == http.MethodGet && t.name == "" && r.URL.Query().Get("watch") == "true":
