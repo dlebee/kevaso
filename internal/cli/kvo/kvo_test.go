@@ -122,3 +122,23 @@ func TestPaneLine(t *testing.T) {
 		}
 	}
 }
+
+// kvo get KIND -o json is an array however many there are (E2E: a script reading leases broke
+// when there was just one, printed as a bare object); kvo get KIND NAME -o json is the object.
+func TestPrintJSONShape(t *testing.T) {
+	for _, tc := range []struct {
+		objs  []meta.Object
+		list  bool
+		first byte
+	}{
+		{nil, true, '['}, {[]meta.Object{silo()}, true, '['}, {[]meta.Object{silo(), silo()}, true, '['}, {[]meta.Object{silo()}, false, '{'},
+	} {
+		var b bytes.Buffer
+		if err := printJSON(&b, tc.objs, tc.list); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(b.String()); got == "" || got[0] != tc.first {
+			t.Errorf("%d objects, list %v: %.40q", len(tc.objs), tc.list, got)
+		}
+	}
+}
