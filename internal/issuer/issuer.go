@@ -49,6 +49,8 @@ const (
 	PathAuthorize = client.PathAuthorize
 	PathLogin     = client.PathLogin
 	PathToken     = client.PathToken
+	// PathRevoke ends a session (RFC 7009): a client signing out hands back its refresh token.
+	PathRevoke = "/oidc/revoke"
 )
 
 // Issuer issues and verifies tokens.
@@ -383,6 +385,7 @@ func (i *Issuer) Handler() http.Handler {
 	mux.HandleFunc(PathAuthorize, i.authorize)
 	mux.HandleFunc(PathLogin, i.login)
 	mux.HandleFunc(PathToken, i.token)
+	mux.HandleFunc(PathRevoke, i.revoke)
 	return mux
 }
 
@@ -398,6 +401,7 @@ func (i *Issuer) discovery(w http.ResponseWriter, _ *http.Request) {
 		"issuer":                                i.URL,
 		"authorization_endpoint":                i.URL + PathAuthorize,
 		"token_endpoint":                        i.URL + PathToken,
+		"revocation_endpoint":                   i.URL + PathRevoke,
 		"jwks_uri":                              i.URL + PathKeys,
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
@@ -652,4 +656,48 @@ func (i *Issuer) refresh(w http.ResponseWriter, r *http.Request, tok string) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// revoke ends the session a refresh token belongs to (RFC 7009), for clients that sign out. Only
+// the holder of the current or the previous refresh token of a session can end it; anything else
+// (unknown, malformed or already ended) is answered 200 as well, so the endpoint tells nothing.
+// Access tokens aren't revocable here: they expire in minutes, and ending their session stops
+// them at once anyway (Verify checks the session).
+func (i *Issuer) revoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		tokenErr(w, http.StatusMethodNotAllowed, "invalid_request", "POST only")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	if err := r.ParseForm(); err != nil {
+		tokenErr(w, http.StatusBadRequest, "invalid_request", "bad form")
+		return
+	}
+	f := r.PostForm
+	client := f.Get("client_id")
+	if u, _, ok := r.BasicAuth(); ok && client == "" {
+		client = u
+	}
+	if client != ClientID {
+		tokenErr(w, http.StatusUnauthorized, "invalid_client", "unknown client")
+		return
+	}
+	tok := f.Get("token")
+	if tok == "" {
+		tokenErr(w, http.StatusBadRequest, "invalid_request", "token is required")
+		return
+	}
+	if sid, secret, ok := split(tok, "kvr_"); ok {
+		ctx := r.Context()
+		key := store.Key{Kind: KindSession, Name: sid}
+		var s session
+		if rev, err := getJSON(ctx, i.Store, key, &s); err == nil &&
+			(sameHash(secret, s.RefreshHash) || (s.PrevHash != "" && sameHash(secret, s.PrevHash))) {
+			if _, err := i.Store.Delete(ctx, key, rev); err == nil {
+				i.record(r, "sign-out", s.User, true, "session "+sid+" revoked by its client")
+			}
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
 }
