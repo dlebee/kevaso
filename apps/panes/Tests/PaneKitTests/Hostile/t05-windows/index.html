@@ -1,0 +1,20 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script></head><body style="margin:0">
+<a id=a target=_blank href="__C__/t05/target-blank" style="display:block;width:100vw;height:100vh;background:#322;color:#eee">t05 click</a>
+<script>
+(async()=>{
+await T('window.open-no-gesture',()=>String(window.open('__C__/t05/open-no-gesture')));
+await T('top.location',()=>{top.location='__C__/t05/top-location';return 'set'});
+document.getElementById('a').addEventListener('click',()=>{
+  R('click','user click');
+  try{R('window.open-with-gesture',String(window.open('__C__/t05/open-gesture')))}catch(e){R('window.open-with-gesture','blocked '+e)}
+  try{R('window.open-own-pane',String(window.open('kvpane://p-t05-windows/index.html')))}catch(e){R('window.open-own-pane','blocked '+e)}
+});
+setTimeout(()=>R('done','t05'),3000);
+})();
+</script></body></html>

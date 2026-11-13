@@ -1,0 +1,8 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script></head><body>t10b<script>window.__report=['started'];const keep=[];
+setTimeout(function grow(){if(keep.length>=300){window.__report=['capped at '+keep.length+' arrays (~2.4 GB)'];return}for(let i=0;i<20;i++)keep.push(new Array(1e6).fill(i));const d=document.createElement('div');d.innerHTML='<span>x</span>'.repeat(20000);document.body.append(d);window.__report=['arrays '+keep.length];setTimeout(grow,10)},300)</script></body></html>

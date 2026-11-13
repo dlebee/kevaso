@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script></head><body style="margin:0;background:#0d1017"><canvas id=c width=300 height=180></canvas><script>
+let data={progress:0,label:'waiting'},frames=0,updates=0;
+window.kvoUpdate=d=>{data=d;updates++};
+const c=document.getElementById('c').getContext('2d');
+function draw(t){frames++;c.fillStyle='#0d1017';c.fillRect(0,0,300,180);
+ c.fillStyle='#3cc7b4';c.fillRect(20,90,260*data.progress,18);c.strokeStyle='#3a4458';c.strokeRect(20,90,260,18);
+ c.fillStyle='#e9edf5';c.font='14px -apple-system';c.fillText('legit pane · '+data.label,20,60);
+ c.beginPath();c.arc(150+90*Math.cos(t/400),140,6,0,7);c.fill();requestAnimationFrame(draw)}
+requestAnimationFrame(draw);
+setInterval(()=>{window.__report=['frames: '+frames,'updates: '+updates,'last: '+JSON.stringify(data)]},100);
+</script></body></html>

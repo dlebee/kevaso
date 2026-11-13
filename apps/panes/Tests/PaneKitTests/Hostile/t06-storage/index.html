@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script></head><body>t06<script>
+(async()=>{
+R('origin',location.origin);
+R('seen-localStorage',String(localStorage.getItem('e034')));
+R('seen-sessionStorage',String(sessionStorage.getItem('e034')));
+R('seen-cookie',JSON.stringify(document.cookie));
+await T('seen-indexedDB',()=>new Promise((ok,no)=>{const r=indexedDB.open('e034',1);r.onupgradeneeded=()=>r.result.createObjectStore('s');r.onsuccess=()=>{const tx=r.result.transaction('s','readonly').objectStore('s').get('k');tx.onsuccess=()=>ok(String(tx.result));tx.onerror=()=>no(tx.error)};r.onerror=()=>no(r.error)}));
+await T('seen-cacheStorage',async()=>window.caches?(await caches.keys()).join(','):'no caches API');
+const mark=location.host+'@'+Date.now();
+try{localStorage.setItem('e034',mark);sessionStorage.setItem('e034',mark);document.cookie='e034='+mark}catch(e){R('write','blocked '+e)}
+await T('write-indexedDB',()=>new Promise((ok,no)=>{const r=indexedDB.open('e034',1);r.onupgradeneeded=()=>r.result.createObjectStore('s');r.onsuccess=()=>{const tx=r.result.transaction('s','readwrite').objectStore('s').put(mark,'k');tx.onsuccess=()=>ok('written');tx.onerror=()=>no(tx.error)};r.onerror=()=>no(r.error)}));
+await T('write-cacheStorage',async()=>window.caches?((await caches.open('e034')),'opened'):'no caches API');
+R('wrote',mark);
+})();
+</script></body></html>

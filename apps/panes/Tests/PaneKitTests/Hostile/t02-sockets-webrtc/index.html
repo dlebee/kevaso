@@ -1,0 +1,27 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script></head><body>t02<script>
+(async()=>{
+await T('websocket',()=>new Promise((ok,no)=>{const s=new WebSocket('ws://127.0.0.1:__TCP__/t02/ws');s.onopen=()=>ok('open');s.onerror=()=>no(new Error('ws error'))}));
+await T('websocket-lan',()=>new Promise((ok,no)=>{const s=new WebSocket('ws://__LANIP__:__TCP__/t02/ws-lan');s.onopen=()=>ok('open');s.onerror=()=>no(new Error('ws error'))}));
+await T('eventsource',()=>new Promise((ok,no)=>{const s=new EventSource('__C__/t02/sse');s.onmessage=m=>ok('msg '+m.data);s.onerror=()=>no(new Error('sse error'))}));
+await T('webrtc',async()=>{
+  if(!window.RTCPeerConnection) return 'no RTCPeerConnection API';
+  const pc=new RTCPeerConnection({iceServers:[{urls:'stun:127.0.0.1:__UDP__'},{urls:'stun:__LANIP__:__UDP__'}]});
+  const cands=[];pc.onicecandidate=e=>{if(e.candidate)cands.push(e.candidate.candidate)};
+  pc.createDataChannel('x');await pc.setLocalDescription(await pc.createOffer());
+  await new Promise(r=>setTimeout(r,2500));return 'candidates='+cands.length+' '+cands.join(' | ').slice(0,60)});
+await T('webrtc-iframe-realm',async()=>{
+  const f=document.createElement('iframe');document.body.append(f);
+  const w=f.contentWindow; if(!w) return 'no contentWindow';
+  const PC=w.RTCPeerConnection||w.webkitRTCPeerConnection; if(!PC) return 'no RTCPeerConnection in iframe realm';
+  const pc=new PC({iceServers:[{urls:'stun:127.0.0.1:__UDP__'}]});const c=[];pc.onicecandidate=e=>{if(e.candidate)c.push(1)};
+  pc.createDataChannel('y');await pc.setLocalDescription(await pc.createOffer());await new Promise(r=>setTimeout(r,2500));return 'iframe candidates='+c.length});
+await T('webrtc-frames0-realm',()=>{const w=window.frames[0];return w?('frames[0] has RTCPeerConnection='+!!w.RTCPeerConnection):'no frames[0]'});
+R('done','t02');
+})();
+</script></body></html>
