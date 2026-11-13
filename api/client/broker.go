@@ -34,6 +34,19 @@ const (
 	OpAskInject  = "ask-inject"
 )
 
+// OpPullCredential is a host's agent asking for the credential to pull one of its silos' images
+// (Name: the image), from the silo's imagePull secret or its namespace's default for the image's
+// registry. Never forwarded from a silo: the agent hands it to the engine for that one pull.
+const OpPullCredential = "pull-credential"
+
+// RegistryCredential is a registry secret, for one pull.
+type RegistryCredential struct {
+	Secret   string `json:"secret"`
+	Server   string `json:"server"`
+	Username string `json:"username"`
+	Password []byte `json:"password"`
+}
+
 // BrokerRequest is one line from a silo.
 type BrokerRequest struct {
 	Op      string `json:"op"`
@@ -64,8 +77,10 @@ type BrokerResponse struct {
 	Deliveries []Delivery     `json:"deliveries,omitempty"`
 	Injections []Injection    `json:"injections,omitempty"`
 	Ingress    *IngressConfig `json:"ingress,omitempty"`
-	Event      string         `json:"event,omitempty"` // watch: "changed" (a secret or grant), "ready"
-	Secret     string         `json:"secret,omitempty"`
+	// Registry: pull-credential, the credential (nil: none applies, pull anonymously).
+	Registry *RegistryCredential `json:"registry,omitempty"`
+	Event    string              `json:"event,omitempty"` // watch: "changed" (a secret or grant), "ready"
+	Secret   string              `json:"secret,omitempty"`
 	// Digest: pane-bundle, the name the bundle is stored under (sha256:…).
 	Digest string `json:"digest,omitempty"`
 	// Pending: the use waits for a person's yes. Ask again with Request.Approval set to its name.

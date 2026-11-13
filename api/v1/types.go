@@ -176,8 +176,12 @@ type Silo struct {
 
 // SiloSpec is what the user declares.
 type SiloSpec struct {
-	Runtime     string       `json:"runtime"`
-	Image       string       `json:"image,omitempty"`
+	Runtime string `json:"runtime"`
+	// Image: on cloud-hypervisor an Image name (NAME[:VERSION]) or a built-in OS image; on docker,
+	// podman and OpenShell a registry reference, used as it is (pin it by digest: a tag can move).
+	Image string `json:"image,omitempty"`
+	// ImagePull says how a registry image is pulled (a private registry's credential).
+	ImagePull   *ImagePull   `json:"imagePull,omitempty"`
 	Resources   Resources    `json:"resources,omitempty"`
 	Disk        Disk         `json:"disk,omitempty"`
 	Placement   Placement    `json:"placement,omitempty"`
@@ -363,6 +367,9 @@ type SiloImage struct {
 	Ref     string `json:"ref"`               // what the runtime is given
 	Running string `json:"running,omitempty"` // the ref the silo was created or last reset with
 	Reset   string `json:"reset,omitempty"`   // the spec.reset last applied
+	// Digest is what the host actually pulled for Running (registry images: sha256:…), so an
+	// update shows even when a tag moved.
+	Digest string `json:"digest,omitempty"`
 }
 
 // VolumeStatus is one provider volume of a silo. The control plane creates and attaches it (Handle,

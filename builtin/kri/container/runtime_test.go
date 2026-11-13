@@ -26,10 +26,12 @@ type fake struct {
 	wired      map[int]bool
 	execHook   func(context.Context, hostexec.Cmd) (int, error) // docker exec, if set
 	pid1       map[string]string                                // image → its inspected entrypoint and command
+	digests    map[string]string                                // image → its RepoDigests (JSON)
+	onPull     func(engine string, args []string) (int, error)  // a pull, if set (pull_test.go)
 }
 
 func newFake() *fake {
-	return &fake{files: map[string][]byte{}, containers: map[string]string{}, images: map[string]bool{}, pid: 100, wired: map[int]bool{}, pid1: map[string]string{}}
+	return &fake{files: map[string][]byte{}, containers: map[string]string{}, images: map[string]bool{}, pid: 100, wired: map[int]bool{}, pid1: map[string]string{}, digests: map[string]string{}}
 }
 
 func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
@@ -54,7 +56,15 @@ func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
 		out("2: eth0 inet 10.64.0.2/24 scope global eth0")
 	case c.Name == "nsenter" && strings.Contains(strings.Join(a, " "), "route add default"):
 		f.wired[f.pid] = true
-	case c.Name == "docker":
+	case (c.Name == "docker" || c.Name == "podman") && indexOf(a, "pull") >= 0 && f.onPull != nil:
+		code, err := f.onPull(c.Name, a)
+		if code == 0 && err == nil {
+			f.images[a[len(a)-1]] = true
+		} else if c.Stderr != nil {
+			_, _ = io.WriteString(c.Stderr, "Error response from daemon: denied: requested access to the resource is denied")
+		}
+		return code, err
+	case c.Name == "docker" || c.Name == "podman":
 		switch a[0] {
 		case "container":
 			if a[1] != "inspect" {
@@ -69,7 +79,9 @@ func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
 			if !f.images[a[len(a)-1]] && f.pid1[a[len(a)-1]] == "" {
 				return fail("No such image")
 			}
-			if indexOf(a, "--format") > 0 {
+			if i := indexOf(a, "--format"); i > 0 && strings.Contains(a[i+1], "RepoDigests") {
+				out(f.digests[a[len(a)-1]])
+			} else if i > 0 {
 				out(f.pid1[a[len(a)-1]])
 			}
 		case "import":
@@ -115,7 +127,7 @@ func indexOf(l []string, v string) int {
 func (f *fake) WriteFile(p string, d []byte, _ os.FileMode) error {
 	f.fmu.Lock()
 	defer f.fmu.Unlock()
-	f.files[p] = d
+	f.files[p] = append([]byte(nil), d...) // a copy, as a real file is
 	return nil
 }
 func (f *fake) ReadFile(p string) ([]byte, error) {
@@ -294,7 +306,7 @@ func TestKevasoImages(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := strings.Join(f.cmds, "\n")
-	if strings.Contains(all, "pull") && strings.Contains(all, "kevaso-ingress") {
+	if strings.Contains(all, "docker pull") {
 		t.Fatalf("pulled Kevaso's own image:\n%s", all)
 	}
 	imp := f.last("docker import --change ENTRYPOINT [\"/usr/local/bin/kvo-guest\",\"ingress\"]")
