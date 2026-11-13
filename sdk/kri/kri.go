@@ -149,6 +149,21 @@ type Runtime interface {
 	Exec(ctx context.Context, id ID, req ExecRequest) (int, error)
 }
 
+// Killer is a runtime that can stop a silo at once, with no graceful shutdown (SIGKILL, not a stop
+// with a grace period): what a fence does, since the silo is about to be started elsewhere and a
+// clean shutdown isn't worth eating into that margin. Killing a stopped or absent one is a no-op.
+type Killer interface {
+	Kill(ctx context.Context, id ID) error
+}
+
+// Kill stops a silo at once where the runtime can (Killer), else as gracefully as Stop does.
+func Kill(ctx context.Context, rt Runtime, id ID) error {
+	if k, ok := rt.(Killer); ok {
+		return k.Kill(ctx, id)
+	}
+	return rt.Stop(ctx, id)
+}
+
 // Resetter is a runtime that can put a silo back onto an image (design §0.2, `kvo reset`): a
 // fresh disk or container from spec.Image, with the same ID and private address, and its volumes
 // kept. The silo is stopped first (the agent stops it; Reset makes sure) and left Created. Every

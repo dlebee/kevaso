@@ -25,13 +25,42 @@ import (
 // watcher when the agent is gone) before the control plane calls it lost, and the control plane
 // recreates only RecreateAfter later. The heartbeat period counts too: the record's last contact
 // can already be that old when the agent stops.
+//
+// Both sides count from the same moment, the last heartbeat that got through: the worst case of
+// "record goes stale → every silo killed" must stay under the earliest "host declared lost →
+// started elsewhere" by fence.MinMargin. If it doesn't, change the timings, not this test.
 func TestFenceTiming(t *testing.T) {
-	fence, lease, recreate := agent.DefaultFenceAfter, hostctl.DefaultLease, siloctl.RecreateAfter
-	if fence >= lease || lease >= lease+recreate {
-		t.Fatalf("FenceAfter %s < host lease %s < lease + RecreateAfter %s doesn't hold", fence, lease, lease+recreate)
+	after, lease, recreate := agent.DefaultFenceAfter, hostctl.DefaultLease, siloctl.RecreateAfter
+	if after >= lease {
+		t.Fatalf("FenceAfter %s isn't under the host lease %s: the host is called lost before it fences", after, lease)
 	}
-	if hb := worker.DefaultHeartbeat; hb >= fence {
-		t.Fatalf("heartbeat %s isn't under FenceAfter %s: a healthy host would fence", hb, fence)
+	stopped := fence.WorstStopped(after)
+	elsewhere := lease + recreate - fence.MaxSkew
+	if margin := elsewhere - stopped; margin < fence.MinMargin {
+		t.Fatalf("every silo killed by %s, another copy as early as %s: margin %s < %s", stopped, elsewhere, margin, fence.MinMargin)
+	}
+	// A healthy host never fences: two heartbeats in a row may fail and it still doesn't.
+	if hb := worker.DefaultHeartbeat; 2*hb+fence.CheckEvery >= after {
+		t.Fatalf("heartbeat %s: two missed beats reach FenceAfter %s", hb, after)
+	}
+}
+
+// A fence kills (kri.Kill): no runtime's graceful stop and its grace period in the way.
+func TestWatcherKills(t *testing.T) {
+	ctx := context.Background()
+	rt := fake.New()
+	id := kri.ID{Namespace: "dev", Name: "web", UID: "u1"}
+	_ = rt.Create(ctx, kri.Spec{ID: id})
+	_ = rt.Start(ctx, id)
+	dir := t.TempDir()
+	now := time.Now()
+	_ = fence.Write(dir, fence.Record{LastContact: now.Add(-time.Minute), Fence: true,
+		Silos: []fence.Silo{{ID: id, Runtime: "docker", OnHostLoss: v1.OnHostLossRecreate}}})
+	w := &fence.Watcher{Dir: dir, Runtimes: map[string]kri.Runtime{"docker": rt}, FenceAfter: agent.DefaultFenceAfter}
+	w.Check(ctx)
+	calls := rt.Calls
+	if len(calls) == 0 || calls[len(calls)-1] != "kill dev/web" {
+		t.Fatalf("calls: %v", calls)
 	}
 }
 

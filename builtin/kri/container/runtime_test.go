@@ -81,7 +81,7 @@ func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
 			f.containers[name] = "running"
 		case "start":
 			f.containers[a[1]] = "running"
-		case "stop":
+		case "stop", "kill":
 			f.containers[a[len(a)-1]] = "exited"
 		case "rm":
 			delete(f.containers, a[len(a)-1])
@@ -337,5 +337,37 @@ func TestInstallRestartsDockerOnlyWhenItsConfigChanges(t *testing.T) {
 	_ = r.Install(context.Background(), nil)
 	if restarts() != 2 {
 		t.Fatal("a changed daemon.json didn't restart dockerd")
+	}
+}
+
+// A fence kills: SIGKILL, no grace period (docker stop would wait out its 20s first).
+func TestKillHasNoGrace(t *testing.T) {
+	ctx := context.Background()
+	f := newFake()
+	r := runtime(t, f)
+	if err := r.Create(ctx, kri.Spec{ID: silo, Image: "ubuntu-24.04"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(ctx, silo); err != nil {
+		t.Fatal(err)
+	}
+	n := NamesFor(silo)
+	before := len(f.cmds)
+	if err := kri.Kill(ctx, r, silo); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.last("docker kill"); got != "docker kill --signal KILL "+n.Main {
+		t.Fatalf("kill: %q", got)
+	}
+	for _, c := range f.cmds[before:] {
+		if strings.HasPrefix(c, "docker stop") {
+			t.Fatalf("a graceful stop in a kill: %s", c)
+		}
+	}
+	if st, _ := r.Status(ctx, silo); st.State != kri.Stopped {
+		t.Fatalf("after kill: %v", st.State)
+	}
+	if err := r.Kill(ctx, silo); err != nil { // stopped already: a no-op
+		t.Fatal(err)
 	}
 }

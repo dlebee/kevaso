@@ -8,9 +8,12 @@
 // host's Recreate and Move silos through the runtimes, as the agent's own fence does. A dead agent
 // and a cut-off agent look the same from outside: neither renews the contact.
 //
-// Timing: FenceAfter (30s) < the control plane's host lease (40s) < lease + RecreateAfter (70s),
-// so the old copy is stopped well before the control plane starts another. An agent restart shorter
-// than FenceAfter (minus the heartbeat period) stops nothing.
+// Timing, from the last contact the record holds (the agent may die right after it): every silo is
+// stopped by FenceAfter + CheckEvery + KillWithin (36s), killed rather than stopped gracefully; the
+// control plane, judging by the same heartbeat, calls the host lost after its lease (40s) and
+// starts another copy RecreateAfter (30s) later, minus what second-resolution timestamps and clock
+// skew can take off (MaxSkew): 67s at the earliest. agent.TestFenceTiming holds the margin to
+// MinMargin. An agent restart shorter than FenceAfter (minus the heartbeat period) stops nothing.
 package fence
 
 import (
@@ -21,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	v1 "kevaso.com/core/api/v1"
@@ -34,6 +38,25 @@ var Dir = "/run/kevaso-fence"
 // DefaultAfter is how old the last contact may get before a fence: under the control plane's host
 // lease (40s), so the old copy is stopped before the host is even called lost.
 const DefaultAfter = 30 * time.Second
+
+// The fence's side of the timing (see the package doc).
+const (
+	// CheckEvery is how often the watcher reads the record (and the agent checks its contact).
+	CheckEvery = time.Second
+	// KillWithin is how long a fence may take to kill every silo it stops: they're killed at
+	// once (kri.Kill), all together; a kill that takes longer is logged and tried again.
+	KillWithin = 5 * time.Second
+	// MaxSkew is what may make the control plane see the last heartbeat earlier than the host
+	// did: heartbeat and condition times truncated to the second (1s each), and clock skew
+	// between the host and the control plane (up to 2s, NTP assumed).
+	MaxSkew = 4 * time.Second
+	// MinMargin is the least time between "every silo stopped" and "another copy started
+	// elsewhere" the timings must leave.
+	MinMargin = 15 * time.Second
+)
+
+// WorstStopped is, from the last contact, when every movable silo is stopped at the latest.
+func WorstStopped(after time.Duration) time.Duration { return after + CheckEvery + KillWithin }
 
 // RecordFile is the record's name in Dir.
 const RecordFile = "record.json"
@@ -156,7 +179,7 @@ type Watcher struct {
 	Dir        string
 	Runtimes   map[string]kri.Runtime
 	FenceAfter time.Duration
-	Every      time.Duration // how often the record is read (default 1s)
+	Every      time.Duration // how often the record is read (default CheckEvery)
 	Now        func() time.Time
 	Log        func(string, ...any)
 
@@ -186,29 +209,42 @@ func (w *Watcher) Check(ctx context.Context) {
 		w.fencing, w.done = false, map[string]bool{}
 		w.log("fence: contact is back: the agent takes over again")
 	}
-	for _, s := range stop {
+	// All at once, each killed (no graceful stop): KillWithin bounds the whole fence.
+	kctx, cancel := context.WithTimeout(ctx, KillWithin)
+	defer cancel()
+	errs := make([]error, len(stop))
+	var wg sync.WaitGroup
+	for i, s := range stop {
 		rt, ok := w.Runtimes[s.Runtime]
 		if !ok {
-			w.log("fence: %s/%s: no runtime %s here", s.ID.Namespace, s.ID.Name, s.Runtime)
-			w.done[s.ID.UID] = true
+			errs[i] = errNoRuntime
 			continue
 		}
-		err := rt.Stop(ctx, s.ID)
-		switch {
+		wg.Add(1)
+		go func() { defer wg.Done(); errs[i] = kri.Kill(kctx, rt, s.ID) }()
+	}
+	wg.Wait()
+	for i, s := range stop {
+		switch err := errs[i]; {
+		case errors.Is(err, errNoRuntime):
+			w.log("fence: %s/%s: no runtime %s here", s.ID.Namespace, s.ID.Name, s.Runtime)
+			w.done[s.ID.UID] = true
 		case err == nil || errors.Is(err, kri.ErrNotFound):
 			w.done[s.ID.UID] = true
 			w.log("fence: stopped %s/%s (onHostLoss %s)", s.ID.Namespace, s.ID.Name, s.OnHostLoss)
 		default:
-			w.log("fence: stopping %s/%s: %v (trying again)", s.ID.Namespace, s.ID.Name, err)
+			w.log("fence: killing %s/%s: %v (trying again)", s.ID.Namespace, s.ID.Name, err)
 		}
 	}
 }
+
+var errNoRuntime = errors.New("no such runtime here")
 
 // Run checks every period until ctx ends.
 func (w *Watcher) Run(ctx context.Context) {
 	every := w.Every
 	if every <= 0 {
-		every = time.Second
+		every = CheckEvery
 	}
 	t := time.NewTicker(every)
 	defer t.Stop()

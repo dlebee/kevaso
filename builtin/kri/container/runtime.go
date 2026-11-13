@@ -455,6 +455,22 @@ func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
 	return err
 }
 
+// Kill implements kri.Killer: SIGKILL to the main container's PID 1 (its init: the whole
+// container goes with it), no grace period. For fencing.
+func (r *Runtime) Kill(ctx context.Context, id kri.ID) error {
+	if _, ok := r.load(id); !ok {
+		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
+	}
+	st, _, err := r.inspect(ctx, NamesFor(id).Main)
+	if err != nil || st != "running" {
+		return err
+	}
+	if _, err = r.eng(ctx, nil, "kill", "--signal", "KILL", NamesFor(id).Main); err != nil && strings.Contains(err.Error(), "is not running") {
+		return nil // stopped meanwhile
+	}
+	return err
+}
+
 // Reset implements kri.Resetter: the containers go, the volumes, address and pause container
 // stay, and the silo is Created again from spec's image (the main container comes with Start).
 func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {

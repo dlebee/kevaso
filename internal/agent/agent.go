@@ -162,7 +162,7 @@ func (a *Agent) writeFenceRecord() {
 // fence runs while the agent runs: on losing contact it stops Recreate silos; on getting it back
 // it looks at every silo again (the ones recreated elsewhere get removed).
 func (a *Agent) fence(ctx context.Context, e *engine.Engine) {
-	t := time.NewTicker(time.Second)
+	t := time.NewTicker(fence.CheckEvery)
 	defer t.Stop()
 	for {
 		select {
@@ -185,9 +185,12 @@ func (a *Agent) fence(ctx context.Context, e *engine.Engine) {
 					if ok && o.(*v1.Silo).Policy() == v1.OnHostLossWait {
 						continue // Wait silos are never started elsewhere: keep them running
 					}
-					if err := rt.Stop(ctx, id); err != nil {
+					kctx, cancel := context.WithTimeout(ctx, fence.KillWithin)
+					// Killed, not stopped gracefully: another copy may start elsewhere soon.
+					if err := kri.Kill(kctx, rt, id); err != nil {
 						a.log("fence %s: %v", id, err)
 					}
+					cancel()
 				}
 			}
 		case !cut && a.fenced.Load():
