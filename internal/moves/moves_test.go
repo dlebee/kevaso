@@ -146,9 +146,12 @@ func TestApplyAndHandoff(t *testing.T) {
 	if _, ok := Released(st, "hv3"); ok {
 		t.Fatal("the new host released the handoff")
 	}
+	// The old host's volumes are said unmounted in the same write: it may write nothing else of
+	// a silo placed elsewhere (on real machines a move waited forever for "w1 to unmount it").
+	st.Volumes = []v1.VolumeStatus{{Name: "data", Class: "juicefs", AttachedTo: "hv1", Mounted: true}}
 	rel, ok := Released(st, "hv1")
-	if !ok || rel.MovingFrom != "" {
-		t.Fatalf("released = %+v", rel)
+	if !ok || rel.MovingFrom != "" || rel.Volumes[0].Mounted || !st.Volumes[0].Mounted {
+		t.Fatalf("released = %+v (input changed: %v)", rel, !st.Volumes[0].Mounted)
 	}
 	moved.Status = rel
 	if !MayStart(&moved, "hv3") {

@@ -211,12 +211,24 @@ func MayStart(s *v1.Silo, host string) bool {
 	return s.Status.Host == host && (s.Status.MovingFrom == "" || s.Status.MovingFrom == host)
 }
 
-// Released is the status once the old host has stopped the silo and unmounted its volumes.
+// Released is the status once the old host has stopped the silo and unmounted its volumes: the
+// handoff done, and its volumes no longer mounted there. One write, by the old host, which may
+// write nothing else of a silo placed elsewhere.
 func Released(st v1.SiloStatus, host string) (v1.SiloStatus, bool) {
 	if st.MovingFrom != host || st.Host == host {
 		return st, false
 	}
 	st.MovingFrom = ""
+	if len(st.Volumes) > 0 {
+		vols := make([]v1.VolumeStatus, len(st.Volumes))
+		copy(vols, st.Volumes)
+		for i := range vols {
+			if vols[i].AttachedTo == host {
+				vols[i].Mounted = false
+			}
+		}
+		st.Volumes = vols
+	}
 	return st, true
 }
 
