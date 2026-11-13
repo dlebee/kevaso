@@ -289,3 +289,40 @@ func TestKevasoImages(t *testing.T) {
 		t.Fatalf("main container: %s", main)
 	}
 }
+
+// Install runs at every kevasod start: dockerd is restarted (which, without live-restore, stops
+// every container) only when its configuration changes, not on an agent restart or upgrade. (On
+// Linodes, before this, kvoadm upgrade stopped the worker's container silos.)
+func TestInstallRestartsDockerOnlyWhenItsConfigChanges(t *testing.T) {
+	f := newFake()
+	r := runtime(t, f)
+	restarts := func() int {
+		n := 0
+		for _, c := range f.cmds {
+			if c == "systemctl restart docker" {
+				n++
+			}
+		}
+		return n
+	}
+	if err := r.Install(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if restarts() != 1 || !strings.Contains(string(f.files["/etc/docker/daemon.json"]), `"live-restore": true`) {
+		t.Fatalf("first install: %d restarts, daemon.json %s", restarts(), f.files["/etc/docker/daemon.json"])
+	}
+	if err := r.Install(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if restarts() != 1 {
+		t.Fatalf("a second start restarted dockerd: %v", f.cmds)
+	}
+	if f.last("systemctl enable --now") != "systemctl enable --now docker" {
+		t.Fatal("docker not made sure to run")
+	}
+	f.files["/etc/docker/daemon.json"] = []byte(`{"iptables": true}`)
+	_ = r.Install(context.Background(), nil)
+	if restarts() != 2 {
+		t.Fatal("a changed daemon.json didn't restart dockerd")
+	}
+}
