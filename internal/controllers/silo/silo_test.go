@@ -58,8 +58,13 @@ func TestDecide(t *testing.T) {
 
 	placed := newSilo("b")
 	placed.Status.Host = "hv1"
-	if _, changed, _, _ = silo.Decide(placed, []*v1.Host{readyHost("hv2")}, nil, now); changed {
+	st, _, _, _ = silo.Decide(placed, []*v1.Host{readyHost("hv2")}, nil, now) // records its image
+	if st.Host != "hv1" {
 		t.Fatal("a placed silo was moved: silos are stateful, moves are never a side effect")
+	}
+	placed.Status = st
+	if _, changed, _, _ = silo.Decide(placed, []*v1.Host{readyHost("hv2")}, nil, now); changed {
+		t.Fatal("a placed silo with its image recorded still changed")
 	}
 	deleting := newSilo("c")
 	deleting.DeletionTimestamp = &now

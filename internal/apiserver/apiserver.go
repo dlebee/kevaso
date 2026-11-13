@@ -457,6 +457,15 @@ func (s *Server) admit(kind string, obj meta.Object) ([]byte, error) {
 		return nil, err
 	}
 	failed := append(s.valid.validate(kind, m), semantic(obj)...)
+	if set, ok := obj.(*v1.SiloSet); ok {
+		// Its instances must be valid silos: say so now, not when the first one is made.
+		inst := set.Instance(0, false)
+		if im, _, err := toMap(inst); err == nil {
+			for _, f := range append(s.valid.validate("Silo", im), semantic(inst)...) {
+				failed = append(failed, "template: "+f)
+			}
+		}
+	}
 	if len(failed) > 0 {
 		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %s", kind, obj.GetObjectMeta().Name, joinMessages(failed))
 	}
@@ -546,6 +555,9 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		}
 	}
 	next.GetObjectMeta().ResourceVersion = om.ResourceVersion
+	if errs := transition(old, next); len(errs) > 0 && !t.status {
+		return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %s", t.kind.Kind, om.Name, joinMessages(errs))
+	}
 	data, err := s.admit(t.kind.Kind, next)
 	if err != nil {
 		return store.Object{}, err
@@ -658,22 +670,22 @@ func (s *Server) ensureBuiltins(ctx context.Context) error {
 	return nil
 }
 
-// checkExposure: making a silo reachable from outside (hostPort, loadBalancer) is its own
-// permission, create on services/expose-public in the namespace (design §7.2a), on top of writing
-// the silo. Status writes don't change the spec, so they don't need it.
+// checkExposure: making silos reachable from outside is its own permission, create on
+// services/expose-public in the namespace (design §7.2a), on top of writing the object: a silo
+// exposed with hostPort or loadBalancer, a SiloSet whose instances would be (its controller makes
+// them, so the check is here), and a Service of type LoadBalancer. Status writes don't change the
+// spec, so they don't need it.
 func (s *Server) checkExposure(ctx context.Context, t target, obj meta.Object) error {
-	silo, ok := obj.(*v1.Silo)
-	if !ok || t.status || s.auth == nil || silo.Spec.Service == nil {
+	if t.status || s.auth == nil {
 		return nil
 	}
-	if e := silo.Spec.Service.Expose; e != v1.ExposeHostPort && e != v1.ExposeLoadBalancer {
+	how := exposure(obj)
+	if how == "" {
 		return nil
 	}
 	if old, err := s.store.Get(ctx, t.key()); err == nil { // already exposed the same way: nothing new
-		if prev, _, err := v1.Decode(old.Data); err == nil {
-			if ps := prev.(*v1.Silo).Spec.Service; ps != nil && ps.Expose == silo.Spec.Service.Expose {
-				return nil
-			}
+		if prev, _, err := v1.Decode(old.Data); err == nil && exposure(prev) == how {
+			return nil
 		}
 	}
 	id, _ := IdentityFrom(ctx)
@@ -689,4 +701,24 @@ func (s *Server) checkExposure(ctx context.Context, t target, obj meta.Object) e
 		return errf(http.StatusForbidden, "Forbidden", "%s may not expose silos publicly (needs create on services/expose-public): %s", id, d.Reason)
 	}
 	return nil
+}
+
+// exposure is how an object makes silos reachable from outside ("" if it doesn't).
+func exposure(obj meta.Object) string {
+	var svc *v1.SiloService
+	switch o := obj.(type) {
+	case *v1.Silo:
+		svc = o.Spec.Service
+	case *v1.SiloSet:
+		svc = o.Spec.Template.Service
+	case *v1.Service:
+		if o.Spec.Type == v1.ServiceLoadBalancer {
+			return "service:" + o.Spec.LoadBalancerClass
+		}
+		return ""
+	}
+	if svc == nil || (svc.Expose != v1.ExposeHostPort && svc.Expose != v1.ExposeLoadBalancer) {
+		return ""
+	}
+	return svc.Expose
 }

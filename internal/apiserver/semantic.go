@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"reflect"
+	"strconv"
 	"strings"
+	"time"
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
@@ -35,6 +38,24 @@ func semantic(obj meta.Object) []string {
 		for _, a := range o.Spec.AllowFrom {
 			if strings.Count(a.Silo, "/") > 1 {
 				errs = append(errs, fmt.Sprintf("allowFrom: %q: want NAME or NAMESPACE/NAME", a.Silo))
+			}
+		}
+		if r := o.Spec.Readiness; r != nil {
+			for field, d := range map[string]string{"readiness.period": r.Period, "readiness.timeout": r.Timeout} {
+				if d == "" {
+					continue
+				}
+				if v, err := time.ParseDuration(d); err != nil || v <= 0 {
+					errs = append(errs, fmt.Sprintf("%s: %q isn't a duration (e.g. 10s)", field, d))
+				}
+			}
+		}
+	case *v1.Service:
+		for _, p := range o.Spec.Ports {
+			if t := p.TargetPort; t != "" {
+				if n, err := strconv.Atoi(t); err == nil && (n < 1 || n > 65535) {
+					errs = append(errs, fmt.Sprintf("port %s: targetPort %d isn't from 1 to 65535", p.Name, n))
+				}
 			}
 		}
 	case *v1.Grant:
@@ -88,6 +109,23 @@ func semantic(obj meta.Object) []string {
 			}
 			if !p.Addr().Is4() {
 				errs = append(errs, fmt.Sprintf("spec.addresses: %q: IPv6 pools come later; IPv4 for now", a))
+			}
+		}
+	}
+	return errs
+}
+
+// transition checks what may change on an update: an Image's versions are immutable once added
+// (an instance on v1 must always run the same thing), though old ones may be dropped.
+func transition(old, next meta.Object) []string {
+	var errs []string
+	if o, ok := old.(*v1.Image); ok {
+		n := next.(*v1.Image)
+		for _, ov := range o.Spec.Versions {
+			for _, nv := range n.Spec.Versions {
+				if nv.Name == ov.Name && !reflect.DeepEqual(nv, ov) {
+					errs = append(errs, fmt.Sprintf("version %s can't change once added: add a new version instead", ov.Name))
+				}
 			}
 		}
 	}

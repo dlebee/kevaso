@@ -246,3 +246,85 @@ func TestFencingWhenCutOff(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// A new image (resolved by the control plane) or a reset puts the silo back onto its image:
+// stopped first, reset by the runtime, started again, the image it runs recorded.
+func TestImageChangeAndResetAreStopFirst(t *testing.T) {
+	e := setup(t)
+	e.place(t, "node", "hv1", &v1.Init{Steps: []v1.InitStep{{Name: "setup", Run: "true"}}})
+	s := e.wait(t, "node", func(s *v1.Silo) bool {
+		return meta.IsTrue(s.Status.Conditions, "Ready") && s.Status.Image != nil && s.Status.Image.Running == "ubuntu-24.04"
+	})
+	id := kri.ID{Namespace: "dev", Name: "node", UID: s.UID}
+	// The user moves it to geth:v2, which the control plane resolves.
+	s.Spec.Image = "geth:v2"
+	if err := e.c.Update(e.ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	_ = e.c.Get(e.ctx, "Silo", "dev", "node", s)
+	s.Status.Image = &v1.SiloImage{From: "geth:v2", Ref: "docker.io/ethereum/client-go:v1.15.0", Running: "ubuntu-24.04"}
+	if err := e.c.UpdateStatus(e.ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	s = e.wait(t, "node", func(s *v1.Silo) bool {
+		c := meta.FindCondition(s.Status.Conditions, "Ready")
+		return s.Status.Image.Running == "docker.io/ethereum/client-go:v1.15.0" && c != nil && c.Status == meta.ConditionTrue && c.ObservedGeneration == s.Generation
+	})
+	if got := e.rt.Image(id); got != "docker.io/ethereum/client-go:v1.15.0" {
+		t.Fatalf("the runtime has %q", got)
+	}
+	if len(s.Status.Init) != 1 || s.Status.Init[0].State != "Done" {
+		t.Fatalf("init steps didn't run again on the fresh disk: %+v", s.Status.Init)
+	}
+	calls := strings.Join(e.rt.Calls, ",")
+	if i, j := strings.LastIndex(calls, "stop dev/node"), strings.LastIndex(calls, "reset dev/node"); i < 0 || j < i {
+		t.Fatalf("not stop-first: %s", calls)
+	}
+	// kvo reset: same image, a fresh copy.
+	s.Spec.Reset = "2026-11-12T10:00:00Z"
+	if err := e.c.Update(e.ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	e.wait(t, "node", func(s *v1.Silo) bool {
+		return s.Status.Image.Reset == "2026-11-12T10:00:00Z" && meta.IsTrue(s.Status.Conditions, "Ready")
+	})
+	if n := strings.Count(strings.Join(e.rt.Calls, ","), "reset dev/node"); n != 2 {
+		t.Fatalf("%d resets, want 2", n)
+	}
+}
+
+// A readiness check keeps the silo from being Ready until it passes.
+func TestReadiness(t *testing.T) {
+	e := setup(t)
+	var mu sync.Mutex
+	synced := false
+	e.rt.Handler = func(_ kri.ID, cmd []string, _ []byte) (string, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		if strings.Join(cmd, " ") == "check-synced" && !synced {
+			return "still syncing", 1
+		}
+		return "", 0
+	}
+	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "rpc", Namespace: "dev"},
+		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+			Readiness: &v1.Readiness{Command: []string{"check-synced"}, Period: "50ms"}}}
+	if err := e.c.Create(e.ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	s.Status.Host = "hv1"
+	if err := e.c.UpdateStatus(e.ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	got := e.wait(t, "rpc", func(s *v1.Silo) bool {
+		c := meta.FindCondition(s.Status.Conditions, "Ready")
+		return c != nil && c.Reason == "NotReady"
+	})
+	if c := meta.FindCondition(got.Status.Conditions, "Ready"); !strings.Contains(c.Message, "still syncing") || got.Status.Phase != agent.PhaseRunning {
+		t.Fatalf("not ready: %+v", got.Status)
+	}
+	mu.Lock()
+	synced = true
+	mu.Unlock()
+	e.wait(t, "rpc", func(s *v1.Silo) bool { return meta.IsTrue(s.Status.Conditions, "Ready") })
+}

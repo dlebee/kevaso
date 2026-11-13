@@ -58,7 +58,25 @@ func describeObject(w io.Writer, obj meta.Object) error {
 	switch o := obj.(type) {
 	case *v1.Silo:
 		kv(0, "Runtime", o.Spec.Runtime)
-		kv(0, "Image", dash(o.Spec.Image))
+		img := dash(o.Spec.Image)
+		if im := o.Status.Image; im != nil {
+			if im.Ref != "" && im.Ref != o.Spec.Image {
+				img += " → " + im.Ref
+			}
+			if im.Running != "" && im.Running != im.Ref {
+				img += " (running " + im.Running + ": the update is on its way)"
+			}
+		}
+		kv(0, "Image", img)
+		if o.Spec.Exclusive {
+			kv(0, "Exclusive", "at most one copy ever runs: updates stop-first, no automatic failover")
+		}
+		if r := o.Spec.Readiness; r != nil {
+			kv(0, "Readiness", strings.Join(r.Command, " ")+" every "+dash(r.Period)+" (default 10s)")
+		}
+		if set := ownerSet(o); set != "" {
+			kv(0, "SiloSet", set+" (revision "+dash(o.Labels[v1.LabelRevision])+")")
+		}
 		kv(0, "Resources", fmt.Sprintf("%d CPU, %s memory", o.Spec.Resources.CPU, dash(o.Spec.Resources.Memory)))
 		disk := dash(o.Spec.Disk.Size)
 		if o.Spec.Disk.Class != "" {
@@ -368,6 +386,98 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		if rq := o.Spec.Requires; rq != nil && rq.Assurance != "" && rq.Assurance != v1.AssuranceHost {
 			kv(0, "Requires", rq.Assurance+" assurance: no silo can have it yet (only host), so the broker refuses")
 		}
+	case *v1.SiloSet:
+		conds = o.Status.Conditions
+		kv(0, "Image", dash(o.InstanceSpec().Image))
+		kv(0, "Runtime", o.Spec.Template.Runtime)
+		kv(0, "Instances", fmt.Sprintf("%d wanted, %d ready, %d on revision %s", o.Spec.Instances, o.Status.Ready, o.Status.Updated, dash(o.Status.Revision)))
+		if o.Spec.Standby > 0 || o.Status.Standby > 0 {
+			kv(0, "Standby", fmt.Sprintf("%d wanted, %d there", o.Spec.Standby, o.Status.Standby))
+		}
+		unavail, surge := o.Limits()
+		policy := o.Spec.UpgradePolicy
+		if policy == "" {
+			policy = v1.UpgradeManual
+		}
+		how := fmt.Sprintf("%s; at most %d not ready at a time", policy, unavail)
+		if surge > 0 {
+			how += fmt.Sprintf(", %d extra started first", surge)
+		}
+		if o.Spec.Template.Exclusive {
+			how += "; exclusive: one at a time, stop-first"
+		}
+		kv(0, "Upgrades", how)
+		scaleIn := o.Spec.ScaleInPolicy
+		if scaleIn == "" {
+			scaleIn = v1.NewestFirst
+		}
+		kv(0, "Scale-in", scaleIn+" (not ready ones first; protected ones never)")
+		if o.Spec.Spread != "" {
+			kv(0, "Spread", "by "+o.Spec.Spread)
+		}
+	case *v1.Service:
+		conds = o.Status.Conditions
+		typ := o.Spec.Type
+		if typ == "" {
+			typ = v1.ServiceClusterIP
+		}
+		if o.Spec.LoadBalancerClass != "" {
+			typ += " (" + o.Spec.LoadBalancerClass + ")"
+		}
+		kv(0, "Type", typ)
+		kv(0, "Selector", pairs(o.Spec.Selector))
+		kv(0, "Name", dash(o.Status.Name))
+		kv(0, "Cluster IP", dash(o.Status.ClusterIP))
+		if o.Spec.Type == v1.ServiceLoadBalancer {
+			kv(0, "Public IP", dash(o.Status.PublicIP))
+		}
+		nps := map[string]int{}
+		for _, np := range o.Status.NodePorts {
+			nps[np.Name] = np.NodePort
+		}
+		var ps []string
+		for _, p := range o.Spec.Ports {
+			proto, target := p.Protocol, p.TargetPort
+			if proto == "" {
+				proto = "TCP"
+			}
+			if target == "" {
+				target = fmt.Sprint(p.Port)
+			}
+			x := fmt.Sprintf("%s %d/%s → %s", p.Name, p.Port, proto, target)
+			if np := nps[p.Name]; np > 0 {
+				x += fmt.Sprintf(" (node port %d)", np)
+			}
+			ps = append(ps, x)
+		}
+		kv(0, "Ports", strings.Join(ps, ", "))
+		eps := o.Status.Endpoints
+		tables = append(tables, func() {
+			_, _ = fmt.Fprintf(tw, "Endpoints:\t%d\n", len(eps))
+			if len(eps) > 0 {
+				_, _ = fmt.Fprintln(tw, "  SILO\tHOST\tADDRESS\tPORTS")
+				for _, ep := range eps {
+					var tp []string
+					for _, p := range ep.Ports {
+						tp = append(tp, fmt.Sprintf("%s→%d", p.Name, p.NodePort))
+					}
+					_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", ep.Silo, ep.Host, ep.Address, strings.Join(tp, ","))
+				}
+			}
+		})
+	case *v1.Image:
+		vs := o.Spec.Versions
+		tables = append(tables, func() {
+			_, _ = fmt.Fprintln(tw, "Versions:")
+			_, _ = fmt.Fprintln(tw, "  NAME\tCONTAINER\tDISK")
+			for _, v := range vs {
+				disk := "-"
+				if v.Disk != nil {
+					disk = v.Disk.URL + " (sha256 " + v.Disk.SHA256[:12] + "…)"
+				}
+				_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\n", v.Name, dash(v.Container), disk)
+			}
+		})
 	}
 	for _, t := range tables {
 		t()
@@ -407,4 +517,13 @@ func envName(sec v1.GrantSecret) string {
 		return sec.Env
 	}
 	return strings.ToUpper(strings.ReplaceAll(sec.Name, "-", "_"))
+}
+
+func ownerSet(s *v1.Silo) string {
+	for _, r := range s.OwnerReferences {
+		if r.Kind == "SiloSet" && r.Controller {
+			return r.Name
+		}
+	}
+	return ""
 }

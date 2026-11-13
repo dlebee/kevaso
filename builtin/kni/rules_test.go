@@ -13,7 +13,7 @@ var (
 )
 
 func p2p() v1.SiloSpec {
-	return v1.SiloSpec{Service: &v1.Service{
+	return v1.SiloSpec{Service: &v1.SiloService{
 		Ports:    []v1.ServicePort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}, {Name: "rpc", Port: 8545}},
 		Expose:   v1.ExposeHostPort,
 		HostPort: &v1.HostPortSpec{Ports: []string{"p2p", "disc"}},
@@ -66,7 +66,7 @@ func TestHostPortAndSameAsService(t *testing.T) {
 
 // Example 03's dashboard: only the office range.
 func TestHostPortAllowFromCIDRs(t *testing.T) {
-	spec := v1.SiloSpec{Service: &v1.Service{Ports: []v1.ServicePort{{Name: "web", Port: 3000}}, Expose: v1.ExposeHostPort,
+	spec := v1.SiloSpec{Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "web", Port: 3000}}, Expose: v1.ExposeHostPort,
 		HostPort: &v1.HostPortSpec{Ports: []string{"web"}, AllowFrom: []string{"203.0.113.0/24"}}}}
 	r := Rules(host(Silo{Key: "ops/metrics", IP: a("10.64.2.3"), Spec: spec, PublicIP: a("198.51.100.10")}))
 	has(t, r, `oifname "kvbr0" ip daddr 10.64.2.3 ip saddr 203.0.113.0/24 tcp dport 3000 ct status dnat accept`)
@@ -77,7 +77,7 @@ func TestHostPortAllowFromCIDRs(t *testing.T) {
 
 // Example 06: two silos, both 30303, each on its own pool address, in and out.
 func TestPoolAddresses(t *testing.T) {
-	spec := v1.SiloSpec{Service: &v1.Service{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}},
+	spec := v1.SiloSpec{Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}},
 		Expose: v1.ExposeLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Class: v1.LBIPPool, Pool: "metal-1-extra"}},
 		Network: v1.SiloNetwork{Egress: v1.Egress{Source: v1.EgressSameAsService}}}
 	r := Rules(host(
@@ -95,7 +95,7 @@ func TestPoolAddresses(t *testing.T) {
 // allowFrom: same host (bridged) and across the mesh (routed); the source must be running.
 func TestAllowFrom(t *testing.T) {
 	api := Silo{Key: "payments/api", IP: a("10.64.2.2"), Spec: v1.SiloSpec{
-		Service:   &v1.Service{Ports: []v1.ServicePort{{Name: "http", Port: 8080}, {Name: "admin", Port: 9090}}},
+		Service:   &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8080}, {Name: "admin", Port: 9090}}},
 		AllowFrom: []v1.AllowFrom{{Silo: "worker", Ports: []string{"http"}}, {Silo: "research/crawler"}, {Silo: "ghost"}},
 	}}
 	worker := Silo{Key: "payments/worker", IP: a("10.64.2.5")}   // same host
@@ -126,7 +126,7 @@ func TestDefaultsAndIsolation(t *testing.T) {
 		"ip saddr 10.64.2.0/24 ip daddr != { 10.64.0.0/16, 10.62.0.0/16, 10.63.0.0/16 } oifname != \"kvbr0\" masquerade",
 		"table inet kevaso_nat\ndelete table inet kevaso_nat", // old tables cleaned up
 	)
-	hasNot(t, r, "dnat", "snat ip to")
+	hasNot(t, r, "dnat ip to", "snat ip to")
 	if Rules(host(Silo{Key: "dev/plain", IP: a("10.64.2.2")})) != r {
 		t.Error("not deterministic")
 	}
@@ -179,7 +179,7 @@ func TestGateRedirect(t *testing.T) {
 	h.GatePort = 15001
 	r := Rules(h)
 	has(t, r,
-		`iifname "kvbr0" ip saddr 10.64.2.2 ip daddr != { 10.64.0.0/16, 10.62.0.0/16, 10.63.0.0/16 } tcp dport { 443, 8443 } redirect to :15001`,
+		`iifname "kvbr0" ip saddr 10.64.2.2 ip daddr != { 10.64.0.0/16, 10.65.0.0/16, 10.62.0.0/16, 10.63.0.0/16 } tcp dport { 443, 8443 } redirect to :15001`,
 		`iifname "kvbr0" ip daddr 10.64.2.1 tcp dport 15001 accept`,
 	)
 	hasNot(t, r, "ip saddr 10.64.2.3 ip daddr != { 10.64.0.0/16, 10.62.0.0/16, 10.63.0.0/16 } tcp dport")
@@ -195,7 +195,7 @@ func TestGateRedirect(t *testing.T) {
 // A plugin's load balancer (a NodeBalancer) reaches the silo through node ports, from its own
 // addresses only; nothing opens on the host's public address.
 func TestNodePortRules(t *testing.T) {
-	spec := v1.SiloSpec{Service: &v1.Service{Expose: v1.ExposeLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Class: "linode-nodebalancer"},
+	spec := v1.SiloSpec{Service: &v1.SiloService{Expose: v1.ExposeLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Class: "linode-nodebalancer"},
 		Ports: []v1.ServicePort{{Name: "web", Port: 80}, {Name: "dns", Port: 53, Protocol: "UDP"}}}}
 	r := Rules(host(Silo{Key: "dev/web", IP: a("10.64.2.5"), Spec: spec,
 		NodePorts:    []v1.NodePort{{Name: "web", Port: 80, NodePort: 30000}, {Name: "dns", Port: 53, NodePort: 30001}},
@@ -205,4 +205,29 @@ func TestNodePortRules(t *testing.T) {
 		"ip saddr 192.168.255.0/24 udp dport 30001 dnat ip to 10.64.2.5:53",
 		`oifname "kvbr0" ip daddr 10.64.2.5 ip saddr 192.168.255.0/24 tcp dport 80 ct status dnat accept`)
 	hasNot(t, r, "ip daddr 198.51.100.10")
+}
+
+func TestServiceRules(t *testing.T) {
+	h := host(Silo{Key: "web3/rpc-0", IP: a("10.64.2.2"), Spec: v1.SiloSpec{AllowFrom: []v1.AllowFrom{{Silo: "client"}},
+		Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "rpc", Port: 8545}}}}})
+	h.All = []Silo{{Key: "web3/client", IP: a("10.64.2.9")}}
+	h.Local = append(h.Local, Silo{Key: "web3/client", IP: a("10.64.2.9")})
+	h.Services = []Service{{Key: "web3/rpc", ClusterIP: a("10.65.0.1"), SourceRanges: []string{"192.168.255.0/24"},
+		Ports: []ServicePort{{Proto: "tcp", Port: 8545, NodePort: 32000, Targets: []Target{
+			{IP: a("10.64.2.2"), Port: 8545, Local: true}, {IP: a("10.64.3.2"), Port: 8545}}}}}}
+	r := Rules(h)
+	has(t, r,
+		// The virtual IP from this host's silos, to any endpoint, at random.
+		`iifname "kvbr0" ip daddr 10.65.0.1 tcp dport 8545 dnat ip to numgen random mod 2 map { 0 : 10.64.2.2 . 8545, 1 : 10.64.3.2 . 8545 }`,
+		// The node port from the load balancer: only this host's endpoints (client address kept).
+		`ip saddr 192.168.255.0/24 tcp dport 32000 dnat ip to 10.64.2.2:8545`,
+		`oifname "kvbr0" ip daddr 10.64.2.2 ip saddr 192.168.255.0/24 tcp dport 8545 ct status dnat accept`,
+		// A same-host client reaching it through the virtual IP is routed: allowFrom still decides.
+		`oifname "kvbr0" ip saddr 10.64.2.9 ip daddr 10.64.2.2 tcp dport 8545 ct status dnat accept`,
+		// …and masqueraded, so the reply comes back through the translation.
+		`ip saddr 10.64.2.0/24 ip daddr 10.64.2.0/24 oifname "kvbr0" ct status dnat masquerade`,
+	)
+	// No endpoints: no rule (a connection is refused rather than sent nowhere).
+	h.Services[0].Ports[0].Targets = nil
+	hasNot(t, Rules(h), "10.65.0.1")
 }

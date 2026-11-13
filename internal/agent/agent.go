@@ -255,6 +255,13 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	if err != nil {
 		return engine.Result{}, err
 	}
+	image, resolved := imageOf(s)
+	if rs.State != kri.Absent && resolved {
+		// A new image, or a reset asked for: put it back onto the image, stop-first (design §0.4).
+		if due, err := a.update(ctx, rt, s, image, vols); err != nil || due {
+			return engine.Result{RequeueAfter: time.Millisecond}, err
+		}
+	}
 	switch rs.State {
 	case kri.Absent:
 		mem, err := v1.ParseBytes(s.Spec.Resources.Memory)
@@ -271,7 +278,7 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		}); err != nil {
 			return engine.Result{}, err
 		}
-		if err := rt.Create(ctx, kri.Spec{ID: id, Image: s.Spec.Image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
+		if err := rt.Create(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
 			Volumes: vols, Command: s.Spec.Command}); err != nil {
 			_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 				st.Phase = PhaseFailed
@@ -279,7 +286,9 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			})
 			return engine.Result{}, err
 		}
-		return engine.Result{RequeueAfter: time.Millisecond}, nil
+		return engine.Result{RequeueAfter: time.Millisecond}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			st.Image = running(st.Image, s, image)
+		})
 	case kri.Created, kri.Stopped:
 		if ic, ok := rt.(kri.InitContainers); ok {
 			// Init containers: the steps run before the main process, each in its own container.
@@ -332,10 +341,138 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	if done, err := a.runInit(ctx, rt, s); err != nil || !done {
 		return engine.Result{}, err
 	}
-	return engine.Result{}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+	reason, msg, again := "Running", "running on "+a.HostName, time.Duration(0)
+	status := meta.ConditionTrue
+	if r := s.Spec.Readiness; r != nil {
+		// Ready only while its check passes: looked at again every period.
+		again = duration(r.Period, 10*time.Second)
+		if ok, out := a.ready(ctx, rt, s); !ok {
+			status, reason, msg = meta.ConditionFalse, "NotReady", "readiness: "+out
+		} else {
+			msg += ", readiness passing"
+		}
+	}
+	return engine.Result{RequeueAfter: again}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		st.Phase, st.Address = PhaseRunning, rs.Address
-		setCond(st, "Ready", meta.ConditionTrue, "Running", "running on "+a.HostName, s.Generation, a.now())
+		if st.Image == nil || st.Image.Running == "" {
+			st.Image = running(st.Image, s, image) // created before images were recorded
+		}
+		setCond(st, "Ready", status, reason, msg, s.Generation, a.now())
 	})
+}
+
+// imageOf is what the silo's runtime gets: what the control plane resolved spec.image to (an
+// Image's version). resolved is false while a changed spec.image waits for the control plane: the
+// silo keeps what it has until then.
+func imageOf(s *v1.Silo) (image string, resolved bool) {
+	im := s.Status.Image
+	switch {
+	case im == nil || im.Ref == "":
+		return s.Spec.Image, true // nothing resolved yet: the name as it is
+	case im.From == s.Spec.Image:
+		return im.Ref, true
+	}
+	return im.Ref, false
+}
+
+// running records that the silo now runs image, with its current reset applied.
+func running(cur *v1.SiloImage, s *v1.Silo, image string) *v1.SiloImage {
+	next := &v1.SiloImage{From: s.Spec.Image, Ref: image}
+	if cur != nil {
+		next.From, next.Ref = cur.From, cur.Ref
+		if next.Ref == "" {
+			next.From, next.Ref = s.Spec.Image, image
+		}
+	}
+	next.Running, next.Reset = image, s.Spec.Reset
+	return next
+}
+
+// update resets the silo onto image when that's due: its image changed, or spec.reset did. Always
+// stop-first: the old copy is stopped completely before the new one exists, so two never run
+// (StartFirst needs a disk clone, which comes with moves). Volumes are kept; the disk or container
+// is fresh from the image, so firstBoot init steps run again. due says it acted (or must wait).
+func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image string, vols []kri.Volume) (bool, error) {
+	due := func(s *v1.Silo) bool {
+		cur := s.Status.Image
+		return cur != nil && cur.Running != "" && (cur.Running != image || cur.Reset != s.Spec.Reset)
+	}
+	if !due(s) {
+		return false, nil
+	}
+	// The cache may be behind our own last write (a reset just done): decide on the stored silo.
+	var fresh v1.Silo
+	if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &fresh); err != nil {
+		return true, client.IgnoreNotFound(err)
+	}
+	if fresh.UID != s.UID || fresh.Generation != s.Generation || !due(&fresh) {
+		return true, nil // changed under us, or already done: look again with what's stored
+	}
+	cur := s.Status.Image
+	what := "a reset"
+	if cur.Running != image {
+		what = "image " + image
+	}
+	rr, ok := rt.(kri.Resetter)
+	if !ok {
+		return true, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			setCond(st, "Updated", meta.ConditionFalse, "ResetUnsupported", "runtime "+s.Spec.Runtime+" can't reset a silo: "+what+" waits", s.Generation, a.now())
+		})
+	}
+	if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+		st.Phase = PhaseStarting
+		setCond(st, "Ready", meta.ConditionFalse, "Updating", "stopping for "+what+" (StopFirst; volumes kept)", s.Generation, a.now())
+	}); err != nil {
+		return true, err
+	}
+	id := idOf(s)
+	if err := rt.Stop(ctx, id); err != nil {
+		return true, fmt.Errorf("stop for %s: %w", what, err)
+	}
+	mem, err := v1.ParseBytes(s.Spec.Resources.Memory)
+	if err != nil {
+		return true, err
+	}
+	disk, err := v1.ParseBytes(s.Spec.Disk.Size)
+	if err != nil {
+		return true, err
+	}
+	if err := rr.Reset(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
+		Volumes: vols, Command: s.Spec.Command}); err != nil {
+		_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			setCond(st, "Updated", meta.ConditionFalse, "ResetFailed", err.Error(), s.Generation, a.now())
+		})
+		return true, fmt.Errorf("reset onto %s: %w", image, err)
+	}
+	a.prepared.Delete(s.UID) // a fresh disk: the guest helper goes in again
+	a.log("silo %s/%s: reset onto %s (%s)", s.Namespace, s.Name, image, what)
+	return true, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+		st.Image, st.Init, st.Address = running(st.Image, s, image), nil, ""
+		setCond(st, "Updated", meta.ConditionTrue, "Reset", "reset onto "+image+" (stop-first, volumes kept)", s.Generation, a.now())
+	})
+}
+
+// ready runs the silo's readiness command once.
+func (a *Agent) ready(ctx context.Context, rt kri.Runtime, s *v1.Silo) (bool, string) {
+	r := s.Spec.Readiness
+	cctx, cancel := context.WithTimeout(ctx, duration(r.Timeout, 5*time.Second))
+	defer cancel()
+	var out bytes.Buffer
+	code, err := rt.Exec(cctx, idOf(s), kri.ExecRequest{Command: r.Command, Stdout: &out, Stderr: &out})
+	switch {
+	case err != nil:
+		return false, err.Error()
+	case code != 0:
+		return false, fmt.Sprintf("exit %d: %s", code, tail(out.String(), 200))
+	}
+	return true, ""
+}
+
+func duration(s string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+		return d
+	}
+	return def
 }
 
 // runInit runs the init steps that haven't run yet inside the running silo (through Exec).
@@ -457,9 +594,9 @@ func (a *Agent) setStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.SiloS
 		if cur.UID != s.UID {
 			return nil // deleted and re-created: not the silo we were working on
 		}
-		before := fmt.Sprintf("%+v", cur.Status)
+		before := statusKey(cur.Status)
 		mutate(&cur.Status)
-		if fmt.Sprintf("%+v", cur.Status) == before {
+		if statusKey(cur.Status) == before {
 			return nil
 		}
 		err := a.Client.UpdateStatus(ctx, &cur)

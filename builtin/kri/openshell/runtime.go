@@ -392,6 +392,26 @@ func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 	return r.Host.RemoveAll(statePath(id))
 }
 
+// Reset implements kri.Resetter: the sandbox goes (its gateway and providers stay) and is made
+// again from spec's image on Start, with the policy applied afresh.
+func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.load(spec.ID)
+	if !ok {
+		return fmt.Errorf("%s: %w", spec.ID, kri.ErrNotFound)
+	}
+	if _, exists, err := r.get(ctx, s); err != nil {
+		return err
+	} else if exists {
+		if _, err := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "delete", SandboxName(spec.ID)); err != nil {
+			return err
+		}
+	}
+	s.Image, s.CPU, s.Memory, s.Created, s.PolicyHash = spec.Image, spec.CPU, spec.Memory, false, ""
+	return r.save(s)
+}
+
 // Status implements kri.Runtime.
 func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 	s, ok := r.load(id)

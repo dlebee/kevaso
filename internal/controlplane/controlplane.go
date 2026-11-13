@@ -28,7 +28,9 @@ import (
 	"kevaso.com/core/internal/controllers/certificate"
 	hostcontroller "kevaso.com/core/internal/controllers/host"
 	"kevaso.com/core/internal/controllers/provider"
+	servicecontroller "kevaso.com/core/internal/controllers/service"
 	silocontroller "kevaso.com/core/internal/controllers/silo"
+	"kevaso.com/core/internal/controllers/siloset"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
@@ -270,7 +272,8 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	e.OnError = func(ctrl string, k engine.Key, err error, retry time.Duration) {
 		cfg.Log("%s: %s: %v (retry in %v)", ctrl, k, err, retry)
 	}
-	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, Pools: pools, Clock: cfg.Clock}
+	images, sets, services := informer.New(c, "Image"), informer.New(c, "SiloSet"), informer.New(c, "Service")
+	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, Pools: pools, Images: images, Clock: cfg.Clock}
 	if cfg.Plugins != nil {
 		reg := cfg.Plugins
 		sc.Classes = func() map[string]scheduler.Class { return provider.Classes(reg) }
@@ -280,6 +283,11 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
 	pools.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IPPool", Name: k.Name}) })
+	e.Register(&siloset.Controller{Client: c, Sets: sets, Silos: silos, Clock: cfg.Clock}, engine.Options{Workers: 2})
+	e.Register(&servicecontroller.Controller{Client: c, Services: services, Silos: silos, Clock: cfg.Clock}, engine.Options{Workers: 2})
+	images.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Image", Namespace: k.Namespace, Name: k.Name}) })
+	sets.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "SiloSet", Namespace: k.Namespace, Name: k.Name}) })
+	services.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Service", Namespace: k.Namespace, Name: k.Name}) })
 	cc := &certificate.Controller{Client: c, Store: cd.store, KMS: cd.kms, Clock: cfg.Clock,
 		CertControllers: certControllers(cfg, cd),
 		Certificates:    certs, Ingresses: ingresses, Classes: classes, Issuers: issuers, Log: cfg.Log}
@@ -318,6 +326,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	if reg := cfg.Plugins; reg != nil {
 		e.Register(&provider.Hosts{Client: c, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 1})
 		e.Register(&provider.LoadBalancers{Client: c, Silos: silos, Hosts: hosts, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 2})
+		e.Register(&provider.ServiceLoadBalancers{Client: c, Services: services, Hosts: hosts, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 1})
 		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 2})
 		e.Register(&provider.IngressDNS{Client: c, Ingresses: ingresses, Classes: classes, Plugins: reg, Cluster: cfg.ClusterName, Clock: cfg.Clock}, engine.Options{Workers: 1})
 		classes.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IngressClass", Name: k.Name}) })
@@ -334,6 +343,10 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 				ing := o.(*v1.Ingress)
 				e.Changed(engine.Key{Kind: "Ingress", Namespace: ing.Namespace, Name: ing.Name})
 			}
+			for _, o := range services.List() {
+				svc := o.(*v1.Service)
+				e.Changed(engine.Key{Kind: "Service", Namespace: svc.Namespace, Name: svc.Name})
+			}
 		}
 		go reg.Run(ctx)
 	}
@@ -343,6 +356,9 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	go silos.Run(ctx)
 	go hosts.Run(ctx)
 	go pools.Run(ctx)
+	go images.Run(ctx)
+	go sets.Run(ctx)
+	go services.Run(ctx)
 	e.Run(ctx)
 }
 

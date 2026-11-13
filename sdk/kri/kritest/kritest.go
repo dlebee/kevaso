@@ -129,6 +129,40 @@ func Run(t *testing.T, newRuntime func(t *testing.T) kri.Runtime, o Options) {
 		}
 	})
 
+	t.Run("ResetKeepsTheAddress", func(t *testing.T) {
+		r, ctx, s := newRuntime(t), ctxT(t), spec("reset")
+		rr, ok := r.(kri.Resetter)
+		if !ok {
+			t.Skip("not a Resetter")
+		}
+		cleanup(t, r, s.ID)
+		if err := r.Create(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Start(ctx, s.ID); err != nil {
+			t.Fatal(err)
+		}
+		before, _ := r.Status(ctx, s.ID)
+		if err := r.Stop(ctx, s.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := rr.Reset(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		if st, err := r.Status(ctx, s.ID); err != nil || st.State != kri.Created {
+			t.Fatalf("after reset: %+v %v (want Created)", st, err)
+		}
+		if err := r.Start(ctx, s.ID); err != nil {
+			t.Fatal(err)
+		}
+		if after, _ := r.Status(ctx, s.ID); after.State != kri.Running || after.Address != before.Address {
+			t.Fatalf("after reset and start: %+v, before %+v (same address)", after, before)
+		}
+		if err := rr.Reset(ctx, spec("never-made")); !errors.Is(err, kri.ErrNotFound) {
+			t.Fatalf("reset of an absent silo: want ErrNotFound, got %v", err)
+		}
+	})
+
 	t.Run("OperationsOnAbsentSilos", func(t *testing.T) {
 		r, ctx := newRuntime(t), ctxT(t)
 		id := spec("absent").ID

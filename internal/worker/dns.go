@@ -20,6 +20,12 @@ const Zone = "kevaso."
 // is false for names outside the zone (forward them); found is false for an unknown silo (NXDOMAIN).
 // Resolving a name grants no connection: allowFrom does. Pure.
 func Lookup(name string, silos []*v1.Silo) (ip netip.Addr, inZone, found bool) {
+	return LookupIn(name, silos, nil)
+}
+
+// LookupIn is Lookup with standalone Services too: NAME.NAMESPACE.kevaso → its virtual IP. A
+// Service and a silo of the same name: the Service wins (it's what a set's clients want).
+func LookupIn(name string, silos []*v1.Silo, svcs []*v1.Service) (ip netip.Addr, inZone, found bool) {
 	name = strings.ToLower(dns.Fqdn(name))
 	if name != Zone && !strings.HasSuffix(name, "."+Zone) {
 		return netip.Addr{}, false, false
@@ -27,6 +33,13 @@ func Lookup(name string, silos []*v1.Silo) (ip netip.Addr, inZone, found bool) {
 	labels := dns.SplitDomainName(strings.TrimSuffix(name, Zone))
 	if len(labels) != 2 {
 		return netip.Addr{}, true, false
+	}
+	for _, sv := range svcs {
+		if sv.Name == labels[0] && sv.Namespace == labels[1] && sv.DeletionTimestamp == nil {
+			if a, err := netip.ParseAddr(sv.Status.ClusterIP); err == nil {
+				return a, true, true
+			}
+		}
 	}
 	for _, s := range silos {
 		if s.Name == labels[0] && s.Namespace == labels[1] && s.DeletionTimestamp == nil {
@@ -43,6 +56,7 @@ func Lookup(name string, silos []*v1.Silo) (ip netip.Addr, inZone, found bool) {
 type DNS struct {
 	Listen   string               // e.g. 10.64.3.1:53
 	Silos    func() []*v1.Silo    // the current silos
+	Services func() []*v1.Service // the current Services (nil: none)
 	Upstream []string             // default: the host's resolvers
 	Log      func(string, ...any) //
 
@@ -82,7 +96,11 @@ func (d *DNS) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 	q := req.Question[0]
-	ip, inZone, found := Lookup(q.Name, d.Silos())
+	var svcs []*v1.Service
+	if d.Services != nil {
+		svcs = d.Services()
+	}
+	ip, inZone, found := LookupIn(q.Name, d.Silos(), svcs)
 	if inZone {
 		m := new(dns.Msg)
 		m.SetReply(req)

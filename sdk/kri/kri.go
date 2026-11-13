@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 )
 
 // ID names a silo on this host. UID makes a deleted and re-created silo a different one.
@@ -122,6 +123,24 @@ type Runtime interface {
 	List(ctx context.Context) ([]ID, error)
 	// Exec runs a command inside a running silo and returns its exit code. ErrNotFound if absent.
 	Exec(ctx context.Context, id ID, req ExecRequest) (int, error)
+}
+
+// Resetter is a runtime that can put a silo back onto an image (design §0.2, `kvo reset`): a
+// fresh disk or container from spec.Image, with the same ID and private address, and its volumes
+// kept. The silo is stopped first (the agent stops it; Reset makes sure) and left Created. Every
+// built-in runtime has it.
+type Resetter interface {
+	Reset(ctx context.Context, spec Spec) error
+}
+
+// ParseDiskImage reads a disk image reference (URL#sha256=HEX, as an Image version's disk reaches
+// a VM runtime).
+func ParseDiskImage(ref string) (url, sha256 string, ok bool) {
+	i := strings.LastIndex(ref, "#sha256=")
+	if i < 0 || !strings.HasPrefix(ref, "https://") {
+		return "", "", false
+	}
+	return ref[:i], ref[i+len("#sha256="):], true
 }
 
 // Broker is a runtime that gives every silo its own channel to its host (vsock for VMs), so the

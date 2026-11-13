@@ -6,7 +6,7 @@ Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for
 **New here? Read [the guide](https://dlebee.github.io/kevaso-docs/)**: from an empty machine to a shared
 cluster, one explained step at a time. (`docs/` in this repo is for people working on Kevaso itself.)
 
-**Status:** early (M0–M11 of [MILESTONES.md](MILESTONES.md) done). What exists today:
+**Status:** early (M0–M12 of [MILESTONES.md](MILESTONES.md) done). What exists today:
 
 - setup in explicit steps ([guide](https://dlebee.github.io/kevaso-docs/setup/prepare/)): you make Kevaso's SSH key and
   check the machine's fingerprint, `kvoadm init` first looks without changing anything (`--dry-run` stops there), then
@@ -68,6 +68,14 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   cloud token alone. The first is [Linode](https://github.com/dlebee/kevaso-provider-linode):
   NodeBalancers, Block Storage volumes (formatted once, deleted with the silo), shared IPs announced
   over BGP that follow their silo to another Linode, and Linode DNS for Ingress host names;
+- sets and images: an `Image` names what silos start from, with versions that never change (an OCI
+  reference for containers, a checked disk image for VMs). A `SiloSet` is a scale set of stateful
+  silos with stable names (`rpc-0`, `rpc-1`, …), spread over hosts, with booted standby instances,
+  protected ones scale-in never removes (`kvo protect`), and rollouts that reset instances onto a new
+  image a few at a time (or start extra ones first), volumes kept. `exclusive: true` guarantees one
+  copy only. A standalone `Service` puts a virtual IP and a name in front of a set, on every worker,
+  sending to the instances whose `readiness` check passes, and can take an outside address from a
+  plugin's load balancer. `kvo scale`, `kvo reset`;
 - under the hood: a store with global revisions and resumable watches, CEL validation, a controller
   engine; the testbed and end-to-end loop (`make e2e`).
 

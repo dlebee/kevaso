@@ -371,9 +371,9 @@ func updateStatus(ctx context.Context, c *client.Client, s *v1.Silo, mutate func
 		if cur.UID != s.UID {
 			return nil
 		}
-		before := fmt.Sprintf("%+v", cur.Status)
+		before := statusKey(cur.Status)
 		mutate(&cur.Status)
-		if fmt.Sprintf("%+v", cur.Status) == before {
+		if statusKey(cur.Status) == before {
 			return nil
 		}
 		err := c.UpdateStatus(ctx, &cur)

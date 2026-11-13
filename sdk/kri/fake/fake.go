@@ -108,6 +108,28 @@ func (r *Runtime) Delete(_ context.Context, id kri.ID) error {
 	return nil
 }
 
+// Reset implements kri.Resetter: a fresh copy from spec.Image, Created.
+func (r *Runtime) Reset(_ context.Context, spec kri.Spec) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.record("reset", spec.ID)
+	if _, err := r.get(spec.ID); err != nil {
+		return err
+	}
+	r.silos[spec.ID] = &silo{spec: spec, state: kri.Created}
+	return nil
+}
+
+// Image is the image a silo was created or last reset with ("" if absent).
+func (r *Runtime) Image(id kri.ID) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.silos[id]; ok {
+		return s.spec.Image
+	}
+	return ""
+}
+
 // Status implements kri.Runtime.
 func (r *Runtime) Status(_ context.Context, id kri.ID) (kri.Status, error) {
 	r.mu.Lock()

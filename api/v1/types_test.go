@@ -94,8 +94,8 @@ func TestLookup(t *testing.T) {
 	if _, ok := Lookup("pods"); ok {
 		t.Error("Lookup(pods) found something")
 	}
-	if got := len(Kinds()); got != 15 {
-		t.Errorf("%d kinds, want 15", got)
+	if got := len(Kinds()); got != 18 {
+		t.Errorf("%d kinds, want 18", got)
 	}
 }
 
@@ -164,6 +164,34 @@ func TestParseBytes(t *testing.T) {
 	for _, bad := range []string{"4GB", "-1Gi", "1.5Gi", "Gi", "lots", "99999999999Ti"} {
 		if _, err := ParseBytes(bad); err == nil {
 			t.Errorf("ParseBytes(%q) accepted", bad)
+		}
+	}
+}
+
+func TestResolveImage(t *testing.T) {
+	img := &Image{ObjectMeta: meta.ObjectMeta{Name: "geth", Namespace: "web3"}, Spec: ImageSpec{Versions: []ImageVersion{
+		{Name: "v1", Container: "ethereum/client-go:v1.14.0"},
+		{Name: "v2", Container: "ethereum/client-go:v1.15.0", Disk: &ImageDisk{URL: "https://x/geth.img", SHA256: strings.Repeat("ab", 32)}},
+	}}}
+	for _, tc := range []struct{ spec, runtime, want, err string }{
+		{"geth:v1", "docker", "ethereum/client-go:v1.14.0", ""},
+		{"geth", "docker", "ethereum/client-go:v1.15.0", ""}, // the newest
+		{"geth:v2", "cloud-hypervisor", "https://x/geth.img#sha256=" + strings.Repeat("ab", 32), ""},
+		{"geth:v1", "cloud-hypervisor", "", "has no disk image"},
+		{"geth:v9", "docker", "", "has no version v9"},
+		{"nginx:1.27", "docker", "nginx:1.27", ""},                 // not an Image: as it is
+		{"registry:5000/geth", "docker", "registry:5000/geth", ""}, // a port isn't a version
+		{"ubuntu-24.04", "cloud-hypervisor", "ubuntu-24.04", ""},
+	} {
+		got, err := ResolveImage(tc.spec, tc.runtime, []*Image{img})
+		if tc.err != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Errorf("%s on %s: err %v, want %q", tc.spec, tc.runtime, err, tc.err)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("%s on %s: %q %v, want %q", tc.spec, tc.runtime, got, err, tc.want)
 		}
 	}
 }

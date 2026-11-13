@@ -26,7 +26,7 @@ func TestIngress(t *testing.T) {
 		ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{Public: true, Controller: v1.SiloRef{Silo: "ingress-public", Namespace: "kevaso-system"}}}); err != nil {
 		t.Fatal(err)
 	}
-	place := func(name, ns string, svc *v1.Service) *v1.Silo {
+	place := func(name, ns string, svc *v1.SiloService) *v1.Silo {
 		t.Helper()
 		s := silo(name, ns)
 		s.Spec.Service = svc
@@ -41,7 +41,7 @@ func TestIngress(t *testing.T) {
 	}
 	ctrl := place("ingress-public", "kevaso-system", nil)
 	other := place("bystander", "kevaso-system", nil)
-	place("api", "payments", &v1.Service{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}})
+	place("api", "payments", &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}})
 
 	ing := func(name string) *v1.Ingress {
 		return &v1.Ingress{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Ingress"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "payments"},

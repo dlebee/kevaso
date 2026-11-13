@@ -34,6 +34,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -55,6 +56,7 @@ type opts struct {
 	duration                                 string // kvo create token
 	all, noBrowser                           bool
 	secret                                   secretOpts
+	sets                                     setOpts
 	args                                     []string
 	command                                  []string // after --
 	ctxNamespace                             string   // the context's default namespace
@@ -122,6 +124,18 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.secret.labels = append(o.secret.labels, v)
 		case "--reveal":
 			o.secret.reveal = true
+		case "--instances":
+			var v string
+			if v, err = val(); err == nil {
+				o.sets.instances, err = strconv.Atoi(v)
+				o.sets.instancesSet = true
+			}
+		case "--rolling":
+			o.sets.rolling = true
+		case "--off":
+			o.sets.off = true
+		case "--yes":
+			o.sets.yes = true
 		default:
 			if strings.HasPrefix(a, "-") && a != "-" {
 				return o, fmt.Errorf("unknown flag %s", a)
@@ -138,7 +152,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|create|secret|login|logout|ctx|ns|auth …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|scale|reset|protect|create|secret|login|logout|ctx|ns|auth …")
 		return 2
 	}
 	o, err := parse(args[1:], os.Getenv)
@@ -184,6 +198,12 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		err = del(ctx, c, o, stdout)
 	case "watch":
 		err = watch(ctx, c, o, stdout)
+	case "scale":
+		err = scale(ctx, c, o, stdout)
+	case "reset":
+		err = reset(ctx, c, o, stdout)
+	case "protect":
+		err = protect(ctx, c, o, stdout)
 	case "exec":
 		var code int
 		code, err = execIn(ctx, c, o, stdin, stdout, stderr)
@@ -608,6 +628,12 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error 
 		head = append(head, "CLASS", "HOSTS", "ADDRESS", "READY")
 	case "Certificate":
 		head = append(head, "HOSTS", "ISSUER", "EXPIRES", "READY")
+	case "SiloSet":
+		head = append(head, "IMAGE", "INSTANCES", "READY", "UPDATED")
+	case "Service":
+		head = append(head, "TYPE", "CLUSTER-IP", "PUBLIC-IP", "PORTS", "ENDPOINTS")
+	case "Image":
+		head = append(head, "VERSIONS")
 	}
 	head = append(head, "AGE")
 	_, _ = fmt.Fprintln(tw, strings.Join(head, "\t"))
@@ -686,6 +712,32 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error 
 				exp = o.Status.NotAfter.Local().Format("2006-01-02")
 			}
 			row = append(row, strings.Join(o.Spec.Hosts, ","), o.Spec.Issuer, exp, readiness(o.Status.Conditions))
+		case *v1.SiloSet:
+			inst := fmt.Sprint(o.Spec.Instances)
+			if o.Spec.Standby > 0 {
+				inst += fmt.Sprintf("+%d standby", o.Spec.Standby)
+			}
+			row = append(row, dash(o.InstanceSpec().Image), inst, fmt.Sprintf("%d/%d", o.Status.Ready, o.Spec.Instances), fmt.Sprint(o.Status.Updated))
+		case *v1.Service:
+			typ := o.Spec.Type
+			if typ == "" {
+				typ = v1.ServiceClusterIP
+			}
+			var ps []string
+			for _, p := range o.Spec.Ports {
+				proto := p.Protocol
+				if proto == "" {
+					proto = "TCP"
+				}
+				ps = append(ps, fmt.Sprintf("%d/%s", p.Port, proto))
+			}
+			row = append(row, typ, dash(o.Status.ClusterIP), dash(o.Status.PublicIP), strings.Join(ps, ","), fmt.Sprint(len(o.Status.Endpoints)))
+		case *v1.Image:
+			var vs []string
+			for _, v := range o.Spec.Versions {
+				vs = append(vs, v.Name)
+			}
+			row = append(row, strings.Join(vs, ","))
 		}
 		row = append(row, age(m))
 		_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))

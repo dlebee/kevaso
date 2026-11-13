@@ -49,6 +49,39 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 		return st, false, 0, nil
 	}
 	var again time.Duration
+	// The image: resolved when the silo is new, and again only when spec.image changes (an Image's
+	// versions never change, so a resolved one stays right). Unresolvable: a new silo waits; a
+	// placed one keeps running what it has.
+	imgCond := meta.Condition{Type: "Image", ObservedGeneration: s.Generation}
+	imageChanged := false
+	if st.Image == nil || st.Image.From != s.Spec.Image {
+		var images []*v1.Image
+		for _, i := range env.Images {
+			if i.Namespace == s.Namespace {
+				images = append(images, i)
+			}
+		}
+		ref, err := v1.ResolveImage(s.Spec.Image, s.Spec.Runtime, images)
+		if err != nil {
+			imgCond.Status, imgCond.Reason, imgCond.Message = meta.ConditionFalse, "ImageMissing", err.Error()
+			changed := meta.SetCondition(&st.Conditions, imgCond, now)
+			if st.Host == "" {
+				st.Phase = PhasePending
+				changed = meta.SetCondition(&st.Conditions, meta.Condition{Type: "Scheduled", Status: meta.ConditionFalse,
+					Reason: "ImageMissing", Message: err.Error(), ObservedGeneration: s.Generation}, now) || changed
+				return st, changed || st.Phase != s.Status.Phase, 0, nil
+			}
+		} else {
+			next := &v1.SiloImage{From: s.Spec.Image, Ref: ref}
+			if st.Image != nil {
+				next.Running, next.Reset = st.Image.Running, st.Image.Reset
+			}
+			st.Image = next
+			imgCond.Status, imgCond.Reason, imgCond.Message = meta.ConditionTrue, "Resolved", s.Spec.Image+" → "+ref
+			meta.SetCondition(&st.Conditions, imgCond, now)
+			imageChanged = true
+		}
+	}
 	if st.Host != "" {
 		var h *v1.Host
 		for _, x := range hosts {
@@ -75,14 +108,14 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 				cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "HostBack", st.Host+" is back"
 				changed = meta.SetCondition(&st.Conditions, cond, now) || changed
 			}
-			return st, changed, 0, nil
+			return st, changed || imageChanged, 0, nil
 		case s.Policy() == v1.OnHostLossRecreate && now.Sub(since) < RecreateAfter:
 			again = RecreateAfter - now.Sub(since)
 			cond.Status, cond.Reason = meta.ConditionTrue, "Fencing"
 			cond.Message = st.Host + " lost; recreating elsewhere once its agent has surely stopped it (onHostLoss: Recreate)"
 			st.Phase = PhaseUnknown
 			changed := meta.SetCondition(&st.Conditions, cond, now)
-			return st, changed || s.Status.Phase != st.Phase, again, nil
+			return st, changed || imageChanged || s.Status.Phase != st.Phase, again, nil
 		case s.Policy() == v1.OnHostLossRecreate:
 			// Not lost any more (it's being placed afresh); the condition keeps what happened.
 			cond.Status, cond.Reason = meta.ConditionFalse, "Recreated"
@@ -91,13 +124,16 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 			meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Recreating",
 				Message: "recreating after losing " + st.Host, ObservedGeneration: s.Generation}, now)
 			st.Host, st.Address, st.Init = "", "", nil
+			if st.Image != nil { // a fresh instance from the image
+				st.Image.Running, st.Image.Reset = "", ""
+			}
 			// …and it's scheduled right away, below.
 		default: // Wait
 			cond.Status, cond.Reason = meta.ConditionTrue, "Waiting"
 			cond.Message = st.Host + " lost; waiting for it to come back (onHostLoss: Wait)"
 			st.Phase = PhaseUnknown
 			changed := meta.SetCondition(&st.Conditions, cond, now)
-			return st, changed || s.Status.Phase != st.Phase, 0, nil
+			return st, changed || imageChanged || s.Status.Phase != st.Phase, 0, nil
 		}
 	}
 	sched := *s
@@ -126,7 +162,7 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 	}
 	changed := meta.SetCondition(&conds, cond, now)
 	st.Conditions = conds
-	changed = changed || st.Phase != s.Status.Phase || st.Host != s.Status.Host
+	changed = changed || imageChanged || st.Phase != s.Status.Phase || st.Host != s.Status.Host
 	return st, changed, again, nil
 }
 
@@ -140,6 +176,7 @@ type Controller struct {
 	Silos  *informer.Informer
 	Hosts  *informer.Informer
 	Pools  *informer.Informer // IPPools; nil: none
+	Images *informer.Informer // Images; nil: none
 	Clock  clock.Clock
 	// Classes returns the plugins' classes now (nil: none).
 	Classes func() map[string]scheduler.Class
@@ -200,6 +237,11 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		}
 	}
 	env := scheduler.Env{Pools: pools}
+	if c.Images != nil {
+		for _, o := range c.Images.List() {
+			env.Images = append(env.Images, o.(*v1.Image))
+		}
+	}
 	if c.Classes != nil {
 		env.Classes = c.Classes()
 	}
@@ -207,13 +249,14 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	if err != nil || !changed {
 		return engine.Result{RequeueAfter: again}, err
 	}
+	prevHost := s.Status.Host
 	s.Status = st
 	// Conditional on the version we read (in s.ResourceVersion): a conflict means the cache was
 	// behind; the engine retries with fresh state.
 	if err := c.Client.UpdateStatus(ctx, s); err != nil {
 		return engine.Result{}, err
 	}
-	if st.Host != "" && st.Host != s.Status.Host {
+	if st.Host != "" && st.Host != prevHost {
 		c.assumed[key] = st.Host
 	}
 	return engine.Result{RequeueAfter: again}, nil
@@ -223,7 +266,7 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 // silo's change (freed capacity) may let pending silos fit now, and a host change concerns the
 // silos on it.
 func (c *Controller) Map(changed engine.Key) []engine.Key {
-	if changed.Kind != "Host" && changed.Kind != "Silo" && changed.Kind != "IPPool" {
+	if changed.Kind != "Host" && changed.Kind != "Silo" && changed.Kind != "IPPool" && changed.Kind != "Image" {
 		return nil
 	}
 	var keys []engine.Key
@@ -231,6 +274,10 @@ func (c *Controller) Map(changed engine.Key) []engine.Key {
 		s := o.(*v1.Silo)
 		self := changed.Kind == "Silo" && changed.Namespace == s.Namespace && changed.Name == s.Name
 		onIt := (changed.Kind == "Host" && s.Status.Host == changed.Name) || (changed.Kind == "IPPool" && scheduler.PoolOf(s) == changed.Name)
+		if changed.Kind == "Image" {
+			name, _ := v1.SplitImage(s.Spec.Image)
+			onIt = s.Namespace == changed.Namespace && name == changed.Name
+		}
 		if (s.Status.Host == "" && !self) || onIt {
 			keys = append(keys, engine.Key{Kind: "Silo", Namespace: s.Namespace, Name: s.Name})
 		}

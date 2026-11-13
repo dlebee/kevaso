@@ -172,12 +172,12 @@ func (c *IngressDNS) condition(ctx context.Context, ing *v1.Ingress, published [
 		if err := c.Client.Get(ctx, "Ingress", ing.Namespace, ing.Name, &cur); err != nil {
 			return engine.Result{}, client.IgnoreNotFound(err)
 		}
-		before := fmt.Sprintf("%+v", cur.Status)
+		before := statusKey(cur.Status)
 		if published != nil || reason == "Published" {
 			cur.Status.DNSNames = published
 		}
 		meta.SetCondition(&cur.Status.Conditions, meta.Condition{Type: "DNS", Status: status, Reason: reason, Message: msg, ObservedGeneration: cur.Generation}, now)
-		if fmt.Sprintf("%+v", cur.Status) == before {
+		if statusKey(cur.Status) == before {
 			return engine.Result{RequeueAfter: again}, nil
 		}
 		err := c.Client.UpdateStatus(ctx, &cur)

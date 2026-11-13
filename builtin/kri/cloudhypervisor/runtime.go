@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -123,14 +124,17 @@ func (r *Runtime) saveState(s State) error {
 
 // Create implements kri.Runtime: disk from the image, cloud-init seed, TAP, VMM unit. Not started.
 func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
+	if _, ok := r.state(spec.ID); ok {
+		return nil
+	}
+	img, err := r.image(ctx, spec.Image) // before the lock: a first fetch takes a while
+	if err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.state(spec.ID); ok {
 		return nil
-	}
-	img, err := imagePath(spec.Image, r.Arch)
-	if err != nil {
-		return err
 	}
 	n := NamesFor(spec.ID)
 	IPMu.Lock() // container silos share the bridge and its addresses: until the state is saved
@@ -408,6 +412,94 @@ func dialSSH(ctx context.Context, addr string, cfg *ssh.ClientConfig) (*ssh.Clie
 	}
 	_ = nc.SetDeadline(time.Time{})
 	return ssh.NewClient(cc, chans, reqs), nil
+}
+
+// image is the local file of an image: a built-in name's (fetched at install), or an Image
+// version's disk (URL#sha256=HEX: fetched once, checked against its hash).
+func (r *Runtime) image(ctx context.Context, image string) (string, error) {
+	url, sum, ok := kri.ParseDiskImage(image)
+	if !ok {
+		return imagePath(image, r.Arch)
+	}
+	dst := filepath.Join(ImagesDir, "sha256-"+sum+".img")
+	if err := Fetch(ctx, r.Host, Asset{URL: url, SHA256: sum, File: filepath.Base(dst)}, dst, 0o600); err != nil {
+		return "", fmt.Errorf("image %s: %w", url, err)
+	}
+	return dst, nil
+}
+
+// Reset implements kri.Resetter: the VM is stopped, its disk is made afresh from spec's image and
+// its seed (with a new guest host key) rebuilt; its address, MAC and tap stay.
+func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
+	img, err := r.image(ctx, spec.Image)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st, ok := r.state(spec.ID)
+	if !ok {
+		return fmt.Errorf("%s: %w", spec.ID, kri.ErrNotFound)
+	}
+	ip, err := netip.ParseAddr(st.IP)
+	if err != nil {
+		return err
+	}
+	n := NamesFor(spec.ID)
+	disk := spec.DiskBytes
+	if disk <= 0 {
+		disk = 20 << 30
+	}
+	mem := spec.Memory
+	if mem <= 0 {
+		mem = 1 << 30
+	}
+	cpus := spec.CPU
+	if cpus <= 0 {
+		cpus = 1
+	}
+	hostPub, hostPriv, err := newHostKey()
+	if err != nil {
+		return err
+	}
+	steps := []func() error{
+		func() error { return r.run(ctx, "systemctl", "stop", n.Unit) },
+		func() error {
+			if out, err := r.Host.Run(ctx, "lvs", "--noheadings", VG+"/"+n.LV); err == nil && len(bytes.TrimSpace(out)) > 0 {
+				return r.run(ctx, "lvremove", "-q", "-y", VG+"/"+n.LV)
+			}
+			return nil
+		},
+		func() error {
+			return r.run(ctx, "lvcreate", "-q", "-T", VG+"/"+ThinPool, "-V", strconv.FormatInt(disk>>20, 10)+"m", "-n", n.LV)
+		},
+		func() error {
+			return r.run(ctx, "qemu-img", "convert", "-n", "--target-is-zero", "-O", "raw", img, "/dev/"+VG+"/"+n.LV)
+		},
+		func() error {
+			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
+		},
+		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID)), 0o600) },
+		func() error {
+			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, spec.ID.Namespace)), 0o600)
+		},
+		func() error {
+			return r.run(ctx, "cloud-localds", "--network-config="+n.Dir+"/network-config", n.Dir+"/seed.img", n.Dir+"/user-data", n.Dir+"/meta-data")
+		},
+		func() error { return r.run(ctx, "rm", "-f", n.Dir+"/user-data") },
+		func() error { return r.run(ctx, "chown", VMMUser+":"+VMMUser, n.Dir+"/seed.img") },
+		func() error {
+			return r.Host.WriteFile("/etc/systemd/system/"+n.Unit, []byte(Unit(n, cpus, mem>>20, r.Firmware(), st.MAC)), 0o644)
+		},
+		func() error { return r.run(ctx, "systemctl", "daemon-reload") },
+	}
+	for _, step := range steps {
+		if err := step(); err != nil {
+			return fmt.Errorf("reset %s: %w", spec.ID, err)
+		}
+	}
+	st.HostKey, st.Started = hostPub, false
+	return r.saveState(st)
 }
 
 // imagePath maps an image name to its cached file.

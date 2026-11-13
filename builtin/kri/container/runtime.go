@@ -409,6 +409,31 @@ func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
 	return err
 }
 
+// Reset implements kri.Resetter: the containers go, the volumes, address and pause container
+// stay, and the silo is Created again from spec's image (the main container comes with Start).
+func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
+	r.mu.Lock()
+	s, ok := r.load(spec.ID)
+	if !ok {
+		r.mu.Unlock()
+		return fmt.Errorf("%s: %w", spec.ID, kri.ErrNotFound)
+	}
+	n := NamesFor(spec.ID)
+	for _, c := range []string{n.Main, n.Init} {
+		if _, err := r.eng(ctx, nil, "rm", "-f", c); err != nil && !strings.Contains(strings.ToLower(err.Error()), "no such") {
+			r.mu.Unlock()
+			return err
+		}
+	}
+	s.Image, s.Command, s.Volumes, s.CPU, s.Memory = spec.Image, spec.Command, spec.Volumes, spec.CPU, spec.Memory
+	err := r.save(s)
+	r.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return r.Create(ctx, spec) // pulls the new image, makes any new volume; the state is kept
+}
+
 // Delete implements kri.Runtime: the containers, volumes, veth and state.
 func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 	r.mu.Lock()

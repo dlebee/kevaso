@@ -165,9 +165,9 @@ func netFilter(s *v1.Silo, h *v1.Host, placed []*v1.Silo, pools []*v1.IPPool) st
 // it already holds stays its own (stableIP). For a plugin's load-balancer class, the address is the
 // plugin's (the load-balancer controller writes it; kept here), and node ports, if the class uses
 // them, are allocated on h. Pure.
-func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.ServiceStatus, error) {
+func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloServiceStatus, error) {
 	pools := env.Pools
-	st := v1.ServiceStatus{Name: s.Name + "." + s.Namespace + ".kevaso"}
+	st := v1.SiloServiceStatus{Name: s.Name + "." + s.Namespace + ".kevaso"}
 	if class := v1.PluginLB(s); class != "" {
 		cur := s.Status.Service
 		st.PublicIP, st.SourceRanges, st.Announce = cur.PublicIP, cur.SourceRanges, cur.Announce
@@ -212,7 +212,7 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.Servi
 }
 
 // NodePorts gives each of s's service ports a host port on host, kept if it already has them there:
-// the lowest free in v1.NodePortMin…NodePortMax among the silos placed on host.
+// the lowest free in v1.NodePortMin…NodePortSiloMax among the silos placed on host.
 func NodePorts(s *v1.Silo, host string, placed []*v1.Silo) ([]v1.NodePort, error) {
 	if s.Spec.Service == nil {
 		return nil, nil
@@ -242,10 +242,10 @@ func NodePorts(s *v1.Silo, host string, placed []*v1.Silo) ([]v1.NodePort, error
 	for _, p := range s.Spec.Service.Ports {
 		np, ok := had[p.Name]
 		if !ok {
-			for next <= v1.NodePortMax && taken[next] {
+			for next <= v1.NodePortSiloMax && taken[next] {
 				next++
 			}
-			if next > v1.NodePortMax {
+			if next > v1.NodePortSiloMax {
 				return nil, fmt.Errorf("no free node port on %s", host)
 			}
 			np = next

@@ -331,7 +331,7 @@ func TestExposePublicNeedsItsOwnPermission(t *testing.T) {
 	}
 	node := func(name string) *v1.Silo {
 		s := silo(name, "web3")
-		s.Spec.Service = &v1.Service{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}}, Expose: v1.ExposeHostPort}
+		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}}, Expose: v1.ExposeHostPort}
 		return s
 	}
 	ed, ada := as("ed"), as("ada")
@@ -341,7 +341,7 @@ func TestExposePublicNeedsItsOwnPermission(t *testing.T) {
 		t.Fatalf("editor exposing: %v", err)
 	}
 	private := silo("private", "web3")
-	private.Spec.Service = &v1.Service{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}}
+	private.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}}
 	if err := ed.Create(c.ctx, private); err != nil {
 		t.Fatalf("editor, private service: %v", err)
 	}
@@ -354,5 +354,34 @@ func TestExposePublicNeedsItsOwnPermission(t *testing.T) {
 	s.Spec.Resources.CPU = 2
 	if err := ed.Update(c.ctx, &s); err != nil {
 		t.Fatalf("editor updating an already-exposed silo: %v", err)
+	}
+	// The same goes for a set whose instances would be exposed (its controller makes them), and a
+	// Service with an outside address; private ones are the editor's to make.
+	tm := func(k string) meta.TypeMeta { return meta.TypeMeta{APIVersion: v1.APIVersion, Kind: k} }
+	set := &v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: "nodes", Namespace: "web3"},
+		Spec: v1.SiloSetSpec{Instances: 2, Template: v1.SiloTemplate{SiloSpec: node("x").Spec}}}
+	if err := ed.Create(c.ctx, set); !errors.As(err, &ce) || ce.Code != http.StatusForbidden {
+		t.Fatalf("editor, an exposed set: %v", err)
+	}
+	set.Spec.Template.Service = private.Spec.Service
+	if err := ed.Create(c.ctx, set); err != nil {
+		t.Fatalf("editor, a private set: %v", err)
+	}
+	lb := &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "rpc", Namespace: "web3"},
+		Spec: v1.ServiceSpec{Selector: map[string]string{"app": "rpc"}, Ports: []v1.ServicePortSpec{{Name: "rpc", Port: 8545}},
+			Type: v1.ServiceLoadBalancer, LoadBalancerClass: "linode-nodebalancer"}}
+	if err := ed.Create(c.ctx, lb); !errors.As(err, &ce) || ce.Code != http.StatusForbidden {
+		t.Fatalf("editor, a LoadBalancer service: %v", err)
+	}
+	lb.Spec.Type, lb.Spec.LoadBalancerClass = "", ""
+	if err := ed.Create(c.ctx, lb); err != nil {
+		t.Fatalf("editor, a ClusterIP service: %v", err)
+	}
+	if err := ada.Get(c.ctx, "Service", "web3", "rpc", lb); err != nil {
+		t.Fatal(err)
+	}
+	lb.Spec.Type, lb.Spec.LoadBalancerClass = v1.ServiceLoadBalancer, "linode-nodebalancer"
+	if err := ada.Update(c.ctx, lb); err != nil {
+		t.Fatalf("admin exposing the service: %v", err)
 	}
 }

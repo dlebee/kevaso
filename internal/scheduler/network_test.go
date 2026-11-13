@@ -9,7 +9,7 @@ import (
 
 func exposed(name, host string, f func(*v1.Silo)) *v1.Silo {
 	s := silo(name)
-	s.Spec.Service = &v1.Service{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}, {Name: "rpc", Port: 8545}},
+	s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}, {Name: "rpc", Port: 8545}},
 		Expose: v1.ExposeHostPort, HostPort: &v1.HostPortSpec{Ports: []string{"p2p", "disc"}}}
 	s.Status.Host = host
 	if f != nil {

@@ -19,9 +19,9 @@ func TestNetworkView(t *testing.T) {
 		return s
 	}
 	node := mk("eth-node", "metal-1", "10.64.0.2", func(s *v1.Silo) {
-		s.Spec.Service = &v1.Service{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}}, Expose: v1.ExposeHostPort}
+		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}}, Expose: v1.ExposeHostPort}
 		s.Spec.Network.Egress.Source = v1.EgressSameAsService
-		s.Status.Service = v1.ServiceStatus{PublicIP: "198.51.100.10", EgressIP: "198.51.100.10"}
+		s.Status.Service = v1.SiloServiceStatus{PublicIP: "198.51.100.10", EgressIP: "198.51.100.10"}
 	})
 	plain := mk("plain", "metal-1", "10.64.0.3", func(s *v1.Silo) { s.Status.Service.EgressIP = "198.51.100.10" })
 	pooled := mk("pooled", "metal-1", "10.64.0.4", func(s *v1.Silo) { s.Status.Service.PoolIP = "198.51.100.17" })

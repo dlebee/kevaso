@@ -41,6 +41,31 @@ type Silo struct {
 	SourceRanges []string
 }
 
+// Service is a standalone Service as the rules need it (design §7.1): its virtual IP, sent to its
+// endpoints from this host's silos (like kube-proxy), and for a load balancer, its node ports sent
+// to the endpoints on this host only (from the load balancer's addresses: client addresses kept).
+type Service struct {
+	Key          string // namespace/name
+	ClusterIP    netip.Addr
+	Ports        []ServicePort
+	SourceRanges []string
+}
+
+// ServicePort is one port of a Service and where it goes.
+type ServicePort struct {
+	Proto    string // tcp | udp
+	Port     int
+	NodePort int // 0: none
+	Targets  []Target
+}
+
+// Target is one endpoint of a port.
+type Target struct {
+	IP    netip.Addr
+	Port  int
+	Local bool // on this host
+}
+
 // Host is one worker's view.
 type Host struct {
 	Bridge  string
@@ -51,11 +76,28 @@ type Host struct {
 	All     []Silo     // every silo in the cluster with an address, to resolve allowFrom sources
 	// GatePort is where the egress gate listens on the gateway (0: no gate).
 	GatePort int
+	// Services are the cluster's standalone Services with endpoints.
+	Services []Service
 }
 
 // Prefixes no silo may reach directly: the mesh's host addresses.
 const meshHosts = "{ 10.62.0.0/16, 10.63.0.0/16 }"
 const silosAll = "10.64.0.0/16"
+
+// servicesAll is where Services' virtual IPs are (v1.ServiceCIDR).
+const servicesAll = "10.65.0.0/16"
+
+// pick sends to one of targets, chosen at random per connection.
+func pick(ts []Target) string {
+	if len(ts) == 1 {
+		return fmt.Sprintf("dnat ip to %s:%d", ts[0].IP, ts[0].Port)
+	}
+	parts := make([]string, len(ts))
+	for i, t := range ts {
+		parts[i] = fmt.Sprintf("%d : %s . %d", i, t.IP, t.Port)
+	}
+	return fmt.Sprintf("dnat ip to numgen random mod %d map { %s }", len(ts), strings.Join(parts, ", "))
+}
 
 type rule struct {
 	proto string // tcp | udp
@@ -174,8 +216,8 @@ func Rules(h Host) string {
 			for i, p := range s.GatePorts {
 				ps[i] = p.String()
 			}
-			redirect = append(redirect, fmt.Sprintf("iifname %q ip saddr %s ip daddr != { %s, 10.62.0.0/16, 10.63.0.0/16 } tcp dport %s redirect to :%d",
-				h.Bridge, s.IP, silosAll, set(ps), h.GatePort))
+			redirect = append(redirect, fmt.Sprintf("iifname %q ip saddr %s ip daddr != { %s, %s, 10.62.0.0/16, 10.63.0.0/16 } tcp dport %s redirect to :%d",
+				h.Bridge, s.IP, silosAll, servicesAll, set(ps), h.GatePort))
 		}
 		// Outbound: only what its grants open.
 		for _, e := range s.Egress {
@@ -213,10 +255,41 @@ func Rules(h Host) string {
 			for _, r := range ports(s.Spec, a.Ports) {
 				m := fmt.Sprintf("ip saddr %s ip daddr %s %s dport %d accept", src.IP, s.IP, r.proto, r.port)
 				if h.Subnet.Contains(src.IP) {
-					br = append(br, m) // same host: bridged
+					br = append(br, m) // same host: bridged…
+					// …or routed, when it came through a Service's virtual IP
+					fwd = append(fwd, fmt.Sprintf("oifname %q %s", h.Bridge, strings.Replace(m, " accept", " ct status dnat accept", 1)))
 				} else {
 					fwd = append(fwd, fmt.Sprintf("oifname %q %s", h.Bridge, m)) // across the mesh: routed
 				}
+			}
+		}
+	}
+
+	// Services: the virtual IP from this host's silos to every endpoint (each endpoint's own host
+	// still applies its allowFrom); node ports from the load balancer to the endpoints here.
+	svcs := append([]Service(nil), h.Services...)
+	sort.Slice(svcs, func(i, j int) bool { return svcs[i].Key < svcs[j].Key })
+	for _, sv := range svcs {
+		for _, p := range sv.Ports {
+			if len(p.Targets) == 0 {
+				continue
+			}
+			if sv.ClusterIP.IsValid() {
+				dnat = append(dnat, fmt.Sprintf("iifname %q ip daddr %s %s dport %d %s", h.Bridge, sv.ClusterIP, p.Proto, p.Port, pick(p.Targets)))
+			}
+			var local []Target
+			for _, t := range p.Targets {
+				if t.Local {
+					local = append(local, t)
+				}
+			}
+			if p.NodePort == 0 || len(local) == 0 || len(sv.SourceRanges) == 0 {
+				continue
+			}
+			src := "ip saddr " + set(sv.SourceRanges) + " "
+			dnat = append(dnat, fmt.Sprintf("%s%s dport %d %s", src, p.Proto, p.NodePort, pick(local)))
+			for _, t := range local {
+				fwd = append(fwd, fmt.Sprintf("oifname %q ip daddr %s %s%s dport %d ct status dnat accept", h.Bridge, t.IP, src, p.Proto, t.Port))
 			}
 		}
 	}
@@ -241,6 +314,10 @@ func Rules(h Host) string {
 		w("    %s", r)
 	}
 	w("    ip saddr %s ip daddr != { %s, 10.62.0.0/16, 10.63.0.0/16 } oifname != %q masquerade", h.Subnet, silosAll, h.Bridge)
+	// Hairpin: a silo reaching one on this host through an address that was translated (a
+	// Service's virtual IP, an exposed port): without this the reply would go straight across the
+	// bridge and skip the translation back. allowFrom was checked in forward, on the real source.
+	w("    ip saddr %s ip daddr %s oifname %q ct status dnat masquerade", h.Subnet, h.Subnet, h.Bridge)
 	w("  }")
 	w("  chain forward {")
 	w("    type filter hook forward priority filter; policy accept;")

@@ -1,0 +1,63 @@
+# 07 · A set of identical silos behind one Service (what M12 runs).
+#
+#   kvo apply -f examples/07-siloset-service.yaml
+#   kvo get silosets,services -n web3
+#   kvo describe service rpc -n web3              # its virtual IP, endpoints, outside address
+#
+# An Image names the bits with immutable versions; a SiloSet makes N silos from it (like a VM scale
+# set: stateful instances with stable names, rpc-pool-0, rpc-pool-1, …); a standalone Service picks
+# them by label and is their public face. Each instance stays private: the Service's load balancer
+# reaches it through a node port on its host, from the load balancer's addresses only.
+#
+# The Linode parts (provider: linode, linode-nodebalancer) need the plugin (kvoadm plugin install
+# linode); without one, drop the hostSelector and use the Service's default type, ClusterIP: a
+# virtual IP and the name rpc.web3.kevaso, for silos its instances allowFrom.
+#
+#   kvo scale siloset rpc-pool --instances 5      # more; fewer asks first (it deletes disks)
+#   kvo reset siloset rpc-pool --rolling          # every instance back onto its image, one at a time
+#   kvo protect silo rpc-pool-0                   # never removed by scale-in
+
+apiVersion: kevaso/v1
+kind: Namespace
+metadata: { name: web3 }
+---
+apiVersion: kevaso/v1
+kind: Image
+metadata: { name: geth-node, namespace: web3 }
+spec:
+  versions:                       # oldest first; a version never changes once added
+    - name: v1
+      container: docker.io/ethereum/client-go:v1.14.13
+---
+apiVersion: kevaso/v1
+kind: SiloSet
+metadata: { name: rpc-pool, namespace: web3 }
+spec:
+  image: geth-node:v1
+  instances: 3
+  spread: host                    # instances on different hosts where possible
+  upgradePolicy: Rolling          # a new image resets instances onto it, one at a time (Manual: you choose when)
+  update: { strategy: StartFirst } # start an extra instance first: never fewer than 3 ready
+  template:
+    labels: { app: rpc }
+    runtime: docker               # Linode hosts have no KVM (research E030); cloud-hypervisor on KVM hosts
+    command: [geth, --http, --http.addr, 0.0.0.0, --http.vhosts, "*", --syncmode, snap]
+    placement:
+      hostSelector: { provider: linode }   # a label on your Linode workers (kvoadm host add … --label provider=linode)
+    volumes: [{ name: chain, mountPath: /root/.ethereum, size: 100Gi }]
+    readiness:                    # an endpoint only while it answers
+      command: [sh, -c, "geth attach --exec eth.blockNumber /root/.ethereum/geth.ipc"]
+      period: 15s
+    service:
+      ports: [{ name: rpc, port: 8545, protocol: TCP }]
+      expose: private
+---
+apiVersion: kevaso/v1
+kind: Service
+metadata: { name: rpc, namespace: web3 }
+spec:
+  selector: { app: rpc }          # every Ready rpc-pool instance (standby ones aren't)
+  ports:
+    - { name: rpc, port: 8545, targetPort: rpc, protocol: TCP }
+  type: LoadBalancer
+  loadBalancerClass: linode-nodebalancer

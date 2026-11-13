@@ -367,14 +367,14 @@ spec:
 	mem, disk := snap+"/memory-ranges", "/dev/"+cloudhypervisor.VG+"/"+n.LV
 	for _, c := range []struct {
 		where, file, needle string
-		want0              bool
+		want0               bool
 	}{
 		{"memory", mem, apiKey, true},
 		{"memory", mem, apiKey2, true},
 		{"memory", mem, tls2, false}, // control: the file delivery is in its RAM (tmpfs)
 		{"disk", disk, apiKey, true},
 		{"disk", disk, apiKey2, true},
-		{"disk", disk, tls2, true}, // tmpfs: a file delivery never reaches the disk
+		{"disk", disk, tls2, true},                      // tmpfs: a file delivery never reaches the disk
 		{"disk", disk, "kevaso-e2e-disk-marker", false}, // control: the scan reads the disk
 	} {
 		got := count(c.file, c.needle)

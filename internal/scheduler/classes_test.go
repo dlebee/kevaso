@@ -13,7 +13,7 @@ func provider(name, region string) hostOpt {
 
 func lb(class string, ports ...v1.ServicePort) siloOpt {
 	return func(s *v1.Silo) {
-		s.Spec.Service = &v1.Service{Expose: v1.ExposeLoadBalancer, Ports: ports, LoadBalancer: &v1.LoadBalancerSpec{Class: class}}
+		s.Spec.Service = &v1.SiloService{Expose: v1.ExposeLoadBalancer, Ports: ports, LoadBalancer: &v1.LoadBalancerSpec{Class: class}}
 	}
 }
 

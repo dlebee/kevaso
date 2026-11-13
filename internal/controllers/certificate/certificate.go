@@ -209,7 +209,7 @@ func (c *Controller) reconcileIngress(ctx context.Context, k engine.Key) error {
 		if err := c.Client.Get(ctx, "Ingress", ing.Namespace, ing.Name, &cur); err != nil {
 			return err
 		}
-		before := fmt.Sprintf("%+v", cur.Status)
+		before := statusKey(cur.Status)
 		cur.Status.Address = c.controllerAddress(ctx, class)
 		ready, reason, msg := true, "Ready", "routes served by the class's controller"
 		if class == nil {
@@ -232,7 +232,7 @@ func (c *Controller) reconcileIngress(ctx context.Context, k engine.Key) error {
 			st = meta.ConditionTrue
 		}
 		meta.SetCondition(&cur.Status.Conditions, meta.Condition{Type: "Ready", Status: st, Reason: reason, Message: msg, ObservedGeneration: cur.Generation}, c.now())
-		if fmt.Sprintf("%+v", cur.Status) == before {
+		if statusKey(cur.Status) == before {
 			return nil
 		}
 		err := c.Client.UpdateStatus(ctx, &cur)

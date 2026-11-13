@@ -16,7 +16,7 @@ var (
 )
 
 // workloads is what lives in a namespace and its users work with.
-var workloads = []string{"silos", "serviceaccounts", "grants", "ingresses", "certificates"}
+var workloads = []string{"silos", "silosets", "services", "images", "serviceaccounts", "grants", "ingresses", "certificates"}
 
 // Secret powers by role: admins do everything a person can, editors can create and use secrets but
 // never read a value back, viewers see that they exist.

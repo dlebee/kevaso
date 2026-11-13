@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -159,5 +161,22 @@ func TestKvoUsageErrors(t *testing.T) {
 		if _, _, code := h.kvo(context.Background(), "", args...); code == 0 {
 			t.Errorf("kvo %v: want a non-zero exit", args)
 		}
+	}
+}
+
+// The examples are the contract: each one applies as it is, every object admitted.
+func TestExamplesApply(t *testing.T) {
+	for _, f := range []string{"01-one-host.yaml", "07-siloset-service.yaml"} {
+		t.Run(f, func(t *testing.T) {
+			b, err := os.ReadFile(filepath.Join("..", "..", "examples", f))
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := newHarness(t)
+			out := h.ok(string(b), "apply", "-f", "-")
+			if want := strings.Count(string(b), "\nkind: "); strings.Count(out, " created") != want {
+				t.Fatalf("%s: %d objects in the file, apply said:\n%s", f, want, out)
+			}
+		})
 	}
 }

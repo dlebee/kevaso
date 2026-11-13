@@ -169,9 +169,9 @@ type SiloSpec struct {
 	// Availability says what happens when the silo's host is lost (design §0.3).
 	Availability Availability `json:"availability,omitempty"`
 	// Service is the silo's own service (design §7.1); AllowFrom opens it to other silos.
-	Service   *Service    `json:"service,omitempty"`
-	AllowFrom []AllowFrom `json:"allowFrom,omitempty"`
-	Network   SiloNetwork `json:"network,omitempty"`
+	Service   *SiloService `json:"service,omitempty"`
+	AllowFrom []AllowFrom  `json:"allowFrom,omitempty"`
+	Network   SiloNetwork  `json:"network,omitempty"`
 	// Grants are the Grant objects (in this namespace) the silo uses: what it may reach outside
 	// the cluster and which secrets it gets, and how (design §8).
 	Grants []string `json:"grants,omitempty"`
@@ -181,6 +181,38 @@ type SiloSpec struct {
 	// Command is a container silo's main process (default: the image's own; for the ubuntu-24.04
 	// image, which has none that stays up, a process that sleeps, so the silo is a machine to exec into).
 	Command []string `json:"command,omitempty"`
+	// Exclusive: at most one copy of this silo may ever run (validators, single-writer things,
+	// design §0.4). It forces StopFirst updates and forbids automatic failover (onHostLoss: Wait).
+	Exclusive bool `json:"exclusive,omitempty"`
+	// Update says how a change that needs a fresh copy (a new image, a reset) is applied.
+	Update *UpdatePolicy `json:"update,omitempty"`
+	// Readiness is what "ready" means beyond running: a command run inside the silo now and then.
+	// Until it passes the silo isn't Ready, so it's no Service's endpoint and a rolling update waits.
+	Readiness *Readiness `json:"readiness,omitempty"`
+	// Reset, when it changes, puts the silo back onto its image (`kvo reset silo`): a fresh disk
+	// (or container) from the image, the same name, address and volumes. Any new value will do;
+	// kvo sets the time.
+	Reset string `json:"reset,omitempty"`
+}
+
+// Update strategies (design §0.4).
+const (
+	StopFirst  = "StopFirst"  // stop the old copy completely, then start the new one: never two
+	StartFirst = "StartFirst" // start the new one, switch to it when ready, then stop the old one
+)
+
+// UpdatePolicy is how a silo is moved onto a new image.
+type UpdatePolicy struct {
+	// Strategy: StopFirst (the default). StartFirst on a single silo needs its disk cloned, which
+	// comes with moves (M14); in a SiloSet it means starting extra instances first (maxSurge).
+	Strategy string `json:"strategy,omitempty"`
+}
+
+// Readiness is a check run inside the silo.
+type Readiness struct {
+	Command []string `json:"command"`           // argv, run directly (use sh -c for a script)
+	Period  string   `json:"period,omitempty"`  // how often (default 10s)
+	Timeout string   `json:"timeout,omitempty"` // each run's limit (default 5s)
 }
 
 // Volume is a silo's extra storage.
@@ -254,6 +286,15 @@ type Placement struct {
 	HostSelector map[string]string `json:"hostSelector,omitempty"`
 	Region       string            `json:"region,omitempty"` // only hosts in this region
 	Zone         string            `json:"zone,omitempty"`   // only hosts in this zone
+	// Spread prefers hosts (or zones, regions) with fewer of the silos it selects: a SiloSet's
+	// instances, kept apart where possible. A preference, never a reason to stay Pending.
+	Spread *Spread `json:"spread,omitempty"`
+}
+
+// Spread keeps silos apart.
+type Spread struct {
+	By       string            `json:"by"`       // host | zone | region
+	Selector map[string]string `json:"selector"` // the silos to keep apart (labels, in the namespace)
 }
 
 // Toleration lets a silo land on a worker with a matching taint. An empty Effect tolerates both effects.
@@ -271,15 +312,26 @@ func (t Toleration) Tolerates(taint Taint) bool {
 
 // SiloStatus is what controllers report.
 type SiloStatus struct {
-	Phase      string           `json:"phase,omitempty"` // Pending | Scheduled | Starting | Running | Failed
-	Host       string           `json:"host,omitempty"`  // where the scheduler placed it
-	Conditions []meta.Condition `json:"conditions,omitempty"`
-	Init       []StepStatus     `json:"init,omitempty"`
-	Address    string           `json:"address,omitempty"` // the silo's private address
-	Service    ServiceStatus    `json:"service,omitempty"`
+	Phase      string            `json:"phase,omitempty"` // Pending | Scheduled | Starting | Running | Failed
+	Host       string            `json:"host,omitempty"`  // where the scheduler placed it
+	Conditions []meta.Condition  `json:"conditions,omitempty"`
+	Init       []StepStatus      `json:"init,omitempty"`
+	Address    string            `json:"address,omitempty"` // the silo's private address
+	Service    SiloServiceStatus `json:"service,omitempty"`
 	// Volumes are its volumes from a provider's storage class: where each is and whether it's
 	// attached and mounted.
 	Volumes []VolumeStatus `json:"volumes,omitempty"`
+	// Image is what spec.image resolved to, and what the silo runs now.
+	Image *SiloImage `json:"image,omitempty"`
+}
+
+// SiloImage is a silo's image: resolved by the control plane (an Image's version, or the name as
+// it is), run by the host's agent. Ref differing from Running means an update is due.
+type SiloImage struct {
+	From    string `json:"from"`              // spec.image it was resolved from
+	Ref     string `json:"ref"`               // what the runtime is given
+	Running string `json:"running,omitempty"` // the ref the silo was created or last reset with
+	Reset   string `json:"reset,omitempty"`   // the spec.reset last applied
 }
 
 // VolumeStatus is one provider volume of a silo. The control plane creates and attaches it (Handle,

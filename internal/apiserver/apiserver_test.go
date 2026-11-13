@@ -281,7 +281,7 @@ func TestServiceAndPoolValidation(t *testing.T) {
 	c, ctx := setup(t)
 	svc := func(f func(*v1.Silo)) *v1.Silo {
 		s := newSilo("p2p")
-		s.Spec.Service = &v1.Service{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}}}
+		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}}}
 		f(s)
 		return s
 	}

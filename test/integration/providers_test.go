@@ -103,7 +103,7 @@ func TestProviderPlugin(t *testing.T) {
 	}
 	db := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "db", Namespace: "payments"},
 		Spec: v1.SiloSpec{Runtime: "docker", Image: "postgres:17", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-			Service: &v1.Service{Expose: v1.ExposeLoadBalancer, Ports: []v1.ServicePort{{Name: "pg", Port: 5432}},
+			Service: &v1.SiloService{Expose: v1.ExposeLoadBalancer, Ports: []v1.ServicePort{{Name: "pg", Port: 5432}},
 				LoadBalancer: &v1.LoadBalancerSpec{Class: "fake-lb"}},
 			Volumes: []v1.Volume{{Name: "data", Class: "fake-block", Size: "10Gi", MountPath: "/var/lib/postgresql/data"}}}}
 	if err := admin.Create(ctx, db); err != nil {
@@ -157,7 +157,7 @@ func TestProviderPlugin(t *testing.T) {
 	// Ingress host names published through the class's DNS provider, at the controller's address.
 	ingress := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "ingress", Namespace: "kevaso-system"},
 		Spec: v1.SiloSpec{Runtime: "docker", Image: "caddy", Resources: v1.Resources{CPU: 1, Memory: "512Mi"},
-			Service: &v1.Service{Expose: v1.ExposeLoadBalancer, Ports: []v1.ServicePort{{Name: "https", Port: 443}},
+			Service: &v1.SiloService{Expose: v1.ExposeLoadBalancer, Ports: []v1.ServicePort{{Name: "https", Port: 443}},
 				LoadBalancer: &v1.LoadBalancerSpec{Class: "fake-lb"}}}}
 	if err := admin.Create(ctx, ingress); err != nil {
 		t.Fatal(err)

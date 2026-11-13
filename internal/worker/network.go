@@ -58,6 +58,43 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 	return view
 }
 
+// ServiceView is the cluster's Services as this host's rules need them: each port's targets (the
+// endpoints' addresses and target ports), marking the ones on this host. Pure.
+func ServiceView(hostName string, svcs []*v1.Service) []kni.Service {
+	var out []kni.Service
+	for _, sv := range svcs {
+		if sv.DeletionTimestamp != nil || len(sv.Status.Endpoints) == 0 {
+			continue
+		}
+		ks := kni.Service{Key: sv.Namespace + "/" + sv.Name, SourceRanges: sv.Status.SourceRanges}
+		ks.ClusterIP, _ = netip.ParseAddr(sv.Status.ClusterIP)
+		nps := map[string]int{}
+		for _, np := range sv.Status.NodePorts {
+			nps[np.Name] = np.NodePort
+		}
+		for _, p := range sv.Spec.Ports {
+			kp := kni.ServicePort{Proto: "tcp", Port: p.Port, NodePort: nps[p.Name]}
+			if strings.EqualFold(p.Protocol, "UDP") {
+				kp.Proto = "udp"
+			}
+			for _, ep := range sv.Status.Endpoints {
+				ip, err := netip.ParseAddr(ep.Address)
+				if err != nil {
+					continue
+				}
+				for _, t := range ep.Ports {
+					if t.Name == p.Name {
+						kp.Targets = append(kp.Targets, kni.Target{IP: ip, Port: t.NodePort, Local: ep.Host == hostName})
+					}
+				}
+			}
+			ks.Ports = append(ks.Ports, kp)
+		}
+		out = append(out, ks)
+	}
+	return out
+}
+
 // PoolAddresses are the IPPool addresses this host's silos hold: they go on its uplink.
 func PoolAddresses(hostName string, silos []*v1.Silo) []string {
 	var out []string
@@ -89,6 +126,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 	silos, hosts, grantsInf := informer.New(c, "Silo"), informer.New(c, "Host"), informer.New(c, "Grant")
 	secretsInf := informer.New(c, "Secret")
 	ingInf, classInf := informer.New(c, "Ingress"), informer.New(c, "IngressClass")
+	svcInf := informer.New(c, "Service")
 	changed := make(chan struct{}, 1)
 	poke := func(informer.Key) {
 		select {
@@ -107,6 +145,15 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 	classInf.AddHandler(poke)
 	go ingInf.Run(ctx)
 	go classInf.Run(ctx)
+	svcInf.AddHandler(poke)
+	go svcInf.Run(ctx)
+	currentServices := func() []*v1.Service {
+		var out []*v1.Service
+		for _, o := range svcInf.List() {
+			out = append(out, o.(*v1.Service))
+		}
+		return out
+	}
 	if !silos.WaitSynced(ctx) || !hosts.WaitSynced(ctx) || !grantsInf.WaitSynced(ctx) {
 		return
 	}
@@ -124,7 +171,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		}
 		return out
 	}
-	go (&DNS{Listen: net.JoinHostPort(cloudhypervisor.Gateway.String(), "53"), Silos: current, Log: log}).Run(ctx)
+	go (&DNS{Listen: net.JoinHostPort(cloudhypervisor.Gateway.String(), "53"), Silos: current, Services: currentServices, Log: log}).Run(ctx)
 	gatePort := 0
 	if ca != nil {
 		eg := &egress{c: c, hostName: hostName, ca: ca, upstream: upstream, log: log, silos: current, grants: currentGrants}
@@ -155,6 +202,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		}
 		view := NetworkView(hostName, me, WithIngressPaths(all, ings, classes), currentGrants())
 		view.GatePort = gatePort
+		view.Services = ServiceView(hostName, currentServices())
 		rules := kni.Rules(view)
 		if rules != last {
 			if err := applyNFT(ctx, rules); err != nil {

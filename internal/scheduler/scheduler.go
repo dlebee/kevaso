@@ -13,8 +13,9 @@
 //  7. for a plugin's class (a load balancer, a volume): be one of that plugin's machines, in the
 //     region the silo's volumes already are.
 //
-// Among the hosts left, it prefers ones without an untolerated PreferNoSchedule taint, then the one
-// with the most free memory (spreading silos out), then the name (so it's deterministic).
+// Among the hosts left, it prefers ones without an untolerated PreferNoSchedule taint, then (for a
+// silo with placement.spread, like a SiloSet's instances) the host whose domain has the fewest of
+// the silos it spreads from, then the one with the most free memory (spreading silos out), then the name (so it's deterministic).
 package scheduler
 
 import (
@@ -69,6 +70,8 @@ type Env struct {
 	Pools []*v1.IPPool
 	// Classes are the plugins' load-balancer and storage classes, by name.
 	Classes map[string]Class
+	// Images are the Image objects, for resolving silos' spec.image.
+	Images []*v1.Image
 }
 
 // Schedule picks a host for silo. placed are all silos already assigned (status.host set); pools,
@@ -99,10 +102,12 @@ func ScheduleIn(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, env Env) (De
 	}
 
 	type candidate struct {
-		name    string
-		prefer  bool // no untolerated PreferNoSchedule taint
-		freeMem int64
+		name     string
+		prefer   bool // no untolerated PreferNoSchedule taint
+		siblings int  // silos it's spread from already in the host's domain
+		freeMem  int64
 	}
+	spread := spreadCounts(silo, hosts, placed)
 	d := Decision{Excluded: map[string]string{}}
 	var fits []candidate
 	for _, h := range hosts {
@@ -123,9 +128,10 @@ func ScheduleIn(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, env Env) (De
 		}
 		allocMem, _ := v1.ParseBytes(h.Status.Allocatable.Memory)
 		fits = append(fits, candidate{
-			name:    h.Name,
-			prefer:  !untoleratedTaint(silo, w.Taints, v1.PreferNoSchedule),
-			freeMem: allocMem - used[h.Name].mem - needMem,
+			name:     h.Name,
+			prefer:   !untoleratedTaint(silo, w.Taints, v1.PreferNoSchedule),
+			siblings: spread(h),
+			freeMem:  allocMem - used[h.Name].mem - needMem,
 		})
 	}
 	if len(fits) == 0 {
@@ -135,6 +141,9 @@ func ScheduleIn(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, env Env) (De
 		a, b := fits[i], fits[j]
 		if a.prefer != b.prefer {
 			return a.prefer
+		}
+		if a.siblings != b.siblings {
+			return a.siblings < b.siblings
 		}
 		if a.freeMem != b.freeMem {
 			return a.freeMem > b.freeMem
@@ -214,6 +223,39 @@ func classFilter(silo *v1.Silo, h *v1.Host, classes map[string]Class) string {
 		}
 	}
 	return ""
+}
+
+// spreadCounts returns, per host, how many of the silos the silo is spread from (placement.spread:
+// same namespace, selected by its labels) are already in that host's domain (the host, its zone or
+// its region).
+func spreadCounts(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo) func(*v1.Host) int {
+	sp := silo.Spec.Placement.Spread
+	if sp == nil {
+		return func(*v1.Host) int { return 0 }
+	}
+	domain := func(h *v1.Host) string {
+		switch sp.By {
+		case "zone":
+			return h.Spec.Region + "/" + h.Spec.Zone
+		case "region":
+			return h.Spec.Region
+		}
+		return h.Name
+	}
+	byName := map[string]*v1.Host{}
+	for _, h := range hosts {
+		byName[h.Name] = h
+	}
+	counts := map[string]int{}
+	for _, s := range placed {
+		if s.Namespace != silo.Namespace || s.Name == silo.Name || s.Status.Host == "" || s.DeletionTimestamp != nil || !v1.Selects(sp.Selector, s.Labels) {
+			continue
+		}
+		if h, ok := byName[s.Status.Host]; ok {
+			counts[domain(h)]++
+		}
+	}
+	return func(h *v1.Host) int { return counts[domain(h)] }
 }
 
 func untoleratedTaint(silo *v1.Silo, taints []v1.Taint, effect v1.TaintEffect) bool {

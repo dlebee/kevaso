@@ -26,8 +26,8 @@ const (
 	EgressPool          = "pool"          // an address of its own from an IPPool
 )
 
-// Service is a silo's own service.
-type Service struct {
+// SiloService is a silo's own service.
+type SiloService struct {
 	Ports        []ServicePort     `json:"ports,omitempty"`
 	Expose       string            `json:"expose,omitempty"` // private | hostPort | loadBalancer
 	HostPort     *HostPortSpec     `json:"hostPort,omitempty"`
@@ -74,8 +74,8 @@ type Egress struct {
 	Pool   string `json:"pool,omitempty"`   // source: pool
 }
 
-// ServiceStatus says where the service is reachable.
-type ServiceStatus struct {
+// SiloServiceStatus says where the service is reachable.
+type SiloServiceStatus struct {
 	Name     string `json:"name,omitempty"`     // its private name, e.g. api.payments.kevaso
 	PublicIP string `json:"publicIP,omitempty"` // the outside address, if exposed
 	EgressIP string `json:"egressIP,omitempty"` // where its outgoing traffic comes from
@@ -97,7 +97,7 @@ type NodePort struct {
 }
 
 // Equal reports whether two service statuses are the same.
-func (a ServiceStatus) Equal(b ServiceStatus) bool {
+func (a SiloServiceStatus) Equal(b SiloServiceStatus) bool {
 	if a.Name != b.Name || a.PublicIP != b.PublicIP || a.EgressIP != b.EgressIP || a.PoolIP != b.PoolIP || a.Announce != b.Announce ||
 		len(a.NodePorts) != len(b.NodePorts) || len(a.SourceRanges) != len(b.SourceRanges) {
 		return false
