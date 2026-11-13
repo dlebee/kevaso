@@ -152,10 +152,15 @@ func TestAllocateIP(t *testing.T) {
 
 func TestRenderedFiles(t *testing.T) {
 	ud := UserData("ssh-ed25519 AAAA exec", "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----", "ssh-ed25519 BBBB host")
-	for _, want := range []string{"name: kevaso", "ssh-ed25519 AAAA exec", "ssh_pwauth: false", "lock_passwd: true", "disable_root: true", "      abc", "ed25519_public: ssh-ed25519 BBBB host"} {
+	for _, want := range []string{"users: []\n", "path: /root/.ssh/authorized_keys\n    content: \"ssh-ed25519 AAAA exec\\n\"", "ssh_pwauth: false",
+		"PermitRootLogin prohibit-password", "disable_root: false", "      abc", "ed25519_public: ssh-ed25519 BBBB host"} {
 		if !strings.Contains(ud, want) {
-			t.Errorf("user-data missing %q", want)
+			t.Errorf("user-data missing %q:\n%s", want, ud)
 		}
+	}
+	// No user with sudo: exec command lines must not reach sudo's log or SUDO_COMMAND.
+	if strings.Contains(ud, "sudo") || strings.Contains(ud, "NOPASSWD") {
+		t.Errorf("user-data gives someone sudo:\n%s", ud)
 	}
 	n := NamesFor(id("web"))
 	u := Unit(n, 2, 4096, BinDir+"/CLOUDHV_EFI.fd", MAC(id("web")))
@@ -363,7 +368,7 @@ func startGuest(t *testing.T, allowed ssh.PublicKey) *guest {
 	t.Cleanup(func() { _ = l.Close() })
 	g.addr = l.Addr().String()
 	cfg := &ssh.ServerConfig{PublicKeyCallback: func(m ssh.ConnMetadata, k ssh.PublicKey) (*ssh.Permissions, error) {
-		if m.User() == GuestUser && bytes.Equal(k.Marshal(), g.allowed.Marshal()) {
+		if m.User() == ExecUser && bytes.Equal(k.Marshal(), g.allowed.Marshal()) {
 			return nil, nil
 		}
 		return nil, errors.New("denied")
@@ -481,7 +486,7 @@ func TestExecPinsTheGuestKeyAndRunsWithSudo(t *testing.T) {
 	g.mu.Lock()
 	ran := g.ran[0]
 	g.mu.Unlock()
-	if !strings.HasPrefix(ran, "sudo -n -- env KEVASO_EXEC=") || !strings.HasSuffix(ran, ` 'echo' 'it'\''s'`) {
+	if !strings.HasPrefix(ran, "exec env KEVASO_EXEC=") || strings.Contains(ran, "sudo") || !strings.HasSuffix(ran, ` 'echo' 'it'\''s'`) {
 		t.Fatalf("guest ran %q", ran)
 	}
 	code, err = r2.Exec(ctx, id("web"), kri.ExecRequest{Command: []string{"sh", "-c", "exit 4"}})

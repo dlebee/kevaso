@@ -76,8 +76,8 @@ func TestExecOnATerminalResizesAndStopsWhenCancelled(t *testing.T) {
 		ran := slices.Clone(g.ran)
 		g.mu.Unlock()
 		if len(ran) == 2 {
-			marker := strings.Fields(strings.TrimPrefix(ran[0], "sudo -n -- env "+kri.ExecMarkerEnv+"="))[0]
-			want := "sudo -n -- sh -c " + shellQuote([]string{hostexec.SweepScript}) + " sh " + marker
+			marker := strings.Fields(strings.TrimPrefix(ran[0], "exec env "+kri.ExecMarkerEnv+"="))[0]
+			want := "sh -c " + shellQuote([]string{hostexec.SweepScript}) + " sh " + marker
 			if ran[1] != want {
 				t.Fatalf("sweep ran %q, want %q", ran[1], want)
 			}
