@@ -32,6 +32,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/clock"
+	"kevaso.com/core/internal/leases"
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/rbac"
 	"kevaso.com/core/internal/scheduler"
@@ -55,10 +56,15 @@ type Server struct {
 	vault    *secrets.Vault // nil: no KMS, secrets can't hold values
 	kmsAdmin KMSAdmin
 	backup   func(context.Context, []byte) ([]byte, error)
+	joinNode SystemNodeJoiner // POST /join/system-node (systemnodes.go)
 
 	approvalLimits approvals.Limits
+	leaseLimits    leases.Limits                     // port leases (leases.go)
 	classes        func() map[string]scheduler.Class // the plugins' classes; nil: none
 	paneRates      paneRates
+
+	kinds    kindCache   // the served KindDefinitions (kinds.go)
+	policies policyCache // the admission policies (policies.go)
 }
 
 // New returns a server over a store, without authentication (kevasod dev, tests).
@@ -79,6 +85,7 @@ func NewWithAuth(s store.Store, c clock.Clock, auth *Auth) (*Server, error) {
 		}
 	}
 	srv.mux.HandleFunc("/apis/kevaso/v1/", srv.route)
+	srv.registerDefined()
 	srv.mux.HandleFunc("/agent/connect", srv.agentConnect)
 	srv.mux.HandleFunc(client.PathAgentBroker, srv.agentBroker)
 	srv.mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
@@ -144,6 +151,11 @@ type target struct {
 	move      bool   // a silo's /move
 	answer    string // an approval's /approve or /deny
 	bundle    bool   // a pane's /bundle
+	stream    string // a silo's /ssh or /files (silostreams.go)
+	lease     string // a silo's /open or /close (leases.go)
+
+	def   *definedKind // a kind defined by a KindDefinition (kinds.go); nil for built-ins
+	scale bool         // a defined kind's /scale (scale.go)
 }
 
 func parsePath(path string) (target, error) {
@@ -171,8 +183,12 @@ func parsePath(path string) (target, error) {
 		t.status = true
 	case len(parts) == 3 && parts[2] == "exec" && k.Kind == "Silo":
 		t.exec = true
+	case len(parts) == 3 && (parts[2] == "ssh" || parts[2] == "files") && k.Kind == "Silo":
+		t.stream = parts[2]
 	case len(parts) == 3 && parts[2] == "move" && k.Kind == "Silo":
 		t.move = true
+	case len(parts) == 3 && (parts[2] == "open" || parts[2] == "close") && k.Kind == "Silo":
+		t.lease = parts[2]
 	case len(parts) == 3 && parts[2] == "token" && k.Kind == "ServiceAccount":
 		t.token = true
 	case len(parts) == 3 && parts[2] == "value" && k.Kind == "Secret":
@@ -201,8 +217,14 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case t.exec:
 		s.siloExec(w, r, t.namespace, t.name)
+	case t.stream == "ssh":
+		s.siloSSH(w, r, t.namespace, t.name)
+	case t.stream == "files":
+		s.siloFiles(w, r, t.namespace, t.name)
 	case t.move:
 		s.moveSilo(w, r, t)
+	case t.lease != "":
+		s.siloLease(w, r, t)
 	case t.token:
 		s.serviceAccountToken(w, r, t)
 	case t.value && r.Method == http.MethodGet:
@@ -213,6 +235,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.paneBundle(w, r, t)
 	case t.kind.Kind == "Approval" && (r.Method == http.MethodPost || r.Method == http.MethodPut) && !internal(ctx):
 		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "approvals are made by the broker when a silo asks; answer one with kvo approve or kvo deny"))
+	case t.kind.Kind == "Lease" && (r.Method == http.MethodPost || r.Method == http.MethodPut) && !internal(ctx):
+		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "leases are made when a silo or a person asks; use kvo open / kvo close"))
 	case t.kind.Kind == "Pane" && (r.Method == http.MethodPost || r.Method == http.MethodPut) && !internal(ctx):
 		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "panes are reported by their silo (spec.panes); they can't be written through the API"))
 	case t.value:
@@ -360,6 +384,7 @@ func (s *Server) watch(ctx context.Context, w http.ResponseWriter, r *http.Reque
 type writeFunc func(ctx context.Context, t target, obj meta.Object) (store.Object, error)
 
 func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Request, t target, fn writeFunc, okCode int) {
+	ctx = withDryRun(ctx, r) // dryrun.go
 	body, err := readBody(r)
 	if err != nil {
 		writeErr(w, err)
@@ -387,31 +412,12 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "metadata.name %q doesn't match the path's name %q", om.Name, t.name))
 		return
 	}
-	if err := meta.ValidateName(om.Name); err != nil {
+	if err := validateObjectName(t.kind, om.Name); err != nil {
 		writeErr(w, errf(http.StatusUnprocessableEntity, "Invalid", "%s", err))
 		return
 	}
 	t.name = om.Name
-	if err := s.checkExposure(ctx, t, obj); err != nil {
-		writeErr(w, err)
-		return
-	}
-	if err := s.checkSecretUse(ctx, t, obj); err != nil {
-		writeErr(w, err)
-		return
-	}
-	if err := s.checkRuntimeFit(ctx, t, obj); err != nil {
-		writeErr(w, err)
-		return
-	}
-	if err := s.checkMovability(t, obj); err != nil {
-		writeErr(w, err)
-		return
-	}
-	if err := s.checkPublishPublic(ctx, t, obj); err != nil {
-		writeErr(w, err)
-		return
-	}
+	// The guards (exposure, secrets, runtime fit, …) run in admitBuiltin, on the object as stored.
 	value, err := s.prepareSecret(ctx, t, obj)
 	if err != nil {
 		writeErr(w, err)
@@ -423,7 +429,7 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		writeErr(w, err)
 		return
 	}
-	if value != nil && o.Data != nil {
+	if value != nil && o.Data != nil && !dryRun(ctx) {
 		if o, err = s.storeSecretValue(ctx, o, value); err != nil {
 			writeErr(w, err)
 			return
@@ -524,11 +530,11 @@ func (s *Server) create(ctx context.Context, t target, obj meta.Object) (store.O
 	if t.kind.Kind == "Namespace" {
 		obj.(*v1.Namespace).Status.Phase = "Active"
 	}
-	data, err := s.admit(t.kind.Kind, obj)
+	data, err := s.admitBuiltin(ctx, t, nil, obj)
 	if err != nil {
 		return store.Object{}, err
 	}
-	return s.store.Create(ctx, t.key(), data)
+	return s.commitCreate(ctx, t.key(), data)
 }
 
 // update replaces an object (or only its status, for /status). It needs the resourceVersion the
@@ -580,7 +586,7 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		// Once deleting, finalizers may only be removed; when the last one goes, the object goes.
 		if oldMeta.DeletionTimestamp != nil {
 			if len(nm.Finalizers) == 0 {
-				d, err := s.store.Delete(ctx, t.key(), expected)
+				d, err := s.commitDelete(ctx, t.key(), expected)
 				return store.Object{Key: d.Key}, err // no Data: tells write() the object is gone
 			}
 			if !isSubset(nm.Finalizers, oldMeta.Finalizers) {
@@ -592,16 +598,20 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 	if errs := transition(old, next); len(errs) > 0 && !t.status {
 		return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %s", t.kind.Kind, om.Name, joinMessages(errs))
 	}
-	data, err := s.admit(t.kind.Kind, next)
+	data, err := s.admitBuiltin(ctx, t, old, next)
 	if err != nil {
 		return store.Object{}, err
 	}
-	return s.store.Update(ctx, t.key(), data, expected)
+	return s.commitUpdate(ctx, t.key(), data, expected)
 }
 
 // delete removes an object, or, while it has finalizers, marks it as being deleted and leaves the
 // rest to the controllers that own the finalizers.
 func (s *Server) delete(ctx context.Context, w http.ResponseWriter, t target) {
+	if err := s.checkDeleteDefinition(ctx, t); err != nil {
+		writeErr(w, err)
+		return
+	}
 	for attempt := 0; attempt < 5; attempt++ {
 		cur, err := s.store.Get(ctx, t.key())
 		if err != nil {

@@ -39,6 +39,14 @@ type Silo struct {
 	// SourceRanges only (a NodeBalancer's addresses).
 	NodePorts    []v1.NodePort
 	SourceRanges []string
+	// Leases (design §7.2d): Leased are the exposed ports (by name) that open only on a lease, and
+	// Closed those of them with no active lease now: a closed port has no outside rule at all, and
+	// connections that a lease let in are cut (reset) once it ends. An open leased port takes
+	// LeaseFrom as its sources when set (the service's allowFrom narrowed by the lease's). Private
+	// access (allowFrom on the silo) is never leased.
+	Leased    []string
+	Closed    []string
+	LeaseFrom []string
 }
 
 // Service is a standalone Service as the rules need it (design §7.1): its virtual IP, sent to its
@@ -100,6 +108,7 @@ func pick(ts []Target) string {
 }
 
 type rule struct {
+	name  string
 	proto string // tcp | udp
 	port  int
 }
@@ -119,7 +128,7 @@ func ports(s v1.SiloSpec, names []string) []rule {
 	var out []rule
 	for _, p := range s.Service.Ports {
 		if len(names) == 0 || contains(names, p.Name) {
-			out = append(out, rule{protoOf(p), p.Port})
+			out = append(out, rule{p.Name, protoOf(p), p.Port})
 		}
 	}
 	return out
@@ -163,6 +172,23 @@ func set(items []string) string {
 	return "{ " + strings.Join(items, ", ") + " }"
 }
 
+// cutRules end the connections an outside rule let in to a silo's port, once that rule is gone (a
+// lease ended): both directions of a translated connection whose original destination matched
+// (orig: its public address, or the node port), placed before the rules that let established
+// traffic through. TCP is reset, so both ends learn at once; UDP is dropped. Connections to the
+// same port that weren't translated (silo to silo, allowFrom) are untouched. They're harmless while
+// the port stays closed (nothing new is translated) and go when it opens again.
+func cutRules(bridge string, ip netip.Addr, proto string, port int, orig string) []string {
+	verdict := "drop"
+	if proto == "tcp" {
+		verdict = "reject with tcp reset"
+	}
+	return []string{
+		fmt.Sprintf("oifname %q ip daddr %s %s dport %d ct status dnat %s %s", bridge, ip, proto, port, orig, verdict),
+		fmt.Sprintf("iifname %q ip saddr %s %s sport %d ct status dnat %s %s", bridge, ip, proto, port, orig, verdict),
+	}
+}
+
 // Rules is the host's whole silo ruleset, ready for `nft -f` (it replaces the previous one
 // atomically). Deterministic: the same input gives the same text, so unchanged means no reload.
 func Rules(h Host) string {
@@ -175,7 +201,7 @@ func Rules(h Host) string {
 	for _, s := range local {
 		byKey[s.Key] = s
 	}
-	var redirect, dnat, snat, fwd, br, egress []string
+	var redirect, dnat, snat, fwd, br, egress, cut []string
 	for _, s := range local {
 		if !s.IP.IsValid() {
 			continue
@@ -184,10 +210,20 @@ func Rules(h Host) string {
 		exp, from := Exposed(s.Spec)
 		if s.PublicIP.IsValid() {
 			for _, r := range exp {
+				sources := from
+				if contains(s.Leased, r.name) && s.LeaseFrom != nil {
+					sources = s.LeaseFrom
+				}
+				// Leased with no lease now (or a lease no source may use): no rule; cut what a
+				// lease let in.
+				if contains(s.Closed, r.name) || (sources != nil && len(sources) == 0) {
+					cut = append(cut, cutRules(h.Bridge, s.IP, r.proto, r.port, fmt.Sprintf("ct original ip daddr %s", s.PublicIP))...)
+					continue
+				}
 				dnat = append(dnat, fmt.Sprintf("ip daddr %s %s dport %d dnat ip to %s:%d", s.PublicIP, r.proto, r.port, s.IP, r.port))
 				src := ""
-				if len(from) > 0 {
-					src = "ip saddr " + set(from) + " "
+				if len(sources) > 0 {
+					src = "ip saddr " + set(sources) + " "
 				}
 				fwd = append(fwd, fmt.Sprintf("oifname %q ip daddr %s %s%s dport %d ct status dnat accept", h.Bridge, s.IP, src, r.proto, r.port))
 			}
@@ -204,6 +240,10 @@ func Rules(h Host) string {
 			for _, np := range s.NodePorts {
 				proto := protos[np.Name]
 				if proto == "" {
+					continue
+				}
+				if contains(s.Closed, np.Name) {
+					cut = append(cut, cutRules(h.Bridge, s.IP, proto, np.Port, fmt.Sprintf("ct original proto-dst %d", np.NodePort))...)
 					continue
 				}
 				dnat = append(dnat, fmt.Sprintf("%s%s dport %d dnat ip to %s:%d", src, proto, np.NodePort, s.IP, np.Port))
@@ -322,6 +362,9 @@ func Rules(h Host) string {
 	w("  chain forward {")
 	w("    type filter hook forward priority filter; policy accept;")
 	w("    iifname %q ip daddr %s drop", h.Bridge, meshHosts)
+	for _, r := range cut {
+		w("    %s", r)
+	}
 	w("    oifname %q ct state established,related accept", h.Bridge)
 	for _, r := range fwd {
 		w("    %s", r)

@@ -26,10 +26,10 @@ type setOpts struct {
 // it says which and needs --yes.
 func scale(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error {
 	if len(o.args) != 2 || !o.sets.instancesSet {
-		return errors.New("scale needs siloset NAME --instances N")
+		return errors.New("scale needs siloset NAME --instances N (or KIND NAME --replicas N for a defined kind with scale)")
 	}
 	if k, err := kindOf(o.args[0]); err != nil || k.Kind != "SiloSet" {
-		return errors.New("scale works on silosets")
+		return scaleDefined(ctx, c, o, stdout) // scale.go
 	}
 	if o.sets.instances < 0 {
 		return errors.New("--instances can't be negative")

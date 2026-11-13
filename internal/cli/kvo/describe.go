@@ -20,7 +20,7 @@ func describe(ctx context.Context, c *client.Client, o opts, stdout io.Writer) e
 	if len(o.args) != 2 {
 		return errors.New("describe needs KIND NAME")
 	}
-	k, err := kindOf(o.args[0])
+	k, err := resolveKind(ctx, c, o.args[0])
 	if err != nil {
 		return err
 	}
@@ -32,7 +32,13 @@ func describe(ctx context.Context, c *client.Client, o opts, stdout io.Writer) e
 	if err := c.Get(ctx, k.Kind, ns, o.args[1], obj); err != nil {
 		return err
 	}
-	return describeObject(stdout, obj)
+	if err := describeObject(stdout, obj); err != nil {
+		return err
+	}
+	if s, ok := obj.(*v1.Silo); ok {
+		return describeLeases(ctx, c, s, stdout)
+	}
+	return nil
 }
 
 // describeObject writes an object for people: what it is, what it wants, how it's doing and why.
@@ -56,6 +62,15 @@ func describeObject(w io.Writer, obj meta.Object) error {
 	var conds []meta.Condition
 	var tables []func()
 	switch o := obj.(type) {
+	case *v1.Unstructured:
+		kv(0, "Kind", o.Kind+" ("+o.APIVersion+")")
+		conds = unstructuredConditions(o)
+		lines := describeFields(o)
+		tables = append(tables, func() {
+			for _, l := range lines {
+				_, _ = fmt.Fprintln(tw, l)
+			}
+		})
 	case *v1.Silo:
 		kv(0, "Runtime", o.Spec.Runtime)
 		img := dash(o.Spec.Image)
@@ -156,8 +171,11 @@ func describeObject(w io.Writer, obj meta.Object) error {
 					if class == "" {
 						class = v1.VolumeLocal
 					}
-					where, state := "on the host", "-"
+					where, state, size := "on the host", "-", dash(v.Size)
 					if vs, ok := got[v.Name]; ok {
+						if vs.SizeNotEnforced {
+							size += " (not enforced)"
+						}
 						where = dash(vs.Region)
 						if vs.Handle != "" {
 							where += " #" + vs.Handle
@@ -171,7 +189,7 @@ func describeObject(w io.Writer, obj meta.Object) error {
 							state = vs.Message
 						}
 					}
-					_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n", v.Name, class, dash(v.Size), v.MountPath, where, state)
+					_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n", v.Name, class, size, v.MountPath, where, state)
 				}
 			})
 		}

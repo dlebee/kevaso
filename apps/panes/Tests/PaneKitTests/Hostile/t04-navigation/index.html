@@ -1,0 +1,27 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script>
+<meta http-equiv="refresh" content="3;url=__C__/t04/meta-refresh">
+</head><body style="margin:0"><form id=f method=POST action="__C__/t04/form"><input name=x value=leak></form>
+<a id=a href="__C__/t04/a-click" style="display:block;width:100vw;height:100vh;background:#232;color:#eee">t04 click</a>
+<iframe srcdoc="<meta http-equiv=refresh content='0;url=__C__/t04/iframe-srcdoc-refresh'>"></iframe>
+<script>
+(async()=>{
+await T('form.submit',()=>{document.getElementById('f').submit();return 'called'});
+await new Promise(r=>setTimeout(r,300));
+await T('location.href',()=>{location.href='__C__/t04/location-href';return 'set'});
+await new Promise(r=>setTimeout(r,300));
+await T('location.assign',()=>{location.assign('__C__/t04/location-assign');return 'called'});
+await T('location.replace',()=>{location.replace('__C__/t04/location-replace');return 'called'});
+await T('history.pushState-cross-origin',()=>{history.pushState({},'', '__C__/t04/pushstate');return 'called'});
+await T('nav-other-pane',()=>{location.href='kvpane://p-t08-files/index.html';return 'set'});
+await T('nav-data-url',()=>{location.href='data:text/html,<img src=__C__/t04/data-url>';return 'set'});
+R('still-here',location.href);
+R('done','t04');
+setTimeout(()=>{location.href="javascript:new Image().src='__C__/t04/javascript-url';void 0"},3500);
+})();
+</script></body></html>

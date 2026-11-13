@@ -1,0 +1,13 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script>
+<link rel="dns-prefetch" href="//e034-dns-prefetch.invalid"><link rel="dns-prefetch" href="__C__">
+<link rel="preconnect" href="__C__"><link rel="preconnect" href="__L__">
+</head><body style="margin:0"><a id=a ping="__C__/t03/a-ping" href="__C__/t03/a-href"
+ style="display:block;width:100vw;height:100vh;background:#223;color:#eee">t03: click me (a ping)</a>
+<script>document.getElementById('a').addEventListener('click',()=>R('a-click','user click received'));
+setTimeout(()=>R('done','t03'),3000)</script></body></html>

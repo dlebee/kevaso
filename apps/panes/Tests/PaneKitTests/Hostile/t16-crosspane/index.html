@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script>
+</head><body>t16
+<!-- Not covered by E034: two open panes trying to talk to each other. -->
+<script>
+const me=location.host;window.__heard=[];
+let bc=null;try{bc=new BroadcastChannel('kevaso');bc.onmessage=e=>window.__heard.push('bc:'+e.data)}catch(e){R('bc','blocked '+e)}
+window.addEventListener('storage',e=>window.__heard.push('storage:'+e.key));
+window.addEventListener('message',e=>window.__heard.push('message:'+e.origin));
+let named=null;try{named=window.open('','kevaso-shared')}catch(e){}
+setInterval(()=>{try{bc&&bc.postMessage(me)}catch(e){}try{localStorage.setItem('k'+me,String(Date.now()))}catch(e){}
+ try{named&&named.postMessage(me,'*')}catch(e){}try{parent.postMessage(me,'*')}catch(e){}},200);
+setInterval(()=>{window.__report=['me: '+me,'named-window: '+String(named),'heard: '+JSON.stringify(window.__heard.filter(h=>!h.includes(me)))]},100);
+</script></body></html>

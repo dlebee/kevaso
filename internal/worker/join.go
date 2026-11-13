@@ -14,12 +14,13 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/clock"
+	"kevaso.com/core/internal/version"
 )
 
 // JoinConfig is a worker-only host joining a cluster (kvoadm host add sets these files up).
 type JoinConfig struct {
 	HostName  string
-	Server    string // the control plane's API, e.g. https://203.0.113.10:6443
+	Server    string // the control plane's API, e.g. https://203.0.113.10:6443; several, comma-separated, fail over
 	CAFile    string // the cluster CA (pinned)
 	TokenFile string // the one-time join token; removed once used
 	DataDir   string // the host's key and certificate go to DataDir/pki
@@ -42,7 +43,7 @@ func Join(ctx context.Context, cfg JoinConfig) (*client.Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("not joined yet, and no join token: %w", err)
 		}
-		anon, err := client.NewTLS(cfg.Server, ca, nil, nil)
+		anon, err := client.NewTLSEndpoints(client.SplitServers(cfg.Server), ca, nil, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -62,7 +63,7 @@ func Join(ctx context.Context, cfg JoinConfig) (*client.Client, error) {
 		_ = os.Remove(cfg.TokenFile) // used up anyway
 		cert, key = cred.Certificate, cred.Key
 	}
-	return client.NewTLS(cfg.Server, ca, cert, key)
+	return client.NewTLSEndpoints(client.SplitServers(cfg.Server), ca, cert, key)
 }
 
 // Contact remembers when this host last reached the control plane (the agent fences by it).
@@ -92,6 +93,7 @@ func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Du
 				return
 			}
 			now := clk.Now().UTC()
+			h.Status.Version = version.Version
 			meta.SetCondition(&h.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "WorkerUp",
 				Message: "kevasod reporting", ObservedGeneration: h.Generation}, now.Truncate(time.Second))
 			hb := now.Truncate(time.Second)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"slices"
 	"strings"
 
@@ -494,8 +495,10 @@ func (s *Server) checkContainerFit(ctx context.Context, t target, silo *v1.Silo)
 		if len(silo.Spec.Command) > 0 {
 			problems = append(problems, "command is for container silos (docker, podman); "+rt+" boots its image")
 		}
-		if len(silo.Spec.Volumes) > 0 && !policy.SelfEnforced(rt) {
-			problems = append(problems, "extra volumes on "+rt+" come later (container silos have them now)")
+		if rt == "cloud-hypervisor" {
+			problems = append(problems, s.vmVolumeProblems(silo)...)
+		} else if len(silo.Spec.Volumes) > 0 && !policy.SelfEnforced(rt) {
+			problems = append(problems, "extra volumes on "+rt+" come later (container silos and cloud-hypervisor have them now)")
 		}
 		if policy.SelfEnforced(rt) && len(silo.Spec.Volumes) > 0 {
 			problems = append(problems, "volumes on "+rt+" come later: /sandbox is what persists")
@@ -521,4 +524,22 @@ func (s *Server) checkContainerFit(ctx context.Context, t target, silo *v1.Silo)
 		return errf(http.StatusUnprocessableEntity, "Invalid", "Silo %s: %s", silo.Name, strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// vmVolumeProblems: what a cloud-hypervisor silo's volumes and disk can't be (ADR 0006). A volume
+// can't replace the guest's root; the root disk can only live on a mount class (an image file on
+// its folder, so it moves with the silo), not on a device class.
+func (s *Server) vmVolumeProblems(silo *v1.Silo) []string {
+	var problems []string
+	for _, v := range silo.Spec.Volumes {
+		if path.Clean(v.MountPath) == "/" {
+			problems = append(problems, "volume "+v.Name+": mountPath / is the VM's own disk")
+		}
+	}
+	if d, ok := v1.DiskVolume(silo); ok {
+		if c, known := s.classMap()[d.Class]; known && !c.Mount {
+			problems = append(problems, "disk.class "+d.Class+": a VM's disk can live on a mount class (an image file on it), not a device class yet")
+		}
+	}
+	return problems
 }

@@ -42,13 +42,14 @@ func (s *Server) agentBroker(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errf(http.StatusForbidden, "Forbidden", "only hosts relay broker requests"))
 		return
 	}
-	if s.vault == nil {
-		writeErr(w, errf(http.StatusServiceUnavailable, "Unavailable", "this server has no KMS"))
-		return
-	}
 	var req client.AgentBrokerRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "broker request: %v", err))
+		return
+	}
+	portOp := req.Request.Op == client.OpPortOpen || req.Request.Op == client.OpPortClose // leases need no KMS
+	if s.vault == nil && !portOp {
+		writeErr(w, errf(http.StatusServiceUnavailable, "Unavailable", "this server has no KMS"))
 		return
 	}
 	host := id.Name
@@ -60,7 +61,7 @@ func (s *Server) agentBroker(w http.ResponseWriter, r *http.Request) {
 	if s.auth != nil && s.auth.Audit != nil {
 		s.auth.Audit.Record(audit.Entry{
 			Time: s.clock.Now(), Event: "broker", User: "system:silo:" + req.Namespace + ":" + req.Name, Type: "silo",
-			Verb: req.Request.Op, Resource: "secrets", Namespace: req.Namespace, Name: req.Request.Name,
+			Verb: req.Request.Op, Resource: map[bool]string{false: "secrets", true: v1.ResourceExposure}[portOp], Namespace: req.Namespace, Name: req.Request.Name,
 			Allowed: allowed, Reason: reason + " (via host " + host + ")",
 		})
 	}
@@ -156,6 +157,8 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 		return s.askInject(ctx, call, op)
 	case client.OpPane, client.OpPaneBundle:
 		return s.brokerPane(ctx, call, op)
+	case client.OpPortOpen, client.OpPortClose:
+		return s.brokerPort(ctx, call, op)
 	case client.OpIngress:
 		cfg, n, err := s.ingressConfig(ctx, call.silo)
 		if err != nil {

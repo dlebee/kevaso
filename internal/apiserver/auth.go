@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"kevaso.com/core/api/client"
+	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/audit"
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
@@ -122,8 +123,14 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 	switch {
 	case t.exec:
 		a.Verb, a.Resource = "create", t.kind.Plural+"/exec"
+	case t.stream == "files" && r.Method == http.MethodGet:
+		a.Verb, a.Resource = "get", t.kind.Plural+"/files" // read, list, stat
+	case t.stream != "":
+		a.Verb, a.Resource = "create", t.kind.Plural+"/"+t.stream // ssh; files: write
 	case t.move:
 		a.Verb, a.Resource = "create", t.kind.Plural+"/move"
+	case t.lease != "":
+		a.Verb, a.Resource = v1.VerbOpen, v1.ResourceExposure // open and close
 	case t.token:
 		a.Verb, a.Resource = "create", t.kind.Plural+"/token"
 	case t.value:
@@ -152,6 +159,9 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 	if t.status {
 		a.Resource = t.kind.Plural + "/status"
 	}
+	if t.scale {
+		a.Resource = t.kind.Plural + "/scale"
+	}
 	return a
 }
 
@@ -179,6 +189,9 @@ func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups [
 	if t.answer != "" {
 		a = s.approvalAttributes(ctx, a, t)
 	}
+	if t.lease != "" {
+		a = s.exposureAttributes(ctx, a, v1.VerbOpen, t.namespace, t.name)
+	}
 	d := p.Authorize(a)
 	if !d.Allowed && t.kind.Kind == "Namespace" && a.Verb == "list" {
 		return true, true, "namespaces you have a role in", nil
@@ -195,12 +208,14 @@ func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
 		return false
 	case t.answer != "": // only people answer approvals
 		return false
+	case t.lease != "": // hosts never open leases (a silo asks through its broker)
+		return false
 	case t.bundle: // bundles are for people's clients, never for hosts
 		return false
 	case id.Role == "control-plane" && id.Type == "host":
 		return true
 	case id.Role == "worker" && id.Type == "host":
-		if t.exec || t.token || t.move {
+		if t.exec || t.token || t.move || t.stream != "" {
 			return false
 		}
 		if r.Method == http.MethodGet {
@@ -230,6 +245,9 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			return
 		case r.URL.Path == "/enroll":
 			s.enroll(w, r)
+			return
+		case r.URL.Path == client.PathSystemNodeJoin: // a join token, like /enroll
+			s.systemNodeJoin(w, r)
 			return
 		case r.URL.Path == "/ca.crt": // public: kvo login checks it against the fingerprint it was given
 			w.Header().Set("Content-Type", "application/x-pem-file")
@@ -277,7 +295,7 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusOK, client.WhoAmI{Type: id.Type, Name: id.Name, Role: id.Role, Groups: groups})
 			return
 		}
-		t, err := parsePath(r.URL.Path)
+		t, err := s.parseAny(ctx, r.URL.Path)
 		if err == nil {
 			ok, filter, reason, err := s.authorizeRequest(ctx, id, groups, r, t)
 			if err != nil {

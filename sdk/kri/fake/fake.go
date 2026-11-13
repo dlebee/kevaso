@@ -23,6 +23,11 @@ type Runtime struct {
 	// Handler answers Exec; the default treats `sh -c SCRIPT` as "success, no output", and
 	// `exit N` exits with N.
 	Handler Handler
+	// Program, if set, answers Exec instead of Handler, streaming: it gets the request as is (stdin,
+	// stdout, the terminal and its resizes). ctx is cancelled when the exec's client goes away; the
+	// fake then counts the command killed and returns at once, as a real runtime must.
+	Program         func(ctx context.Context, id kri.ID, req kri.ExecRequest) int
+	running, killed int
 	// Calls records every operation, for tests that check what the agent did.
 	Calls []string
 	// FailCreate makes Create fail for these silo names (to test error handling).
@@ -61,6 +66,17 @@ func (r *Runtime) Create(_ context.Context, spec kri.Spec) error {
 	}
 	r.silos[spec.ID] = &silo{spec: spec, state: kri.Created}
 	return nil
+}
+
+// Spec returns what the silo was created with (its volumes' host paths, say).
+func (r *Runtime) Spec(id kri.ID) (kri.Spec, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.silos[id]
+	if !ok {
+		return kri.Spec{}, false
+	}
+	return s.spec, true
 }
 
 func (r *Runtime) get(id kri.ID) (*silo, error) {
@@ -158,16 +174,22 @@ func (r *Runtime) List(context.Context) ([]kri.ID, error) {
 }
 
 // Exec implements kri.Runtime.
-func (r *Runtime) Exec(_ context.Context, id kri.ID, req kri.ExecRequest) (int, error) {
+func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int, error) {
 	r.mu.Lock()
 	s, err := r.get(id)
 	if err == nil && s.state != kri.Running {
 		err = fmt.Errorf("%s is %s, not running", id, s.state)
 	}
-	h := r.Handler
+	h, p := r.Handler, r.Program
+	if err == nil && p != nil {
+		r.running++
+	}
 	r.mu.Unlock()
 	if err != nil {
 		return -1, err
+	}
+	if p != nil {
+		return r.runProgram(ctx, id, req, p)
 	}
 	var stdin []byte
 	if req.Stdin != nil {
@@ -181,6 +203,38 @@ func (r *Runtime) Exec(_ context.Context, id kri.ID, req kri.ExecRequest) (int, 
 		_, _ = io.WriteString(req.Stdout, out)
 	}
 	return code, nil
+}
+
+func (r *Runtime) runProgram(ctx context.Context, id kri.ID, req kri.ExecRequest, p func(context.Context, kri.ID, kri.ExecRequest) int) (int, error) {
+	done := make(chan int, 1)
+	go func() { done <- p(ctx, id, req) }()
+	select {
+	case code := <-done:
+		r.mu.Lock()
+		r.running--
+		r.mu.Unlock()
+		return code, nil
+	case <-ctx.Done():
+		r.mu.Lock()
+		r.running--
+		r.killed++
+		r.mu.Unlock()
+		return -1, ctx.Err()
+	}
+}
+
+// Running is how many Program commands are running now.
+func (r *Runtime) Running() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.running
+}
+
+// Killed is how many Program commands were stopped because their client went away.
+func (r *Runtime) Killed() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.killed
 }
 
 func defaultHandler(_ kri.ID, cmd []string, _ []byte) (string, int) {

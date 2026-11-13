@@ -14,7 +14,9 @@ import (
 )
 
 // Fake is an in-memory plugin named "fake" with classes fake-lb (node ports), fake-ip (announced),
-// fake-block and DNS provider fake-dns.
+// fake-block (a device), fake-share (mounted by the node side, global topology)
+// and DNS provider fake-dns. Node returns its node side on one host; all node sides share the
+// fake's volumes, like hosts sharing a network filesystem.
 type Fake struct {
 	mu sync.Mutex
 	// Machines: host address → what the plugin knows about it (only these are its own).
@@ -22,6 +24,8 @@ type Fake struct {
 	LBs      map[string]kplugin.LoadBalancer // by ID
 	Volumes  map[string]*FakeVolume          // by handle
 	Records  map[string]kplugin.Record       // by name/type
+	// Mounts are the node sides' mounts of fake-share volumes: "HOST:PATH" → handle.
+	Mounts map[string]string
 	// DetachCalls before a detach completes (0: at once); counts down per volume.
 	DetachSlow int
 	// Fail, if set, is returned by every mutating call.
@@ -41,8 +45,14 @@ type FakeVolume struct {
 // New returns an empty fake.
 func New() *Fake {
 	return &Fake{Machines: map[string]kplugin.HostInfo{}, LBs: map[string]kplugin.LoadBalancer{},
-		Volumes: map[string]*FakeVolume{}, Records: map[string]kplugin.Record{}}
+		Volumes: map[string]*FakeVolume{}, Records: map[string]kplugin.Record{}, Mounts: map[string]string{}}
 }
+
+// Fake classes.
+const (
+	ClassBlock = "fake-block"
+	ClassShare = "fake-share"
+)
 
 func (f *Fake) call(s string, args ...any) error {
 	f.Calls = append(f.Calls, fmt.Sprintf(s, args...))
@@ -56,8 +66,11 @@ func (f *Fake) Info(context.Context) (kplugin.Info, error) {
 			{Name: "fake-lb", OwnHostsOnly: true, NodePorts: true},
 			{Name: "fake-ip", OwnHostsOnly: true, Announce: true},
 		},
-		Storage: []kplugin.Class{{Name: "fake-block", OwnHostsOnly: true}},
-		DNS:     []string{"fake-dns"}}, nil
+		Storage: []kplugin.Class{
+			{Name: ClassBlock, OwnHostsOnly: true},
+			{Name: ClassShare, Topology: kplugin.TopologyGlobal, Reach: kplugin.ReachMount},
+		},
+		DNS: []string{"fake-dns"}}, nil
 }
 
 // DescribeHosts implements kplugin.HostDescriber.
@@ -129,13 +142,24 @@ func (f *Fake) EnsureVolume(_ context.Context, v kplugin.Volume) (kplugin.Volume
 	}
 	for _, x := range f.Volumes {
 		if x.ID == v.ID {
-			return kplugin.VolumeStatus{Handle: x.Handle, Region: x.Region, SizeBytes: x.SizeBytes}, nil
+			if v.SizeBytes > x.SizeBytes { // grows (online); never shrinks
+				x.SizeBytes = v.SizeBytes
+			}
+			return kplugin.VolumeStatus{Handle: x.Handle, Region: x.Region, SizeBytes: x.SizeBytes, SizeEnforced: x.Class == ClassBlock}, nil
 		}
 	}
 	f.next++
 	h := fmt.Sprintf("vol-%d", f.next)
+	switch v.Class {
+	case ClassBlock:
+	case ClassShare: // a folder on a shared filesystem: anywhere, so no region
+		h, v.Region = fmt.Sprintf("share-%d", f.next), ""
+	default:
+		return kplugin.VolumeStatus{}, fmt.Errorf("storage class %s: %w", v.Class, kplugin.ErrUnsupported)
+	}
 	f.Volumes[h] = &FakeVolume{Volume: v, Handle: h}
-	return kplugin.VolumeStatus{Handle: h, Region: v.Region, SizeBytes: v.SizeBytes}, nil
+	// A block volume's size is its device's; the fake share enforces none (like a folder without a quota).
+	return kplugin.VolumeStatus{Handle: h, Region: v.Region, SizeBytes: v.SizeBytes, SizeEnforced: v.Class == ClassBlock}, nil
 }
 
 // AttachVolume implements kplugin.Volumes.
@@ -149,6 +173,8 @@ func (f *Fake) AttachVolume(_ context.Context, a kplugin.Attachment) (kplugin.At
 	switch {
 	case !ok:
 		return kplugin.AttachmentStatus{}, kplugin.ErrNotFound
+	case v.Class != ClassBlock:
+		return kplugin.AttachmentStatus{}, fmt.Errorf("%s volumes are mounted by the node side, not attached: %w", v.Class, kplugin.ErrUnsupported)
 	case v.Region != a.Host.Region:
 		return kplugin.AttachmentStatus{}, fmt.Errorf("volume in %s, host in %s", v.Region, a.Host.Region)
 	case v.AttachedTo != "" && v.AttachedTo != a.Host.ID:
@@ -195,6 +221,11 @@ func (f *Fake) DeleteVolume(_ context.Context, ref kplugin.VolumeRef) error {
 	if v.AttachedTo != "" {
 		return fmt.Errorf("volume %s is attached", ref.Handle)
 	}
+	for at, h := range f.Mounts {
+		if h == ref.Handle {
+			return fmt.Errorf("volume %s is mounted at %s", ref.Handle, at)
+		}
+	}
 	delete(f.Volumes, ref.Handle)
 	return nil
 }
@@ -233,6 +264,87 @@ func (f *Fake) DeleteRecord(_ context.Context, r kplugin.Record) error {
 	return nil
 }
 
+// FakeNode is the fake's node side on one host.
+type FakeNode struct {
+	*Fake
+	Host string
+}
+
+// Node returns the fake's node side on host.
+func (f *Fake) Node(host string) *FakeNode { return &FakeNode{Fake: f, Host: host} }
+
+// Info implements kplugin.Plugin: the node side serves only the mount classes.
+func (n *FakeNode) Info(ctx context.Context) (kplugin.Info, error) {
+	i, _ := n.Fake.Info(ctx)
+	out := kplugin.Info{Name: i.Name, Version: i.Version, Protocol: i.Protocol}
+	for _, c := range i.Storage {
+		if c.Mounted() {
+			out.Storage = append(out.Storage, c)
+		}
+	}
+	return out, nil
+}
+
+// MountVolume implements kplugin.Node.
+func (n *FakeNode) MountVolume(_ context.Context, m kplugin.NodeMount) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err := n.call("mount %s %s %s", n.Host, m.Handle, m.Path); err != nil {
+		return err
+	}
+	v, ok := n.Volumes[m.Handle]
+	switch {
+	case !ok:
+		return fmt.Errorf("volume %s: %w", m.Handle, kplugin.ErrNotFound)
+	case v.Class != ClassShare:
+		return fmt.Errorf("%s volumes aren't mounted by the node side: %w", v.Class, kplugin.ErrUnsupported)
+	case m.Path == "":
+		return fmt.Errorf("mount %s: no path", m.Handle)
+	}
+	at := n.Host + ":" + m.Path
+	if cur, ok := n.Mounts[at]; ok && cur != m.Handle {
+		return fmt.Errorf("%s already has %s mounted: %w", at, cur, kplugin.ErrConflict)
+	}
+	n.Mounts[at] = m.Handle
+	return nil
+}
+
+// UnmountVolume implements kplugin.Node.
+func (n *FakeNode) UnmountVolume(_ context.Context, m kplugin.NodeMount) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err := n.call("unmount %s %s", n.Host, m.Path); err != nil {
+		return err
+	}
+	delete(n.Mounts, n.Host+":"+m.Path)
+	return nil
+}
+
+// MountVolume implements kplugin.Node for the fake as one host with no name (core's
+// plugins.Conn wants every interface); Node gives a host's own.
+func (f *Fake) MountVolume(ctx context.Context, m kplugin.NodeMount) error {
+	return f.Node("").MountVolume(ctx, m)
+}
+
+// UnmountVolume implements kplugin.Node (see MountVolume).
+func (f *Fake) UnmountVolume(ctx context.Context, m kplugin.NodeMount) error {
+	return f.Node("").UnmountVolume(ctx, m)
+}
+
+// MountsOf returns the paths where handle is mounted, as HOST:PATH.
+func (f *Fake) MountsOf(handle string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for at, h := range f.Mounts {
+		if h == handle {
+			out = append(out, at)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // CallLog returns the calls so far.
 func (f *Fake) CallLog() []string {
 	f.mu.Lock()
@@ -263,4 +375,6 @@ var (
 	_ kplugin.LoadBalancers = (*Fake)(nil)
 	_ kplugin.Volumes       = (*Fake)(nil)
 	_ kplugin.DNS           = (*Fake)(nil)
+	_ kplugin.Node          = (*Fake)(nil)
+	_ kplugin.Node          = (*FakeNode)(nil)
 )

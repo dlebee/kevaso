@@ -39,6 +39,7 @@ message Class {
   bool announce = 4;       // load balancers: the silo's host announces the address
   bool node_ports = 5;     // load balancers: the host gets a node port per service port
   string topology = 6;     // storage: host | zone | region | global (where it can attach from)
+  string reach = 7;        // storage: device (attached, the host mounts it; the default) | mount (the node side mounts it)
 }
 
 // ── Hosts ────────────────────────────────────────────────────────────────────
@@ -121,6 +122,9 @@ message VolumeStatus {
   string handle = 1;
   string region = 2;
   int64 size_bytes = 3;
+  // size_enforced: the volume can't grow past size_bytes (a block device's size, a directory
+  // quota). A mount class that can't enforce it says false.
+  bool size_enforced = 4;
 }
 
 message Attachment {
@@ -138,6 +142,28 @@ message VolumeRef {
 }
 
 message DeleteVolumeResponse {}
+
+// ── Node ─────────────────────────────────────────────────────────────────────
+
+// Node is a plugin's node side, on a worker: its own socket, /run/kevaso-plugins/NAME/node.sock,
+// serving Identity (the storage classes it mounts) and Node. The worker's kevasod calls it for
+// storage classes with reach "mount": the node side mounts the volume at the path kevasod gives
+// (credentials stay in the plugin), and unmounts it when the silo leaves the host.
+
+service Node {
+  rpc NodeMountVolume(NodeMount) returns (NodeMountResponse);
+  rpc NodeUnmountVolume(NodeMount) returns (NodeUnmountResponse);
+}
+
+message NodeMount {
+  string class = 1;
+  string handle = 2; // from EnsureVolume
+  string id = 3;     // the silo's UID and the volume's name
+  string path = 4;   // where on the host: kevasod made the parent, the plugin makes the rest
+}
+
+message NodeMountResponse {}
+message NodeUnmountResponse {}
 
 // ── DNS ──────────────────────────────────────────────────────────────────────
 

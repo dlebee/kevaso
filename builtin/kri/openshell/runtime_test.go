@@ -24,6 +24,7 @@ type fake struct {
 	users     map[string]bool
 	gwUp      map[string]bool // gateway name → answering
 	execCode  int
+	execHook  func(context.Context, Cmd) (int, error) // sandbox exec, if set
 }
 
 func newFake() *fake {
@@ -39,7 +40,7 @@ func gatewayOf(env []string) string {
 	return ""
 }
 
-func (f *fake) Run(_ context.Context, c Cmd) (int, error) {
+func (f *fake) Run(ctx context.Context, c Cmd) (int, error) {
 	line := c.Name + " " + strings.Join(c.Args, " ")
 	f.cmds = append(f.cmds, line)
 	f.envs = append(f.envs, strings.Join(c.Env, " "))
@@ -85,6 +86,8 @@ func (f *fake) Run(_ context.Context, c Cmd) (int, error) {
 			f.sandboxes[a[2]] = "Ready"
 		case a[0] == "sandbox" && a[1] == "delete":
 			delete(f.sandboxes, a[2])
+		case a[0] == "sandbox" && a[1] == "exec" && f.execHook != nil:
+			return f.execHook(ctx, c)
 		case a[0] == "sandbox" && a[1] == "exec":
 			if c.Stdin != nil {
 				b, _ := io.ReadAll(c.Stdin)
@@ -173,7 +176,8 @@ func TestLifecycle(t *testing.T) {
 	f.execCode = 7
 	var out strings.Builder
 	code, err := r.Exec(ctx, silo, kri.ExecRequest{Command: []string{"sh", "-c", "cat; exit 7"}, Stdin: strings.NewReader("hi"), Stdout: &out})
-	if err != nil || code != 7 || out.String() != "hi" || !strings.Contains(f.cmds[len(f.cmds)-1], "sandbox exec -n "+SandboxName(silo)+" --no-tty -- sh -c cat; exit 7") {
+	if err != nil || code != 7 || out.String() != "hi" || !strings.Contains(f.cmds[len(f.cmds)-1], "sandbox exec -n "+SandboxName(silo)+" --no-tty -- env KEVASO_EXEC=") ||
+		!strings.HasSuffix(f.cmds[len(f.cmds)-1], " sh -c cat; exit 7") {
 		t.Fatalf("exec: %d %q %v %s", code, out.String(), err, f.cmds[len(f.cmds)-1])
 	}
 	if err := r.Stop(ctx, silo); err != nil {

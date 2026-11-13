@@ -75,8 +75,8 @@ func (s *Server) users(w http.ResponseWriter, r *http.Request, id pki.Identity, 
 			return
 		}
 		for _, role := range req.Roles {
-			if role != "worker" {
-				writeErr(w, errf(http.StatusBadRequest, "BadRequest", "hosts can join as worker (control-plane joins come with HA)"))
+			if role != "worker" && role != RoleSystemNode {
+				writeErr(w, errf(http.StatusBadRequest, "BadRequest", "hosts join as worker or %s", RoleSystemNode))
 				return
 			}
 		}

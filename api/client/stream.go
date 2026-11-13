@@ -81,6 +81,9 @@ func (f FrameWriter) Write(p []byte) (int, error) {
 // ExecRequest is what a client asks the API server to run.
 type ExecRequest struct {
 	Command []string `json:"command"`
+	TTY     bool     `json:"tty,omitempty"` // on a terminal of Rows x Cols (FrameResize changes it)
+	Rows    uint16   `json:"rows,omitempty"`
+	Cols    uint16   `json:"cols,omitempty"`
 }
 
 // ExecHeader is the first line (JSON) on an exec stream from the API server to a host's agent.
@@ -90,22 +93,33 @@ type ExecHeader struct {
 	UID       string   `json:"uid"`
 	Runtime   string   `json:"runtime"`
 	Command   []string `json:"command"`
+	TTY       bool     `json:"tty,omitempty"`
+	Rows      uint16   `json:"rows,omitempty"`
+	Cols      uint16   `json:"cols,omitempty"`
 }
 
 // upgradeClient returns an HTTP client that can do HTTP/1.1 upgrades (HTTP/2 can't hijack).
 func (c *Client) upgradeClient() *http.Client {
 	base := c.http()
+	if f, ok := base.Transport.(*failover); ok { // several control planes (failover.go)
+		return &http.Client{Transport: f.forUpgrade(http1Only)}
+	}
 	t, ok := base.Transport.(*http.Transport)
 	if !ok || t == nil {
 		t = http.DefaultTransport.(*http.Transport)
 	}
+	return &http.Client{Transport: http1Only(t)}
+}
+
+// http1Only is a copy of t that speaks HTTP/1.1 only.
+func http1Only(t *http.Transport) *http.Transport {
 	u := t.Clone()
 	u.ForceAttemptHTTP2 = false
 	u.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
 	if u.TLSClientConfig != nil {
 		u.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	}
-	return &http.Client{Transport: u}
+	return u
 }
 
 // Upgrade sends a request asking to switch to a raw stream and returns that stream.
@@ -148,26 +162,13 @@ func (c *Client) Upgrade(ctx context.Context, method, path, proto string, body a
 
 // Exec runs a command in a silo and returns its exit code. stdin may be nil.
 func (c *Client) Exec(ctx context.Context, namespace, name string, command []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	p, err := Path("Silo", namespace, name)
-	if err != nil {
-		return -1, err
-	}
-	s, err := c.Upgrade(ctx, http.MethodPost, p+"/exec", "kevaso-exec", ExecRequest{Command: command})
+	s, err := c.OpenExec(ctx, namespace, name, ExecRequest{Command: command})
 	if err != nil {
 		return -1, err
 	}
 	defer func() { _ = s.Close() }()
-	go func() { <-ctx.Done(); _ = s.Close() }()
-	var mu sync.Mutex
-	go func() {
-		if stdin != nil {
-			_, _ = io.Copy(FrameWriter{W: s, Typ: FrameStdin, Mu: &mu}, stdin)
-		}
-		mu.Lock()
-		_ = WriteFrame(s, FrameStdinClose, nil)
-		mu.Unlock()
-	}()
-	return ReadOutput(s, stdout, stderr)
+	go s.SendStdin(stdin)
+	return s.Wait(stdout, stderr)
 }
 
 // ReadOutput reads output frames until the exit code (or an error frame).

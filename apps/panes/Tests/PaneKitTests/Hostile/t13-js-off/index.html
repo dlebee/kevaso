@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script data-note="never runs with JS off">
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script></head><body style="color:#eee;background:#111">t13 js off
+<script>new Image().src='__C__/t13/script-ran';document.body.append('SCRIPT RAN')</script>
+<noscript><img src="__C__/t13/noscript-img"><link rel=stylesheet href="__C__/t13/noscript-css"></noscript>
+<img src="x" onerror="new Image().src='__C__/t13/onerror-ran'">
+</body></html>

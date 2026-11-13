@@ -21,18 +21,21 @@ import (
 
 // RunTunnel keeps a connection open to the control plane (research E020: agents dial out, so
 // hosts need no inbound port) and serves the exec streams the API server opens on it.
-func (a *Agent) RunTunnel(ctx context.Context) {
+func (a *Agent) RunTunnel(ctx context.Context) { a.runTunnel(ctx, a.Client) }
+
+// runTunnel keeps one tunnel open through c (one control plane, or a failover list).
+func (a *Agent) runTunnel(ctx context.Context, c *client.Client) {
 	backoff := time.Second
 	for ctx.Err() == nil {
 		start := time.Now()
-		err := a.tunnelOnce(ctx)
+		err := a.tunnelOnce(ctx, c)
 		if ctx.Err() != nil {
 			return
 		}
 		if time.Since(start) > time.Minute {
 			backoff = time.Second // it was up for a while: reconnect quickly
 		}
-		a.log("tunnel: %v (reconnecting in %v)", err, backoff)
+		a.log("tunnel to %s: %v (reconnecting in %v)", c.BaseURL, err, backoff)
 		select {
 		case <-ctx.Done():
 			return
@@ -42,8 +45,8 @@ func (a *Agent) RunTunnel(ctx context.Context) {
 	}
 }
 
-func (a *Agent) tunnelOnce(ctx context.Context) error {
-	conn, err := a.Client.Upgrade(ctx, http.MethodGet, "/agent/connect?host="+url.QueryEscape(a.HostName), "kevaso-tunnel", nil)
+func (a *Agent) tunnelOnce(ctx context.Context, c *client.Client) error {
+	conn, err := c.Upgrade(ctx, http.MethodGet, "/agent/connect?host="+url.QueryEscape(a.HostName), "kevaso-tunnel", nil)
 	if err != nil {
 		return err
 	}
@@ -94,6 +97,11 @@ func (a *Agent) serveExec(ctx context.Context, st net.Conn) {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	var tty *kri.TTY
+	resize := make(chan kri.WindowSize, 1)
+	if h.TTY {
+		tty = &kri.TTY{Size: kri.WindowSize{Rows: h.Rows, Cols: h.Cols}, Resize: resize}
+	}
 	pr, pw := io.Pipe()
 	go func() { // stdin frames → the command; the stream ending ends the command
 		defer cancel()
@@ -108,6 +116,10 @@ func (a *Agent) serveExec(ctx context.Context, st net.Conn) {
 				if _, err := pw.Write(p); err != nil {
 					// the command stopped reading; keep draining for FrameStdinClose
 					continue
+				}
+			case client.FrameResize:
+				if r, c, ok := client.ParseResize(p); ok && tty != nil {
+					latest(resize, kri.WindowSize{Rows: r, Cols: c})
 				}
 			case client.FrameStdinClose:
 				_ = pw.Close()
@@ -124,6 +136,7 @@ func (a *Agent) serveExec(ctx context.Context, st net.Conn) {
 		Stdin:   pr,
 		Stdout:  client.FrameWriter{W: st, Typ: client.FrameStdout, Mu: &mu},
 		Stderr:  client.FrameWriter{W: st, Typ: client.FrameStderr, Mu: &mu},
+		TTY:     tty,
 	})
 	_ = pr.Close()
 	if err != nil {
@@ -135,4 +148,19 @@ func (a *Agent) serveExec(ctx context.Context, st net.Conn) {
 	mu.Lock()
 	_ = client.WriteFrame(st, client.FrameExit, b[:])
 	mu.Unlock()
+}
+
+// latest puts sz on a one-slot channel, replacing a size the runtime hasn't taken yet.
+func latest(ch chan kri.WindowSize, sz kri.WindowSize) {
+	for {
+		select {
+		case ch <- sz:
+			return
+		default:
+			select {
+			case <-ch:
+			default:
+			}
+		}
+	}
 }

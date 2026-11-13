@@ -5,7 +5,10 @@
 //	kvo describe KIND NAME [-n NS]   everything about one object, for people
 //	kvo delete KIND NAME [-n NS]
 //	kvo watch KIND [-n NS|-A]
-//	kvo exec silo NAME [-n NS] -- CMD [ARGS…]   run a command in a silo; exits with its code
+//	kvo exec silo NAME [-n NS] [-it] -- CMD [ARGS…]   run a command in a silo (-t: on a terminal); exits with its code
+//	kvo ssh silo NAME [-n NS]     a login shell in the silo, on a terminal (through the relay; no SSH)
+//	kvo cp SRC DST [--max-size 1GiB]   copy a file or folder in or out: one side is silo/NAME:/PATH
+//	kvo ui silo NAME [--no-browser]   a small local web page for one silo: a terminal and its files
 //	kvo move silo NAME --to HOST [--recreate] [--confirm-fenced]   move it (with its data if it can)
 //	kvo login [SERVER --ca sha256:…] [--context NAME] [--no-browser]   sign in (browser + invite code)
 //	kvo logout                    forget this context's session
@@ -65,6 +68,8 @@ type opts struct {
 	all, noBrowser                           bool
 	secret                                   secretOpts
 	sets                                     setOpts
+	term                                     termOpts  // exec -it, cp, ui (terminal.go, copy.go)
+	lease                                    leaseOpts // kvo open / close (leases.go)
 	args                                     []string
 	command                                  []string // after --
 	ctxNamespace                             string   // the context's default namespace
@@ -113,6 +118,12 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.reason, err = val()
 		case "--to":
 			o.moveTo, err = val()
+		case "--port":
+			o.lease.port, err = val()
+		case "--for":
+			o.lease.forDur, err = val()
+		case "--no-wait":
+			o.lease.noWait = true
 		case "--recreate":
 			o.recreate = true
 		case "--confirm-fenced":
@@ -140,7 +151,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.secret.labels = append(o.secret.labels, v)
 		case "--reveal":
 			o.secret.reveal = true
-		case "--instances":
+		case "--instances", "--replicas":
 			var v string
 			if v, err = val(); err == nil {
 				o.sets.instances, err = strconv.Atoi(v)
@@ -152,6 +163,12 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.sets.off = true
 		case "--yes":
 			o.sets.yes = true
+		case "-i", "--stdin":
+			// stdin always reaches the command; accepted for people used to docker and kubectl
+		case "-t", "--tty", "-it", "-ti":
+			o.term.tty = true
+		case "--max-size":
+			o.term.maxSize, err = val()
 		default:
 			if strings.HasPrefix(a, "-") && a != "-" {
 				return o, fmt.Errorf("unknown flag %s", a)
@@ -168,7 +185,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|scale|reset|protect|move|pane|create|secret|approve|deny|login|logout|ctx|ns|auth …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|pane|create|secret|approve|deny|open|close|login|logout|ctx|ns|auth …")
 		return 2
 	}
 	o, err := parse(args[1:], os.Getenv)
@@ -216,6 +233,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		err = paneCommand(ctx, c, o, stdout)
 	case "approve", "deny":
 		err = approve(ctx, c, o, args[0], stdout)
+	case "open", "close":
+		err = leaseCommand(ctx, c, o, args[0], stdout, stderr)
 	case "delete":
 		err = del(ctx, c, o, stdout)
 	case "watch":
@@ -226,12 +245,20 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		err = reset(ctx, c, o, stdout)
 	case "protect":
 		err = protect(ctx, c, o, stdout)
-	case "exec":
+	case "exec", "ssh":
 		var code int
-		code, err = execIn(ctx, c, o, stdin, stdout, stderr)
+		if args[0] == "ssh" || o.term.tty {
+			code, err = terminal(ctx, c, o, args[0], stdin, stdout)
+		} else {
+			code, err = execIn(ctx, c, o, stdin, stdout, stderr)
+		}
 		if err == nil {
 			return code
 		}
+	case "cp":
+		err = copyFiles(ctx, c, o, stdout, stderr)
+	case "ui":
+		err = siloUI(ctx, c, o, stdout, stderr)
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}
@@ -398,6 +425,9 @@ func apply(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdou
 		if err != nil {
 			return err
 		}
+		if k, err = objectKind(ctx, c, obj, k); err != nil {
+			return err
+		}
 		m := obj.GetObjectMeta()
 		if k.Scope == v1.Namespaced && m.Namespace == "" {
 			m.Namespace = defaultNS(o)
@@ -414,15 +444,15 @@ func apply(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdou
 		case err != nil:
 			return fmt.Errorf("%s: %w", what, err)
 		default:
-			same, err := sameDeclared(obj, cur)
+			m.ResourceVersion = cur.GetObjectMeta().ResourceVersion
+			same, err := wouldStore(ctx, c, obj, cur) // apply.go
 			if err != nil {
-				return err
+				return fmt.Errorf("%s: %w", what, err)
 			}
 			if same {
 				_, _ = fmt.Fprintln(stdout, what, "unchanged")
 				continue
 			}
-			m.ResourceVersion = cur.GetObjectMeta().ResourceVersion
 			if err := c.Update(ctx, obj); err != nil {
 				return fmt.Errorf("%s: %w", what, err)
 			}
@@ -432,47 +462,16 @@ func apply(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdou
 	return nil
 }
 
-// sameDeclared reports whether the stored object already matches what's declared: the spec and the
-// user-owned metadata (labels, annotations, finalizers, owners). Status and system fields are ignored.
-func sameDeclared(declared, stored meta.Object) (bool, error) {
-	a, err := declaredPart(declared)
-	if err != nil {
-		return false, err
-	}
-	b, err := declaredPart(stored)
-	if err != nil {
-		return false, err
-	}
-	return a == b, nil
-}
-
-func declaredPart(obj meta.Object) (string, error) {
-	b, err := json.Marshal(obj)
-	if err != nil {
-		return "", err
-	}
-	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		return "", err
-	}
-	md, _ := m["metadata"].(map[string]any)
-	keep := map[string]any{}
-	for _, f := range []string{"labels", "annotations", "finalizers", "ownerReferences"} {
-		if v, ok := md[f]; ok {
-			keep[f] = v
-		}
-	}
-	out, err := json.Marshal(map[string]any{"spec": m["spec"], "metadata": keep})
-	return string(out), err
-}
-
 // ── get ──────────────────────────────────────────────────────────────────────
 
 func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error {
 	if len(o.args) < 1 {
 		return fmt.Errorf("get needs a kind (%s)", knownKinds())
 	}
-	k, err := kindOf(o.args[0])
+	if o.args[0] == "kinds" {
+		return getKinds(ctx, c, stdout)
+	}
+	k, err := resolveKind(ctx, c, o.args[0])
 	if err != nil {
 		return err
 	}
@@ -512,6 +511,9 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	case "yaml":
 		return printYAML(stdout, objs)
 	case "", "wide":
+		if isDefined(k) {
+			return printDefinedTable(ctx, c, stdout, k, objs, o.all)
+		}
 		return printTable(stdout, k, objs, o.all, o.output == "wide")
 	default:
 		return fmt.Errorf("unknown output %q: use yaml, json or wide", o.output)
@@ -604,9 +606,14 @@ func summary(obj meta.Object) string {
 			parts = append(parts, "address="+o.Status.Address)
 		}
 		conds = o.Status.Conditions
+	case *v1.Unstructured:
+		conds = unstructuredConditions(o)
 	case *v1.Approval:
 		c := approvalColumns(o, time.Now())
 		parts = append(parts, "silo="+c[0], "secret="+c[1], "use="+c[2], "phase="+c[4], o.Spec.Summary)
+	case *v1.Lease:
+		c := leaseColumns(o, time.Now())
+		parts = append(parts, "silo="+c[0], "port="+c[1], "phase="+c[2], c[3])
 	case *v1.Host:
 		names := make([]string, 0, len(o.Status.Runtimes))
 		for n := range o.Status.Runtimes {
@@ -664,6 +671,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 		head = append(head, "VERSIONS")
 	case "Approval":
 		head = append(head, "SILO", "SECRET", "USE", "FOR", "PHASE", "WHEN", "ANSWERED-BY")
+	case "Lease":
+		head = append(head, leaseHead...)
 	case "Pane":
 		head = append(head, "SILO", "PANE", "KIND", "STATE", "UPDATED")
 	}
@@ -749,6 +758,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			row = append(row, strings.Join(o.Spec.Hosts, ","), o.Spec.Issuer, exp, readiness(o.Status.Conditions))
 		case *v1.Approval:
 			row = append(row, approvalColumns(o, time.Now())...)
+		case *v1.Lease:
+			row = append(row, leaseColumns(o, time.Now())...)
 		case *v1.Pane:
 			state, updated := plain(o.Spec.State, 16), "-"
 			if o.Spec.Kind == v1.PaneHTML {
@@ -800,7 +811,7 @@ func del(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	if len(o.args) != 2 {
 		return errors.New("delete needs KIND NAME")
 	}
-	k, err := kindOf(o.args[0])
+	k, err := resolveKind(ctx, c, o.args[0])
 	if err != nil {
 		return err
 	}
@@ -830,7 +841,7 @@ func watch(ctx context.Context, c *client.Client, o opts, stdout io.Writer) erro
 	if len(o.args) != 1 {
 		return errors.New("watch needs KIND")
 	}
-	k, err := kindOf(o.args[0])
+	k, err := resolveKind(ctx, c, o.args[0])
 	if err != nil {
 		return err
 	}

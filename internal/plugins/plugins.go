@@ -2,7 +2,8 @@
 // copied from the kubelet's plugin watcher): it watches kplugin.Dir for NAME/plugin.sock, asks each
 // new socket for its Info, and from then on routes load-balancer and storage classes and DNS
 // provider names to the plugin that serves them. A plugin that stops answering is dropped until its
-// socket answers again.
+// socket answers again. A worker's agent keeps one too, for the plugins' node sides
+// (NAME/node.sock), which mount the volumes of mount-reach storage classes.
 package plugins
 
 import (
@@ -24,6 +25,7 @@ type Conn interface {
 	kplugin.LoadBalancers
 	kplugin.Volumes
 	kplugin.DNS
+	kplugin.Node
 }
 
 // Plugin is one registered plugin.
@@ -35,6 +37,7 @@ type Plugin struct {
 // Registry is the registered plugins.
 type Registry struct {
 	Dir      string        // default kplugin.Dir
+	Socket   string        // the socket's name in Dir/NAME (default kplugin.ControllerSocket)
 	Every    time.Duration // how often to look (default 2s)
 	Log      func(string, ...any)
 	OnChange func() // after a plugin is added or removed
@@ -143,7 +146,11 @@ func (r *Registry) Run(ctx context.Context) {
 }
 
 func (r *Registry) scan(ctx context.Context, dir string) {
-	found, _ := filepath.Glob(filepath.Join(dir, "*", "plugin.sock"))
+	name := r.Socket
+	if name == "" {
+		name = kplugin.ControllerSocket
+	}
+	found, _ := filepath.Glob(filepath.Join(dir, "*", name))
 	seen := map[string]bool{}
 	for _, sock := range found {
 		seen[sock] = true
@@ -231,6 +238,21 @@ func (r *Registry) Storage(class string) (*Plugin, kplugin.Class, bool) {
 		}
 	}
 	return nil, kplugin.Class{}, false
+}
+
+// MountClasses are the mount-reach storage classes the registered plugins serve, sorted: on a
+// worker's registry of node sides, the classes this host can mount.
+func (r *Registry) MountClasses() []string {
+	var out []string
+	for _, p := range r.All() {
+		for _, c := range p.Info.Storage {
+			if c.Mounted() {
+				out = append(out, c.Name)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // DNS is the plugin serving a DNS provider.

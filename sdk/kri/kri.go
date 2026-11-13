@@ -50,6 +50,10 @@ type Spec struct {
 	DiskBytes int64
 	Volumes   []Volume
 	Command   []string // containers: the main process (empty: the image's)
+	// DiskHostPath, if set, is a folder on the host (a mount class's volume, already mounted) that
+	// keeps a VM's own disk as an image file instead of host-local storage, so the disk moves with
+	// the silo. Only one host has it mounted at a time; the runtime reuses an image already there.
+	DiskHostPath string
 }
 
 // Volume is extra storage mounted in the silo.
@@ -60,6 +64,21 @@ type Volume struct {
 	// HostPath, if set, is a folder on the host that already holds the volume (a provider's block
 	// volume, mounted by the agent): the runtime binds it instead of making storage of its own.
 	HostPath string
+}
+
+// VolumeSetter is a runtime whose silos' volumes are fixed while they run (a VM's disks and shares
+// are set when its VMM starts; no hot-add). SetVolumes makes a silo's volumes vols for its next
+// start: if it's running with others it changes nothing and says restart (the agent stops it and
+// calls again); stopped or created, it applies them (restart false). Unchanged volumes: no work.
+type VolumeSetter interface {
+	SetVolumes(ctx context.Context, id ID, vols []Volume) (restart bool, err error)
+}
+
+// GuestVolumes is a runtime whose volumes the silo's own system mounts (a VM's guest: its disks and
+// virtiofs shares at their mount paths, and again at every boot). The agent calls it once the silo
+// runs, before its guest helper and init steps; it is idempotent.
+type GuestVolumes interface {
+	MountGuestVolumes(ctx context.Context, id ID) error
 }
 
 // InitStep is one init step (design §0.2): a script run by a shell or any interpreter.
@@ -100,6 +119,9 @@ type ExecRequest struct {
 	Stdin   io.Reader
 	Stdout  io.Writer
 	Stderr  io.Writer
+	// TTY, if set, runs the command on a terminal: Stdout gets everything it prints, Stderr isn't
+	// used, and the window follows TTY.Resize. Runtimes that can't make one return ErrNoTTY.
+	TTY *TTY
 }
 
 // ErrNotFound: the silo isn't on this host.
@@ -122,6 +144,8 @@ type Runtime interface {
 	// List returns every silo this runtime has on this host.
 	List(ctx context.Context) ([]ID, error)
 	// Exec runs a command inside a running silo and returns its exit code. ErrNotFound if absent.
+	// When ctx is cancelled (the client went away) Exec stops the command inside the silo, not
+	// only the runtime's own client, before it returns.
 	Exec(ctx context.Context, id ID, req ExecRequest) (int, error)
 }
 

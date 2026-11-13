@@ -190,3 +190,17 @@ func sortObjects(os []Object) {
 }
 
 var _ Store = (*Memory)(nil)
+
+// sortAll sorts objects of any kinds by key: kind, namespace, name.
+func sortAll(os []Object) {
+	sort.Slice(os, func(i, j int) bool {
+		a, b := os[i].Key, os[j].Key
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		if a.Namespace != b.Namespace {
+			return a.Namespace < b.Namespace
+		}
+		return a.Name < b.Name
+	})
+}

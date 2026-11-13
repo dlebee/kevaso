@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>window.__report=[];const R=(k,v)=>window.__report.push(k+': '+v);
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+window.__loaded={};</script>
+<!-- script-src 'self' allows same-origin scripts, so these reach the scheme handler itself -->
+<script src="own.js"></script>
+<script src="kvpane://p-t08b-scheme-traversal/%2e%2e/t08-files-secret/secret.js"></script>
+<script src="kvpane://p-t08b-scheme-traversal/..%2ft08-files-secret/secret.js"></script>
+<script src="kvpane://p-t08b-scheme-traversal/%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc/hosts"></script>
+<script src="kvpane://p-t08b-scheme-traversal/link-out/secret.js"></script>
+<script src="kvpane://p-t08b-scheme-traversal/link-dir-out/secret.js"></script>
+<script src="kvpane://p-t12-legit/index.html"></script>
+</head><body>t08b<script>
+setTimeout(()=>{R('own.js loaded',String(window.__loaded.own));R('SECRET loaded',String(window.__loaded.secret));R('done','t08b')},1000);
+</script></body></html>

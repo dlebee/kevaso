@@ -31,6 +31,8 @@ import (
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/gate"
+	"kevaso.com/core/internal/plugins"
+	"kevaso.com/core/sdk/kplugin"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -56,6 +58,9 @@ type Config struct {
 	// GatewayScope is how many OpenShell gateways run (host | namespace | silo; default namespace):
 	// sandboxes of one gateway share its user (design §3.1).
 	GatewayScope string
+	// PluginsDir is where the plugins' node sides put their sockets, DIR/NAME/node.sock (default
+	// kplugin.Dir): they mount the volumes of mount-reach storage classes (juicefs).
+	PluginsDir string
 }
 
 // Installer is a runtime that needs setting up on the host first.
@@ -154,6 +159,8 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	for name, rt := range rts {
 		states[name] = v1.RuntimeStatus{State: "Installing", Version: rt.Info().Version}
 	}
+	// The plugins' node sides on this host: the storage classes it can mount are on its Host.
+	nodes := &plugins.Registry{Dir: cfg.PluginsDir, Socket: kplugin.NodeSocket, Log: cfg.Log}
 	report := func() {
 		mu.Lock()
 		snap := map[string]v1.RuntimeStatus{}
@@ -161,7 +168,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 			snap[k] = v
 		}
 		mu.Unlock()
-		if err := updateHost(ctx, c, cfg, snap); err != nil && ctx.Err() == nil {
+		if err := updateHost(ctx, c, cfg, snap, nodes.MountClasses()); err != nil && ctx.Err() == nil {
 			cfg.Log("worker status: %v", err)
 		}
 	}
@@ -186,6 +193,8 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 		}
 	}
 	report()
+	nodes.OnChange = func() { go report() }
+	go nodes.Run(ctx)
 	// The egress gate's CA: made on this host, its silos trust it (design §8.1, E025).
 	var egressCA *gate.CA
 	var upstream *x509.CertPool
@@ -257,7 +266,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	for name, rt := range rts {
 		runtimes[name] = rt
 	}
-	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log}
+	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes}
 	if cfg.Contact != nil {
 		a.LastContact = cfg.Contact.Last
 	}
@@ -294,7 +303,7 @@ func caBundle(egress *gate.CA) []byte {
 
 // updateHost makes sure the Host declares the worker component and reports its runtimes and
 // allocatable resources, retrying on conflicts with the control plane's own heartbeat.
-func updateHost(ctx context.Context, c *client.Client, cfg Config, states map[string]v1.RuntimeStatus) error {
+func updateHost(ctx context.Context, c *client.Client, cfg Config, states map[string]v1.RuntimeStatus, mountClasses []string) error {
 	for attempt := 0; attempt < 5; attempt++ {
 		var h v1.Host
 		if err := c.Get(ctx, "Host", "", cfg.HostName, &h); err != nil {
@@ -323,6 +332,7 @@ func updateHost(ctx context.Context, c *client.Client, cfg Config, states map[st
 		}
 		h.Status.Runtimes = states
 		h.Status.Allocatable = allocatable()
+		h.Status.MountClasses = mountClasses
 		err := c.UpdateStatus(ctx, &h)
 		if client.IsConflict(err) {
 			continue

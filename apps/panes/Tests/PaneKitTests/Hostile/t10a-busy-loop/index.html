@@ -1,0 +1,7 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script>
+window.__report=[];
+const R=(k,v)=>window.__report.push(k+': '+v);
+const T=async(k,f)=>{try{const v=await f();R(k,'ok '+String(v).slice(0,80))}catch(e){R(k,'blocked '+(e&&e.name)+' '+String(e&&e.message).slice(0,80))}};
+document.addEventListener('securitypolicyviolation',e=>R('csp',e.effectiveDirective+' '+e.blockedURI.slice(0,60)));
+</script></head><body>t10a<script>window.__report=['started'];setTimeout(()=>{for(;;){}},300)</script></body></html>

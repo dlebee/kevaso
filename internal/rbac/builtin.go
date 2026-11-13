@@ -29,8 +29,22 @@ var (
 // Approvals (design §8.7) and panes (§10.1): everyone with a role in the namespace sees the queue; admins also answer
 // (approve on secrets, above) and clear old ones. Nobody creates them: the broker does.
 var (
-	approvalsRead  = v1.PolicyRule{Verbs: read, Resources: []string{"approvals", "panes"}}
-	approvalsAdmin = v1.PolicyRule{Verbs: []string{"get", "list", "watch", "delete"}, Resources: []string{"approvals", "panes"}}
+	approvalsRead  = v1.PolicyRule{Verbs: read, Resources: []string{"approvals", "panes", "leases"}}
+	approvalsAdmin = v1.PolicyRule{Verbs: []string{"get", "list", "watch", "delete"}, Resources: []string{"approvals", "panes", "leases"}}
+)
+
+// Port leases (design §7.2d): editors may open and close a silo's leased ports (within the exposure
+// an admin made); admins also answer the leases that need a yes. Both on silos/exposure.
+var (
+	exposureEditor = v1.PolicyRule{Verbs: []string{v1.VerbOpen}, Resources: []string{v1.ResourceExposure}}
+	exposureAdmin  = v1.PolicyRule{Verbs: []string{v1.VerbOpen, v1.VerbApprove}, Resources: []string{v1.ResourceExposure}}
+)
+
+// siloShell is a terminal in a silo (create silos/ssh, kvo ssh) and its files (get silos/files to
+// read, create to write: kvo cp, kvo ui): as strong as exec, so the same roles have it.
+var (
+	siloShell = v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/ssh"}}
+	siloFiles = v1.PolicyRule{Verbs: []string{"get", "create"}, Resources: []string{"silos/files"}}
 )
 
 // BuiltinRoles are the roles of design §9.3: cluster-admin (everything), admin (a namespace, its
@@ -46,11 +60,11 @@ func BuiltinRoles() []*v1.ClusterRole {
 		mk("admin",
 			v1.PolicyRule{Verbs: write, Resources: slices.Concat(workloads, []string{"roles", "rolebindings"})},
 			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "silos/move", "serviceaccounts/token", "services/expose-public", "ingresses/publish-public"}},
-			secretsAdmin, approvalsAdmin),
+			siloShell, siloFiles, secretsAdmin, approvalsAdmin, exposureAdmin),
 		mk("editor",
 			v1.PolicyRule{Verbs: write, Resources: workloads},
 			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "silos/move", "serviceaccounts/token"}},
-			secretsEditor, approvalsRead),
+			siloShell, siloFiles, secretsEditor, approvalsRead, exposureEditor),
 		mk("viewer", v1.PolicyRule{Verbs: read, Resources: workloads}, secretsViewer, approvalsRead),
 		mk("runner", v1.PolicyRule{Verbs: []string{"get", "list", "watch", "create"}, Resources: []string{"runs"}}),
 	}

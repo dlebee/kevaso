@@ -36,6 +36,8 @@ import (
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
 	"kevaso.com/core/internal/kms"
+	"kevaso.com/core/internal/leader"
+	"kevaso.com/core/internal/leases"
 	"kevaso.com/core/internal/mesh"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/plugins"
@@ -73,7 +75,21 @@ type Config struct {
 	Plugins *plugins.Registry
 	// Approvals: how long requests for a person's yes wait, and how long access may last (§8.7).
 	Approvals approvals.Limits
-	Log       func(format string, args ...any)
+	// Leases: the longest a port may be open on a lease, and the limit when a silo sets none (§7.2d).
+	Leases leases.Limits
+	Log    func(format string, args ...any)
+	// Store is StoreSQLite (default) or StoreEtcd; Etcd configures the embedded member.
+	Store string
+	Etcd  EtcdConfig
+	// More than one system node (systemnodes.go, ADR 0006): Join on a node's first start takes it
+	// into an existing cluster; StateOnly runs a light node (the etcd member only); ClusterDNS is
+	// the control plane's one name (server certificates, the OIDC issuer); Leader times the
+	// controllers' election; MemberEvery is how often the leader looks at the etcd members.
+	Join        *JoinConfig
+	StateOnly   bool
+	ClusterDNS  string
+	Leader      leader.Options
+	MemberEvery time.Duration
 }
 
 func (c *Config) defaults() {
@@ -88,6 +104,12 @@ func (c *Config) defaults() {
 	}
 	if c.Log == nil {
 		c.Log = func(string, ...any) {}
+	}
+	if c.HostLease <= 0 {
+		c.HostLease = 40 * time.Second
+	}
+	if c.MemberEvery <= 0 {
+		c.MemberEvery = 5 * time.Second
 	}
 }
 
@@ -112,29 +134,35 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, err
 	}
-	pkiDir := filepath.Join(cfg.DataDir, "pki")
-	ca, err := pki.LoadCA(pkiDir)
-	if errors.Is(err, os.ErrNotExist) {
-		cfg.Log("creating the cluster CA in %s", pkiDir)
-		if ca, err = pki.NewCA(cfg.ClusterName, cfg.Clock.Now()); err == nil {
-			err = ca.Save(pkiDir)
-		}
+	if err := prepareJoin(ctx, &cfg); err != nil {
+		return nil, err
 	}
+	ca, err := loadOrCreateCA(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("cluster CA: %w", err)
+		return nil, err
 	}
 	names := append([]string{cfg.HostName, cfg.Address, "127.0.0.1", "localhost"}, cfg.ExtraNames...)
+	if cfg.ClusterDNS != "" {
+		names = append(names, cfg.ClusterDNS)
+	}
 	serverCert, err := ca.ServerCert(names, cfg.Clock.Now(), 365*24*time.Hour)
 	if err != nil {
 		return nil, err
 	}
-	st, err := store.OpenSQLite(filepath.Join(cfg.DataDir, "store.db"), 0)
+	st, err := openStore(ctx, cfg, ca)
 	if err != nil {
 		return nil, err
 	}
+	if cfg.StateOnly {
+		return startStateOnly(ctx, cfg, st)
+	}
 	tokens := &jointoken.Issuer{Store: st, Clock: cfg.Clock}
 	_, port, _ := net.SplitHostPort(cfg.Listen)
-	iss, err := issuer.New(ctx, st, cfg.Clock, "https://"+net.JoinHostPort(cfg.Address, port))
+	issuerHost := cfg.Address
+	if cfg.ClusterDNS != "" { // one issuer for every system node: tokens work at any of them
+		issuerHost = cfg.ClusterDNS
+	}
+	iss, err := issuer.New(ctx, st, cfg.Clock, "https://"+net.JoinHostPort(issuerHost, port))
 	if err != nil {
 		_ = st.Close()
 		return nil, fmt.Errorf("issuer: %w", err)
@@ -153,12 +181,17 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		return nil, fmt.Errorf("kms: %w", err)
 	}
 	srv.SetApprovalLimits(cfg.Approvals)
+	srv.SetLeaseLimits(cfg.Leases)
 	if cfg.Plugins != nil {
 		reg := cfg.Plugins
 		srv.SetClasses(func() map[string]scheduler.Class { return provider.Classes(reg) })
 	}
 	srv.SetVault(&secrets.Vault{Store: st, KMS: localKMS, Now: cfg.Clock.Now})
-	srv.SetKMSAdmin(localKMS)
+	srv.SetKMSAdmin(haKMS{localKMS, st})
+	if st.etcd != nil {
+		j := &joiner{cfg: cfg, st: st, clock: cfg.Clock.Now}
+		srv.SetSystemNodeJoiner(j.join)
+	}
 	srv.SetBackup(func(ctx context.Context, pub []byte) ([]byte, error) {
 		ks, _ := localKMS.Status(ctx)
 		return backup.Make(ctx, cfg.DataDir, st.Snapshot,
@@ -193,9 +226,15 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 
 	admin, closeInProcess := srv.InProcess() // the components' own way in, not the admin socket
 	hbCtx, stopHB := context.WithCancel(ctx)
-	go heartbeat(hbCtx, admin, cfg)
-	go runControllers(hbCtx, admin, cfg, certDeps{store: st, kms: localKMS, ca: ca})
-	go expireApprovals(hbCtx, srv, cfg)
+	go heartbeat(hbCtx, admin, cfg, cfg.self(r.APIAddr, st))
+	// Every system node serves the API; one at a time runs the controllers (systemnodes.go).
+	go runLeader(hbCtx, st, cfg, func(ctx context.Context) {
+		go expireApprovals(ctx, srv, cfg)
+		if st.etcd != nil {
+			go runMembers(ctx, admin, st, cfg, cfg.MemberEvery)
+		}
+		runControllers(ctx, admin, cfg, certDeps{store: st, kms: localKMS, ca: ca})
+	})
 	if cfg.Mesh {
 		m := &mesh.Agent{Client: admin, HostName: cfg.HostName, Dir: filepath.Join(cfg.DataDir, "mesh"), Log: cfg.Log}
 		go func() {
@@ -252,6 +291,9 @@ func expireApprovals(ctx context.Context, srv *apiserver.Server, cfg Config) {
 		case <-t.C:
 			if err := srv.ExpireApprovals(ctx); err != nil && ctx.Err() == nil {
 				cfg.Log("approvals: %v", err)
+			}
+			if err := srv.SweepLeases(ctx); err != nil && ctx.Err() == nil {
+				cfg.Log("leases: %v", err)
 			}
 			if n%6 == 0 {
 				if err := srv.SweepPanes(ctx); err != nil && ctx.Err() == nil {
@@ -359,7 +401,14 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	})
 	if reg := cfg.Plugins; reg != nil {
 		e.Register(&provider.Hosts{Client: c, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 1})
-		e.Register(&provider.LoadBalancers{Client: c, Silos: silos, Hosts: hosts, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 2})
+		leaseInf := informer.New(c, "Lease") // a plugin's load balancer has no backend for a closed leased port
+		leaseInf.AddHandler(func(k informer.Key) {
+			if o, ok := leaseInf.Get(k.Namespace, k.Name); ok {
+				e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: o.(*v1.Lease).Spec.Silo})
+			}
+		})
+		go leaseInf.Run(ctx)
+		e.Register(&provider.LoadBalancers{Client: c, Silos: silos, Hosts: hosts, Leases: leaseInf, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 2})
 		e.Register(&provider.ServiceLoadBalancers{Client: c, Services: services, Hosts: hosts, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 1})
 		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 2})
 		e.Register(&provider.IngressDNS{Client: c, Ingresses: ingresses, Classes: classes, Plugins: reg, Cluster: cfg.ClusterName, Clock: cfg.Clock}, engine.Options{Workers: 1})
@@ -404,7 +453,7 @@ func serveErr(err error) error {
 }
 
 // heartbeat makes sure this host's Host object exists and keeps its Ready condition fresh.
-func heartbeat(ctx context.Context, c *client.Client, cfg Config) {
+func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport) {
 	tick := func() {
 		var h v1.Host
 		err := c.Get(ctx, "Host", "", cfg.HostName, &h)
@@ -438,6 +487,7 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config) {
 			Message: "API serving", ObservedGeneration: h.Generation,
 		}, cfg.Clock.Now().UTC().Truncate(time.Second))
 		setHeartbeat(&h, cfg.Clock.Now())
+		reportSelf(&h, rep)
 		if err := c.UpdateStatus(ctx, &h); err != nil && ctx.Err() == nil {
 			cfg.Log("heartbeat status: %v", err)
 		}
