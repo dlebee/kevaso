@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"slices"
 	"strconv"
@@ -43,6 +44,11 @@ func netFilter(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) string {
 			return fmt.Sprintf("no %s IP, which port %d/%s asks for (hostPort: [%s])", w.Network, w.Port, w.Proto, w.Network)
 		}
 	}
+	for _, w := range want {
+		if env.Claimed[h.Name].HostPorts[w] {
+			return fmt.Sprintf("port %s (%s) is held by another silo", w, h.IPOn(w.Network))
+		}
+	}
 	if len(want) > 0 {
 		for _, o := range placed {
 			if o.Status.Host != h.Name || (o.Namespace == s.Namespace && o.Name == s.Name) || o.DeletionTimestamp != nil {
@@ -81,7 +87,7 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloS
 			st.LoadBalancerIP, st.SourceRanges, st.Announce = cur.LoadBalancerIP, cur.SourceRanges, cur.Announce
 		}
 		if c, ok := env.Classes[class]; ok && c.NodePorts {
-			np, err := NodePorts(s, h.Name, placed)
+			np, err := nodePorts(s, h.Name, placed, env.Claimed[h.Name].NodePorts)
 			if err != nil {
 				return st, err
 			}
@@ -131,10 +137,18 @@ func PortStatus(s *v1.Silo, h *v1.Host, lb string) []v1.ServicePortStatus {
 // NodePorts gives each of s's service ports a host port on host, kept if it already has them there:
 // the lowest free in v1.NodePortMin…NodePortSiloMax among the silos placed on host.
 func NodePorts(s *v1.Silo, host string, placed []*v1.Silo) ([]v1.NodePort, error) {
+	return nodePorts(s, host, placed, nil)
+}
+
+// nodePorts is NodePorts, also avoiding the ports in avoid (held by others, says the store).
+func nodePorts(s *v1.Silo, host string, placed []*v1.Silo, avoid map[int]bool) ([]v1.NodePort, error) {
 	if s.Spec.Service == nil {
 		return nil, nil
 	}
-	taken := map[int]bool{}
+	taken := maps.Clone(avoid)
+	if taken == nil {
+		taken = map[int]bool{}
+	}
 	for _, o := range placed {
 		if o.Status.Host != host || (o.Namespace == s.Namespace && o.Name == s.Name) {
 			continue

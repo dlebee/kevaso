@@ -37,14 +37,13 @@ func (w *startWatcher) Start(ctx context.Context, id kri.ID) error {
 	return w.Runtime.Start(ctx, id)
 }
 
-// For phase/metal (the agent's start path is that branch's): proven here, skipped until fixed.
+// Found by the restart audit; fixed on phase/metal (the Stopped/Created branch says NotRunning first).
 //
 // A silo with routeWhen: ready that stopped behind the agent's back (its VM died, the host
 // rebooted, a liveness restart) is started again with its old Ready and Running still in its
 // status: DNS, Service endpoints, host ports and ingress go on sending to it while it boots, before
 // its readiness probe has passed since. The start must take it out of routing first.
 func TestARestartedSiloIsNotRoutedBeforeItsReadinessPassesAgain(t *testing.T) {
-	t.Skip("phase/metal: the Stopped/Created branch of Reconcile clears probes and startedAt but leaves Ready and Phase (agent.go)")
 	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
 	ts := httptest.NewServer(srv)
 	defer ts.Close()

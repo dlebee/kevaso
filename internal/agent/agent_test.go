@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -402,7 +403,7 @@ func TestNothingStartsBeforeItsRuntimeIsReady(t *testing.T) {
 	defer cancel()
 	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
 	ts := httptest.NewServer(srv)
-	defer ts.Close()
+	defer func() { cancel(); ts.Close() }() // the agent's watch ends first, or Close waits for it
 	c := client.New(ts.URL)
 	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
 	rt := fake.New()
@@ -419,4 +420,108 @@ func TestNothingStartsBeforeItsRuntimeIsReady(t *testing.T) {
 	}
 	ready.Store(true)
 	e.wait(t, "web", func(s *v1.Silo) bool { return meta.IsTrue(s.Status.Conditions, "Ready") })
+}
+
+// failing is the fake runtime with a machine that can fail: Status says Failed until the next
+// Start (a VMM that exited, a unit that failed).
+type failing struct {
+	*fake.Runtime
+	failed  atomic.Bool // Status: Failed until the next Start
+	stopped atomic.Bool // Status: Stopped until the next Start (a host just rebooted)
+	starts  atomic.Int32
+}
+
+func (f *failing) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
+	if f.failed.Load() {
+		return kri.Status{State: kri.Failed, Message: "the VMM exited"}, nil
+	}
+	if f.stopped.Load() {
+		return kri.Status{State: kri.Stopped}, nil
+	}
+	return f.Runtime.Status(ctx, id)
+}
+
+func (f *failing) Start(ctx context.Context, id kri.ID) error {
+	f.starts.Add(1)
+	f.failed.Store(false)
+	f.stopped.Store(false)
+	return f.Runtime.Start(ctx, id)
+}
+
+// Found on the metal machine: a microVM whose unit failed was never started again.
+func TestAFailedSiloIsStartedAgainWithBackoff(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
+	ts := httptest.NewServer(srv)
+	defer func() { cancel(); ts.Close() }() // the agent's watch ends first, or Close waits for it
+	c := client.New(ts.URL)
+	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
+	rt := &failing{Runtime: fake.New()}
+	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}}
+	go a.Run(ctx)
+	e := &env{c: c, rt: rt.Runtime, ctx: ctx}
+	e.place(t, "web", "hv1", nil)
+	e.wait(t, "web", func(s *v1.Silo) bool { return meta.IsTrue(s.Status.Conditions, "Ready") })
+	before := rt.starts.Load()
+	rt.failed.Store(true)
+	poke := func() { // a spec change wakes the agent for the silo
+		var s v1.Silo
+		if err := c.Get(ctx, "Silo", "dev", "web", &s); err == nil {
+			if s.Labels == nil {
+				s.Labels = map[string]string{}
+			}
+			s.Labels["poke"] = strconv.FormatInt(time.Now().UnixNano(), 36)
+			_ = c.Update(ctx, &s)
+		}
+	}
+	poke()
+	e.wait(t, "web", func(s *v1.Silo) bool {
+		return s.Status.Restarts != nil && s.Status.Restarts.Count == 1 && s.Status.Phase == agent.PhaseRunning
+	})
+	if rt.starts.Load() != before+1 {
+		t.Fatalf("starts %d → %d, want one more", before, rt.starts.Load())
+	}
+	// A second failure right away waits for the backoff (10s) before the next start.
+	rt.failed.Store(true)
+	poke()
+	e.wait(t, "web", func(s *v1.Silo) bool {
+		c := meta.FindCondition(s.Status.Conditions, "Ready")
+		return s.Status.Phase == agent.PhaseFailed && c != nil && strings.Contains(c.Message, "starting it again in")
+	})
+	if rt.starts.Load() != before+1 {
+		t.Errorf("restarted again inside the backoff: starts %d", rt.starts.Load())
+	}
+}
+
+// Found on the metal machine: right after a reboot the API said Running, from before, while
+// nothing ran and the agent was still installing its runtimes.
+func TestAfterARebootTheStatusSaysWhatIsTrue(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
+	ts := httptest.NewServer(srv)
+	defer func() { cancel(); ts.Close() }()
+	c := client.New(ts.URL)
+	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
+	rt := fake.New()
+	actx, stop := context.WithCancel(ctx)
+	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}}
+	go a.Run(actx)
+	e := &env{c: c, rt: rt, ctx: ctx}
+	e.place(t, "web", "hv1", nil)
+	e.wait(t, "web", func(s *v1.Silo) bool { return s.Status.Phase == agent.PhaseRunning })
+	stop() // the host goes down; it comes back with nothing running, its runtime installing
+	time.Sleep(100 * time.Millisecond)
+	down := &failing{Runtime: rt}
+	down.stopped.Store(true)
+	var ready atomic.Bool
+	b := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": down}, Clock: clock.Real{},
+		RuntimeReady: func(string) bool { return ready.Load() }}
+	go b.Run(ctx)
+	s := e.wait(t, "web", func(s *v1.Silo) bool { return s.Status.Phase == agent.PhaseStarting })
+	if cd := meta.FindCondition(s.Status.Conditions, "Ready"); cd == nil || cd.Reason != "NotRunning" || !strings.Contains(cd.Message, "runtime cloud-hypervisor is installed") {
+		t.Fatalf("the reason: %+v", cd)
+	}
+	ready.Store(true)
+	e.wait(t, "web", func(s *v1.Silo) bool { return s.Status.Phase == agent.PhaseRunning })
 }

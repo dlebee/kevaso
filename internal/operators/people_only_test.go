@@ -27,3 +27,41 @@ func TestPluginRolesNeverHoldPeoplesVerbs(t *testing.T) {
 		t.Errorf("open on silos/exposure (a controller opening its silos' leases): %v", errs)
 	}
 }
+
+// K-003: who may sign in and what may join as a host are people's: a plugin role never holds
+// invites, jointokens or users, on any subresource.
+func TestPluginRolesNeverMintPeople(t *testing.T) {
+	for _, res := range []string{"invites", "jointokens", "users", "invites/x", "users/status"} {
+		if errs := RuleProblems(v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{res}}); len(errs) == 0 {
+			t.Errorf("a plugin role on %q was accepted", res)
+		}
+	}
+}
+
+// K-010: a plugin role names plain resources: nothing with a wildcard in it (it would match the
+// forbidden ones), nothing that is not a resource name.
+func TestPluginRoleResourcesAreStrict(t *testing.T) {
+	for _, res := range []string{
+		"*/token", "*/exposure", "*/status", "serviceaccounts/*", "*s", "sil*", "silos*", "?", "silos/ status", "Silos", "",
+	} {
+		if errs := RuleProblems(v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{res}}); len(errs) == 0 {
+			t.Errorf("a plugin role on %q was accepted", res)
+		}
+	}
+}
+
+// Rules the plugins that exist ask for pass (kevaso-provider-linode and -juicefs ship a manifest
+// without roles: the rules here are the example operator's roles.yaml, the one plugin role
+// the project documents, and what a provider's controller does with the API).
+func TestPluginRolesOfTheKnownPluginsPass(t *testing.T) {
+	for _, r := range []v1.PolicyRule{
+		{Verbs: []string{"get", "list", "watch", "update"}, Resources: []string{"sessions.example.dev"}},
+		{Verbs: []string{"update"}, Resources: []string{"sessions.example.dev/status"}},
+		{Verbs: []string{"get", "list", "watch", "create", "delete"}, Resources: []string{"silos"}},
+		{Verbs: []string{"get", "list", "watch", "update"}, Resources: []string{"hosts", "hosts/status", "ips", "ips/status", "silos/status", "volumes", "classes"}},
+	} {
+		if errs := RuleProblems(r); len(errs) != 0 {
+			t.Errorf("%v on %v: %v", r.Verbs, r.Resources, errs)
+		}
+	}
+}

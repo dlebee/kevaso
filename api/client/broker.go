@@ -143,7 +143,10 @@ type AgentBrokerRequest struct {
 // PathAgentBroker is where hosts relay broker requests.
 const PathAgentBroker = "/agent/broker"
 
-// ApprovalAnswer is the body of POST …/approvals/NAME/approve or /deny (optional).
+// ApprovalAnswer is the body of POST …/approvals/NAME/approve or /deny.
 type ApprovalAnswer struct {
 	Reason string `json:"reason,omitempty"`
+	// Request is the ID of the request the person read (kvo get approvals): a yes needs it, and
+	// is refused when the request has changed since.
+	Request string `json:"request,omitempty"`
 }

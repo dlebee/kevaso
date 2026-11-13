@@ -319,6 +319,9 @@ func (c *Controller) instances(set *v1.SiloSet) []*v1.Silo {
 
 // Reconcile implements engine.Controller.
 func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
+	if !informer.AllSynced(c.Sets, c.Silos) {
+		return engine.Result{RequeueAfter: time.Second}, nil // instances not seen yet are not missing ones
+	}
 	o, ok := c.Sets.Get(k.Namespace, k.Name)
 	if !ok {
 		return engine.Result{}, nil
@@ -328,7 +331,7 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	if set.DeletionTimestamp != nil {
 		for _, s := range insts {
 			if s.DeletionTimestamp == nil {
-				if err := c.Client.Delete(ctx, "Silo", s.Namespace, s.Name); client.IgnoreNotFound(err) != nil {
+				if err := c.Client.Delete(ctx, "Silo", s.Namespace, s.Name, client.SameObject(s)); client.IgnoreNotFound(err) != nil && !client.IsConflict(err) {
 					return engine.Result{}, err
 				}
 			}
@@ -353,8 +356,12 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 			errs = append(errs, fmt.Errorf("update %s: %w", s.Name, err))
 		}
 	}
+	uids := map[string]string{} // the instances decided on, not whatever has their names now (K-031)
+	for _, s := range insts {
+		uids[s.Name] = s.UID
+	}
 	for _, name := range p.Delete {
-		if err := c.Client.Delete(ctx, "Silo", set.Namespace, name); client.IgnoreNotFound(err) != nil {
+		if err := c.Client.Delete(ctx, "Silo", set.Namespace, name, client.Precondition{UID: uids[name]}); client.IgnoreNotFound(err) != nil {
 			errs = append(errs, fmt.Errorf("delete %s: %w", name, err))
 		}
 	}

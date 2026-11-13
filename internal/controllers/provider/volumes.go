@@ -79,6 +79,18 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 		return engine.Result{}, nil
 	}
 	s := o.(*v1.Silo)
+	// Decide from the silo as it is, not as the cache has it (K-033): a cache that is behind
+	// would detach and attach again a volume that has moved since, and is mounted there.
+	if len(v1.PluginVolumes(s)) > 0 || len(s.Status.Volumes) > 0 || hasFinalizer(s, FinalizerVolumes) {
+		var fresh v1.Silo
+		if err := c.Client.Get(ctx, "Silo", k.Namespace, k.Name, &fresh); err != nil {
+			return engine.Result{}, client.IgnoreNotFound(err)
+		}
+		if fresh.UID != s.UID {
+			return engine.Result{}, nil
+		}
+		s = &fresh
+	}
 	want := map[string]v1.Volume{}
 	if s.DeletionTimestamp == nil {
 		for _, v := range v1.PluginVolumes(s) {
@@ -136,7 +148,12 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 			keep = append(keep, next)
 		}
 	}
+	decided, stale := placesOf(s.Status.Volumes), false
 	if err := updateStatus(ctx, c.Client, s, func(st *v1.SiloStatus) {
+		if placesOf(st.Volumes) != decided {
+			stale = true // changed while the plugin was asked: decide again from that
+			return
+		}
 		// The agent owns Mounted: keep what it says now.
 		for i := range keep {
 			if j := find(st.Volumes, keep[i].Name); j >= 0 {
@@ -150,10 +167,24 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 	}); err != nil {
 		return engine.Result{}, err
 	}
+	if stale {
+		return engine.Result{RequeueAfter: time.Second}, errors.Join(errs...)
+	}
 	if len(keep) == 0 && s.DeletionTimestamp != nil {
 		return engine.Result{}, setFinalizers(ctx, c.Client, s, FinalizerVolumes, "")
 	}
 	return engine.Result{RequeueAfter: again}, errors.Join(errs...)
+}
+
+// placesOf is what the control plane decides about volumes (which, where, attached how), without
+// what their hosts say (mounted) or the messages.
+func placesOf(vs []v1.VolumeStatus) string {
+	out := make([]v1.VolumeStatus, len(vs))
+	for i, v := range vs {
+		v.Mounted, v.Message = false, ""
+		out[i] = v
+	}
+	return fmt.Sprintf("%+v", out)
 }
 
 func find(vs []v1.VolumeStatus, name string) int {

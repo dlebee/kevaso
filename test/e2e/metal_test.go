@@ -144,6 +144,7 @@ func setUpMetal() (s *metalSuite, skip string, err error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
+	pinGoEnv()
 	say := func(f string, a ...any) { fmt.Printf("metal: "+f+"\n", a...) }
 	s = &metalSuite{cfg: cfg, d: remote.New(cfg)}
 

@@ -126,7 +126,7 @@ func TestPropertyHostWrites(t *testing.T) {
 func TestHandoffSequence(t *testing.T) {
 	s := &v1.Silo{Status: v1.SiloStatus{Host: "a", Phase: "Running", Volumes: []v1.VolumeStatus{{Name: "data", AttachedTo: "a", Mounted: true}}}}
 	m := Movability{WithData: true}
-	p, err := PlanMove(s, m, Request{To: "b"}, false, "")
+	p, err := PlanMove(s, m, Request{To: "b"}, false, false, "")
 	if err != nil || !p.Handoff {
 		t.Fatalf("plan: %+v %v", p, err)
 	}
@@ -158,10 +158,10 @@ func TestHandoffSequence(t *testing.T) {
 	}
 	// The old host lost instead: no handoff, and only with the operator's word it's stopped.
 	s = &v1.Silo{Status: v1.SiloStatus{Host: "a", Phase: "Running"}}
-	if _, err := PlanMove(s, m, Request{To: "b"}, true, ""); err != ErrNeedsFenced {
+	if _, err := PlanMove(s, m, Request{To: "b"}, true, false, ""); err != ErrNeedsFenced {
 		t.Fatalf("a lost, not confirmed: %v", err)
 	}
-	p, err = PlanMove(s, m, Request{To: "b", ConfirmFenced: true}, true, "")
+	p, err = PlanMove(s, m, Request{To: "b", ConfirmFenced: true}, true, false, "")
 	if err != nil || p.Handoff {
 		t.Fatalf("a lost, confirmed: %+v %v", p, err)
 	}

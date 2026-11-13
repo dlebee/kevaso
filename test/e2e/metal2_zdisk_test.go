@@ -9,10 +9,11 @@ package e2e
 import (
 	"bytes"
 	"fmt"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"kevaso.com/core/internal/cli/kvoadm"
 )
 
 func (p *pair) spare() string {
@@ -85,12 +86,10 @@ func TestMetal2DiskReset(t *testing.T) {
 	lvs := strings.TrimSpace(p.c2.mustSh("lvs --noheadings -o lv_name kevaso | tr -d ' ' | grep '^kv-' | sort"))
 	reset := func(extra ...string) string {
 		cfg := p.m2.cfg
-		args := append([]string{"run", "./cmd/kvoadm", "reset", cfg.SSHTarget(), "--ssh-key", cfg.KeyFile, "--host-key", cfg.HostKey, "--force", "--yes"}, extra...)
-		cmd := exec.CommandContext(c.ctx, "go", args...)
+		args := append([]string{"reset", cfg.SSHTarget(), "--ssh-key", cfg.KeyFile, "--host-key", cfg.HostKey, "--force", "--yes"}, extra...)
 		var o bytes.Buffer
-		cmd.Stdout, cmd.Stderr = &o, &o
-		err := cmd.Run()
-		t.Logf("kvoadm reset %v: %v\n%s", extra, err, o.String())
+		code := kvoadm.Run(c.ctx, args, strings.NewReader(""), &o, &o)
+		t.Logf("kvoadm reset %v: exit %d\n%s", extra, code, o.String())
 		return o.String()
 	}
 	_ = p.m2.d.Close()
@@ -103,7 +102,7 @@ func TestMetal2DiskReset(t *testing.T) {
 	out = reset("--wipe-storage")
 	c.expect("--wipe-storage: the volumes are named as lost first", out, "will be lost")
 	c.expect("…and it's clean", out, "is clean")
-	left := p.c2.mustSh(fmt.Sprintf("lsblk -nr -o NAME %s | tail -n +2; wipefs -n %s; vgs kevaso 2>&1 | grep -v 'not found' || true", disk, disk))
+	left := p.c2.mustSh(fmt.Sprintf("lsblk -nr -o NAME %s | tail -n +2; wipefs -n %s; vgs --noheadings -o vg_name kevaso 2>/dev/null || true", disk, disk))
 	if strings.TrimSpace(left) != "" {
 		t.Errorf("the disk isn't empty after --wipe-storage: %s", left)
 	} else {

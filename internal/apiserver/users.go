@@ -24,6 +24,10 @@ func (s *Server) can(ctx context.Context, id pki.Identity, groups []string, a rb
 	if err != nil {
 		return rbac.Decision{}, err
 	}
+	if id.Type == "serviceaccount" && (a.Resource == "invites" || a.Resource == "jointokens") {
+		// Who may sign in, and what may join as a host, are people's to give, however a role reads.
+		return rbac.Decision{Reason: "a service account may not create invites or join tokens"}, nil
+	}
 	a.User, a.Groups = id.Name, groups
 	return p.Authorize(a), nil
 }

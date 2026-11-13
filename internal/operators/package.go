@@ -196,7 +196,13 @@ func ValidName(n string) bool { return pluginNameRE.MatchString(n) }
 // forbidden are resources a plugin's roles can't reach: they would let it grant itself more
 // (RBAC, tokens), change what the API serves or admits, or touch other plugins.
 var forbidden = []string{"roles", "rolebindings", "clusterroles", "clusterrolebindings", "serviceaccounts/token",
-	"kinddefinitions", "validationpolicies", "mutationpolicies", "plugins", "plugins/status"}
+	"kinddefinitions", "validationpolicies", "mutationpolicies", "plugins", "plugins/status",
+	// people's: who may sign in, and what may join as a host (any subresource too: see RuleProblems)
+	"invites", "jointokens", "users"}
+
+// resourceRE is a resource a plugin's role can name: a plain name (a built-in's plural or a
+// plugin kind's "plural.group"), and at most one subresource. No wildcard of any kind.
+var resourceRE = regexp.MustCompile(`^[a-z][a-z0-9.-]*(/[a-z][a-z0-9-]*)?$`)
 
 // forbiddenVerbs on a resource: secrets' values and every approval are people's.
 var forbiddenVerbs = map[string][]string{"secrets": {v1.VerbReadValue, v1.VerbApprove}, v1.ResourceExposure: {v1.VerbApprove}}
@@ -293,9 +299,11 @@ func RuleProblems(r v1.PolicyRule) []string {
 	}
 	for _, res := range r.Resources {
 		switch {
-		case res == "*" || strings.HasSuffix(res, "/*"):
-			errs = append(errs, "resources: * isn't for plugins: name each resource")
-		case slices.Contains(forbidden, res):
+		case strings.Contains(res, "*"):
+			errs = append(errs, fmt.Sprintf("resources: * isn't for plugins: name each resource (%q)", res))
+		case !resourceRE.MatchString(res):
+			errs = append(errs, fmt.Sprintf("resources: %s isn't a resource name (lower-case letters, digits, . and -, and at most one /subresource)", res))
+		case slices.Contains(forbidden, res) || slices.Contains(forbidden, strings.SplitN(res, "/", 2)[0]):
 			errs = append(errs, fmt.Sprintf("resources: %s: a plugin's controller never gets it (it could give itself more, or change what the API admits)", res))
 		}
 		for _, v := range forbiddenVerbs[res] {

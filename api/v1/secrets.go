@@ -2,6 +2,7 @@ package v1
 
 import (
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -180,15 +181,34 @@ type GrantRequires struct {
 	Assurance string `json:"assurance,omitempty"` // host (default) | vtpm | confidential
 }
 
+// cleanPathRE is a path an engine's mount argument can carry as it is: absolute, plain characters
+// only (no comma, colon, equals, quote, space or control character: those split or extend the
+// argument), no empty segment.
+var cleanPathRE = regexp.MustCompile(`^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$`)
+
+// CleanMountPath reports whether p is one clean absolute path: plain characters, no "." or ".."
+// segment, not the root. Pure.
+func CleanMountPath(p string) bool {
+	if !cleanPathRE.MatchString(p) {
+		return false
+	}
+	for _, seg := range strings.Split(p[1:], "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
+}
+
 // ContainerFileProblem says why a file secret can't be delivered at p on a container silo (""
 // if it can): it must be in a folder under /run, since the host mounts that folder into the
-// container read-only (/run itself stays the container's own, writable tmpfs). Pure.
+// container read-only (/run itself stays the container's own, writable tmpfs), and it must be a
+// clean path (CleanMountPath), since it goes into the engine's mount argument. Pure.
 func ContainerFileProblem(p string) string {
-	c := path.Clean(p)
 	switch {
-	case !path.IsAbs(p) || c != p || !strings.HasPrefix(c, "/run/"):
-		return p + " must be a clean path under /run/"
-	case path.Dir(c) == "/run":
+	case !CleanMountPath(p) || !strings.HasPrefix(p, "/run/"):
+		return p + " must be a clean path under /run/ (letters, digits, . _ - and / only)"
+	case path.Dir(p) == "/run":
 		return p + " must be in a folder under /run (like /run/secrets/NAME), not in /run itself: on a container the host mounts that folder read-only"
 	}
 	return ""

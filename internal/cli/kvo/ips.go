@@ -83,7 +83,9 @@ func ipCommand(ctx context.Context, c *client.Client, o opts, stdout io.Writer) 
 			msg = fmt.Sprintf("ip/%s kept: %s stays until you delete the IP", name, dash(x.Status.Address))
 		} else {
 			if len(x.Status.BoundTo) == 0 {
-				if err := c.Delete(ctx, "IP", ns, name); err != nil {
+				if err := c.Delete(ctx, "IP", ns, name, client.Seen(&x)); client.IsConflict(err) {
+					continue // bound or replaced since it was read: look again
+				} else if err != nil {
 					return err
 				}
 				_, _ = fmt.Fprintf(stdout, "ip/%s released: nothing held it, so it's deleted and %s goes back\n", name, dash(x.Status.Address))

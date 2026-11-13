@@ -6,7 +6,9 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"kevaso.com/core/api/informer"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/claims"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/mesh"
@@ -62,6 +65,17 @@ type Controller struct {
 
 	mu       sync.Mutex
 	assigned map[string]int // indexes written but maybe not in the cache yet (like an assume cache)
+	// Claims make each mesh index one host's, by the store (another leader's writes included).
+	Claims *claims.Claims
+}
+
+// PoolMeshIndex is the claims pool of hosts' mesh indexes.
+const PoolMeshIndex = "mesh-index"
+
+// UsesMeshIndex says whether a stored Host still has the mesh index.
+func UsesMeshIndex(obj []byte, value string) bool {
+	var h v1.Host
+	return json.Unmarshal(obj, &h) == nil && strconv.Itoa(h.Status.Network.Index) == value
 }
 
 // assignIndex gives h its mesh index if it has none, reporting whether it wrote. Called with c.mu
@@ -82,13 +96,30 @@ func (c *Controller) assignIndex(ctx context.Context, h *v1.Host) (bool, error) 
 		}
 		hosts = append(hosts, x)
 	}
-	got, err := mesh.AssignIndexes(hosts)
-	if err != nil {
-		return false, err
-	}
-	i, ok := got[h.Name]
-	if !ok {
-		return false, nil
+	var i int
+	for {
+		got, err := mesh.AssignIndexes(hosts)
+		if err != nil {
+			return false, err
+		}
+		var ok bool
+		if i, ok = got[h.Name]; !ok {
+			return false, nil
+		}
+		if c.Claims == nil {
+			break
+		}
+		ok, err = c.Claims.Take(ctx, PoolMeshIndex, strconv.Itoa(i), claims.Holder{Kind: "Host", Name: h.Name, UID: h.UID, Version: h.ResourceVersion}, UsesMeshIndex)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			break
+		}
+		// Another host has it (the cache doesn't show it yet): the next one.
+		taken := &v1.Host{}
+		taken.Status.Network.Index = i
+		hosts = append(hosts, taken)
 	}
 	n := &h.Status.Network
 	n.Index = i

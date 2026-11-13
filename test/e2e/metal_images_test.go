@@ -96,9 +96,8 @@ spec:
 	// The same disk with a wrong hash (after the right one, so the two never download at once).
 	c.apply(vm("wronghash", wrong))
 	c.eventually("a wrong hash is refused, saying so", 15*time.Minute, func() (bool, string) {
-		s := c.silo(ns, "wronghash")
-		d, _ := c.kvo("", "describe", "silo", "wronghash", "-n", ns)
-		return s.Status.Phase != "Running" && strings.Contains(d, "want "+wrong), d
+		d, code := c.kvo("", "describe", "silo", "wronghash", "-n", ns) // a slow answer is tried again
+		return code == 0 && !strings.Contains(d, "Phase:      Running") && strings.Contains(d, "want "+wrong), d
 	})
 }
 

@@ -52,11 +52,21 @@ type Options struct {
 	Backoff Backoff // default DefaultBackoff
 }
 
+// Cache is a local copy that controllers read (an informer): until it has its first list, not
+// seeing an object in it says nothing about whether the object exists.
+type Cache interface {
+	Kind() string
+	WaitSynced(ctx context.Context) bool
+}
+
 // Engine routes changes to controllers and runs them.
 type Engine struct {
-	clock clock.Clock
-	mu    sync.Mutex
-	ctrls []*registered
+	clock  clock.Clock
+	mu     sync.Mutex
+	ctrls  []*registered
+	caches []Cache
+	// OnWait, if set, is told which caches Run is waiting for before any controller runs.
+	OnWait func(kinds []string)
 	// OnError, if set, is told about every failed reconcile (logging, metrics).
 	OnError func(controller string, key Key, err error, retryIn time.Duration)
 }
@@ -83,6 +93,16 @@ func (e *Engine) Register(c Controller, opts Options) {
 	e.ctrls = append(e.ctrls, &registered{c: c, opts: opts, q: newQueue(e.clock, opts.Backoff)})
 }
 
+// WaitFor makes Run hold every controller until each of caches has loaded its first list: a
+// controller acting on a cache that is still empty would take "I do not see it" for "it does not
+// exist", and unbind, release or delete what is in use. Changes that come meanwhile stay queued.
+// Call before Run.
+func (e *Engine) WaitFor(caches ...Cache) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.caches = append(e.caches, caches...)
+}
+
 // Changed tells the engine an object changed: its kind's controllers get the key, and every Mapper
 // gets a chance to map it onto its own keys.
 func (e *Engine) Changed(k Key) {
@@ -104,11 +124,30 @@ func (e *Engine) Changed(k Key) {
 	}
 }
 
-// Run runs every controller's workers until ctx ends, then waits for in-flight reconciles.
+// Run runs every controller's workers until ctx ends, then waits for in-flight reconciles. With
+// caches to wait for (WaitFor), no worker starts before all of them have synced.
 func (e *Engine) Run(ctx context.Context) {
 	e.mu.Lock()
 	ctrls := append([]*registered(nil), e.ctrls...)
+	caches := append([]Cache(nil), e.caches...)
 	e.mu.Unlock()
+	if len(caches) > 0 {
+		if e.OnWait != nil {
+			kinds := make([]string, len(caches))
+			for i, c := range caches {
+				kinds[i] = c.Kind()
+			}
+			e.OnWait(kinds)
+		}
+		for _, c := range caches {
+			if !c.WaitSynced(ctx) {
+				for _, r := range ctrls {
+					r.q.shutDown()
+				}
+				return
+			}
+		}
+	}
 	var wg sync.WaitGroup
 	for _, r := range ctrls {
 		for i := 0; i < r.opts.Workers; i++ {
