@@ -57,6 +57,10 @@ func TestSecretArgsOnARealEngine(t *testing.T) {
 		return strings.TrimSpace(out.String()), err
 	}
 	name := "kv-" + id.Name
+	// --pull never, as the runtime runs it: the image must be there first.
+	if out, err := docker("pull", "-q", "debian:bookworm-slim"); err != nil {
+		t.Fatalf("docker pull debian:bookworm-slim: %v: %s", err, out)
+	}
 	args := append([]string{"run", "-d", "--name", name, "--pull", "never", "--tmpfs", "/run:rw,nosuid,nodev,mode=0755"}, secretArgs(s)...)
 	args = append(args, "debian:bookworm-slim", "sleep", "300")
 	if out, err := docker(args...); err != nil {
