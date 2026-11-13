@@ -256,6 +256,11 @@ func (a *Agent) unmountDirs(ctx context.Context, uid string) error {
 			if _, _, err := a.run(ctx, "umount", d); err != nil {
 				return err
 			}
+			// Mounts stacked on it (a node side that mounted again): removing the folder now
+			// would delete the volume's files.
+			if a.mountedAt(ctx, d) {
+				return fmt.Errorf("%s is still mounted after umount: not removing it (will try again)", d)
+			}
 			a.log("unmounted %s", d)
 		}
 	}
