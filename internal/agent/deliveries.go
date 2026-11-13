@@ -192,13 +192,32 @@ func (a *Agent) deliver(ctx context.Context, rt kri.Runtime, s *v1.Silo) error {
 	grants := a.grantList()
 	wantsCA := a.trustsCA(rt, s, grants)
 	last, had := a.delivered.Load(s.UID)
-	if !v1.HostWrites(s, grants) && !wantsCA && !had {
-		return nil
+	id := idOf(s)
+	hs, hostSecrets := rt.(kri.HostSecrets)
+	if !v1.HostWrites(s, grants) && !wantsCA && !had && !hostSecrets {
+		// Nothing for it, and nothing written by this run: but an earlier run may have written what
+		// was taken away while kevasod was down. Looked at once per run.
+		if _, checked := a.leftovers.LoadOrStore(s.UID, struct{}{}); checked || !a.hasDeliveries(ctx, rt, id) {
+			return nil
+		}
+		a.log("silo %s/%s has secrets an earlier run delivered and it no longer receives: removing them", s.Namespace, s.Name)
+		// Nothing is delivered: no need to ask the control plane, only to remove what's listed.
+		note, err := a.writeDeliveries(ctx, rt, id, nil, nil, "")
+		if err != nil {
+			a.leftovers.Delete(s.UID) // looked at again next time
+			a.log("silo %s/%s: removing secrets no longer delivered: %v", s.Namespace, s.Name, err)
+			return nil
+		}
+		if findCond(s.Status.Conditions, "SecretsDelivered") == nil {
+			return nil
+		}
+		return a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			setCond(st, "SecretsDelivered", meta.ConditionTrue, "Delivered", note, s.Generation, a.now())
+		})
 	}
-	if hs, ok := rt.(kri.HostSecrets); ok {
+	if hostSecrets {
 		return a.deliverFromHost(ctx, hs, s, false)
 	}
-	id := idOf(s)
 	ask := a.asker(ctx, s)
 	list, err := ask(client.OpDeliveries)
 	if err != nil {
@@ -230,8 +249,25 @@ func (a *Agent) deliver(ctx context.Context, rt kri.Runtime, s *v1.Silo) error {
 	if werr != nil {
 		return werr
 	}
-	a.delivered.Store(s.UID, delivered{key: key, note: note})
+	a.remember(s.UID, key, note, len(list.Deliveries) > 0 || ca != "")
 	return nil
+}
+
+// remember records what was delivered to a silo; with nothing (all removed), nothing is kept, so
+// a silo that receives nothing isn't asked about again.
+func (a *Agent) remember(uid, key, note string, any bool) {
+	if !any {
+		a.delivered.Delete(uid)
+		a.leftovers.Store(uid, struct{}{})
+		return
+	}
+	a.delivered.Store(uid, delivered{key: key, note: note})
+}
+
+// hasDeliveries reports whether the silo holds a list of deliveries an earlier run wrote.
+func (a *Agent) hasDeliveries(ctx context.Context, rt kri.Runtime, id kri.ID) bool {
+	code, err := rt.Exec(ctx, id, kri.ExecRequest{Command: []string{"sh", "-c", scriptEnv + `test -s "$R` + DeliveredFile + `"`}})
+	return err == nil && code == 0
 }
 
 // asker asks the control plane for the silo's deliveries (op: OpDeliveries, OpDeliveryValues).
@@ -270,7 +306,14 @@ func (a *Agent) deliverFromHost(ctx context.Context, hs kri.HostSecrets, s *v1.S
 		ds = list.Deliveries
 	}
 	key := deliveriesKey(ds, "")
-	if !starting && (!had && len(ds) == 0 || had && last.(delivered).key == key) {
+	if !starting && !had && len(ds) == 0 {
+		// What an earlier run set may have been taken away while kevasod was down: set nothing,
+		// once per run.
+		if _, checked := a.leftovers.LoadOrStore(s.UID, struct{}{}); checked {
+			return nil
+		}
+	}
+	if !starting && had && last.(delivered).key == key {
 		return nil
 	}
 	note, werr := a.setHostSecrets(ctx, hs, s, ds, ask)
@@ -288,7 +331,7 @@ func (a *Agent) deliverFromHost(ctx context.Context, hs kri.HostSecrets, s *v1.S
 	if werr != nil {
 		return werr
 	}
-	a.delivered.Store(s.UID, delivered{key: key, note: note})
+	a.remember(s.UID, key, note, len(ds) > 0)
 	return nil
 }
 

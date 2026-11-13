@@ -189,6 +189,9 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 		cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "Unschedulable", d.Message()
 	} else {
 		st.Phase, st.Host = PhaseScheduled, d.Host
+		if st.MovingFrom == st.Host {
+			st.MovingFrom = "" // back on the host it was moving from: nothing to hand off
+		}
 		cond.Status, cond.Reason, cond.Message = meta.ConditionTrue, "Scheduled", d.Message()
 		for _, h := range hosts {
 			if h.Name == d.Host {

@@ -59,7 +59,11 @@ func (a *Agent) loadRecorded() {
 func (a *Agent) buildRecord() fence.Record {
 	r := fence.Record{Written: a.now().UTC(), LastContact: a.fencePrev.LastContact, Fence: a.fenceApplies()}
 	if a.LastContact != nil {
-		if last := a.LastContact(); last.After(r.LastContact) {
+		last := a.LastContact()
+		if last.IsZero() && !a.started.IsZero() {
+			last = a.lastContact() // none yet in this run
+		}
+		if last.After(r.LastContact) {
 			r.LastContact = last.UTC()
 		}
 	}

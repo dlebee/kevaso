@@ -151,13 +151,29 @@ func (c *Controller) client(ctx context.Context, issuer string, cfg Config) (*xa
 		key = k.(crypto.Signer)
 	}
 	cl := &xacme.Client{Key: key, DirectoryURL: cfg.Server, HTTPClient: hc, UserAgent: "kevaso"}
+	if !fresh {
+		// The key is stored before its account is registered: a registration that failed (the
+		// server, a kill, a lost leadership) left a key with no account, and every order then
+		// went without one. A key the server doesn't know is registered now.
+		if a, err := cl.GetReg(ctx, ""); err == nil {
+			cl.KID = xacme.KeyID(a.URI)
+		} else if errors.Is(err, xacme.ErrNoAccount) {
+			fresh = true
+		} else {
+			return nil, fmt.Errorf("acme account: %w", err)
+		}
+	}
 	if fresh {
 		acct := &xacme.Account{}
 		if cfg.Email != "" {
 			acct.Contact = []string{"mailto:" + cfg.Email}
 		}
-		if _, err := cl.Register(ctx, acct, xacme.AcceptTOS); err != nil && !errors.Is(err, xacme.ErrAccountAlreadyExists) {
+		a, err := cl.Register(ctx, acct, xacme.AcceptTOS)
+		if err != nil && !errors.Is(err, xacme.ErrAccountAlreadyExists) {
 			return nil, fmt.Errorf("acme account: %w", err)
+		}
+		if a != nil && a.URI != "" {
+			cl.KID = xacme.KeyID(a.URI)
 		}
 	}
 	return cl, nil

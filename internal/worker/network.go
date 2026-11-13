@@ -174,8 +174,12 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		}
 		return out
 	}
-	if !silos.WaitSynced(ctx) || !hosts.WaitSynced(ctx) || !grantsInf.WaitSynced(ctx) {
-		return
+	// Every input before the first ruleset: one built without the leases (or services, ingress
+	// classes) closes their ports and resets what an open lease let in, on every restart.
+	for _, inf := range []*informer.Informer{silos, hosts, grantsInf, secretsInf, ingInf, classInf, svcInf, leaseInf} {
+		if !inf.WaitSynced(ctx) {
+			return
+		}
 	}
 	currentGrants := func() []*v1.Grant {
 		var out []*v1.Grant
@@ -243,7 +247,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		leaseEnd, stopLeaseEnd := leaseTimer(ls, now)
 		rules := kni.Rules(view)
 		if rules != last {
-			if err := applyNFT(ctx, rules); err != nil {
+			if err := applyRules(ctx, rules); err != nil {
 				log("silo firewall: %v", err)
 			} else {
 				last = rules
@@ -277,6 +281,9 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		stopLeaseEnd()
 	}
 }
+
+// applyRules loads a ruleset (tests replace it).
+var applyRules = applyNFT
 
 func applyNFT(ctx context.Context, rules string) error {
 	// Connection tracking on the bridge (for same-host allowFrom replies) is its own module, and

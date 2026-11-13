@@ -61,9 +61,10 @@ func TestApplyFiles(t *testing.T) {
 	if r, err := ingress.Apply(ctx, execOn(px), nil, nginx.Driver{}, p, r.Hash); err != nil || r.Changed || len(px.Commands()) != before {
 		t.Fatalf("unchanged: %+v %v %v", r, err, px.Commands()[before:])
 	}
-	// An agent that restarted (knows nothing): it reads the config, sees it's the same, stops.
+	// An agent that restarted (knows nothing): it reads the config, sees it's the same, and only
+	// has the proxy load it (it may have stopped between the move and the reload).
 	if r, err := ingress.Apply(ctx, execOn(px), nil, nginx.Driver{}, p, ""); err != nil || r.Changed || r.Hash != p.Hash() ||
-		!slices.Equal(px.Commands()[before:], []string{"cat " + nginx.ConfigPath}) {
+		!slices.Equal(px.Commands()[before:], []string{"cat " + nginx.ConfigPath, "nginx -s reload"}) {
 		t.Fatalf("after a restart: %+v %v %v", r, err, px.Commands()[before:])
 	}
 
@@ -80,15 +81,15 @@ func TestApplyFiles(t *testing.T) {
 		t.Fatalf("refused: %+v %v", r2, err)
 	}
 	after, _, reloads := px.Snapshot()
-	if reloads != 1 || len(after) != len(files) || string(after[nginx.ConfigPath]) != string(p.Config.Data) {
+	if reloads != 2 || len(after) != len(files) || string(after[nginx.ConfigPath]) != string(p.Config.Data) {
 		t.Fatalf("a refused config left something: reloads %d, files %d → %d", reloads, len(files), len(after))
 	}
 
-	// Accepted (a renewal): the new certificate in, the old one out, one reload.
+	// Accepted (a renewal): the new certificate in, the old one out, one reload more.
 	px.Check = nil
 	r3, err := ingress.Apply(ctx, execOn(px), nil, nginx.Driver{}, bad, r.Hash)
 	after, _, reloads = px.Snapshot()
-	if err != nil || !r3.Changed || reloads != 2 {
+	if err != nil || !r3.Changed || reloads != 3 {
 		t.Fatalf("renewal: %+v %v", r3, err)
 	}
 	if _, ok := after[p.Files[0].Path]; ok {

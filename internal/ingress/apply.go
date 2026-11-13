@@ -74,17 +74,22 @@ func Apply(ctx context.Context, exec Exec, call Caller, d kic.Driver, p kic.Plan
 	if p.Config.Path == "" {
 		return applyCall(ctx, call, d, p, hash)
 	}
-	if last == "" { // this agent doesn't know: the proxy may have it already (an agent restart)
-		if code, out, err := exec(ctx, ReadCmd(p.Config.Path), nil); err == nil && code == 0 && out == string(p.Config.Data) {
-			return Result{Hash: hash}, nil
-		}
-	}
 	run := func(argv []string, stdin []byte) error {
 		code, out, err := exec(ctx, argv, stdin)
 		if err == nil && code != 0 {
 			err = fmt.Errorf("%s: exit %d: %s", argv[0], code, tail(out))
 		}
 		return err
+	}
+	if last == "" { // this agent doesn't know: the proxy may have it already (an agent restart)
+		if code, out, err := exec(ctx, ReadCmd(p.Config.Path), nil); err == nil && code == 0 && out == string(p.Config.Data) {
+			// On disk, but maybe never loaded: an agent stopped between the move and the reload
+			// left the proxy on the old config for good. Reloading what it has costs nothing.
+			if err := reload(ctx, run, call, d, p, hash); err != nil {
+				return Result{}, err
+			}
+			return Result{Hash: hash}, nil
+		}
 	}
 	var have map[string]bool
 	if p.Dir != "" {
@@ -147,6 +152,30 @@ func Apply(ctx context.Context, exec Exec, call Caller, d kic.Driver, p kic.Plan
 			return r, err
 		}
 	}
+	return finish(run, p, have, hash)
+}
+
+// reload has the proxy load the config at its path again (an agent restart: it's there already).
+func reload(ctx context.Context, run func([]string, []byte) error, call Caller, d kic.Driver, p kic.Plan, hash string) error {
+	switch {
+	case len(p.Reload.Exec) > 0:
+		if err := run(p.Reload.Exec, nil); err != nil {
+			return fmt.Errorf("reload: %w", err)
+		}
+	case p.Reload.Call != nil:
+		r, err := applyCall(ctx, call, d, p, hash)
+		if err != nil {
+			return err
+		}
+		if r.Rejected != "" {
+			return fmt.Errorf("reload: %s", r.Rejected)
+		}
+	}
+	return nil
+}
+
+// finish removes the supporting files no plan names any more.
+func finish(run func([]string, []byte) error, p kic.Plan, have map[string]bool, hash string) (Result, error) {
 	if p.Dir != "" {
 		want := map[string]bool{}
 		for _, f := range p.Files {

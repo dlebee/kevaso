@@ -104,11 +104,13 @@ type Agent struct {
 	fenced      atomic.Bool
 	silosSynced atomic.Bool
 	fencePrev   fence.Record // the fence record as an earlier run left it (FenceDir)
+	started     time.Time    // when this run began (Run)
 	fenceMu     sync.Mutex   // the record: built and written by one at a time
 	recorded    map[string]fence.Silo
 	goneChecked time.Time
 	endpoint    *Endpoint
 	delivered   sync.Map // silo uid → delivered: its file and env secrets as this agent last wrote them
+	leftovers   sync.Map // silo uid → struct{}: looked at for what an earlier run delivered (deliveries.go)
 	paneRuns    sync.Map // silo uid → paneRun: its pane fetcher
 	panesMu     sync.Mutex
 	runCtx      context.Context
@@ -140,11 +142,24 @@ func (a *Agent) fenceAfter() time.Duration {
 
 // cutOff reports whether the host has gone too long without reaching the control plane.
 func (a *Agent) cutOff() bool {
-	if a.LastContact == nil || !a.fenceApplies() {
+	if a.LastContact == nil || !a.fenceApplies() || a.started.IsZero() {
 		return false
 	}
-	last := a.LastContact()
-	return !last.IsZero() && a.Clock.Now().Sub(last) > a.fenceAfter()
+	return a.Clock.Now().Sub(a.lastContact()) > a.fenceAfter()
+}
+
+// lastContact is LastContact; with none yet in this run, what an earlier run recorded (a
+// restart: never a fresh count), else when this run started (a host just booted, whose heartbeats
+// haven't got through). Zero meant never fencing, which left its silos running while the control
+// plane, counting from the last heartbeat stored before, recreated them elsewhere.
+func (a *Agent) lastContact() time.Time {
+	if last := a.LastContact(); !last.IsZero() {
+		return last
+	}
+	if !a.fencePrev.LastContact.IsZero() {
+		return a.fencePrev.LastContact
+	}
+	return a.started
 }
 
 // fenceApplies is FenceApplies, or what an earlier run recorded while it's undecided.
@@ -226,6 +241,7 @@ func (a *Agent) Run(ctx context.Context) {
 	a.silos = informer.New(a.Client, "Silo")
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
 	a.runCtx = ctx
+	a.started = a.Clock.Now()
 	a.endpoint = &Endpoint{Client: a.Client, HostName: a.HostName, Log: a.Log}
 	if a.EndpointListen != "" {
 		go a.endpoint.ServeEndpoint(ctx, a.EndpointListen)
@@ -259,6 +275,12 @@ func (a *Agent) Run(ctx context.Context) {
 			a.collectGarbage(ctx, e)
 		}
 	}()
+	// Nothing is reconciled before the agent knows the grants and secrets: with their caches still
+	// empty (a restart) a silo would seem to receive nothing, and start, or run its init steps,
+	// without its secrets.
+	if !a.grants.WaitSynced(ctx) || !a.secrets.WaitSynced(ctx) {
+		return
+	}
 	e.Run(ctx)
 }
 
