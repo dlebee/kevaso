@@ -301,17 +301,24 @@ func OnLiveness(spec *v1.Probes, st []v1.ProbeStatus, r *v1.LivenessRestarts, no
 	if bad, _ := Degraded(spec, st); !bad {
 		return false, 0
 	}
+	if w := RestartWait(r, now); w > 0 {
+		return false, w
+	}
+	return true, 0
+}
+
+// RestartWait is how long the next restart must wait after r (0: now): the backoff after the
+// last restart, unless the silo stayed up long enough since (StableAfter). Liveness restarts and
+// restarts after a runtime failure share it.
+func RestartWait(r *v1.LivenessRestarts, now time.Time) time.Duration {
 	if r == nil || r.Last == nil {
-		return true, 0
+		return 0
 	}
 	n := r.Backoff
 	if !now.Before(r.Last.Add(StableAfter)) {
 		n = 0 // it stayed up long enough: this one isn't "in a row"
 	}
-	if w := r.Last.Add(Backoff(n)).Sub(now); w > 0 {
-		return false, w
-	}
-	return true, 0
+	return max(r.Last.Add(Backoff(n)).Sub(now), 0)
 }
 
 // Restarted is the restart record after a liveness restart at now.

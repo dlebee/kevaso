@@ -152,7 +152,8 @@ func TestMetal2Upgrade(t *testing.T) {
 	c.apply(boxEcho(ns, "a", 8080) + on(metalHost) + "---\n" + boxEcho(ns, "b", 8080) + on(metalHost2) + "---\n" + vmEcho(ns, "vm", 8080) + on(metalHost2))
 	c.waitRunning(ns, 20*time.Minute, "a", "b", "vm")
 	before := p.startTimes(ns, "a", "b", "vm")
-	version := "e2e-" + strconv.FormatInt(time.Now().Unix(), 36)
+	// A patch above the tree's own v0.0.0-dev, higher on every run (a kept cluster upgrades again).
+	version := "v0.0." + strconv.FormatInt(time.Now().Unix()/60, 10) + "-e2e"
 	bin := filepath.Join(t.TempDir(), "kevasod")
 	build := exec.CommandContext(c.ctx, "go", "build", "-o", bin, "-ldflags", "-X kevaso.com/core/internal/version.Version="+version, "kevaso.com/core/cmd/kevasod")
 	build.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+p.m1.arch, "CGO_ENABLED=0")

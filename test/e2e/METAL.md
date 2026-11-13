@@ -387,3 +387,38 @@ release), the Ubuntu archive and, with `KEVASO_METAL_HOSTNAME` set, Let's Encryp
   hostname are fine; never point it at production.
 - The provider may flag a machine that suddenly answers on many ports, or the DNS listener, as
   abuse. Tell them it is a test machine.
+
+## Where we stopped (2026-11-13, phase/metal)
+
+Status: both suites are green on the real machines (one-machine suite in halves across both;
+two-machine core path with machine 2's volume group on its spare disk). Both machines are reset
+and clean; `/var/cache/kvt` (the download cache) is kept on purpose.
+
+Written but never run on a machine, or not green yet:
+
+- One-machine failure cases (`metal_failures_test.go`): TestMetalKilledMidStart,
+  TestMetalDownloadInterrupted, TestMetalBadImages. Never run.
+- Two-machine: TestMetal2ShortCut, TestMetal2RebootMidMove, TestMetal2MoveUnlikeStorage,
+  TestMetal2Soak. Never run.
+- TestMetal2DiskReset: its `kvoadm reset` steps passed on machine 2 (the volume group was kept
+  without `--wipe-storage`, wiped with it, the disk left empty). Its last check had a test bug,
+  fixed since and checked by hand; the test hasn't run again after the fix.
+
+Next, in this order:
+
+1. The audit findings in the host lane, data loss first: K-004, K-006, K-007. Then K-022,
+   K-020, K-015 (if it can be confirmed), and the rest of the ledger whose "Where" is in this
+   lane. Each gets a test that fails before the fix, one commit per finding with its id.
+   Where a finding only shows on a real host, it also gets a metal test.
+2. The failure cases above.
+3. The soak (TestMetal2Soak).
+4. OpenShell on both machines: install on 26.04, both drivers, exec and terminal, ports, names,
+   secrets (inject and the endpoint; file, env and `container.pull` refused with their
+   reasons), reset coverage of its gateway, units, images and state.
+5. The owner's decisions (asked by the orchestrator): a held ingress class also holds back new
+   routes; moving a local volume's data isn't built; thin pools overcommit, so the disk test's
+   "too large" check passes on a refusal message that should be confirmed. Also
+   `--storage-device`, which was built and reverted (stabilization).
+
+Picking up cold: the environment is in this runbook. Use `KEVASO_METAL_REUSE=1` for
+iterations, and run each test alone before a gate.
