@@ -125,6 +125,16 @@ spec:
 	}
 	c.holds("traffic keeps flowing", 20*time.Second, get)
 
+	// Every reload since the start took (the pid file the image's nginx writes is the one its
+	// config names: a mismatch deletes it on the first reload, and every later reload fails).
+	pid := strings.TrimSpace(c.mustSh(`docker ps -q --filter label=kevaso.com/name=ingress-public | xargs -r -I{} docker exec {} cat /run/nginx.pid`))
+	if pid == "" {
+		t.Error("nginx's pid file is empty after the reloads: the next config change can't be loaded")
+	}
+	if n := strings.TrimSpace(c.mustSh(`journalctl -u kevasod --no-pager --since '-15min' | grep -c 'ingress-public: reload' || true`)); n != "0" {
+		t.Errorf("%s failed reloads of the ingress controller in kevasod's log", n)
+	}
+
 	host := c.cfg.Hostname
 	if host == "" {
 		t.Log("KEVASO_METAL_HOSTNAME isn't set: the Let's Encrypt staging certificate isn't tried")

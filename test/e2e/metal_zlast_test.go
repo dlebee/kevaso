@@ -154,10 +154,22 @@ func TestMetalReboot(t *testing.T) {
 	})
 	c.runtimeReady("cloud-hypervisor", 10*time.Minute)
 	c.runtimeReady("docker", 10*time.Minute)
-	c.waitRunning(ns, 15*time.Minute, "stay", "moves", "vm")
+	// Right after the boot the API (this same kevasod) still says what it said before: wait for
+	// the host itself to run them again.
 	vm := c.silo(ns, "vm")
 	unit := cloudhypervisor.NamesFor(kri.ID{Namespace: vm.Namespace, Name: vm.Name, UID: vm.UID}).Unit
-	c.expect("the microVM's unit is up", c.mustSh("systemctl is-active "+unit), "active")
+	c.eventually("the microVM is started again", 10*time.Minute, func() (bool, string) {
+		out, _ := c.sh("systemctl is-active " + unit)
+		return strings.TrimSpace(out) == "active", out
+	})
+	for _, n := range []string{"stay", "moves"} {
+		uid := c.silo(ns, n).UID
+		c.eventually(n+"'s container runs again", 10*time.Minute, func() (bool, string) {
+			out, _ := c.sh("docker ps -q --filter label=kevaso.com/uid=" + uid + " --filter label=kevaso.com/name")
+			return strings.TrimSpace(out) != "", "not running"
+		})
+	}
+	c.waitRunning(ns, 5*time.Minute, "stay", "moves", "vm")
 	c.eventually("the microVM's volume still has its data", 5*time.Minute, func() (bool, string) {
 		out, code := c.in(ns, "vm", "cat /data/marker")
 		return code == 0 && out == marker, out
