@@ -101,17 +101,25 @@ type ExecHeader struct {
 // upgradeClient returns an HTTP client that can do HTTP/1.1 upgrades (HTTP/2 can't hijack).
 func (c *Client) upgradeClient() *http.Client {
 	base := c.http()
+	if f, ok := base.Transport.(*failover); ok { // several control planes (failover.go)
+		return &http.Client{Transport: f.forUpgrade(http1Only)}
+	}
 	t, ok := base.Transport.(*http.Transport)
 	if !ok || t == nil {
 		t = http.DefaultTransport.(*http.Transport)
 	}
+	return &http.Client{Transport: http1Only(t)}
+}
+
+// http1Only is a copy of t that speaks HTTP/1.1 only.
+func http1Only(t *http.Transport) *http.Transport {
 	u := t.Clone()
 	u.ForceAttemptHTTP2 = false
 	u.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
 	if u.TLSClientConfig != nil {
 		u.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	}
-	return &http.Client{Transport: u}
+	return u
 }
 
 // Upgrade sends a request asking to switch to a raw stream and returns that stream.

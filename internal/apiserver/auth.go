@@ -235,6 +235,9 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 		case r.URL.Path == "/enroll":
 			s.enroll(w, r)
 			return
+		case r.URL.Path == client.PathSystemNodeJoin: // a join token, like /enroll
+			s.systemNodeJoin(w, r)
+			return
 		case r.URL.Path == "/ca.crt": // public: kvo login checks it against the fingerprint it was given
 			w.Header().Set("Content-Type", "application/x-pem-file")
 			_, _ = w.Write(s.auth.CA.PEM)

@@ -78,6 +78,9 @@ type Server struct {
 	ClientURL string // where its client listener is, e.g. https://127.0.0.1:2379
 	PeerURL   string // what it advertises to peers
 	clientTLS *tls.Config
+	ca        *pki.CA
+	names     []string
+	files     tlsFiles
 }
 
 // Start starts the member and returns once it serves.
@@ -171,7 +174,14 @@ func Start(ctx context.Context, c Config) (*Server, error) {
 		Etcd:      e,
 		ClientURL: "https://" + e.Clients[0].Addr().String(),
 		PeerURL:   peer,
-		clientTLS: &tls.Config{RootCAs: c.CA.Pool(), Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+		clientTLS: &tls.Config{RootCAs: c.CA.Pool(), MinVersion: tls.VersionTLS12,
+			// Read from the files at each handshake, as etcd does: a rotated certificate (rotate.go)
+			// is used from the next connection on, with no restart.
+			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				c, err := tls.LoadX509KeyPair(files.cert, files.key)
+				return &c, err
+			}},
+		ca: c.CA, names: names, files: files,
 	}
 	if err := s.advertise(ctx); err != nil {
 		s.Close()

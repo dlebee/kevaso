@@ -123,6 +123,20 @@ type HostStatus struct {
 	// MountClasses are the storage classes whose plugin's node side runs on this host (reach
 	// mount, e.g. juicefs): only such hosts can take a silo with a volume on one.
 	MountClasses []string `json:"mountClasses,omitempty"`
+	// Version is the kevasod version reporting (kvoadm upgrade reads it; ADR 0006 has the skew rule).
+	Version string `json:"version,omitempty"`
+	// ControlPlane is what a system node reports about its control-plane component.
+	ControlPlane *ControlPlaneStatus `json:"controlPlane,omitempty"`
+}
+
+// ControlPlaneStatus is a system node's control-plane component as it reports itself (APIURL,
+// Store, PeerURL) and as the controllers' leader sees it (Member, Leader).
+type ControlPlaneStatus struct {
+	APIURL  string `json:"apiURL,omitempty"`  // where its API serves; empty on a light (state-only) node
+	Store   string `json:"store,omitempty"`   // sqlite | etcd
+	PeerURL string `json:"peerURL,omitempty"` // its etcd member's peer URL; empty: no peer listener
+	Member  string `json:"member,omitempty"`  // voter | learner | "" (not a store member)
+	Leader  bool   `json:"leader,omitempty"`  // runs the controllers and the scheduler now
 }
 
 // HostProvider is a machine as its provider sees it.

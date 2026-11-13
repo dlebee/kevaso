@@ -21,18 +21,21 @@ import (
 
 // RunTunnel keeps a connection open to the control plane (research E020: agents dial out, so
 // hosts need no inbound port) and serves the exec streams the API server opens on it.
-func (a *Agent) RunTunnel(ctx context.Context) {
+func (a *Agent) RunTunnel(ctx context.Context) { a.runTunnel(ctx, a.Client) }
+
+// runTunnel keeps one tunnel open through c (one control plane, or a failover list).
+func (a *Agent) runTunnel(ctx context.Context, c *client.Client) {
 	backoff := time.Second
 	for ctx.Err() == nil {
 		start := time.Now()
-		err := a.tunnelOnce(ctx)
+		err := a.tunnelOnce(ctx, c)
 		if ctx.Err() != nil {
 			return
 		}
 		if time.Since(start) > time.Minute {
 			backoff = time.Second // it was up for a while: reconnect quickly
 		}
-		a.log("tunnel: %v (reconnecting in %v)", err, backoff)
+		a.log("tunnel to %s: %v (reconnecting in %v)", c.BaseURL, err, backoff)
 		select {
 		case <-ctx.Done():
 			return
@@ -42,8 +45,8 @@ func (a *Agent) RunTunnel(ctx context.Context) {
 	}
 }
 
-func (a *Agent) tunnelOnce(ctx context.Context) error {
-	conn, err := a.Client.Upgrade(ctx, http.MethodGet, "/agent/connect?host="+url.QueryEscape(a.HostName), "kevaso-tunnel", nil)
+func (a *Agent) tunnelOnce(ctx context.Context, c *client.Client) error {
+	conn, err := c.Upgrade(ctx, http.MethodGet, "/agent/connect?host="+url.QueryEscape(a.HostName), "kevaso-tunnel", nil)
 	if err != nil {
 		return err
 	}

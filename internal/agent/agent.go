@@ -62,14 +62,17 @@ type Agent struct {
 	// Nodes are the plugins' node sides on this host (NAME/node.sock), which mount the volumes of
 	// mount-reach storage classes (juicefs) and hold their credentials; nil: none.
 	Nodes *plugins.Registry
+	// TunnelRefresh is how often the agent looks for system nodes to hold a tunnel to (tunnels.go).
+	TunnelRefresh time.Duration
 
-	silos    *informer.Informer
-	secrets  *informer.Informer
-	grants   *informer.Informer
-	fenced   atomic.Bool
-	broker   *Broker
-	prepared sync.Map // silo uid → struct{}: the guest helper is in place for this agent's run
-	kept     sync.Map // silo uid → keptState: its daemons and upkeep as this agent last decided
+	tunnelsSeen []string // the last tunnel targets found (only RunTunnels touches it)
+	silos       *informer.Informer
+	secrets     *informer.Informer
+	grants      *informer.Informer
+	fenced      atomic.Bool
+	broker      *Broker
+	prepared    sync.Map // silo uid → struct{}: the guest helper is in place for this agent's run
+	kept        sync.Map // silo uid → keptState: its daemons and upkeep as this agent last decided
 	// nodeMounts: volume path → handle, mounted here by a node side during this agent's run.
 	nodeMounts sync.Map
 	engine     *engine.Engine
@@ -170,7 +173,7 @@ func (a *Agent) Run(ctx context.Context) {
 		inf.AddHandler(func(k informer.Key) { a.fanOut(kind, k.Namespace, k.Name) })
 		go inf.Run(ctx)
 	}
-	go a.RunTunnel(ctx)
+	go a.RunTunnels(ctx)
 	go a.fence(ctx, e)
 	go a.resync(ctx, e)
 	go func() { // after the first sync, look for runtime silos the API no longer knows
