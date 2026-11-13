@@ -134,7 +134,7 @@ func (a *Agent) mountByNode(ctx context.Context, s *v1.Silo, n kplugin.Node, vs 
 		return "", false, m, nil
 	}
 	m := a.nodeMount(s.UID, vs)
-	if done, _ := a.nodeMounts.Load(m.Path); done != m.Handle || !vs.Mounted {
+	if done, _ := a.nodeMounts.Load(m.Path); done != m.Handle || !vs.Mounted || !a.mountedAt(ctx, m.Path) {
 		err := n.MountVolume(ctx, m)
 		if errors.Is(err, kplugin.ErrInProgress) {
 			return "", false, "mounting volume " + vs.Name + ": " + err.Error(), nil
@@ -235,6 +235,17 @@ func (a *Agent) unmountVolumes(ctx context.Context, uid string, s *v1.Silo) erro
 			}
 		}
 	})
+}
+
+// mountedAt reports whether something is mounted at dir (true when this host can't say): what this
+// run mounted can go behind its back (a node side or its FUSE daemon restarted), and a silo started
+// on the plain folder writes onto the host's root disk.
+func (a *Agent) mountedAt(ctx context.Context, dir string) bool {
+	if a.Host == nil {
+		return true
+	}
+	_, code, _ := a.run(ctx, "mountpoint", "-q", dir)
+	return code == 0
 }
 
 // unmountDirs unmounts whatever is still mounted under the silo's volume folder, and removes it.
