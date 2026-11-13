@@ -685,11 +685,11 @@ func summary(obj meta.Object) string {
 			parts = append(parts, fmt.Sprintf("%s: %s", cd.Type, cd.Message))
 		}
 	}
-	return strings.Join(parts, "  ")
+	return plain(strings.Join(parts, "  "), 0) // status text is the silo's and its host's: one safe line
 }
 
 func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) error {
-	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+	tw := tabwriter.NewWriter(safeTerminal(w), 0, 0, 3, ' ', 0)
 	var head []string
 	if all && k.Scope == v1.Namespaced {
 		head = append(head, "NAMESPACE")
