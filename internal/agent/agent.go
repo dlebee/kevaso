@@ -107,6 +107,7 @@ type Agent struct {
 	goneChecked time.Time
 	endpoint    *Endpoint
 	delivered   sync.Map // silo uid → delivered: its file and env secrets as this agent last wrote them
+	leftovers   sync.Map // silo uid → struct{}: looked at for what an earlier run delivered (deliveries.go)
 	paneRuns    sync.Map // silo uid → paneRun: its pane fetcher
 	panesMu     sync.Mutex
 	runCtx      context.Context

@@ -40,6 +40,7 @@ var sites = map[string]string{
 	"builtin/kri/openshell/runtime.go Exec":                    "hostexec.SweepScript in the sandbox",
 	"internal/agent/agent.go command":                          "dynamic: a silo's own init step",
 	"internal/agent/deliveries.go execIn":                      "a constant script, dynamic arguments",
+	"internal/agent/deliveries.go hasDeliveries":               "scriptEnv and a test -s of the delivery list",
 	"internal/apiserver/silostreams.go ":                       "LoginShell",
 	"internal/ingress/apply.go ListCmd":                        "listScript",
 	"internal/ingress/apply.go WriteCmd":                       "writeScript",
