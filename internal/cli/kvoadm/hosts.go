@@ -19,6 +19,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/kvoconfig"
+	"kevaso.com/core/internal/sshboot"
 )
 
 // HostAddOptions are kvoadm host add's flags, on top of init's SSH ones.
@@ -141,8 +142,40 @@ WantedBy=multi-user.target
 `
 }
 
-// FenceUnit is a worker-only host's fence (kevasod fence-watch), separate from kevasod.service.
-func FenceUnit(o HostAddOptions) string { return fence.Unit(o.Runtimes, fence.DefaultAfter) }
+// FenceUnitName is the fence's unit, separate from kevasod.service.
+const FenceUnitName = "kevaso-fence.service"
+
+// FenceUnit is the fence (kevasod fence-watch) of a host that runs silos with these runtimes.
+func FenceUnit(runtimes []string) string {
+	if len(runtimes) == 0 {
+		runtimes = []string{"cloud-hypervisor"} // the worker's default (workerArgs)
+	}
+	return fence.Unit(runtimes, fence.DefaultAfter)
+}
+
+// UnitFile is a systemd unit kvoadm installs.
+type UnitFile struct{ Name, Text string }
+
+// UnitsFor is what a host gets: kevasod's unit and, wherever a worker runs, the fence, a worker
+// on a control plane included. Whether the fence ever stops anything is the agent's call
+// (fence.Applies, in the record), kept current as system nodes come and go, so a one-node
+// cluster that grows to three system nodes is covered without reinstalling anything. Pure.
+func UnitsFor(kevasod string, worker bool, runtimes []string) []UnitFile {
+	us := []UnitFile{{"kevasod.service", kevasod}}
+	if worker {
+		us = append(us, UnitFile{FenceUnitName, FenceUnit(runtimes)})
+	}
+	return us
+}
+
+func installUnits(ctx context.Context, conn *sshboot.Conn, us []UnitFile) error {
+	for _, u := range us {
+		if err := conn.InstallUnit(ctx, u.Name, []byte(u.Text)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func adminClient(kctx string) (*client.Client, kvoconfig.Context, error) {
 	path, err := kvoconfig.Path()
@@ -224,16 +257,12 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 	if err := conn.Upload(ctx, "/etc/kevaso/join-token", []byte(tok.Token), 0o600); err != nil {
 		return err
 	}
-	if err := conn.InstallUnit(ctx, "kevasod.service", []byte(WorkerUnit(o, server))); err != nil {
-		return err
-	}
-	say("worker started (kevasod.service), joining %s", server)
 	// Its fence, a unit of its own: when this host's agent can no longer vouch for its silos (cut
 	// off, or not running), it stops those the control plane may start elsewhere.
-	if err := conn.InstallUnit(ctx, "kevaso-fence.service", []byte(FenceUnit(o))); err != nil {
+	if err := installUnits(ctx, conn, UnitsFor(WorkerUnit(o, server), true, o.Runtimes)); err != nil {
 		return err
 	}
-	say("fence started (kevaso-fence.service)")
+	say("worker started (kevasod.service), joining %s; fence started (%s)", server, FenceUnitName)
 	// How kvoadm reaches it, kept on its Host (and so in backups): kvoadm init --restore uses it to
 	// reconnect the worker to a restored control plane.
 	if err := annotateSSH(ctx, c, o.Name, fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))), conn.Fingerprint); err != nil {

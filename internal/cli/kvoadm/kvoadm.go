@@ -494,10 +494,13 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 		}
 		say("backup restored into /var/lib/kevaso: store, cluster CA, and the master key rebuilt with the recovery key")
 	}
-	if err := conn.InstallUnit(ctx, "kevasod.service", []byte(Unit(o))); err != nil {
+	if err := installUnits(ctx, conn, UnitsFor(Unit(o), o.Worker, o.Runtimes)); err != nil {
 		return err
 	}
 	say("control plane started (kevasod.service)")
+	if o.Worker {
+		say("fence installed (%s): it acts once other system nodes could start this host's silos", FenceUnitName)
+	}
 
 	// 5. Your credentials: the key is made here, only the CSR goes to the host.
 	keyPEM, csrPEM, err := client.NewKeyAndCSR(o.UserName)

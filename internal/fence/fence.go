@@ -44,7 +44,10 @@ type Record struct {
 	// judges by). Zero: never yet, so nothing here may run elsewhere.
 	LastContact time.Time `json:"lastContact"`
 	Written     time.Time `json:"written"` // when the agent wrote this (it's alive)
-	Silos       []Silo    `json:"silos"`
+	// Fence: a second copy of this host's silos could be started elsewhere while this one may
+	// still run (see Applies). False: the watcher stops nothing, ever.
+	Fence bool   `json:"fence"`
+	Silos []Silo `json:"silos"`
 }
 
 // Silo is one silo the agent runs here.
@@ -61,10 +64,52 @@ func Stops(policy string) bool {
 	return policy == v1.OnHostLossRecreate || policy == v1.OnHostLossMove
 }
 
+// Applies reports whether a host needs fencing: whether, with this host cut off or its agent down,
+// the rest of the cluster could start a second copy of its silos. Pure.
+//
+//   - No worker: nothing runs here.
+//   - A worker only: the control plane is elsewhere and carries on without it. Always.
+//   - Control plane and worker: only when the control plane carries on without this host: another
+//     system node serves the API and the store members without this one are a majority. A
+//     one-node cluster (or two system nodes: neither is a majority alone) has nobody to start
+//     the silos elsewhere, and a fence there would only stop silos for nothing.
+//
+// self missing from hosts (not registered yet) counts as a worker only: fencing is the safe side.
+func Applies(hosts []v1.Host, self string) bool {
+	var me *v1.Host
+	members, others, apiOthers := 0, 0, 0
+	for i := range hosts {
+		h := &hosts[i]
+		if h.Name == self {
+			me = h
+		}
+		cp := h.Spec.Components.ControlPlane
+		if cp == nil {
+			continue
+		}
+		members++
+		if h.Name != self {
+			others++
+			if !cp.StateOnly {
+				apiOthers++
+			}
+		}
+	}
+	switch {
+	case me == nil:
+		return true
+	case me.Spec.Components.Worker == nil:
+		return false
+	case me.Spec.Components.ControlPlane == nil:
+		return true
+	}
+	return apiOthers > 0 && 2*others > members
+}
+
 // Decide is what to stop now: the silos the control plane may start elsewhere, once the last
 // contact is older than after, minus those already stopped in this fence. Pure.
 func Decide(r Record, now time.Time, after time.Duration, done map[string]bool) []Silo {
-	if r.LastContact.IsZero() || now.Sub(r.LastContact) <= after {
+	if !r.Fence || r.LastContact.IsZero() || now.Sub(r.LastContact) <= after {
 		return nil
 	}
 	var out []Silo
@@ -191,7 +236,9 @@ func (w *Watcher) log(format string, args ...any) {
 }
 
 // Unit is the watcher's systemd unit: its own, restarted on its own, and not tied to kevasod's
-// (stopping or killing kevasod must leave it running: that's when it's needed).
+// (stopping or killing kevasod must leave it running: that's when it's needed). Every host with a
+// worker gets it, a control plane's included: whether it ever stops anything is the record's Fence,
+// which the agent keeps current as system nodes come and go.
 func Unit(runtimes []string, after time.Duration) string {
 	args := "fence-watch --fence-after " + after.String()
 	for _, r := range runtimes {

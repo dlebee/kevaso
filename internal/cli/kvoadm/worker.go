@@ -89,13 +89,13 @@ func enableWorker(ctx context.Context, args []string, stdin io.Reader, out io.Wr
 	if err != nil {
 		return err
 	}
-	if err := conn.InstallUnit(ctx, "kevasod.service", []byte(next)); err != nil {
-		return err
-	}
 	rts := o.Runtimes
 	if len(rts) == 0 {
 		rts = []string{"cloud-hypervisor"}
 	}
-	_, _ = fmt.Fprintf(out, "→ kevasod restarted with the worker (%s). Its runtimes install now: kvo watch hosts\n", strings.Join(rts, ", "))
+	if err := installUnits(ctx, conn, UnitsFor(next, true, rts)); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(out, "→ kevasod restarted with the worker (%s), and its fence (%s). Its runtimes install now: kvo watch hosts\n", strings.Join(rts, ", "), FenceUnitName)
 	return nil
 }

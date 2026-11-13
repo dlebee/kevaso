@@ -312,6 +312,7 @@ func runWorker(ctx context.Context, args []string) error {
 	}
 	logger.Printf("joined %s as host %s", jc.Server, jc.HostName)
 	contact := &worker.Contact{}
+	contact.SetFence(true) // a worker only: the control plane is elsewhere and carries on without it
 	wc := worker.Config{HostName: jc.HostName, Runtimes: runtimes, DataDir: jc.DataDir, Clock: clock.Real{}, Log: logger.Printf,
 		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize}, Contact: contact, MeshSubnet: *withMesh, EgressExtraCA: *egressCA, GatewayScope: *gwScope}
 	rts, err := worker.NewRuntimes(wc)

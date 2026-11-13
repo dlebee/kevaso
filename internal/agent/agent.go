@@ -56,6 +56,10 @@ type Agent struct {
 	// its last contact and its silos' onHostLoss, for the fence watcher, which stops the movable
 	// ones when this agent can no longer vouch for them, running or not.
 	FenceDir string
+	// FenceApplies says whether this host needs fencing at all (fence.Applies: a second copy of
+	// its silos could be started elsewhere); known false: not decided yet (the last record's
+	// answer stands). Nil: always (a worker-only host).
+	FenceApplies func() (applies, known bool)
 	// GuestHelper is the kvo-guest binary copied into silos whose runtime has a broker channel
 	// (kevasod itself: it runs as kvo-guest by that name). Empty: no helper.
 	GuestHelper string
@@ -104,17 +108,28 @@ func (a *Agent) fenceAfter() time.Duration {
 
 // cutOff reports whether the host has gone too long without reaching the control plane.
 func (a *Agent) cutOff() bool {
-	if a.LastContact == nil {
+	if a.LastContact == nil || !a.fenceApplies() {
 		return false
 	}
 	last := a.LastContact()
 	return !last.IsZero() && a.Clock.Now().Sub(last) > a.fenceAfter()
 }
 
+// fenceApplies is FenceApplies, or what an earlier run recorded while it's undecided.
+func (a *Agent) fenceApplies() bool {
+	if a.FenceApplies == nil {
+		return true
+	}
+	if applies, known := a.FenceApplies(); known {
+		return applies
+	}
+	return a.fencePrev.Fence
+}
+
 // fenceRecord is what the fence watcher gets: the last contact, and this host's silos' policies
 // (once the silos are known; until then, what an earlier run recorded).
 func (a *Agent) fenceRecord() fence.Record {
-	r := fence.Record{Written: a.now().UTC(), LastContact: a.fencePrev.LastContact, Silos: a.fencePrev.Silos}
+	r := fence.Record{Written: a.now().UTC(), LastContact: a.fencePrev.LastContact, Fence: a.fenceApplies(), Silos: a.fencePrev.Silos}
 	if a.LastContact != nil {
 		if last := a.LastContact(); last.After(r.LastContact) {
 			r.LastContact = last.UTC()
