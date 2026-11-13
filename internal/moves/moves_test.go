@@ -175,3 +175,29 @@ func TestForceRelease(t *testing.T) {
 		t.Fatal("forced while still waiting on hv1's handoff")
 	}
 }
+
+// The old host's writes during a handoff: unmount its own volumes (LetGo), then let go
+// (Released, which also counts them unmounted). Nobody else's, and never from the new host.
+func TestLetGoAndReleased(t *testing.T) {
+	st := v1.SiloStatus{Host: "hv2", MovingFrom: "hv1", Phase: "Scheduled", Volumes: []v1.VolumeStatus{
+		{Name: "data", AttachedTo: "hv1", Mounted: true}, {Name: "shared", AttachedTo: "hv2", Mounted: true}}}
+	got, ok := LetGo(st, "hv1")
+	if !ok || got.Volumes[0].Mounted || !got.Volumes[1].Mounted || got.MovingFrom != "hv1" || got.Phase != "Scheduled" {
+		t.Fatalf("LetGo: %+v %v", got, ok)
+	}
+	if !st.Volumes[0].Mounted {
+		t.Fatal("LetGo changed its argument's volumes")
+	}
+	rel, ok := Released(st, "hv1")
+	if !ok || rel.MovingFrom != "" || rel.Volumes[0].Mounted || !rel.Volumes[1].Mounted {
+		t.Fatalf("Released: %+v %v", rel, ok)
+	}
+	for _, host := range []string{"hv2", "hv3"} {
+		if _, ok := LetGo(st, host); ok {
+			t.Errorf("LetGo by %s", host)
+		}
+		if _, ok := Released(st, host); ok {
+			t.Errorf("Released by %s", host)
+		}
+	}
+}

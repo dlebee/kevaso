@@ -507,7 +507,7 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	}
 	switch o.output {
 	case "json":
-		return printJSON(stdout, objs)
+		return printJSON(stdout, objs, len(o.args) < 2)
 	case "yaml":
 		return printYAML(stdout, objs)
 	case "", "wide":
@@ -520,11 +520,16 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	}
 }
 
-func printJSON(w io.Writer, objs []meta.Object) error {
+// printJSON prints one object (kvo get KIND NAME), or a list as an array, whatever its length,
+// so a script reads the same shape for none, one or many.
+func printJSON(w io.Writer, objs []meta.Object, list bool) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	if len(objs) == 1 {
+	if !list && len(objs) == 1 {
 		return enc.Encode(objs[0])
+	}
+	if objs == nil {
+		objs = []meta.Object{}
 	}
 	return enc.Encode(objs)
 }
