@@ -269,7 +269,12 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	for name, rt := range rts {
 		runtimes[name] = rt
 	}
-	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes}
+	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes,
+		RuntimeReady: func(name string) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return states[name].State == "Ready"
+		}}
 	if cfg.Contact != nil {
 		a.LastContact, a.FenceApplies = cfg.Contact.Last, cfg.Contact.Fence
 		if runtime.GOOS == "linux" {

@@ -47,6 +47,10 @@ type Agent struct {
 	Client   *client.Client
 	HostName string
 	Runtimes map[string]kri.Runtime // by name, e.g. "cloud-hypervisor"
+	// RuntimeReady says whether a runtime has finished installing (nil: all are). Until it has, its
+	// silos are neither made nor started: a microVM started before its runtime's storage is up
+	// fails, and a failed one stays failed.
+	RuntimeReady func(name string) bool
 	Clock    clock.Clock
 	Log      func(format string, args ...any)
 	// LastContact, if set, says when this host last reached the control plane. Past FenceAfter
@@ -334,6 +338,9 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			st.Phase = PhaseFailed
 			setCond(st, "Ready", meta.ConditionFalse, "RuntimeMissing", "runtime "+s.Spec.Runtime+" isn't installed on "+a.HostName, s.Generation, a.now())
 		})
+	}
+	if a.RuntimeReady != nil && !a.RuntimeReady(s.Spec.Runtime) {
+		return engine.Result{RequeueAfter: 2 * time.Second}, nil // still installing (a boot, a new host)
 	}
 	// Provider volumes first: attached by the control plane, formatted once and mounted here. Also
 	// after a reboot, before the silo starts again.
