@@ -73,7 +73,8 @@ func TestPrivilegedPluginUnit(t *testing.T) {
 			t.Errorf("controller unit lacks %q:\n%s", want, c)
 		}
 	}
-	for _, never := range []string{"PrivateDevices", "KillMode", "DynamicUser"} {
+	// …and sees /proc/sys: juicefs panics without /proc/sys/kernel/osrelease (first real install).
+	for _, never := range []string{"PrivateDevices", "KillMode", "DynamicUser", "ProcSubset"} {
 		if strings.Contains(c, never) {
 			t.Errorf("controller unit has %s:\n%s", never, c)
 		}

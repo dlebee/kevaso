@@ -95,8 +95,13 @@ func PluginUnit(o PluginOptions) string {
 	if !n.HostMounts { // everything that needs a mount namespace of its own
 		for _, l := range []string{"ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes",
 			"ProtectKernelTunables=yes", "ProtectKernelModules=yes", "ProtectKernelLogs=yes", "ProtectControlGroups=yes",
-			"ProtectHostname=yes", "ProtectProc=invisible", "ProcSubset=pid"} {
+			"ProtectHostname=yes", "ProtectProc=invisible"} {
 			w("%s", l)
+		}
+		if !n.Mounts() {
+			// A side that mounts runs a file-system daemon (juicefs), which reads /proc/sys
+			// (kernel.osrelease, fs limits) and panics without it.
+			w("ProcSubset=pid")
 		}
 		if len(n.Devices) == 0 {
 			w("PrivateDevices=yes")
