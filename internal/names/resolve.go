@@ -8,7 +8,7 @@ import (
 	"kevaso.com/core/internal/routing"
 )
 
-// Asker is who asks a name, known by where the question arrived (design §7.0, ADR 0009 §5).
+// Asker is who asks a name, known by where the question arrived (design §7.0, ADR 0010 §5).
 type Asker int
 
 const (

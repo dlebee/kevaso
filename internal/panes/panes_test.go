@@ -10,7 +10,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 )
 
-var on = &v1.PaneConfig{Enabled: true, Allow: []string{"status", "html"}, MaxPanes: 2}
+var on = &v1.PaneConfig{HTTP: &v1.PaneHTTP{Port: 7070}, Allow: []string{"status", "html"}, MaxPanes: 2}
 
 func status() v1.PaneReport {
 	p := 0.57
@@ -26,7 +26,7 @@ func TestCheck(t *testing.T) {
 	if err := Check(on, html, nil, Defaults); err != nil {
 		t.Fatal(err)
 	}
-	if err := Check(&v1.PaneConfig{Enabled: true}, html, nil, Defaults); !errors.Is(err, ErrKind) {
+	if err := Check(&v1.PaneConfig{HTTP: &v1.PaneHTTP{Port: 7070}}, html, nil, Defaults); !errors.Is(err, ErrKind) {
 		t.Fatalf("html when only status is allowed (the default): %v", err)
 	}
 	for name, tc := range map[string]struct {

@@ -222,7 +222,7 @@ Design §7: untrusted silos get a striped rim. Where "untrusted" comes from:
 **Proposal for the orchestrator (no Go API change made):**
 
 1. Make `kevaso.com/trust` a reserved label: settable only by someone who may update the Silo (it is
-   today), never by credentials the silo itself holds (kvo-guest's pane reports write Pane objects
+   today), never by credentials the silo itself holds (the panes its host fetches write Pane objects
    only; keep it that way), and documented next to `kevaso.com/protected`.
 2. Optionally, have the control plane copy it into the Pane object's server-set fields (say
    `status.siloTrust: untrusted`) when it stores a report, so a client that may read panes but not

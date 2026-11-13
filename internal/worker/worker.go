@@ -12,10 +12,12 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -283,11 +285,13 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	if runtime.GOOS == "linux" {
 		a.Host = hostexec.Local{} // provider volumes: format once, mount
 	}
-	if exe, err := os.Executable(); err == nil && runtime.GOOS == "linux" {
-		a.GuestHelper = exe // kevasod itself: in a silo, as kvo-guest
-	}
 	if egressCA != nil {
-		a.GuestCA = egressCA.PEM
+		a.EgressCA = egressCA.PEM
+	}
+	for _, rt := range rts {
+		if usesBridge(rt) && runtime.GOOS == "linux" { // the local endpoint, on the silo bridge (ADR 0009)
+			a.EndpointListen = net.JoinHostPort(v1.EndpointAddress, strconv.Itoa(v1.EndpointPort))
+		}
 	}
 	a.Run(ctx)
 }

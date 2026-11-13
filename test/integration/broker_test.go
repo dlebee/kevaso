@@ -1,37 +1,16 @@
 package integration
 
 import (
-	"context"
 	"crypto/ed25519"
 	"encoding/hex"
-	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"kevaso.com/core/api/client"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/agent"
-	"kevaso.com/core/internal/guest"
-	"kevaso.com/core/sdk/kri"
 )
-
-// channels stands in for a runtime's per-silo vsock: one unix socket per silo.
-type channels struct{ dir string }
-
-func (c channels) BrokerListen(id kri.ID, _ uint32) (net.Listener, error) {
-	return net.Listen("unix", filepath.Join(c.dir, id.UID+".sock"))
-}
-
-func (c channels) dialer(uid string) guest.Dialer {
-	return func(ctx context.Context) (net.Conn, error) {
-		var d net.Dialer
-		return d.DialContext(ctx, "unix", filepath.Join(c.dir, uid+".sock"))
-	}
-}
 
 func (c *cluster) host(t *testing.T, name string) *client.Client {
 	t.Helper()
@@ -103,125 +82,76 @@ func TestBroker(t *testing.T) {
 	locked := place("locked", "hv1", "confidential-only")
 	elsewhere := place("elsewhere", "hv2", "app")
 
-	dir, _ := os.MkdirTemp("/tmp", "kvb") // unix socket paths are short on macOS
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	ch := channels{dir}
-	hv1 := &agent.Broker{Client: c.host(t, "hv1")}
-	ctx, cancel := context.WithCancel(c.ctx)
-	defer cancel()
+	eps := c.endpoints(t, "hv1")
 	for _, s := range []*v1.Silo{node, other, locked, elsewhere} { // hv1 serves them all, even the one on hv2
-		if err := hv1.Ensure(ctx, ch, kri.ID{Namespace: s.Namespace, Name: s.Name, UID: s.UID}); err != nil {
-			t.Fatal(err)
-		}
+		eps.add(t, s)
 	}
-	call := func(s *v1.Silo, req client.BrokerRequest) (client.BrokerResponse, error) {
-		return guest.Call(ctx, ch.dialer(s.UID), req)
-	}
+	get := func(s *v1.Silo, path string) epAnswer { return eps.call(t, s, http.MethodGet, path, nil) }
 
 	// The node gets its broker secret; the same name from another silo is "no secret", like a
-	// name that doesn't exist.
-	r, err := call(node, client.BrokerRequest{Op: client.OpGetSecret, Name: "db-password"})
-	if err != nil || string(r.Value) != "pw-1" || r.Version != 1 {
-		t.Fatalf("node get db-password: %q %v", r.Value, err)
+	// name that doesn't exist, word for word.
+	if a := get(node, "/v1/secrets/db-password"); a.code != 200 || a.body != "pw-1" || a.header.Get("Kevaso-Version") != "1" {
+		t.Fatalf("node get db-password: %d %q", a.code, a.body)
 	}
-	_, errOther := call(other, client.BrokerRequest{Op: client.OpGetSecret, Name: "db-password"})
-	_, errMissing := call(node, client.BrokerRequest{Op: client.OpGetSecret, Name: "does-not-exist"})
-	if errOther == nil || errMissing == nil || strings.ReplaceAll(errOther.Error(), "db-password", "X") != strings.ReplaceAll(errMissing.Error(), "does-not-exist", "X") {
-		t.Fatalf("not granted vs missing must look the same: %v / %v", errOther, errMissing)
+	aOther, aMissing := get(other, "/v1/secrets/db-password"), get(node, "/v1/secrets/does-not-exist")
+	if aOther.code != 404 || aMissing.code != 404 || strings.ReplaceAll(aOther.msg(), "db-password", "X") != strings.ReplaceAll(aMissing.msg(), "does-not-exist", "X") {
+		t.Fatalf("not granted vs missing must look the same: %d %q / %d %q", aOther.code, aOther.msg(), aMissing.code, aMissing.msg())
 	}
-	// Injected secrets never go to the silo, nor do signing keys.
-	if _, err := call(node, client.BrokerRequest{Op: client.OpGetSecret, Name: "infura-key"}); err == nil {
-		t.Fatal("an inject-only secret reached the silo")
+	// Injected secrets never go to the silo, nor do signing keys, nor (now that the host writes
+	// them) file and env secrets.
+	for _, name := range []string{"infura-key", "validator-1-key", "tls-key", "legacy-token"} {
+		if a := get(node, "/v1/secrets/"+name); a.code != 404 {
+			t.Fatalf("%s reached the silo through its endpoint: %d %q", name, a.code, a.body)
+		}
 	}
-	if _, err := call(node, client.BrokerRequest{Op: client.OpGetSecret, Name: "validator-1-key"}); err == nil {
-		t.Fatal("a signing key reached the silo")
-	}
-	// The gate's op isn't something a silo can ask for.
-	if _, err := call(node, client.BrokerRequest{Op: client.OpInjections}); err == nil || !strings.Contains(err.Error(), "unknown op") {
-		t.Fatalf("silo asking for injections: %v", err)
+	// The host's own ops aren't routes a silo has.
+	for _, path := range []string{"/v1/injections", "/v1/deliveries", "/v1/delivery-values", "/v1/panes"} {
+		if a := get(node, path); a.code != 404 {
+			t.Fatalf("silo reached %s: %d", path, a.code)
+		}
 	}
 	// Assurance: a grant needing a confidential VM gives nothing to a host-assured silo.
-	if _, err := call(locked, client.BrokerRequest{Op: client.OpGetSecret, Name: "db-password"}); err == nil {
-		t.Fatal("confidential-only grant served a host-assured silo")
+	if a := get(locked, "/v1/secrets/db-password"); a.code != 404 {
+		t.Fatalf("confidential-only grant served a host-assured silo: %d", a.code)
 	}
 	// A host only gets secrets for silos placed on it.
-	if _, err := call(elsewhere, client.BrokerRequest{Op: client.OpGetSecret, Name: "db-password"}); err == nil || !strings.Contains(err.Error(), "no access") {
-		t.Fatalf("hv1 fetching for a silo on hv2: %v", err)
+	if a := get(elsewhere, "/v1/secrets/db-password"); a.code != 404 || !strings.Contains(a.msg(), "no access") {
+		t.Fatalf("hv1 fetching for a silo on hv2: %d %q", a.code, a.body)
 	}
 
 	// Sign: verifiable with the public key; slashing protection; no slot, no signature.
-	pk, err := call(node, client.BrokerRequest{Op: client.OpPublicKey, Name: "validator-1-key"})
-	if err != nil {
-		t.Fatal(err)
+	pk := get(node, "/v1/keys/validator-1-key")
+	if pk.code != 200 {
+		t.Fatalf("public key: %d %s", pk.code, pk.body)
 	}
-	pub, _ := hex.DecodeString(pk.PublicKey)
-	slot := int64(7)
-	sig, err := call(node, client.BrokerRequest{Op: client.OpSign, Name: "validator-1-key", Payload: []byte("block 7"), Slot: &slot})
-	if err != nil || !ed25519.Verify(pub, []byte("block 7"), sig.Signature) {
-		t.Fatalf("sign: %v", err)
+	pub, _ := hex.DecodeString(strings.TrimSpace(pk.body))
+	sig := eps.call(t, node, http.MethodPost, "/v1/sign/validator-1-key?slot=7", []byte("block 7"))
+	sigBytes, _ := hex.DecodeString(strings.TrimSpace(sig.body))
+	if sig.code != 200 || !ed25519.Verify(pub, []byte("block 7"), sigBytes) {
+		t.Fatalf("sign: %d %s", sig.code, sig.body)
 	}
-	if _, err := call(node, client.BrokerRequest{Op: client.OpSign, Name: "validator-1-key", Payload: []byte("block 7, other"), Slot: &slot}); err == nil || !strings.Contains(err.Error(), "slashing") {
-		t.Fatalf("equivocation: %v", err)
+	if a := eps.call(t, node, http.MethodPost, "/v1/sign/validator-1-key?slot=7", []byte("block 7, other")); a.code != 409 || !strings.Contains(a.msg(), "slashing") {
+		t.Fatalf("equivocation: %d %s", a.code, a.body)
 	}
-	if _, err := call(other, client.BrokerRequest{Op: client.OpSign, Name: "validator-1-key", Payload: []byte("x"), Slot: &slot}); err == nil {
-		t.Fatal("a silo without the grant signed")
-	}
-
-	// File and env deliveries through the helper, into a fake root.
-	root := t.TempDir()
-	sy := &guest.Syncer{Dial: ch.dialer(node.UID), Root: root, Log: t.Logf}
-	if err := sy.SyncOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	b, err := os.ReadFile(filepath.Join(root, "run/secrets/tls.pem"))
-	if err != nil || string(b) != "-----BEGIN KEY-----" {
-		t.Fatalf("file delivery: %q %v", b, err)
-	}
-	if fi, _ := os.Stat(filepath.Join(root, "run/secrets/tls.pem")); fi.Mode().Perm() != 0o400 {
-		t.Fatalf("delivered file mode %v", fi.Mode().Perm())
-	}
-	env, _ := os.ReadFile(filepath.Join(root, guest.EnvFile))
-	if string(env) != "LEGACY_TOKEN='tok'\\''en'\n" {
-		t.Fatalf("env delivery: %q", env)
+	if a := eps.call(t, other, http.MethodPost, "/v1/sign/validator-1-key?slot=7", []byte("x")); a.code != 404 {
+		t.Fatalf("a silo without the grant signed: %d", a.code)
 	}
 
-	// Rotation: watchers hear about it; the next sync writes the new value; a delivery that's
-	// gone is removed.
-	wc, err := ch.dialer(node.UID)(ctx)
-	if err != nil {
-		t.Fatal(err)
+	// File and env secrets: the host asks for them for its own silo (with their values), never a silo.
+	hv1 := c.host(t, "hv1")
+	var dv client.BrokerResponse
+	if err := hv1.Call(c.ctx, http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{Namespace: "web3", Name: "node", UID: node.UID,
+		Request: client.BrokerRequest{Op: client.OpDeliveryValues}}, &dv); err != nil || dv.Error != "" {
+		t.Fatalf("delivery values: %v %s", err, dv.Error)
 	}
-	defer func() { _ = wc.Close() }()
-	_, _ = wc.Write([]byte(`{"op":"watch"}` + "\n"))
-	buf := make([]byte, 4096)
-	_ = wc.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if n, err := wc.Read(buf); err != nil || !strings.Contains(string(buf[:n]), "ready") {
-		t.Fatalf("watch: %q %v", buf[:n], err)
+	if len(dv.Deliveries) != 2 || string(dv.Deliveries[0].Value) != "-----BEGIN KEY-----" || dv.Deliveries[0].Path != "/run/secrets/tls.pem" ||
+		string(dv.Deliveries[1].Value) != "tok'en" || dv.Deliveries[1].Env != "LEGACY_TOKEN" {
+		t.Fatalf("delivery values: %+v", dv.Deliveries)
 	}
-	var tls v1.Secret
-	_ = c.admin.Get(c.ctx, "Secret", "web3", "tls-key", &tls)
-	tls.Spec.Value = []byte("-----BEGIN KEY v2-----")
-	if err := c.admin.Update(c.ctx, &tls); err != nil {
-		t.Fatal(err)
-	}
-	hv1.Notify("web3", "node", "tls-key") // the agent's informers do this on the real host
-	if n, err := wc.Read(buf); err != nil || !strings.Contains(string(buf[:n]), `"changed"`) {
-		t.Fatalf("watch after rotation: %q %v", buf[:n], err)
-	}
-	var g v1.Grant
-	_ = c.admin.Get(c.ctx, "Grant", "web3", "app", &g)
-	g.Spec.Secrets = g.Spec.Secrets[:2] // drop legacy-token's env delivery
-	if err := c.admin.Update(c.ctx, &g); err != nil {
-		t.Fatal(err)
-	}
-	if err := sy.SyncOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := os.ReadFile(filepath.Join(root, "run/secrets/tls.pem")); string(b) != "-----BEGIN KEY v2-----" {
-		t.Fatalf("after rotation: %q", b)
-	}
-	if _, err := os.Stat(filepath.Join(root, guest.EnvFile)); !os.IsNotExist(err) {
-		t.Fatal("env file kept after the delivery went")
+	var dv2 client.BrokerResponse
+	if err := hv1.Call(c.ctx, http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{Namespace: "web3", Name: "elsewhere", UID: elsewhere.UID,
+		Request: client.BrokerRequest{Op: client.OpDeliveryValues}}, &dv2); err != nil || dv2.Error == "" || len(dv2.Deliveries) != 0 {
+		t.Fatalf("hv1 got another host's silo's file secrets: %+v %v", dv2, err)
 	}
 
 	// Every broker call is in the audit log, as the silo, allowed or not.
@@ -238,7 +168,7 @@ func TestBroker(t *testing.T) {
 			}
 		}
 	}
-	if allowed < 5 || denied < 6 {
+	if allowed < 4 || denied < 9 {
 		t.Fatalf("audit: %d allowed, %d denied broker calls", allowed, denied)
 	}
 }

@@ -2,7 +2,7 @@
 
 **Status:** accepted · **Date:** 2026-11-12
 
-> **Note (2026-11-13):** ADR 0009 replaces a host's one address with its internal and external IPs; plugins are told both, and a port's client ranges are `sources`.
+> **Note (2026-11-13):** ADR 0010 replaces a host's one address with its internal and external IPs; plugins are told both, and a port's client ranges are `sources`.
 
 ## Decision
 

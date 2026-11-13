@@ -58,7 +58,7 @@ type Config struct {
 	HostName    string // this host's name
 	// InternalIP and ExternalIP are this host's addresses (design §7.0: at least one), put on its
 	// Host object and in the server certificate; other hosts reach it at its external IP if it has
-	// one, else its internal IP (Reach; ADR 0009).
+	// one, else its internal IP (Reach; ADR 0010).
 	InternalIP string
 	ExternalIP string
 	// DNSSuffix is the cluster's names' last label ("": kevaso), published on this host's status.

@@ -2,7 +2,7 @@
 
 **Status:** accepted · **Date:** 2026-11-13
 
-> **Note (2026-11-13):** `Host.Spec.Address` is gone (ADR 0009): peers use the host's reach address, its external IP if it has one, else its internal IP.
+> **Note (2026-11-13):** `Host.Spec.Address` is gone (ADR 0010): peers use the host's reach address, its external IP if it has one, else its internal IP.
 
 ## Context
 

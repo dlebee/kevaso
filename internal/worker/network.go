@@ -59,6 +59,7 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 			}
 		}
 		ks.GatePorts = gate.PolicyFor(s, grants).Ports()
+		ks.Endpoint = v1.NeedsEndpoint(s, grants)
 		ks.Held = !routing.Routed(s) // routeWhen (design §0.6): no outside rule while held
 		ks.Paths = paths[ks.Key]
 		view.Local = append(view.Local, ks)
@@ -211,6 +212,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		go eg.run(ctx)
 		gatePort = GatePort
 	}
+	endpointAddr := netip.MustParseAddr(v1.EndpointAddress) // the silos' local endpoint, on the bridge (ADR 0009)
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	last := ""
@@ -234,6 +236,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		svcs := currentServices()
 		view := NetworkView(hostName, me, all, currentGrants(), WithIngressPaths(all, svcs, ings, classes))
 		view.GatePort = gatePort
+		view.Endpoint = endpointAddr
 		view.Services = ServiceView(hostName, svcs)
 		now, ls := time.Now(), currentLeases()
 		view = WithLeases(view, all, ls, now)
@@ -257,6 +260,9 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		}
 		if err := syncAddresses(ctx, "lo", "lo:kv", AnnouncedAddresses(hostName, all)); err != nil {
 			log("announced addresses: %v", err)
+		}
+		if err := syncAddresses(ctx, cloudhypervisor.Bridge, cloudhypervisor.Bridge+":kv", []string{v1.EndpointAddress}); err != nil {
+			log("the local endpoint's address: %v", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -402,7 +408,7 @@ func WithIngressPaths(silos []*v1.Silo, svcs []*v1.Service, ingresses []*v1.Ingr
 	return out
 }
 
-// DNSListeners are where a host answers names, and who asks on each (ADR 0009 §5): its silos'
+// DNSListeners are where a host answers names, and who asks on each (ADR 0010 §5): its silos'
 // gateway (silos) and its mesh IP (hosts) always; its internal IP (machines on its network) and
 // external IP (anyone) only when its spec.network.dns lists them. Pure.
 func DNSListeners(h *v1.Host) map[string]names.Asker {

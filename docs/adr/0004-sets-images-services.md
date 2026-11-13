@@ -2,7 +2,7 @@
 
 **Status:** accepted · **Date:** 2026-11-12 (images for disks only, private registries: 2026-11-13)
 
-> **Note (2026-11-13):** ADR 0009 changes the shapes this one states: ports are declared in `spec.ports` and opened per service port; `allowFrom` lives on the service port; a Service's `targetPort` names a declared port; `publicIP` is `loadBalancerIP`.
+> **Note (2026-11-13):** ADR 0010 changes the shapes this one states: ports are declared in `spec.ports` and opened per service port; `allowFrom` lives on the service port; a Service's `targetPort` names a declared port; `publicIP` is `loadBalancerIP`.
 
 ## Decision
 

@@ -155,7 +155,13 @@ func Materialize(t *testing.T, p kic.Plan, dir string, moves ...string) string {
 	t.Helper()
 	cfg := string(p.Config.Data)
 	for _, m := range append([]string{p.Dir}, moves...) {
-		cfg = strings.ReplaceAll(cfg, m, filepath.Join(dir, strings.ReplaceAll(strings.Trim(m, "/"), "/", "_")))
+		to := filepath.Join(dir, strings.ReplaceAll(strings.Trim(m, "/"), "/", "_"))
+		cfg = strings.ReplaceAll(cfg, m, to)
+		if filepath.Ext(m) == "" { // a folder (logs): the proxy opens files in it, so it has to exist
+			if err := os.MkdirAll(to, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	for _, f := range p.Files {
 		rel := strings.ReplaceAll(strings.Trim(p.Dir, "/"), "/", "_")

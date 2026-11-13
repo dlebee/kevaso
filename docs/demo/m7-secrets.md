@@ -90,17 +90,17 @@ bin/kvo exec silo agent -n dev -- curl -s --max-time 5 https://example.com
 
 Nothing: no grant names example.com, and silos reach nothing outside without one.
 
-## 5. The broker, over vsock
+## 5. The local endpoint, and a file the host wrote
 
 ```bash
-bin/kvo exec silo agent -n dev -- sh -c 'kvo-guest secret get db-password; echo; cat /run/secrets/db; echo; kvo-guest secret get api-key'
+bin/kvo exec silo agent -n dev -- sh -c 'curl -sS -H "Kevaso-Local: 1" http://169.254.42.1/v1/secrets/db-password; echo; cat /run/secrets/db; echo; curl -sS -H "Kevaso-Local: 1" http://169.254.42.1/v1/secrets/api-key'
 ```
 
-The password twice (asked for, and as a tmpfs file), then `no secret "api-key" for this silo`:
-injected secrets never come into the silo.
+The password twice (asked for, and as a tmpfs file the host wrote), then
+`{"error":"no secret \"api-key\" for this silo"}`: injected secrets never come into the silo.
 
 ```bash
-bin/kvo exec silo agent -n dev -- sh -c "printf 'transfer 10 to alice' | kvo-guest sign validator-key"
+bin/kvo exec silo agent -n dev -- sh -c "printf 'transfer 10 to alice' | curl -sS -H 'Kevaso-Local: 1' --data-binary @- http://169.254.42.1/v1/sign/validator-key"
 ```
 
 A signature; the key stayed on the control plane.
@@ -123,7 +123,7 @@ A new master key and a new recovery key, printed once: the old recovery key open
 up from now on. The secrets didn't change, and the silo didn't notice:
 
 ```bash
-bin/kvo exec silo agent -n dev -- kvo-guest secret get db-password
+bin/kvo exec silo agent -n dev -- curl -sS -H 'Kevaso-Local: 1' http://169.254.42.1/v1/secrets/db-password
 ```
 
 ## 8. Clean up

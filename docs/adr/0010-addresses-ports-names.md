@@ -1,4 +1,4 @@
-# ADR 0009: Addresses, ports, services and names (the sealed model)
+# ADR 0010: Addresses, ports, services and names (the sealed model)
 
 **Status:** accepted · **Date:** 2026-11-13 · **Implements:** design §7.0 · **Supersedes:** a host's
 one `spec.address`; `expose: private|hostPort|loadBalancer`; the `hostPort` block; CIDRs in

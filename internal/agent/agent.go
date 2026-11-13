@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,11 +62,12 @@ type Agent struct {
 	// its silos could be started elsewhere); known false: not decided yet (the last record's
 	// answer stands). Nil: always (a worker-only host).
 	FenceApplies func() (applies, known bool)
-	// GuestHelper is the kvo-guest binary copied into silos whose runtime has a broker channel
-	// (kevasod itself: it runs as kvo-guest by that name). Empty: no helper.
-	GuestHelper string
-	// GuestCA is the host's egress CA, put in every silo's trust store with the helper.
-	GuestCA []byte
+	// EgressCA is the host's egress CA: the agent puts it in the trust store of the VM silos whose
+	// grants inject (containers get the runtime's read-only bundle).
+	EgressCA []byte
+	// EndpointListen, if set, is where the agent serves its silos' local endpoint (ADR 0009:
+	// 169.254.42.1:80 on the silo bridge).
+	EndpointListen string
 	// Host runs commands on the host, for provider volumes (format once, mount); nil: this host
 	// can't mount them. VolumesDir is where they go (default DefaultVolumesDir).
 	Host       hostexec.Runner
@@ -99,8 +101,11 @@ type Agent struct {
 	fenceMu     sync.Mutex   // the record: built and written by one at a time
 	recorded    map[string]fence.Silo
 	goneChecked time.Time
-	broker      *Broker
-	prepared    sync.Map // silo uid → struct{}: the guest helper is in place for this agent's run
+	endpoint    *Endpoint
+	delivered   sync.Map // silo uid → delivered: its file and env secrets as this agent last wrote them
+	paneRuns    sync.Map // silo uid → paneRun: its pane fetcher
+	panesMu     sync.Mutex
+	runCtx      context.Context
 	kept        sync.Map // silo uid → keptState: its daemons and upkeep as this agent last decided
 	probed      sync.Map // silo uid → probeState: its probes as this agent last decided
 	// nodeMounts: volume path → handle, mounted here by a node side during this agent's run.
@@ -214,7 +219,11 @@ func idOf(s *v1.Silo) kri.ID { return kri.ID{Namespace: s.Namespace, Name: s.Nam
 func (a *Agent) Run(ctx context.Context) {
 	a.silos = informer.New(a.Client, "Silo")
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
-	a.broker = &Broker{Client: a.Client, HostName: a.HostName, Log: a.Log}
+	a.runCtx = ctx
+	a.endpoint = &Endpoint{Client: a.Client, HostName: a.HostName, Log: a.Log}
+	if a.EndpointListen != "" {
+		go a.endpoint.ServeEndpoint(ctx, a.EndpointListen)
+	}
 	e := engine.New(a.Clock)
 	a.engine = e
 	e.OnError = func(_ string, k engine.Key, err error, retry time.Duration) {
@@ -223,8 +232,8 @@ func (a *Agent) Run(ctx context.Context) {
 	e.Register(a, engine.Options{Workers: 4})
 	a.silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	go a.silos.Run(ctx)
-	// Rotation fan-out: a secret or grant changing tells the guest helpers of the silos here that
-	// receive it.
+	// Rotation fan-out: a secret or grant changing looks again at every silo here that receives
+	// it (its files and env vars are written again, its endpoint and policy follow its grants).
 	for kind, inf := range map[string]*informer.Informer{"Secret": a.secrets, "Grant": a.grants} {
 		inf.AddHandler(func(k informer.Key) { a.fanOut(kind, k.Namespace, k.Name) })
 		go inf.Run(ctx)
@@ -416,6 +425,7 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		if err := a.recordForFence(s); err != nil {
 			return engine.Result{}, err
 		}
+		a.delivered.Delete(s.UID) // a fresh boot: an empty /run, its secrets are written again
 		// Every start begins its probes afresh: startup's deadline counts from this boot.
 		a.probed.Delete(s.UID)
 		if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Probes, st.StartedAt = nil, nil }); err != nil {
@@ -438,7 +448,8 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	}
 
 	// Running: its guest mounts its volumes (VMs), the silo's policy (runtimes that enforce grants
-	// themselves), the broker channel and the guest helper, then init steps, then Ready.
+	// themselves), its local endpoint, its file and env secrets (written by the host), then init
+	// steps, then Ready. Its panes are fetched while it runs.
 	if err := a.mountGuestVolumes(ctx, rt, s, vols); err != nil {
 		return engine.Result{}, err
 	}
@@ -447,16 +458,13 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			return engine.Result{}, err
 		}
 	}
-	if br, ok := rt.(kri.Broker); ok {
-		if err := a.broker.Ensure(ctx, br, id); err != nil {
-			return engine.Result{}, fmt.Errorf("broker channel: %w", err)
-		}
-		if rt.Info().Capabilities.Isolation == "vm" { // containers get only the broker socket and the CA bundle
-			if err := a.prepareGuest(ctx, rt, s); err != nil {
-				return engine.Result{}, err
-			}
-		}
+	if err := a.keepEndpoint(ctx, rt, s, rs.Address); err != nil {
+		return engine.Result{}, err
 	}
+	if err := a.deliver(ctx, rt, s); err != nil {
+		return engine.Result{}, err
+	}
+	a.keepPanes(ctx, s, rs.Address)
 	if done, err := a.runInit(ctx, rt, s); err != nil || !done {
 		return engine.Result{}, err
 	}
@@ -605,7 +613,7 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		})
 		return true, fmt.Errorf("reset onto %s: %w", image, err)
 	}
-	a.prepared.Delete(s.UID) // a fresh disk: the guest helper goes in again, and its mounts
+	a.delivered.Delete(s.UID) // a fresh disk: its secrets and CA are written again, and its mounts
 	a.guestMounted.Delete(s.UID)
 	a.log("silo %s/%s: reset onto %s (%s)", s.Namespace, s.Name, image, what)
 	return true, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
@@ -804,10 +812,11 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			}
 			a.heldBack.Delete(id.UID)
 			a.log("removing %s from %s", id, rt.Info().Name)
-			if a.broker != nil {
-				a.broker.Close(id.UID)
+			if a.endpoint != nil {
+				a.endpoint.Unregister(id.UID)
 			}
-			a.prepared.Delete(id.UID)
+			a.stopPanes(id.UID)
+			a.delivered.Delete(id.UID)
 			a.guestMounted.Delete(id.UID)
 			a.kept.Delete(id.UID)
 			if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
@@ -838,7 +847,7 @@ func hostLocalVolumes(s *v1.Silo) []string {
 	return out
 }
 
-// fanOut notifies the local silos a changed secret or grant reaches.
+// fanOut looks again at the local silos a changed secret or grant reaches.
 func (a *Agent) fanOut(kind, namespace, name string) {
 	var local []*v1.Silo
 	for _, o := range a.silos.List() {
@@ -851,8 +860,7 @@ func (a *Agent) fanOut(kind, namespace, name string) {
 		grants = append(grants, o.(*v1.Grant))
 	}
 	for _, s := range Affected(local, grants, kind, namespace, name) {
-		a.broker.Notify(s.Namespace, s.Name, name)
-		if a.engine != nil { // runtimes that enforce grants themselves get the new policy
+		if a.engine != nil {
 			a.engine.Changed(engine.Key{Kind: "Silo", Namespace: s.Namespace, Name: s.Name})
 		}
 	}
@@ -894,3 +902,55 @@ func (a *Agent) applyPolicy(ctx context.Context, rt kri.Policied, s *v1.Silo) er
 }
 
 var _ engine.Controller = (*Agent)(nil)
+
+// keepEndpoint registers the silo with its host's local endpoint while one of its grants needs it
+// (ADR 0009), at the address its runtime gave it, and forgets it otherwise. Runtimes that enforce
+// grants themselves (OpenShell) have no ordinary network to reach it by: a silo there that would
+// need it says so in LocalEndpoint.
+func (a *Agent) keepEndpoint(ctx context.Context, rt kri.Runtime, s *v1.Silo, address string) error {
+	needs := v1.NeedsEndpoint(s, a.grantList())
+	addr, err := netip.ParseAddr(address)
+	_, policied := rt.(kri.Policied)
+	status, reason, msg := meta.ConditionTrue, "Serving", "http://"+v1.EndpointAddress+" (header "+v1.EndpointHeader+": 1)"
+	switch {
+	case !needs:
+		a.endpoint.Unregister(s.UID)
+		if findCond(s.Status.Conditions, "LocalEndpoint") == nil {
+			return nil
+		}
+		return a.setStatus(ctx, s, func(st *v1.SiloStatus) { removeCondition(st, "LocalEndpoint") })
+	case policied:
+		a.endpoint.Unregister(s.UID)
+		status, reason, msg = meta.ConditionFalse, "NotSupported", "runtime "+s.Spec.Runtime+" has no local endpoint yet: broker secrets, signing and port leases aren't reachable from this silo"
+	case err != nil:
+		a.endpoint.Unregister(s.UID)
+		status, reason, msg = meta.ConditionFalse, "NoAddress", "the runtime gave the silo no address"
+	default:
+		a.endpoint.Register(addr, idOf(s))
+	}
+	if c := findCond(s.Status.Conditions, "LocalEndpoint"); c != nil && c.Status == status && c.Reason == reason && c.Message == msg {
+		return nil // as it says already
+	}
+	return a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+		setCond(st, "LocalEndpoint", status, reason, msg, s.Generation, a.now())
+	})
+}
+
+func findCond(cs []meta.Condition, typ string) *meta.Condition {
+	for i := range cs {
+		if cs[i].Type == typ {
+			return &cs[i]
+		}
+	}
+	return nil
+}
+
+func removeCondition(st *v1.SiloStatus, typ string) {
+	out := st.Conditions[:0]
+	for _, c := range st.Conditions {
+		if c.Type != typ {
+			out = append(out, c)
+		}
+	}
+	st.Conditions = out
+}

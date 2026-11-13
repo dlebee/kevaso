@@ -181,7 +181,7 @@ func (h *Host) Internal() string {
 func (h *Host) External() string { return h.Spec.ExternalIP }
 
 // Reach is where other hosts reach this one (the mesh's WireGuard endpoint, the API and store
-// peer URLs): its external IP if it has one, else its internal IP (ADR 0009).
+// peer URLs): its external IP if it has one, else its internal IP (ADR 0010).
 func (h *Host) Reach() string {
 	if h.Spec.ExternalIP != "" {
 		return h.Spec.ExternalIP

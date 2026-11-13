@@ -454,7 +454,7 @@ func SSHKey(dir string) (ssh.Signer, []byte, error) {
 }
 
 // Reach is where other hosts reach this machine: its external IP if it has one, else its internal
-// IP, else the SSH address (ADR 0009).
+// IP, else the SSH address (ADR 0010).
 func (o InitOptions) Reach() string {
 	switch {
 	case o.ExternalIP != "":

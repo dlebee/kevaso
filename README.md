@@ -32,7 +32,7 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   by the control plane (each its own silo subnet; boxes behind NAT reach each other through a relay,
   end-to-end encrypted inside it, so the relay sees only UDP). Placement by region/zone, host
   leases, `onHostLoss: Wait | Recreate` with agent-side fencing, `kvoadm host drain / uncordon / list`;
-- addresses, ports and names (ADR 0009): a host has an internal and/or an external IP; a silo
+- addresses, ports and names (ADR 0010): a host has an internal and/or an external IP; a silo
   declares its ports (`spec.ports`) and its service (`spec.service`) opens them, port by port: to
   other silos on its silo IP (`allowFrom`), on its host's internal or external IP (`hostPort`,
   `as`, `sources`), or on a load balancer (`ip-pool` from a host's extra addresses, or a plugin's
@@ -46,9 +46,10 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
 - secrets: `Secret` values sealed with envelope encryption under a local KMS (a recovery key printed
   once by `kvoadm init`), never returned by reads; `Grant`s say what a silo may reach and use.
   Silos reach nothing outside the cluster without one. API keys are **injected** at the host's
-  egress gate, so they never enter the silo; other secrets come over the silo's own vsock channel
-  (`kvo-guest secret get`, tmpfs files, env for legacy apps); signing keys stay outside (`Sign`,
-  with slashing protection). Per-secret RBAC (`list`, `use`, `read-value`, `write`, by name or
+  egress gate, so they never enter the silo; other secrets are written into the silo's tmpfs by its
+  host (files, env for legacy apps) or fetched on demand from a plain HTTP endpoint only that silo
+  reaches (`curl -H 'Kevaso-Local: 1' http://169.254.42.1/v1/secrets/NAME`, ADR 0009); nothing of
+  Kevaso's is installed in a silo; signing keys stay outside (`Sign`, with slashing protection). Per-secret RBAC (`list`, `use`, `read-value`, `write`, by name or
   label), write-only secrets, and rotation that reaches every silo using a secret;
 - OpenShell runtimes: `runtime: openshell` (NVIDIA OpenShell's microVM, no network card) and
   `openshell-container` (its Docker driver, no KVM needed). kevasod installs the pinned release and runs
@@ -58,7 +59,8 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   OpenShell can't do (services, address ranges, UDP, file/env/broker/sign) is refused when you apply;
 - container runtimes: `runtime: docker` / `podman` on the same silo bridge as the VMs (firewall,
   default-deny egress, exposure and the egress gate apply unchanged), init steps as init containers,
-  volumes that persist, the broker over a socket of their own;
+  volumes that persist, the same local endpoint as VMs, and a tmpfs `/run` for the secrets the
+  host writes;
 - HTTPS: an ingress controller is a silo running a stock proxy (nginx, Caddy, Kong) exactly as its
   vendor ships it, driven from outside: an **ingress driver** (`sdk/kic`) renders the routes,
   certificates and ACME challenges into that proxy's config, and the host's agent writes it in,

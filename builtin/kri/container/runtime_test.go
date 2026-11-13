@@ -231,14 +231,14 @@ func TestLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	main := f.last("docker run -d --name " + n.Main)
-	for _, want := range []string{"--network container:" + n.Pause, "--security-opt no-new-privileges", "-v " + n.Dir + "/broker:/run/kevaso",
+	for _, want := range []string{"--network container:" + n.Pause, "--security-opt no-new-privileges", "--tmpfs /run:rw,nosuid,nodev,mode=0755",
 		"SSL_CERT_FILE=/etc/ssl/certs/kevaso-ca-bundle.crt", "--cpus 2", "--memory 536870912",
 		"-v " + n.Dir + "/resolv.conf:/etc/resolv.conf:ro", "--init docker.io/library/ubuntu:24.04 sleep infinity"} {
 		if !strings.Contains(main, want) {
 			t.Errorf("main container %q missing %q", main, want)
 		}
 	}
-	if strings.Contains(main, "kvo-guest") || strings.Contains(main, r.Self) {
+	if strings.Contains(main, "broker") || strings.Contains(main, r.Self) {
 		t.Errorf("something of Kevaso's in a user's container: %s", main)
 	}
 	if strings.Contains(main, "--hostname") || strings.Contains(main, "--uts") {

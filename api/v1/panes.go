@@ -7,9 +7,11 @@ import (
 	"kevaso.com/core/api/meta"
 )
 
-// Panes (design §10.1): a silo reports what its status looks like; the control plane keeps the
-// latest report per pane and relays it; clients render it. One way only: nothing flows back to the
-// silo. Off unless the silo turns it on (spec.panes), and a client only shows panes it asked for.
+// Panes (design §10.1, ADR 0009): a silo says what its status looks like; its host fetches the
+// reports from where the silo answers, the control plane keeps the latest report per pane and
+// relays it; clients render it. One way only: nothing flows back to the silo, and the host's
+// request carries nothing. Off unless the silo says where it answers (spec.panes.http), and a
+// client only shows panes it asked for.
 
 // Pane kinds.
 const (
@@ -20,15 +22,41 @@ const (
 // Pane states (status panes).
 var PaneStates = []string{"idle", "running", "needs-you", "done", "failed"}
 
-// PaneConfig is a silo's spec.panes.
+// PaneConfig is a silo's spec.panes. Without HTTP, panes are off and nothing is ever fetched.
 type PaneConfig struct {
-	Enabled  bool     `json:"enabled,omitempty"`
+	// HTTP is where the silo answers, on its own private address: GET PATH lists its reports
+	// ({"panes": [PaneReport, …]}), GET PATH/bundles/sha256:HEX is an HTML pane's bundle.
+	HTTP *PaneHTTP `json:"http,omitempty"`
+	// Every is how often its host asks (a Go duration: default 5s, from 1s to 5m).
+	Every    string   `json:"every,omitempty"`
 	Allow    []string `json:"allow,omitempty"`    // status, html (default: status)
 	MaxPanes int      `json:"maxPanes,omitempty"` // default 4, at most 16
 }
 
+// PaneHTTP is where a silo answers its host's pane requests.
+type PaneHTTP struct {
+	Port int    `json:"port"`
+	Path string `json:"path,omitempty"` // default /panes
+}
+
+// On reports whether panes are on: the silo says where it answers.
+func (c *PaneConfig) On() bool { return c != nil && c.HTTP != nil && c.HTTP.Port > 0 }
+
+// PanePath is where the list is (default /panes).
+func (c *PaneConfig) PanePath() string {
+	if c == nil || c.HTTP == nil || c.HTTP.Path == "" {
+		return "/panes"
+	}
+	return c.HTTP.Path
+}
+
+// PaneList is what a silo answers to GET spec.panes.http.path.
+type PaneList struct {
+	Panes []PaneReport `json:"panes"`
+}
+
 // Pane is one pane's latest report. Namespaced; named SILO.PANE. Only the control plane writes
-// them (from the silo's broker channel); people read them with get/list/watch on panes.
+// them (from what the silo's host fetched); people read them with get/list/watch on panes.
 type Pane struct {
 	meta.TypeMeta   `json:",inline"`
 	meta.ObjectMeta `json:"metadata"`
@@ -36,7 +64,8 @@ type Pane struct {
 	Status          PaneState  `json:"status,omitempty"`
 }
 
-// PaneReport is what the silo sent. Text is plain text, always.
+// PaneReport is what the silo answered. Text is plain text, always. Silo and SiloUID are the
+// control plane's, never the silo's.
 type PaneReport struct {
 	Silo     string      `json:"silo"`
 	SiloUID  string      `json:"siloUID"`
@@ -48,7 +77,7 @@ type PaneReport struct {
 	Message  string      `json:"message,omitempty"`
 	Fields   []PaneField `json:"fields,omitempty"`
 	// HTML: the bundle's digest (sha256:…, uploaded once) and the data pushed to it. The bundle's
-	// format is ADR 0007's (see PaneBundleMaxBytes); the control plane never opens it.
+	// format is ADR 0007's (see PaneBundleMaxBytes); the host and the control plane never open it.
 	Bundle string          `json:"bundle,omitempty"`
 	Data   json.RawMessage `json:"data,omitempty"`
 	TTL    string          `json:"ttl,omitempty"` // past it without an update, the pane is stale
@@ -83,10 +112,10 @@ func (p *Pane) Stale(now time.Time) bool {
 //     PaneBundleMaxUnpacked bytes;
 //   - anything else: the pane's index.html, as it is.
 //
-// Either way it's at most PaneBundleMaxBytes, and named by its sha256 digest. The control plane
-// only weighs and hashes it: it's opened by the panes app, which refuses anything else, and built
-// by `kvo-guest pane html --bundle DIR` (sorted names, zeroed times and owners, modes 0644 and
-// 0755, so the same files give the same digest).
+// Either way it's at most PaneBundleMaxBytes, and named by its sha256 digest. The silo serves it;
+// its host and the control plane only weigh and hash it: it's opened by the panes app, which
+// refuses anything else. (Packing a folder deterministically, with sorted names, zeroed times and
+// owners and modes 0644 and 0755, keeps the same files at the same digest.)
 const (
 	PaneBundleMaxBytes    = 512 << 10
 	PaneBundleMaxFiles    = 256
