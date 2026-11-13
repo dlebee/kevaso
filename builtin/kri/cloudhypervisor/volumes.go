@@ -177,8 +177,11 @@ func VirtiofsdUnit(n Names, s Share) string {
 Description=Kevaso silo ` + n.Short + `: virtiofsd for volume ` + s.Name + `
 
 [Service]
+# Root's own group: virtiofsd keeps its own credentials for the guest's root (uid 0, gid 0), so
+# files that root makes in the share get this group, and must get gid 0. The socket's group is
+# --socket-group's.
 User=root
-Group=` + VMMUser + `
+Group=root
 ExecStartPre=+/bin/rm -f ` + s.Socket + `
 ExecStart=` + VirtiofsdBin + ` ` + strings.Join(VirtiofsdArgs(s), " ") + `
 Restart=always

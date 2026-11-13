@@ -100,7 +100,7 @@ func TestVirtiofsdUnit(t *testing.T) {
 	u := VirtiofsdUnit(n, s)
 	caps := "CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETPCAP CAP_SETUID CAP_SYS_CHROOT"
 	for _, want := range []string{
-		"User=root\n", "Group=" + VMMUser + "\n",
+		"User=root\n", "Group=root\n",
 		"ExecStart=" + VirtiofsdBin + " --socket-path=" + s.Socket,
 		"CapabilityBoundingSet=" + caps + "\n", "AmbientCapabilities=" + caps + "\n",
 		"NoNewPrivileges=yes", "PrivateNetwork=yes", "PrivateDevices=yes", "RestrictAddressFamilies=AF_UNIX\n",
@@ -160,6 +160,11 @@ func TestVirtiofsdStartsOnARealHost(t *testing.T) {
 	}
 	if !slices.Contains(VirtiofsdCaps, "CAP_SETPCAP") {
 		t.Error("no CAP_SETPCAP: virtiofsd can't drop its capabilities")
+	}
+	// Files the guest's root made in the share came out on the host (and back in the guest) with
+	// group kevaso-vmm: virtiofsd keeps its own credentials for uid 0, gid 0 callers.
+	if !strings.Contains(u, "Group=root\n") {
+		t.Error("virtiofsd's own group isn't root: the guest's root makes files of another group")
 	}
 	if !strings.Contains(u, "AmbientCapabilities="+strings.Join(VirtiofsdCaps, " ")+"\n") {
 		t.Error("virtiofsd can't apply its capabilities unless it starts with them ambient")
