@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"kevaso.com/core/builtin/kri/hostpkg"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,6 +14,7 @@ import (
 	"strings"
 
 	"kevaso.com/core/builtin/kni"
+	"kevaso.com/core/builtin/kri/hostpkg"
 )
 
 // Asset is a file to download, with its pinned digest.

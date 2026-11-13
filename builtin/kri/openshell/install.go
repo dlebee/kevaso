@@ -7,12 +7,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"kevaso.com/core/builtin/kri/hostpkg"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"kevaso.com/core/builtin/kri/hostpkg"
 )
 
 // Install readies the host: the pinned OpenShell package (checksum verified here), Docker for the
