@@ -535,7 +535,7 @@ func (s *Server) checkDeleteDefinition(ctx context.Context, t target) error {
 	if n := len(left); n > 0 {
 		names := make([]string, 0, min(n, 3))
 		for _, o := range left[:min(n, 3)] {
-			names = append(names, o.Key.String())
+			names = append(names, o.String())
 		}
 		return errf(http.StatusConflict, "Conflict", "KindDefinition %s still has %d object(s) (%s%s): delete them first",
 			d.Name, n, strings.Join(names, ", "), map[bool]string{true: ", …", false: ""}[n > 3])
