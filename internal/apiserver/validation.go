@@ -158,7 +158,9 @@ var builtinRules = map[string][]Rule{
 			"approval works with deliver: broker or inject (and operations.sign): once a value sits in a file or an env var, nothing can ask again"},
 	},
 	"IngressClass": {
-		{`self.spec.controller.silo != '' && self.spec.controller.namespace != ''`, "spec.controller needs a silo and its namespace"},
+		{`has(self.spec.controller.driver) && self.spec.controller.driver != ''`, "spec.controller.driver names the proxy's driver (nginx, caddy, kong…)"},
+		{`has(self.spec.controller.namespace) && self.spec.controller.namespace != '' && (has(self.spec.controller.silo) && self.spec.controller.silo != '' ? 1 : 0) + (has(self.spec.controller.siloSet) && self.spec.controller.siloSet != '' ? 1 : 0) == 1`,
+			"spec.controller needs its namespace and one of silo or siloSet"},
 	},
 	"Ingress": {
 		{`self.spec.ingressClass != ''`, "spec.ingressClass is required"},

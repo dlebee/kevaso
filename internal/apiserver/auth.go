@@ -30,7 +30,8 @@ import (
 //     minted by kvoadm are in the cluster-admins group;
 //   - hosts with role control-plane: everything (they run the controllers);
 //   - hosts with role worker: read everything, write only their own Host's status and the status
-//     of silos placed on them (they can't move a silo elsewhere);
+//     of silos placed on them (they can't move a silo elsewhere), and of the ingress controllers
+//     among them in their IngressClass;
 //   - anyone without credentials: only POST /enroll, with a join token.
 type Auth struct {
 	CA      *pki.CA
@@ -224,9 +225,10 @@ func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
 		if r.Method != http.MethodPut || !t.status {
 			return false
 		}
-		// Its own Host's status; a Silo's status only if the silo is placed on it (checked in
-		// update, which has the stored object).
-		return (t.kind.Kind == "Host" && t.name == id.Name) || t.kind.Kind == "Silo"
+		// Its own Host's status; a Silo's status only if the silo is placed on it, and an
+		// IngressClass's only for the controller silos on it (checked in update, which has the
+		// stored object).
+		return (t.kind.Kind == "Host" && t.name == id.Name) || t.kind.Kind == "Silo" || t.kind.Kind == "IngressClass"
 	}
 	return false
 }

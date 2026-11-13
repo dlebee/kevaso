@@ -25,11 +25,11 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 	c.bind(t, "dev", "Role", "no-secrets")
 	ed, ada, dev := c.as(t, "ed"), c.as(t, "ada"), c.as(t, "dev")
 	if err := c.admin.Create(c.ctx, &v1.IngressClass{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IngressClass"},
-		ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{Public: true, Controller: v1.SiloRef{Silo: "edge", Namespace: "web3"}}}); err != nil {
+		ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{Public: true, Controller: v1.IngressController{Driver: "nginx", Silo: "edge", Namespace: "web3"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.admin.Create(c.ctx, &v1.IngressClass{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IngressClass"},
-		ObjectMeta: meta.ObjectMeta{Name: "office"}, Spec: v1.IngressClassSpec{Controller: v1.SiloRef{Silo: "edge", Namespace: "web3"}}}); err != nil {
+		ObjectMeta: meta.ObjectMeta{Name: "office"}, Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "edge", Namespace: "web3"}}}); err != nil {
 		t.Fatal(err)
 	}
 	// A secret ed may not use, and a grant naming it.

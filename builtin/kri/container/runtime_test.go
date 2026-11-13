@@ -280,33 +280,6 @@ func TestMainCommandAndImages(t *testing.T) {
 	}
 }
 
-// Kevaso's own silos run from images of their own, built from kevasod on the host: never pulled,
-// nothing mounted into them beyond what any silo gets.
-func TestKevasoImages(t *testing.T) {
-	ctx := context.Background()
-	f := newFake()
-	r := runtime(t, f)
-	id := kri.ID{Namespace: "kevaso-system", Name: "ingress", UID: "u9"}
-	if err := r.Create(ctx, kri.Spec{ID: id, Image: "kevaso-ingress"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Start(ctx, id); err != nil {
-		t.Fatal(err)
-	}
-	all := strings.Join(f.cmds, "\n")
-	if strings.Contains(all, "pull") && strings.Contains(all, "kevaso-ingress") {
-		t.Fatalf("pulled Kevaso's own image:\n%s", all)
-	}
-	imp := f.last("docker import --change ENTRYPOINT [\"/usr/local/bin/kvo-guest\",\"ingress\"]")
-	if !strings.Contains(imp, "localhost/kevaso-ingress:") {
-		t.Fatalf("ingress image not built: %s", imp)
-	}
-	main := f.last("docker run -d --name " + NamesFor(id).Main)
-	if !strings.HasSuffix(main, strings.Fields(imp)[len(strings.Fields(imp))-1]) || strings.Contains(main, "kvo-guest:ro") {
-		t.Fatalf("main container: %s", main)
-	}
-}
-
 // Install runs at every kevasod start: dockerd is restarted (which, without live-restore, stops
 // every container) only when its configuration changes, not on an agent restart or upgrade. (On
 // Linodes, before this, kvoadm upgrade stopped the worker's container silos.)

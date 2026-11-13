@@ -13,7 +13,6 @@
 //	kvo-guest pane report NAME [--state S] [--progress 0.4] [--title T] [--message M] [--field L=V]… [--ttl 60s]
 //	kvo-guest pane html NAME --bundle FILE [--data JSON|-] [--ttl 30s]   report a pane (one way, §10.1)
 //	kvo-guest sync [--once]             write file and env deliveries, and keep them up to date
-//	kvo-guest ingress [--install]       be an ingress controller (--install: as a service, in a VM)
 //
 // kevasod copies itself into the silo as /usr/local/bin/kvo-guest; called by that name it runs this.
 package guest
@@ -150,7 +149,7 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 }
 
 func run(ctx context.Context, dial Dialer, root string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	usage := errors.New("usage: kvo-guest secret get NAME [--for D] [--wait D] | sign KEY [--slot N] [--for D] [--wait D] < payload | public-key KEY | pane report NAME … | pane html NAME --bundle FILE … | port open NAME [--for D] [--wait D] | port close NAME | sync [--once] | ingress [--install]")
+	usage := errors.New("usage: kvo-guest secret get NAME [--for D] [--wait D] | sign KEY [--slot N] [--for D] [--wait D] < payload | public-key KEY | pane report NAME … | pane html NAME --bundle FILE … | port open NAME [--for D] [--wait D] | port close NAME | sync [--once]")
 	if len(args) == 0 {
 		return usage
 	}
@@ -211,14 +210,6 @@ func run(ctx context.Context, dial Dialer, root string, args []string, stdin io.
 		}
 		_, err = fmt.Fprintln(stdout, resp.PublicKey)
 		return err
-	case "ingress":
-		if len(args) == 2 && args[1] == "--install" {
-			return InstallIngress()
-		}
-		if len(args) != 1 {
-			return usage
-		}
-		return (&Ingress{Dial: dial}).Run(ctx)
 	case "sync":
 		once := len(args) == 2 && args[1] == "--once"
 		if len(args) > 2 || (len(args) == 2 && !once) {

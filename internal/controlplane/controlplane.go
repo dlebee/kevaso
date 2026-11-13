@@ -21,6 +21,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kcc/acme"
+	kicdrivers "kevaso.com/core/builtin/kic"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/audit"
@@ -34,6 +35,7 @@ import (
 	"kevaso.com/core/internal/controllers/siloset"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/fence"
+	"kevaso.com/core/internal/ingress"
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
 	"kevaso.com/core/internal/kms"
@@ -374,7 +376,10 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	services.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Service", Namespace: k.Namespace, Name: k.Name}) })
 	cc := &certificate.Controller{Client: c, Store: cd.store, KMS: cd.kms, Clock: cfg.Clock, Defaults: cfg.DefaultIssuers,
 		CertControllers: certControllers(cfg, cd),
-		Certificates:    certs, Ingresses: ingresses, Classes: classes, Issuers: issuers, Log: cfg.Log}
+		Certificates:    certs, Ingresses: ingresses, Classes: classes, Issuers: issuers, Log: cfg.Log, Silos: silos,
+		Refused: func(class *v1.IngressClass, ing *v1.Ingress) (string, string) {
+			return ingress.Refused(kicdrivers.Builtin(), class, ing)
+		}}
 	e.Register(cc, engine.Options{Workers: 2})
 	e.Register(cc.IngressController(), engine.Options{Workers: 1})
 	ingressesOf := func(match func(*v1.Ingress) bool) {
@@ -400,9 +405,11 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 		ingressesOf(func(ing *v1.Ingress) bool { return ing.Spec.IngressClass == k.Name })
 	})
 	silos.AddHandler(func(k informer.Key) { // a controller's address shows in its Ingresses' status
+		so, _ := silos.Get(k.Namespace, k.Name)
+		s, _ := so.(*v1.Silo)
 		for _, o := range classes.List() {
 			cl := o.(*v1.IngressClass)
-			if cl.Spec.Controller.Namespace == k.Namespace && cl.Spec.Controller.Silo == k.Name {
+			if ctl := cl.Spec.Controller; ctl.Runs(s) || (ctl.Namespace == k.Namespace && ctl.Silo == k.Name) {
 				ingressesOf(func(ing *v1.Ingress) bool { return ing.Spec.IngressClass == cl.Name })
 			}
 		}

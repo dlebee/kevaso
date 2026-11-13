@@ -341,7 +341,7 @@ func uplink(addr string) string {
 }
 
 // WithIngressPaths returns the silos with the paths Ingresses open (design §7.2b: "an Ingress opens
-// its own path, visibly"): each Ingress's target port, reachable from its class's controller silo,
+// its own path, visibly"): each Ingress's target port, reachable from its class's controller silos,
 // as if the target's allowFrom said so. The silos given aren't changed. Pure.
 func WithIngressPaths(silos []*v1.Silo, ingresses []*v1.Ingress, classes []*v1.IngressClass) []*v1.Silo {
 	byClass := map[string]*v1.IngressClass{}
@@ -354,10 +354,15 @@ func WithIngressPaths(silos []*v1.Silo, ingresses []*v1.Ingress, classes []*v1.I
 		if !ok || ing.DeletionTimestamp != nil {
 			continue
 		}
-		from := c.Spec.Controller.Namespace + "/" + c.Spec.Controller.Silo
-		for _, r := range ing.Spec.Rules {
-			key := ing.Namespace + "/" + r.Silo.Name
-			extra[key] = append(extra[key], v1.AllowFrom{Silo: from, Ports: []string{r.Silo.Port}})
+		for _, ctl := range silos {
+			if !c.Spec.Controller.Runs(ctl) {
+				continue
+			}
+			from := ctl.Namespace + "/" + ctl.Name
+			for _, r := range ing.Spec.Rules {
+				key := ing.Namespace + "/" + r.Silo.Name
+				extra[key] = append(extra[key], v1.AllowFrom{Silo: from, Ports: []string{r.Silo.Port}})
+			}
 		}
 	}
 	if len(extra) == 0 {

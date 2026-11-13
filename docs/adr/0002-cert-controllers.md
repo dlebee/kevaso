@@ -13,7 +13,8 @@
    Secret. A cert-controller never sees a key, so an external tool can't leak one.
 3. **The built-in `acme` is cert-manager style.** A list of solvers with selectors (`dnsNames`, then
    the longest `dnsZones`, then no selector). `http01` is answered by the ingress controllers
-   (`HTTP01Solver` keeps the tokens in the store, served over the controller silo's broker);
+   (`HTTP01Solver` keeps the tokens in the store; the ingress driver renders them into the stock
+   proxy's config, ADR 0008);
    `dns01` calls a DNS provider (`acme.DNSProvider`: `Present/CleanUp(fqdn, value)`). Its account
    key lives in a `SealedStore` (KMS-sealed, per issuer).
 4. **Programs, not plugins in the API.** External cert-controllers and DNS providers are programs on

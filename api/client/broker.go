@@ -20,7 +20,6 @@ const (
 	OpPublicKey  = "public-key"  // the public half of a key the silo may sign with
 	OpDeliveries = "deliveries"  // which secrets go to files and env vars (names and versions only)
 	OpWatch      = "watch"       // a stream of events: a secret or grant changed, re-read
-	OpIngress    = "ingress"     // an ingress controller silo's routes, certificates and ACME answers
 	OpPane       = "pane"        // report a pane's latest state (design §10.1); nothing comes back
 	OpPaneBundle = "pane-bundle" // upload an HTML pane's bundle (Payload; format: v1.PaneBundleMaxBytes), named by its digest
 	OpPortOpen   = "port-open"   // open a leased port (Name) for a while (For) (design §7.2d)
@@ -56,16 +55,15 @@ type BrokerRequest struct {
 
 // BrokerResponse is one line back (watch: one per event).
 type BrokerResponse struct {
-	Error      string         `json:"error,omitempty"`
-	Value      []byte         `json:"value,omitempty"`
-	Version    int64          `json:"version,omitempty"`
-	Signature  []byte         `json:"signature,omitempty"`
-	PublicKey  string         `json:"publicKey,omitempty"`
-	Deliveries []Delivery     `json:"deliveries,omitempty"`
-	Injections []Injection    `json:"injections,omitempty"`
-	Ingress    *IngressConfig `json:"ingress,omitempty"`
-	Event      string         `json:"event,omitempty"` // watch: "changed" (a secret or grant), "ready"
-	Secret     string         `json:"secret,omitempty"`
+	Error      string      `json:"error,omitempty"`
+	Value      []byte      `json:"value,omitempty"`
+	Version    int64       `json:"version,omitempty"`
+	Signature  []byte      `json:"signature,omitempty"`
+	PublicKey  string      `json:"publicKey,omitempty"`
+	Deliveries []Delivery  `json:"deliveries,omitempty"`
+	Injections []Injection `json:"injections,omitempty"`
+	Event      string      `json:"event,omitempty"` // watch: "changed" (a secret or grant), "ready"
+	Secret     string      `json:"secret,omitempty"`
 	// Digest: pane-bundle, the name the bundle is stored under (sha256:…).
 	Digest string `json:"digest,omitempty"`
 	// Pending: the use waits for a person's yes. Ask again with Request.Approval set to its name.
@@ -119,30 +117,6 @@ type AgentBrokerRequest struct {
 
 // PathAgentBroker is where hosts relay broker requests.
 const PathAgentBroker = "/agent/broker"
-
-// IngressConfig is what an ingress controller silo serves.
-type IngressConfig struct {
-	Routes []IngressRoute `json:"routes"`
-	// Certs are certificate bundles (chain then key, PEM) for TLS hosts.
-	Certs []IngressCert `json:"certs"`
-	// Challenges are ACME HTTP-01 answers to serve on port 80 (token → key authorization).
-	Challenges map[string]string `json:"challenges"`
-}
-
-// IngressRoute sends a host and path prefix to a backend.
-type IngressRoute struct {
-	Host    string `json:"host"`
-	Path    string `json:"path"`
-	Backend string `json:"backend"` // host:port, a private name
-	TLS     bool   `json:"tls"`     // served on 443; port 80 redirects
-	Ingress string `json:"ingress"` // namespace/name, for logs
-}
-
-// IngressCert is a certificate for some hosts.
-type IngressCert struct {
-	Hosts  []string `json:"hosts"`
-	Bundle []byte   `json:"bundle"`
-}
 
 // ApprovalAnswer is the body of POST …/approvals/NAME/approve or /deny (optional).
 type ApprovalAnswer struct {

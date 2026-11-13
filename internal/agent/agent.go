@@ -73,6 +73,8 @@ type Agent struct {
 	Nodes *plugins.Registry
 	// TunnelRefresh is how often the agent looks for system nodes to hold a tunnel to (tunnels.go).
 	TunnelRefresh time.Duration
+	// IngressEvery is how often it looks at its ingress controller silos again (ingress.go).
+	IngressEvery time.Duration
 	// OnEndpoints, if set, hears the control planes the agent's client may use whenever it learns
 	// more from the system nodes (the worker keeps them for its next start).
 	OnEndpoints func([]string)
@@ -211,6 +213,7 @@ func (a *Agent) Run(ctx context.Context) {
 		go inf.Run(ctx)
 	}
 	go a.RunTunnels(ctx)
+	go a.runIngress(ctx)
 	if a.FenceDir != "" {
 		// What an earlier run of this agent recorded stands until this run knows better: a restart
 		// while cut off must not make the watcher forget the last contact, or the silos.
