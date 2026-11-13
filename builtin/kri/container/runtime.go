@@ -9,9 +9,9 @@
 // nothing is pulled for it.
 //
 // A container reaches its host's local endpoint (ADR 0009) over the bridge like a VM, and gets a
-// tmpfs at /run, where its host writes its file and env secrets through exec (memory only: an exec
-// into the engine's overlay would put them on the host's disk). The host's CA bundle with the
-// egress CA is mounted in read-only. Nothing else of Kevaso's goes into a user's container
+// tmpfs of its own at /run. Its file secrets come from a tmpfs of the host's, mounted read-only,
+// and its env secrets are its environment (secrets.go): nothing is written into it. The host's CA
+// bundle with the egress CA is mounted in read-only. Nothing else of Kevaso's goes into a user's container
 // (design §12: Kevaso's own pieces are built and isolated properly); an ingress controller is a
 // vendor's proxy image, driven from outside (design §7.3).
 package container
@@ -66,6 +66,7 @@ type state struct {
 	Volumes []kri.Volume `json:"volumes,omitempty"`
 	CPU     int          `json:"cpu,omitempty"`
 	Memory  int64        `json:"memory,omitempty"`
+	Secrets *secretState `json:"secrets,omitempty"` // secrets.go
 }
 
 // Names are everything a silo owns.
@@ -373,7 +374,8 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 }
 
 // runArgs are a silo container's settings: the pause container's network, the volumes, a tmpfs at
-// /run (for secrets the host writes) and the CA bundle, limits, no new privileges.
+// /run, the CA bundle, its secrets (read-only folders from the host's tmpfs, an env file), limits,
+// no new privileges.
 func (r *Runtime) runArgs(s state, name string) []string {
 	n := NamesFor(s.ID)
 	// --pull never: every pull is the agent's (Pull, with the silo's credential), never the
@@ -398,6 +400,7 @@ func (r *Runtime) runArgs(s state, name string) []string {
 		}
 		args = append(args, "-v", VolumeName(s.ID, v.Name)+":"+v.MountPath)
 	}
+	args = append(args, secretArgs(s)...)
 	if s.CPU > 0 {
 		args = append(args, "--cpus", strconv.Itoa(s.CPU))
 	}
@@ -408,7 +411,8 @@ func (r *Runtime) runArgs(s state, name string) []string {
 }
 
 // Start implements kri.Runtime: the pause container first (rewired after a reboot), then the main
-// container, made the first time.
+// container, made the first time, and made afresh when its secrets need it (a changed variable, a
+// folder it doesn't have mounted: secrets.go).
 func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -423,6 +427,19 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 	st, _, err := r.inspect(ctx, n.Main)
 	if err != nil {
 		return err
+	}
+	if st == "running" {
+		return nil
+	}
+	making := st == "" || s.Secrets.remake()
+	if err := r.prepareSecrets(ctx, s, making); err != nil {
+		return err
+	}
+	if st != "" && making {
+		if _, err := r.eng(ctx, nil, "rm", "-f", n.Main); err != nil {
+			return err
+		}
+		st = ""
 	}
 	switch st {
 	case "running":
@@ -442,7 +459,10 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 		}
 		args = append(args, ref)
 		args = append(args, cmd...)
-		_, err = r.eng(ctx, nil, args...)
+		if _, err = r.eng(ctx, nil, args...); err == nil && s.Secrets != nil {
+			s.Secrets.MainDirs, s.Secrets.MainEnv = s.Secrets.Dirs, s.Secrets.Env
+			err = r.save(s)
+		}
 	default:
 		_, err = r.eng(ctx, nil, "start", n.Main)
 	}
@@ -457,6 +477,9 @@ func (r *Runtime) RunInit(ctx context.Context, id kri.ID, step kri.InitStep, out
 		return -1, fmt.Errorf("%s: %w", id, kri.ErrNotFound)
 	}
 	if err := r.ensurePause(ctx, s); err != nil {
+		return -1, err
+	}
+	if err := r.prepareSecrets(ctx, s, true); err != nil {
 		return -1, err
 	}
 	n := NamesFor(id)
@@ -474,33 +497,42 @@ func (r *Runtime) RunInit(ctx context.Context, id kri.ID, step kri.InitStep, out
 	return r.Host.Run(ctx, hostexec.Cmd{Name: r.engine(), Args: args, Stdout: out, Stderr: out})
 }
 
-// Stop implements kri.Runtime (the pause container keeps the address).
+// Stop implements kri.Runtime (the pause container keeps the address). The silo's secrets leave
+// the host's tmpfs once it's stopped.
 func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
-	if _, ok := r.load(id); !ok {
+	s, ok := r.load(id)
+	if !ok {
 		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
 	}
 	st, _, err := r.inspect(ctx, NamesFor(id).Main)
-	if err != nil || st == "" || st != "running" {
+	if err != nil {
 		return err
 	}
-	_, err = r.eng(ctx, nil, "stop", "-t", "20", NamesFor(id).Main)
-	return err
+	if st == "running" {
+		if _, err := r.eng(ctx, nil, "stop", "-t", "20", NamesFor(id).Main); err != nil {
+			return err
+		}
+	}
+	return r.wipeSecrets(s)
 }
 
 // Kill implements kri.Killer: SIGKILL to the main container's PID 1 (its init: the whole
 // container goes with it), no grace period. For fencing.
 func (r *Runtime) Kill(ctx context.Context, id kri.ID) error {
-	if _, ok := r.load(id); !ok {
+	s, ok := r.load(id)
+	if !ok {
 		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
 	}
 	st, _, err := r.inspect(ctx, NamesFor(id).Main)
-	if err != nil || st != "running" {
+	if err != nil {
 		return err
 	}
-	if _, err = r.eng(ctx, nil, "kill", "--signal", "KILL", NamesFor(id).Main); err != nil && strings.Contains(err.Error(), "is not running") {
-		return nil // stopped meanwhile
+	if st == "running" {
+		if _, err = r.eng(ctx, nil, "kill", "--signal", "KILL", NamesFor(id).Main); err != nil && !strings.Contains(err.Error(), "is not running") {
+			return err // (not running: stopped meanwhile)
+		}
 	}
-	return err
+	return r.wipeSecrets(s)
 }
 
 // Reset implements kri.Resetter: the containers go, the volumes, address and pause container
@@ -520,6 +552,9 @@ func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
 		}
 	}
 	s.Image, s.Command, s.Volumes, s.CPU, s.Memory = spec.Image, spec.Command, spec.Volumes, spec.CPU, spec.Memory
+	if s.Secrets != nil { // no main container any more: the next one gets the secrets as they are
+		s.Secrets.MainDirs, s.Secrets.MainEnv = nil, nil
+	}
 	err := r.save(s)
 	r.mu.Unlock()
 	if err != nil {
@@ -548,6 +583,9 @@ func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 		}
 	}
 	_, _ = r.cmd(ctx, nil, "ip", "link", "del", n.Veth)
+	if err := r.unmountSecrets(ctx, id); err != nil {
+		return err
+	}
 	return r.Host.RemoveAll(n.Dir)
 }
 
@@ -689,4 +727,5 @@ func (c chHost) Glob(p string) ([]string, error)                   { return c.h.
 var (
 	_ kri.Runtime        = (*Runtime)(nil)
 	_ kri.InitContainers = (*Runtime)(nil)
+	_ kri.HostSecrets    = (*Runtime)(nil)
 )

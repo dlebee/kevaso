@@ -458,7 +458,7 @@ func describeObject(w io.Writer, obj meta.Object) error {
 				}
 				how = "tier 4, file: " + path + " (tmpfs, written by the host, rewritten on rotation)"
 			case v1.DeliverEnv:
-				how = "tier 4, env " + envName(sec) + " — FLAGGED: leaks into child processes, dumps, logs and an agent's context"
+				how = "tier 4, env " + envName(sec) + " — FLAGGED: leaks into child processes, dumps, logs and an agent's context; on docker and podman, also in the engine's container config (inspect)"
 			}
 			_, _ = fmt.Fprintf(tw, "%s:\t%s: %s\n", label, sec.Name, how)
 		}

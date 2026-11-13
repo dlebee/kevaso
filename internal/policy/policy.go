@@ -71,8 +71,8 @@ func For(s *v1.Silo, grants []*v1.Grant, injections []client.Injection) (kri.Pol
 			}
 		}
 		for _, sec := range g.Spec.Secrets {
-			if sec.Delivery() != v1.DeliverInject {
-				problems = append(problems, fmt.Sprintf("grant %s: secret %s: deliver %s isn't available on %s yet (inject is)", g.Name, sec.Name, sec.Delivery(), s.Spec.Runtime))
+			if d := sec.Delivery(); d != v1.DeliverInject {
+				problems = append(problems, fmt.Sprintf("grant %s: secret %s: deliver %s isn't available on %s (inject is): %s", g.Name, sec.Name, d, s.Spec.Runtime, notOnSelfEnforced(d)))
 			}
 		}
 		if g.Spec.Operations != nil && g.Spec.Operations.Sign != nil {
@@ -104,6 +104,17 @@ func For(s *v1.Silo, grants []*v1.Grant, injections []client.Injection) (kri.Pol
 		return p.Credentials[i].Name+p.Credentials[i].Host < p.Credentials[j].Name+p.Credentials[j].Host
 	})
 	return p, problems
+}
+
+// notOnSelfEnforced is why a delivery other than inject can't reach an OpenShell sandbox.
+func notOnSelfEnforced(mode string) string {
+	switch mode {
+	case v1.DeliverFile, v1.DeliverEnv:
+		return "the host can't put a file or a variable in an OpenShell sandbox without something of Kevaso's inside it (its exec runs as the sandbox's own user, not root, and no folder of the host's is mounted in; its environment is OpenShell's)"
+	case v1.DeliverBroker, v1.DeliverSign:
+		return "its sandbox can't reach the host's local endpoint yet (ADR 0009)"
+	}
+	return "not supported"
 }
 
 func contains(l []string, v string) bool {

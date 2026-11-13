@@ -27,6 +27,10 @@ type Client struct {
 	// as needed).
 	Token func(ctx context.Context) (string, error)
 
+	// Warnings, if set, gets each warning the server sends with an answer (an HTTP Warning header:
+	// what it accepted but the user should know).
+	Warnings func(string)
+
 	kindsMu sync.Mutex
 	kinds   []v1.APIResource // what the server serves, once asked (kinds.go)
 }
@@ -130,6 +134,13 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 	if err != nil {
 		return err
 	}
+	if c.Warnings != nil {
+		for _, h := range resp.Header.Values("Warning") {
+			if t, ok := WarningText(h); ok {
+				c.Warnings(t)
+			}
+		}
+	}
 	if resp.StatusCode >= 300 {
 		e := &Error{Code: resp.StatusCode}
 		if json.Unmarshal(data, e) != nil || e.Reason == "" {
@@ -141,6 +152,23 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 		return json.Unmarshal(data, out)
 	}
 	return nil
+}
+
+// WarningText is a Warning header's text (299 - "TEXT"). Pure.
+func WarningText(h string) (string, bool) {
+	rest, ok := strings.CutPrefix(h, `299 - "`)
+	if !ok || !strings.HasSuffix(rest, `"`) {
+		return "", false
+	}
+	rest = rest[:len(rest)-1]
+	var b strings.Builder
+	for i := 0; i < len(rest); i++ {
+		if rest[i] == '\\' && i+1 < len(rest) {
+			i++
+		}
+		b.WriteByte(rest[i])
+	}
+	return b.String(), true
 }
 
 // Raw sends a request without a body and returns the answer's body as it is (a pane's bundle:
