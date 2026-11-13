@@ -281,7 +281,9 @@ func TestStartupAndLiveness(t *testing.T) {
 		}
 		return "", 0
 	})
-	exec := func(cmd string) *v1.Probe { return &v1.Probe{Exec: &v1.ExecProbe{Command: []string{cmd}}, Period: "1s"} }
+	exec := func(cmd string) *v1.Probe {
+		return &v1.Probe{Exec: &v1.ExecProbe{Command: []string{cmd}}, Period: "1s"}
+	}
 
 	slow := silo("slow", "web3")
 	slow.Spec.Probes = &v1.Probes{Startup: exec("check-up"), Readiness: exec("ready")}

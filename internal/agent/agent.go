@@ -569,13 +569,6 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 	})
 }
 
-func duration(s string, def time.Duration) time.Duration {
-	if d, err := time.ParseDuration(s); err == nil && d > 0 {
-		return d
-	}
-	return def
-}
-
 // runInit runs the init steps that haven't run yet inside the running silo (through Exec).
 func (a *Agent) runInit(ctx context.Context, rt kri.Runtime, s *v1.Silo) (bool, error) {
 	return a.runSteps(ctx, s, func(ctx context.Context, step v1.InitStep, out io.Writer) (int, error) {

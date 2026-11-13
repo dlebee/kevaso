@@ -86,7 +86,9 @@ func TestRunProbe(t *testing.T) {
 		})
 	}
 	// A dial that fails is a failure, with the error.
-	a.ProbeDial = func(context.Context, string, string) (net.Conn, error) { return nil, &net.OpError{Op: "dial", Err: errRefused{}} }
+	a.ProbeDial = func(context.Context, string, string) (net.Conn, error) {
+		return nil, &net.OpError{Op: "dial", Err: errRefused{}}
+	}
 	if o := run(rt, "10.64.1.2", &v1.Probe{TCP: &v1.TCPProbe{Port: "rpc"}}); o.Result != v1.ResultFailure || !strings.Contains(o.Reason, "refused") {
 		t.Fatalf("refused: %+v", o)
 	}
