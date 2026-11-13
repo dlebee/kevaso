@@ -1,6 +1,7 @@
 package cloudhypervisor
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -121,5 +122,44 @@ func TestStorageNeverWritesOverAFileWithoutItsGroup(t *testing.T) {
 	}
 	if has(cmds, "pvcreate") || has(cmds, "truncate") {
 		t.Errorf("it wrote over the file: %v", cmds)
+	}
+}
+
+// Found on the metal machine: after the host rebooted, every start failed on "ip link set TAP
+// up: Cannot find device" (a TAP doesn't outlive a boot), retried every 5 minutes forever.
+func TestStartAfterAHostRebootMakesTheTapAgain(t *testing.T) {
+	h := newFakeHost()
+	r := newRuntime(t, h)
+	ctx := context.Background()
+	if err := r.Create(ctx, spec("web")); err != nil {
+		t.Fatal(err)
+	}
+	tap := NamesFor(id("web")).Tap
+	h.answer = func(cmd string) (string, error) {
+		if cmd == "ip link show "+tap {
+			return "", errors.New(`Device "` + tap + `" does not exist.`)
+		}
+		return "", nil
+	}
+	before := len(h.commands())
+	if err := r.Start(ctx, id("web")); err != nil {
+		t.Fatal(err)
+	}
+	cmds := h.commands()[before:]
+	add := indexOf(cmds, "ip tuntap add dev "+tap+" mode tap user "+VMMUser)
+	master := indexOf(cmds, "ip link set "+tap+" master "+Bridge)
+	up := indexOf(cmds, "ip link set "+tap+" up")
+	start := indexOf(cmds, "systemctl start "+NamesFor(id("web")).Unit)
+	if add < 0 || master < add || up < master || start < up {
+		t.Fatalf("the TAP wasn't made again before the VMM started: %v", cmds)
+	}
+	// A TAP that's there is left alone.
+	h.answer = func(string) (string, error) { return "", nil }
+	before = len(h.commands())
+	if err := r.Start(ctx, id("web")); err != nil {
+		t.Fatal(err)
+	}
+	if indexOf(h.commands()[before:], "ip tuntap add dev "+tap+" mode tap user "+VMMUser) >= 0 {
+		t.Error("an existing TAP was made again")
 	}
 }

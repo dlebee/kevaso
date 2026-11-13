@@ -115,13 +115,16 @@ spec:
 // as their restart rules say (every silo is meant to run: Wait and Recreate alike), the
 // microVM's volume with its data.
 //
-// Listens on nothing outside but what the silos it makes would.
+// Listens on the external IP while it runs: 18140 (stay), 18141 (vm).
 func TestMetalReboot(t *testing.T) {
 	c := metal(t)
 	ns := "boot"
 	c.namespace(ns)
-	c.apply(boxEcho(ns, "stay", 8080) + "---\n" + boxEcho(ns, "moves", 8080) + "  availability: { onHostLoss: Recreate }\n---\n" +
-		vmEcho(ns, "vm", 8080) + "  volumes: [{ name: data, size: 1Gi, mountPath: /data }]\n")
+	port := func(p int) string {
+		return fmt.Sprintf("  ports: [{ name: web, port: %d }]\n  service:\n    ports: [{ port: web, hostPort: [external] }]\n", p)
+	}
+	c.apply(boxEcho(ns, "stay", 18140) + port(18140) + "---\n" + boxEcho(ns, "moves", 8080) + "  availability: { onHostLoss: Recreate }\n---\n" +
+		vmEcho(ns, "vm", 18141) + port(18141) + "  volumes: [{ name: data, size: 1Gi, mountPath: /data }]\n")
 	c.waitRunning(ns, 20*time.Minute, "stay", "moves", "vm")
 	marker := randomValue(t, "boot-")
 	if out, code := c.in(ns, "vm", "echo "+marker+" > /data/marker && sync"); code != 0 {
@@ -170,6 +173,9 @@ func TestMetalReboot(t *testing.T) {
 		})
 	}
 	c.waitRunning(ns, 5*time.Minute, "stay", "moves", "vm")
+	for _, p := range []int{18140, 18141} { // their networks came back too (a TAP, a veth)
+		c.eventually(fmt.Sprintf("port %d answers this Mac after the boot", p), 3*time.Minute, func() (bool, string) { return c.open(p) })
+	}
 	c.eventually("the microVM's volume still has its data", 5*time.Minute, func() (bool, string) {
 		out, code := c.in(ns, "vm", "cat /data/marker")
 		return code == 0 && out == marker, out
