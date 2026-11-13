@@ -124,7 +124,9 @@ func (s *Server) relay(conn net.Conn, cr *bufio.Reader, stream net.Conn, limit i
 		drain = s.drain
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(drain))
-	<-clientDone
+	if err := <-clientDone; !quietEnd(err) { // the client closed, or the drain ran out: both fine
+		logEnd("draining the client", err)
+	}
 }
 
 // quietEnd: how a client normally leaves (closed, or gone with its connection).
