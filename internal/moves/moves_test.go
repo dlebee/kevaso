@@ -2,6 +2,7 @@ package moves
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -198,6 +199,58 @@ func TestLetGoAndReleased(t *testing.T) {
 		}
 		if _, ok := Released(st, host); ok {
 			t.Errorf("Released by %s", host)
+		}
+	}
+}
+
+// Who may write what of a silo's status, per volume: only the host a volume is attached to (or
+// to be mounted on) changes its mounted flag; the old host of a move may clear its own and let
+// go; the new host may only set its own; nobody else writes it.
+func TestHostWrite(t *testing.T) {
+	moving := v1.SiloStatus{Host: "hv2", MovingFrom: "hv1", Phase: "Scheduled", Volumes: []v1.VolumeStatus{
+		{Name: "data", AttachedTo: "hv1", Mounted: true}, {Name: "new", AttachedTo: "hv2"}}}
+	placed := v1.SiloStatus{Host: "hv2", Phase: "Running", Volumes: []v1.VolumeStatus{
+		{Name: "data", AttachedTo: "hv2", Mounted: true}, {Name: "left", AttachedTo: "hv1", Mounted: true}, {Name: "none"}}}
+	with := func(st v1.SiloStatus, f func(*v1.SiloStatus)) v1.SiloStatus {
+		st.Volumes = slices.Clone(st.Volumes)
+		f(&st)
+		return st
+	}
+	mount := func(i int, m bool) func(*v1.SiloStatus) { return func(st *v1.SiloStatus) { st.Volumes[i].Mounted = m } }
+	letGo, _ := LetGo(moving, "hv1")
+	released, _ := Released(moving, "hv1")
+	for _, c := range []struct {
+		name      string
+		old, next v1.SiloStatus
+		host      string
+		ok        bool
+	}{
+		{"new host sets its own volume mounted", moving, with(moving, mount(1, true)), "hv2", true},
+		{"new host writes its phase", moving, with(moving, func(st *v1.SiloStatus) { st.Phase = "Starting" }), "hv2", true},
+		{"new host clears the old host's mounted", moving, with(moving, mount(0, false)), "hv2", false},
+		{"new host clears movingFrom", moving, with(moving, func(st *v1.SiloStatus) { st.MovingFrom = "" }), "hv2", false},
+		{"new host re-attaches a volume to itself", moving, with(moving, func(st *v1.SiloStatus) { st.Volumes[0].AttachedTo = "hv2" }), "hv2", false},
+		{"new host drops a volume", moving, with(moving, func(st *v1.SiloStatus) { st.Volumes = st.Volumes[1:] }), "hv2", false},
+		{"old host unmounts (LetGo)", moving, letGo, "hv1", true},
+		{"old host lets go (Released)", moving, released, "hv1", true},
+		{"old host lets go after LetGo", letGo, released, "hv1", true},
+		{"old host sets mounted", letGo, moving, "hv1", false},
+		{"old host writes its phase", moving, with(moving, func(st *v1.SiloStatus) { st.Phase = "Stopped" }), "hv1", false},
+		{"old host clears the new host's volume", with(moving, mount(1, true)), with(moving, func(st *v1.SiloStatus) { st.Volumes[0].Mounted, st.Volumes[1].Mounted = false, false }), "hv1", false},
+		{"a third host clears mounted", moving, with(moving, mount(0, false)), "hv3", false},
+		{"a third host writes its phase", placed, with(placed, func(st *v1.SiloStatus) { st.Phase = "Failed" }), "hv3", false},
+		{"host clears its own volume", placed, with(placed, mount(0, false)), "hv2", true},
+		{"host clears a volume still on a lost host", placed, with(placed, mount(1, false)), "hv2", false},
+		{"host marks an unattached volume mounted", placed, with(placed, mount(2, true)), "hv2", false},
+		{"host moves its silo", placed, with(placed, func(st *v1.SiloStatus) { st.Host = "hv9" }), "hv2", false},
+		{"host starts a move", placed, with(placed, func(st *v1.SiloStatus) { st.MovingFrom = "hv2" }), "hv2", false},
+	} {
+		err := HostWrite(c.old, c.next, c.host)
+		if (err == nil) != c.ok {
+			t.Errorf("%s: allowed=%v, want %v (%v)", c.name, err == nil, c.ok, err)
+		}
+		if err != nil && !errors.Is(err, ErrHostWrite) {
+			t.Errorf("%s: %v is not ErrHostWrite", c.name, err)
 		}
 	}
 }

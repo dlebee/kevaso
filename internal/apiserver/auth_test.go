@@ -224,6 +224,31 @@ func TestWorkerWritesOnlyItsOwnSilosStatus(t *testing.T) {
 	if err := worker.Update(e.ctx, &s); code(err) != http.StatusForbidden {
 		t.Fatalf("worker writing a silo's spec: want 403, got %v", err)
 	}
+	// A silo moving here from hv1, its volume still attached to and mounted on hv1: hv2 (the
+	// new host) may write the silo's status but never say hv1's volume is unmounted.
+	mk("moving", "hv2")
+	var mv v1.Silo
+	_ = e.admin.Get(e.ctx, "Silo", "dev", "moving", &mv)
+	mv.Status.MovingFrom = "hv1"
+	mv.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "linode-block", AttachedTo: "hv1", Mounted: true}}
+	if err := e.admin.UpdateStatus(e.ctx, &mv); err != nil {
+		t.Fatal(err)
+	}
+	_ = worker.Get(e.ctx, "Silo", "dev", "moving", &mv)
+	stale := mv
+	mv.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "linode-block", AttachedTo: "hv1"}}
+	if err := worker.UpdateStatus(e.ctx, &mv); code(err) != http.StatusForbidden {
+		t.Fatalf("new host clearing the old host's volume: want 403, got %v", err)
+	}
+	_ = worker.Get(e.ctx, "Silo", "dev", "moving", &mv)
+	mv.Status.Phase = "Scheduled"
+	if err := worker.UpdateStatus(e.ctx, &mv); err != nil {
+		t.Fatalf("new host writing the moving silo's phase: %v", err)
+	}
+	stale.Status.Phase = "Starting"
+	if err := worker.UpdateStatus(e.ctx, &stale); code(err) != http.StatusConflict {
+		t.Fatalf("a stale write: want 409, got %v", err)
+	}
 	// Hosts read everything but a secret's value: values reach a host only through the broker,
 	// for silos placed on it.
 	if err := worker.Call(e.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/dev/secrets/x/value", nil, nil); code(err) != http.StatusForbidden {

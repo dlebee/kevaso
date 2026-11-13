@@ -11,6 +11,7 @@ package moves
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"sort"
 
@@ -241,4 +242,54 @@ func Released(st v1.SiloStatus, host string) (v1.SiloStatus, bool) {
 // anyway: the host is lost and the silo isn't waiting on that host's handoff (it was fenced).
 func ForceRelease(s *v1.Silo, vs v1.VolumeStatus, attachedLost bool) bool {
 	return vs.Mounted && attachedLost && vs.AttachedTo != s.Status.Host && s.Status.MovingFrom != vs.AttachedTo
+}
+
+// ErrHostWrite is why a host's write of a silo's status is refused (a 403).
+var ErrHostWrite = errors.New("forbidden")
+
+// HostWrite judges a host's write of a silo's status: old as stored, next as written (a stale
+// write, from an older revision, is refused before this as a conflict). nil: allowed.
+//
+// A host writes only the status of a silo placed on it, and never where it is placed (host,
+// movingFrom). Per volume, the mounted flag is the host's whose the volume is (attachedTo: the
+// host it's attached to, or for a mount-reach class the one it's to be mounted on): only that
+// host may change it, so the control plane never detaches a volume a host still has mounted
+// because another host said it wasn't. Which volumes there are and where they're attached is
+// the control plane's. During a handoff the old host may only unmount its volumes (LetGo) and
+// then let go (Released); the new host may only set mounted on volumes attached to itself.
+func HostWrite(old, next v1.SiloStatus, host string) error {
+	if old.MovingFrom == host && old.Host != host {
+		for _, step := range []func(v1.SiloStatus, string) (v1.SiloStatus, bool){LetGo, Released} {
+			if want, ok := step(old, host); ok && reflect.DeepEqual(want, next) {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: %s is handing this silo off: it may only unmount its volumes and let go", ErrHostWrite, host)
+	}
+	if old.Host != host {
+		return fmt.Errorf("%w: %s may only write the status of silos placed on it", ErrHostWrite, host)
+	}
+	if next.Host != old.Host {
+		return fmt.Errorf("%w: %s may not place a silo (status.host)", ErrHostWrite, host)
+	}
+	if next.MovingFrom != old.MovingFrom {
+		return fmt.Errorf("%w: only %s can say it has let go of this silo", ErrHostWrite, old.MovingFrom)
+	}
+	if len(next.Volumes) != len(old.Volumes) {
+		return fmt.Errorf("%w: which volumes a silo has is the control plane's to write", ErrHostWrite)
+	}
+	for i, o := range old.Volumes {
+		n := next.Volumes[i]
+		switch {
+		case n.Name != o.Name || n.AttachedTo != o.AttachedTo:
+			return fmt.Errorf("%w: volume %s: where it is attached is the control plane's to write", ErrHostWrite, o.Name)
+		case n.Mounted != o.Mounted && o.AttachedTo != host:
+			to := o.AttachedTo
+			if to == "" {
+				to = "no host"
+			}
+			return fmt.Errorf("%w: volume %s is attached to %s: only that host says whether it is mounted", ErrHostWrite, o.Name, to)
+		}
+	}
+	return nil
 }
