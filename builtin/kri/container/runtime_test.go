@@ -19,6 +19,7 @@ import (
 type fake struct {
 	fmu        sync.Mutex // files: Exec looks for its command from another goroutine
 	files      map[string][]byte
+	modes      map[string]os.FileMode
 	cmds       []string
 	containers map[string]string // name → status
 	images     map[string]bool
@@ -31,7 +32,7 @@ type fake struct {
 }
 
 func newFake() *fake {
-	return &fake{files: map[string][]byte{}, containers: map[string]string{}, images: map[string]bool{}, pid: 100, wired: map[int]bool{}, pid1: map[string]string{}, digests: map[string]string{}}
+	return &fake{files: map[string][]byte{}, modes: map[string]os.FileMode{}, containers: map[string]string{}, images: map[string]bool{}, pid: 100, wired: map[int]bool{}, pid1: map[string]string{}, digests: map[string]string{}}
 }
 
 func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
@@ -49,6 +50,20 @@ func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
 		return 1, nil
 	}
 	switch {
+	case c.Name == "mount" && len(a) > 0 && a[len(a)-1] != "":
+		f.fmu.Lock()
+		f.files["/proc/self/mounts"] = append(f.files["/proc/self/mounts"], []byte(a[len(a)-2]+" "+a[len(a)-1]+" tmpfs rw 0 0\n")...)
+		f.fmu.Unlock()
+	case c.Name == "umount":
+		f.fmu.Lock()
+		var keep []string
+		for _, l := range strings.Split(string(f.files["/proc/self/mounts"]), "\n") {
+			if l != "" && strings.Fields(l)[1] != a[0] {
+				keep = append(keep, l+"\n")
+			}
+		}
+		f.files["/proc/self/mounts"] = []byte(strings.Join(keep, ""))
+		f.fmu.Unlock()
 	case c.Name == "nsenter" && strings.Contains(strings.Join(a, " "), "addr show dev eth0"):
 		if !f.wired[f.pid] {
 			return fail("")
@@ -124,10 +139,11 @@ func indexOf(l []string, v string) int {
 	return -1
 }
 
-func (f *fake) WriteFile(p string, d []byte, _ os.FileMode) error {
+func (f *fake) WriteFile(p string, d []byte, m os.FileMode) error {
 	f.fmu.Lock()
 	defer f.fmu.Unlock()
 	f.files[p] = append([]byte(nil), d...) // a copy, as a real file is
+	f.modes[p] = m
 	return nil
 }
 func (f *fake) ReadFile(p string) ([]byte, error) {

@@ -94,6 +94,43 @@ type InitContainers interface {
 	RunInit(ctx context.Context, id ID, step InitStep, out io.Writer) (exitCode int, err error)
 }
 
+// HostSecrets is a runtime whose silos get their file and env secrets from the host with nothing
+// written into them (containers, ADR 0009 addendum: files from a tmpfs of the host's, mounted
+// read-only; variables in the engine's own config), instead of the agent writing them in through
+// Exec. The agent calls SetSecrets before the silo starts (before its init containers too) and
+// again whenever what it receives changes; Stop and Kill take the values out of the host's memory
+// where the runtime can (the next start gets them again), Delete removes everything.
+//
+// A file changes in place while the silo runs. pending says what waits for its next start: an
+// environment variable (a running process's environment can't be changed), or a file in a folder
+// the running silo doesn't have mounted yet. "" when nothing waits.
+type HostSecrets interface {
+	SetSecrets(ctx context.Context, id ID, s Secrets) (pending string, err error)
+}
+
+// Secrets are a silo's file and env deliveries, with their values.
+type Secrets struct {
+	Files []SecretFile
+	Env   []SecretEnv
+}
+
+// SecretFile is one secret as a file in the silo, owned by root.
+type SecretFile struct {
+	Secret  string
+	Path    string // absolute, under /run/
+	Mode    uint32 // e.g. 0o400
+	Value   []byte
+	Version int64
+}
+
+// SecretEnv is one secret as an environment variable of the silo's command.
+type SecretEnv struct {
+	Secret  string
+	Name    string
+	Value   []byte
+	Version int64
+}
+
 // State is where a silo is on this host.
 type State string
 

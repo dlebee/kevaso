@@ -160,6 +160,9 @@ pipe: never in argv, never in a file on the host.
 - Containers' init steps run in init containers before the main container starts, so they don't
   see `file` / `env` secrets (VMs' init steps, run by exec, do).
 
+**Containers changed since: see the addendum below.** The exec path above is now the microVMs'
+only; containers get their files from a tmpfs of the host's and their variables from the engine.
+
 ### 3. The egress CA
 
 A silo whose grants inject a secret must trust its host's egress CA. Containers keep the bundle the
@@ -226,6 +229,59 @@ has no route to it, and the integration tests check a silo can't reach it).
   endpoint until the policy-and-token path is built.
 - No live "rotated" notice inside the silo any more: a program that keeps a `file` secret open
   re-reads it on its own schedule (or watches the file).
+
+## Addendum (2026-11-13): `file` and `env` on containers, from the host
+
+Admission refused `deliver: file` and `deliver: env` for `docker` and `podman` silos; they work on
+both now, with nothing of Kevaso's inside the container and nothing exec'd into it (so a
+distroless image works too). The runtime has `kri.HostSecrets`: the agent hands it a silo's
+deliveries before the silo starts (before its init containers too) and whenever they change.
+`builtin/kri/container/secrets.go` has the details.
+
+**Files.** Each silo has a tmpfs of the host's own, `/run/kevaso-secrets/SHORT` (0700, 16 MiB,
+`nosuid,nodev,noexec`), mounted by the runtime. A file at `/run/a/b` in the silo is
+`…/files/run/a/b` there (0400, root), and its folder `/run/a` is bind-mounted **read-only** into the
+main container and its init containers (`--mount type=bind,…,readonly`). So:
+- in memory only, never in the container's writable layer, an image or `docker inspect` (which
+  shows the folder, not a value); there before init steps and the command start;
+- rotated in place: the host renames a new file over the old one in the mounted folder, so the
+  silo sees it without a restart (as on microVMs, where the file is rewritten while it runs);
+- the container can't write in that folder, so it can't plant a link the host would follow;
+- **a file must be in a folder under `/run`, not in `/run` itself** (admission says so for
+  containers): `/run` stays the container's own writable tmpfs;
+- a file in a folder the running container doesn't have mounted yet (a grant added while it runs)
+  waits for its next start (a running container can't get a new mount); microVMs get it at once;
+- stop or kill takes every value out of the host's tmpfs (the agent sets them again before the next start);
+  a deletion unmounts the tmpfs. A silo placed on another host gets them there; the old host's
+  delete leaves nothing.
+
+**Variables.** The engine sets a container's environment when the container is made and keeps
+it; with nothing of ours inside, there is no other way to give the command a variable. They go
+in through `--env-file`, a file in the same tmpfs (0600): never on a command line, so never in
+the host's process listing. **What Docker and podman can't avoid:** the engine keeps the values
+in the container's config, so `docker inspect` / `podman inspect` shows them (`Config.Env`) to
+anyone with access to the host's engine, and the engine stores that config on the host's disk
+(docker: `/var/lib/docker/containers/ID/config.v2.json`; podman: its containers database).
+Admission accepts such a silo with a warning (an HTTP `Warning` header that `kvo` prints), and
+`SecretsDelivered` says it too. A rotated variable takes effect at the next start, when the main
+container is made afresh from its image (volumes kept, its writable layer not); on microVMs the
+env file is rewritten at once and read by the next login shell, and a running process sees neither
+change. Values with a newline or NUL are refused (the env-file format can't carry them; deliver
+as a file), and so, on podman, are values starting with a quote (its env-file reader unquotes).
+
+**What someone with the host's engine (or root on the host) can see:** the folders mounted and
+the env file's path (`inspect`, the process listing); the variables' values (`inspect`, the
+engine's state on disk). They can't see a file's value through the engine; root on the host
+can read the tmpfs, as it can a microVM's memory.
+
+**Differs from microVMs:** files only in a folder under `/run`; a new folder and a rotated
+variable wait for the next start; variables are the command's own environment (on a VM only
+login shells read them) and visible to the engine's users; a stopped container silo has no
+value in the host's tmpfs (its variables stay in the engine's config). If the engine remaps users (docker `userns-remap`), root in the container isn't
+the host's root, and a 0400 root file is unreadable inside: not supported yet.
+
+**OpenShell** still refuses `file` and `env`, saying why: its exec runs as the sandbox's own user,
+not root, no folder of the host's is mounted in, and its environment is OpenShell's.
 
 ## History
 

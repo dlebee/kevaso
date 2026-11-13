@@ -406,6 +406,13 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			st.Image.Digest = digest
 		})
 	case kri.Created, kri.Stopped:
+		hs, hostSecrets := rt.(kri.HostSecrets)
+		if hostSecrets {
+			// Its file and env secrets are there before anything of it starts (init containers too).
+			if err := a.deliverFromHost(ctx, hs, s, true); err != nil {
+				return engine.Result{}, err
+			}
+		}
 		if ic, ok := rt.(kri.InitContainers); ok {
 			// Init containers: the steps run before the main process, each in its own container.
 			if rs.State == kri.Stopped && s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" && initDone(s) {
@@ -425,7 +432,9 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		if err := a.recordForFence(s); err != nil {
 			return engine.Result{}, err
 		}
-		a.delivered.Delete(s.UID) // a fresh boot: an empty /run, its secrets are written again
+		if !hostSecrets {
+			a.delivered.Delete(s.UID) // a fresh boot: an empty /run, its secrets are written again
+		}
 		// Every start begins its probes afresh: startup's deadline counts from this boot.
 		a.probed.Delete(s.UID)
 		if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Probes, st.StartedAt = nil, nil }); err != nil {

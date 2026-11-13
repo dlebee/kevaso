@@ -1,6 +1,8 @@
 package v1
 
 import (
+	"path"
+	"strings"
 	"time"
 
 	"kevaso.com/core/api/meta"
@@ -176,6 +178,20 @@ type SignOperation struct {
 // GrantRequires is what the asking silo must prove.
 type GrantRequires struct {
 	Assurance string `json:"assurance,omitempty"` // host (default) | vtpm | confidential
+}
+
+// ContainerFileProblem says why a file secret can't be delivered at p on a container silo (""
+// if it can): it must be in a folder under /run, since the host mounts that folder into the
+// container read-only (/run itself stays the container's own, writable tmpfs). Pure.
+func ContainerFileProblem(p string) string {
+	c := path.Clean(p)
+	switch {
+	case !path.IsAbs(p) || c != p || !strings.HasPrefix(c, "/run/"):
+		return p + " must be a clean path under /run/"
+	case path.Dir(c) == "/run":
+		return p + " must be in a folder under /run (like /run/secrets/NAME), not in /run itself: on a container the host mounts that folder read-only"
+	}
+	return ""
 }
 
 // Delivery returns the secret's delivery mode, broker by default.

@@ -398,6 +398,7 @@ type writeFunc func(ctx context.Context, t target, obj meta.Object) (store.Objec
 
 func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Request, t target, fn writeFunc, okCode int) {
 	ctx = withDryRun(ctx, r) // dryrun.go
+	ctx, warned := withWarnings(ctx)
 	body, err := readBody(r)
 	if err != nil {
 		writeErr(w, err)
@@ -457,6 +458,7 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		writeErr(w, err)
 		return
 	}
+	warned.set(w.Header())
 	writeJSON(w, okCode, b)
 }
 

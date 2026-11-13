@@ -234,6 +234,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		_, _ = fmt.Fprintln(stderr, "kvo:", err)
 		return 1
 	}
+	c.Warnings = func(text string) { _, _ = fmt.Fprintln(stderr, "Warning:", text) }
 	switch args[0] {
 	case "auth":
 		var code int
