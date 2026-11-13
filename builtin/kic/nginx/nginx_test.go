@@ -1,6 +1,7 @@
 package nginx
 
 import (
+	"os"
 	"os/exec"
 	"slices"
 	"strconv"
@@ -105,6 +106,28 @@ func TestNginxAcceptsIt(t *testing.T) {
 	}
 	dir := t.TempDir()
 	cfg := kictest.Materialize(t, p, dir, "/var/log/nginx", "/tmp/kvo-nginx-test.pid")
+	// nginx -t opens its listening sockets, and a test doesn't run as root: move 80 and 443 up.
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := strings.NewReplacer("listen 80", "listen 18080", "listen 443", "listen 18443").Replace(string(b))
+	if moved == string(b) {
+		t.Fatal("no listen 80 / 443 found to move: the test would need root")
+	}
+	// …and its temporary folders default to places only root can make.
+	var temps strings.Builder
+	for _, d := range []string{"client_body", "proxy", "fastcgi", "uwsgi", "scgi"} {
+		temps.WriteString("\n    " + d + "_temp_path " + dir + "/tmp_" + d + ";")
+	}
+	withTemps := strings.Replace(moved, "http {", "http {"+temps.String(), 1)
+	if withTemps == moved {
+		t.Fatal("no http block found")
+	}
+	moved = withTemps
+	if err := os.WriteFile(cfg, []byte(moved), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if out, err := exec.Command(bin, "-t", "-q", "-p", dir, "-c", cfg, "-e", dir+"/error.log").CombinedOutput(); err != nil {
 		t.Fatalf("nginx -t: %v\n%s", err, out)
 	}

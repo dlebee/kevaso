@@ -103,10 +103,17 @@ func TestFenceRecordCoversTheSiloWhileItCanRun(t *testing.T) {
 
 	// Placed elsewhere while its copy here can't be removed yet: still recorded.
 	rt.holdDelete.Store(true)
-	_ = c.Get(ctx, "Silo", "dev", "web", s)
-	s.Status.Host = "hv2"
-	if err := c.UpdateStatus(ctx, s); err != nil {
-		t.Fatal(err)
+	for { // the agent writes this silo's status too: read again on a conflict
+		_ = c.Get(ctx, "Silo", "dev", "web", s)
+		s.Status.Host = "hv2"
+		err := c.UpdateStatus(ctx, s)
+		if client.IsConflict(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		break
 	}
 	time.Sleep(2500 * time.Millisecond)
 	if !recorded() {

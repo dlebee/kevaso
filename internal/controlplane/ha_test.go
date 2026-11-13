@@ -258,14 +258,21 @@ func (c *cluster) worker(name string, servers ...string) (*client.Client, string
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	var cur v1.Host
-	if err := wc.Get(ctx, "Host", "", name, &cur); err != nil {
-		c.t.Fatal(err)
-	}
-	cur.Status.Runtimes = map[string]v1.RuntimeStatus{"cloud-hypervisor": {State: "Ready"}}
-	cur.Status.Allocatable = v1.Resources{CPU: 8, Memory: "16Gi"}
-	if err := wc.UpdateStatus(ctx, &cur); err != nil {
-		c.t.Fatal(err)
+	for { // the control plane writes this Host's status too: read again on a conflict
+		var cur v1.Host
+		if err := wc.Get(ctx, "Host", "", name, &cur); err != nil {
+			c.t.Fatal(err)
+		}
+		cur.Status.Runtimes = map[string]v1.RuntimeStatus{"cloud-hypervisor": {State: "Ready"}}
+		cur.Status.Allocatable = v1.Resources{CPU: 8, Memory: "16Gi"}
+		err := wc.UpdateStatus(ctx, &cur)
+		if client.IsConflict(err) {
+			continue
+		}
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		break
 	}
 	go worker.Heartbeat(ctx, wc, name, 100*time.Millisecond, clock.Real{}, func(string, ...any) {}, nil)
 	a := &agent.Agent{Client: wc, HostName: name, Runtimes: map[string]kri.Runtime{"cloud-hypervisor": echo{fake.New()}}, Clock: clock.Real{}, TunnelRefresh: 100 * time.Millisecond,
