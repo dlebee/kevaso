@@ -50,8 +50,10 @@ type ApprovalSpec struct {
 	Silo    string `json:"silo"`
 	SiloUID string `json:"siloUID"`
 	Secret  string `json:"secret"`
-	Use     string `json:"use"`   // get-secret | sign | inject
-	Grant   string `json:"grant"` // the grant that requires the yes
+	// Port: an expose approval's leased port (its Secret is empty).
+	Port  string `json:"port,omitempty"`
+	Use   string `json:"use"`   // get-secret | sign | inject | expose
+	Grant string `json:"grant"` // the grant that requires the yes
 	// Inject: where the request goes. Sign: the payload's hash (hex SHA-256) and size.
 	Destination *ApprovalDestination `json:"destination,omitempty"`
 	PayloadHash string               `json:"payloadHash,omitempty"`

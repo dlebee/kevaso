@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"kevaso.com/core/api/client"
+	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/audit"
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
@@ -128,6 +129,8 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 		a.Verb, a.Resource = "create", t.kind.Plural+"/"+t.stream // ssh; files: write
 	case t.move:
 		a.Verb, a.Resource = "create", t.kind.Plural+"/move"
+	case t.lease != "":
+		a.Verb, a.Resource = v1.VerbOpen, v1.ResourceExposure // open and close
 	case t.token:
 		a.Verb, a.Resource = "create", t.kind.Plural+"/token"
 	case t.value:
@@ -183,6 +186,9 @@ func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups [
 	if t.answer != "" {
 		a = s.approvalAttributes(ctx, a, t)
 	}
+	if t.lease != "" {
+		a = s.exposureAttributes(ctx, a, v1.VerbOpen, t.namespace, t.name)
+	}
 	d := p.Authorize(a)
 	if !d.Allowed && t.kind.Kind == "Namespace" && a.Verb == "list" {
 		return true, true, "namespaces you have a role in", nil
@@ -198,6 +204,8 @@ func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
 	case t.value: // values reach hosts only for their own silos, through the broker
 		return false
 	case t.answer != "": // only people answer approvals
+		return false
+	case t.lease != "": // hosts never open leases (a silo asks through its broker)
 		return false
 	case t.bundle: // bundles are for people's clients, never for hosts
 		return false

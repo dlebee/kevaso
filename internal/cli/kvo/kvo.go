@@ -68,7 +68,8 @@ type opts struct {
 	all, noBrowser                           bool
 	secret                                   secretOpts
 	sets                                     setOpts
-	term                                     termOpts // exec -it, cp, ui (terminal.go, copy.go)
+	term                                     termOpts  // exec -it, cp, ui (terminal.go, copy.go)
+	lease                                    leaseOpts // kvo open / close (leases.go)
 	args                                     []string
 	command                                  []string // after --
 	ctxNamespace                             string   // the context's default namespace
@@ -117,6 +118,12 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.reason, err = val()
 		case "--to":
 			o.moveTo, err = val()
+		case "--port":
+			o.lease.port, err = val()
+		case "--for":
+			o.lease.forDur, err = val()
+		case "--no-wait":
+			o.lease.noWait = true
 		case "--recreate":
 			o.recreate = true
 		case "--confirm-fenced":
@@ -178,7 +185,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|pane|create|secret|approve|deny|login|logout|ctx|ns|auth …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|pane|create|secret|approve|deny|open|close|login|logout|ctx|ns|auth …")
 		return 2
 	}
 	o, err := parse(args[1:], os.Getenv)
@@ -226,6 +233,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		err = paneCommand(ctx, c, o, stdout)
 	case "approve", "deny":
 		err = approve(ctx, c, o, args[0], stdout)
+	case "open", "close":
+		err = leaseCommand(ctx, c, o, args[0], stdout, stderr)
 	case "delete":
 		err = del(ctx, c, o, stdout)
 	case "watch":
@@ -636,6 +645,9 @@ func summary(obj meta.Object) string {
 	case *v1.Approval:
 		c := approvalColumns(o, time.Now())
 		parts = append(parts, "silo="+c[0], "secret="+c[1], "use="+c[2], "phase="+c[4], o.Spec.Summary)
+	case *v1.Lease:
+		c := leaseColumns(o, time.Now())
+		parts = append(parts, "silo="+c[0], "port="+c[1], "phase="+c[2], c[3])
 	case *v1.Host:
 		names := make([]string, 0, len(o.Status.Runtimes))
 		for n := range o.Status.Runtimes {
@@ -693,6 +705,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 		head = append(head, "VERSIONS")
 	case "Approval":
 		head = append(head, "SILO", "SECRET", "USE", "FOR", "PHASE", "WHEN", "ANSWERED-BY")
+	case "Lease":
+		head = append(head, leaseHead...)
 	case "Pane":
 		head = append(head, "SILO", "PANE", "KIND", "STATE", "UPDATED")
 	}
@@ -778,6 +792,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			row = append(row, strings.Join(o.Spec.Hosts, ","), o.Spec.Issuer, exp, readiness(o.Status.Conditions))
 		case *v1.Approval:
 			row = append(row, approvalColumns(o, time.Now())...)
+		case *v1.Lease:
+			row = append(row, leaseColumns(o, time.Now())...)
 		case *v1.Pane:
 			state, updated := plain(o.Spec.State, 16), "-"
 			if o.Spec.Kind == v1.PaneHTML {

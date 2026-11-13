@@ -32,6 +32,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/clock"
+	"kevaso.com/core/internal/leases"
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/rbac"
 	"kevaso.com/core/internal/scheduler"
@@ -57,6 +58,7 @@ type Server struct {
 	backup   func(context.Context, []byte) ([]byte, error)
 
 	approvalLimits approvals.Limits
+	leaseLimits    leases.Limits                     // port leases (leases.go)
 	classes        func() map[string]scheduler.Class // the plugins' classes; nil: none
 	paneRates      paneRates
 
@@ -149,6 +151,7 @@ type target struct {
 	answer    string // an approval's /approve or /deny
 	bundle    bool   // a pane's /bundle
 	stream    string // a silo's /ssh or /files (silostreams.go)
+	lease     string // a silo's /open or /close (leases.go)
 
 	def *definedKind // a kind defined by a KindDefinition (kinds.go); nil for built-ins
 }
@@ -182,6 +185,8 @@ func parsePath(path string) (target, error) {
 		t.stream = parts[2]
 	case len(parts) == 3 && parts[2] == "move" && k.Kind == "Silo":
 		t.move = true
+	case len(parts) == 3 && (parts[2] == "open" || parts[2] == "close") && k.Kind == "Silo":
+		t.lease = parts[2]
 	case len(parts) == 3 && parts[2] == "token" && k.Kind == "ServiceAccount":
 		t.token = true
 	case len(parts) == 3 && parts[2] == "value" && k.Kind == "Secret":
@@ -216,6 +221,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.siloFiles(w, r, t.namespace, t.name)
 	case t.move:
 		s.moveSilo(w, r, t)
+	case t.lease != "":
+		s.siloLease(w, r, t)
 	case t.token:
 		s.serviceAccountToken(w, r, t)
 	case t.value && r.Method == http.MethodGet:
@@ -226,6 +233,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.paneBundle(w, r, t)
 	case t.kind.Kind == "Approval" && (r.Method == http.MethodPost || r.Method == http.MethodPut) && !internal(ctx):
 		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "approvals are made by the broker when a silo asks; answer one with kvo approve or kvo deny"))
+	case t.kind.Kind == "Lease" && (r.Method == http.MethodPost || r.Method == http.MethodPut) && !internal(ctx):
+		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "leases are made when a silo or a person asks; use kvo open / kvo close"))
 	case t.kind.Kind == "Pane" && (r.Method == http.MethodPost || r.Method == http.MethodPut) && !internal(ctx):
 		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "panes are reported by their silo (spec.panes); they can't be written through the API"))
 	case t.value:
@@ -418,6 +427,10 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if err := s.checkMovability(t, obj); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := s.checkLease(t, obj); err != nil {
 		writeErr(w, err)
 		return
 	}

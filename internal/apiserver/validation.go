@@ -204,10 +204,10 @@ var builtinRules = map[string][]Rule{
 var rbacRuleRules = []Rule{
 	{`!has(self.rules) || self.rules.all(r, has(r.verbs) && r.verbs.size() > 0 && has(r.resources) && r.resources.size() > 0)`,
 		"every rule needs verbs and resources"},
-	{`!has(self.rules) || self.rules.all(r, r.verbs.all(v, v in ['*', 'get', 'list', 'watch', 'create', 'update', 'patch', 'delete', 'use', 'read-value', 'write', 'approve']))`,
-		"verbs must be *, get, list, watch, create, update, patch, delete, or for secrets use, read-value, write and approve"},
-	{`!has(self.rules) || self.rules.all(r, !has(r.selector) || r.resources.all(x, x == 'secrets'))`,
-		"a rule's selector (by label) only works on secrets"},
+	{`!has(self.rules) || self.rules.all(r, r.verbs.all(v, v in ['*', 'get', 'list', 'watch', 'create', 'update', 'patch', 'delete', 'use', 'read-value', 'write', 'approve', 'open']))`,
+		"verbs must be *, get, list, watch, create, update, patch, delete, or for secrets use, read-value, write and approve, or for silos/exposure open and approve"},
+	{`!has(self.rules) || self.rules.all(r, !has(r.selector) || r.resources.all(x, x == 'secrets' || x == 'silos/exposure'))`,
+		"a rule's selector (by label) only works on secrets and silos/exposure"},
 }
 
 var bindingRules = []Rule{

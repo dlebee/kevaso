@@ -150,7 +150,7 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 }
 
 func run(ctx context.Context, dial Dialer, root string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	usage := errors.New("usage: kvo-guest secret get NAME [--for D] [--wait D] | sign KEY [--slot N] [--for D] [--wait D] < payload | public-key KEY | pane report NAME … | pane html NAME --bundle FILE … | sync [--once] | ingress [--install]")
+	usage := errors.New("usage: kvo-guest secret get NAME [--for D] [--wait D] | sign KEY [--slot N] [--for D] [--wait D] < payload | public-key KEY | pane report NAME … | pane html NAME --bundle FILE … | port open NAME [--for D] [--wait D] | port close NAME | sync [--once] | ingress [--install]")
 	if len(args) == 0 {
 		return usage
 	}
@@ -199,6 +199,8 @@ func run(ctx context.Context, dial Dialer, root string, args []string, stdin io.
 		return err
 	case "pane":
 		return paneCommand(ctx, dial, args[1:], stdin, stdout)
+	case "port":
+		return portCommand(ctx, dial, args[1:], stdout, stderr)
 	case "public-key":
 		if len(args) != 2 {
 			return usage

@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -170,6 +171,8 @@ type LoadBalancers struct {
 	Hosts   *informer.Informer
 	Plugins *plugins.Registry
 	Clock   clock.Clock
+	// Leases (optional): a leased port with no active lease has no backend (design §7.2d).
+	Leases *informer.Informer
 	// Resync is how often an unchanged load balancer is ensured anyway, to repair changes made
 	// outside Kevaso (default 10m).
 	Resync time.Duration
@@ -263,7 +266,11 @@ func (c *LoadBalancers) Reconcile(ctx context.Context, k engine.Key) (engine.Res
 	for _, np := range s.Status.Service.NodePorts {
 		nps[np.Name] = np.NodePort
 	}
+	closed, leaseEnd := c.leased(s)
 	for _, sp := range s.Spec.Service.Ports {
+		if slices.Contains(closed, sp.Name) {
+			continue
+		}
 		proto := "TCP"
 		if strings.EqualFold(sp.Protocol, "UDP") {
 			proto = "UDP"
@@ -276,8 +283,12 @@ func (c *LoadBalancers) Reconcile(ctx context.Context, k engine.Key) (engine.Res
 	if resync <= 0 {
 		resync = 10 * time.Minute
 	}
+	var again time.Duration // look again when a lease ends, even if nothing else changes
+	if !leaseEnd.IsZero() {
+		again = max(leaseEnd.Sub(c.now()), time.Second)
+	}
 	if s.Status.Service.PublicIP != "" && remember(&c.mu, &c.ensured, s.UID, reqKey, resync) {
-		return engine.Result{}, nil
+		return engine.Result{RequeueAfter: again}, nil
 	}
 	st, err := p.Conn.EnsureLoadBalancer(ctx, lb)
 	if errors.Is(err, kplugin.ErrInProgress) {
@@ -299,6 +310,9 @@ func (c *LoadBalancers) Reconcile(ctx context.Context, k engine.Key) (engine.Res
 		return engine.Result{}, err
 	}
 	record(&c.mu, &c.ensured, s.UID, reqKey)
+	if again > 0 && again < resync {
+		return engine.Result{RequeueAfter: again}, nil
+	}
 	return engine.Result{RequeueAfter: resync}, nil // and again now and then: someone may change it outside
 }
 
