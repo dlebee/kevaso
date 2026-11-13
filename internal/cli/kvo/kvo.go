@@ -6,6 +6,7 @@
 //	kvo delete KIND NAME [-n NS]
 //	kvo watch KIND [-n NS|-A]
 //	kvo exec silo NAME [-n NS] -- CMD [ARGS…]   run a command in a silo; exits with its code
+//	kvo move silo NAME --to HOST [--recreate] [--confirm-fenced]   move it (with its data if it can)
 //	kvo login [SERVER --ca sha256:…] [--context NAME] [--no-browser]   sign in (browser + invite code)
 //	kvo logout                    forget this context's session
 //	kvo ctx [NAME]                list contexts, or switch to one
@@ -57,6 +58,8 @@ type opts struct {
 	ca                                       string // kvo login: the CA fingerprint to pin
 	duration                                 string // kvo create token
 	reason                                   string // kvo deny / approve
+	moveTo                                   string // kvo move --to
+	recreate, confirmFenced                  bool   // kvo move
 	all, noBrowser                           bool
 	secret                                   secretOpts
 	sets                                     setOpts
@@ -106,6 +109,12 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.duration, err = val()
 		case "--reason":
 			o.reason, err = val()
+		case "--to":
+			o.moveTo, err = val()
+		case "--recreate":
+			o.recreate = true
+		case "--confirm-fenced":
+			o.confirmFenced = true
 		case "--from-file":
 			o.secret.fromFile, err = val()
 		case "--from-literal":
@@ -157,7 +166,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|scale|reset|protect|create|secret|approve|deny|login|logout|ctx|ns|auth …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|scale|reset|protect|move|create|secret|approve|deny|login|logout|ctx|ns|auth …")
 		return 2
 	}
 	o, err := parse(args[1:], os.Getenv)
@@ -199,6 +208,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 	case "secret":
 		err = secretCommand(ctx, c, o, stdin, stdout)
+	case "move":
+		err = move(ctx, c, o, stdout)
 	case "approve", "deny":
 		err = approve(ctx, c, o, args[0], stdout)
 	case "delete":
@@ -497,7 +508,7 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	case "yaml":
 		return printYAML(stdout, objs)
 	case "", "wide":
-		return printTable(stdout, k, objs, o.all)
+		return printTable(stdout, k, objs, o.all, o.output == "wide")
 	default:
 		return fmt.Errorf("unknown output %q: use yaml, json or wide", o.output)
 	}
@@ -616,7 +627,7 @@ func summary(obj meta.Object) string {
 	return strings.Join(parts, "  ")
 }
 
-func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error {
+func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 	var head []string
 	if all && k.Scope == v1.Namespaced {
@@ -626,6 +637,9 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error 
 	switch k.Kind {
 	case "Silo":
 		head = append(head, "RUNTIME", "PHASE", "HOST")
+		if wide {
+			head = append(head, "MOVABLE")
+		}
 	case "Host":
 		head = append(head, "ADDRESS", "REGION", "COMPONENTS", "RUNTIMES")
 	case "Namespace":
@@ -663,6 +677,9 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all bool) error 
 		switch o := obj.(type) {
 		case *v1.Silo:
 			row = append(row, o.Spec.Runtime, dash(o.Status.Phase), dash(o.Status.Host))
+			if wide {
+				row = append(row, dash(o.Status.Movable))
+			}
 		case *v1.Host:
 			var comps, rts []string
 			if o.Spec.Components.ControlPlane != nil {

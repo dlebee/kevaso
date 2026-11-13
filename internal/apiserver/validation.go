@@ -66,8 +66,6 @@ var builtinRules = map[string][]Rule{
 			"volume names must be unique"},
 		{`!has(self.spec.allowFrom) || self.spec.allowFrom.all(a, a.silo != '')`,
 			"every allowFrom entry names a silo (NAME or NAMESPACE/NAME)"},
-		{`!has(self.spec.availability) || !has(self.spec.availability.onHostLoss) || self.spec.availability.onHostLoss != 'Move'`,
-			"onHostLoss: Move needs every disk on a movable storage class, and this silo's disk is local (host-bound): use Wait, or Recreate if its image is enough"},
 		{`!has(self.spec.update) || !has(self.spec.update.strategy) || self.spec.update.strategy in ['StopFirst', 'StartFirst']`,
 			"update.strategy must be StopFirst or StartFirst"},
 		{`!has(self.spec.update) || !has(self.spec.update.strategy) || self.spec.update.strategy != 'StartFirst'`,

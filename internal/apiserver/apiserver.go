@@ -32,7 +32,9 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/clock"
+	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/rbac"
+	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/internal/secrets"
 	"kevaso.com/core/internal/store"
 
@@ -55,6 +57,7 @@ type Server struct {
 	backup   func(context.Context, []byte) ([]byte, error)
 
 	approvalLimits approvals.Limits
+	classes        func() map[string]scheduler.Class // the plugins' classes; nil: none
 }
 
 // New returns a server over a store, without authentication (kevasod dev, tests).
@@ -137,6 +140,7 @@ type target struct {
 	exec      bool   // a silo's /exec
 	token     bool   // a service account's /token
 	value     bool   // a secret's /value
+	move      bool   // a silo's /move
 	answer    string // an approval's /approve or /deny
 }
 
@@ -165,6 +169,8 @@ func parsePath(path string) (target, error) {
 		t.status = true
 	case len(parts) == 3 && parts[2] == "exec" && k.Kind == "Silo":
 		t.exec = true
+	case len(parts) == 3 && parts[2] == "move" && k.Kind == "Silo":
+		t.move = true
 	case len(parts) == 3 && parts[2] == "token" && k.Kind == "ServiceAccount":
 		t.token = true
 	case len(parts) == 3 && parts[2] == "value" && k.Kind == "Secret":
@@ -191,6 +197,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case t.exec:
 		s.siloExec(w, r, t.namespace, t.name)
+	case t.move:
+		s.moveSilo(w, r, t)
 	case t.token:
 		s.serviceAccountToken(w, r, t)
 	case t.value && r.Method == http.MethodGet:
@@ -388,6 +396,10 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		writeErr(w, err)
 		return
 	}
+	if err := s.checkMovability(t, obj); err != nil {
+		writeErr(w, err)
+		return
+	}
 	if err := s.checkPublishPublic(ctx, t, obj); err != nil {
 		writeErr(w, err)
 		return
@@ -533,9 +545,13 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 	oldMeta := old.GetObjectMeta()
 
 	if id, ok := IdentityFrom(ctx); ok && id.Type == "host" && id.Role == "worker" && t.kind.Kind == "Silo" {
-		oldHost, newHost := old.(*v1.Silo).Status.Host, obj.(*v1.Silo).Status.Host
-		if oldHost != id.Name || newHost != id.Name {
+		oldS, newS := old.(*v1.Silo), obj.(*v1.Silo)
+		oldHost, newHost := oldS.Status.Host, newS.Status.Host
+		if (oldHost != id.Name || newHost != id.Name) && !releasesMove(oldS, newS, id.Name) {
 			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s may only write the status of silos placed on it", id)
+		}
+		if oldS.Status.MovingFrom != newS.Status.MovingFrom && !releasesMove(oldS, newS, id.Name) {
+			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s: only %s can say it has let go of this silo", id, oldS.Status.MovingFrom)
 		}
 	}
 	var next meta.Object
@@ -731,4 +747,14 @@ func exposure(obj meta.Object) string {
 		return ""
 	}
 	return svc.Expose
+}
+
+// releasesMove: the host a silo is moving away from may write one thing, that it has let go
+// (status.movingFrom cleared), and nothing else.
+func releasesMove(old, next *v1.Silo, host string) bool {
+	if old.Status.MovingFrom != host || next.Status.MovingFrom != "" {
+		return false
+	}
+	want, ok := moves.Released(old.Status, host)
+	return ok && reflect.DeepEqual(want, next.Status)
 }

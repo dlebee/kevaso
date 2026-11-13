@@ -63,6 +63,7 @@ type Class struct {
 	Plugin       string // the plugin serving it
 	OwnHostsOnly bool   // only the plugin's own machines can use it
 	NodePorts    bool   // load balancers: the host gets node ports
+	Topology     string // storage: host (default) | zone | region | global
 }
 
 // Env is the rest of the cluster a decision depends on.

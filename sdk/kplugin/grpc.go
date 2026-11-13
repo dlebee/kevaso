@@ -84,7 +84,7 @@ func trimSuffix(s, suf string) string {
 func classesTo(cs []Class) []*pb.Class {
 	out := make([]*pb.Class, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, &pb.Class{Name: c.Name, Description: c.Description, OwnHostsOnly: c.OwnHostsOnly, Announce: c.Announce, NodePorts: c.NodePorts})
+		out = append(out, &pb.Class{Name: c.Name, Description: c.Description, OwnHostsOnly: c.OwnHostsOnly, Announce: c.Announce, NodePorts: c.NodePorts, Topology: c.Topology})
 	}
 	return out
 }
@@ -92,7 +92,7 @@ func classesTo(cs []Class) []*pb.Class {
 func classesFrom(cs []*pb.Class) []Class {
 	out := make([]Class, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, Class{Name: c.GetName(), Description: c.GetDescription(), OwnHostsOnly: c.GetOwnHostsOnly(), Announce: c.GetAnnounce(), NodePorts: c.GetNodePorts()})
+		out = append(out, Class{Name: c.GetName(), Description: c.GetDescription(), OwnHostsOnly: c.GetOwnHostsOnly(), Announce: c.GetAnnounce(), NodePorts: c.GetNodePorts(), Topology: c.GetTopology()})
 	}
 	return out
 }

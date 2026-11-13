@@ -167,6 +167,7 @@ type Class struct {
 	OwnHostsOnly  bool                   `protobuf:"varint,3,opt,name=own_hosts_only,json=ownHostsOnly,proto3" json:"own_hosts_only,omitempty"` // only the plugin's machines can use it
 	Announce      bool                   `protobuf:"varint,4,opt,name=announce,proto3" json:"announce,omitempty"`                               // load balancers: the silo's host announces the address
 	NodePorts     bool                   `protobuf:"varint,5,opt,name=node_ports,json=nodePorts,proto3" json:"node_ports,omitempty"`            // load balancers: the host gets a node port per service port
+	Topology      string                 `protobuf:"bytes,6,opt,name=topology,proto3" json:"topology,omitempty"`                                // storage: host | zone | region | global (where it can attach from)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -234,6 +235,13 @@ func (x *Class) GetNodePorts() bool {
 		return x.NodePorts
 	}
 	return false
+}
+
+func (x *Class) GetTopology() string {
+	if x != nil {
+		return x.Topology
+	}
+	return ""
 }
 
 type Host struct {
@@ -1294,14 +1302,15 @@ const file_kplugin_proto_rawDesc = "" +
 	"\x05hosts\x18\x04 \x01(\bR\x05hosts\x12>\n" +
 	"\x0eload_balancers\x18\x05 \x03(\v2\x17.kevaso.plugin.v1.ClassR\rloadBalancers\x121\n" +
 	"\astorage\x18\x06 \x03(\v2\x17.kevaso.plugin.v1.ClassR\astorage\x12\x10\n" +
-	"\x03dns\x18\a \x03(\tR\x03dns\"\x9e\x01\n" +
+	"\x03dns\x18\a \x03(\tR\x03dns\"\xba\x01\n" +
 	"\x05Class\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +
 	"\x0eown_hosts_only\x18\x03 \x01(\bR\fownHostsOnly\x12\x1a\n" +
 	"\bannounce\x18\x04 \x01(\bR\bannounce\x12\x1d\n" +
 	"\n" +
-	"node_ports\x18\x05 \x01(\bR\tnodePorts\"4\n" +
+	"node_ports\x18\x05 \x01(\bR\tnodePorts\x12\x1a\n" +
+	"\btopology\x18\x06 \x01(\tR\btopology\"4\n" +
 	"\x04Host\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\"o\n" +

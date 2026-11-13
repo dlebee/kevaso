@@ -25,6 +25,7 @@ import (
 	"kevaso.com/core/builtin/kri/hostexec"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/policy"
 	"kevaso.com/core/sdk/kri"
 )
@@ -221,9 +222,22 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			return engine.Result{}, err
 		}
 		if s != nil { // mounted, but its runtime copy never got made
-			return engine.Result{}, a.unmountVolumes(ctx, s.UID, s)
+			if err := a.unmountVolumes(ctx, s.UID, s); err != nil {
+				return engine.Result{}, err
+			}
+			// Moved away from here: stopped and let go of, so the new host may start it.
+			if _, ok := moves.Released(s.Status, a.HostName); ok && s.DeletionTimestamp == nil {
+				a.log("%s/%s moved to %s: released here", s.Namespace, s.Name, s.Status.Host)
+				return engine.Result{}, a.releaseMove(ctx, s)
+			}
 		}
 		return engine.Result{}, nil
+	}
+	if !moves.MayStart(s, a.HostName) {
+		// Moving here: the old host stops it and lets go of its volumes first.
+		return engine.Result{RequeueAfter: 2 * time.Second}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			setCond(st, "Ready", meta.ConditionFalse, "Moving", "waiting for "+s.Status.MovingFrom+" to stop it and let go", s.Generation, a.now())
+		})
 	}
 	if a.fenced.Load() && s.Policy() != v1.OnHostLossWait {
 		return engine.Result{RequeueAfter: 5 * time.Second}, nil // cut off: start nothing that may run elsewhere
@@ -604,6 +618,28 @@ func (a *Agent) setStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.SiloS
 			continue
 		}
 		return err
+	}
+	return errors.New("status kept changing; will retry")
+}
+
+// releaseMove tells the control plane this host has let go of a silo that moved away.
+func (a *Agent) releaseMove(ctx context.Context, s *v1.Silo) error {
+	for range 5 {
+		st, ok := moves.Released(s.Status, a.HostName)
+		if !ok {
+			return nil
+		}
+		next := *s
+		next.Status = st
+		err := a.Client.UpdateStatus(ctx, &next)
+		if !client.IsConflict(err) {
+			return err
+		}
+		var fresh v1.Silo
+		if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &fresh); err != nil {
+			return err
+		}
+		s = &fresh
 	}
 	return errors.New("status kept changing; will retry")
 }

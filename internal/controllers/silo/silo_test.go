@@ -15,7 +15,9 @@ import (
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/internal/store"
+	"kevaso.com/core/sdk/kplugin"
 )
 
 var now = time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
@@ -192,5 +194,42 @@ func waitFor(ctx context.Context, t *testing.T, c *client.Client, name string, o
 			t.Fatalf("silo %s never reached the expected state; last status %+v", name, s.Status)
 		case <-time.After(20 * time.Millisecond):
 		}
+	}
+}
+
+// onHostLoss: Move (design §0.3): fenced first, like Recreate, then placed elsewhere with its data
+// (its image, its volumes) instead of a fresh copy; a silo whose storage stopped being movable waits.
+func TestDecideOnHostLossMove(t *testing.T) {
+	env := scheduler.Env{Classes: map[string]scheduler.Class{"juicefs": {Plugin: "juicefs", Topology: kplugin.TopologyGlobal}}}
+	moving := func() *v1.Silo {
+		s := newSilo("files")
+		s.Spec.Runtime = "docker"
+		s.Spec.Volumes = []v1.Volume{{Name: "data", Class: "juicefs", Size: "10Gi", MountPath: "/data"}}
+		s.Spec.Availability.OnHostLoss = v1.OnHostLossMove
+		s.Status.Host, s.Status.Phase, s.Status.Address = "hv1", "Running", "10.64.1.2"
+		s.Status.Image = &v1.SiloImage{From: "app", Ref: "app:1", Running: "app:1"}
+		s.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "juicefs", Handle: "vol-1", AttachedTo: "hv1", Mounted: true}}
+		return s
+	}
+	docker := func(h *v1.Host) *v1.Host {
+		h.Spec.Components.Worker.Runtimes = []v1.RuntimeSpec{{Name: "docker"}}
+		h.Status.Runtimes = map[string]v1.RuntimeStatus{"docker": {State: "Ready"}}
+		return h
+	}
+	s := moving()
+	s.Spec.Image = "app"
+	st, _, again, _ := silo.DecideIn(s, []*v1.Host{docker(lostHost("hv1", now.Add(-10*time.Second))), docker(readyHost("hv2"))}, nil, now, env)
+	if c := meta.FindCondition(st.Conditions, "HostLost"); st.Host != "hv1" || c.Reason != "Fencing" || !strings.Contains(c.Message, "with its data") || again == 0 {
+		t.Fatalf("Move early: %+v", st)
+	}
+	st, changed, _, _ := silo.DecideIn(s, []*v1.Host{docker(lostHost("hv1", now.Add(-time.Minute))), docker(readyHost("hv2"))}, nil, now, env)
+	c := meta.FindCondition(st.Conditions, "HostLost")
+	if !changed || st.Host != "hv2" || c.Reason != "Moved" || st.Image.Running != "app:1" || len(st.Volumes) != 1 || st.MovingFrom != "" || st.Movable != "Anywhere" {
+		t.Fatalf("Move: %+v", st)
+	}
+	// Its class lost its topology (the plugin changed): it waits instead.
+	st, _, _, _ = silo.DecideIn(moving(), []*v1.Host{docker(lostHost("hv1", now.Add(-time.Minute))), docker(readyHost("hv2"))}, nil, now, scheduler.Env{})
+	if c := meta.FindCondition(st.Conditions, "HostLost"); st.Host != "hv1" || c.Reason != "Waiting" || !strings.Contains(c.Message, "can't move") {
+		t.Fatalf("Move without a movable class: %+v", st)
 	}
 }

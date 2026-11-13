@@ -38,6 +38,7 @@ message Class {
   bool own_hosts_only = 3; // only the plugin's machines can use it
   bool announce = 4;       // load balancers: the silo's host announces the address
   bool node_ports = 5;     // load balancers: the host gets a node port per service port
+  string topology = 6;     // storage: host | zone | region | global (where it can attach from)
 }
 
 // ── Hosts ────────────────────────────────────────────────────────────────────

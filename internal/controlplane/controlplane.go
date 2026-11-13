@@ -153,6 +153,10 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		return nil, fmt.Errorf("kms: %w", err)
 	}
 	srv.SetApprovalLimits(cfg.Approvals)
+	if cfg.Plugins != nil {
+		reg := cfg.Plugins
+		srv.SetClasses(func() map[string]scheduler.Class { return provider.Classes(reg) })
+	}
 	srv.SetVault(&secrets.Vault{Store: st, KMS: localKMS, Now: cfg.Clock.Now})
 	srv.SetKMSAdmin(localKMS)
 	srv.SetBackup(func(ctx context.Context, pub []byte) ([]byte, error) {

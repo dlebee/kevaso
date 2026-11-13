@@ -49,7 +49,19 @@ type Class struct {
 	// NodePorts (load balancers): the load balancer sends to each backend host on a port of its own
 	// (a node port), which the host forwards to the silo.
 	NodePorts bool `json:"nodePorts,omitempty"`
+	// Topology (storage): from where a volume can be attached, which is what lets a silo move
+	// with its data (design §0.3, §6): host (pinned, the default), zone, region, or global (any
+	// host anywhere).
+	Topology string `json:"topology,omitempty"`
 }
+
+// Storage topologies.
+const (
+	TopologyHost   = "host"
+	TopologyZone   = "zone"
+	TopologyRegion = "region"
+	TopologyGlobal = "global"
+)
 
 // Host is a cluster host, as the control plane knows it.
 type Host struct {

@@ -11,7 +11,9 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/informer"
 	v1 "kevaso.com/core/api/v1"
+	hostctl "kevaso.com/core/internal/controllers/host"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/sdk/kplugin"
 )
@@ -200,8 +202,13 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 		return vs, 0, nil
 	}
 	if vs.AttachedTo != "" && vs.AttachedTo != h.Name {
-		// It moved: the old host must let go first.
-		if vs.Mounted {
+		// It moved: the old host must let go first, unless that host is lost and the silo was
+		// fenced there (its agent stopped it): then the volume is detached anyway.
+		attachedLost := false
+		if oh, ok := c.Hosts.Get("", vs.AttachedTo); ok {
+			attachedLost, _ = hostctl.Lost(oh.(*v1.Host))
+		}
+		if vs.Mounted && !moves.ForceRelease(s, vs, attachedLost) {
 			vs.Message = "waiting for " + vs.AttachedTo + " to unmount it"
 			return vs, c.poll(), nil
 		}

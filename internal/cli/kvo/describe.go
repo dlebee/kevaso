@@ -98,6 +98,10 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		}
 		kv(0, "Phase", dash(o.Status.Phase))
 		kv(0, "Host", dash(o.Status.Host))
+		if o.Status.MovingFrom != "" {
+			kv(0, "Moving from", o.Status.MovingFrom+" (it stops the silo and lets go first)")
+		}
+		kv(0, "Movable", dash(o.Status.Movable)+" (onHostLoss: "+o.Policy()+")")
 		kv(0, "Address", dash(o.Status.Address))
 		if sv := o.Spec.Service; sv != nil || o.Status.Service.Name != "" {
 			st := o.Status.Service

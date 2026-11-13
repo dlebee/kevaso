@@ -21,6 +21,7 @@ import (
 	"kevaso.com/core/internal/clock"
 	hostctl "kevaso.com/core/internal/controllers/host"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/scheduler"
 )
 
@@ -49,6 +50,10 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 		return st, false, 0, nil
 	}
 	var again time.Duration
+	movableChanged := false
+	if m := moves.Summary(s, moves.Of(s, env.Classes)); m != st.Movable {
+		st.Movable, movableChanged = m, true
+	}
 	// The image: resolved when the silo is new, and again only when spec.image changes (an Image's
 	// versions never change, so a resolved one stays right). Unresolvable: a new silo waits; a
 	// placed one keeps running what it has.
@@ -108,14 +113,34 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 				cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "HostBack", st.Host+" is back"
 				changed = meta.SetCondition(&st.Conditions, cond, now) || changed
 			}
-			return st, changed || imageChanged, 0, nil
-		case s.Policy() == v1.OnHostLossRecreate && now.Sub(since) < RecreateAfter:
+			return st, changed || imageChanged || movableChanged, 0, nil
+		case (s.Policy() == v1.OnHostLossRecreate || s.Policy() == v1.OnHostLossMove) && now.Sub(since) < RecreateAfter:
 			again = RecreateAfter - now.Sub(since)
 			cond.Status, cond.Reason = meta.ConditionTrue, "Fencing"
-			cond.Message = st.Host + " lost; recreating elsewhere once its agent has surely stopped it (onHostLoss: Recreate)"
+			what := "recreating"
+			if s.Policy() == v1.OnHostLossMove {
+				what = "moving it with its data"
+			}
+			cond.Message = st.Host + " lost; " + what + " elsewhere once its agent has surely stopped it (onHostLoss: " + s.Policy() + ")"
 			st.Phase = PhaseUnknown
 			changed := meta.SetCondition(&st.Conditions, cond, now)
 			return st, changed || imageChanged || s.Status.Phase != st.Phase, again, nil
+		case s.Policy() == v1.OnHostLossMove && !moves.Of(s, env.Classes).WithData:
+			// Admission refuses this; a class that stopped being movable since lands here: wait.
+			cond.Status, cond.Reason = meta.ConditionTrue, "Waiting"
+			cond.Message = st.Host + " lost; can't move it: " + moves.Of(s, env.Classes).Pinned
+			st.Phase = PhaseUnknown
+			changed := meta.SetCondition(&st.Conditions, cond, now)
+			return st, changed || imageChanged || s.Status.Phase != st.Phase, 0, nil
+		case s.Policy() == v1.OnHostLossMove:
+			// Fenced: its agent stopped it (and the volumes are force-detached from the lost host).
+			cond.Status, cond.Reason = meta.ConditionFalse, "Moved"
+			cond.Message = st.Host + " was lost: moved with its data (onHostLoss: Move)"
+			meta.SetCondition(&st.Conditions, cond, now)
+			meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Moving",
+				Message: "moving after losing " + st.Host, ObservedGeneration: s.Generation}, now)
+			st.Host, st.Address, st.MovingFrom = "", "", ""
+			// …and it's scheduled right away, below (its volumes keep it in their region).
 		case s.Policy() == v1.OnHostLossRecreate:
 			// Not lost any more (it's being placed afresh); the condition keeps what happened.
 			cond.Status, cond.Reason = meta.ConditionFalse, "Recreated"
@@ -162,7 +187,7 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 	}
 	changed := meta.SetCondition(&conds, cond, now)
 	st.Conditions = conds
-	changed = changed || imageChanged || st.Phase != s.Status.Phase || st.Host != s.Status.Host
+	changed = changed || imageChanged || movableChanged || st.Phase != s.Status.Phase || st.Host != s.Status.Host
 	return st, changed, again, nil
 }
 

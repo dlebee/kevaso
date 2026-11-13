@@ -323,6 +323,13 @@ type SiloStatus struct {
 	Volumes []VolumeStatus `json:"volumes,omitempty"`
 	// Image is what spec.image resolved to, and what the silo runs now.
 	Image *SiloImage `json:"image,omitempty"`
+	// MovingFrom is the host a move is taking the silo away from (design §0.3): until that host
+	// says it has stopped it and let go of its volumes, the new host starts nothing, so two copies
+	// never run. Empty when no move is under way, or when the old host was lost and fenced.
+	MovingFrom string `json:"movingFrom,omitempty"`
+	// Movable says where the silo could go with its data, from its storage: Pinned (HOST),
+	// Region (R), Anywhere; or Recreate when only a fresh copy can go elsewhere.
+	Movable string `json:"movable,omitempty"`
 }
 
 // SiloImage is a silo's image: resolved by the control plane (an Image's version, or the name as
