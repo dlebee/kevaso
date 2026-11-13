@@ -89,7 +89,7 @@ func livedIn() map[string][]meta.Object {
 				Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}, {Name: "docker"}}, Taints: []v1.Taint{{Key: "gpu", Value: "yes", Effect: v1.NoSchedule}}}}},
 		Status: v1.HostStatus{Allocatable: v1.Resources{CPU: 3, Memory: "4886Mi"}, LastHeartbeat: &created,
 			Conditions: []meta.Condition{{Type: "Ready", Status: meta.ConditionTrue, Reason: "WorkerUp", LastTransitionTime: created}},
-			Runtimes: map[string]v1.RuntimeStatus{"cloud-hypervisor": {State: "Ready", Version: "v54.1"}, "docker": {State: "Installing", Message: "3/5 engine"}}}}
+			Runtimes:   map[string]v1.RuntimeStatus{"cloud-hypervisor": {State: "Ready", Version: "v54.1"}, "docker": {State: "Installing", Message: "3/5 engine"}}}}
 	h.Status.Network.MeshIP = "10.63.0.2"
 	s := silo()
 	s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 8080}, {Name: "metrics", Port: 9090}}

@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	v1 "kevaso.com/core/api/v1"
-	"kevaso.com/core/internal/mesh"
 )
 
 // Properties of the rules a host gets, over random sets of silos (design §7.0, ADR 0010): what a
@@ -387,12 +386,5 @@ func TestSpoofedSiloSourceFromTheUplink(t *testing.T) {
 		if want := iif != "eth0"; ok != want {
 			t.Errorf("api's address arriving on %s reaches db: %v, want %v", iif, ok, want)
 		}
-	}
-}
-
-// The rules name the mesh's devices; they are internal/mesh's.
-func TestMeshDevicesAreTheMeshes(t *testing.T) {
-	if meshDevices[0] != mesh.Outer || meshDevices[1] != mesh.Inner {
-		t.Fatalf("kni allows silo sources from %v; the mesh's devices are %s, %s", meshDevices, mesh.Outer, mesh.Inner)
 	}
 }

@@ -242,7 +242,7 @@ func collect(t *testing.T) found {
 				}
 				shellBefore := i > 0 && oks[i-1] && shells[vals[i-1]]
 				variableShell := i > 0 && !oks[i-1]
-				if !(shellBefore || (composite && i == 0) || variableShell) {
+				if !shellBefore && (!composite || i != 0) && !variableShell {
 					continue
 				}
 				if variableShell && oks[i+1] && !strings.ContainsAny(vals[i+1], " ;|&$") {

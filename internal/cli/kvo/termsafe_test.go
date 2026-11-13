@@ -13,11 +13,11 @@ import (
 // and, compromised, anything in the status of the silos on it) reaches an operator's terminal through kvo. A silo is not trusted: none of it may
 // carry a terminal escape (retitle the window, rewrite the screen, hide a line) or a bidi
 // override, whether kvo prints it as a table or describes the object.
-const evil = "ok\x1b]0;pwned\x07\x1b[2J\x1b[1A\r‮hidden\u009b31m"
+const evil = "ok\x1b]0;pwned\x07\x1b[2J\x1b[1A\r\u202ehidden\u009b31m"
 
 func clean(t *testing.T, where, out string) {
 	t.Helper()
-	for _, bad := range []string{"\x1b", "\x07", "\r", "‮", "\u009b"} {
+	for _, bad := range []string{"\x1b", "\x07", "\r", "\u202e", "\u009b"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("%s: %q reached the terminal:\n%q", where, bad, out)
 		}

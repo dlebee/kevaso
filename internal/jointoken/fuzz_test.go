@@ -35,7 +35,7 @@ func FuzzRedeem(f *testing.F) {
 		right := token == real
 		err := iss.Check(ctx, token, host, role)
 		switch {
-		case err == nil && !(right && host == "hv2" && role == "worker"):
+		case err == nil && (!right || host != "hv2" || role != "worker"):
 			t.Fatalf("Check accepted %q for %q/%q", token, host, role)
 		case errors.Is(err, ErrNotAllowed) && !right:
 			t.Fatalf("%q isn't the token, yet the answer says it is (%v)", token, err)

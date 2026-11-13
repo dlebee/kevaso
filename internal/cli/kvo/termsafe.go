@@ -18,7 +18,7 @@ func (t terminalSafe) Write(p []byte) (int, error) {
 	out := make([]byte, 0, len(p))
 	for i := 0; i < len(p); {
 		r, n := utf8.DecodeRune(p[i:])
-		if r == '\n' || r == '\t' || !(r == utf8.RuneError && n == 1) && !drives(r) {
+		if r == '\n' || r == '\t' || (r != utf8.RuneError || n != 1) && !drives(r) {
 			out = append(out, p[i:i+n]...)
 		}
 		i += n

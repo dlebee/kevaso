@@ -93,7 +93,7 @@ func TestPropertyHostWrites(t *testing.T) {
 				fail("it placed the silo")
 			case old.Host != host && !handingOff:
 				fail("not its silo")
-			case next.MovingFrom != old.MovingFrom && !(handingOff && next.MovingFrom == ""):
+			case next.MovingFrom != old.MovingFrom && (!handingOff || next.MovingFrom != ""):
 				fail("it changed who is letting go")
 			case len(next.Volumes) != len(old.Volumes):
 				fail("it changed which volumes there are")
