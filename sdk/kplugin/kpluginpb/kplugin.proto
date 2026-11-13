@@ -40,6 +40,7 @@ message Class {
   bool node_ports = 5;     // load balancers: the host gets a node port per service port
   string topology = 6;     // storage: host | zone | region | global (where it can attach from)
   string reach = 7;        // storage: device (attached, the host mounts it; the default) | mount (the node side mounts it)
+  bool filters_sources = 8; // load balancers not announced: it accepts only Port.allow_from's client sources
 }
 
 // ── Hosts ────────────────────────────────────────────────────────────────────
@@ -75,6 +76,8 @@ message Port {
   string protocol = 2; // TCP | UDP
   int32 port = 3;
   int32 node_port = 4;
+  // where clients may connect from (CIDRs); empty: anywhere. Only sent to classes that filter sources.
+  repeated string allow_from = 5;
 }
 
 message LoadBalancer {

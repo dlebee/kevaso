@@ -84,7 +84,7 @@ func trimSuffix(s, suf string) string {
 func classesTo(cs []Class) []*pb.Class {
 	out := make([]*pb.Class, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, &pb.Class{Name: c.Name, Description: c.Description, OwnHostsOnly: c.OwnHostsOnly, Announce: c.Announce, NodePorts: c.NodePorts, Topology: c.Topology, Reach: c.Reach})
+		out = append(out, &pb.Class{Name: c.Name, Description: c.Description, OwnHostsOnly: c.OwnHostsOnly, Announce: c.Announce, NodePorts: c.NodePorts, Topology: c.Topology, Reach: c.Reach, FiltersSources: c.FiltersSources})
 	}
 	return out
 }
@@ -92,7 +92,7 @@ func classesTo(cs []Class) []*pb.Class {
 func classesFrom(cs []*pb.Class) []Class {
 	out := make([]Class, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, Class{Name: c.GetName(), Description: c.GetDescription(), OwnHostsOnly: c.GetOwnHostsOnly(), Announce: c.GetAnnounce(), NodePorts: c.GetNodePorts(), Topology: c.GetTopology(), Reach: c.GetReach()})
+		out = append(out, Class{Name: c.GetName(), Description: c.GetDescription(), OwnHostsOnly: c.GetOwnHostsOnly(), Announce: c.GetAnnounce(), NodePorts: c.GetNodePorts(), Topology: c.GetTopology(), Reach: c.GetReach(), FiltersSources: c.GetFiltersSources()})
 	}
 	return out
 }
@@ -125,7 +125,7 @@ func lbTo(lb LoadBalancer) *pb.LoadBalancer {
 	m := &pb.LoadBalancer{Class: lb.Class, Id: lb.ID, Namespace: lb.Namespace, Name: lb.Name, Address: lb.Address,
 		Backends: hostInfosTo(lb.Backends), Hosts: hostInfosTo(lb.Hosts)}
 	for _, p := range lb.Ports {
-		m.Ports = append(m.Ports, &pb.Port{Name: p.Name, Protocol: p.Protocol, Port: int32(p.Port), NodePort: int32(p.NodePort)})
+		m.Ports = append(m.Ports, &pb.Port{Name: p.Name, Protocol: p.Protocol, Port: int32(p.Port), NodePort: int32(p.NodePort), AllowFrom: p.AllowFrom})
 	}
 	return m
 }
@@ -134,7 +134,7 @@ func lbFrom(m *pb.LoadBalancer) LoadBalancer {
 	lb := LoadBalancer{Class: m.GetClass(), ID: m.GetId(), Namespace: m.GetNamespace(), Name: m.GetName(), Address: m.GetAddress(),
 		Backends: hostInfosFrom(m.GetBackends()), Hosts: hostInfosFrom(m.GetHosts())}
 	for _, p := range m.GetPorts() {
-		lb.Ports = append(lb.Ports, Port{Name: p.GetName(), Protocol: p.GetProtocol(), Port: int(p.GetPort()), NodePort: int(p.GetNodePort())})
+		lb.Ports = append(lb.Ports, Port{Name: p.GetName(), Protocol: p.GetProtocol(), Port: int(p.GetPort()), NodePort: int(p.GetNodePort()), AllowFrom: p.GetAllowFrom()})
 	}
 	return lb
 }

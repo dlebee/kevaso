@@ -7,6 +7,28 @@ import (
 	"kevaso.com/core/internal/leases"
 )
 
+// sources are where clients may reach each exposed port of s from (design §7.2d): the service's
+// loadBalancer.allowFrom (nil: anywhere), narrowed by lease.allowFrom on its leased ports. An
+// empty, non-nil list: no source may (the two don't overlap).
+func sources(s *v1.Silo) map[string][]string {
+	sv := s.Spec.Service
+	var base []string
+	if sv.LoadBalancer != nil {
+		base = sv.LoadBalancer.AllowFrom
+	}
+	out := map[string][]string{}
+	for _, p := range sv.Ports {
+		out[p.Name] = base
+	}
+	if sv.Lease != nil && len(sv.Lease.AllowFrom) > 0 {
+		narrow := leases.Sources(base, sv.Lease.AllowFrom)
+		for _, p := range leases.Leased(sv) {
+			out[p] = narrow
+		}
+	}
+	return out
+}
+
 // leased: which of s's leased ports are closed now (no backend on its load balancer), and when its
 // next lease ends (zero: none).
 func (c *LoadBalancers) leased(s *v1.Silo) ([]string, time.Time) {

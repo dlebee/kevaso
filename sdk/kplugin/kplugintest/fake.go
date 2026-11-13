@@ -13,7 +13,8 @@ import (
 	"kevaso.com/core/sdk/kplugin"
 )
 
-// Fake is an in-memory plugin named "fake" with classes fake-lb (node ports), fake-ip (announced),
+// Fake is an in-memory plugin named "fake" with classes fake-lb (node ports), fake-lb-filtered
+// (node ports, filters client sources), fake-ip (announced),
 // fake-block (a device), fake-share (mounted by the node side, global topology)
 // and DNS provider fake-dns. Node returns its node side on one host; all node sides share the
 // fake's volumes, like hosts sharing a network filesystem.
@@ -52,6 +53,8 @@ func New() *Fake {
 const (
 	ClassBlock = "fake-block"
 	ClassShare = "fake-share"
+	// ClassFilteredLB is a node-port class whose load balancer filters client sources.
+	ClassFilteredLB = "fake-lb-filtered"
 )
 
 func (f *Fake) call(s string, args ...any) error {
@@ -64,6 +67,7 @@ func (f *Fake) Info(context.Context) (kplugin.Info, error) {
 	return kplugin.Info{Name: "fake", Version: "0.0.0", Protocol: kplugin.Protocol, Hosts: true,
 		LoadBalancers: []kplugin.Class{
 			{Name: "fake-lb", OwnHostsOnly: true, NodePorts: true},
+			{Name: ClassFilteredLB, OwnHostsOnly: true, NodePorts: true, FiltersSources: true},
 			{Name: "fake-ip", OwnHostsOnly: true, Announce: true},
 		},
 		Storage: []kplugin.Class{

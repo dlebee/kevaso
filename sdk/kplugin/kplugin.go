@@ -56,6 +56,11 @@ type Class struct {
 	// NodePorts (load balancers): the load balancer sends to each backend host on a port of its own
 	// (a node port), which the host forwards to the silo.
 	NodePorts bool `json:"nodePorts,omitempty"`
+	// FiltersSources (load balancers): the load balancer itself accepts clients only from each
+	// port's AllowFrom. A class whose address isn't announced must, for any port with sources: its
+	// hosts see only the load balancer's addresses (SourceRanges), never the clients'. Without it,
+	// such ports are left out of the load balancer (design §7.2d: never open wider than asked).
+	FiltersSources bool `json:"filtersSources,omitempty"`
 	// Topology (storage): from where a volume can be attached, which is what lets a silo move
 	// with its data (design §0.3, §6): host (pinned, the default), zone, region, or global (any
 	// host anywhere).
@@ -119,6 +124,9 @@ type Port struct {
 	Protocol string `json:"protocol"` // TCP | UDP
 	Port     int    `json:"port"`
 	NodePort int    `json:"nodePort,omitempty"`
+	// AllowFrom are the client sources (CIDRs) the port accepts; nil: anywhere. Set only for
+	// classes with FiltersSources: the service's allowFrom, narrowed by an open lease's.
+	AllowFrom []string `json:"allowFrom,omitempty"`
 }
 
 // LoadBalancerStatus is where the load balancer is.

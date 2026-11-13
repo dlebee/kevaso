@@ -161,16 +161,17 @@ func (x *PluginInfo) GetDns() []string {
 }
 
 type Class struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Description   string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
-	OwnHostsOnly  bool                   `protobuf:"varint,3,opt,name=own_hosts_only,json=ownHostsOnly,proto3" json:"own_hosts_only,omitempty"` // only the plugin's machines can use it
-	Announce      bool                   `protobuf:"varint,4,opt,name=announce,proto3" json:"announce,omitempty"`                               // load balancers: the silo's host announces the address
-	NodePorts     bool                   `protobuf:"varint,5,opt,name=node_ports,json=nodePorts,proto3" json:"node_ports,omitempty"`            // load balancers: the host gets a node port per service port
-	Topology      string                 `protobuf:"bytes,6,opt,name=topology,proto3" json:"topology,omitempty"`                                // storage: host | zone | region | global (where it can attach from)
-	Reach         string                 `protobuf:"bytes,7,opt,name=reach,proto3" json:"reach,omitempty"`                                      // storage: device (attached, the host mounts it; the default) | mount (the node side mounts it)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Name           string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Description    string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	OwnHostsOnly   bool                   `protobuf:"varint,3,opt,name=own_hosts_only,json=ownHostsOnly,proto3" json:"own_hosts_only,omitempty"`     // only the plugin's machines can use it
+	Announce       bool                   `protobuf:"varint,4,opt,name=announce,proto3" json:"announce,omitempty"`                                   // load balancers: the silo's host announces the address
+	NodePorts      bool                   `protobuf:"varint,5,opt,name=node_ports,json=nodePorts,proto3" json:"node_ports,omitempty"`                // load balancers: the host gets a node port per service port
+	Topology       string                 `protobuf:"bytes,6,opt,name=topology,proto3" json:"topology,omitempty"`                                    // storage: host | zone | region | global (where it can attach from)
+	Reach          string                 `protobuf:"bytes,7,opt,name=reach,proto3" json:"reach,omitempty"`                                          // storage: device (attached, the host mounts it; the default) | mount (the node side mounts it)
+	FiltersSources bool                   `protobuf:"varint,8,opt,name=filters_sources,json=filtersSources,proto3" json:"filters_sources,omitempty"` // load balancers not announced: it accepts only Port.allow_from's client sources
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Class) Reset() {
@@ -250,6 +251,13 @@ func (x *Class) GetReach() string {
 		return x.Reach
 	}
 	return ""
+}
+
+func (x *Class) GetFiltersSources() bool {
+	if x != nil {
+		return x.FiltersSources
+	}
+	return false
 }
 
 type Host struct {
@@ -461,11 +469,13 @@ func (x *DescribeHostsResponse) GetHosts() []*HostInfo {
 }
 
 type Port struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Protocol      string                 `protobuf:"bytes,2,opt,name=protocol,proto3" json:"protocol,omitempty"` // TCP | UDP
-	Port          int32                  `protobuf:"varint,3,opt,name=port,proto3" json:"port,omitempty"`
-	NodePort      int32                  `protobuf:"varint,4,opt,name=node_port,json=nodePort,proto3" json:"node_port,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Name     string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Protocol string                 `protobuf:"bytes,2,opt,name=protocol,proto3" json:"protocol,omitempty"` // TCP | UDP
+	Port     int32                  `protobuf:"varint,3,opt,name=port,proto3" json:"port,omitempty"`
+	NodePort int32                  `protobuf:"varint,4,opt,name=node_port,json=nodePort,proto3" json:"node_port,omitempty"`
+	// where clients may connect from (CIDRs); empty: anywhere. Only sent to classes that filter sources.
+	AllowFrom     []string `protobuf:"bytes,5,rep,name=allow_from,json=allowFrom,proto3" json:"allow_from,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -526,6 +536,13 @@ func (x *Port) GetNodePort() int32 {
 		return x.NodePort
 	}
 	return 0
+}
+
+func (x *Port) GetAllowFrom() []string {
+	if x != nil {
+		return x.AllowFrom
+	}
+	return nil
 }
 
 type LoadBalancer struct {
@@ -1460,7 +1477,7 @@ const file_kplugin_proto_rawDesc = "" +
 	"\x05hosts\x18\x04 \x01(\bR\x05hosts\x12>\n" +
 	"\x0eload_balancers\x18\x05 \x03(\v2\x17.kevaso.plugin.v1.ClassR\rloadBalancers\x121\n" +
 	"\astorage\x18\x06 \x03(\v2\x17.kevaso.plugin.v1.ClassR\astorage\x12\x10\n" +
-	"\x03dns\x18\a \x03(\tR\x03dns\"\xd0\x01\n" +
+	"\x03dns\x18\a \x03(\tR\x03dns\"\xf9\x01\n" +
 	"\x05Class\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +
@@ -1469,7 +1486,8 @@ const file_kplugin_proto_rawDesc = "" +
 	"\n" +
 	"node_ports\x18\x05 \x01(\bR\tnodePorts\x12\x1a\n" +
 	"\btopology\x18\x06 \x01(\tR\btopology\x12\x14\n" +
-	"\x05reach\x18\a \x01(\tR\x05reach\"4\n" +
+	"\x05reach\x18\a \x01(\tR\x05reach\x12'\n" +
+	"\x0ffilters_sources\x18\b \x01(\bR\x0efiltersSources\"4\n" +
 	"\x04Host\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\"o\n" +
@@ -1481,12 +1499,14 @@ const file_kplugin_proto_rawDesc = "" +
 	"\x14DescribeHostsRequest\x12,\n" +
 	"\x05hosts\x18\x01 \x03(\v2\x16.kevaso.plugin.v1.HostR\x05hosts\"I\n" +
 	"\x15DescribeHostsResponse\x120\n" +
-	"\x05hosts\x18\x01 \x03(\v2\x1a.kevaso.plugin.v1.HostInfoR\x05hosts\"g\n" +
+	"\x05hosts\x18\x01 \x03(\v2\x1a.kevaso.plugin.v1.HostInfoR\x05hosts\"\x86\x01\n" +
 	"\x04Port\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\bprotocol\x18\x02 \x01(\tR\bprotocol\x12\x12\n" +
 	"\x04port\x18\x03 \x01(\x05R\x04port\x12\x1b\n" +
-	"\tnode_port\x18\x04 \x01(\x05R\bnodePort\"\x98\x02\n" +
+	"\tnode_port\x18\x04 \x01(\x05R\bnodePort\x12\x1d\n" +
+	"\n" +
+	"allow_from\x18\x05 \x03(\tR\tallowFrom\"\x98\x02\n" +
 	"\fLoadBalancer\x12\x14\n" +
 	"\x05class\x18\x01 \x01(\tR\x05class\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x1c\n" +

@@ -44,7 +44,7 @@ func TestWireRoundTrip(t *testing.T) {
 	c := serve(t, f)
 
 	info, err := c.Info(ctx)
-	if err != nil || info.Name != "fake" || info.Protocol != kplugin.Protocol || len(info.LoadBalancers) != 2 {
+	if err != nil || info.Name != "fake" || info.Protocol != kplugin.Protocol || len(info.LoadBalancers) != 3 || !info.LoadBalancers[1].FiltersSources {
 		t.Fatalf("info %+v %v", info, err)
 	}
 	hs, err := c.DescribeHosts(ctx, []kplugin.Host{{Name: "w1", Address: "203.0.113.5"}, {Name: "home", Address: "198.51.100.9"}})
@@ -82,9 +82,12 @@ func TestWireRoundTrip(t *testing.T) {
 	if err := c.EnsureRecord(ctx, r2); !errors.Is(err, kplugin.ErrConflict) {
 		t.Fatalf("someone else's record: %v", err)
 	}
-	st, err := c.EnsureLoadBalancer(ctx, kplugin.LoadBalancer{Class: "fake-lb", ID: "u1", Ports: []kplugin.Port{{Name: "web", Protocol: "TCP", Port: 80, NodePort: 30000}}, Backends: hs})
+	st, err := c.EnsureLoadBalancer(ctx, kplugin.LoadBalancer{Class: kplugintest.ClassFilteredLB, ID: "u1", Ports: []kplugin.Port{{Name: "web", Protocol: "TCP", Port: 80, NodePort: 30000, AllowFrom: []string{"203.0.113.0/24"}}}, Backends: hs})
 	if err != nil || st.Address == "" || len(st.SourceRanges) != 1 {
 		t.Fatalf("lb %+v %v", st, err)
+	}
+	if lbs, _, _ := f.Snapshot(); len(lbs["u1"].Ports) != 1 || len(lbs["u1"].Ports[0].AllowFrom) != 1 || lbs["u1"].Ports[0].AllowFrom[0] != "203.0.113.0/24" {
+		t.Fatalf("the port's sources didn't reach the plugin: %+v", lbs["u1"].Ports)
 	}
 }
 
