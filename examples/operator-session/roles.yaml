@@ -1,0 +1,10 @@
+# What the controller may do, shown to the operator before install and bound to its own service
+# account (kevaso-system/plugin-sessions). Never cluster-admin, never RBAC.
+apiVersion: kevaso/v1
+kind: ClusterRole
+metadata: { name: sessions-controller }
+rules:
+  - { verbs: [get, list, watch, update], resources: [sessions.example.dev] }   # update: its finalizer
+  - { verbs: [update], resources: [sessions.example.dev/status] }
+  - { verbs: [get, list, watch], resources: [sessiontemplates.example.dev] }
+  - { verbs: [get, list, watch, create, delete], resources: [silos] }

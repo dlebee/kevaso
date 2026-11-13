@@ -78,8 +78,8 @@ defined. The product built on Kevaso (its `Session` and `Task` kinds, §10) is t
 11. **Changing a definition never makes objects unreadable.** Reads return what's stored and are
     never checked against the schema; the new schema applies from the next write of each object.
 12. **Deleting a definition that still has objects is refused** (409, with how many are left).
-    Delete them first. (Owner references to the plugin that installed a definition come with
-    `kvoadm plugin install`.)
+    Delete them first. A definition a plugin installed belongs to its `Plugin` and goes with
+    `kvoadm plugin uninstall` (ADR 0006).
 13. **Built-in roles don't reach defined kinds**, except cluster-admin's `*`: an operator grants
     them explicitly (a plugin's controller gets a role on its own resources).
 

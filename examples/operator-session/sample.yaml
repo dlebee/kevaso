@@ -1,0 +1,16 @@
+# A template and a session: kvo apply -f examples/operator-session/sample.yaml -n dev
+apiVersion: example.dev/v1
+kind: SessionTemplate
+metadata: { name: claude }
+spec:
+  silo:
+    runtime: cloud-hypervisor
+    image: ubuntu-24.04
+    resources: { cpu: 2, memory: 4Gi }
+---
+apiVersion: example.dev/v1
+kind: Session
+metadata: { name: fix-login-bug }
+spec:
+  template: claude
+  prompt: Find why logins fail after the token refresh, and fix it.

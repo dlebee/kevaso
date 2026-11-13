@@ -1,0 +1,16 @@
+# The package `kvoadm plugin install HOST --package examples/operator-session` installs: this
+# manifest, the files it lists, and the controller program (build it first, for the host:
+#   GOOS=linux GOARCH=amd64 go build -o examples/operator-session/bin/kevaso-operator-session ./examples/operator-session/cmd/kevaso-operator-session
+apiVersion: kevaso/v1
+kind: PluginPackage
+metadata:
+  name: sessions
+spec:
+  version: 0.1.0
+  description: Sessions, each a set of silos made from a template
+  controller:
+    binary: bin/kevaso-operator-session
+  resources:
+    - kinds.yaml
+    - policies.yaml
+    - roles.yaml

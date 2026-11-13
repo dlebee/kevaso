@@ -535,6 +535,9 @@ func (s *Server) checkDeleteDefinition(ctx context.Context, t target) error {
 		return err
 	}
 	d := obj.(*v1.KindDefinition)
+	if err := s.checkOwnerPlugin(ctx, d); err != nil {
+		return err
+	}
 	left, _, err := s.store.List(ctx, store.Selector{Kind: d.Spec.Resource()})
 	if err != nil {
 		return err
@@ -546,6 +549,30 @@ func (s *Server) checkDeleteDefinition(ctx context.Context, t target) error {
 		}
 		return errf(http.StatusConflict, "Conflict", "KindDefinition %s still has %d object(s) (%s%s): delete them first",
 			d.Name, n, strings.Join(names, ", "), map[bool]string{true: ", …", false: ""}[n > 3])
+	}
+	return nil
+}
+
+// checkOwnerPlugin: a definition a plugin installed goes with the plugin (kvoadm plugin uninstall
+// marks the Plugin as being deleted first), not on its own while the plugin is installed.
+func (s *Server) checkOwnerPlugin(ctx context.Context, d *v1.KindDefinition) error {
+	owner := v1.OwnerPlugin(&d.ObjectMeta)
+	if owner == "" {
+		return nil
+	}
+	o, err := s.store.Get(ctx, store.Key{Kind: "Plugin", Name: owner})
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	p, _, err := v1.Decode(o.Data)
+	if err != nil {
+		return err
+	}
+	if p.GetObjectMeta().DeletionTimestamp == nil {
+		return errf(http.StatusConflict, "Conflict", "KindDefinition %s belongs to plugin %s: kvoadm plugin uninstall %s removes it", d.Name, owner, owner)
 	}
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -67,22 +68,25 @@ func PluginUnit(o PluginOptions) string {
 	if o.Config != "" {
 		w("LoadCredential=config:%s/config.json", pluginEtc(o.Name))
 	}
-	for _, l := range []string{
-		"NoNewPrivileges=yes", "CapabilityBoundingSet=", "AmbientCapabilities=",
-		"ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes", "PrivateDevices=yes",
-		"ProtectKernelTunables=yes", "ProtectKernelModules=yes", "ProtectKernelLogs=yes", "ProtectControlGroups=yes",
-		"ProtectClock=yes", "ProtectHostname=yes", "ProtectProc=invisible", "ProcSubset=pid",
-		"RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK", "RestrictNamespaces=yes", "RestrictRealtime=yes",
-		"RestrictSUIDSGID=yes", "LockPersonality=yes", "MemoryDenyWriteExecute=yes",
-		"SystemCallArchitectures=native", "SystemCallFilter=@system-service", "SystemCallFilter=~@privileged",
-		"UMask=0077", "Restart=always", "RestartSec=2",
-	} {
+	for _, l := range pluginHardening {
 		w("%s", l)
 	}
 	w("")
 	w("[Install]")
 	w("WantedBy=multi-user.target")
 	return b.String()
+}
+
+// pluginHardening is every plugin unit's sandbox (operators' too, operator.go).
+var pluginHardening = []string{
+	"NoNewPrivileges=yes", "CapabilityBoundingSet=", "AmbientCapabilities=",
+	"ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes", "PrivateDevices=yes",
+	"ProtectKernelTunables=yes", "ProtectKernelModules=yes", "ProtectKernelLogs=yes", "ProtectControlGroups=yes",
+	"ProtectClock=yes", "ProtectHostname=yes", "ProtectProc=invisible", "ProcSubset=pid",
+	"RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK", "RestrictNamespaces=yes", "RestrictRealtime=yes",
+	"RestrictSUIDSGID=yes", "LockPersonality=yes", "MemoryDenyWriteExecute=yes",
+	"SystemCallArchitectures=native", "SystemCallFilter=@system-service", "SystemCallFilter=~@privileged",
+	"UMask=0077", "Restart=always", "RestartSec=2",
 }
 
 func (o PluginOptions) side() string {
@@ -174,9 +178,18 @@ func parsePlugin(args []string, needBinary bool) (PluginOptions, error) {
 func pluginCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	usage := errors.New(`usage:
   kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--credential NAME=FILE]… [--config FILE] [--side controller|node]
-  kvoadm plugin remove [USER@]ADDRESS --name NAME [--side controller|node]`)
+  kvoadm plugin remove [USER@]ADDRESS --name NAME [--side controller|node]
+  kvoadm plugin install [USER@]ADDRESS --package DIR [--binary PATH] [--api-server URL] [--adopt] [--yes]
+  kvoadm plugin uninstall NAME [--force]
+  kvoadm plugin list`)
 	if len(args) == 0 {
 		return usage
+	}
+	switch args[0] {
+	case "install", "uninstall", "list":
+		if args[0] != "install" || slices.Contains(args, "--package") {
+			return operatorCmd(ctx, args, stdin, out) // operator.go
+		}
 	}
 	switch args[0] {
 	case "install":
