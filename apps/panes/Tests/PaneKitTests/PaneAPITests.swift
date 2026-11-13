@@ -17,7 +17,7 @@ final class PaneAPITests: XCTestCase {
 
     override func setUp() async throws {
         fake = try FakeAPI()
-        api = try PaneAPI(ServerConfig(server: fake.url, token: "test-token-not-a-secret", namespace: ns))
+        api = try PaneAPI(ServerConfig(server: fake.url, tokens: StaticToken("test-token-not-a-secret"), namespace: ns))
     }
 
     func paneJSON(_ name: String, kind: String = "html", bundle: String? = nil, data: String = #"{"progress":0.5,"lit":3}"#,
@@ -129,16 +129,37 @@ final class PaneAPITests: XCTestCase {
         XCTAssertThrowsError(try PaneBundle.materialize(evil, expected: d, under: FileManager.default.temporaryDirectory))
     }
 
-    func testRefusesPlainHTTPToARemoteHost() {
+    func testRefusesPlainHTTPToARemoteHostAndHTTPSWithoutACA() {
         XCTAssertThrowsError(try PaneAPI(ServerConfig(server: URL(string: "http://kevaso.example.com")!)))
-        XCTAssertNoThrow(try PaneAPI(ServerConfig(server: URL(string: "https://kevaso.example.com")!)))
+        XCTAssertThrowsError(try PaneAPI(ServerConfig(server: URL(string: "https://kevaso.example.com")!)), "the system roots must never be used")
     }
 
-    func testConfigFromEnvironment() {
-        let c = ServerConfig.fromEnvironment(["KVO_SERVER": "https://cp.example:6443", "KVO_NAMESPACE": "team", "KVO_TOKEN": "t"])
-        XCTAssertEqual(c?.server.absoluteString, "https://cp.example:6443")
-        XCTAssertEqual(c?.namespace, "team")
-        XCTAssertNil(ServerConfig.fromEnvironment([:]))
+    /// The silo's host and trust come from the Silo object (labels), read with the same token.
+    func testSiloInfoAndTrustLabel() async throws {
+        fake.routes.with {
+            $0["/apis/kevaso/v1/namespaces/team/silos/scrape"] = .init(body: Data(#"{"metadata":{"name":"scrape","labels":{"kevaso.com/trust":"untrusted"}},"spec":{"runtime":"microvm"},"status":{"host":"w2"}}"#.utf8))
+            $0["/apis/kevaso/v1/namespaces/team/silos/api"] = .init(body: Data(#"{"metadata":{"name":"api","labels":{"kevaso.com/trust":"trusted-ish"}},"status":{"host":"w1"}}"#.utf8))
+        }
+        let s = try await api.silo("scrape")
+        XCTAssertEqual(s, SiloInfo(host: "w2", trust: .untrusted))
+        let a = try await api.silo("api")
+        XCTAssertEqual(a, SiloInfo(host: "w1", trust: .trusted))
+        await XCTAssertThrowsAsync(try await api.silo("missing"))
+    }
+
+    /// A 401 drops the cached access token and the request is tried once more with a new one.
+    func testUnauthorizedGetsANewToken() async throws {
+        final class Counting: AccessTokens, @unchecked Sendable {
+            var n = 0, invalidated = 0
+            func token() async throws -> String { n += 1; return "t\(n)" }
+            func invalidate() async { invalidated += 1 }
+        }
+        let t = Counting()
+        let a = try PaneAPI(ServerConfig(server: fake.url, tokens: t, namespace: ns))
+        fake.routes.with { $0[base] = .init(status: 401, body: Data("{}".utf8)) }
+        await XCTAssertThrowsAsync(try await a.list())
+        XCTAssertEqual(t.invalidated, 1)
+        XCTAssertEqual(fake.requests.value.suffix(2).map { $0.headers["authorization"] ?? "" }, ["Bearer t1", "Bearer t2"])
     }
 }
 
@@ -202,5 +223,15 @@ final class PaneUnitTests: XCTestCase {
     func testIdentityRimIsStable() {
         let a = PaneIdentity(silo: "api", siloUID: "1", namespace: "team", host: "h1")
         XCTAssertEqual(a.rimIndex, PaneIdentity(silo: "api", siloUID: "2", namespace: "team", host: nil).rimIndex)
+    }
+
+    /// Striped unless the client read the Silo object and it isn't marked untrusted.
+    func testStripedRim() {
+        for (t, striped) in [(SiloTrust.trusted, false), (.untrusted, true), (.unknown, true)] {
+            XCTAssertEqual(PaneIdentity(silo: "a", siloUID: "1", namespace: "n", host: nil, trust: t).striped, striped)
+        }
+        XCTAssertEqual(SiloTrust.from(labels: ["kevaso.com/trust": "untrusted"]), .untrusted)
+        XCTAssertEqual(SiloTrust.from(labels: nil), .trusted)
+        XCTAssertEqual(SiloTrust.from(labels: ["trust": "untrusted"]), .trusted)
     }
 }

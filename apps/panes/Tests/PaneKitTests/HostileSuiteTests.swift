@@ -402,6 +402,69 @@ final class HostileSuiteTests: XCTestCase {
         a.close(); b.close()
         await assertNoLeak("t16-crosspane")
     }
+
+    // MARK: t17: a pane in its own floating window, as the app shows it
+
+    /// A pane in the app's floating window (PanePanel, the client's frame around it) tries to resize,
+    /// move, close and focus its window, go fullscreen, open a sized window and raise a notification,
+    /// with and without a click. Nothing changes: its window's frame, level and visibility, a
+    /// neighbouring pane's window, which window is key, and the app's windows; nothing leaks.
+    func test17_floatingWindowCantBeTakenOver() async throws {
+        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let frame = NSRect(x: screen.maxX - 340, y: screen.minY + 24, width: 320, height: 220)
+        let view = try SealedPaneView(paneID: "p-t17-floating", root: h.dir("t17-floating"), ruleList: h.ruleList)
+        TestPane.ignoreOcclusion(view.web!)
+        let ident = PaneIdentity(silo: "sandbox-untrusted", siloUID: "s17", namespace: "team", host: "w2", trust: .untrusted)
+        let w = PaneWindowController(key: "t17", frame: frame, rootView: PaneFrame(identity: ident, paneName: "overview", stale: false) {
+            SealedViewHost(view: view)
+        })
+        let neighbourFrame = frame.offsetBy(dx: -340, dy: 0)
+        let neighbour = PaneWindowController(key: "t17-n", frame: neighbourFrame, rootView: Color.blue)
+        // a window of the person's that has the keyboard, which the pane must not take
+        let mine = TestPanel(contentRect: NSRect(x: screen.minX + 24, y: screen.minY + 24, width: 200, height: 120),
+                             styleMask: [.titled], backing: .buffered, defer: false)
+        mine.isReleasedWhenClosed = false
+        mine.makeKeyAndOrderFront(nil)
+        w.show(); neighbour.show()
+        let keyBefore = NSApp.keyWindow
+        let windowsBefore = Set(NSApp.windows.map(ObjectIdentifier.init))
+        XCTAssertFalse(w.panel.canBecomeKey)
+        XCTAssertFalse(w.panel.canBecomeMain)
+        XCTAssertTrue(w.panel.styleMask.contains(.nonactivatingPanel))
+        XCTAssertEqual(w.panel.level, .floating)
+        view.load()
+        await sleep(1.5)
+        // click into the pane's content (below the client's header)
+        for t in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            if let ev = NSEvent.mouseEvent(with: t, location: NSPoint(x: frame.width / 2, y: frame.height / 2 - 20), modifierFlags: [],
+                                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.panel.windowNumber,
+                                           context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                w.panel.sendEvent(ev)
+            }
+        }
+        await sleep(4)
+        let r = await view.probe("return JSON.stringify(window.__report || null)") ?? "TIMEOUT"
+        print("REPORT t17: \(r) events=\(view.events)")
+        XCTAssertTrue(r.contains("done: t17"), r)
+        XCTAssertTrue(r.contains("click: user click"), "the click didn't reach the pane: \(r)")
+        XCTAssertEqual(w.panel.frame, frame, "the pane changed its window's frame")
+        XCTAssertTrue(w.panel.isVisible, "the pane closed or hid its window")
+        XCTAssertEqual(w.panel.level, .floating)
+        XCTAssertFalse(w.panel.styleMask.contains(.fullScreen))
+        XCTAssertEqual(neighbour.panel.frame, neighbourFrame)
+        XCTAssertTrue(neighbour.panel.isVisible)
+        XCTAssertFalse(w.panel.isKeyWindow, "the pane took the keyboard")
+        XCTAssertTrue(NSApp.keyWindow === keyBefore, "the pane took focus from the person's window: \(String(describing: NSApp.keyWindow))")
+        let extra = NSApp.windows.filter { !windowsBefore.contains(ObjectIdentifier($0)) }
+        print("T17 extra windows: \(extra.map { "\(type(of: $0)) visible=\($0.isVisible) frame=\($0.frame) level=\($0.level.rawValue)" })")
+        XCTAssertTrue(extra.allSatisfy { !$0.isVisible }, "the pane opened a window: \(extra)")
+        XCTAssertFalse(r.contains("Notification: ok granted"), r)
+        XCTAssertFalse(r.contains("requestFullscreen: ok fullscreen"), r)
+        XCTAssertTrue(view.state == .running, "\(view.state)")
+        view.close(); w.close(); neighbour.close()
+        mine.orderOut(nil); mine.close()
+        await assertNoLeak("t17-floating")
+    }
 }
 
 /// The client's main-thread responsiveness: a 50 ms timer, worst lateness.

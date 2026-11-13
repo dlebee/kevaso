@@ -23,10 +23,11 @@ final class PaneStoreTests: XCTestCase {
             $0[base + "/api.swapped/bundle"] = .init(body: good) // not what its digest says
             $0["/apis/kevaso/v1/namespaces/team/silos/api"] = .init(body: Data(#"{"status":{"host":"mac-mini-2"}}"#.utf8))
         }
-        UserDefaults.standard.removeObject(forKey: "enabledPanes")
-        let store = PaneStore()
-        store.enabled = ["team/api.good", "team/api.swapped"]
-        store.connect(ServerConfig(server: fake.url, namespace: ns))
+        let defaults = UserDefaults(suiteName: "kevaso-panes-test-\(UUID().uuidString)")!
+        let store = PaneStore(defaults: defaults)
+        store.connect(ServerConfig(server: fake.url, namespace: ns), scope: "c1")
+        store.setEnabled("team/api.good", true)
+        store.setEnabled("team/api.swapped", true)
         let listed = await eventually(5) { store.panes.count == 3 }
         XCTAssertTrue(listed, store.status)
         let opened = await eventually(5) { store.controllers["team/api.good"]?.view != nil && store.controllers["team/api.swapped"]?.problem != nil }
@@ -35,15 +36,21 @@ final class PaneStoreTests: XCTestCase {
         XCTAssertTrue(store.controllers["team/api.swapped"]?.problem?.contains("digestMismatch") ?? false, store.controllers["team/api.swapped"]?.problem ?? "")
         XCTAssertNil(store.controllers["team/api.swapped"]?.view)
         XCTAssertFalse(fake.requests.value.contains { $0.path.hasSuffix("/api.off/bundle") })
-        let host = await eventually(5) { store.hosts["s1"] == "mac-mini-2" }
+        let host = await eventually(5) { store.silos["s1"]?.host == "mac-mini-2" }
         XCTAssertTrue(host)
-        XCTAssertTrue(store.shown.allSatisfy { store.enabled.contains($0.id) })
+        XCTAssertTrue(store.shown.allSatisfy { store.isEnabled($0) })
         let p = store.panes["team/api.good"]!
         XCTAssertTrue(p.isStale(now: p.status!.updatedAt!.addingTimeInterval(60)))
-        store.enabled.remove("team/api.good")
+        store.setEnabled("team/api.good", false)
         XCTAssertNil(store.controllers["team/api.good"])
+        // switches are kept per cluster: another scope starts with none on
+        XCTAssertEqual(Set(defaults.stringArray(forKey: "enabledPanes") ?? []), ["c1|team/api.swapped"])
         store.disconnect()
-        UserDefaults.standard.removeObject(forKey: "enabledPanes")
+        store.connect(ServerConfig(server: fake.url, namespace: ns), scope: "c2")
+        let relisted = await eventually(5) { store.panes.count == 3 }
+        XCTAssertTrue(relisted)
+        XCTAssertTrue(store.shown.isEmpty)
+        store.disconnect()
     }
 
     /// Renders the frame the client draws (rim, silo, namespace, host, stale) around a status pane to a
@@ -52,11 +59,15 @@ final class PaneStoreTests: XCTestCase {
         let spec = Pane.Spec(silo: "payments-api", siloUID: "s1", pane: "overview", kind: "status", title: "claude · refactor",
                              state: "needs-you", progress: 0.57, message: "Keep legacy rounding in roundCents()?",
                              fields: [.init(label: "tests", value: "212/240")], bundle: nil, data: nil, ttl: "60s")
-        let id = PaneIdentity(silo: "payments-api", siloUID: "s1", namespace: "team", host: "mac-mini-2")
-        let v = NSHostingView(rootView: PaneFrame(identity: id, paneName: "overview", stale: true) {
-            StatusPaneView(spec: spec, rim: id.rim)
-        }.frame(width: 340, height: 220).padding(10).background(Color.black))
-        v.frame = NSRect(x: 0, y: 0, width: 360, height: 240)
+        let id = PaneIdentity(silo: "payments-api", siloUID: "s1", namespace: "team", host: "mac-mini-2", trust: .trusted)
+        let bad = PaneIdentity(silo: "sandbox-untrusted", siloUID: "s2", namespace: "team", host: "worker-02", trust: .untrusted)
+        let v = NSHostingView(rootView: HStack {
+            PaneFrame(identity: id, paneName: "overview", stale: true, needsYou: true) { StatusPaneView(spec: spec, rim: id.rim) }
+                .frame(width: 340, height: 220)
+            PaneFrame(identity: bad, paneName: "overview", stale: false) { StatusPaneView(spec: spec, rim: bad.rim) }
+                .frame(width: 340, height: 220)
+        }.padding(10).background(Color.black))
+        v.frame = NSRect(x: 0, y: 0, width: 720, height: 240)
         v.layoutSubtreeIfNeeded()
         let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds)!
         v.cacheDisplay(in: v.bounds, to: rep)

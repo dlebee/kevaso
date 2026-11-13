@@ -265,3 +265,72 @@ func TestDiscoveryAndKeys(t *testing.T) {
 		t.Fatalf("key changed across restarts: %v", err)
 	}
 }
+
+func (e *env) revoke(form url.Values) int {
+	resp, err := http.PostForm(e.ts.URL+PathRevoke, form)
+	if err != nil {
+		return 0
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode
+}
+
+func TestRevokeEndsTheSession(t *testing.T) {
+	e := setup(t)
+	code, _, _ := e.iss.Invite(e.ctx, "bob", nil, 0)
+	t1 := e.login(t, e.config(oauth2.AuthStyleInParams), code)
+	code, _, _ = e.iss.Invite(e.ctx, "bob", nil, 0)
+	other := e.login(t, e.config(oauth2.AuthStyleInParams), code)
+
+	// Refused outright: an unknown client, no token, GET.
+	if c := e.revoke(url.Values{"client_id": {"evil"}, "token": {t1.RefreshToken}}); c != http.StatusUnauthorized {
+		t.Fatalf("unknown client: %d", c)
+	}
+	if c := e.revoke(url.Values{"client_id": {ClientID}}); c != http.StatusBadRequest {
+		t.Fatalf("no token: %d", c)
+	}
+	if resp, err := http.Get(e.ts.URL + PathRevoke); err != nil || resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET: %v %v", resp, err)
+	}
+	// A wrong secret for the right session says 200 and ends nothing.
+	sid, _, _ := split(t1.RefreshToken, "kvr_")
+	if c := e.revoke(url.Values{"client_id": {ClientID}, "token": {"kvr_" + sid + ".nope"}}); c != http.StatusOK {
+		t.Fatalf("wrong secret: %d", c)
+	}
+	if _, err := e.iss.Verify(e.ctx, t1.AccessToken); err != nil {
+		t.Fatalf("a wrong secret ended the session: %v", err)
+	}
+	// The right one ends that session only: its access token stops at once, its refresh fails.
+	if c := e.revoke(url.Values{"client_id": {ClientID}, "token": {t1.RefreshToken}, "token_type_hint": {"refresh_token"}}); c != http.StatusOK {
+		t.Fatalf("revoke: %d", c)
+	}
+	if _, err := e.iss.Verify(e.ctx, t1.AccessToken); err == nil {
+		t.Fatal("access token outlived a revoked session")
+	}
+	if _, err := e.refresh(t1.RefreshToken); err == nil {
+		t.Fatal("a revoked session refreshed")
+	}
+	if _, err := e.iss.Verify(e.ctx, other.AccessToken); err != nil {
+		t.Fatalf("revoking one session ended another: %v", err)
+	}
+	// Again, or garbage: still 200 (RFC 7009 §2.2).
+	for _, tok := range []string{t1.RefreshToken, "garbage", other.AccessToken} {
+		if c := e.revoke(url.Values{"client_id": {ClientID}, "token": {tok}}); c != http.StatusOK {
+			t.Fatalf("revoke %q: %d", tok[:5], c)
+		}
+	}
+	if _, err := e.iss.Verify(e.ctx, other.AccessToken); err != nil {
+		t.Fatalf("revoking an access token ended its session: %v", err)
+	}
+	// The just-replaced refresh token also ends the session (its holder had the session).
+	t2, err := e.refresh(other.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := e.revoke(url.Values{"client_id": {ClientID}, "token": {other.RefreshToken}}); c != http.StatusOK {
+		t.Fatalf("revoke previous: %d", c)
+	}
+	if _, err := e.iss.Verify(e.ctx, t2.AccessToken); err == nil {
+		t.Fatal("the previous refresh token didn't end its session")
+	}
+}

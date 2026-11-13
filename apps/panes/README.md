@@ -1,20 +1,38 @@
 # Kevaso Panes (macOS)
 
-The desktop client of the pane protocol (design §10.1): one window that owns many panes. A silo reports
-what its status looks like; the control plane keeps the latest report per pane and relays it; this app
-draws it. Nothing flows back to the silo.
+The desktop client of the pane protocol (design §7, §10.1). Sign in to your clusters like `kvo login`,
+pick a namespace, turn panes on: each one floats in its own small always-on-top window, with the
+identity (rim, silo, namespace, host) drawn by the app. A silo reports what its status looks like;
+the control plane keeps the latest report per pane and relays it; this app draws it. Nothing flows
+back to the silo.
 
 - `Sources/PaneKit`: the library.
+  - `Trust`: `PinnedCA` (the cluster's CA, its `sha256:` fingerprint), `PinnedSession` (a URLSession
+    that trusts only that CA and never follows redirects), `fetchCA` (the `kvo login --ca` steps).
+  - `SignIn`: `BrowserSignIn` (PKCE on a loopback redirect, the sign-in pages relayed over the pinned
+    session), `OIDCClient` (token, refresh, revoke), `ClusterSession` (refresh token in the keychain,
+    access tokens in memory, refresh, reuse → signed out, sign-out).
+  - `Keychain`: `KeychainVault` (generic passwords under `com.kevaso.panes`).
+  - `Contexts`: `ClusterContext`, `ContextStore` (the clusters, `contexts.json`).
+  - `LoopbackHTTP`: a small HTTP/1.1 server on 127.0.0.1 (the sign-in's redirect and relay).
+  - `PaneWindows`: `PanePanel`, `PaneWindowController`, `FloatingPanes`, `WindowPlaces`.
+  - `Notifier`: `NeedsYouNotifier`, `SystemNotifications`.
   - `SealedPaneView`: an HTML pane in a sealed WKWebView (rules below).
   - `StatusPaneView`: a status pane, drawn natively: no web view, no JavaScript, plain text only.
-  - `PaneFrame`: the identity the client draws itself (rim colour, silo, namespace, host, stale mark).
-  - `PaneAPI`: lists and watches panes, looks up a silo's host, downloads a bundle and checks its digest.
+  - `PaneFrame`, `RimView`: the identity the client draws (rim colour, striped when untrusted, silo,
+    namespace, host, stale and needs-you marks).
+  - `PaneAPI`: lists and watches panes, lists namespaces, reads a silo's host and trust, downloads a
+    bundle and checks its digest.
   - `PaneBundle`: digest check and unpacking into a fresh folder per opened pane.
-  - `PaneStore`: the app's state (which panes are on, one sealed view per open HTML pane).
-- `Sources/KevasoPanes`: the minimal SwiftUI app.
-- `Tests/PaneKitTests`: the hostile-pane suite, and the API tests against a fake control plane.
+  - `PaneStore`: the app's state (panes, switches per cluster, silo info, one controller per open
+    HTML pane).
+- `Sources/KevasoPanes`: the app: one main window (clusters, namespace, panes and their switches),
+  one floating window per pane turned on.
+- `Tests/PaneKitTests`: the hostile-pane suite; the API, store and window tests against a fake control
+  plane; sign-in against a fake issuer over TLS; TLS pinning; the keychain.
 
-Needs macOS 14 or later and Swift 6 (Xcode or the command line tools). No admin rights.
+Needs macOS 14 or later (the tests' TLS server: macOS 15) and Swift 6 (Xcode or the command line
+tools). No admin rights.
 
 ## Build and run
 
@@ -27,11 +45,104 @@ swift build
 ```
 
 ```bash
+swift run KevasoPanes
+```
+
+Press **Add Cluster…** and give what your admin gave you for `kvo login`: the server and the CA
+fingerprint (`sha256:…`), plus a name and a namespace. The app downloads the CA, accepts it only
+with that fingerprint, checks the server holds a certificate from it, then opens your browser to
+sign in (the invite code). Add as many clusters as you like and switch between them in the sidebar;
+right-click one to sign in, sign out or remove it.
+
+For CI, the environment still works and wins over the clusters:
+
+```bash
 KVO_SERVER=https://control-plane:6443 KVO_CA_FILE=ca.pem KVO_TOKEN=… KVO_NAMESPACE=team swift run KevasoPanes
 ```
 
-Without the environment, open the app's Settings (⌘,), fill in the server URL, CA file, token and
-namespace, and press Connect. Turn panes on in the list; only those are shown and opened.
+`KVO_TOKEN` alone overrides the token of a signed-in cluster.
+
+## Sign-in, tokens, TLS
+
+- **Like `kvo login`** (core's `internal/login`, research E022): authorization code with PKCE (S256),
+  `state` and `nonce`, redirect `http://127.0.0.1:<free port>/callback`. The browser is sent to the
+  app's own loopback port, which relays `GET /oidc/authorize` and `POST /oidc/login` to the control
+  plane over the pinned TLS session, so a private CA causes no certificate warning and the browser
+  never talks to the cluster unverified. The relay checks the Host header (DNS rebinding), passes
+  back only Content-Type, Cache-Control, CSP and X-Frame-Options (no cookies), and a redirect only
+  to this sign-in's own callback. A callback with the wrong `state` is ignored.
+- **Client id**: the app uses kvo's public client `kvo`. The issuer's rules for it (no secret, PKCE,
+  a loopback redirect on any port) fit the app exactly, and a second client id would buy nothing the
+  issuer checks today; it can be split later if the issuer ever treats clients differently.
+- **The keychain**: the refresh token is a generic password in the login keychain, service
+  `com.kevaso.panes`, account the cluster's id. Never `kvo`'s items (`com.kevaso.kvo`): the app and
+  kvo have separate sessions, and signing out of one leaves the other. Never the defaults or a file:
+  `contexts.json` (Application Support/KevasoPanes, 0600) holds the server, CA and namespace only.
+  Access tokens stay in memory. An unsigned build is identified by its code hash, so after a rebuild
+  macOS may ask once whether the new binary may read the item.
+- **Refresh**: an access token within 30 s of expiry is refreshed; the rotated refresh token is saved
+  before the new access token is used; concurrent callers share one refresh. A 401 drops the cached
+  access token and tries once more.
+- **Revoked or reused**: when the issuer says the refresh token was already used (a copy got out:
+  it revoked the session for everyone) or the session ended, the app deletes the keychain item,
+  closes the cluster's panes and shows that it is signed out. "Raced" (another copy of the app
+  refreshed a moment ago) re-reads the keychain and goes on.
+- **Sign-out** calls the issuer's `POST /oidc/revoke` (added for this app, RFC 7009, in core's
+  `internal/issuer`) with the refresh token, then deletes the keychain item. If the cluster can't be
+  reached the local sign-out still happens and the session ends when idle.
+- **TLS**: every request (API, watch, bundle, token, the relayed pages) goes through a session that
+  anchors to the cluster's CA only (`SecTrustSetAnchorCertificatesOnly`), checks the hostname or IP,
+  fetches nothing (no AIA or OCSP), and follows no redirect. https without a pinned CA is refused
+  before any request: the system roots are never used. Plain http only to loopback (the tests).
+  The one unverified request is `GET /ca.crt` while adding a cluster, and its answer is checked
+  against the fingerprint before anything else happens.
+
+## Floating panes
+
+Each pane turned on is a `PanePanel`: a small window at the floating level on every Space, never
+key and never main, that doesn't activate the app (a click in a pane leaves the keyboard where it
+was). The header (identity, untrusted, needs-you and stale marks, a × that turns the pane off) drags
+it; the edges resize it, between 220×140 and 1400×1000. Where each window was is kept per cluster and
+pane in `windows.json` and fitted to the screens there are when it reopens (a window on an unplugged
+display comes back stacked at the bottom right). The main window lists clusters, the namespace and
+the panes with their switches.
+
+A pane can't affect any window: WebKit's `resizeTo`, `moveTo`, `close`, `focus` and sized
+`window.open` reach UI delegate methods the sealed view doesn't implement, fullscreen is off, the
+panel can't become key (hostile case t17). A pane that calls `window.close()` only silences itself.
+
+**Needs you**: when a pane that's turned on changes into `state: needs-you`, its rim glows and, if the
+person ticked "Notify me when a pane needs me" (and allowed it in macOS), a notification says
+"SILO needs you · PANE · NAMESPACE". The text is the client's (the silo's name, the pane's name made
+plain), never the silo's message. A repeat of the same state doesn't ring again, and one pane rings at
+most once a minute. A pane's content can't raise one: the sealed view refuses the Notification API
+(t07, t17). macOS notifications need the app to run as a bundle; with `swift run` it bounces the
+Dock icon instead.
+
+## Untrusted silos: the striped rim
+
+Design §7: untrusted silos get a striped rim. Where "untrusted" comes from:
+
+- **A label on the Silo object**, `kevaso.com/trust: untrusted`, read by the client with the same
+  token (`GET …/silos/NAME`, the read that already gives the host). Never from the pane's report or
+  content.
+- **Unknown is striped too**: until the client has read the Silo object, or when it can't (no
+  permission, an error), the rim is striped and the header says "trust unknown". Only a silo the
+  client read and found unmarked gets the solid rim.
+- Not from the runtime: container versus microVM is about isolation strength, not about whether the
+  silo runs code or content you shouldn't trust (a microVM crawler is still untrusted).
+
+**Proposal for the orchestrator (no Go API change made):**
+
+1. Make `kevaso.com/trust` a reserved label: settable only by someone who may update the Silo (it is
+   today), never by credentials the silo itself holds (kvo-guest's pane reports write Pane objects
+   only; keep it that way), and documented next to `kevaso.com/protected`.
+2. Optionally, have the control plane copy it into the Pane object's server-set fields (say
+   `status.siloTrust: untrusted`) when it stores a report, so a client that may read panes but not
+   silos still draws the right rim, and with one read less. The client would prefer that field when
+   present and keep reading the Silo otherwise.
+3. Optionally, `kvo create silo --untrusted` (or a `sandbox-untrusted` template) sets the label, and
+   a silo with an empty keyring could be marked by default.
 
 ## The regression suite: rerun on every macOS / WebKit update
 
@@ -40,8 +151,12 @@ swift test
 ```
 
 That one command runs everything; the hostile suite alone is `swift test --filter HostileSuiteTests`.
-It takes about 2½ minutes and needs a logged-in desktop session: small panes appear at the bottom
+It takes about 3 minutes and needs a logged-in desktop session: small panes appear at the bottom
 right of the screen and are clicked and typed into by synthetic events. Leave them alone while it runs.
+The sign-in tests write to the login keychain under a service of their own
+(`com.kevaso.panes.test-…`) and delete it afterwards; they never touch the app's or kvo's items. The
+TLS tests make throwaway CAs with `/usr/bin/openssl` in a temp folder and load the server identity
+into memory only (nothing is imported into a keychain).
 
 **Rerun it after every macOS or Safari/WebKit update, and after any change to `SealedPolicy` or
 `SealedPaneView`.** Two of the protections rely on private WebKit settings that can change or vanish
@@ -78,6 +193,7 @@ its content is never logged.
 | t14 *(new)* | click into a pane, type, ⌘V | no key or paste reaches the page (the pane takes no keyboard focus) |
 | t15 *(new)* | `a download` (blob, data, own file), blob navigation, window.open(blob), with a click | no file saved, still on its page |
 | t16 *(new)* | two open panes via BroadcastChannel, storage events, a named window, postMessage | neither hears the other |
+| t17 *(new)* | in the app's floating window: resizeTo/By, moveTo/By, focus, blur, fullscreen, a Notification, a sized window.open, window.close, with and without a click | its window's frame, level and visibility unchanged, a neighbour pane's window unchanged, the key window unchanged, no visible window opened, 0 hits |
 | t00 | the configuration: private settings exist and are applied, no drop targets, empty context menu | — |
 
 ## The sealed view
@@ -125,22 +241,20 @@ A new digest reopens the pane in a new folder and a new origin; other reports on
 
 ## What is not done
 
-- **Keychain**: the token comes from `KVO_TOKEN` or the app's settings, stored in its defaults in plain
-  text. The user's `kvo` login (tokens in the keychain) isn't read yet. Sign-in through the browser is
-  out of scope.
-- **Signing, notarisation, distribution**: out of scope; the app runs with `swift run`.
-- **The striped rim for untrusted silos** (design §7): the Pane object doesn't say whether a silo is
-  untrusted yet, so every rim is solid.
+- **Signing, notarisation, distribution**: out of scope; the app runs with `swift run`. So macOS
+  notifications fall back to bouncing the Dock icon, and the keychain may ask again after a rebuild.
+- **Several clusters at once**: clusters are added and switched; the panes of one cluster float at a
+  time (switching closes the other's windows, which come back where they were).
+- **Docking to an edge and the collapsed pill** of the mockup: panes float and resize; they don't dock
+  or shrink to a pill yet. The prompt line is out of scope (nothing flows back to the silo).
+- **An HA server list** (`kvo`'s comma-separated servers): a cluster here has one server URL.
 - **DNS-only leaks** (`<link rel=dns-prefetch>` to a name nobody resolves) are still not measured: it
   needs a DNS server on port 53, i.e. admin rights. DNS prefetching is off in WebKit and link clicks
   never reach it, but the channel is unverified, as in E034.
 - **Drag and drop** is asserted by configuration only (no drop types registered, drags swallowed):
   synthesising a real drag needs the Accessibility permission.
-- **TLS in the tests**: the fake control plane speaks plain HTTP on loopback (the client refuses plain
-  HTTP to any other host). The CA-file path (anchor to that CA only, hostname checked) isn't exercised
-  against a TLS server by the suite.
-- **Panes as separate floating windows** (the mockup's pinned panels): this app is one window with a
-  grid. Each pane is still its own sealed view.
+- **Real mouse drags and edge resizes** of the floating windows are AppKit's own and weren't
+  synthesised (the tests set the frame and check it's remembered); the header button's click is.
 - **Lockdown Mode** (`WKWebpagePreferences.isLockdownModeEnabled`, public API) wasn't tried: it might
   replace some private settings but could cost WebGL and JIT for three.js panes; worth an experiment.
 - **Cost of many panes** (Q006): not measured.
