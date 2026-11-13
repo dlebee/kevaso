@@ -101,7 +101,7 @@ spec:
 		{"vm", "curl -sS --max-time 240 https://" + apiHost + "/v1/models 2>&1"},
 		{"box", "hget https://" + apiHost + "/v1/models 2>&1"},
 	} {
-		t.Run(c.silo, func(t *testing.T) { approvalFlow(t, r, c.silo, c.get, apiHost, ghToken, deployPw, dbPassword, apiKey) })
+		t.Run(c.silo, func(t *testing.T) { approvalFlow(t, r.on(t), c.silo, c.get, apiHost, ghToken, deployPw, dbPassword, apiKey) })
 	}
 
 	// The key never reached the cloud-hypervisor silo's disk either (read from the host).

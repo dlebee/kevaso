@@ -314,3 +314,10 @@ func execGo(r *rig, args ...string) *exec.Cmd {
 	c.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+r.arch, "CGO_ENABLED=0")
 	return c
 }
+
+// on is the rig reporting to a subtest.
+func (r *rig) on(t *testing.T) *rig {
+	c := *r
+	c.t = t
+	return &c
+}
