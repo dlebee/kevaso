@@ -36,6 +36,7 @@ import (
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
 	"kevaso.com/core/internal/kms"
+	"kevaso.com/core/internal/leases"
 	"kevaso.com/core/internal/mesh"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/plugins"
@@ -73,7 +74,9 @@ type Config struct {
 	Plugins *plugins.Registry
 	// Approvals: how long requests for a person's yes wait, and how long access may last (§8.7).
 	Approvals approvals.Limits
-	Log       func(format string, args ...any)
+	// Leases: the longest a port may be open on a lease, and the limit when a silo sets none (§7.2d).
+	Leases leases.Limits
+	Log    func(format string, args ...any)
 	// Store is StoreSQLite (default) or StoreEtcd; Etcd configures the embedded member.
 	Store string
 	Etcd  EtcdConfig
@@ -156,6 +159,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		return nil, fmt.Errorf("kms: %w", err)
 	}
 	srv.SetApprovalLimits(cfg.Approvals)
+	srv.SetLeaseLimits(cfg.Leases)
 	if cfg.Plugins != nil {
 		reg := cfg.Plugins
 		srv.SetClasses(func() map[string]scheduler.Class { return provider.Classes(reg) })
@@ -255,6 +259,9 @@ func expireApprovals(ctx context.Context, srv *apiserver.Server, cfg Config) {
 		case <-t.C:
 			if err := srv.ExpireApprovals(ctx); err != nil && ctx.Err() == nil {
 				cfg.Log("approvals: %v", err)
+			}
+			if err := srv.SweepLeases(ctx); err != nil && ctx.Err() == nil {
+				cfg.Log("leases: %v", err)
 			}
 			if n%6 == 0 {
 				if err := srv.SweepPanes(ctx); err != nil && ctx.Err() == nil {
@@ -362,7 +369,14 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	})
 	if reg := cfg.Plugins; reg != nil {
 		e.Register(&provider.Hosts{Client: c, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 1})
-		e.Register(&provider.LoadBalancers{Client: c, Silos: silos, Hosts: hosts, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 2})
+		leaseInf := informer.New(c, "Lease") // a plugin's load balancer has no backend for a closed leased port
+		leaseInf.AddHandler(func(k informer.Key) {
+			if o, ok := leaseInf.Get(k.Namespace, k.Name); ok {
+				e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: o.(*v1.Lease).Spec.Silo})
+			}
+		})
+		go leaseInf.Run(ctx)
+		e.Register(&provider.LoadBalancers{Client: c, Silos: silos, Hosts: hosts, Leases: leaseInf, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 2})
 		e.Register(&provider.ServiceLoadBalancers{Client: c, Services: services, Hosts: hosts, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 1})
 		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 2})
 		e.Register(&provider.IngressDNS{Client: c, Ingresses: ingresses, Classes: classes, Plugins: reg, Cluster: cfg.ClusterName, Clock: cfg.Clock}, engine.Options{Workers: 1})

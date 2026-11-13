@@ -32,7 +32,13 @@ func describe(ctx context.Context, c *client.Client, o opts, stdout io.Writer) e
 	if err := c.Get(ctx, k.Kind, ns, o.args[1], obj); err != nil {
 		return err
 	}
-	return describeObject(stdout, obj)
+	if err := describeObject(stdout, obj); err != nil {
+		return err
+	}
+	if s, ok := obj.(*v1.Silo); ok {
+		return describeLeases(ctx, c, s, stdout)
+	}
+	return nil
 }
 
 // describeObject writes an object for people: what it is, what it wants, how it's doing and why.

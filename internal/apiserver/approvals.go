@@ -67,9 +67,13 @@ func (s *Server) auditApproval(event, user, typ string, a *v1.Approval, allowed 
 	if s.auth == nil || s.auth.Audit == nil {
 		return
 	}
+	what := fmt.Sprintf("secret %s, grant %s", a.Spec.Secret, a.Spec.Grant)
+	if a.Spec.Use == v1.ApprovalForExpose {
+		what = "port " + a.Spec.Port
+	}
 	s.auth.Audit.Record(audit.Entry{Time: s.clock.Now(), Event: event, User: user, Type: typ,
 		Verb: a.Spec.Use, Resource: "approvals", Namespace: a.Namespace, Name: a.Name, Allowed: allowed,
-		Reason: fmt.Sprintf("silo %s, secret %s, grant %s: %s", a.Spec.Silo, a.Spec.Secret, a.Spec.Grant, reason)})
+		Reason: fmt.Sprintf("silo %s, %s: %s", a.Spec.Silo, what, reason)})
 }
 
 // needsYes runs a use that its grant says needs a person's yes. allow: go ahead; otherwise resp
@@ -194,6 +198,7 @@ func (s *Server) answerApproval(w http.ResponseWriter, r *http.Request, t target
 	if errors.Is(err, approvals.ErrTooLate) {
 		if perr := s.putApproval(ctx, answered, rev, a); perr == nil {
 			s.auditApproval("approval-expired", who, whoType, answered, false, "answered too late")
+			s.leaseAnswered(ctx, answered, who, whoType)
 		}
 		writeErr(w, errf(http.StatusConflict, "Expired", "%v", err))
 		return
@@ -207,6 +212,7 @@ func (s *Server) answerApproval(w http.ResponseWriter, r *http.Request, t target
 		return
 	}
 	s.auditApproval("approval-"+answered.Status.Phase, who, whoType, answered, true, t.answer+" "+body.Reason)
+	s.leaseAnswered(ctx, answered, who, whoType)
 	o, err := s.store.Get(ctx, t.key())
 	if err != nil {
 		writeErr(w, err)
@@ -228,6 +234,9 @@ func (s *Server) approvalAttributes(ctx context.Context, a rbac.Attributes, t ta
 	if err != nil {
 		a.Name = "\x00unknown" // matches no named rule; the handler answers 404
 		return a
+	}
+	if appr.Spec.Use == v1.ApprovalForExpose { // a lease: approve on the silo's exposure (leases.go)
+		return s.exposureAttributes(ctx, a, v1.VerbApprove, t.namespace, appr.Spec.Silo)
 	}
 	a.Name = appr.Spec.Secret
 	a.Labels = s.secretLabels(ctx, target{kind: v1.KindInfo{Kind: "Secret", Plural: "secrets"}, namespace: t.namespace, name: appr.Spec.Secret})

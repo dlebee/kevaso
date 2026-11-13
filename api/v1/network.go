@@ -32,6 +32,8 @@ type SiloService struct {
 	Expose       string            `json:"expose,omitempty"` // private | hostPort | loadBalancer
 	HostPort     *HostPortSpec     `json:"hostPort,omitempty"`
 	LoadBalancer *LoadBalancerSpec `json:"loadBalancer,omitempty"`
+	// Lease: some exposed ports open only on a lease (design §7.2d).
+	Lease *ServiceLease `json:"lease,omitempty"`
 }
 
 // ServicePort is one port of a service.

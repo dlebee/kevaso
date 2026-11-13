@@ -23,6 +23,8 @@ const (
 	OpIngress    = "ingress"     // an ingress controller silo's routes, certificates and ACME answers
 	OpPane       = "pane"        // report a pane's latest state (design §10.1); nothing comes back
 	OpPaneBundle = "pane-bundle" // upload an HTML pane's bundle (Payload), named by its digest
+	OpPortOpen   = "port-open"   // open a leased port (Name) for a while (For) (design §7.2d)
+	OpPortClose  = "port-close"  // close a leased port early
 )
 
 // Ops only a host's egress gate asks for its silos (never forwarded from a silo): the injections,
@@ -68,6 +70,9 @@ type BrokerResponse struct {
 	Digest string `json:"digest,omitempty"`
 	// Pending: the use waits for a person's yes. Ask again with Request.Approval set to its name.
 	Pending *ApprovalWait `json:"pending,omitempty"`
+	// port-open: the port is open until Until; Clamped, the time asked was more than its max.
+	Until   *time.Time `json:"until,omitempty"`
+	Clamped bool       `json:"clamped,omitempty"`
 }
 
 // ApprovalWait is a pending approval a call waits on.

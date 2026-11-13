@@ -127,6 +127,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 	secretsInf := informer.New(c, "Secret")
 	ingInf, classInf := informer.New(c, "Ingress"), informer.New(c, "IngressClass")
 	svcInf := informer.New(c, "Service")
+	leaseInf := informer.New(c, "Lease")
 	changed := make(chan struct{}, 1)
 	poke := func(informer.Key) {
 		select {
@@ -147,6 +148,15 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 	go classInf.Run(ctx)
 	svcInf.AddHandler(poke)
 	go svcInf.Run(ctx)
+	leaseInf.AddHandler(poke)
+	go leaseInf.Run(ctx)
+	currentLeases := func() []*v1.Lease {
+		var out []*v1.Lease
+		for _, o := range leaseInf.List() {
+			out = append(out, o.(*v1.Lease))
+		}
+		return out
+	}
 	currentServices := func() []*v1.Service {
 		var out []*v1.Service
 		for _, o := range svcInf.List() {
@@ -203,6 +213,9 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		view := NetworkView(hostName, me, WithIngressPaths(all, ings, classes), currentGrants())
 		view.GatePort = gatePort
 		view.Services = ServiceView(hostName, currentServices())
+		now, ls := time.Now(), currentLeases()
+		view = WithLeases(view, all, ls, now)
+		leaseEnd, stopLeaseEnd := leaseTimer(ls, now)
 		rules := kni.Rules(view)
 		if rules != last {
 			if err := applyNFT(ctx, rules); err != nil {
@@ -221,12 +234,15 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		}
 		select {
 		case <-ctx.Done():
+			stopLeaseEnd()
 			return
 		case <-changed:
 			time.Sleep(100 * time.Millisecond) // let a burst of changes settle
+		case <-leaseEnd: // a port's lease is up: its rule goes now, whether or not the API says so yet
 		case <-tick.C:
 			last = "" // reload anyway: someone may have flushed the ruleset
 		}
+		stopLeaseEnd()
 	}
 }
 

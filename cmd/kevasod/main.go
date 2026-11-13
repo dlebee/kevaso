@@ -174,6 +174,8 @@ func runControlPlane(ctx context.Context, args []string) error {
 	fs.DurationVar(&cfg.Approvals.MaxWait, "approval-max-wait", time.Hour, "the longest any request for a person's yes may wait")
 	fs.DurationVar(&cfg.Approvals.DefaultFor, "approval-access", 15*time.Minute, "how long approved access lasts when the silo asks for no time")
 	fs.DurationVar(&cfg.Approvals.MaxFor, "approval-max-access", 12*time.Hour, "the longest approved access a silo may ask for")
+	fs.DurationVar(&cfg.Leases.Max, "lease-max", 24*time.Hour, "the longest a port may be open on a lease; a silo's lease.max above it is refused")
+	fs.DurationVar(&cfg.Leases.DefaultMax, "lease-default-max", time.Hour, "the longest lease of a silo whose lease sets no max")
 	pluginsDir := fs.String("plugins-dir", kplugin.Dir, "provider plugins' sockets: DIR/NAME/plugin.sock (\"\": none)")
 	_ = fs.Parse(args)
 	cfg.ExtraNames = extra

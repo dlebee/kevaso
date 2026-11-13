@@ -55,5 +55,9 @@ func approvalColumns(a *v1.Approval, now time.Time) []string {
 	case phase == v1.ApprovalApproved:
 		phase, when = "Used", "access ended"
 	}
-	return []string{a.Spec.Silo, a.Spec.Secret, a.Spec.Use, a.Spec.For, phase, when, dash(a.Status.AnsweredBy)}
+	what := a.Spec.Secret
+	if a.Spec.Use == v1.ApprovalForExpose {
+		what = "port " + a.Spec.Port
+	}
+	return []string{a.Spec.Silo, what, a.Spec.Use, a.Spec.For, phase, when, dash(a.Status.AnsweredBy)}
 }
