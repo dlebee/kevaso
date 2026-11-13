@@ -136,7 +136,7 @@ func TestMoves(t *testing.T) {
 	// With a volume: hv1 first unmounts it (its one other write during the handoff), then lets
 	// go. A write from a stale copy is a conflict, not a refusal. This is the agent's order on a
 	// real host (E2E: the unmount was refused, so the volume never left hv1).
-	vol := place(silo("vol", "web3"), "hv1")
+	place(silo("vol", "web3"), "hv1")
 	get2 := func() *v1.Silo {
 		t.Helper()
 		var x v1.Silo
@@ -145,7 +145,7 @@ func TestMoves(t *testing.T) {
 		}
 		return &x
 	}
-	vol = get2()
+	vol := get2()
 	vol.Status.Host, vol.Status.MovingFrom = "hv2", "hv1"
 	vol.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "linode-block", Handle: "7", AttachedTo: "hv1", Mounted: true}}
 	if err := c.admin.UpdateStatus(c.ctx, vol); err != nil {
