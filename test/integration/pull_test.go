@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -21,7 +20,6 @@ import (
 	"kevaso.com/core/builtin/kri/hostexec"
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/clock"
-	"kevaso.com/core/internal/guest"
 	"kevaso.com/core/sdk/kri"
 	"kevaso.com/core/sdk/kri/fake"
 )
@@ -327,29 +325,18 @@ func TestPrivateRegistryPull(t *testing.T) {
 		t.Fatalf("hv1 got the credential for an image that isn't the silo's: %+v", r)
 	}
 
-	// The silo's own broker can't read it, by either op.
-	dir, _ := os.MkdirTemp("/tmp", "kvp") // unix socket paths are short on macOS
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	ch := channels{dir}
-	b := &agent.Broker{Client: c.host(t, "hv1"), HostName: "hv1"}
+	// The silo's own local endpoint can't read it: no route for the host's op, and the secret
+	// isn't a broker secret of the silo's.
+	eps := c.endpoints(t, "hv1")
 	s := get(api)
-	if err := b.Ensure(ctx, ch, kri.ID{Namespace: "web3", Name: "api", UID: s.UID}); err != nil {
-		t.Fatal(err)
-	}
-	for _, req := range []client.BrokerRequest{{Op: client.OpPullCredential, Name: "ghcr.io/acme/api:v1"}, {Op: client.OpGetSecret, Name: "ghcr-pull"}} {
-		resp, err := guest.Call(ctx, ch.dialer(s.UID), req)
-		if err == nil && (resp.Registry != nil || len(resp.Value) > 0 || resp.Error == "") {
-			t.Fatalf("the silo asked %s and got %+v", req.Op, resp)
+	eps.add(t, s)
+	for _, path := range []string{"/v1/pull-credential", "/v1/pull-credential/ghcr.io", "/v1/secrets/ghcr-pull"} {
+		a := eps.call(t, s, http.MethodGet, path, nil)
+		if a.code == 200 || !strings.Contains(a.body, `"error"`) {
+			t.Fatalf("the silo asked %s and got %d %q", path, a.code, a.body)
 		}
-		if bytes.Contains([]byte(resp.Error+errString(err)), []byte("tok-")) {
-			t.Fatalf("the credential in an answer to the silo: %v %v", resp, err)
+		if strings.Contains(a.body, "tok-") {
+			t.Fatalf("the credential in an answer to the silo: %q", a.body)
 		}
 	}
-}
-
-func errString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }

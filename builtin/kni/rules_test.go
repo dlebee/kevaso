@@ -261,3 +261,33 @@ func TestServiceRules(t *testing.T) {
 	h.Services[0].Ports[0].Targets = nil
 	hasNot(t, Rules(h), "10.65.0.1")
 }
+
+// The local endpoint (ADR 0009): only the silos that have one reach it, only from the bridge; and
+// the anti-spoofing rules sit where frames for the host itself pass too, so the source address
+// the endpoint goes by is the silo's own.
+func TestLocalEndpoint(t *testing.T) {
+	h := host(
+		Silo{Key: "web3/node", IP: a("10.64.2.2"), Tap: "kvt0011223344", Endpoint: true},
+		Silo{Key: "web3/plain", IP: a("10.64.2.3"), Tap: "kvt5566778899"},
+	)
+	h.Endpoint = a("169.254.42.1")
+	r := Rules(h)
+	has(t, r,
+		`iifname != "kvbr0" ip daddr 169.254.42.1 drop`,
+		`iifname "kvbr0" ip saddr 10.64.2.2 ip daddr 169.254.42.1 tcp dport 80 accept`,
+	)
+	hasNot(t, r, "ip saddr 10.64.2.3 ip daddr 169.254.42.1")
+	_, in, _ := strings.Cut(r, "chain input {")
+	if i, j := strings.Index(in, "169.254.42.1 tcp dport 80 accept"), strings.Index(in, `iifname "kvbr0" drop`); i < 0 || i > j {
+		t.Error("the endpoint's accept isn't before the input chain's drop")
+	}
+	_, bt, _ := strings.Cut(r, "table bridge kevaso {")
+	pre, _, _ := strings.Cut(bt, "chain forward {")
+	if !strings.Contains(pre, "type filter hook prerouting") || !strings.Contains(pre, `iifname "kvt0011223344" ip saddr != 10.64.2.2 drop`) ||
+		!strings.Contains(pre, `iifname "kvt5566778899" arp saddr ip != 10.64.2.3 drop`) {
+		t.Errorf("anti-spoofing isn't in the bridge's prerouting hook:\n%s", bt)
+	}
+	if hasEP := Rules(host(Silo{Key: "web3/node", IP: a("10.64.2.2"), Endpoint: true})); strings.Contains(hasEP, "169.254") {
+		t.Error("an endpoint rule on a host without the endpoint")
+	}
+}

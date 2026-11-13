@@ -33,6 +33,33 @@ var Defaults = Limits{MaxReport: 16 << 10, MaxData: 64 << 10, MaxBundle: v1.Pane
 
 const defaultMaxPanes = 4
 
+// How often a host asks a silo for its panes (spec.panes.every).
+const (
+	DefaultEvery = 5 * time.Second
+	MinEvery     = time.Second
+	MaxEvery     = 5 * time.Minute
+)
+
+// Every is how often the host asks: spec.panes.every within the cluster's bounds.
+func Every(cfg *v1.PaneConfig) time.Duration {
+	d, err := time.ParseDuration(cfg.Every)
+	if cfg.Every == "" || err != nil || d <= 0 {
+		return DefaultEvery
+	}
+	return min(max(d, MinEvery), MaxEvery)
+}
+
+// MaxPanes is spec.panes.maxPanes, or the default.
+func MaxPanes(cfg *v1.PaneConfig) int {
+	if cfg.MaxPanes > 0 {
+		return cfg.MaxPanes
+	}
+	return defaultMaxPanes
+}
+
+// Allowed reports whether the silo may report panes of kind.
+func Allowed(cfg *v1.PaneConfig, kind string) bool { return slices.Contains(allowed(cfg), kind) }
+
 var paneName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,30}[a-z0-9])?$`)
 
 // Name is the Pane object's name: SILO.PANE.
@@ -40,7 +67,7 @@ func Name(silo, pane string) string { return silo + "." + pane }
 
 // Errors a report is refused with.
 var (
-	ErrOff     = errors.New("panes are off for this silo (spec.panes.enabled)")
+	ErrOff     = errors.New("panes are off for this silo (no spec.panes.http)")
 	ErrKind    = errors.New("this kind of pane isn't allowed for this silo (spec.panes.allow)")
 	ErrTooMany = errors.New("too many panes")
 	ErrLimit   = errors.New("over the limit")
@@ -58,7 +85,7 @@ func allowed(cfg *v1.PaneConfig) []string {
 // Check decides one report. existing are the silo's panes now (by pane name), so a new pane past
 // maxPanes is refused while updates to existing ones go through.
 func Check(cfg *v1.PaneConfig, r v1.PaneReport, existing []string, l Limits) error {
-	if cfg == nil || !cfg.Enabled {
+	if !cfg.On() {
 		return ErrOff
 	}
 	if !paneName.MatchString(r.Pane) {
@@ -67,10 +94,7 @@ func Check(cfg *v1.PaneConfig, r v1.PaneReport, existing []string, l Limits) err
 	if !slices.Contains(allowed(cfg), r.Kind) {
 		return fmt.Errorf("%w: %s (allowed: %v)", ErrKind, r.Kind, allowed(cfg))
 	}
-	max := cfg.MaxPanes
-	if max == 0 {
-		max = defaultMaxPanes
-	}
+	max := MaxPanes(cfg)
 	if !slices.Contains(existing, r.Pane) && len(existing) >= max {
 		return fmt.Errorf("%w: this silo has %d (spec.panes.maxPanes %d)", ErrTooMany, len(existing), max)
 	}

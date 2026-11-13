@@ -69,7 +69,8 @@ func authHash(v string) string {
 
 // TestSecretsInASilo is M7's "done when": a key works in a silo but never appears inside it. On
 // real machines: the egress gate injects an API key for the one host a grant names (and replaces
-// what the silo sends, refuses everything else), the broker delivers what grants say over vsock,
+// what the silo sends, refuses everything else), the host writes file secrets into the silo's
+// tmpfs and its local endpoint answers what grants say (ADR 0009),
 // signs with a key that stays outside, rotations reach the silo, and then the silo's whole memory
 // (a Cloud Hypervisor snapshot) and disk are searched for the key, from the host: zero times.
 //
@@ -305,25 +306,36 @@ spec:
 	fails("plain HTTP (default deny)", in("agent", "curl -sS --max-time 5 http://"+clientIP+"/ 2>&1"))
 	fails("a silo without grants", curl("plain", "api.allowed.test", "203.0.113.9", ""))
 
-	// Tiers 3 and 4 through the broker over vsock.
-	expect("broker: db-password", in("agent", "kvo-guest secret get db-password"), dbPassword)
+	// Tiers 3 and 4: the local endpoint (curl, nothing of Kevaso's in the silo) and a file the host wrote.
+	// ep prints the body, then the status.
+	ep := func(silo, path, extra string) string {
+		return in(silo, "curl -sS --max-time 10 -w ' %{http_code}' -H 'Kevaso-Local: 1' "+extra+" 'http://169.254.42.1"+path+"' 2>&1")
+	}
+	expect("broker: db-password", ep("agent", "/v1/secrets/db-password", ""), dbPassword+" 200")
 	expect("file delivery in tmpfs", in("agent", "cat /run/secrets/tls.pem; echo; stat -c '%a %U' /run/secrets/tls.pem; df --output=fstype /run/secrets | tail -1"), tlsValue+"\n400 root\ntmpfs")
-	fails("broker: an inject-only key", in("agent", "kvo-guest secret get api-key"))
-	fails("broker: the signing key itself", in("agent", "kvo-guest secret get validator-key"))
-	expect("broker: another silo gets nothing", in("plain", "kvo-guest secret get db-password"), "no secret")
+	expect("broker: an inject-only key", ep("agent", "/v1/secrets/api-key", ""), "no secret")
+	expect("broker: the signing key itself", ep("agent", "/v1/secrets/validator-key", ""), "no secret")
+	expect("broker: a file secret isn't the endpoint's", ep("agent", "/v1/secrets/tls-key", ""), " 404")
+	expect("broker: no header, nothing", ep("agent", "/v1/secrets/db-password", "-H 'Kevaso-Local:'"), " 403")
+	expect("broker: a browser's request, nothing", ep("agent", "/v1/secrets/db-password", "-H 'Origin: http://evil.example'"), " 403")
+	if got := ep("plain", "/v1/secrets/db-password", ""); strings.Contains(got, dbPassword) || strings.Contains(got, " 200") {
+		t.Errorf("a silo whose grants need no endpoint reached it: %q", got)
+	} else {
+		t.Logf("a silo whose grants need no endpoint has none: %s", firstLine(got))
+	}
 	var key v1.Secret
 	if err := json.Unmarshal([]byte(must(kvo.Run, "", "get", "secret", "validator-key", "-n", "dev", "-o", "json")), &key); err != nil {
 		t.Fatal(err)
 	}
 	pub, _ := hex.DecodeString(key.Status.PublicKey)
-	sigHex := in("agent", "printf 'block 1' | kvo-guest sign validator-key --slot 1")
+	sigHex := in("agent", "printf 'block 1' | curl -fsS -H 'Kevaso-Local: 1' --data-binary @- 'http://169.254.42.1/v1/sign/validator-key?slot=1'")
 	sig, _ := hex.DecodeString(sigHex)
 	if len(pub) != ed25519.PublicKeySize || !ed25519.Verify(pub, []byte("block 1"), sig) {
 		t.Errorf("Sign: %q doesn't verify with the key's public half", sigHex)
 	} else {
-		t.Log("Sign over vsock verifies with the public key")
+		t.Log("Sign through the local endpoint verifies with the public key")
 	}
-	expect("slashing protection", in("agent", "printf 'block 1, other' | kvo-guest sign validator-key --slot 1"), "slashing")
+	expect("slashing protection", in("agent", "printf 'block 1, other' | curl -sS -w ' %{http_code}' -H 'Kevaso-Local: 1' --data-binary @- 'http://169.254.42.1/v1/sign/validator-key?slot=1'"), "slashing")
 
 	// Rotation: one place, the silo follows (gate at once, the file within seconds).
 	apiKey2, tls2 := randomToken(t), "-----TLS "+randomToken(t)+"-----"

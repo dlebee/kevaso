@@ -6,31 +6,33 @@ import (
 	v1 "kevaso.com/core/api/v1"
 )
 
-// The secret broker (design §8.2): one protocol, JSON lines over the silo's own vsock channel to its
-// host. A request names a secret; it never says which silo is asking, because the channel says.
-// There's no call to list or search secrets, and no call returns a signing key.
+// The secret broker (design §8.2): a host relays to the control plane (POST /agent/broker) what
+// one of its silos asked its local endpoint (internal/agent/endpoint.go, ADR 0009), and asks for
+// what it does for its silos itself (file and env deliveries, injections, panes it fetched). A
+// request names a secret; which silo it's for is the host's to say, from where the silo's request
+// arrived, never from the silo's words, and the control plane checks the silo is placed on that
+// host. There's no call to list or search secrets, and no call returns a signing key.
 
-// BrokerPort is the vsock port the broker listens on in every silo's channel.
-const BrokerPort = 5000
-
-// Broker operations a silo may ask for.
+// Ops a silo asks for (through its local endpoint).
 const (
-	OpGetSecret  = "get-secret"  // a value, for broker / file / env deliveries
-	OpSign       = "sign"        // a signature; the key stays outside
-	OpPublicKey  = "public-key"  // the public half of a key the silo may sign with
-	OpDeliveries = "deliveries"  // which secrets go to files and env vars (names and versions only)
-	OpWatch      = "watch"       // a stream of events: a secret or grant changed, re-read
-	OpPane       = "pane"        // report a pane's latest state (design §10.1); nothing comes back
-	OpPaneBundle = "pane-bundle" // upload an HTML pane's bundle (Payload; format: v1.PaneBundleMaxBytes), named by its digest
-	OpPortOpen   = "port-open"   // open a leased port (Name) for a while (For) (design §7.2d)
-	OpPortClose  = "port-close"  // close a leased port early
+	OpGetSecret = "get-secret" // a value, for broker deliveries
+	OpSign      = "sign"       // a signature; the key stays outside
+	OpPublicKey = "public-key" // the public half of a key the silo may sign with
+	OpPortOpen  = "port-open"  // open a leased port (Name) for a while (For) (design §7.2d)
+	OpPortClose = "port-close" // close a leased port early
 )
 
-// Ops only a host's egress gate asks for its silos (never forwarded from a silo): the injections,
-// and, for one that needs a person's yes, whether this request may have it (design §8.7).
+// Ops a host asks for its own silos (never forwarded from a silo): the file and env deliveries it
+// writes into them (names and versions; with the values), the egress gate's injections and, for
+// one that needs a person's yes, whether this request may have it (design §8.7), and the panes it
+// fetched (design §10.1): a report, or an HTML pane's bundle (Payload; format: v1.PaneBundleMaxBytes).
 const (
-	OpInjections = "injections"
-	OpAskInject  = "ask-inject"
+	OpDeliveries     = "deliveries"
+	OpDeliveryValues = "delivery-values"
+	OpInjections     = "injections"
+	OpAskInject      = "ask-inject"
+	OpPane           = "pane"
+	OpPaneBundle     = "pane-bundle"
 )
 
 // OpPullCredential is a host's agent asking for the credential to pull one of its silos' images
@@ -46,7 +48,7 @@ type RegistryCredential struct {
 	Password []byte `json:"password"`
 }
 
-// BrokerRequest is one line from a silo.
+// BrokerRequest is one request, as the host relays it.
 type BrokerRequest struct {
 	Op      string `json:"op"`
 	Name    string `json:"name,omitempty"`
@@ -66,9 +68,12 @@ type BrokerRequest struct {
 	Path   string `json:"path,omitempty"`
 }
 
-// BrokerResponse is one line back (watch: one per event).
+// BrokerResponse is the answer.
 type BrokerResponse struct {
-	Error      string      `json:"error,omitempty"`
+	Error string `json:"error,omitempty"`
+	// Code says what kind of refusal Error is, for the endpoint's status: CodeNotFound, CodeConflict,
+	// or "" (refused).
+	Code       string      `json:"code,omitempty"`
 	Value      []byte      `json:"value,omitempty"`
 	Version    int64       `json:"version,omitempty"`
 	Signature  []byte      `json:"signature,omitempty"`
@@ -77,8 +82,6 @@ type BrokerResponse struct {
 	Injections []Injection `json:"injections,omitempty"`
 	// Registry: pull-credential, the credential (nil: none applies, pull anonymously).
 	Registry *RegistryCredential `json:"registry,omitempty"`
-	Event    string              `json:"event,omitempty"` // watch: "changed" (a secret or grant), "ready"
-	Secret   string              `json:"secret,omitempty"`
 	// Digest: pane-bundle, the name the bundle is stored under (sha256:…).
 	Digest string `json:"digest,omitempty"`
 	// Pending: the use waits for a person's yes. Ask again with Request.Approval set to its name.
@@ -88,6 +91,12 @@ type BrokerResponse struct {
 	Clamped bool       `json:"clamped,omitempty"`
 }
 
+// Refusal codes.
+const (
+	CodeNotFound = "NotFound" // no such secret or key for this silo (whichever it really is)
+	CodeConflict = "Conflict" // e.g. signing refused by slashing protection
+)
+
 // ApprovalWait is a pending approval a call waits on.
 type ApprovalWait struct {
 	Namespace string    `json:"namespace"`
@@ -95,13 +104,14 @@ type ApprovalWait struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-// Delivery is a secret the guest helper writes to a file or an environment variable.
+// Delivery is a secret the host writes into a silo as a file or an environment variable.
 type Delivery struct {
 	Name    string `json:"name"`
 	Mode    string `json:"mode"` // file | env
 	Path    string `json:"path,omitempty"`
 	Env     string `json:"env,omitempty"`
 	Version int64  `json:"version"`
+	Value   []byte `json:"value,omitempty"` // delivery-values only
 }
 
 // Injection is a header the egress gate adds to a silo's requests to Host (or, on runtimes that

@@ -20,10 +20,10 @@ const (
 
 // Delivery modes: how a secret reaches a silo (design §8.5).
 const (
-	DeliverBroker = "broker" // the silo asks for it over vsock when it needs it
+	DeliverBroker = "broker" // the silo asks its local endpoint for it when it needs it
 	DeliverInject = "inject" // the egress gate adds it to outgoing requests: never in the silo
-	DeliverFile   = "file"   // a tmpfs file in the silo, rewritten on rotation
-	DeliverEnv    = "env"    // an environment variable: legacy apps only, flagged
+	DeliverFile   = "file"   // a tmpfs file the host writes in the silo, rewritten on rotation
+	DeliverEnv    = "env"    // an environment variable (written by the host): legacy apps only, flagged
 	DeliverSign   = "sign"   // the silo asks for signatures: the key never leaves Kevaso
 )
 

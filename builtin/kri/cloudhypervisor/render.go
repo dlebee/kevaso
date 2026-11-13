@@ -60,9 +60,6 @@ type Names struct {
 	LV     string // logical volume name in VG
 	Unit   string // systemd unit
 	Socket string // VMM API socket
-	// Vsock is the VM's vsock device on the host. A guest connecting to the host (CID 2) on port P
-	// makes Cloud Hypervisor connect to Vsock_P: that socket belongs to this silo only (E014).
-	Vsock string
 }
 
 // NamesFor returns a silo's names.
@@ -75,7 +72,6 @@ func NamesFor(id kri.ID) Names {
 		LV:     "kv-" + s,
 		Unit:   unitPrefix + s + ".service",
 		Socket: "/run/" + unitPrefix + s + "/ch.sock",
-		Vsock:  SilosDir + "/" + s + "/vsock.sock",
 	}
 }
 
@@ -204,7 +200,7 @@ func UnitFor(n Names, cpus int, memMiB int64, firmware, mac string, l Layout) st
 	}
 	args := []string{"--api-socket", n.Socket, "--firmware", firmware, "--cpus", "boot=" + fmt.Sprint(cpus)}
 	args = append(args, VMMArgs(n, l, memMiB)...)
-	args = append(args, "--net", "tap="+n.Tap+",mac="+mac, "--vsock", "cid=3,socket="+n.Vsock, "--serial", "file="+n.Dir+"/serial.log", "--console", "off")
+	args = append(args, "--net", "tap="+n.Tap+",mac="+mac, "--serial", "file="+n.Dir+"/serial.log", "--console", "off")
 	w("ExecStart=" + BinDir + "/cloud-hypervisor " + strings.Join(args, " "))
 	w("Restart=no")
 	w("NoNewPrivileges=yes")

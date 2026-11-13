@@ -1,5 +1,10 @@
 # ADR 0007: The HTML pane bundle format
 
+> **Partly superseded by ADR 0009:** there is no `kvo-guest`. A silo serves its bundles itself
+> (`GET PATH/bundles/sha256:HEX`) and its host fetches them, weighing and hashing only. Item 4 below
+> is now the silo's own business (packing deterministically is still how to keep a digest stable);
+> the format, the limits and item 5 stand.
+
 **Status:** accepted · **Date:** 2026-11-13
 
 ## Context

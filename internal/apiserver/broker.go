@@ -16,8 +16,8 @@ import (
 )
 
 // The broker's decisions (design §8.2), on the control plane. A host relays what one of its silos
-// asked, and the silo's identity is what the host's channel said (the per-silo vsock listener), never
-// the silo's own words. The control plane then checks:
+// asked its local endpoint, and the silo's identity is what the host says from where the request
+// arrived (its source address on the bridge, ADR 0009), never the silo's own words. The control plane then checks:
 //   - the host is the silo's host (a host only ever gets secrets for silos placed on it);
 //   - one of the silo's grants gives it that secret, that way, and the secret allows it;
 //   - the grant's required assurance is one the silo has (host only, for now).
@@ -73,15 +73,15 @@ func (s *Server) agentBroker(w http.ResponseWriter, r *http.Request) {
 func (s *Server) broker(ctx context.Context, host string, req client.AgentBrokerRequest) (client.BrokerResponse, string, bool) {
 	call, err := s.brokerSilo(ctx, host, req)
 	if err != nil {
-		return client.BrokerResponse{Error: "this silo has no access to the broker"}, err.Error(), false
+		return client.BrokerResponse{Error: "this silo has no access to the broker", Code: client.CodeNotFound}, err.Error(), false
 	}
 	op := req.Request
 	refuse := func(why string) (client.BrokerResponse, string, bool) {
-		return client.BrokerResponse{Error: errNoSecret(op.Name).Error()}, why, false
+		return client.BrokerResponse{Error: errNoSecret(op.Name).Error(), Code: client.CodeNotFound}, why, false
 	}
 	switch op.Op {
-	case client.OpGetSecret:
-		sec, g, gs, why := s.grantedSecret(ctx, call, op.Name, v1.DeliverBroker, v1.DeliverFile, v1.DeliverEnv)
+	case client.OpGetSecret: // what the silo asks for itself: broker deliveries only (file and env are the host's to write)
+		sec, g, gs, why := s.grantedSecret(ctx, call, op.Name, v1.DeliverBroker)
 		if sec == nil {
 			return refuse(why)
 		}
@@ -117,13 +117,13 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 		protection := signOp.SlashingProtection
 		sig, err := s.vault.Sign(ctx, sec, secrets.SignRequest{Payload: op.Payload, Slot: op.Slot, Protection: protection})
 		if errors.Is(err, secrets.ErrSlashing) {
-			return client.BrokerResponse{Error: err.Error()}, err.Error(), false
+			return client.BrokerResponse{Error: err.Error(), Code: client.CodeConflict}, err.Error(), false
 		}
 		if err != nil {
 			return refuse(err.Error())
 		}
 		return client.BrokerResponse{Signature: sig}, "grant " + g.Name + ", sign" + approved, true
-	case client.OpDeliveries:
+	case client.OpDeliveries, client.OpDeliveryValues:
 		var out []client.Delivery
 		for _, g := range call.grants {
 			if !assured(g) {
@@ -150,8 +150,21 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 						d.Env = strings.ToUpper(strings.ReplaceAll(gs.Name, "-", "_"))
 					}
 				}
+				if op.Op == client.OpDeliveryValues {
+					value, ver, err := s.vault.Value(ctx, sec)
+					if err != nil {
+						for _, d := range out {
+							clear(d.Value)
+						}
+						return client.BrokerResponse{Error: "deliveries: " + gs.Name + ": can't be read now; try again"}, err.Error(), false
+					}
+					d.Value, d.Version = value, ver
+				}
 				out = append(out, d)
 			}
+		}
+		if op.Op == client.OpDeliveryValues {
+			return client.BrokerResponse{Deliveries: out}, fmt.Sprintf("%d file/env deliveries, with values, for the host to write", len(out)), true
 		}
 		return client.BrokerResponse{Deliveries: out}, fmt.Sprintf("%d file/env deliveries", len(out)), true
 	case client.OpAskInject:
