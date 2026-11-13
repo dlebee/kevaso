@@ -133,6 +133,53 @@ func TestMoves(t *testing.T) {
 		t.Fatalf("after the handoff: %+v", cur.Status)
 	}
 
+	// With a volume: hv1 first unmounts it (its one other write during the handoff), then lets
+	// go. A write from a stale copy is a conflict, not a refusal. This is the agent's order on a
+	// real host (E2E: the unmount was refused, so the volume never left hv1).
+	vol := place(silo("vol", "web3"), "hv1")
+	get2 := func() *v1.Silo {
+		t.Helper()
+		var x v1.Silo
+		if err := c.admin.Get(c.ctx, "Silo", "web3", "vol", &x); err != nil {
+			t.Fatal(err)
+		}
+		return &x
+	}
+	vol = get2()
+	vol.Status.Host, vol.Status.MovingFrom = "hv2", "hv1"
+	vol.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "linode-block", Handle: "7", AttachedTo: "hv1", Mounted: true}}
+	if err := c.admin.UpdateStatus(c.ctx, vol); err != nil {
+		t.Fatal(err)
+	}
+	stale := get2()
+	vol = get2()
+	vol.Status.Volumes[0].Mounted = false
+	vol.Status.Phase = "Stopped"
+	if err := hv1.UpdateStatus(c.ctx, vol); status(err) != http.StatusForbidden {
+		t.Fatalf("the old host changed more than unmounting: %v", err)
+	}
+	vol = get2()
+	vol.Status.Volumes[0].Mounted = false
+	if err := hv1.UpdateStatus(c.ctx, vol); err != nil {
+		t.Fatalf("the old host unmounting its volume during the handoff: %v", err)
+	}
+	stale.Status.MovingFrom = ""
+	stale.Status.Volumes[0].Mounted = false
+	if err := hv1.UpdateStatus(c.ctx, stale); status(err) != http.StatusConflict {
+		t.Fatalf("letting go from a stale copy: %v, want a conflict", err)
+	}
+	vol = get2()
+	if vol.Status.Volumes[0].Mounted || vol.Status.MovingFrom != "hv1" {
+		t.Fatalf("after unmounting: %+v", vol.Status)
+	}
+	vol.Status.MovingFrom = ""
+	if err := hv1.UpdateStatus(c.ctx, vol); err != nil {
+		t.Fatalf("the old host letting go after unmounting: %v", err)
+	}
+	if vol = get2(); vol.Status.MovingFrom != "" || !moves.MayStart(vol, "hv2") {
+		t.Fatalf("after the handoff: %+v", vol.Status)
+	}
+
 	// hv2 is lost: moving back needs --confirm-fenced, and then there's no handoff to wait for.
 	var h v1.Host
 	_ = c.admin.Get(c.ctx, "Host", "", "hv2", &h)

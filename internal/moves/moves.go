@@ -11,6 +11,7 @@ package moves
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 
 	v1 "kevaso.com/core/api/v1"
@@ -211,9 +212,25 @@ func MayStart(s *v1.Silo, host string) bool {
 	return s.Status.Host == host && (s.Status.MovingFrom == "" || s.Status.MovingFrom == host)
 }
 
+// LetGo is the status once the old host has unmounted the volumes attached to it, still handing
+// off: the one other write a host the silo is moving from may make.
+func LetGo(st v1.SiloStatus, host string) (v1.SiloStatus, bool) {
+	if st.MovingFrom != host || st.Host == host {
+		return st, false
+	}
+	st.Volumes = slices.Clone(st.Volumes)
+	for i := range st.Volumes {
+		if st.Volumes[i].AttachedTo == host {
+			st.Volumes[i].Mounted = false
+		}
+	}
+	return st, true
+}
+
 // Released is the status once the old host has stopped the silo and unmounted its volumes.
 func Released(st v1.SiloStatus, host string) (v1.SiloStatus, bool) {
-	if st.MovingFrom != host || st.Host == host {
+	st, ok := LetGo(st, host)
+	if !ok {
 		return st, false
 	}
 	st.MovingFrom = ""

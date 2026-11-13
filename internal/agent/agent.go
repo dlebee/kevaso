@@ -664,21 +664,22 @@ func (a *Agent) setStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.SiloS
 // releaseMove tells the control plane this host has let go of a silo that moved away.
 func (a *Agent) releaseMove(ctx context.Context, s *v1.Silo) error {
 	for range 5 {
-		st, ok := moves.Released(s.Status, a.HostName)
+		var cur v1.Silo // what's stored: the release is judged against it, not our copy
+		if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
+			return err
+		}
+		if cur.UID != s.UID {
+			return nil
+		}
+		st, ok := moves.Released(cur.Status, a.HostName)
 		if !ok {
 			return nil
 		}
-		next := *s
-		next.Status = st
-		err := a.Client.UpdateStatus(ctx, &next)
+		cur.Status = st
+		err := a.Client.UpdateStatus(ctx, &cur)
 		if !client.IsConflict(err) {
 			return err
 		}
-		var fresh v1.Silo
-		if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &fresh); err != nil {
-			return err
-		}
-		s = &fresh
 	}
 	return errors.New("status kept changing; will retry")
 }
