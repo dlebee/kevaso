@@ -64,10 +64,11 @@ func ProbeCommand(d v1.Daemon) []string {
 	return []string{"sh", "-c", script}
 }
 
-// StopCommand stops a daemon that's no longer in the spec (its whole process group).
+// StopCommand stops a daemon that's no longer in the spec (its whole process group). The signal
+// is given with -s: dash's kill reads "kill -TERM -- -PGID" as a bad number.
 func StopCommand(name string) []string {
 	pid, exit, _ := files(name)
-	return []string{"sh", "-c", "if [ -f " + pid + " ]; then p=$(cat " + pid + "); kill -TERM -- -\"$p\" 2>/dev/null || kill -TERM \"$p\" 2>/dev/null; fi; rm -f " + pid + " " + exit + "; true"}
+	return []string{"sh", "-c", "if [ -f " + pid + " ]; then p=$(cat " + pid + "); kill -s TERM -- -\"$p\" 2>/dev/null || kill -s TERM \"$p\" 2>/dev/null; fi; rm -f " + pid + " " + exit + "; true"}
 }
 
 // Probe is what ProbeCommand said.

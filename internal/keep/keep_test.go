@@ -2,6 +2,7 @@ package keep
 
 import (
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -161,5 +162,60 @@ func TestUpkeep(t *testing.T) {
 	}
 	if got := Degraded([]v1.UpkeepStatus{{Name: "a", State: v1.UpkeepOK}, {Name: "b", State: v1.UpkeepFailed}}); len(got) != 1 || got[0] != "b" {
 		t.Fatalf("Degraded = %v", got)
+	}
+}
+
+// shells are the sh implementations silos have: dash (Debian, Ubuntu), bash, busybox (Alpine).
+func shells(t *testing.T) []string {
+	var out []string
+	for _, s := range []string{"dash", "bash", "busybox"} {
+		if p, err := exec.LookPath(s); err == nil {
+			if s == "busybox" {
+				p += " sh"
+			}
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		t.Skip("no dash, bash or busybox here")
+	}
+	return out
+}
+
+// in runs one of the commands with a given sh in place of "sh".
+func in(t *testing.T, shell string, argv []string) string {
+	t.Helper()
+	return sh(t, append(strings.Fields(shell), argv[1:]...))
+}
+
+// A stop takes the daemon's whole process group in every shell: dash's kill doesn't take
+// "kill -TERM -- -PGID" (Illegal number), which left the daemon running with only its wrapper gone.
+func TestStopKillsTheGroupInEveryShell(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("no setsid here: a stop only takes the wrapper")
+	}
+	for _, shell := range shells(t) {
+		t.Run(filepath.Base(shell), func(t *testing.T) {
+			Dir = t.TempDir()
+			d := v1.Daemon{Name: "long", Run: "sleep 30 & echo $! > " + Dir + "/child; wait"}
+			in(t, shell, StartCommand(d))
+			var child string
+			for i := 0; i < 100 && child == ""; i++ {
+				time.Sleep(20 * time.Millisecond)
+				child = strings.TrimSpace(sh(t, []string{"sh", "-c", "cat " + Dir + "/child 2>/dev/null || true"}))
+			}
+			if child == "" {
+				t.Fatal("the daemon never started")
+			}
+			in(t, shell, StopCommand("long"))
+			for i := 0; i < 100; i++ {
+				if exec.Command("kill", "-0", child).Run() != nil {
+					return
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			_ = exec.Command("kill", "-9", child).Run()
+			t.Fatalf("with %s, the daemon's child %s outlived the stop", shell, child)
+		})
 	}
 }
