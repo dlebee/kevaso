@@ -25,10 +25,11 @@ type fake struct {
 	pid        int
 	wired      map[int]bool
 	execHook   func(context.Context, hostexec.Cmd) (int, error) // docker exec, if set
+	pid1       map[string]string                                // image → its inspected entrypoint and command
 }
 
 func newFake() *fake {
-	return &fake{files: map[string][]byte{}, containers: map[string]string{}, images: map[string]bool{}, pid: 100, wired: map[int]bool{}}
+	return &fake{files: map[string][]byte{}, containers: map[string]string{}, images: map[string]bool{}, pid: 100, wired: map[int]bool{}, pid1: map[string]string{}}
 }
 
 func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
@@ -65,8 +66,11 @@ func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
 			}
 			out(fmt.Sprintf("%s %d", st, f.pid))
 		case "image":
-			if !f.images[a[len(a)-1]] {
+			if !f.images[a[len(a)-1]] && f.pid1[a[len(a)-1]] == "" {
 				return fail("No such image")
+			}
+			if indexOf(a, "--format") > 0 {
+				out(f.pid1[a[len(a)-1]])
 			}
 		case "import":
 			if c.Stdin != nil {
@@ -217,7 +221,7 @@ func TestLifecycle(t *testing.T) {
 	main := f.last("docker run -d --name " + n.Main)
 	for _, want := range []string{"--network container:" + n.Pause, "--security-opt no-new-privileges", "-v " + n.Dir + "/broker:/run/kevaso",
 		"SSL_CERT_FILE=/etc/ssl/certs/kevaso-ca-bundle.crt", "--cpus 2", "--memory 536870912",
-		"-v " + n.Dir + "/resolv.conf:/etc/resolv.conf:ro", "docker.io/library/ubuntu:24.04 sleep infinity"} {
+		"-v " + n.Dir + "/resolv.conf:/etc/resolv.conf:ro", "--init docker.io/library/ubuntu:24.04 sleep infinity"} {
 		if !strings.Contains(main, want) {
 			t.Errorf("main container %q missing %q", main, want)
 		}
@@ -369,5 +373,41 @@ func TestKillHasNoGrace(t *testing.T) {
 	}
 	if err := r.Kill(ctx, silo); err != nil { // stopped already: a no-op
 		t.Fatal(err)
+	}
+}
+
+// Container silos get the engine's init as PID 1 (it reaps orphans: under a bare `sleep infinity`
+// every daemon restart left a zombie) unless the image's own PID 1 is an init.
+func TestNeedsInit(t *testing.T) {
+	for _, c := range []struct {
+		name              string
+		ep, imageCmd, cmd []string
+		want              bool
+	}{
+		{"ubuntu, sleep infinity", nil, []string{"/bin/bash"}, []string{"sleep", "infinity"}, true},
+		{"an app's own entrypoint", []string{"/app/server"}, nil, nil, true},
+		{"tini entrypoint", []string{"/usr/bin/tini", "--"}, []string{"app"}, nil, false},
+		{"dumb-init entrypoint, silo command", []string{"dumb-init"}, nil, []string{"app"}, false},
+		{"s6-overlay", []string{"/init"}, nil, nil, false},
+		{"systemd image command", nil, []string{"/lib/systemd/systemd"}, nil, false},
+		{"the silo's command over the image's init cmd", nil, []string{"/sbin/init"}, []string{"sleep", "infinity"}, true},
+		{"nothing known", nil, nil, nil, true},
+	} {
+		if got := NeedsInit(c.ep, c.imageCmd, c.cmd); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+	ctx := context.Background()
+	f := newFake()
+	f.pid1 = map[string]string{"ghcr.io/x/tini-app:1": "[\"/sbin/tini\",\"--\"]\n[\"app\"]"}
+	r := runtime(t, f)
+	if err := r.Create(ctx, kri.Spec{ID: silo, Image: "ghcr.io/x/tini-app:1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(ctx, silo); err != nil {
+		t.Fatal(err)
+	}
+	if main := f.last("docker run -d --name " + NamesFor(silo).Main); strings.Contains(main, "--init") {
+		t.Fatalf("an image with its own init got another: %s", main)
 	}
 }

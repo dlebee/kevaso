@@ -9,7 +9,7 @@ import (
 // Packages are what each engine needs from the distribution (nsenter comes with util-linux).
 var Packages = map[string][]string{
 	"docker": {"docker.io", "nftables", "iproute2"},
-	"podman": {"podman", "nftables", "iproute2"},
+	"podman": {"podman", "catatonit", "nftables", "iproute2"}, // catatonit: podman's run --init
 }
 
 // DockerDaemonJSON keeps Docker out of the host's firewall and networks: container silos use the
