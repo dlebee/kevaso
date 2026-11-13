@@ -362,4 +362,9 @@ type VolumeStatus struct {
 	Device     string `json:"device,omitempty"`     // its path on that host
 	Mounted    bool   `json:"mounted,omitempty"`
 	Message    string `json:"message,omitempty"` // what's going on, or what went wrong
+	// SizeBytes is the size the plugin was last given (asked again when spec's size grows).
+	SizeBytes int64 `json:"sizeBytes,omitempty"`
+	// SizeNotEnforced: the class can't hold the volume to its size (a folder with no quota): it can
+	// fill whatever backs it.
+	SizeNotEnforced bool `json:"sizeNotEnforced,omitempty"`
 }

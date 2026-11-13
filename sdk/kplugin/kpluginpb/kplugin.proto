@@ -122,6 +122,9 @@ message VolumeStatus {
   string handle = 1;
   string region = 2;
   int64 size_bytes = 3;
+  // size_enforced: the volume can't grow past size_bytes (a block device's size, a directory
+  // quota). A mount class that can't enforce it says false.
+  bool size_enforced = 4;
 }
 
 message Attachment {

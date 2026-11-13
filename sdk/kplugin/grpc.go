@@ -212,7 +212,7 @@ func (s volumesServer) EnsureVolume(ctx context.Context, r *pb.Volume) (*pb.Volu
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &pb.VolumeStatus{Handle: st.Handle, Region: st.Region, SizeBytes: st.SizeBytes}, nil
+	return &pb.VolumeStatus{Handle: st.Handle, Region: st.Region, SizeBytes: st.SizeBytes, SizeEnforced: st.SizeEnforced}, nil
 }
 
 func (s volumesServer) AttachVolume(ctx context.Context, r *pb.Attachment) (*pb.AttachmentStatus, error) {
@@ -400,7 +400,7 @@ func (c *Client) EnsureVolume(ctx context.Context, v Volume) (VolumeStatus, erro
 	if err != nil {
 		return VolumeStatus{}, fromStatus(err)
 	}
-	return VolumeStatus{Handle: r.GetHandle(), Region: r.GetRegion(), SizeBytes: r.GetSizeBytes()}, nil
+	return VolumeStatus{Handle: r.GetHandle(), Region: r.GetRegion(), SizeBytes: r.GetSizeBytes(), SizeEnforced: r.GetSizeEnforced()}, nil
 }
 
 // AttachVolume implements Volumes.

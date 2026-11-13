@@ -150,6 +150,10 @@ type VolumeStatus struct {
 	Handle    string `json:"handle"` // the provider's ID for it
 	Region    string `json:"region"`
 	SizeBytes int64  `json:"sizeBytes,omitempty"`
+	// SizeEnforced: the volume can't grow past SizeBytes (a block device's size; a directory quota
+	// on a mount class). A class that can't enforce it leaves it false, and the silo says so.
+	// EnsureVolume is called again when the silo's size grows: a plugin that enforces sizes grows it.
+	SizeEnforced bool `json:"sizeEnforced,omitempty"`
 }
 
 // Attachment attaches a volume to a host, or detaches it.
