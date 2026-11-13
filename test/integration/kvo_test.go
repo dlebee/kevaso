@@ -180,3 +180,25 @@ func TestExamplesApply(t *testing.T) {
 		})
 	}
 }
+
+// K-031 from the CLI: `kvo delete KIND NAME --uid UID` deletes only the object with that UID (a
+// new one under the name stays); by name alone it still deletes whatever has the name.
+func TestKvoDeleteOnlyTheObjectSeen(t *testing.T) {
+	h := newHarness(t)
+	h.ok(manifest, "apply", "-f", "-")
+	uid := func() string {
+		out := h.ok("", "get", "silo", "hello", "-n", "demo", "-o", "json")
+		_, rest, _ := strings.Cut(out, `"uid": "`)
+		u, _, _ := strings.Cut(rest, `"`)
+		return u
+	}
+	old := uid()
+	h.ok("", "delete", "silo", "hello", "-n", "demo")
+	h.ok(manifest, "apply", "-f", "-")
+	if _, errs, code := h.kvo(context.Background(), "", "delete", "silo", "hello", "-n", "demo", "--uid", old); code == 0 || !strings.Contains(errs, "another object") {
+		t.Fatalf("delete --uid of the old silo: exit %d, %q", code, errs)
+	}
+	if out := h.ok("", "delete", "silo", "hello", "-n", "demo", "--uid", uid()); !strings.Contains(out, "silo/hello deleted") {
+		t.Fatalf("delete --uid of the silo there:\n%s", out)
+	}
+}

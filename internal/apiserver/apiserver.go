@@ -265,7 +265,7 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut && t.name != "":
 		s.write(ctx, w, r, t, s.update, http.StatusOK)
 	case r.Method == http.MethodDelete && t.name != "":
-		s.delete(ctx, w, t)
+		s.delete(ctx, w, r, t)
 	default:
 		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "%s %s", r.Method, r.URL.Path))
 	}
@@ -623,8 +623,11 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 }
 
 // delete removes an object, or, while it has finalizers, marks it as being deleted and leaves the
-// rest to the controllers that own the finalizers.
-func (s *Server) delete(ctx context.Context, w http.ResponseWriter, t target) {
+// rest to the controllers that own the finalizers. ?uid= and ?resourceVersion= say which object
+// the caller decided on: another one under the name, or the same one changed since, is not
+// deleted (409), so a delete decided from a stale view can't remove what now has the name.
+func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Request, t target) {
+	wantUID, wantRV := r.URL.Query().Get("uid"), r.URL.Query().Get("resourceVersion")
 	if err := s.checkDeleteDefinition(ctx, t); err != nil {
 		writeErr(w, err)
 		return
@@ -645,6 +648,14 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, t target) {
 			return
 		}
 		om := obj.GetObjectMeta()
+		if wantUID != "" && om.UID != wantUID {
+			writeErr(w, errf(http.StatusConflict, "Conflict", "%s is another object now (uid %s, not %s): not deleted", t.key(), om.UID, wantUID))
+			return
+		}
+		if wantRV != "" && strconv.FormatInt(cur.Revision, 10) != wantRV {
+			writeErr(w, errf(http.StatusConflict, "Conflict", "%s changed since it was read (at %d, not %s): not deleted", t.key(), cur.Revision, wantRV))
+			return
+		}
 		if len(om.Finalizers) == 0 {
 			if _, err := s.store.Delete(ctx, t.key(), cur.Revision); errors.Is(err, store.ErrConflict) {
 				continue

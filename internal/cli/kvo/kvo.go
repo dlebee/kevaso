@@ -3,7 +3,7 @@
 //	kvo apply -f FILE|-             create or update every object in a YAML/JSON file
 //	kvo get KIND [NAME] [-n NS|-A] [-o yaml|json]
 //	kvo describe KIND NAME [-n NS]   everything about one object, for people
-//	kvo delete KIND NAME [-n NS]
+//	kvo delete KIND NAME [-n NS] [--uid UID] [--resource-version V]   only that object, as it was
 //	kvo watch KIND [-n NS|-A]
 //	kvo exec silo NAME [-n NS] [-it] -- CMD [ARGS…]   run a command in a silo (-t: on a terminal); exits with its code
 //	kvo ssh silo NAME [-n NS]     a login shell in the silo, on a terminal (through the relay; no SSH)
@@ -69,6 +69,7 @@ type opts struct {
 	reason                                   string // kvo deny / approve
 	moveTo                                   string // kvo move --to
 	recreate, confirmFenced                  bool   // kvo move
+	uid, resourceVersion                     string // kvo delete: only the object seen
 	all, noBrowser                           bool
 	secret                                   secretOpts
 	sets                                     setOpts
@@ -136,6 +137,10 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.recreate = true
 		case "--confirm-fenced":
 			o.confirmFenced = true
+		case "--uid":
+			o.uid, err = val()
+		case "--resource-version":
+			o.resourceVersion, err = val()
 		case "--from-file":
 			o.secret.fromFile, err = val()
 		case "--from-literal":
@@ -878,7 +883,9 @@ func del(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	if k.Scope == v1.Namespaced {
 		ns = defaultNS(o)
 	}
-	if err := c.Delete(ctx, k.Kind, ns, o.args[1]); err != nil {
+	// By name, whatever has it; with --uid (and --resource-version), only the object the person
+	// looked at (K-031): another one under the name, or that one changed since, is not deleted.
+	if err := c.Delete(ctx, k.Kind, ns, o.args[1], client.Precondition{UID: o.uid, ResourceVersion: o.resourceVersion}); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "%s/%s deleted\n", strings.ToLower(k.Kind), o.args[1])

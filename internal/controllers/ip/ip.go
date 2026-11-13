@@ -149,7 +149,9 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 				return engine.Result{}, err
 			}
 		}
-		return engine.Result{}, client.IgnoreNotFound(c.Client.Delete(ctx, "IP", x.Namespace, x.Name))
+		// Exactly the IP decided on, as it was (K-031): a new one under the name, or this one
+		// bound again since, stays.
+		return engine.Result{}, client.IgnoreNotFound(c.Client.Delete(ctx, "IP", x.Namespace, x.Name, client.Seen(x)))
 	}
 	st.BoundTo, st.Waiting = d.BoundTo(), d.Waiting
 	bound := meta.Condition{Type: "Bound", Status: meta.ConditionFalse, Reason: "Reserved", Message: "held by nobody", ObservedGeneration: x.Generation}

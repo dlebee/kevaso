@@ -188,7 +188,7 @@ func (c *Controller) reconcileIngress(ctx context.Context, k engine.Key) error {
 		for _, co := range c.Certificates.List() {
 			cert := co.(*v1.Certificate)
 			if cert.Namespace == k.Namespace && cert.Labels[LabelIngress] == k.Name {
-				if err := c.Client.Delete(ctx, "Certificate", cert.Namespace, cert.Name); err != nil && !client.IsNotFound(err) {
+				if err := c.Client.Delete(ctx, "Certificate", cert.Namespace, cert.Name, client.SameObject(cert)); err != nil && !client.IsNotFound(err) {
 					return err
 				}
 				if err := c.Client.Delete(ctx, "Secret", cert.Namespace, cert.Spec.SecretName); err != nil && !client.IsNotFound(err) {

@@ -179,7 +179,7 @@ func (s *Server) routeDefined(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut && t.name != "":
 		s.writeDefined(ctx, w, r, t, s.updateDefined, http.StatusOK)
 	case r.Method == http.MethodDelete && t.name != "" && !t.status:
-		s.delete(ctx, w, t)
+		s.delete(ctx, w, r, t)
 	default:
 		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "%s %s", r.Method, r.URL.Path))
 	}
