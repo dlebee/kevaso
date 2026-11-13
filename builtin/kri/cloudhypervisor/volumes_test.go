@@ -106,7 +106,7 @@ func TestVirtiofsdUnit(t *testing.T) {
 		"NoNewPrivileges=yes", "PrivateNetwork=yes", "PrivateDevices=yes", "RestrictAddressFamilies=AF_UNIX\n",
 		"TemporaryFileSystem=/var/lib/kevaso:ro " + SilosDir + ":ro /run:ro\n",
 		"InaccessiblePaths=/root -/etc/kevaso -/etc/ssh -" + ImagesDir + "\n",
-		"BindPaths=" + s.HostPath + " " + n.Dir + "/vfs\n", "RestrictSUIDSGID=yes", "Restart=no", "LimitNOFILE=",
+		"BindPaths=" + s.HostPath + " " + n.Dir + "/vfs\n", "RestrictSUIDSGID=yes", "Restart=always\n", "LimitNOFILE=",
 	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("virtiofsd unit lacks %q:\n%s", want, u)
@@ -126,6 +126,22 @@ func TestVirtiofsdUnit(t *testing.T) {
 // them; it makes its socket 0700 (the VMM got "Permission denied") unless given --socket-group;
 // it also fails to apply them unless they're ambient at start;
 // and it reads /proc/sys/fs/nr_open at start even with --rlimit-nofile=0, which ProcSubset=pid hides.
+// A reboot inside the guest makes Cloud Hypervisor reconnect to the share's socket; virtiofsd
+// exits when its first connection ends, so with Restart=no the VMM timed out and the silo died on
+// a real host (Lima: "Error rebooting VM … Timed out waiting for vhost-user connection").
+func TestVirtiofsdOutlivesAGuestReboot(t *testing.T) {
+	n := NamesFor(id("web"))
+	u := VirtiofsdUnit(n, LayoutFor(n, vmVolumes(), "").Shares[0])
+	if !strings.Contains(u, "Restart=always\n") || strings.Contains(u, "Restart=no") {
+		t.Errorf("virtiofsd isn't started again for the VMM's next connection:\n%s", u)
+	}
+	// Stopping stays an explicit systemctl stop (which systemd never restarts), after the VMM's.
+	stop := StopPlan(n, LayoutFor(n, vmVolumes(), ""))
+	if len(stop) < 3 || stop[0][1] != "stop" || stop[0][2] != n.Unit || stop[2][1] != "stop" {
+		t.Errorf("stop plan: %v", stop)
+	}
+}
+
 func TestVirtiofsdStartsOnARealHost(t *testing.T) {
 	n := NamesFor(id("web"))
 	s := LayoutFor(n, vmVolumes(), "").Shares[0]

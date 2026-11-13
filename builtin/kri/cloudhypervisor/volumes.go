@@ -166,7 +166,9 @@ func VirtiofsdArgs(s Share) []string {
 // VMM's group's (so only the VMM can connect), no network, no devices, and of the host's files only
 // the shared folder and its socket's folder: the control plane's data, other silos and their
 // shares, /run (the admin socket) and Kevaso's keys are out of sight. It serves one VMM connection
-// and exits with it.
+// and exits with it, so systemd starts it again at once: a reboot inside the guest is the VMM
+// reconnecting (it waits up to a minute for the socket), not a new start through StartPlan.
+// Stopping is StopPlan's systemctl stop, which never restarts it.
 //
 // No ProcSubset=pid: virtiofsd reads /proc/sys/fs/nr_open at start, even with --rlimit-nofile=0.
 func VirtiofsdUnit(n Names, s Share) string {
@@ -179,7 +181,8 @@ User=root
 Group=` + VMMUser + `
 ExecStartPre=+/bin/rm -f ` + s.Socket + `
 ExecStart=` + VirtiofsdBin + ` ` + strings.Join(VirtiofsdArgs(s), " ") + `
-Restart=no
+Restart=always
+RestartSec=100ms
 LimitNOFILE=1048576
 CapabilityBoundingSet=` + caps + `
 # virtiofsd fails to apply its own capabilities ("failed to sync capabilities with the kernel")
