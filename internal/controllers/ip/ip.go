@@ -12,6 +12,7 @@ package ip
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -22,6 +23,7 @@ import (
 	"kevaso.com/core/api/informer"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/claims"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/ips"
@@ -38,6 +40,9 @@ type Controller struct {
 	Hosts    *informer.Informer
 	Plugins  *plugins.Registry // nil: only ip-pool
 	Clock    clock.Clock
+	// Claims make each ip-pool address one IP's, by the store: the assumed map below only covers
+	// this controller's own writes, not another leader's.
+	Claims *claims.Claims
 
 	// ip-pool addresses are handed out one at a time, and each is "assumed" (like the silo
 	// controller's placements) until the informer shows it: otherwise the next IP, decided before
@@ -172,6 +177,15 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	return engine.Result{RequeueAfter: again}, nil
 }
 
+// PoolAddress is the claims pool of ip-pool addresses.
+const PoolAddress = "ip-pool-address"
+
+// UsesAddress says whether a stored IP still has the address.
+func UsesAddress(obj []byte, value string) bool {
+	var x v1.IP
+	return json.Unmarshal(obj, &x) == nil && x.Status.Address == value
+}
+
 // poolIPs are the IPs as the informer has them, with the addresses this controller handed out and
 // the informer hasn't shown yet (called with c.pool held).
 func (c *Controller) poolIPs() []*v1.IP {
@@ -226,13 +240,27 @@ func (c *Controller) reserve(ctx context.Context, x *v1.IP, st *v1.IPStatus, d i
 		for _, o := range c.Hosts.List() {
 			hosts = append(hosts, o.(*v1.Host))
 		}
-		h, addr, err := ips.Allocate(x, hosts, c.poolIPs(), placed)
-		if err != nil {
-			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "NoAddress", err.Error()
-			return time.Minute
+		all := c.poolIPs()
+		for {
+			h, addr, err := ips.Allocate(x, hosts, all, placed)
+			if err != nil {
+				cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "NoAddress", err.Error()
+				return time.Minute
+			}
+			if c.Claims != nil {
+				ok, err := c.Claims.Take(ctx, PoolAddress, addr, claims.Holder{Kind: "IP", Namespace: x.Namespace, Name: x.Name, UID: x.UID, Version: x.ResourceVersion}, UsesAddress)
+				if err != nil {
+					cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "NoAddress", err.Error()
+					return 10 * time.Second
+				}
+				if !ok { // another IP has it (the cache doesn't show it yet): the next one
+					all = append(all, &v1.IP{Spec: v1.IPSpec{Class: v1.LBIPPool}, Status: v1.IPStatus{Host: h, Address: addr}})
+					continue
+				}
+			}
+			st.Host, st.Address = h, addr
+			return 0
 		}
-		st.Host, st.Address = h, addr
-		return 0
 	}
 	p, pc, ok := c.plugin(x.Spec.Class)
 	if !ok {

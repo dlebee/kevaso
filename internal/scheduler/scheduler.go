@@ -85,6 +85,16 @@ type Env struct {
 	Images []*v1.VMImage
 	// Suffix is the cluster's names' last label ("": kevaso).
 	Suffix string
+	// Claimed are, by host, values the store says other silos hold there, which the cache may
+	// not show yet (K-029): such a node port isn't handed out, and a host where a host port the
+	// silo asks for is held isn't a fit.
+	Claimed map[string]Claimed
+}
+
+// Claimed are values held on one host.
+type Claimed struct {
+	NodePorts map[int]bool
+	HostPorts map[HostPort]bool
 }
 
 // Schedule picks a host for silo. placed are all silos already assigned (status.host set); ips,

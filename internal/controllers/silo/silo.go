@@ -11,7 +11,13 @@ package silo
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +25,7 @@ import (
 	"kevaso.com/core/api/informer"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/claims"
 	"kevaso.com/core/internal/clock"
 	hostctl "kevaso.com/core/internal/controllers/host"
 	"kevaso.com/core/internal/engine"
@@ -213,9 +220,12 @@ type Controller struct {
 	Clock  clock.Clock
 	// Classes returns the plugins' classes now (nil: none).
 	Classes func() map[string]scheduler.Class
+	// Claims make each node port and host port on a host one silo's, by the store (K-029).
+	Claims *claims.Claims
 
 	mu      sync.Mutex
 	assumed map[informer.Key]string // silo → host, written but not yet seen in the cache
+	mine    sync.Map                // POOL/VALUE → UID: claimed by this controller
 }
 
 // Name implements engine.Controller.
@@ -280,7 +290,27 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	if c.Classes != nil {
 		env.Classes = c.Classes()
 	}
-	st, changed, again, err := DecideIn(s, hosts, silos, c.Clock.Now().UTC().Truncate(time.Second), env)
+	now := c.Clock.Now().UTC().Truncate(time.Second)
+	st, changed, again, err := DecideIn(s, hosts, silos, now, env)
+	// The node ports and host ports it would have, claimed in the store before they are written
+	// (K-029): one another silo holds there is avoided, and it is decided again.
+	for attempt := 0; err == nil && changed && c.Claims != nil && st.Host != ""; attempt++ {
+		if attempt == 8 {
+			return engine.Result{}, errors.New("node or host ports kept being taken; will retry")
+		}
+		held, cerr := c.claim(ctx, s, st)
+		if cerr != nil {
+			return engine.Result{}, cerr
+		}
+		if held == nil {
+			break
+		}
+		if env.Claimed == nil {
+			env.Claimed = map[string]scheduler.Claimed{}
+		}
+		env.Claimed[st.Host] = merge(env.Claimed[st.Host], *held)
+		st, changed, again, err = DecideIn(s, hosts, silos, now, env)
+	}
 	if err != nil || !changed {
 		return engine.Result{RequeueAfter: again}, err
 	}
@@ -295,6 +325,93 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		c.assumed[key] = st.Host
 	}
 	return engine.Result{RequeueAfter: again}, nil
+}
+
+// The pools a silo's values on a host are claimed in (claims.Claims), one per host.
+func poolNodePort(host string) string { return "silo-node-port." + host }
+func poolHostPort(host string) string { return "host-port." + host }
+
+func hostPortValue(p scheduler.HostPort) string {
+	return fmt.Sprintf("%s-%s-%d", p.Network, strings.ToLower(p.Proto), p.Port)
+}
+
+// on reports whether a stored silo is on host (placed there, or still handing off from it).
+func on(obj []byte, host string) (*v1.Silo, bool) {
+	var s v1.Silo
+	if json.Unmarshal(obj, &s) != nil {
+		return nil, false
+	}
+	return &s, s.Status.Host == host || s.Status.MovingFrom == host
+}
+
+func usesNodePort(host string) claims.Uses {
+	return func(obj []byte, value string) bool {
+		s, ok := on(obj, host)
+		return ok && slices.ContainsFunc(s.Status.Service.NodePorts, func(p v1.NodePort) bool { return strconv.Itoa(p.NodePort) == value })
+	}
+}
+
+func usesHostPort(host string) claims.Uses {
+	return func(obj []byte, value string) bool {
+		s, ok := on(obj, host)
+		return ok && slices.ContainsFunc(scheduler.HostPorts(s), func(p scheduler.HostPort) bool { return hostPortValue(p) == value })
+	}
+}
+
+// claim claims st's node ports and s's host ports on st.Host for s, at the version its status
+// write is conditional on. held: what someone else holds there (nil: everything is s's).
+func (c *Controller) claim(ctx context.Context, s *v1.Silo, st v1.SiloStatus) (*scheduler.Claimed, error) {
+	h := claims.Holder{Kind: "Silo", Namespace: s.Namespace, Name: s.Name, UID: s.UID, Version: s.ResourceVersion}
+	held := scheduler.Claimed{NodePorts: map[int]bool{}, HostPorts: map[scheduler.HostPort]bool{}}
+	there := s.Status.Host == st.Host // what it has now, it has on this host
+	take := func(pool, value string, has bool, uses claims.Uses) (bool, error) {
+		// A value it already has there, claimed by this controller, is still its own (a claim is
+		// only taken over once the stored silo stops having it).
+		if u, ok := c.mine.Load(pool + "/" + value); has && ok && u == h.UID {
+			return true, nil
+		}
+		ok, err := c.Claims.Take(ctx, pool, value, h, uses)
+		if ok {
+			c.mine.Store(pool+"/"+value, h.UID)
+		}
+		return ok, err
+	}
+	for _, p := range st.Service.NodePorts {
+		has := there && slices.ContainsFunc(s.Status.Service.NodePorts, func(q v1.NodePort) bool { return q.NodePort == p.NodePort })
+		ok, err := take(poolNodePort(st.Host), strconv.Itoa(p.NodePort), has, usesNodePort(st.Host))
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			held.NodePorts[p.NodePort] = true
+		}
+	}
+	for _, p := range scheduler.HostPorts(s) {
+		ok, err := take(poolHostPort(st.Host), hostPortValue(p), there, usesHostPort(st.Host))
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			held.HostPorts[p] = true
+		}
+	}
+	if len(held.NodePorts) == 0 && len(held.HostPorts) == 0 {
+		return nil, nil
+	}
+	return &held, nil
+}
+
+func merge(a, b scheduler.Claimed) scheduler.Claimed {
+	out := scheduler.Claimed{NodePorts: maps.Clone(a.NodePorts), HostPorts: maps.Clone(a.HostPorts)}
+	if out.NodePorts == nil {
+		out.NodePorts = map[int]bool{}
+	}
+	if out.HostPorts == nil {
+		out.HostPorts = map[scheduler.HostPort]bool{}
+	}
+	maps.Copy(out.NodePorts, b.NodePorts)
+	maps.Copy(out.HostPorts, b.HostPorts)
+	return out
 }
 
 func (c *Controller) classes() map[string]scheduler.Class {
