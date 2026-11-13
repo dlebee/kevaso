@@ -62,6 +62,12 @@ type Agent struct {
 	// Nodes are the plugins' node sides on this host (NAME/node.sock), which mount the volumes of
 	// mount-reach storage classes (juicefs) and hold their credentials; nil: none.
 	Nodes *plugins.Registry
+	// Probe looks at a mount-reach volume's folder; it's not answering while it hasn't returned
+	// (default: a lookup in it). Tests replace it.
+	Probe func(dir string) error
+	// ProbeTimeout is how long it may take (default DefaultProbeTimeout); ProbeEvery how often a
+	// running silo with such volumes is looked at (default DefaultProbeEvery).
+	ProbeTimeout, ProbeEvery time.Duration
 	// TunnelRefresh is how often the agent looks for system nodes to hold a tunnel to (tunnels.go).
 	TunnelRefresh time.Duration
 
@@ -75,6 +81,8 @@ type Agent struct {
 	kept        sync.Map // silo uid → keptState: its daemons and upkeep as this agent last decided
 	// nodeMounts: volume path → handle, mounted here by a node side during this agent's run.
 	nodeMounts sync.Map
+	// probes: a mount-reach volume's folder → its probe (probe.go).
+	probes sync.Map
 	// guestMounted: silo uid → the volumes its guest last mounted (runtimes with kri.GuestVolumes).
 	guestMounted sync.Map
 	engine       *engine.Engine
@@ -393,7 +401,20 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			msg += ", readiness passing"
 		}
 	}
+	// Its mount-reach volumes answering, or not (a JuiceFS volume whose database is down hangs).
+	dirs := a.mountVolumeDirs(s)
+	stuck, pending := a.probeVolumes(dirs)
+	if len(dirs) > 0 {
+		next := a.probeEvery()
+		if pending {
+			next = a.probeTimeout()
+		}
+		if again == 0 || next < again {
+			again = next
+		}
+	}
 	if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+		a.volumesResponding(s, st, stuck, dirs)
 		st.Phase, st.Address = PhaseRunning, rs.Address
 		if st.Image == nil || st.Image.Running == "" {
 			st.Image = running(st.Image, s, image) // created before images were recorded
