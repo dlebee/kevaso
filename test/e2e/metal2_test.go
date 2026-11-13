@@ -116,8 +116,50 @@ func setUpPair() (p *metalPair, skip string, err error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
+	pinGoEnv()
 	say := func(f string, a ...any) { fmt.Printf("metal2: "+f+"\n", a...) }
 	p = &metalPair{}
+	reuse := os.Getenv("KEVASO_METAL_REUSE") != ""
+	if reuse { // the cluster kept from an earlier run, if it answers (no reset, no init)
+		base, err := os.UserHomeDir()
+		if err != nil {
+			return nil, "", err
+		}
+		home := filepath.Join(base, ".kevaso-metal", "pair-"+cfg1.ExternalIP)
+		for k, v := range map[string]string{"HOME": home, "KVO_CONFIG": filepath.Join(home, ".kevaso", "config.yaml"), "KVO_TOKEN_STORE": "file", "KVO_SERVER": ""} {
+			_ = os.Setenv(k, v)
+		}
+		if out, code := kvoOut(ctx, "get", "host", metalHost2, "-o", "json"); code == 0 {
+			p.m1, p.m2 = &metalSuite{cfg: cfg1, d: remote.New(cfg1), arch: "amd64", uname: "x86_64", suffix: "kevaso"},
+				&metalSuite{cfg: cfg2, d: remote.New(cfg2), arch: "amd64", uname: "x86_64", suffix: "kevaso"}
+			pairState.touched = append(pairState.touched, p.m1.d, p.m2.d)
+			var h v1.Host
+			if json.Unmarshal([]byte(out), &h) == nil && h.Spec.Components.Worker != nil {
+				var h1 v1.Host
+				if o1, c1 := kvoOut(ctx, "get", "host", metalHost, "-o", "json"); c1 == 0 && json.Unmarshal([]byte(o1), &h1) == nil {
+					p.m1Worker = h1.Spec.Components.Worker != nil
+				}
+			}
+			say("reusing the two-machine cluster (KEVASO_METAL_REUSE)")
+			if os.Getenv("KEVASO_METAL_REDEPLOY") != "" {
+				bin, err := buildKevasod(ctx, p.m1.arch)
+				if err != nil {
+					return nil, "", err
+				}
+				for _, m := range []*metalSuite{p.m1, p.m2} {
+					if err := m.redeploy(ctx, bin); err != nil {
+						return nil, "", err
+					}
+				}
+				say("kevasod redeployed on both machines")
+				if err := waitRuntimes(ctx, metalHost2, "cloud-hypervisor", "docker"); err != nil {
+					return nil, "", err
+				}
+			}
+			return p, "", nil
+		}
+		say("no two-machine cluster to reuse: making one")
+	}
 	if p.m1, err = reach(ctx, cfg1); err != nil {
 		return nil, "", err
 	}
@@ -139,10 +181,12 @@ func setUpPair() (p *metalPair, skip string, err error) {
 	if b, err := build.CombinedOutput(); err != nil {
 		return nil, "", fmt.Errorf("build kevasod: %v\n%s", err, b)
 	}
-	home := filepath.Join(tmp, "home")
-	for k, v := range map[string]string{"HOME": home, "KVO_CONFIG": filepath.Join(home, ".kevaso", "config.yaml"), "KVO_TOKEN_STORE": "file", "KVO_SERVER": ""} {
-		if err := os.Setenv(k, v); err != nil {
-			return nil, "", err
+	if !reuse {
+		home := filepath.Join(tmp, "home")
+		for k, v := range map[string]string{"HOME": home, "KVO_CONFIG": filepath.Join(home, ".kevaso", "config.yaml"), "KVO_TOKEN_STORE": "file", "KVO_SERVER": ""} {
+			if err := os.Setenv(k, v); err != nil {
+				return nil, "", err
+			}
 		}
 	}
 	run := func(args ...string) error {
@@ -288,8 +332,8 @@ func resetPairAtEnd() int {
 		return 0
 	}
 	code := 0
-	if os.Getenv("KEVASO_E2E_KEEP") != "" {
-		fmt.Println("metal2: KEEPING the two-machine cluster (KEVASO_E2E_KEEP)")
+	if os.Getenv("KEVASO_E2E_KEEP") != "" || os.Getenv("KEVASO_METAL_REUSE") != "" {
+		fmt.Println("metal2: KEEPING the two-machine cluster (KEVASO_E2E_KEEP / KEVASO_METAL_REUSE)")
 		return 0
 	}
 	for _, d := range pairState.touched {
@@ -317,6 +361,34 @@ func spareVG(disk string) string {
 [ -z "$(wipefs -n "$d")" ] || { echo "$d isn't empty: $(wipefs -n "$d" | tr '\n' ' ')" >&2; exit 1; }
 command -v pvcreate >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq lvm2
 pvcreate -q "$d" && vgcreate -q kevaso "$d"`
+}
+
+// pinGoEnv fixes Go's cache directories before a test moves HOME, so later builds use the
+// usual caches.
+func pinGoEnv() {
+	for _, k := range []string{"GOCACHE", "GOMODCACHE", "GOPATH"} {
+		if os.Getenv(k) != "" {
+			continue
+		}
+		if out, err := exec.Command("go", "env", k).Output(); err == nil {
+			_ = os.Setenv(k, strings.TrimSpace(string(out)))
+		}
+	}
+}
+
+// buildKevasod builds kevasod from the tree for the machines' CPU.
+func buildKevasod(ctx context.Context, arch string) (string, error) {
+	dir, err := os.MkdirTemp("", "kvt-kevasod-")
+	if err != nil {
+		return "", err
+	}
+	bin := filepath.Join(dir, "kevasod")
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "kevaso.com/core/cmd/kevasod")
+	build.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
+	if b, err := build.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("build kevasod: %v\n%s", err, b)
+	}
+	return bin, nil
 }
 
 // hostNamed reads a Host.

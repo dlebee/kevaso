@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
+	"kevaso.com/core/internal/cli/kvoadm"
 	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/sdk/kri"
 )
@@ -16,14 +17,18 @@ import (
 // TestMetal2Worker is the owner's setup in miniature: machine 1 the system node only (until a
 // later test makes it a worker too), machine 2 a worker that joined over the external IPs, the
 // mesh between them; a microVM and a container on the worker answer this Mac on its external
-// IP (and not on the system node's), and kvo exec reaches them through the agent's tunnel.
+// IP (and not on the system node's), kvo exec reaches them through the agent's tunnel, and their
+// secrets (the local endpoint, a file) come from the system node on the other machine.
 //
 // Listens on machine 2's external IP while it runs: 18200, 18201.
 func TestMetal2Worker(t *testing.T) {
 	p := metal2(t)
 	c := p.c1
 	ns := "worker2"
-	c.namespace(ns)
+	c.namespace(ns, "grant/app", "secret/pw")
+	pw := randomValue(t, "pw-")
+	c.must(pw, "create", "secret", "pw", "-n", ns, "--from-file", "-")
+	c.apply("apiVersion: kevaso/v1\nkind: Grant\nmetadata: { name: app, namespace: " + ns + " }\nspec:\n  secrets:\n    - { name: pw }\n    - { name: pw, deliver: file, path: /run/secrets/pw }\n")
 	for _, name := range []string{metalHost, metalHost2} {
 		var h = c.hostNamed(name)
 		t.Logf("%s: control plane %v, worker %v, external %s, mesh %s", name, h.Spec.Components.ControlPlane != nil, h.Spec.Components.Worker != nil,
@@ -42,10 +47,12 @@ func TestMetal2Worker(t *testing.T) {
 	c.apply(vmEcho(ns, "vm", 18200) + place + `  ports: [{ name: web, port: 18200 }]
   service:
     ports: [{ port: web, hostPort: [external] }]
+  grants: [app]
 ---
 ` + boxEcho(ns, "box", 18201) + place + `  ports: [{ name: web, port: 18201 }]
   service:
     ports: [{ port: web, hostPort: [external] }]
+  grants: [app]
 `)
 	c.waitRunning(ns, 20*time.Minute, "vm", "box")
 	for _, s := range []struct {
@@ -63,6 +70,10 @@ func TestMetal2Worker(t *testing.T) {
 			t.Errorf("%s answers on the system node's IP too: %s", s.silo, got)
 		}
 		c.expect(s.silo+": kvo exec through the tunnel", func() string { o, _ := c.in(ns, s.silo, "echo through-the-tunnel"); return o }(), "through-the-tunnel")
+		// Secrets on the worker: its agent asks the system node on the other machine.
+		got, _ := c.in(ns, s.silo, `python3 -c "import urllib.request as u; print(u.urlopen(u.Request('http://169.254.42.1/v1/secrets/pw', headers={'Kevaso-Local': '1'}), timeout=10).read().decode())"`)
+		c.expect(s.silo+": the local endpoint, answered across machines", got, pw)
+		c.expect(s.silo+": a file the worker wrote", func() string { o, _ := c.in(ns, s.silo, "cat /run/secrets/pw"); return o }(), pw)
 	}
 }
 
@@ -379,4 +390,76 @@ spec:
 		code, body, err := fromMac("http://"+p.m1.cfg.ExternalIP+"/", name, 5*time.Second)
 		return err == nil && code == 200 && strings.Contains(body, "app 8080"), fmt.Sprint(code, " ", strings.TrimSpace(body), " ", err)
 	})
+}
+
+// TestMetal2Drain is kvoadm host drain with the handoff (fixed after test-gaps proved two copies
+// could run): a Recreate silo on machine 2 goes to machine 1, and at no moment do both hosts run
+// it (both watched from the hosts themselves every half second); Wait silos stay.
+//
+// Listens on nothing outside.
+func TestMetal2Drain(t *testing.T) {
+	p := metal2(t)
+	p.ensureTwoWorkers()
+	c := p.c1
+	ns := "drain2"
+	c.namespace(ns)
+	t.Cleanup(func() { _, _ = c.kvo("", "get", "hosts"); p.kvoadm("host", "uncordon", metalHost2) })
+	c.apply(boxEcho(ns, "job", 8080) + "  availability: { onHostLoss: Recreate }\n---\n" + boxEcho(ns, "stay", 8080) + on(metalHost2))
+	c.waitRunning(ns, 10*time.Minute, "job", "stay")
+	if c.silo(ns, "job").Status.Host != metalHost2 {
+		c.must("", "move", "silo", "job", "-n", ns, "--to", metalHost2)
+		c.eventually("job on "+metalHost2, 5*time.Minute, func() (bool, string) {
+			s := c.silo(ns, "job")
+			return s.Status.Host == metalHost2 && s.Status.Phase == "Running" && s.Status.MovingFrom == "", s.Status.Host
+		})
+	}
+	uid := c.silo(ns, "job").UID
+	done := make(chan struct{})
+	both := make(chan string, 1)
+	go func() { // never two copies: both hosts asked at once, over and over
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			r1, r2 := make(chan bool, 1), make(chan bool, 1)
+			go func() { r1 <- running(p.c1, uid) }()
+			go func() { r2 <- running(p.c2, uid) }()
+			if <-r1 && <-r2 {
+				select {
+				case both <- time.Now().Format(time.TimeOnly):
+				default:
+				}
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}()
+	p.kvoadm("host", "drain", metalHost2)
+	c.eventually("job runs on "+metalHost, 5*time.Minute, func() (bool, string) {
+		s := c.silo(ns, "job")
+		return s.Status.Host == metalHost && s.Status.Phase == "Running" && s.Status.MovingFrom == "", s.Status.Host + " " + s.Status.Phase + " " + s.Status.MovingFrom
+	})
+	close(done)
+	select {
+	case at := <-both:
+		t.Errorf("both hosts ran job at %s: two copies", at)
+	default:
+		t.Log("never two copies of job")
+	}
+	if s := c.silo(ns, "stay"); s.Status.Host != metalHost2 || s.Status.Phase != "Running" {
+		t.Errorf("a Wait silo left the drained host: %s %s", s.Status.Host, s.Status.Phase)
+	}
+	p.kvoadm("host", "uncordon", metalHost2)
+}
+
+// kvoadm runs kvoadm against the cluster's current context.
+func (p *pair) kvoadm(args ...string) {
+	p.t.Helper()
+	var o strings.Builder
+	if code := kvoadm.Run(p.c1.ctx, args, strings.NewReader(""), &o, &o); code != 0 {
+		p.t.Errorf("kvoadm %v: exit %d\n%s", args, code, o.String())
+	} else {
+		p.t.Logf("kvoadm %v:\n%s", args, o.String())
+	}
 }
