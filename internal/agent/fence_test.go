@@ -27,7 +27,7 @@ import (
 // can already be that old when the agent stops.
 func TestFenceTiming(t *testing.T) {
 	fence, lease, recreate := agent.DefaultFenceAfter, hostctl.DefaultLease, siloctl.RecreateAfter
-	if !(fence < lease && lease < lease+recreate) {
+	if fence >= lease || lease >= lease+recreate {
 		t.Fatalf("FenceAfter %s < host lease %s < lease + RecreateAfter %s doesn't hold", fence, lease, lease+recreate)
 	}
 	if hb := worker.DefaultHeartbeat; hb >= fence {
