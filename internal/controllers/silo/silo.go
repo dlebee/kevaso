@@ -141,7 +141,9 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 			meta.SetCondition(&st.Conditions, cond, now)
 			meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Moving",
 				Message: "moving after losing " + st.Host, ObservedGeneration: s.Generation}, now)
-			st.Host, st.SiloIP, st.MovingFrom = "", "", ""
+			// The host it was moving from, if any, keeps it until it says it let go: it may still
+			// run it, and its volumes may still be mounted there.
+			st.Host, st.SiloIP = "", ""
 			// …and it's scheduled right away, below (its volumes keep it in their region).
 		case s.Policy() == v1.OnHostLossRecreate:
 			// Not lost any more (it's being placed afresh); the condition keeps what happened.
@@ -176,6 +178,9 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 		cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "Unschedulable", d.Message()
 	} else {
 		st.Phase, st.Host = PhaseScheduled, d.Host
+		if st.MovingFrom == st.Host {
+			st.MovingFrom = "" // back on the host it was moving from: nothing to hand off
+		}
 		cond.Status, cond.Reason, cond.Message = meta.ConditionTrue, "Scheduled", d.Message()
 		for _, h := range hosts {
 			if h.Name == d.Host {
