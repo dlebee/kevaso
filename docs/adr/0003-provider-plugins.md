@@ -35,6 +35,17 @@
    ranges; it puts announced addresses on `lo`.
 5. **A plugin's node side is optional.** The same binary can run on workers (`--side node`) for
    what must happen on the machine itself. For Linode, that's announcing shared IPs over BGP.
+6. **A storage class says how it reaches a host** (`Class.reach`, M14): `device` (the default: the
+   controller side attaches a block device, kevasod formats it once and mounts it) or `mount` (a
+   network filesystem, like JuiceFS: nothing is attached; the plugin's node side mounts it). A node
+   side serving mount classes listens on `/run/kevaso-plugins/NAME/node.sock` (Identity, saying
+   which classes it mounts, and `Node`: `NodeMountVolume` and `NodeUnmountVolume` of a handle at a
+   host path). Each worker's kevasod watches those sockets like the control plane watches
+   `plugin.sock`, reports the classes on its Host (`status.mountClasses`), and the scheduler only
+   places a silo using such a class there. `status.volumes[].attachedTo` says which host should
+   mount it; when the silo moves, the old host unmounts first, as with a detach. The node side holds
+   the credentials, so the silo only ever gets the mounted folder. A mount class with topology
+   `global` makes a container silo movable `Anywhere`.
 
 ## Why
 
@@ -52,5 +63,8 @@ changes made outside Kevaso). Heartbeats and status writes never reach the plugi
 `sdk/kplugin` (the gRPC wire, status codes, unserved services), `internal/plugins` (a socket appearing and going away), `internal/scheduler` (classes, regions, node
 ports), `builtin/kni` (node-port rules), `internal/agent` (format only an empty volume),
 `test/integration/providers_test.go` (a fake plugin in a real control plane: placement, load
-balancer, volume attach, DNS records, deletion that waits for the unmount and a slow detach, no plugin calls across heartbeats), and
+balancer, volume attach, DNS records, deletion that waits for the unmount and a slow detach, no plugin calls across heartbeats),
+`test/integration/mounts_test.go` (a mount class with two real agents and their node sides: only
+hosts with the node side, mounted without an attach, moved after the old host unmounts, deleted),
+`kplugintest.Conformance` (the protocol's promises, run on the fake and on each provider), and
 the provider's own repo: the Linode API faked, and an e2e on real Linodes.

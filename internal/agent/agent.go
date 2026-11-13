@@ -26,6 +26,7 @@ import (
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/moves"
+	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/policy"
 	"kevaso.com/core/sdk/kri"
 )
@@ -58,6 +59,9 @@ type Agent struct {
 	// can't mount them. VolumesDir is where they go (default DefaultVolumesDir).
 	Host       hostexec.Runner
 	VolumesDir string
+	// Nodes are the plugins' node sides on this host (NAME/node.sock), which mount the volumes of
+	// mount-reach storage classes (juicefs) and hold their credentials; nil: none.
+	Nodes *plugins.Registry
 
 	silos    *informer.Informer
 	secrets  *informer.Informer
@@ -66,7 +70,9 @@ type Agent struct {
 	broker   *Broker
 	prepared sync.Map // silo uid → struct{}: the guest helper is in place for this agent's run
 	kept     sync.Map // silo uid → keptState: its daemons and upkeep as this agent last decided
-	engine   *engine.Engine
+	// nodeMounts: volume path → handle, mounted here by a node side during this agent's run.
+	nodeMounts sync.Map
+	engine     *engine.Engine
 }
 
 // DefaultFenceAfter is under the host lease (40s), so a cut-off host has stopped its Recreate silos

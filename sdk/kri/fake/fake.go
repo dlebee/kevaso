@@ -63,6 +63,17 @@ func (r *Runtime) Create(_ context.Context, spec kri.Spec) error {
 	return nil
 }
 
+// Spec returns what the silo was created with (its volumes' host paths, say).
+func (r *Runtime) Spec(id kri.ID) (kri.Spec, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.silos[id]
+	if !ok {
+		return kri.Spec{}, false
+	}
+	return s.spec, true
+}
+
 func (r *Runtime) get(id kri.ID) (*silo, error) {
 	s, ok := r.silos[id]
 	if !ok {

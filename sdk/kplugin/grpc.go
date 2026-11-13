@@ -84,7 +84,7 @@ func trimSuffix(s, suf string) string {
 func classesTo(cs []Class) []*pb.Class {
 	out := make([]*pb.Class, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, &pb.Class{Name: c.Name, Description: c.Description, OwnHostsOnly: c.OwnHostsOnly, Announce: c.Announce, NodePorts: c.NodePorts, Topology: c.Topology})
+		out = append(out, &pb.Class{Name: c.Name, Description: c.Description, OwnHostsOnly: c.OwnHostsOnly, Announce: c.Announce, NodePorts: c.NodePorts, Topology: c.Topology, Reach: c.Reach})
 	}
 	return out
 }
@@ -92,7 +92,7 @@ func classesTo(cs []Class) []*pb.Class {
 func classesFrom(cs []*pb.Class) []Class {
 	out := make([]Class, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, Class{Name: c.GetName(), Description: c.GetDescription(), OwnHostsOnly: c.GetOwnHostsOnly(), Announce: c.GetAnnounce(), NodePorts: c.GetNodePorts(), Topology: c.GetTopology()})
+		out = append(out, Class{Name: c.GetName(), Description: c.GetDescription(), OwnHostsOnly: c.GetOwnHostsOnly(), Announce: c.GetAnnounce(), NodePorts: c.GetNodePorts(), Topology: c.GetTopology(), Reach: c.GetReach()})
 	}
 	return out
 }
@@ -231,6 +231,27 @@ func (s volumesServer) DeleteVolume(ctx context.Context, r *pb.VolumeRef) (*pb.D
 	return &pb.DeleteVolumeResponse{}, toStatus(s.p.DeleteVolume(ctx, VolumeRef{Class: r.GetClass(), Handle: r.GetHandle()}))
 }
 
+type nodeServer struct {
+	pb.UnimplementedNodeServer
+	p Node
+}
+
+func nodeMountFrom(m *pb.NodeMount) NodeMount {
+	return NodeMount{Class: m.GetClass(), Handle: m.GetHandle(), ID: m.GetId(), Path: m.GetPath()}
+}
+
+func nodeMountTo(m NodeMount) *pb.NodeMount {
+	return &pb.NodeMount{Class: m.Class, Handle: m.Handle, Id: m.ID, Path: m.Path}
+}
+
+func (s nodeServer) NodeMountVolume(ctx context.Context, r *pb.NodeMount) (*pb.NodeMountResponse, error) {
+	return &pb.NodeMountResponse{}, toStatus(s.p.MountVolume(ctx, nodeMountFrom(r)))
+}
+
+func (s nodeServer) NodeUnmountVolume(ctx context.Context, r *pb.NodeMount) (*pb.NodeUnmountResponse, error) {
+	return &pb.NodeUnmountResponse{}, toStatus(s.p.UnmountVolume(ctx, nodeMountFrom(r)))
+}
+
 type dnsServer struct {
 	pb.UnimplementedDNSServer
 	p DNS
@@ -260,6 +281,9 @@ func Server(p Plugin) *grpc.Server {
 	}
 	if x, ok := p.(DNS); ok {
 		pb.RegisterDNSServer(s, dnsServer{p: x})
+	}
+	if x, ok := p.(Node); ok {
+		pb.RegisterNodeServer(s, nodeServer{p: x})
 	}
 	healthpb.RegisterHealthServer(s, health.NewServer())
 	return s
@@ -303,6 +327,7 @@ type Client struct {
 	lbs    pb.LoadBalancersClient
 	vols   pb.VolumesClient
 	dns    pb.DNSClient
+	node   pb.NodeClient
 	health healthpb.HealthClient
 }
 
@@ -313,7 +338,7 @@ func Dial(socket string) *Client {
 		panic(err)
 	}
 	return &Client{Socket: socket, conn: conn, id: pb.NewIdentityClient(conn), hosts: pb.NewHostsClient(conn),
-		lbs: pb.NewLoadBalancersClient(conn), vols: pb.NewVolumesClient(conn), dns: pb.NewDNSClient(conn), health: healthpb.NewHealthClient(conn)}
+		lbs: pb.NewLoadBalancersClient(conn), vols: pb.NewVolumesClient(conn), dns: pb.NewDNSClient(conn), node: pb.NewNodeClient(conn), health: healthpb.NewHealthClient(conn)}
 }
 
 // Close closes the connection.
@@ -411,7 +436,20 @@ func (c *Client) DeleteRecord(ctx context.Context, r Record) error {
 	return fromStatus(err)
 }
 
+// MountVolume implements Node.
+func (c *Client) MountVolume(ctx context.Context, m NodeMount) error {
+	_, err := c.node.NodeMountVolume(ctx, nodeMountTo(m))
+	return fromStatus(err)
+}
+
+// UnmountVolume implements Node.
+func (c *Client) UnmountVolume(ctx context.Context, m NodeMount) error {
+	_, err := c.node.NodeUnmountVolume(ctx, nodeMountTo(m))
+	return fromStatus(err)
+}
+
 var (
+	_ Node          = (*Client)(nil)
 	_ Plugin        = (*Client)(nil)
 	_ HostDescriber = (*Client)(nil)
 	_ LoadBalancers = (*Client)(nil)

@@ -97,3 +97,60 @@ func TestUnservedInterfaces(t *testing.T) {
 		t.Fatalf("hosts on a plugin without them: %v", err)
 	}
 }
+
+// The fake keeps the protocol's promises, the node side too (ADR 0001: fakes can't lie).
+func TestFakeConformance(t *testing.T) {
+	f := kplugintest.New()
+	host := kplugin.HostInfo{Name: "w1", ID: "42", Region: "ca-central"}
+	f.Machines["203.0.113.5"] = host
+	f.DetachSlow = 1
+	kplugintest.Conformance(t, kplugintest.Suite{Plugin: f, Node: f.Node("w1"), Host: host, Region: "ca-central"})
+}
+
+// A mount class says so over the wire, and the node side's calls cross it.
+func TestWireNode(t *testing.T) {
+	ctx := context.Background()
+	f := kplugintest.New()
+	c := serve(t, f)
+	info, err := c.Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var share kplugin.Class
+	for _, cl := range info.Storage {
+		if cl.Name == kplugintest.ClassShare {
+			share = cl
+		}
+	}
+	if !share.Mounted() || share.Topology != kplugin.TopologyGlobal {
+		t.Fatalf("share class over the wire: %+v", share)
+	}
+	vs, err := c.EnsureVolume(ctx, kplugin.Volume{Class: share.Name, ID: "u1/home", Region: "ca-central"})
+	if err != nil || vs.Region != "" {
+		t.Fatalf("a global volume has no region: %+v %v", vs, err)
+	}
+	if _, err := c.AttachVolume(ctx, kplugin.Attachment{Class: share.Name, Handle: vs.Handle}); !errors.Is(err, kplugin.ErrUnsupported) {
+		t.Fatalf("attaching a mount class: %v", err)
+	}
+	n := serve(t, f.Node("w1"))
+	ni, err := n.Info(ctx)
+	if err != nil || len(ni.Storage) != 1 || ni.Storage[0].Name != share.Name || len(ni.LoadBalancers) != 0 {
+		t.Fatalf("node side info %+v %v", ni, err)
+	}
+	m := kplugin.NodeMount{Class: share.Name, Handle: vs.Handle, ID: "u1/home", Path: "/var/lib/kevaso/volumes/u1/home"}
+	if err := n.MountVolume(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.MountsOf(vs.Handle); len(got) != 1 || got[0] != "w1:"+m.Path {
+		t.Fatalf("mounts %v", got)
+	}
+	if err := n.MountVolume(ctx, kplugin.NodeMount{Class: share.Name, Handle: "share-404", Path: "/x"}); !errors.Is(err, kplugin.ErrNotFound) {
+		t.Fatalf("mounting no volume: %v", err)
+	}
+	if err := c.DeleteVolume(ctx, kplugin.VolumeRef{Class: share.Name, Handle: vs.Handle}); err == nil {
+		t.Fatal("deleted while mounted")
+	}
+	if err := n.UnmountVolume(ctx, m); err != nil || len(f.MountsOf(vs.Handle)) != 0 {
+		t.Fatalf("unmount %v %v", err, f.MountsOf(vs.Handle))
+	}
+}
