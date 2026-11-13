@@ -524,3 +524,31 @@ func loadOrCreateCA(cfg Config) (*pki.CA, error) {
 	}
 	return ca, nil
 }
+
+// haKMS refuses rotating the master key while the store has other members: each system node keeps
+// its own copy of the key file, and a key made on one alone would leave the others unable to open
+// what it seals. (A shared KMS, or rotation handed to every node, is the follow-up.)
+type haKMS struct {
+	*kms.Local
+	st *cpStore
+}
+
+func (k haKMS) Rotate() (string, error) {
+	if k.st.etcd != nil {
+		cli, err := k.st.etcd.Client()
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = cli.Close() }()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		ml, err := cli.MemberList(ctx)
+		if err != nil {
+			return "", err
+		}
+		if len(ml.Members) > 1 {
+			return "", refuse(http.StatusConflict, "HA", "the master key can't be rotated on a cluster with %d system nodes yet: each keeps its own copy", len(ml.Members))
+		}
+	}
+	return k.Local.Rotate()
+}

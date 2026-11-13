@@ -183,7 +183,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		srv.SetClasses(func() map[string]scheduler.Class { return provider.Classes(reg) })
 	}
 	srv.SetVault(&secrets.Vault{Store: st, KMS: localKMS, Now: cfg.Clock.Now})
-	srv.SetKMSAdmin(localKMS)
+	srv.SetKMSAdmin(haKMS{localKMS, st})
 	if st.etcd != nil {
 		j := &joiner{cfg: cfg, st: st, clock: cfg.Clock.Now}
 		srv.SetSystemNodeJoiner(j.join)

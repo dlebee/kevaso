@@ -31,6 +31,9 @@ type HostAddOptions struct {
 	KvoContext  string // the kvo context to act as (a cluster-admin)
 	ServerForIt string // the API URL as the new host reaches it (default: the context's)
 	BehindNAT   bool   // nothing unsolicited reaches it (a box at home)
+	Install     string // worker (default) | control-plane
+	StateOnly   bool   // with control-plane: a light system node (systemnodes.go)
+	ClusterDNS  string // the control plane's DNS name, on a new system node
 }
 
 func parseHostAdd(args []string) (HostAddOptions, error) {
@@ -49,9 +52,14 @@ func parseHostAdd(args []string) (HostAddOptions, error) {
 		var v string
 		switch a {
 		case "--install":
-			if v, err = val(); err == nil && v != "worker" {
-				err = errors.New("--install worker is what host add does today (control-plane hosts come with HA)")
+			if v, err = val(); err == nil && v != "worker" && v != "control-plane" {
+				err = errors.New("--install worker or --install control-plane")
 			}
+			o.Install = v
+		case "--state-only":
+			o.StateOnly = true
+		case "--cluster-dns":
+			o.ClusterDNS, err = val()
 		case "--label":
 			if v, err = val(); err == nil {
 				k, lv, ok := strings.Cut(v, "=")
@@ -96,6 +104,9 @@ func parseHostAdd(args []string) (HostAddOptions, error) {
 	}
 	if o.Advertise == "" {
 		o.Advertise = o.Address
+	}
+	if o.StateOnly && o.Install != "control-plane" {
+		return o, errors.New("--state-only goes with --install control-plane")
 	}
 	return o, nil
 }
@@ -295,7 +306,7 @@ func hostList(ctx context.Context, kctx string, out io.Writer) error {
 // hostCmd dispatches kvoadm host add|list|… .
 func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("host needs add, enable-worker, reconnect, list, drain or uncordon")
+		return errors.New("host needs add, install, uninstall, remove, enable-worker, reconnect, list, drain or uncordon")
 	}
 	switch args[0] {
 	case "add":
@@ -303,13 +314,50 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 		if err != nil {
 			return err
 		}
-		if err := hostAdd(ctx, o, stdin, out); !errors.Is(err, ErrDryRun) {
+		add := hostAdd
+		if o.Install == "control-plane" {
+			add = hostAddSystemNode
+		}
+		if err := add(ctx, o, stdin, out); !errors.Is(err, ErrDryRun) {
 			return err
 		}
 		_, _ = fmt.Fprintln(out, "Dry run: nothing was changed.")
 		return nil
 	case "enable-worker":
 		return enableWorker(ctx, args[1:], stdin, out)
+	case "install", "uninstall":
+		if len(args) < 3 || args[2] != "control-plane" {
+			return fmt.Errorf("host %s HOST control-plane [--state-only] (workers: kvoadm host add / enable-worker)", args[0])
+		}
+		o, kctx := HostAddOptions{}, ""
+		for i := 3; i < len(args); i++ {
+			switch {
+			case args[i] == "--state-only":
+				o.StateOnly = true
+			case args[i] == "--ssh-key" && i+1 < len(args):
+				o.SSHKey = args[i+1]
+				i++
+			case args[i] == "--context" && i+1 < len(args):
+				kctx = args[i+1]
+				i++
+			default:
+				return fmt.Errorf("unknown flag %s", args[i])
+			}
+		}
+		o.KvoContext = kctx
+		if args[0] == "uninstall" {
+			return hostRemoveSystemNode(ctx, args[1], kctx, false, out)
+		}
+		return hostInstallControlPlane(ctx, args[1], o, stdin, out)
+	case "remove":
+		if len(args) < 2 {
+			return errors.New("host remove NAME")
+		}
+		kctx := ""
+		if len(args) == 4 && args[2] == "--context" {
+			kctx = args[3]
+		}
+		return hostRemoveSystemNode(ctx, args[1], kctx, true, out)
 	case "reconnect":
 		return hostReconnect(ctx, args[1:], stdin, out)
 	case "list":
