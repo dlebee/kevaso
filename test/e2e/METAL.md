@@ -147,8 +147,11 @@ export KEVASO_METAL_HOSTNAME=secure.135-148-103-69.sslip.io
 All of them, one cluster for the whole run:
 
 ```bash
-go test -tags metal -run '^TestMetal' -v -count=1 -timeout 5h ./test/e2e/ 2>&1 | tee /tmp/metal-all.log
+go test -tags metal -run '^TestMetal[A-Z]' -v -count=1 -timeout 5h ./test/e2e/ 2>&1 | tee /tmp/metal-all.log
 ```
+
+The pattern `^TestMetal[A-Z]` leaves out the two-machine tests (`TestMetal2…`), which make a
+cluster of their own.
 
 Don't add `-parallel` or `t.Parallel`: the tests share the machine's ports and its one kevasod,
 and TestMetalFence stops kevasod.
@@ -162,6 +165,89 @@ machine afterwards:
 ```bash
 go test -tags metal -run '^TestMetalReset$' -v -count=1 ./test/e2e/
 ```
+
+## Iterating fast
+
+To fix one test, rerun only that test, on a cluster kept from one attempt to the next.
+`KEVASO_METAL_REUSE=1` keeps kvo's config in `~/.kevaso-metal/EXTERNAL_IP` and skips the final
+reset. The next run with the variable set takes the cluster that is there, if it answers: no
+reset and no `kvoadm init`. Each test removes its own namespace, which makes reuse safe.
+
+```bash
+KEVASO_METAL_REUSE=1 go test -tags metal -run '^TestMetalIngress$' -v -count=1 ./test/e2e/
+```
+
+When product code changed, add `KEVASO_METAL_REDEPLOY=1`. kevasod is built from the tree,
+copied over and restarted, and the cluster is kept:
+
+```bash
+KEVASO_METAL_REUSE=1 KEVASO_METAL_REDEPLOY=1 go test -tags metal -run '^TestMetalIngress$' -v -count=1 ./test/e2e/
+```
+
+To finish, reset the machine with `TestMetalReset`, or let a run without the variable reset it.
+
+Downloads are cached on each machine in `/var/cache/kvt`: the Ubuntu cloud image and Cloud
+Hypervisor's release. The reset keeps that directory, saves Kevaso's downloads there before
+removing them, and setup puts them back before `kvoadm init`. Kevaso still checks every file's
+digest, so a stale copy is fetched again.
+
+**Both machines at once.** The one-machine suite makes one cluster per machine, so it can run on
+both concurrently: point the `KEVASO_METAL_*` variables at machine 2 in a second shell, one half
+of the tests each. These halves take about the same time:
+
+```bash
+go test -tags metal -run '^TestMetal(Images|Model|Names|Leases|Podman|Reboot)$' -v -count=1 -timeout 3h ./test/e2e/ 2>&1 | tee /tmp/metal-a.log
+```
+
+```bash
+go test -tags metal -run '^TestMetal(Ingress|Probes|Panes|Fence|Volumes|Secrets|Registry)$' -v -count=1 -timeout 3h ./test/e2e/ 2>&1 | tee /tmp/metal-b.log
+```
+
+In the second shell, set `KEVASO_METAL_HOSTNAME` to an sslip.io name of machine 2's IP. The
+ports table holds for either machine: each test opens its ports on the external IP of the
+machine it runs on.
+
+**The gate.** Before a merge, every test must have passed on its own since its last relevant
+change. Then the whole suite runs once, across both machines. If only one test's code changes
+after that, rerunning that test is enough. If product code changes, rerun the tests that
+exercise that package.
+
+## Two machines
+
+A second machine opens the tests one machine can't run. Its variables mirror the first's. The key
+is shared unless `KEVASO_METAL2_KEY` is set:
+
+```bash
+export KEVASO_METAL2_HOST=ubuntu@54.39.243.98
+```
+
+```bash
+export KEVASO_METAL2_HOSTKEY=SHA256:paste-machine-2s-fingerprint-from-its-console
+```
+
+```bash
+export KEVASO_METAL2_EXTERNAL_IP=54.39.243.98
+```
+
+The cluster: machine 1 is the system node only (`kvoadm init` without `--worker`). Machine 2
+joins as a worker over the external IPs (`kvoadm host add --install worker`), with the mesh
+between them. The tests that need two workers make machine 1 a worker too (`kvoadm host
+enable-worker`), and label both hosts `kvt/host=NAME` so a silo can be placed on either. Both
+machines are reset at the start and at the end. The two suites use different clusters, so run
+them separately:
+
+```bash
+go test -tags metal -run '^TestMetal2' -v -count=1 -timeout 4h ./test/e2e/ 2>&1 | tee /tmp/metal2.log
+```
+
+| Test | What it proves | Listens on |
+|---|---|---|
+| TestMetal2Worker | the system node runs no silos; a microVM and a container on the worker answer on the worker's external IP only; `kvo exec` through the tunnel | 18200, 18201 on machine 2 |
+| TestMetal2Mesh | across sites: a service name resolves to the silo IP and connects over WireGuard; `allowFrom` keeps a stranger out; `[external]` answers on its own host only | 18210 on machine 2 |
+| TestMetal2Moves | a container moves with its data and leaves nothing behind; a microVM with a local volume is refused; `onHostLoss: Move` with a local volume is refused | nothing |
+| TestMetal2Fence | machine 2 cut off from the system node (nftables table `kvt-cut` on machine 2, traffic to and from machine 1 only, never port 22): the fence stops only the `Recreate` silo; the control plane starts it on machine 1; `--confirm-fenced`; one copy of everything once the cut is lifted | nothing |
+| TestMetal2HostLoss | machine 2 rebooted while it holds silos: the `Recreate` one moves, the `Wait` ones come back with their data | nothing |
+| TestMetal2Ingress | nginx on machine 1 serving a silo that runs on machine 2 | 80, 443 on machine 1 |
 
 ## The reset
 
@@ -254,7 +340,7 @@ machine, 6443 (the API, mutual TLS) is open from the first test to the final res
 | TestMetalFence | nothing | |
 | TestMetalVolumes | nothing | |
 | TestMetalPodman | 18130 | echo, in a podman silo |
-| TestMetalReboot | nothing new; the machine itself goes down and up | |
+| TestMetalReboot | 18140, 18141, before and after the machine itself goes down and up | echo |
 
 Silos reach the internet too: Docker Hub, cloud-images.ubuntu.com, GitHub (the Cloud Hypervisor
 release), the Ubuntu archive and, with `KEVASO_METAL_HOSTNAME` set, Let's Encrypt staging.

@@ -46,6 +46,9 @@ type Config struct {
 	ExternalIP string
 	InternalIP string // "" when the machine has none
 	Hostname   string // "" when none was given
+	// SpareDisk is a whole disk the tests may give Kevaso and the reset may wipe (PREFIX_SPARE_DISK,
+	// e.g. /dev/nvme1n1). No other disk is ever touched.
+	SpareDisk string
 }
 
 // ErrNotConfigured: the environment doesn't name a machine (tests skip on it).
@@ -54,23 +57,40 @@ var ErrNotConfigured = errors.New("no test machine configured")
 // FromEnv reads the machine from the environment. Missing required variables give an error
 // wrapping ErrNotConfigured that names them; present but malformed ones give another error.
 func FromEnv(getenv func(string) string) (Config, error) {
+	return FromEnvPrefix(getenv, "KEVASO_METAL")
+}
+
+// SecondPrefix names a second machine's variables (KEVASO_METAL2_HOST, …); its key defaults to
+// the first machine's (KEVASO_METAL_KEY).
+const SecondPrefix = "KEVASO_METAL2"
+
+// FromEnvPrefix reads a machine from PREFIX_HOST, PREFIX_KEY (default KEVASO_METAL_KEY),
+// PREFIX_HOSTKEY, PREFIX_EXTERNAL_IP, and optionally PREFIX_INTERNAL_IP and PREFIX_HOSTNAME.
+func FromEnvPrefix(getenv func(string) string, prefix string) (Config, error) {
 	var missing []string
+	get := func(name string) string { return strings.TrimSpace(getenv(prefix + "_" + name)) }
 	need := func(name string) string {
-		v := strings.TrimSpace(getenv(name))
+		v := get(name)
 		if v == "" {
-			missing = append(missing, name)
+			missing = append(missing, prefix+"_"+name)
 		}
 		return v
 	}
-	host, key, hk, ext := need(EnvHost), need(EnvKey), need(EnvHostKey), need(EnvExternalIP)
+	key := get("KEY")
+	if key == "" {
+		key = strings.TrimSpace(getenv(EnvKey))
+	}
+	if key == "" {
+		missing = append(missing, prefix+"_KEY")
+	}
+	host, hk, ext := need("HOST"), need("HOSTKEY"), need("EXTERNAL_IP")
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("%w: set %s (see test/e2e/METAL.md)", ErrNotConfigured, strings.Join(missing, ", "))
 	}
-	c := Config{KeyFile: key, HostKey: hk, ExternalIP: ext,
-		InternalIP: strings.TrimSpace(getenv(EnvInternalIP)), Hostname: strings.TrimSpace(getenv(EnvHostname))}
+	c := Config{KeyFile: key, HostKey: hk, ExternalIP: ext, InternalIP: get("INTERNAL_IP"), Hostname: get("HOSTNAME"), SpareDisk: get("SPARE_DISK")}
 	var err error
 	if c.User, c.Address, c.Port, err = ParseTarget(host); err != nil {
-		return Config{}, fmt.Errorf("%s: %w", EnvHost, err)
+		return Config{}, fmt.Errorf("%s_HOST: %w", prefix, err)
 	}
 	return c, c.Validate()
 }
@@ -117,6 +137,9 @@ func (c Config) Validate() error {
 	}
 	if c.Hostname != "" && (strings.ContainsAny(c.Hostname, " /:*") || !strings.Contains(c.Hostname, ".")) {
 		errs = append(errs, fmt.Errorf("%s %q: want a DNS name", EnvHostname, c.Hostname))
+	}
+	if c.SpareDisk != "" && (!strings.HasPrefix(c.SpareDisk, "/dev/") || strings.ContainsAny(c.SpareDisk, " '\"$;&|")) {
+		errs = append(errs, fmt.Errorf("SPARE_DISK %q: want a /dev path", c.SpareDisk))
 	}
 	if c.KeyFile == "" {
 		errs = append(errs, fmt.Errorf("%s: required", EnvKey))

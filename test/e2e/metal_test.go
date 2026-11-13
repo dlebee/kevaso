@@ -36,6 +36,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/cli/kvo"
 	"kevaso.com/core/internal/cli/kvoadm"
+	"kevaso.com/core/testbed"
 	"kevaso.com/core/testbed/remote"
 )
 
@@ -75,8 +76,11 @@ var metalState struct {
 
 func TestMain(m *testing.M) {
 	code := m.Run()
+	if c := resetPairAtEnd(); c != 0 {
+		code = c
+	}
 	if metalState.touched {
-		if os.Getenv("KEVASO_E2E_KEEP") != "" {
+		if os.Getenv("KEVASO_E2E_KEEP") != "" || os.Getenv("KEVASO_METAL_REUSE") != "" {
 			fmt.Println("metal: KEEPING the cluster (KEVASO_E2E_KEEP): reset it later with go test -tags metal -run TestMetalReset")
 		} else {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
@@ -105,6 +109,9 @@ type mt struct {
 // configured and fails it when making the cluster failed.
 func metal(t *testing.T) *mt {
 	t.Helper()
+	if pairState.p != nil || len(pairState.touched) > 0 {
+		t.Fatal("this run made the two-machine cluster: run the one-machine tests on their own")
+	}
 	metalState.once.Do(func() { metalState.s, metalState.skip, metalState.err = setUpMetal() })
 	if metalState.skip != "" {
 		t.Skip(metalState.skip)
@@ -190,16 +197,7 @@ func setUpMetal() (s *metalSuite, skip string, err error) {
 	}
 	say("machine %s (%s), this Mac seen as %s", cfg.SSHTarget(), s.uname, s.macIP)
 
-	// 2. Clean: the baseline (recorded once, on the fresh machine), then a reset to it.
-	if _, err := s.d.RecordBaseline(ctx); err != nil {
-		return nil, "", err
-	}
-	if err := s.d.Reset(ctx); err != nil {
-		return nil, "", fmt.Errorf("the starting reset: %w", err)
-	}
-	say("reset to clean: the checklist passed")
-
-	// 3. kevasod for its CPU (built before HOME moves, so the build cache is the usual one).
+	// 2. kevasod for its CPU (built before HOME moves, so the build cache is the usual one).
 	tmp, err := os.MkdirTemp("", "kvt-metal-")
 	if err != nil {
 		return nil, "", err
@@ -210,12 +208,49 @@ func setUpMetal() (s *metalSuite, skip string, err error) {
 	if b, err := build.CombinedOutput(); err != nil {
 		return nil, "", fmt.Errorf("build kevasod: %v\n%s", err, b)
 	}
+	// kvo's config: a fresh home per run, or, to reuse the cluster between runs
+	// (KEVASO_METAL_REUSE), one kept per machine.
 	s.home = filepath.Join(tmp, "home")
+	reuse := os.Getenv("KEVASO_METAL_REUSE") != ""
+	if reuse {
+		base, err := os.UserHomeDir()
+		if err != nil {
+			return nil, "", err
+		}
+		s.home = filepath.Join(base, ".kevaso-metal", cfg.ExternalIP)
+	}
 	for k, v := range map[string]string{"HOME": s.home, "KVO_CONFIG": filepath.Join(s.home, ".kevaso", "config.yaml"),
 		"KVO_TOKEN_STORE": "file", "KVO_SERVER": ""} {
 		if err := os.Setenv(k, v); err != nil {
 			return nil, "", err
 		}
+	}
+	if reuse {
+		if ok, why := s.reusable(ctx); ok {
+			say("reusing the cluster on %s (KEVASO_METAL_REUSE)", cfg.ExternalIP)
+			if os.Getenv("KEVASO_METAL_REDEPLOY") != "" {
+				if err := s.redeploy(ctx, bin); err != nil {
+					return nil, "", err
+				}
+				say("kevasod redeployed from the tree and restarted")
+			}
+			return s, "", s.waitReady(ctx)
+		} else {
+			say("no cluster to reuse (%s): making one", why)
+		}
+	}
+
+	// 3. Clean: the baseline (recorded once, on the fresh machine), then a reset to it, then
+	// Kevaso's download caches seeded from the suite's own (the reset keeps those).
+	if _, err := s.d.RecordBaseline(ctx); err != nil {
+		return nil, "", err
+	}
+	if err := s.d.Reset(ctx); err != nil {
+		return nil, "", fmt.Errorf("the starting reset: %w", err)
+	}
+	say("reset to clean: the checklist passed")
+	if out, err := s.d.Run(ctx, remote.SeedCacheScript, nil); err != nil {
+		say("seeding the download cache: %v %s", err, out)
 	}
 
 	// 4. The stand-in API on the internet for the injection test, on the machine's loopback,
@@ -239,6 +274,15 @@ func setUpMetal() (s *metalSuite, skip string, err error) {
 	say("kvoadm init: %s is Ready (kvo config: KVO_CONFIG=%s)", metalHost, os.Getenv("KVO_CONFIG"))
 
 	// 6. Both runtimes installed (the first silo shouldn't wait on apt).
+	if err := s.waitReady(ctx); err != nil {
+		return nil, "", err
+	}
+	say("runtimes Ready; names under .%s", s.suffix)
+	return s, "", nil
+}
+
+// waitReady waits for both runtimes, and reads the cluster's DNS suffix.
+func (s *metalSuite) waitReady(ctx context.Context) error {
 	deadline := time.Now().Add(20 * time.Minute)
 	for {
 		var h v1.Host
@@ -249,22 +293,48 @@ func setUpMetal() (s *metalSuite, skip string, err error) {
 				if st, ok := h.Status.Runtimes[rt]; ok && st.State == "Ready" {
 					ready++
 				} else if ok && st.State == "Failed" {
-					return nil, "", fmt.Errorf("runtime %s failed: %s", rt, st.Message)
+					return fmt.Errorf("runtime %s failed: %s", rt, st.Message)
 				}
 			}
 			if ready == 2 {
 				s.suffix = v1.ClusterSuffix([]*v1.Host{&h})
-				break
+				return nil
 			}
 		}
 		if time.Now().After(deadline) {
 			j, _ := s.d.Run(ctx, "journalctl -u kevasod -n 60 --no-pager", nil)
-			return nil, "", fmt.Errorf("the runtimes never got Ready:\n%s\n%s", ko.String(), j)
+			return fmt.Errorf("the runtimes never got Ready:\n%s\n%s", ko.String(), j)
 		}
-		time.Sleep(10 * time.Second)
+		time.Sleep(5 * time.Second)
 	}
-	say("runtimes Ready; names under .%s", s.suffix)
-	return s, "", nil
+}
+
+// reusable says whether the cluster in this machine's kept home answers and is this suite's.
+func (s *metalSuite) reusable(ctx context.Context) (bool, string) {
+	if _, err := os.Stat(os.Getenv("KVO_CONFIG")); err != nil {
+		return false, "no kept kvo config"
+	}
+	var o bytes.Buffer
+	if kvo.Run(ctx, []string{"get", "host", metalHost, "-o", "json"}, nil, &o, &o) != 0 {
+		return false, "its API doesn't answer: " + strings.TrimSpace(o.String())
+	}
+	if out, err := s.d.Run(ctx, "systemctl is-active kvt-inet >/dev/null || systemd-run --unit=kvt-inet python3 /var/lib/kvt-inet/server.py", nil); err != nil {
+		return false, "the stand-in internet: " + out
+	}
+	return true, ""
+}
+
+// redeploy puts a kevasod built from the tree on the machine and restarts it (the agent and the
+// fence), keeping the cluster: for iterating on product code without a new cluster.
+func (s *metalSuite) redeploy(ctx context.Context, bin string) error {
+	if err := s.d.CopyTo(ctx, testbed.Machine{}, bin, "/usr/local/bin/kevasod.next"); err != nil {
+		return err
+	}
+	out, err := s.d.Run(ctx, "install -m 0755 /usr/local/bin/kevasod.next /usr/local/bin/kevasod && rm -f /usr/local/bin/kevasod.next && systemctl restart kevasod kevaso-fence", nil)
+	if err != nil {
+		return fmt.Errorf("redeploy: %v %s", err, out)
+	}
+	return nil
 }
 
 // metalRedact keeps the recovery key kvoadm init prints out of the test log.

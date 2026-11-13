@@ -228,6 +228,73 @@ func TestFromEnv(t *testing.T) {
 	}
 }
 
+func TestFromEnvSecondMachine(t *testing.T) {
+	env := map[string]string{EnvKey: "/k1", "KEVASO_METAL2_HOST": "ubuntu@m2", "KEVASO_METAL2_HOSTKEY": "SHA256:" + strings.Repeat("C", 43),
+		"KEVASO_METAL2_EXTERNAL_IP": "198.51.100.7"}
+	c, err := FromEnvPrefix(func(k string) string { return env[k] }, SecondPrefix)
+	if err != nil || c.KeyFile != "/k1" || c.User != "ubuntu" || c.ExternalIP != "198.51.100.7" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	env["KEVASO_METAL2_KEY"] = "/k2"
+	if c, _ := FromEnvPrefix(func(k string) string { return env[k] }, SecondPrefix); c.KeyFile != "/k2" {
+		t.Errorf("its own key: %q", c.KeyFile)
+	}
+	_, err = FromEnvPrefix(func(string) string { return "" }, SecondPrefix)
+	if !errors.Is(err, ErrNotConfigured) || !strings.Contains(err.Error(), "KEVASO_METAL2_HOST") {
+		t.Errorf("unset: %v", err)
+	}
+}
+
+func TestCacheScripts(t *testing.T) {
+	for _, sc := range []string{SaveCacheScript, SeedCacheScript} {
+		if !strings.Contains(sc, CacheDir) || strings.Contains(sc, "rm ") {
+			t.Errorf("cache script: %q", sc)
+		}
+	}
+	for _, p := range hostreset.Paths {
+		if strings.HasPrefix(CacheDir, strings.TrimSuffix(p, "*")) {
+			t.Errorf("the cache (%s) is under a path the reset removes (%s)", CacheDir, p)
+		}
+	}
+}
+
+func TestSparePlan(t *testing.T) {
+	steps := Plan(fresh, fresh, "/dev/nvme1n1")
+	var vg string
+	for _, s := range steps {
+		if strings.HasPrefix(s.Name, "remove volume group") {
+			vg = s.Script
+		}
+	}
+	for _, want := range []string{"d=/dev/nvme1n1", `"$d") ;;`, "refusing: volume group $vg is on $p, not the spare disk", "has partitions or holders", "is mounted", `wipefs -a -q "$d"`} {
+		if !strings.Contains(vg, want) {
+			t.Errorf("the spare-disk step lacks %q:\n%s", want, vg)
+		}
+	}
+	if strings.Index(vg, "wipefs") < strings.Index(vg, "has partitions") {
+		t.Error("the disk is wiped before its partitions are checked")
+	}
+	for _, s := range Plan(fresh, fresh, "") {
+		if strings.Contains(s.Script, "wipefs") {
+			t.Errorf("without a spare disk, %q wipes something", s.Name)
+		}
+	}
+	all := ""
+	for _, c := range Checklist("/dev/nvme1n1") {
+		all += c.Script
+	}
+	if !strings.Contains(all, "wipefs -n /dev/nvme1n1") {
+		t.Error("the checklist doesn't check the spare disk is empty")
+	}
+	c, err := FromEnvPrefix(func(k string) string {
+		return map[string]string{EnvKey: "/k", "KEVASO_METAL2_HOST": "h", "KEVASO_METAL2_HOSTKEY": "SHA256:" + strings.Repeat("C", 43),
+			"KEVASO_METAL2_EXTERNAL_IP": "198.51.100.7", "KEVASO_METAL2_SPARE_DISK": "/dev/sdb; reboot"}[k]
+	}, SecondPrefix)
+	if err == nil {
+		t.Errorf("an unsafe spare disk accepted: %+v", c)
+	}
+}
+
 func TestParseTarget(t *testing.T) {
 	for in, want := range map[string]string{
 		"1.2.3.4":            "root 1.2.3.4 22",
@@ -356,12 +423,12 @@ func (s *machineState) handle(cmd string, stdin []byte) (string, int) {
 		}
 		return s.now.Render(), 0
 	}
-	for _, st := range Plan(s.now, s.now) {
+	for _, st := range Plan(s.now, s.now, "") {
 		if strings.HasPrefix(st.Name, "remove the tests' files") && cmd == st.Script {
 			s.planDone = true
 		}
 	}
-	for _, c := range Checklist() {
+	for _, c := range Checklist("") {
 		if cmd == c.Script {
 			s.order = append(s.order, "check:"+c.Name)
 			return s.leftovers[c.Name], 0
@@ -399,8 +466,8 @@ func TestResetRunsThePlanThenTheChecklist(t *testing.T) {
 	if firstCheck < 0 || slices.Contains(st.order[firstCheck:], "step") {
 		t.Errorf("steps and checks interleaved: %v", st.order)
 	}
-	if n := len(st.order) - firstCheck; n != len(Checklist()) {
-		t.Errorf("%d checks ran, want %d", n, len(Checklist()))
+	if n := len(st.order) - firstCheck; n != len(Checklist("")) {
+		t.Errorf("%d checks ran, want %d", n, len(Checklist("")))
 	}
 }
 
