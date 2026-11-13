@@ -141,7 +141,13 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 			meta.SetCondition(&st.Conditions, cond, now)
 			meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Moving",
 				Message: "moving after losing " + st.Host, ObservedGeneration: s.Generation}, now)
-			st.Host, st.SiloIP, st.MovingFrom = "", "", ""
+			// A handoff still under way stays: the host it was moving from has not let go, and
+			// the next host waits for it as the lost one did (K-005). Only a handoff from the lost
+			// host itself is over: that host is fenced.
+			if st.MovingFrom == st.Host {
+				st.MovingFrom = ""
+			}
+			st.Host, st.SiloIP = "", ""
 			// …and it's scheduled right away, below (its volumes keep it in their region).
 		case s.Policy() == v1.OnHostLossRecreate:
 			// Not lost any more (it's being placed afresh); the condition keeps what happened.
