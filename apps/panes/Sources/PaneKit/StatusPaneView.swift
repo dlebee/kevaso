@@ -97,13 +97,19 @@ public struct PaneIdentity: Equatable, Sendable {
     public var siloUID: String
     public var namespace: String
     public var host: String?
+    /// From the Silo object's labels, read by the client (never from the pane): anything but
+    /// `.trusted` gets the striped rim.
+    public var trust: SiloTrust
 
-    public init(silo: String, siloUID: String, namespace: String, host: String?) {
+    public init(silo: String, siloUID: String, namespace: String, host: String?, trust: SiloTrust = .unknown) {
         self.silo = silo
         self.siloUID = siloUID
         self.namespace = namespace
         self.host = host
+        self.trust = trust
     }
+
+    public var striped: Bool { trust != .trusted }
 
     /// A stable rim colour per silo (FNV-1a of namespace/silo), so the same silo keeps its colour.
     public var rimIndex: Int {
@@ -120,12 +126,17 @@ public struct PaneFrame<Content: View>: View {
     let identity: PaneIdentity
     let paneName: String
     let stale: Bool
+    let needsYou: Bool
+    let trailing: AnyView?
     let content: Content
 
-    public init(identity: PaneIdentity, paneName: String, stale: Bool, @ViewBuilder content: () -> Content) {
+    public init(identity: PaneIdentity, paneName: String, stale: Bool, needsYou: Bool = false,
+                trailing: AnyView? = nil, @ViewBuilder content: () -> Content) {
         self.identity = identity
         self.paneName = paneName
         self.stale = stale
+        self.needsYou = needsYou
+        self.trailing = trailing
         self.content = content()
     }
 
@@ -136,12 +147,22 @@ public struct PaneFrame<Content: View>: View {
                 Text(verbatim: identity.silo).font(.system(size: 12, weight: .semibold))
                 Text(verbatim: "· " + paneName).font(.system(size: 11)).foregroundStyle(.secondary)
                 Spacer()
+                if identity.striped {
+                    Text(identity.trust == .untrusted ? "untrusted" : "trust unknown").font(.system(size: 10.5))
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Capsule().fill(identity.rim.opacity(0.22)))
+                }
+                if needsYou {
+                    Text("needs you").font(.system(size: 10.5, weight: .semibold)).padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Capsule().fill(Brand.amber.opacity(0.35)))
+                }
                 if stale {
                     Text("stale").font(.system(size: 10.5)).padding(.horizontal, 6).padding(.vertical, 1)
                         .background(Capsule().fill(Brand.ink3.opacity(0.3)))
                 }
                 Text(verbatim: identity.namespace + (identity.host.map { " · " + $0 } ?? ""))
-                    .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                if let trailing { trailing }
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(LinearGradient(colors: [identity.rim.opacity(0.16), .clear], startPoint: .top, endPoint: .bottom))
@@ -152,7 +173,61 @@ public struct PaneFrame<Content: View>: View {
         }
         .background(Brand.panel)
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(identity.rim.opacity(0.85), lineWidth: 1.5))
+        .overlay(RimView(color: identity.rim, striped: identity.striped, glow: needsYou))
         .foregroundStyle(Brand.ink)
+    }
+}
+
+/// The rim the client draws around a pane (mockups/panes.html): solid for a trusted silo; hatched,
+/// with diagonal stripes along the top and bottom edges, for an untrusted (or unknown) one.
+public struct RimView: View {
+    let color: Color
+    let striped: Bool
+    let glow: Bool
+
+    public init(color: Color, striped: Bool, glow: Bool = false) {
+        self.color = color
+        self.striped = striped
+        self.glow = glow
+    }
+
+    public var body: some View {
+        ZStack {
+            if striped {
+                RoundedRectangle(cornerRadius: 12).strokeBorder(color.opacity(0.9), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
+                VStack(spacing: 0) {
+                    Stripes(color: color).frame(height: 3)
+                    Spacer()
+                    Stripes(color: color).frame(height: 3)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else {
+                RoundedRectangle(cornerRadius: 12).strokeBorder(color.opacity(0.85), lineWidth: 1.5)
+            }
+            if glow {
+                RoundedRectangle(cornerRadius: 12).strokeBorder(Brand.amber.opacity(0.7), lineWidth: 3).blur(radius: 2)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// Diagonal stripes, 6 points on, 6 off (the mockup's repeating-linear-gradient at 45°).
+struct Stripes: View {
+    let color: Color
+    var body: some View {
+        Canvas { ctx, size in
+            var x: CGFloat = -size.height
+            while x < size.width + size.height {
+                var p = Path()
+                p.move(to: CGPoint(x: x, y: size.height))
+                p.addLine(to: CGPoint(x: x + size.height, y: 0))
+                p.addLine(to: CGPoint(x: x + size.height + 6, y: 0))
+                p.addLine(to: CGPoint(x: x + 6, y: size.height))
+                p.closeSubpath()
+                ctx.fill(p, with: .color(color))
+                x += 12
+            }
+        }
     }
 }

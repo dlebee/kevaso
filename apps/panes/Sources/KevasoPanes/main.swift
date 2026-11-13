@@ -1,157 +1,321 @@
-// Kevaso Panes: one window that owns many panes (design §7, §10.1). It lists and watches the panes of
-// one namespace, shows only the ones the person turned on, draws each pane's identity itself, and
-// opens HTML panes in the sealed view.
+// Kevaso Panes (design §7, §10.1): sign in to your clusters like `kvo login`, pick a namespace, turn
+// panes on; each one floats in its own small always-on-top window with the identity drawn by the app.
 //
-//   KVO_SERVER=https://… KVO_CA_FILE=ca.pem KVO_TOKEN=… KVO_NAMESPACE=team swift run KevasoPanes
+//   swift run KevasoPanes
+//   KVO_SERVER=https://… KVO_CA_FILE=ca.pem KVO_TOKEN=… KVO_NAMESPACE=team swift run KevasoPanes   (CI)
 import AppKit
 import PaneKit
 import SwiftUI
 
+@MainActor
+final class AppModel: ObservableObject {
+    let contexts = ContextStore()
+    let store = PaneStore()
+    let vault = KeychainVault()
+    let floating: FloatingPanes
+    let notifier: NeedsYouNotifier
+    /// KVO_SERVER (and friends): a cluster from the environment, no sign-in.
+    let environment: ServerConfig?
+    /// KVO_TOKEN: overrides any sign-in, for CI.
+    let tokenOverride = ServerConfig.tokenOverride()
+
+    @Published var signedIn: Set<String> = []
+    @Published var message = ""
+    @Published var busy = false
+    @Published var notify: Bool { didSet { UserDefaults.standard.set(notify, forKey: "notifyNeedsYou"); notifier.enabled = notify } }
+    private var sessions: [String: ClusterSession] = [:]
+
+    init() {
+        var env: ServerConfig?
+        var problem = ""
+        do { env = try ServerConfig.fromEnvironment() } catch { problem = "\(error)" }
+        environment = env
+        floating = FloatingPanes(store: store, places: WindowPlaces(file: ContextStore.defaultFolder.appendingPathComponent("windows.json")))
+        let on = UserDefaults.standard.bool(forKey: "notifyNeedsYou")
+        notifier = NeedsYouNotifier(enabled: on)
+        notify = on
+        message = problem
+        store.onNeedsYou = { [weak self] p, id in self?.notifier.needsYou(p, id) }
+        store.onSessionEnded = { [weak self] e in self?.sessionEnded(e) }
+        for c in contexts.contexts where (try? vault.read(c.id)) ?? nil != nil { signedIn.insert(c.id) }
+        connect()
+    }
+
+    func session(_ c: ClusterContext) throws -> ClusterSession {
+        if let s = sessions[c.id], s.context == c { return s }
+        let s = try ClusterSession(context: c, vault: vault)
+        Task { await s.setOnEnded { [weak self] e in Task { @MainActor in self?.sessionEnded(e) } } }
+        sessions[c.id] = s
+        return s
+    }
+
+    func sessionEnded(_ e: Error) {
+        guard let c = contexts.current else { return }
+        signedIn.remove(c.id)
+        message = "\(e)"
+        floating.closeAll()
+        store.disconnect()
+    }
+
+    /// Connects to the current cluster when it can: the environment's, or a signed-in context.
+    func connect() {
+        if let environment {
+            store.connect(environment, scope: "env")
+            return
+        }
+        floating.closeAll()
+        guard let c = contexts.current else { store.disconnect(); return }
+        guard signedIn.contains(c.id) || tokenOverride != nil else { store.disconnect(); return }
+        do {
+            let tokens: AccessTokens = try tokenOverride ?? session(c)
+            store.connect(ServerConfig(server: c.server, ca: try c.pinnedCA(), tokens: tokens, namespace: c.namespace), scope: c.id)
+        } catch {
+            message = "\(error)"
+        }
+    }
+
+    func select(_ id: String?) {
+        guard id != contexts.currentID else { return }
+        contexts.currentID = id
+        message = ""
+        connect()
+    }
+
+    func setNamespace(_ ns: String) {
+        guard var c = contexts.current, c.namespace != ns else { return }
+        c.namespace = ns
+        contexts.upsert(c)
+        connect()
+    }
+
+    func add(name: String, server: String, fingerprint: String, namespace: String) async {
+        busy = true
+        defer { busy = false }
+        do {
+            guard let u = URL(string: server.trimmingCharacters(in: .whitespaces)), u.scheme == "https", u.host != nil else {
+                throw TrustError.insecure(server)
+            }
+            let ca = try await PinnedSession.fetchCA(server: u, fingerprint: fingerprint)
+            let c = ClusterContext(name: name.isEmpty ? (u.host ?? "cluster") : name, server: u, ca: ca,
+                                   namespace: namespace.isEmpty ? "default" : namespace)
+            contexts.upsert(c)
+            contexts.currentID = c.id
+            message = "CA \(ca.fingerprint) pinned for \(c.name)."
+            await signIn(c)
+        } catch {
+            message = "\(error)"
+        }
+    }
+
+    func signIn(_ c: ClusterContext) async {
+        busy = true
+        defer { busy = false }
+        do {
+            message = "Sign in in your browser…"
+            try await session(c).signIn { url in await MainActor.run { _ = NSWorkspace.shared.open(url) } }
+            signedIn.insert(c.id)
+            message = "Signed in to \(c.name)."
+            NSApp.activate(ignoringOtherApps: true)
+            if contexts.current?.id == c.id { connect() }
+        } catch {
+            message = "\(error)"
+        }
+    }
+
+    func signOut(_ c: ClusterContext) async {
+        let s = try? session(c)
+        if contexts.current?.id == c.id { floating.closeAll(); store.disconnect() }
+        let confirmed = await s?.signOut() ?? false
+        try? vault.delete(c.id)
+        signedIn.remove(c.id)
+        message = confirmed ? "Signed out of \(c.name)." : "Signed out of \(c.name) here (the cluster didn't confirm; its session ends when idle)."
+    }
+
+    func remove(_ c: ClusterContext) async {
+        if signedIn.contains(c.id) { await signOut(c) }
+        sessions[c.id] = nil
+        contexts.remove(c.id)
+        connect()
+    }
+
+    func setNotify(_ on: Bool) async {
+        if on, SystemNotifications.available, !(await SystemNotifications.requestAuthorization()) {
+            message = "Notifications are off for Kevaso Panes in System Settings."
+        }
+        notify = on
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    var model: AppModel?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
-}
-
-/// Settings, overridden by the environment. The token is kept in the app's defaults until keychain
-/// integration lands (README: what is not done).
-@MainActor
-final class AppSettings: ObservableObject {
-    @AppStorage("server") var server = ""
-    @AppStorage("caFile") var caFile = ""
-    @AppStorage("token") var token = ""
-    @AppStorage("namespace") var namespace = "default"
-
-    var config: ServerConfig? {
-        if let env = ServerConfig.fromEnvironment() { return env }
-        guard let u = URL(string: server), u.host != nil else { return nil }
-        return ServerConfig(server: u, caFile: caFile.isEmpty ? nil : caFile, token: token.isEmpty ? nil : token,
-                            namespace: namespace.isEmpty ? "default" : namespace)
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated { model?.floating.closeAll() }
     }
-    var fromEnvironment: Bool { ServerConfig.fromEnvironment() != nil }
 }
 
-struct ContentView: View {
+struct MainView: View {
+    @EnvironmentObject var model: AppModel
     @EnvironmentObject var store: PaneStore
-    @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject var contexts: ContextStore
+    @State private var adding = false
 
     var body: some View {
         NavigationSplitView {
-            List {
-                Section("Panes in \(settings.config?.namespace ?? "–")") {
-                    ForEach(store.sorted) { p in
-                        Toggle(isOn: Binding(get: { store.enabled.contains(p.id) },
-                                             set: { on in if on { store.enabled.insert(p.id) } else { store.enabled.remove(p.id) } })) {
+            List(selection: Binding(get: { contexts.current?.id }, set: { model.select($0) })) {
+                Section("Clusters") {
+                    if model.environment != nil {
+                        Label("From the environment (KVO_SERVER)", systemImage: "terminal").foregroundStyle(.secondary)
+                    }
+                    ForEach(contexts.contexts) { c in
+                        HStack(spacing: 7) {
+                            Circle().fill(model.signedIn.contains(c.id) ? Brand.green : Brand.ink3).frame(width: 7, height: 7)
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(verbatim: p.metadata.name).font(.system(size: 12, weight: .medium))
-                                Text(verbatim: p.spec.kind + (p.isStale(now: store.now) ? " · stale" : ""))
-                                    .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                Text(verbatim: c.name).font(.system(size: 12, weight: .medium))
+                                Text(verbatim: c.server.host ?? c.server.absoluteString).font(.system(size: 10.5)).foregroundStyle(.secondary)
                             }
+                        }
+                        .tag(c.id)
+                        .contextMenu {
+                            if model.signedIn.contains(c.id) {
+                                Button("Sign Out") { Task { await model.signOut(c) } }
+                            } else {
+                                Button("Sign In…") { Task { await model.signIn(c) } }
+                            }
+                            Divider()
+                            Button("Remove", role: .destructive) { Task { await model.remove(c) } }
                         }
                     }
                 }
             }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 240)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 230)
             .safeAreaInset(edge: .bottom) {
-                Text(verbatim: store.status).font(.caption).foregroundStyle(.secondary).padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button { adding = true } label: { Label("Add Cluster…", systemImage: "plus") }
+                    .buttonStyle(.borderless).padding(10).frame(maxWidth: .infinity, alignment: .leading)
             }
         } detail: {
-            if store.shown.isEmpty {
-                Text(store.panes.isEmpty ? "No panes yet." : "Turn a pane on in the list.").foregroundStyle(.secondary)
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 300, maximum: 420), spacing: 14)], spacing: 14) {
-                        ForEach(store.shown) { p in
-                            PaneFrame(identity: store.identity(p), paneName: p.spec.pane, stale: p.isStale(now: store.now)) {
-                                if p.isHTML, let c = store.controllers[p.id] {
-                                    HTMLPaneSlot(controller: c)
-                                } else {
-                                    StatusPaneView(spec: p.spec, rim: store.identity(p).rim)
-                                }
+            DetailView()
+        }
+        .sheet(isPresented: $adding) { AddClusterView(done: { adding = false }) }
+    }
+}
+
+struct DetailView: View {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var store: PaneStore
+    @EnvironmentObject var contexts: ContextStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let c = contexts.current, model.environment == nil {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verbatim: c.name).font(.headline)
+                        Text(verbatim: c.server.absoluteString + " · CA " + c.fingerprint.prefix(23) + "…")
+                            .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                    Spacer()
+                    if model.signedIn.contains(c.id) {
+                        Button("Sign Out") { Task { await model.signOut(c) } }
+                    } else {
+                        Button("Sign In…") { Task { await model.signIn(c) } }.keyboardShortcut(.defaultAction).disabled(model.busy)
+                    }
+                }
+                .padding(14)
+                Divider()
+            }
+            if store.namespaces.count > 0 {
+                Picker("Namespace", selection: Binding(get: { store.namespace }, set: { model.setNamespace($0) })) {
+                    ForEach(store.namespaces, id: \.self) { Text(verbatim: $0).tag($0) }
+                }
+                .disabled(model.environment != nil)
+                .frame(maxWidth: 320).padding(.horizontal, 14).padding(.vertical, 10)
+            }
+            List {
+                ForEach(store.sorted) { p in
+                    let ident = store.identity(p)
+                    Toggle(isOn: Binding(get: { store.isEnabled(p) }, set: { store.setEnabled(p.id, $0) })) {
+                        HStack(spacing: 8) {
+                            Circle().fill(ident.rim).frame(width: 9, height: 9)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(verbatim: ident.silo + " · " + PlainText.clean(p.spec.pane, max: 60)).font(.system(size: 12, weight: .medium))
+                                Text(verbatim: [p.spec.kind, PlainText.clean(p.spec.state, max: 20), p.isStale(now: store.now) ? "stale" : "",
+                                                ident.striped ? (ident.trust == .untrusted ? "untrusted" : "trust unknown") : ""]
+                                    .filter { !$0.isEmpty }.joined(separator: " · "))
+                                    .font(.system(size: 10.5)).foregroundStyle(p.spec.state == "needs-you" ? Brand.amber : .secondary)
                             }
-                            .frame(height: 220)
                         }
                     }
-                    .padding(14)
+                    .toggleStyle(.switch)
                 }
-                .background(Color(red: 0x15 / 255, green: 0x1a / 255, blue: 0x22 / 255))
             }
-        }
-        .onAppear { if let c = settings.config { store.connect(c) } }
-    }
-}
-
-/// Where an HTML pane's sealed view sits, or why it isn't there.
-struct HTMLPaneSlot: View {
-    @ObservedObject var controller: HTMLPaneController
-    var body: some View {
-        if let p = controller.problem {
-            Text(verbatim: p).font(.caption).foregroundStyle(Brand.rose).padding(10)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        } else if let v = controller.view {
-            SealedViewHost(view: v)
-        } else {
-            ProgressView().controlSize(.small)
-        }
-    }
-}
-
-struct SealedViewHost: NSViewRepresentable {
-    let view: SealedPaneView
-    func makeNSView(context: Context) -> NSView {
-        let box = NSView()
-        view.frame = box.bounds
-        view.autoresizingMask = [.width, .height]
-        box.addSubview(view)
-        return box
-    }
-    func updateNSView(_ box: NSView, context: Context) {
-        if view.superview !== box {
-            box.subviews.forEach { $0.removeFromSuperview() }
-            view.frame = box.bounds
-            box.addSubview(view)
+            .overlay {
+                if store.panes.isEmpty {
+                    Text(contexts.contexts.isEmpty && model.environment == nil ? "Add a cluster to start." : "No panes here yet.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Divider()
+            HStack {
+                Toggle("Notify me when a pane needs me", isOn: Binding(get: { model.notify }, set: { on in Task { await model.setNotify(on) } }))
+                    .toggleStyle(.checkbox).font(.caption)
+                Spacer()
+                Text(verbatim: model.message.isEmpty ? store.status : model.message).font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(2).textSelection(.enabled)
+            }
+            .padding(10)
         }
     }
 }
 
-struct SettingsView: View {
-    @EnvironmentObject var settings: AppSettings
-    @EnvironmentObject var store: PaneStore
+struct AddClusterView: View {
+    @EnvironmentObject var model: AppModel
+    let done: () -> Void
+    @State private var name = ""
+    @State private var server = ""
+    @State private var fingerprint = ""
+    @State private var namespace = "default"
 
     var body: some View {
         Form {
-            if settings.fromEnvironment {
-                Text("KVO_SERVER is set: the environment wins over these settings.").foregroundStyle(.secondary)
-            }
-            TextField("Server URL", text: $settings.server, prompt: Text("https://control-plane:6443"))
-            TextField("CA file (PEM)", text: $settings.caFile, prompt: Text("/path/to/ca.pem"))
-            SecureField("Bearer token", text: $settings.token)
-            TextField("Namespace", text: $settings.namespace)
+            Text("Like `kvo login SERVER --ca FINGERPRINT`: your admin gives you both.").font(.callout).foregroundStyle(.secondary)
+            TextField("Name", text: $name, prompt: Text("home"))
+            TextField("Server", text: $server, prompt: Text("https://203.0.113.10:6443"))
+            TextField("CA fingerprint", text: $fingerprint, prompt: Text("sha256:…")).font(.system(.body, design: .monospaced))
+            TextField("Namespace", text: $namespace)
+            if !model.message.isEmpty { Text(verbatim: model.message).font(.caption).foregroundStyle(.secondary) }
             HStack {
                 Spacer()
-                Button("Connect") { if let c = settings.config { store.connect(c) } }.keyboardShortcut(.defaultAction)
+                Button("Cancel", action: done).keyboardShortcut(.cancelAction)
+                Button("Add and Sign In") {
+                    Task {
+                        await model.add(name: name, server: server, fingerprint: fingerprint, namespace: namespace)
+                        if model.contexts.current?.server.absoluteString == server.trimmingCharacters(in: .whitespaces) { done() }
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.busy || server.isEmpty || PinnedCA.normalize(fingerprint: fingerprint) == nil)
             }
         }
         .padding(20)
-        .frame(width: 460)
+        .frame(width: 480)
     }
 }
 
 struct KevasoPanesApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    @StateObject var store = PaneStore()
-    @StateObject var settings = AppSettings()
+    @StateObject var model = AppModel()
 
     var body: some Scene {
-        Window("Kevaso Panes", id: "main") { // one window owns every pane
-            ContentView().environmentObject(store).environmentObject(settings)
-                .frame(minWidth: 720, minHeight: 440)
-        }
-        Settings {
-            SettingsView().environmentObject(store).environmentObject(settings)
+        Window("Kevaso Panes", id: "main") {
+            MainView()
+                .environmentObject(model).environmentObject(model.store).environmentObject(model.contexts)
+                .frame(minWidth: 680, minHeight: 420)
+                .onAppear { delegate.model = model }
         }
     }
 }
