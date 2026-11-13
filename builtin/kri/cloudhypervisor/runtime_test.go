@@ -424,6 +424,11 @@ func startGuest(t *testing.T, allowed ssh.PublicKey) *guest {
 								case strings.Contains(cmd, "exit 4"):
 									_, _ = io.ReadAll(ch)
 									code = 4
+								case strings.Contains(cmd, "'probe'"): // a line on stdout; stderr ends a little later, empty
+									_, _ = io.ReadAll(ch)
+									_, _ = ch.Write([]byte("running\n"))
+									time.Sleep(20 * time.Millisecond)
+									_ = ch.CloseWrite()
 								default:
 									_, _ = io.ReadAll(ch)
 									_, _ = ch.Write([]byte("hi\n"))
@@ -482,6 +487,29 @@ func TestExecPinsTheGuestKeyAndRunsWithSudo(t *testing.T) {
 	code, err = r2.Exec(ctx, id("web"), kri.ExecRequest{Command: []string{"sh", "-c", "exit 4"}})
 	if err != nil || code != 4 {
 		t.Fatalf("exit code: %d %v", code, err)
+	}
+}
+
+// One buffer for stdout and stderr (what the agent passes for probes, readiness and the guest
+// helper): nothing the command printed is lost. The SSH session copies the two streams in two
+// goroutines, and a bytes.Buffer's ReadFrom on stderr, waiting with the length it started at,
+// cut stdout's line off when stderr ended: a probe came back empty.
+func TestExecIntoOneBufferKeepsStdout(t *testing.T) {
+	r, _ := runningRuntime(t, ed25519Pub(t))
+	g := startGuest(t, r.ExecKey.PublicKey())
+	r2, _ := runningRuntime(t, g.hostKey.PublicKey())
+	r2.ExecKey, r2.ExecPub = r.ExecKey, r.ExecPub
+	r2.DialSSH = func(ctx context.Context, _ string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
+		return dialSSH(ctx, g.addr, cfg)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for i := 0; i < 10; i++ {
+		var out bytes.Buffer
+		code, err := r2.Exec(ctx, id("web"), kri.ExecRequest{Command: []string{"probe"}, Stdout: &out, Stderr: &out})
+		if err != nil || code != 0 || out.String() != "running\n" {
+			t.Fatalf("run %d: %d %q %v", i, code, out.String(), err)
+		}
 	}
 }
 
