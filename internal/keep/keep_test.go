@@ -157,7 +157,7 @@ func TestUpkeep(t *testing.T) {
 		{Check: 1, FixRan: true, After: 1}:                    v1.UpkeepFailed,
 		{Check: 1, FixRan: true, Fix: 2, Output: "npm: E404"}: v1.UpkeepFailed,
 	} {
-		if st := Result(u, o, t0); st.State != want || st.Message != o.Output {
+		if st := Result(u, v1.UpkeepStatus{}, o, t0); st.State != want || st.Message != o.Output {
 			t.Errorf("%+v → %+v, want %s", o, st, want)
 		}
 	}
@@ -252,5 +252,23 @@ func TestProbeSeesAZombieAsDead(t *testing.T) {
 		if p := ParseProbe(in(t, shell, ProbeCommand(v1.Daemon{Name: "z"}))); p.Running || p.Absent || p.Exit != -1 {
 			t.Errorf("%s: a zombie probed as %+v, want exited -1", filepath.Base(shell), p)
 		}
+	}
+}
+
+// When the fix last ran is kept: the next check that passes on its own doesn't forget it.
+func TestUpkeepKeepsLastFix(t *testing.T) {
+	u := v1.Upkeep{Name: "marker", Every: "1m"}
+	fixed := Result(u, v1.UpkeepStatus{}, Outcome{Check: 1, FixRan: true}, t0)
+	if fixed.State != v1.UpkeepFixed || fixed.LastFix == nil || !fixed.LastFix.Equal(t0) {
+		t.Fatalf("fixed: %+v", fixed)
+	}
+	later := t0.Add(time.Minute)
+	ok := Result(u, fixed, Outcome{Check: 0}, later)
+	if ok.State != v1.UpkeepOK || !ok.LastCheck.Equal(later) || ok.LastFix == nil || !ok.LastFix.Equal(t0) {
+		t.Fatalf("a passing check after a fix: %+v, want LastFix %s kept", ok, t0)
+	}
+	failed := Result(u, ok, Outcome{Check: 1, FixRan: true, Fix: 1, Output: "no"}, later.Add(time.Minute))
+	if failed.LastFix == nil || !failed.LastFix.Equal(later.Add(time.Minute)) {
+		t.Fatalf("a fix that ran and failed: %+v", failed)
 	}
 }

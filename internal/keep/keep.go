@@ -192,10 +192,10 @@ type Outcome struct {
 	Output     string // the end of what the failing part printed
 }
 
-// Result is the task's status after a run.
-func Result(u v1.Upkeep, o Outcome, now time.Time) v1.UpkeepStatus {
+// Result is the task's status after a run (prev: its status before).
+func Result(u v1.Upkeep, prev v1.UpkeepStatus, o Outcome, now time.Time) v1.UpkeepStatus {
 	t := now
-	st := v1.UpkeepStatus{Name: u.Name, LastCheck: &t}
+	st := v1.UpkeepStatus{Name: u.Name, LastCheck: &t, LastFix: prev.LastFix} // when the fix last ran stays known
 	switch {
 	case o.Check == 0:
 		st.State = v1.UpkeepOK

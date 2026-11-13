@@ -116,7 +116,7 @@ func (a *Agent) keepInside(ctx context.Context, rt kri.Runtime, s *v1.Silo) (tim
 		if o.Check != 0 && (o.Fix != 0 || o.After != 0) {
 			o.Output = tail(strings.TrimSpace(out), 300)
 		}
-		st := keep.Result(u, o, now)
+		st := keep.Result(u, prevU[u.Name], o, now)
 		if st.State != v1.UpkeepOK {
 			a.log("%s/%s: upkeep %q: %s %s", s.Namespace, s.Name, u.Name, st.State, st.Message)
 		}
