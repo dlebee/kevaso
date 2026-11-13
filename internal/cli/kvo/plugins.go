@@ -38,7 +38,7 @@ var builtinCommands = map[string]bool{
 	"reset": true, "protect": true, "exec": true, "ssh": true, "cp": true, "ui": true, "plugin": true,
 	// kept: kvo will want these, and a plugin by that name would confuse people
 	"help": true, "version": true, "completion": true, "config": true, "kvo": true, "edit": true,
-	"logs": true, "run": true, "ip": true, "ips": true, "image": true, "images": true,
+	"logs": true, "run": true, "ip": true, "ips": true, "vmimage": true, "vmimages": true,
 }
 
 // Builtin reports whether name is one of kvo's own commands (or kept for one).

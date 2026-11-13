@@ -188,7 +188,7 @@ chmod 0755 /etc/kevaso/dns-providers/challtest`); err != nil {
 	hk, _ := d.Exec(ctx, machines["metal"], "ssh-keygen", "-lf", "/etc/ssh/ssh_host_ed25519_key.pub")
 	must(kvoadm.Run, "", "init", info.User+"@"+info.Host, "--ssh-port", strconv.Itoa(info.Port), "--ssh-key", info.KeyFile,
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
-		"--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker", "--runtime", "docker")
+		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker", "--runtime", "docker")
 
 	app := func(name, ns, port, page string) string {
 		return fmt.Sprintf(`---
@@ -197,11 +197,11 @@ kind: Silo
 metadata: { name: %[1]s, namespace: %[2]s }
 spec:
   runtime: docker
-  image: docker.io/library/python:3.12-slim
-  command: [python3, -m, http.server, "%[3]s", --directory, /site]
+  container: { image: docker.io/library/python:3.12-slim, command: [python3, -m, http.server, "%[3]s", --directory, /site] }
   volumes: [{ name: site, mountPath: /site }]
+  ports: [{ name: http, port: %[3]s }]
   service:
-    ports: [{ name: http, port: %[3]s }]
+    ports: [{ port: http }]
   init:
     steps:
       - name: page
@@ -239,10 +239,10 @@ kind: Silo
 metadata: { name: ingress-public, namespace: kevaso-system }
 spec:
   runtime: docker
-  image: docker.io/library/nginx:1.27   # the vendor's image as shipped: driven from outside
+  container: { image: docker.io/library/nginx:1.27 }   # the vendor's image as shipped: driven from outside
+  ports: [{ name: http, port: 80 }, { name: https, port: 443 }]
   service:
-    ports: [{ name: http, port: 80 }, { name: https, port: 443 }]
-    expose: hostPort
+    ports: [{ port: http, hostPort: [internal] }, { port: https, hostPort: [internal] }]
 ---
 apiVersion: kevaso/v1
 kind: IngressClass
@@ -258,7 +258,7 @@ spec:
   ingressClass: public
   hosts: [` + apiHost + `]
   tls: { issuer: pebble }
-  rules: [{ path: /, silo: { name: api, port: http } }]
+  rules: [{ path: /, service: { name: api, port: http } }]
 ---
 apiVersion: kevaso/v1
 kind: Ingress
@@ -267,7 +267,7 @@ spec:
   ingressClass: public
   hosts: [` + shopHost + `]
   tls: { issuer: pebble }
-  rules: [{ path: /, silo: { name: web, port: http } }]
+  rules: [{ path: /, service: { name: web, port: http } }]
 ---
 apiVersion: kevaso/v1
 kind: Ingress
@@ -276,7 +276,7 @@ spec:
   ingressClass: public
   hosts: [` + docsHost + `]
   tls: { issuer: pebble }
-  rules: [{ path: /, silo: { name: web, port: http } }]
+  rules: [{ path: /, service: { name: web, port: http } }]
 ---
 apiVersion: kevaso/v1
 kind: Certificate
@@ -384,7 +384,7 @@ spec:
   ingressClass: public
   hosts: [`+apiHost+`]
   tls: { issuer: pebble }
-  rules: [{ path: /, silo: { name: api, port: http } }]
+  rules: [{ path: /, service: { name: api, port: http } }]
 `, "apply", "-f", "-")
 	time.Sleep(10 * time.Second)
 	desc := must(kvo.Run, "", "describe", "ingress", "api", "-n", "payments")

@@ -13,15 +13,81 @@ var (
 )
 
 func p2p() v1.SiloSpec {
-	return v1.SiloSpec{Service: &v1.SiloService{
-		Ports:    []v1.ServicePort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}, {Name: "rpc", Port: 8545}},
-		Expose:   v1.ExposeHostPort,
-		HostPort: &v1.HostPortSpec{Ports: []string{"p2p", "disc"}},
-	}, Network: v1.SiloNetwork{Egress: v1.Egress{Source: v1.EgressSameAsService}}}
+	return v1.SiloSpec{
+		Ports: []v1.SiloPort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}, {Name: "rpc", Port: 8545}},
+		Service: &v1.SiloService{Ports: []v1.ServicePort{
+			{Port: "p2p", HostPort: []string{v1.NetworkExternal}}, {Port: "disc", HostPort: []string{v1.NetworkExternal}}, {Port: "rpc"}}},
+		Network: v1.SiloNetwork{Egress: v1.Egress{Source: v1.EgressSameAsService}}}
+}
+
+// opens is a silo that declares one TCP port and opens it as sp says.
+func opens(number int, sp v1.ServicePort) v1.SiloSpec {
+	sp.Port = "web"
+	return v1.SiloSpec{Ports: []v1.SiloPort{{Name: "web", Port: number}}, Service: &v1.SiloService{Ports: []v1.ServicePort{sp}}}
+}
+
+// Rule generation per case (design §7.0): a port opens on exactly the addresses it asks for, at
+// its as number, from its sources; a declared port nothing opens, or a silo without a service, has
+// no rule at all.
+func TestOutsideRulesPerCase(t *testing.T) {
+	const ip = "10.64.2.2"
+	internalOnly := host()
+	internalOnly.ExternalIP = netip.Addr{}
+	cases := []struct {
+		name     string
+		h        Host
+		spec     v1.SiloSpec
+		lb       netip.Addr
+		want     []string
+		wantNone []string
+	}{
+		{"external only, as 443", host(), opens(8443, v1.ServicePort{HostPort: []string{"external"}, As: 443}), netip.Addr{},
+			[]string{"ip daddr 198.51.100.10 tcp dport 443 dnat ip to 10.64.2.2:8443",
+				`oifname "kvbr0" ip daddr 10.64.2.2 tcp dport 8443 ct original ip daddr 198.51.100.10 ct status dnat accept`},
+			[]string{"ip daddr 10.0.0.5", "dport 8443 dnat"}},
+		{"internal only", host(), opens(9090, v1.ServicePort{HostPort: []string{"internal"}}), netip.Addr{},
+			[]string{"ip daddr 10.0.0.5 tcp dport 9090 dnat ip to 10.64.2.2:9090"},
+			[]string{"ip daddr 198.51.100.10"}},
+		{"both", host(), opens(9229, v1.ServicePort{HostPort: []string{"internal", "external"}}), netip.Addr{},
+			[]string{"ip daddr { 10.0.0.5, 198.51.100.10 } tcp dport 9229 dnat ip to 10.64.2.2:9229"}, nil},
+		{"external asked, host has none: nothing", internalOnly, opens(443, v1.ServicePort{HostPort: []string{"external"}}), netip.Addr{},
+			nil, []string{"dnat ip to 10.64.2.2"}},
+		{"sources", host(), opens(3000, v1.ServicePort{HostPort: []string{"internal"}, Sources: []string{"10.0.0.0/24", "192.0.2.7"}}), netip.Addr{},
+			[]string{`oifname "kvbr0" ip daddr 10.64.2.2 ip saddr { 10.0.0.0/24, 192.0.2.7 } tcp dport 3000 ct original ip daddr 10.0.0.5 ct status dnat accept`}, nil},
+		{"allowFrom only: nothing outside", host(), opens(8080, v1.ServicePort{AllowFrom: []string{"worker"}}), netip.Addr{},
+			nil, []string{"dnat ip to 10.64.2.2"}},
+		{"declared, not opened", host(), v1.SiloSpec{Ports: []v1.SiloPort{{Name: "web", Port: 8080}}, Service: &v1.SiloService{}}, netip.Addr{},
+			nil, []string{"dport 8080"}},
+		{"no service", host(), v1.SiloSpec{Ports: []v1.SiloPort{{Name: "web", Port: 8080}}}, netip.Addr{},
+			nil, []string{"dport 8080"}},
+		{"ip-pool load balancer, as 30000", host(), func() v1.SiloSpec {
+			s := opens(30303, v1.ServicePort{LoadBalancer: true, As: 30000})
+			s.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: v1.LBIPPool}
+			return s
+		}(), a("198.51.100.17"),
+			[]string{"ip daddr 198.51.100.17 tcp dport 30000 dnat ip to 10.64.2.2:30303"},
+			[]string{"ip daddr 198.51.100.10", "ip daddr 10.0.0.5"}},
+		{"on the host and the load balancer", host(), func() v1.SiloSpec {
+			s := opens(53, v1.ServicePort{LoadBalancer: true, HostPort: []string{"internal"}})
+			s.Ports[0].Protocol = "UDP"
+			s.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: v1.LBIPPool}
+			return s
+		}(), a("198.51.100.17"),
+			[]string{"ip daddr { 10.0.0.5, 198.51.100.17 } udp dport 53 dnat ip to 10.64.2.2:53"}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := c.h
+			h.Local = []Silo{{Key: "dev/api", IP: a(ip), Spec: c.spec, LoadBalancerIP: c.lb}}
+			r := Rules(h)
+			has(t, r, c.want...)
+			hasNot(t, r, c.wantNone...)
+		})
+	}
 }
 
 func host(local ...Silo) Host {
-	return Host{Bridge: "kvbr0", Subnet: netip.MustParsePrefix("10.64.2.0/24"), Gateway: a("10.64.2.1"), Address: a("198.51.100.10"), Local: local}
+	return Host{Bridge: "kvbr0", Subnet: netip.MustParsePrefix("10.64.2.0/24"), Gateway: a("10.64.2.1"), InternalIP: a("10.0.0.5"), ExternalIP: a("198.51.100.10"), Local: local}
 }
 
 func has(t *testing.T, rules string, want ...string) {
@@ -45,12 +111,12 @@ func hasNot(t *testing.T, rules string, bad ...string) {
 // Example 03's P2P node: TCP+UDP 30303 public on the host's IP, rpc private, outbound from the
 // same IP.
 func TestHostPortAndSameAsService(t *testing.T) {
-	s := Silo{Key: "web3/eth-node", IP: a("10.64.2.2"), Tap: "kvt0011223344", Spec: p2p(), PublicIP: a("198.51.100.10"), EgressIP: a("198.51.100.10")}
+	s := Silo{Key: "web3/eth-node", IP: a("10.64.2.2"), Tap: "kvt0011223344", Spec: p2p(), EgressIP: a("198.51.100.10")}
 	r := Rules(host(s))
 	has(t, r,
-		"fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 30303 dnat ip to 10.64.2.2:30303",
-		"fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } udp dport 30303 dnat ip to 10.64.2.2:30303",
-		`oifname "kvbr0" ip daddr 10.64.2.2 tcp dport 30303 ct status dnat accept`,
+		"ip daddr 198.51.100.10 tcp dport 30303 dnat ip to 10.64.2.2:30303",
+		"ip daddr 198.51.100.10 udp dport 30303 dnat ip to 10.64.2.2:30303",
+		`oifname "kvbr0" ip daddr 10.64.2.2 tcp dport 30303 ct original ip daddr 198.51.100.10 ct status dnat accept`,
 		`ip saddr 10.64.2.2 ip daddr != { 10.64.0.0/16, 10.62.0.0/16, 10.63.0.0/16 } oifname != "kvbr0" snat ip to 198.51.100.10`,
 		`iifname "kvt0011223344" ip saddr != 10.64.2.2 drop`,
 		`iifname "kvt0011223344" arp saddr ip != 10.64.2.2 drop`,
@@ -64,25 +130,15 @@ func TestHostPortAndSameAsService(t *testing.T) {
 	}
 }
 
-// Example 03's dashboard: only the office range.
-func TestHostPortAllowFromCIDRs(t *testing.T) {
-	spec := v1.SiloSpec{Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "web", Port: 3000}}, Expose: v1.ExposeHostPort,
-		HostPort: &v1.HostPortSpec{Ports: []string{"web"}, AllowFrom: []string{"203.0.113.0/24"}}}}
-	r := Rules(host(Silo{Key: "ops/metrics", IP: a("10.64.2.3"), Spec: spec, PublicIP: a("198.51.100.10")}))
-	has(t, r, `oifname "kvbr0" ip daddr 10.64.2.3 ip saddr 203.0.113.0/24 tcp dport 3000 ct status dnat accept`)
-	spec.Service.HostPort.AllowFrom = []string{"203.0.113.0/24", "192.0.2.7"}
-	r = Rules(host(Silo{Key: "ops/metrics", IP: a("10.64.2.3"), Spec: spec, PublicIP: a("198.51.100.10")}))
-	has(t, r, "ip saddr { 203.0.113.0/24, 192.0.2.7 } tcp dport 3000")
-}
-
 // Example 06: two silos, both 30303, each on its own ip-pool IP, in and out.
 func TestPoolAddresses(t *testing.T) {
-	spec := v1.SiloSpec{Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}},
-		Expose: v1.ExposeLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Class: v1.LBIPPool}},
+	spec := v1.SiloSpec{Ports: []v1.SiloPort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}},
+		Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "p2p", LoadBalancer: true}, {Port: "disc", LoadBalancer: true}},
+			LoadBalancer: &v1.LoadBalancerSpec{Class: v1.LBIPPool}},
 		Network: v1.SiloNetwork{Egress: v1.Egress{Source: v1.EgressSameAsService}}}
 	r := Rules(host(
-		Silo{Key: "web3/eth-node-a", IP: a("10.64.2.2"), Spec: spec, PublicIP: a("198.51.100.17"), EgressIP: a("198.51.100.17")},
-		Silo{Key: "web3/eth-node-b", IP: a("10.64.2.3"), Spec: spec, PublicIP: a("198.51.100.18"), EgressIP: a("198.51.100.18")},
+		Silo{Key: "web3/eth-node-a", IP: a("10.64.2.2"), Spec: spec, LoadBalancerIP: a("198.51.100.17"), EgressIP: a("198.51.100.17")},
+		Silo{Key: "web3/eth-node-b", IP: a("10.64.2.3"), Spec: spec, LoadBalancerIP: a("198.51.100.18"), EgressIP: a("198.51.100.18")},
 	))
 	has(t, r,
 		"ip daddr 198.51.100.17 tcp dport 30303 dnat ip to 10.64.2.2:30303",
@@ -96,15 +152,16 @@ func TestPoolAddresses(t *testing.T) {
 // announced shared IP and an ip-pool IP send from themselves; behind a balancer (node ports) the
 // silo sends from the host's address, and nothing ever sends from the balancer's.
 func TestEgressCases(t *testing.T) {
-	ports := []v1.ServicePort{{Name: "p2p", Port: 30303}}
 	lb := func(class string) v1.SiloSpec {
-		return v1.SiloSpec{Service: &v1.SiloService{Ports: ports, Expose: v1.ExposeLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Class: class}},
-			Network: v1.SiloNetwork{Egress: v1.Egress{Source: v1.EgressSameAsService}}}
+		s := opens(30303, v1.ServicePort{LoadBalancer: true})
+		s.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: class}
+		s.Network.Egress.Source = v1.EgressSameAsService
+		return s
 	}
-	shared := Silo{Key: "web3/shared", IP: a("10.64.2.2"), Spec: lb("linode-shared-ip"), PublicIP: a("203.0.113.100"), EgressIP: a("203.0.113.100")}
-	pooled := Silo{Key: "web3/pooled", IP: a("10.64.2.3"), Spec: lb(v1.LBIPPool), PublicIP: a("198.51.100.17"), EgressIP: a("198.51.100.17")}
+	shared := Silo{Key: "web3/shared", IP: a("10.64.2.2"), Spec: lb("linode-shared-ip"), LoadBalancerIP: a("203.0.113.100"), EgressIP: a("203.0.113.100")}
+	pooled := Silo{Key: "web3/pooled", IP: a("10.64.2.3"), Spec: lb(v1.LBIPPool), LoadBalancerIP: a("198.51.100.17"), EgressIP: a("198.51.100.17")}
 	behind := Silo{Key: "web3/behind", IP: a("10.64.2.4"), Spec: lb("linode-nodebalancer"), EgressIP: a("198.51.100.10"),
-		NodePorts: []v1.NodePort{{Name: "p2p", Port: 30303, NodePort: 30000}}, SourceRanges: []string{"192.168.255.0/24"}}
+		NodePorts: []v1.NodePort{{Name: "web", Port: 30303, NodePort: 30000}}, SourceRanges: []string{"192.168.255.0/24"}}
 	plain := Silo{Key: "web3/plain", IP: a("10.64.2.5")}
 	r := Rules(host(shared, pooled, behind, plain))
 	has(t, r,
@@ -122,24 +179,30 @@ func TestEgressCases(t *testing.T) {
 	}
 }
 
-// allowFrom: same host (bridged) and across the mesh (routed); the source must be running.
+// allowFrom: same host (bridged) and across the mesh (routed), port by port; the source must be
+// running. An Ingress's path (Paths) opens the same way.
 func TestAllowFrom(t *testing.T) {
 	api := Silo{Key: "payments/api", IP: a("10.64.2.2"), Spec: v1.SiloSpec{
-		Service:   &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8080}, {Name: "admin", Port: 9090}}},
-		AllowFrom: []v1.AllowFrom{{Silo: "worker", Ports: []string{"http"}}, {Silo: "research/crawler"}, {Silo: "ghost"}},
-	}}
+		Ports: []v1.SiloPort{{Name: "http", Port: 8080}, {Name: "admin", Port: 9090}, {Name: "debug", Port: 9229}},
+		Service: &v1.SiloService{Ports: []v1.ServicePort{
+			{Port: "http", AllowFrom: []string{"worker", "research/crawler", "ghost"}},
+			{Port: "admin", AllowFrom: []string{"research/crawler"}}, {Port: "debug"}}},
+	}, Paths: map[string][]string{"debug": {"kevaso-system/ingress-public"}}}
 	worker := Silo{Key: "payments/worker", IP: a("10.64.2.5")}   // same host
 	crawler := Silo{Key: "research/crawler", IP: a("10.64.7.9")} // another host
 	h := host(api, worker)
-	h.All = []Silo{api, worker, crawler, {Key: "payments/ghost"}} // ghost has no address: not running
+	ingress := Silo{Key: "kevaso-system/ingress-public", IP: a("10.64.4.4")}
+	h.All = []Silo{api, worker, crawler, ingress, {Key: "payments/ghost"}} // ghost has no address: not running
 	r := Rules(h)
 	has(t, r,
 		"ip saddr 10.64.2.5 ip daddr 10.64.2.2 tcp dport 8080 accept",                 // worker → http, bridged
-		`oifname "kvbr0" ip saddr 10.64.7.9 ip daddr 10.64.2.2 tcp dport 8080 accept`, // crawler → all ports, routed
+		`oifname "kvbr0" ip saddr 10.64.7.9 ip daddr 10.64.2.2 tcp dport 8080 accept`, // crawler → http and admin, routed
 		`oifname "kvbr0" ip saddr 10.64.7.9 ip daddr 10.64.2.2 tcp dport 9090 accept`,
+		`oifname "kvbr0" ip saddr 10.64.4.4 ip daddr 10.64.2.2 tcp dport 9229 accept`, // the ingress's path
 		`iifname "kvt*" oifname "kvt*" drop`,
 	)
-	hasNot(t, r, "ip saddr 10.64.2.5 ip daddr 10.64.2.2 tcp dport 9090") // worker only got http
+	hasNot(t, r, "ip saddr 10.64.2.5 ip daddr 10.64.2.2 tcp dport 9090", // worker only got http
+		"ip saddr 10.64.4.4 ip daddr 10.64.2.2 tcp dport 8080") // the ingress only its path
 	// The bridged rule lives in the bridge table, before its default drop.
 	_, bt, _ := strings.Cut(r, "table bridge kevaso {")
 	if i, j := strings.Index(bt, "ip saddr 10.64.2.5"), strings.Index(bt, `oifname "kvt*" drop`); i < 0 || i > j {
@@ -225,8 +288,9 @@ func TestGateRedirect(t *testing.T) {
 // A plugin's load balancer (a NodeBalancer) reaches the silo through node ports, from its own
 // addresses only; nothing opens on the host's public address.
 func TestNodePortRules(t *testing.T) {
-	spec := v1.SiloSpec{Service: &v1.SiloService{Expose: v1.ExposeLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Class: "linode-nodebalancer"},
-		Ports: []v1.ServicePort{{Name: "web", Port: 80}, {Name: "dns", Port: 53, Protocol: "UDP"}}}}
+	spec := v1.SiloSpec{Ports: []v1.SiloPort{{Name: "web", Port: 80}, {Name: "dns", Port: 53, Protocol: "UDP"}},
+		Service: &v1.SiloService{LoadBalancer: &v1.LoadBalancerSpec{Class: "linode-nodebalancer"},
+			Ports: []v1.ServicePort{{Port: "web", LoadBalancer: true}, {Port: "dns", LoadBalancer: true}}}}
 	r := Rules(host(Silo{Key: "dev/web", IP: a("10.64.2.5"), Spec: spec,
 		NodePorts:    []v1.NodePort{{Name: "web", Port: 80, NodePort: 30000}, {Name: "dns", Port: 53, NodePort: 30001}},
 		SourceRanges: []string{"192.168.255.0/24"}}))
@@ -238,8 +302,8 @@ func TestNodePortRules(t *testing.T) {
 }
 
 func TestServiceRules(t *testing.T) {
-	h := host(Silo{Key: "web3/rpc-0", IP: a("10.64.2.2"), Spec: v1.SiloSpec{AllowFrom: []v1.AllowFrom{{Silo: "client"}},
-		Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "rpc", Port: 8545}}}}})
+	h := host(Silo{Key: "web3/rpc-0", IP: a("10.64.2.2"), Spec: v1.SiloSpec{Ports: []v1.SiloPort{{Name: "rpc", Port: 8545}},
+		Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc", AllowFrom: []string{"client"}}}}}})
 	h.All = []Silo{{Key: "web3/client", IP: a("10.64.2.9")}}
 	h.Local = append(h.Local, Silo{Key: "web3/client", IP: a("10.64.2.9")})
 	h.Services = []Service{{Key: "web3/rpc", ClusterIP: a("10.65.0.1"), SourceRanges: []string{"192.168.255.0/24"},

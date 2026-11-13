@@ -271,8 +271,8 @@ func (c *Controller) controllerAddress(ctx context.Context, class *v1.IngressCla
 	if c.Silos != nil {
 		var addrs []string
 		for _, o := range c.Silos.List() {
-			if s := o.(*v1.Silo); ctl.Runs(s) && s.Status.Service.PublicIP != "" {
-				addrs = append(addrs, s.Status.Service.PublicIP)
+			if s := o.(*v1.Silo); ctl.Runs(s) && s.Status.Service.Front() != "" {
+				addrs = append(addrs, s.Status.Service.Front())
 			}
 		}
 		slices.Sort(addrs)
@@ -288,7 +288,7 @@ func (c *Controller) controllerAddress(ctx context.Context, class *v1.IngressCla
 	if err := c.Client.Get(ctx, "Silo", ctl.Namespace, ctl.Silo, &s); err != nil {
 		return ""
 	}
-	return s.Status.Service.PublicIP
+	return s.Status.Service.Front()
 }
 
 func (c *Controller) now() time.Time { return c.Clock.Now().UTC().Truncate(time.Second) }

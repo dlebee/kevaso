@@ -14,7 +14,7 @@ const siloJSON = `{
   "apiVersion": "kevaso/v1", "kind": "Silo",
   "metadata": {"name": "hello", "namespace": "demo", "labels": {"app": "hello"}},
   "spec": {
-    "runtime": "cloud-hypervisor", "image": "ubuntu-24.04",
+    "runtime": "cloud-hypervisor", "vm": {"image": "ubuntu-24.04"},
     "resources": {"cpu": 2, "memory": "4Gi"},
     "placement": {"hostSelector": {"region": "ca-central"}},
     "tolerations": [{"key": "pool", "value": "quarantine", "effect": "NoSchedule"}]
@@ -30,7 +30,7 @@ func TestDecodeSilo(t *testing.T) {
 	if !ok || k.Kind != "Silo" || k.Scope != Namespaced {
 		t.Fatalf("decoded %T as %+v", obj, k)
 	}
-	if s.Name != "hello" || s.Namespace != "demo" || s.Spec.Runtime != "cloud-hypervisor" ||
+	if s.Name != "hello" || s.Namespace != "demo" || s.Spec.Runtime != "cloud-hypervisor" || s.Spec.VM == nil || s.Spec.From() != "ubuntu-24.04" ||
 		s.Spec.Resources.CPU != 2 || s.Spec.Placement.HostSelector["region"] != "ca-central" ||
 		len(s.Spec.Tolerations) != 1 {
 		t.Fatalf("decoded silo %+v", s)
@@ -170,31 +170,66 @@ func TestParseBytes(t *testing.T) {
 
 func TestResolveImage(t *testing.T) {
 	sum := strings.Repeat("ab", 32)
-	img := &Image{ObjectMeta: meta.ObjectMeta{Name: "geth", Namespace: "web3"}, Spec: ImageSpec{Versions: []ImageVersion{
-		{Name: "v1", Disk: &ImageDisk{URL: "https://x/geth-1.img", SHA256: sum}},
-		{Name: "v2", Disk: &ImageDisk{URL: "https://x/geth-2.img", SHA256: sum}},
+	img := &VMImage{ObjectMeta: meta.ObjectMeta{Name: "geth", Namespace: "web3"}, Spec: VMImageSpec{Versions: []VMImageVersion{
+		{Name: "v1", Disk: &VMDisk{URL: "https://x/geth-1.img", SHA256: sum}},
+		{Name: "v2", Disk: &VMDisk{URL: "https://x/geth-2.img", SHA256: sum}},
 	}}}
-	for _, tc := range []struct{ spec, runtime, want, err string }{
-		{"geth:v1", "cloud-hypervisor", "https://x/geth-1.img#sha256=" + sum, ""},
-		{"geth", "cloud-hypervisor", "https://x/geth-2.img#sha256=" + sum, ""}, // the newest
-		{"geth:v9", "cloud-hypervisor", "", "has no version v9"},
-		{"other", "cloud-hypervisor", "", "no Image other"},
-		{"ubuntu-24.04", "cloud-hypervisor", "ubuntu-24.04", ""},
-		// registry runtimes: the reference as it is, never an Image (admission refuses one)
-		{"geth:v1", "docker", "geth:v1", ""},
-		{"nginx:1.27", "podman", "nginx:1.27", ""},
-		{"registry:5000/geth", "docker", "registry:5000/geth", ""},
-		{"ghcr.io/acme/api@sha256:" + strings.Repeat("0", 64), "openshell-container", "ghcr.io/acme/api@sha256:" + strings.Repeat("0", 64), ""},
+	empty := &VMImage{ObjectMeta: meta.ObjectMeta{Name: "empty", Namespace: "web3"}}
+	ch := func(src VMSource) SiloSpec { return SiloSpec{Runtime: "cloud-hypervisor", VM: &src} }
+	ctr := func(rt, image string) SiloSpec {
+		return SiloSpec{Runtime: rt, Container: &ContainerSource{Image: image}}
+	}
+	digest := "ghcr.io/acme/api@sha256:" + strings.Repeat("0", 64)
+	for _, tc := range []struct {
+		name      string
+		spec      SiloSpec
+		want, err string
+	}{
+		// container.image: as it is, never looked up (a VMImage of the same name doesn't matter)
+		{"container tag", ctr("docker", "nginx:1.27"), "nginx:1.27", ""},
+		{"container named like a VMImage", ctr("docker", "geth:v1"), "geth:v1", ""},
+		{"container with a registry port", ctr("podman", "registry:5000/geth"), "registry:5000/geth", ""},
+		{"container by digest", ctr("openshell-container", digest), digest, ""},
+		{"container built-in", ctr("docker", "ubuntu-24.04"), "ubuntu-24.04", ""},
+		// vm.disk: its URL and hash, the hash lowercased
+		{"vm.disk", ch(VMSource{Disk: &VMDisk{URL: "https://x/d.img", SHA256: strings.Repeat("AB", 32)}}), "https://x/d.img#sha256=" + sum, ""},
+		// vm.image: a VMImage's version
+		{"vm.image newest", ch(VMSource{Image: "geth"}), "https://x/geth-2.img#sha256=" + sum, ""},
+		{"vm.image NAME:VERSION", ch(VMSource{Image: "geth:v1"}), "https://x/geth-1.img#sha256=" + sum, ""},
+		{"vm.image built-in", ch(VMSource{Image: "ubuntu-24.04"}), "ubuntu-24.04", ""},
+		{"vm.image unknown name", ch(VMSource{Image: "other"}), "", "no VMImage other"},
+		{"vm.image unknown version", ch(VMSource{Image: "geth:v9"}), "", "VMImage geth has no version v9"},
+		{"vm.image no versions", ch(VMSource{Image: "empty"}), "", "VMImage empty has no versions"},
+		{"nothing", SiloSpec{Runtime: "cloud-hypervisor"}, "", ""},
 	} {
-		got, err := ResolveImage(tc.spec, tc.runtime, []*Image{img})
+		got, err := ResolveImage(tc.spec, []*VMImage{img, empty})
 		if tc.err != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
-				t.Errorf("%s on %s: err %v, want %q", tc.spec, tc.runtime, err, tc.err)
+				t.Errorf("%s: err %v, want %q", tc.name, err, tc.err)
 			}
 			continue
 		}
 		if err != nil || got != tc.want {
-			t.Errorf("%s on %s: %q %v, want %q", tc.spec, tc.runtime, got, err, tc.want)
+			t.Errorf("%s: %q %v, want %q", tc.name, got, err, tc.want)
 		}
+	}
+}
+
+// A set rolls when what its template boots changes, an inline disk's hash included.
+func TestSiloSetRevisionFollowsTheDisk(t *testing.T) {
+	set := func(sum string) *SiloSet {
+		return &SiloSet{ObjectMeta: meta.ObjectMeta{Name: "rpc", Namespace: "web3"}, Spec: SiloSetSpec{Instances: 2,
+			Template: SiloTemplate{SiloSpec: SiloSpec{Runtime: "cloud-hypervisor",
+				VM: &VMSource{Disk: &VMDisk{URL: "https://x/geth.img", SHA256: sum}}}}}}
+	}
+	a, b := set(strings.Repeat("ab", 32)), set(strings.Repeat("cd", 32))
+	if a.Revision() == b.Revision() {
+		t.Fatal("changing template.vm.disk.sha256 didn't change the revision: the set wouldn't roll")
+	}
+	if a.Revision() != set(strings.Repeat("ab", 32)).Revision() {
+		t.Fatal("the same template gave two revisions")
+	}
+	if got := a.Instance(0, false); got.Labels[LabelRevision] != a.Revision() || got.Spec.From() != "https://x/geth.img#sha256="+strings.Repeat("ab", 32) {
+		t.Fatalf("instance: %+v", got)
 	}
 }

@@ -70,10 +70,10 @@ func TestRecord(t *testing.T) {
 func spec(startup, readiness, liveness bool) *v1.Probes {
 	ps := &v1.Probes{}
 	if startup {
-		ps.Startup = &v1.Probe{TCP: &v1.TCPProbe{Port: "8545"}, Period: "5s", Timeout: "1m"}
+		ps.Startup = &v1.Probe{TCP: &v1.TCPProbe{Port: "rpc"}, Period: "5s", Timeout: "1m"}
 	}
 	if readiness {
-		ps.Readiness = &v1.Probe{HTTP: &v1.HTTPProbe{Port: "8545"}, Period: "10s"}
+		ps.Readiness = &v1.Probe{HTTP: &v1.HTTPProbe{Port: "rpc"}, Period: "10s"}
 	}
 	if liveness {
 		ps.Liveness = &v1.Probe{Exec: &v1.ExecProbe{Command: []string{"true"}}, Period: "30s", Failures: 2}
@@ -256,10 +256,11 @@ func TestOnLiveness(t *testing.T) {
 }
 
 func TestValidate(t *testing.T) {
-	svc := &v1.SiloService{Ports: []v1.ServicePort{{Name: "rpc", Port: 8545}}, RouteWhen: v1.RouteWhenReady}
-	good := v1.SiloSpec{Service: svc, Probes: &v1.Probes{
+	svc := &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc"}}, RouteWhen: v1.RouteWhenReady}
+	// metrics is declared but not on the service: a probe may still use it.
+	good := v1.SiloSpec{Ports: []v1.SiloPort{{Name: "rpc", Port: 8545}, {Name: "metrics", Port: 9100}}, Service: svc, Probes: &v1.Probes{
 		Startup:   &v1.Probe{TCP: &v1.TCPProbe{Port: "rpc"}, Timeout: "10m"},
-		Readiness: &v1.Probe{HTTP: &v1.HTTPProbe{Port: "8545", Path: "/health"}, Period: "10s"},
+		Readiness: &v1.Probe{HTTP: &v1.HTTPProbe{Port: "metrics", Path: "/health"}, Period: "10s"},
 		Liveness:  &v1.Probe{Exec: &v1.ExecProbe{Command: []string{"pg_isready"}}, Failures: 3, OnFailure: "restart"},
 	}}
 	if errs := probes.Validate(good); len(errs) != 0 {
@@ -276,8 +277,9 @@ func TestValidate(t *testing.T) {
 		{"two kinds", func(s *v1.SiloSpec) { s.Probes.Readiness.Exec = &v1.ExecProbe{Command: []string{"x"}} }, "exactly one"},
 		{"no kind", func(s *v1.SiloSpec) { s.Probes.Readiness.HTTP = nil }, "exactly one"},
 		{"empty command", func(s *v1.SiloSpec) { s.Probes.Liveness.Exec.Command = nil }, "needs a command"},
-		{"unknown port name", func(s *v1.SiloSpec) { s.Probes.Startup.TCP.Port = "web" }, `"web" isn't one of the service's ports`},
-		{"port out of range", func(s *v1.SiloSpec) { s.Probes.Readiness.HTTP.Port = "70000" }, "isn't from 1 to 65535"},
+		{"unknown port name", func(s *v1.SiloSpec) { s.Probes.Startup.TCP.Port = "web" }, `"web" isn't one of the silo's declared ports`},
+		{"a number isn't a port's name", func(s *v1.SiloSpec) { s.Probes.Readiness.HTTP.Port = "8545" }, `"8545" isn't one of the silo's declared ports`},
+		{"no port", func(s *v1.SiloSpec) { s.Probes.Startup.TCP.Port = "" }, "needed (a declared port's name"},
 		{"relative path", func(s *v1.SiloSpec) { s.Probes.Readiness.HTTP.Path = "health" }, "must start with /"},
 		{"bad period", func(s *v1.SiloSpec) { s.Probes.Readiness.Period = "often" }, "isn't a duration"},
 		{"startup failures", func(s *v1.SiloSpec) { s.Probes.Startup.Failures = 2 }, "only by its deadline"},

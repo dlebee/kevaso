@@ -2,6 +2,8 @@
 
 **Status:** accepted · **Date:** 2026-11-12
 
+> **Note (2026-11-13):** ADR 0010 replaces a host's one address with its internal and external IPs; plugins are told both, and a port's client ranges are `sources`.
+
 ## Decision
 
 1. **One protocol, `sdk/kplugin`: gRPC over a unix socket, like CSI.** A provider plugin is its

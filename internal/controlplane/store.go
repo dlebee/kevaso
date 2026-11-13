@@ -63,7 +63,7 @@ func openStore(ctx context.Context, cfg Config, ca *pki.CA) (*cpStore, error) {
 		return nil, fmt.Errorf("store %q: want %s or %s", cfg.Store, StoreSQLite, StoreEtcd)
 	}
 	srv, err := etcd.Start(ctx, etcd.Config{
-		Name: cfg.HostName, Dir: filepath.Join(cfg.DataDir, "etcd"), CA: ca, Names: []string{cfg.Address},
+		Name: cfg.HostName, Dir: filepath.Join(cfg.DataDir, "etcd"), CA: ca, Names: cfg.ips(),
 		ClientListen: cfg.Etcd.ClientListen, PeerListen: cfg.Etcd.PeerListen, AdvertisePeer: cfg.Etcd.AdvertisePeer,
 		Join: cfg.Etcd.Join, InitialCluster: cfg.Etcd.InitialCluster, UnsafeNoFsync: cfg.Etcd.UnsafeNoFsync,
 	})

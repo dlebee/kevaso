@@ -36,16 +36,16 @@ func (s *Server) checkLease(t target, obj meta.Object) error {
 	if t.status {
 		return nil
 	}
-	var sv *v1.SiloService
+	var spec v1.SiloSpec
 	switch o := obj.(type) {
 	case *v1.Silo:
-		sv = o.Spec.Service
+		spec = o.Spec
 	case *v1.SiloSet:
-		sv = o.Spec.Template.Service
+		spec = o.Spec.Template.SiloSpec
 	default:
 		return nil
 	}
-	if errs := leases.Validate(sv, s.limitsForLeases()); len(errs) > 0 {
+	if errs := leases.Validate(spec, s.limitsForLeases()); len(errs) > 0 {
 		return errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %s", t.kind.Kind, obj.GetObjectMeta().Name, joinMessages(errs))
 	}
 	return nil
@@ -158,7 +158,7 @@ func (s *Server) leaseAsk(ctx context.Context, silo *v1.Silo, a leases.Ask, byTy
 	if out.Event != "" {
 		why := leaseWhy(out.Lease)
 		if out.Clamped {
-			why += fmt.Sprintf(" (asked for %s, more than its max %s)", a.For, leases.MaxOf(leases.Of(silo.Spec.Service, a.Port), s.limitsForLeases()))
+			why += fmt.Sprintf(" (asked for %s, more than its max %s)", a.For, leases.MaxOf(leases.Of(silo.Spec, a.Port), s.limitsForLeases()))
 		}
 		s.auditLease(out.Event, a.By, byType, silo.Namespace, silo.Name, a.Port, out.Err == nil, why)
 	} else if out.Err != nil && a.Poll == "" {

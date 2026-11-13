@@ -11,9 +11,14 @@ func provider(name, region string) hostOpt {
 	return func(h *v1.Host) { h.Status.Provider = &v1.HostProvider{Name: name, ID: "1", Region: region} }
 }
 
-func lb(class string, ports ...v1.ServicePort) siloOpt {
+// lb declares ports and opens each on a load balancer of class.
+func lb(class string, ports ...v1.SiloPort) siloOpt {
 	return func(s *v1.Silo) {
-		s.Spec.Service = &v1.SiloService{Expose: v1.ExposeLoadBalancer, Ports: ports, LoadBalancer: &v1.LoadBalancerSpec{Class: class}}
+		s.Spec.Ports = ports
+		s.Spec.Service = &v1.SiloService{LoadBalancer: &v1.LoadBalancerSpec{Class: class}}
+		for _, p := range ports {
+			s.Spec.Service.Ports = append(s.Spec.Service.Ports, v1.ServicePort{Port: p.Name, LoadBalancer: true})
+		}
 	}
 }
 
@@ -45,7 +50,7 @@ func TestPluginClasses(t *testing.T) {
 	}{
 		{"a volume goes to the plugin's machine", silo("a", volume("linode-block")),
 			hosts(host("home", mem("64Gi")), host("tor", provider("linode", "ca-central"))), "tor", ""},
-		{"a load balancer too", silo("a", lb("linode-nodebalancer", v1.ServicePort{Name: "web", Port: 80}), func(s *v1.Silo) { s.UID = "uid-a" }),
+		{"a load balancer too", silo("a", lb("linode-nodebalancer", v1.SiloPort{Name: "web", Port: 80}), func(s *v1.Silo) { s.UID = "uid-a" }),
 			hosts(host("home", mem("64Gi")), host("tor", provider("linode", "ca-central"))), "tor", ""},
 		{"another provider's machine won't do", silo("a", volume("linode-block")),
 			hosts(host("fra", provider("hetzner", "fsn1"))), "", "fra: class linode-block needs a linode machine"},
@@ -79,7 +84,7 @@ func TestPluginClasses(t *testing.T) {
 }
 
 func TestNodePorts(t *testing.T) {
-	ports := []v1.ServicePort{{Name: "web", Port: 80}, {Name: "rpc", Port: 8545}}
+	ports := []v1.SiloPort{{Name: "web", Port: 80}, {Name: "rpc", Port: 8545}}
 	a := silo("a", lb("linode-nodebalancer", ports...), on("tor"))
 	got, err := NodePorts(a, "tor", nil)
 	if err != nil || len(got) != 2 || got[0].NodePort != 30000 || got[1].NodePort != 30001 || got[1].Port != 8545 {
@@ -100,11 +105,11 @@ func TestNodePorts(t *testing.T) {
 		t.Fatalf("kept: %+v", got)
 	}
 	// …and they're through ServiceStatus, with the plugin's address kept.
-	a.Status.Service.PublicIP = "198.51.100.40"
+	a.Status.Service.LoadBalancerIP = "198.51.100.40"
 	a.UID = "uid-a"
 	held := ipObj(v1.DefaultIPName("linode-nodebalancer"), "linode-nodebalancer", func(x *v1.IP) { x.Status.BoundTo = []v1.IPHolder{{Holder: "silo/a", UID: "uid-a"}} })
 	st, err := ServiceStatus(a, host("tor", provider("linode", "ca-central")), nil, Env{Classes: linodeClasses, IPs: []*v1.IP{held}})
-	if err != nil || st.PublicIP != "198.51.100.40" || len(st.NodePorts) != 2 || st.NodePorts[0].NodePort != 30010 {
+	if err != nil || st.LoadBalancerIP != "198.51.100.40" || len(st.NodePorts) != 2 || st.NodePorts[0].NodePort != 30010 {
 		t.Fatalf("service status: %+v %v", st, err)
 	}
 }

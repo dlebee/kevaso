@@ -29,7 +29,6 @@ type HostAddOptions struct {
 	Region      string
 	Zone        string
 	Runtimes    []string
-	Advertise   string // the Host's address, if not the SSH one
 	KvoContext  string // the kvo context to act as (a cluster-admin)
 	ServerForIt string // the API URL as the new host reaches it (default: the context's)
 	BehindNAT   bool   // nothing unsolicited reaches it (a box at home)
@@ -78,8 +77,6 @@ func parseHostAdd(args []string) (HostAddOptions, error) {
 			if v, err = val(); err == nil {
 				o.Runtimes = append(o.Runtimes, v)
 			}
-		case "--address":
-			o.Advertise, err = val()
 		case "--context":
 			o.KvoContext, err = val()
 		case "--server":
@@ -103,9 +100,6 @@ func parseHostAdd(args []string) (HostAddOptions, error) {
 		o.Runtimes = []string{"cloud-hypervisor"}
 	case len(o.Runtimes) == 1 && o.Runtimes[0] == "none":
 		o.Runtimes = nil // a worker with no runtime yet (e.g. a box without KVM, for now)
-	}
-	if o.Advertise == "" {
-		o.Advertise = o.Address
 	}
 	if o.StateOnly && o.Install != "control-plane" {
 		return o, errors.New("--state-only goes with --install control-plane")
@@ -229,7 +223,7 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 		runtimes = append(runtimes, v1.RuntimeSpec{Name: r})
 	}
 	h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: o.Name},
-		Spec: v1.HostSpec{Address: o.Advertise, Region: o.Region, Zone: o.Zone, Network: v1.HostNetwork{BehindNAT: o.BehindNAT},
+		Spec: v1.HostSpec{InternalIP: o.InternalIP, ExternalIP: o.ExternalIP, Region: o.Region, Zone: o.Zone, Network: v1.HostNetwork{BehindNAT: o.BehindNAT},
 			Components: v1.HostComponents{Worker: &v1.WorkerSpec{Labels: o.Labels, Runtimes: runtimes}}}}
 	if err := c.Create(ctx, h); err != nil && !client.IsAlreadyExists(err) {
 		return fmt.Errorf("register host %s: %w", o.Name, err)
@@ -313,7 +307,7 @@ func hostList(ctx context.Context, kctx string, out io.Writer) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "NAME\tADDRESS\tREGION\tZONE\tCOMPONENTS\tSTATUS")
+	_, _ = fmt.Fprintln(tw, "NAME\tINTERNAL IP\tEXTERNAL IP\tREGION\tZONE\tCOMPONENTS\tSTATUS")
 	for _, raw := range l.Items {
 		obj, _, err := v1.Decode(raw)
 		if err != nil {
@@ -337,7 +331,7 @@ func hostList(ctx context.Context, kctx string, out io.Writer) error {
 		if h.Spec.Unschedulable {
 			st += " · cordoned"
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", h.Name, h.Spec.Address, dashOr(h.Spec.Region), dashOr(h.Spec.Zone), strings.Join(comps, ", "), st)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", h.Name, dashOr(h.Internal()), dashOr(h.External()), dashOr(h.Spec.Region), dashOr(h.Spec.Zone), strings.Join(comps, ", "), st)
 	}
 	return tw.Flush()
 }
@@ -477,7 +471,7 @@ func hostDrain(ctx context.Context, name, kctx string, uncordon bool, out io.Wri
 	move, stay := DrainPlan(name, silos)
 	now := time.Now().UTC().Truncate(time.Second)
 	for _, s := range move {
-		s.Status.Host, s.Status.Phase, s.Status.Address, s.Status.Init = "", "Pending", "", nil
+		s.Status.Host, s.Status.Phase, s.Status.SiloIP, s.Status.Init = "", "Pending", "", nil
 		meta.SetCondition(&s.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Drained",
 			Message: "moved off " + name + " by kvoadm host drain: a fresh instance from its image (onHostLoss: Recreate)", ObservedGeneration: s.Generation}, now)
 		if err := c.UpdateStatus(ctx, s); err != nil {

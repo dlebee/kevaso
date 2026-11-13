@@ -150,7 +150,7 @@ func TestServicesAndExposure(t *testing.T) {
 	hk, _ := d.Exec(ctx, machines["metal"], "ssh-keygen", "-lf", "/etc/ssh/ssh_host_ed25519_key.pub")
 	must(kvoadm.Run, "", "init", info.User+"@"+info.Host, "--ssh-port", strconv.Itoa(info.Port), "--ssh-key", info.KeyFile,
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
-		"--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker", "--loop-storage", "40G")
+		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker", "--loop-storage", "40G")
 	// The two extra addresses routed to metal-1, for ip-pool to hand out.
 	must(kvoadm.Run, "", "host", "addresses", "metal-1", "add", pool1, pool2)
 
@@ -161,7 +161,7 @@ kind: Silo
 metadata: { name: %s, namespace: %s }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 768Mi }
   disk: { size: 5Gi }
 %s
@@ -185,36 +185,35 @@ spec:
 ` +
 		// Example 03's P2P node: TCP+UDP 30303 public, rpc private, outbound from the same IP;
 		// and rpc open to one other silo.
-		silo("web3", "eth-node", `  service:
+		silo("web3", "eth-node", `  ports:
+    - { name: p2p,  port: 30303, protocol: TCP }
+    - { name: disc, port: 30303, protocol: UDP }
+    - { name: rpc,  port: 8545,  protocol: TCP }
+  service:
     ports:
-      - { name: p2p,  port: 30303, protocol: TCP }
-      - { name: disc, port: 30303, protocol: UDP }
-      - { name: rpc,  port: 8545,  protocol: TCP }
-    expose: hostPort
-    hostPort: { ports: [p2p, disc] }
+      - { port: p2p, hostPort: [internal] }
+      - { port: disc, hostPort: [internal] }
+      - { port: rpc, allowFrom: [ops/metrics] }
   network: { egress: { source: sameAsService } }
-  grants: [to-client]
-  allowFrom: [{ silo: ops/metrics, ports: [rpc] }]`+echoInit("tcp/30303", "udp/30303", "tcp/8545")) +
+  grants: [to-client]`+echoInit("tcp/30303", "udp/30303", "tcp/8545")) +
 		// Example 03's dashboard, open to the client's address only…
-		silo("ops", "metrics", `  service:
-    ports: [{ name: web, port: 3000 }]
-    expose: hostPort
-    hostPort: { ports: [web], allowFrom: ["`+clientIP+`/32"] }`+echoInit("tcp/3000")) +
+		silo("ops", "metrics", `  ports: [{ name: web, port: 3000 }]
+  service:
+    ports: [{ port: web, hostPort: [internal], sources: ["`+clientIP+`/32"] }]`+echoInit("tcp/3000")) +
 		// …and one open only to a range the client isn't in.
-		silo("ops", "locked", `  service:
-    ports: [{ name: web, port: 3001 }]
-    expose: hostPort
-    hostPort: { ports: [web], allowFrom: ["203.0.113.0/24"] }`+echoInit("tcp/3001")) +
+		silo("ops", "locked", `  ports: [{ name: web, port: 3001 }]
+  service:
+    ports: [{ port: web, hostPort: [internal], sources: ["203.0.113.0/24"] }]`+echoInit("tcp/3001")) +
 		// Example 06: both on 30303, each on an IP of its own from metal-1's addresses, in and out.
-		silo("web3", "eth-node-a", `  service:
-    ports: [{ name: p2p, port: 30303, protocol: TCP }, { name: disc, port: 30303, protocol: UDP }]
-    expose: loadBalancer
+		silo("web3", "eth-node-a", `  ports: [{ name: p2p, port: 30303, protocol: TCP }, { name: disc, port: 30303, protocol: UDP }]
+  service:
+    ports: [{ port: p2p, loadBalancer: true }, { port: disc, loadBalancer: true }]
     loadBalancer: { class: ip-pool }
   network: { egress: { source: sameAsService } }
   grants: [to-client]`+echoInit("tcp/30303", "udp/30303")) +
-		silo("web3", "eth-node-b", `  service:
-    ports: [{ name: p2p, port: 30303, protocol: TCP }, { name: disc, port: 30303, protocol: UDP }]
-    expose: loadBalancer
+		silo("web3", "eth-node-b", `  ports: [{ name: p2p, port: 30303, protocol: TCP }, { name: disc, port: 30303, protocol: UDP }]
+  service:
+    ports: [{ port: p2p, loadBalancer: true }, { port: disc, loadBalancer: true }]
     loadBalancer: { class: ip-pool }
   network: { egress: { source: sameAsService } }`+echoInit("tcp/30303", "udp/30303"))
 	must(kvo.Run, manifest, "apply", "-f", "-")

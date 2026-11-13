@@ -2,6 +2,8 @@
 
 **Status:** accepted · **Date:** 2026-11-13
 
+> **Note (2026-11-13):** `Host.Spec.Address` is gone (ADR 0010): peers use the host's reach address, its external IP if it has one, else its internal IP.
+
 ## Context
 
 Design §3 and §4.1: HA is 3 or 5 system nodes, or two plus a **light system node** (an etcd member

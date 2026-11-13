@@ -95,23 +95,21 @@ func ipFilter(s *v1.Silo, h *v1.Host, env Env) string {
 	return ""
 }
 
-// Egress is where a silo placed on h sends from, given the address it's reached on (in) and the
-// IPs it holds, and why that isn't in when it isn't: design §7.2b's table.
+// Egress is where a silo placed on h sends from, given where it's reached (st: its load-balancer
+// address, its ports on the host) and the IPs it holds, and why that isn't in when it isn't:
+// design §7.2b's table.
 //
-//   - hostPort, worker-ip: the host's address, for host and sameAsService alike;
+//   - hostPort: the host's address, for host and sameAsService alike;
 //   - ip-pool, and a class whose address is on the silo's host (SendsFrom: an announced shared IP):
 //     the IP's address with sameAsService (and egress.source pool: its own IP's);
 //   - a balancer in front (not SendsFrom), or a class no plugin serves now: never the balancer's
 //     address, which is on no host: the host's, with the reason.
-func Egress(s *v1.Silo, h *v1.Host, in string, svcIP, egIP *v1.IP, classes map[string]Class) (out, note string) {
+func Egress(s *v1.Silo, h *v1.Host, st v1.SiloServiceStatus, svcIP, egIP *v1.IP, classes map[string]Class) (out, note string) {
 	hostOut := ""
 	if !h.Spec.Network.BehindNAT {
-		hostOut = h.Spec.Address
+		hostOut = h.Reach()
 	}
-	class := ""
-	if sv := s.Spec.Service; sv != nil && sv.Expose == v1.ExposeLoadBalancer && sv.LoadBalancer != nil {
-		class = sv.LoadBalancer.Class
-	}
+	class, in := s.Spec.LBClass(), st.LoadBalancerIP
 	c, served := classes[class]
 	switch s.Spec.Network.Egress.Source {
 	case v1.EgressPool:
@@ -125,7 +123,7 @@ func Egress(s *v1.Silo, h *v1.Host, in string, svcIP, egIP *v1.IP, classes map[s
 		return egIP.Status.Address, ""
 	case v1.EgressSameAsService:
 		switch {
-		case UsesHostAddress(s):
+		case class == "" && s.Spec.OnHost():
 			return hostOut, ""
 		case class == v1.LBIPPool:
 			if in == "" {

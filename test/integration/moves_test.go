@@ -22,7 +22,7 @@ func TestMoves(t *testing.T) {
 	worker := func(name string, runtimes ...string) {
 		t.Helper()
 		h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: name},
-			Spec: v1.HostSpec{Address: "203.0.113.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}
+			Spec: v1.HostSpec{ExternalIP: "203.0.113.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}
 		h.Status.Runtimes = map[string]v1.RuntimeStatus{}
 		for _, r := range runtimes {
 			h.Spec.Components.Worker.Runtimes = append(h.Spec.Components.Worker.Runtimes, v1.RuntimeSpec{Name: r})
@@ -50,8 +50,7 @@ func TestMoves(t *testing.T) {
 		t.Fatalf("Move on a local disk: %v", err)
 	}
 	// …and a Recreate silo with a host-local volume (a volume is kept data), naming it.
-	rec := silo("rec", "web3")
-	rec.Spec.Runtime = "docker"
+	rec := containerSilo("rec", "web3", "docker")
 	rec.Spec.Availability.OnHostLoss = v1.OnHostLossRecreate
 	rec.Spec.Volumes = []v1.Volume{{Name: "keys", MountPath: "/keys"}}
 	if err := c.admin.Create(c.ctx, rec); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "leave volume keys behind") {
@@ -70,8 +69,7 @@ func TestMoves(t *testing.T) {
 		}
 		return s
 	}
-	web := silo("web", "web3")
-	web.Spec.Runtime = "docker"
+	web := containerSilo("web", "web3", "docker")
 	place(web, "hv1")
 	pinned := place(silo("pinned", "web3"), "hv1")
 	place(rec, "hv1") // no volume: Recreate is fine

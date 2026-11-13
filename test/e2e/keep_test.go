@@ -28,17 +28,21 @@ func TestDaemonsAndUpkeep(t *testing.T) {
 	})
 	metalIP := r.ip("metal")
 	r.must(kvoadm.Run, "", append(append([]string{"init"}, r.sshArgs("metal")...),
-		"--name", "metal-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker",
+		"--name", "metal-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker",
 		"--runtime", "cloud-hypervisor", "--runtime", "docker", "--loop-storage", "30G")...)
 	r.must(kvo.Run, "apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: keep }\n", "apply", "-f", "-")
 	silo := func(name, runtime, extra string) string {
+		from := "container"
+		if runtime == "cloud-hypervisor" {
+			from = "vm"
+		}
 		return fmt.Sprintf(`---
 apiVersion: kevaso/v1
 kind: Silo
 metadata: { name: %s, namespace: keep }
 spec:
   runtime: %s
-  image: ubuntu-24.04
+  %s: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 768Mi }
 %s  daemons:
     - name: ticker
@@ -55,7 +59,7 @@ spec:
       every: 1m
       check: test -f /tmp/fixed-by-hand
       fix: echo this fix cannot help >&2; exit 3
-`, name, runtime, extra)
+`, name, runtime, from, extra)
 	}
 	r.must(kvo.Run, silo("vm", "cloud-hypervisor", "  disk: { size: 5Gi }\n")+silo("box", "docker", ""), "apply", "-f", "-")
 	r.waitRunning("keep", 30*time.Minute, "metal", "vm", "box")

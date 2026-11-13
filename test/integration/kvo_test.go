@@ -28,7 +28,7 @@ apiVersion: kevaso/v1
 kind: Host
 metadata: { name: hv1 }
 spec:
-  address: 203.0.113.10
+  externalIP: 203.0.113.10
   components:
     controlPlane: {}
     worker:
@@ -40,7 +40,7 @@ kind: Silo
 metadata: { name: hello, namespace: demo }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 2, memory: 4Gi }
 `
 

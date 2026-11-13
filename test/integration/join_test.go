@@ -33,7 +33,7 @@ func TestAWorkerOnlyHostJoinsAndRunsSilos(t *testing.T) {
 	defer cancel()
 	dir, _ := os.MkdirTemp("/tmp", "kvj")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", Address: "127.0.0.1",
+	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +43,7 @@ func TestAWorkerOnlyHostJoinsAndRunsSilos(t *testing.T) {
 
 	// What kvoadm host add does: the Host object, then a join token for it.
 	if err := admin.Create(ctx, &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: "worker-1"},
-		Spec: v1.HostSpec{Address: "127.0.0.2", Region: "ca-central",
+		Spec: v1.HostSpec{InternalIP: "127.0.0.2", Region: "ca-central",
 			Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}}}}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ type testWorker struct {
 func joinWorker(t *testing.T, ctx context.Context, admin *client.Client, server string, caPEM []byte, dir, name string, rt *fake.Runtime) *testWorker {
 	t.Helper()
 	if err := admin.Create(ctx, &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: name},
-		Spec: v1.HostSpec{Address: "127.0.0.2", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}}}}}}); err != nil && !client.IsAlreadyExists(err) {
+		Spec: v1.HostSpec{InternalIP: "127.0.0.2", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}}}}}}); err != nil && !client.IsAlreadyExists(err) {
 		t.Fatal(err)
 	}
 	wdir := filepath.Join(dir, name)
@@ -168,7 +168,7 @@ func TestLosingAHost(t *testing.T) {
 	defer func() { silocontroller.RecreateAfter = saved }()
 	dir, _ := os.MkdirTemp("/tmp", "kvl")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", Address: "127.0.0.1",
+	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"),
 		Heartbeat: 100 * time.Millisecond, HostLease: time.Second})
 	if err != nil {
@@ -230,7 +230,7 @@ func TestDrainingAHost(t *testing.T) {
 	defer cancel()
 	dir, _ := os.MkdirTemp("/tmp", "kvd")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", Address: "127.0.0.1",
+	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)

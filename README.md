@@ -32,15 +32,17 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   by the control plane (each its own silo subnet; boxes behind NAT reach each other through a relay,
   end-to-end encrypted inside it, so the relay sees only UDP). Placement by region/zone, host
   leases, `onHostLoss: Wait | Recreate` with agent-side fencing, `kvoadm host drain / uncordon / list`;
-- services: every silo can carry its own (`spec.service`): a private name
-  (`NAME.NAMESPACE.kevaso`, served on each worker), and exposure with `hostPort` or a load balancer
-  (`worker-ip`, `ip-pool` from a host's extra addresses, or a plugin's class), raw TCP/UDP with the
-  client's IP kept. An outside address is an `IP` object you keep (`kvo create ip`, `kvo get ips`,
+- addresses, ports and names (ADR 0010): a host has an internal and/or an external IP; a silo
+  declares its ports (`spec.ports`) and its service (`spec.service`) opens them, port by port: to
+  other silos on its silo IP (`allowFrom`), on its host's internal or external IP (`hostPort`,
+  `as`, `sources`), or on a load balancer (`ip-pool` from a host's extra addresses, or a plugin's
+  class), raw TCP/UDP with the client's IP kept. A service has a name, unique in its namespace
+  (`SERVICE.NAMESPACE[.mesh|.internal|.external].kevaso`), answered by who asks. An outside address is an `IP` object you keep (`kvo create ip`, `kvo get ips`,
   `kvo ip keep`), and there's no load-balancer object: a namespace's services of a class share one
   address and balancer on their own ports unless they name an `IP` or ask for a `dedicated` one.
   Its outbound address can be the host's, the service's (where the address is on the host; never a
   balancer's), or an IP of its own; `kvo describe silo` says whether in and out match, and why not. Silo-to-silo traffic is denied
-  until the receiving silo's `allowFrom` opens it; exposing publicly needs its own permission;
+  until the receiving silo's service port names the caller in `allowFrom`; exposing publicly needs its own permission;
 - secrets: `Secret` values sealed with envelope encryption under a local KMS (a recovery key printed
   once by `kvoadm init`), never returned by reads; `Grant`s say what a silo may reach and use.
   Silos reach nothing outside the cluster without one. API keys are **injected** at the host's
@@ -78,9 +80,12 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   cloud token alone. The first is [Linode](https://github.com/dlebee/kevaso-provider-linode):
   NodeBalancers, Block Storage volumes (formatted once, deleted with the silo), shared IPs announced
   over BGP that follow their silo to another Linode, and Linode DNS for Ingress host names;
-- sets and images: an `Image` is a bootable disk for VMs, with versions that never change (a URL
-  and its SHA-256, checked by every host); a container silo's image is just its registry reference,
-  pulled from a private registry with a `registry` secret only its host's agent ever gets. A `SiloSet` is a scale set of stateful
+- sets and images: a silo says what it starts from in a block named for what the image is:
+  `container: { image, pull, command }` for docker, podman and OpenShell, where the image is just a
+  registry reference, pulled from a private registry with a `registry` secret only its host's agent
+  ever gets; `vm: { image }` or `vm: { disk: { url, sha256 } }` for cloud-hypervisor, where a
+  `VMImage` is a bootable disk with versions that never change (a URL and its SHA-256, checked by
+  every host). A `SiloSet` is a scale set of stateful
   silos with stable names (`rpc-0`, `rpc-1`, …), spread over hosts, with booted standby instances,
   protected ones scale-in never removes (`kvo protect`), and rollouts that reset instances onto a new
   image a few at a time (or start extra ones first), volumes kept. `exclusive: true` guarantees one

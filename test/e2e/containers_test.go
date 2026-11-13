@@ -136,7 +136,7 @@ func TestContainerSilos(t *testing.T) {
 	hk, _ := d.Exec(ctx, machines["metal"], "ssh-keygen", "-lf", "/etc/ssh/ssh_host_ed25519_key.pub")
 	must(kvoadm.Run, "", "init", info.User+"@"+info.Host, "--ssh-port", strconv.Itoa(info.Port), "--ssh-key", info.KeyFile,
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
-		"--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker",
+		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker",
 		"--runtime", "docker", "--runtime", "podman", "--egress-extra-ca", "/etc/kevaso/test-internet-ca.pem")
 
 	apiKey, dbPassword := randomToken(t), randomToken(t)
@@ -150,7 +150,7 @@ kind: Silo
 metadata: { name: %[1]s, namespace: shop }
 spec:
   runtime: %[2]s
-  image: ubuntu-24.04
+  container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 512Mi }
   volumes: [{ name: data, mountPath: /data }]
   grants: [app]
@@ -175,11 +175,10 @@ kind: Silo
 metadata: { name: web, namespace: shop }
 spec:
   runtime: docker
-  image: docker.io/library/python:3.12-slim
-  command: [python3, -m, http.server, "8080"]
+  container: { image: docker.io/library/python:3.12-slim, command: [python3, -m, http.server, "8080"] }
+  ports: [{ name: http, port: 8080 }]
   service:
-    ports: [{ name: http, port: 8080 }]
-    expose: hostPort
+    ports: [{ port: http, hostPort: [internal] }]
 `
 	must(kvo.Run, manifest, "apply", "-f", "-")
 	deadline := time.Now().Add(25 * time.Minute)

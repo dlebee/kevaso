@@ -29,7 +29,7 @@ kind: Silo
 metadata: { name: hello, namespace: demo }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 1Gi }
   disk: { size: 10Gi }
   init:
@@ -126,7 +126,7 @@ func TestExample01RunsASiloOnCloudHypervisor(t *testing.T) {
 			last = y
 		}
 		if strings.Contains(y, "reason: Running") && strings.Contains(y, "phase: Running") {
-			for _, want := range []string{"name: proof", "name: python", "name: gateway", "state: Done", "address: 10.64.0."} {
+			for _, want := range []string{"name: proof", "name: python", "name: gateway", "state: Done", "siloIP: 10.64.0."} {
 				if !strings.Contains(y, want) {
 					t.Fatalf("Ready, but missing %q:\n%s", want, y)
 				}

@@ -24,7 +24,8 @@ import (
 // fake's volumes, like hosts sharing a network filesystem.
 type Fake struct {
 	mu sync.Mutex
-	// Machines: host address → what the plugin knows about it (only these are its own).
+	// Machines: a host's external or internal IP → what the plugin knows about it (only these are
+	// its own).
 	Machines map[string]kplugin.HostInfo
 	LBs      map[string]kplugin.LoadBalancer // by ID
 	// Reserved are fake-ip's reserved addresses, by ID (an IP's UID).
@@ -93,9 +94,12 @@ func (f *Fake) DescribeHosts(_ context.Context, hosts []kplugin.Host) ([]kplugin
 	defer f.mu.Unlock()
 	var out []kplugin.HostInfo
 	for _, h := range hosts {
-		if m, ok := f.Machines[h.Address]; ok {
-			m.Name = h.Name
-			out = append(out, m)
+		for _, a := range []string{h.ExternalIP, h.InternalIP} {
+			if m, ok := f.Machines[a]; ok && a != "" {
+				m.Name = h.Name
+				out = append(out, m)
+				break
+			}
 		}
 	}
 	return out, nil

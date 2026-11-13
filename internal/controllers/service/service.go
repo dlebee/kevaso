@@ -36,10 +36,10 @@ func Endpoints(svc *v1.Service, silos []*v1.Silo) []v1.ServiceEndpoint {
 func Split(svc *v1.Service, silos []*v1.Silo) (routed, held []v1.ServiceEndpoint) {
 	for _, s := range silos {
 		if s.Namespace != svc.Namespace || s.DeletionTimestamp != nil || s.Labels[v1.LabelStandby] == "true" ||
-			!v1.Selects(svc.Spec.Selector, s.Labels) || s.Status.Address == "" || s.Status.Host == "" {
+			!v1.Selects(svc.Spec.Selector, s.Labels) || s.Status.SiloIP == "" || s.Status.Host == "" {
 			continue
 		}
-		ep := v1.ServiceEndpoint{Silo: s.Name, Host: s.Status.Host, Address: s.Status.Address}
+		ep := v1.ServiceEndpoint{Silo: s.Name, Host: s.Status.Host, SiloIP: s.Status.SiloIP}
 		for _, p := range svc.Spec.Ports {
 			if t := v1.TargetPort(p, s); t > 0 {
 				ep.Ports = append(ep.Ports, v1.NodePort{Name: p.Name, Port: p.Port, NodePort: t})
@@ -191,7 +191,7 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		before := jsonOf(cur.Status)
 		cur.Status.ClusterIP, cur.Status.Name, cur.Status.Endpoints, cur.Status.Held, cur.Status.NodePorts = ip, svc.Name+"."+svc.Namespace+".kevaso", eps, held, nps
 		if svc.Spec.Type != v1.ServiceLoadBalancer {
-			cur.Status.PublicIP, cur.Status.IP, cur.Status.SourceRanges = "", "", nil
+			cur.Status.LoadBalancerIP, cur.Status.IP, cur.Status.SourceRanges = "", "", nil
 		}
 		meta.SetCondition(&cur.Status.Conditions, cond, c.now())
 		if jsonOf(cur.Status) == before {

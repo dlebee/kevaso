@@ -49,7 +49,7 @@ func setup(t *testing.T) *env {
 func (e *env) place(t *testing.T, name, host string, init *v1.Init) {
 	t.Helper()
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev"},
-		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 1, Memory: "1Gi"}, Init: init}}
+		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}, Init: init}}
 	if err := e.c.Create(e.ctx, s); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestRunsASiloAndItsInitStepsThenReady(t *testing.T) {
 		{Name: "check", Shell: "python3", Run: "print('ok')"},
 	}})
 	s := e.wait(t, "web", func(s *v1.Silo) bool { return meta.IsTrue(s.Status.Conditions, "Ready") })
-	if s.Status.Phase != agent.PhaseRunning || s.Status.Address == "" {
+	if s.Status.Phase != agent.PhaseRunning || s.Status.SiloIP == "" {
 		t.Fatalf("status %+v", s.Status)
 	}
 	if len(s.Status.Init) != 2 || s.Status.Init[0].State != "Done" || s.Status.Init[1].State != "Done" {
@@ -257,7 +257,7 @@ func TestImageChangeAndResetAreStopFirst(t *testing.T) {
 	})
 	id := kri.ID{Namespace: "dev", Name: "node", UID: s.UID}
 	// The user moves it to geth:v2, which the control plane resolves.
-	s.Spec.Image = "geth:v2"
+	s.Spec.VM = &v1.VMSource{Image: "geth:v2"}
 	if err := e.c.Update(e.ctx, s); err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +313,7 @@ func TestReadiness(t *testing.T) {
 		return "", 0
 	}
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "rpc", Namespace: "dev"},
-		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Probes: &v1.Probes{Readiness: &v1.Probe{Exec: &v1.ExecProbe{Command: []string{"check-synced"}}, Period: "50ms"}}}}
 	if err := e.c.Create(e.ctx, s); err != nil {
 		t.Fatal(err)
@@ -345,7 +345,7 @@ func TestOldCopyWithLocalVolumesIsKept(t *testing.T) {
 	mk := func(name string, vols []v1.Volume) *v1.Silo {
 		t.Helper()
 		s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev"},
-			Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 1, Memory: "1Gi"}, Volumes: vols}}
+			Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}, Volumes: vols}}
 		if err := e.c.Create(e.ctx, s); err != nil {
 			t.Fatal(err)
 		}

@@ -24,7 +24,7 @@ var now = time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
 
 func readyHost(name string) *v1.Host {
 	h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: name}}
-	h.Spec.Address = "203.0.113.10"
+	h.Spec.ExternalIP = "203.0.113.10"
 	h.Spec.Components.Worker = &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}}}
 	h.Status.Conditions = []meta.Condition{{Type: "Ready", Status: meta.ConditionTrue}}
 	h.Status.Runtimes = map[string]v1.RuntimeStatus{"cloud-hypervisor": {State: "Ready"}}
@@ -88,7 +88,7 @@ func TestDecideOnHostLoss(t *testing.T) {
 	onHv1 := func(policy string) *v1.Silo {
 		s := newSilo("a")
 		s.Spec.Availability.OnHostLoss = policy
-		s.Status.Host, s.Status.Phase, s.Status.Address = "hv1", "Running", "10.64.0.2"
+		s.Status.Host, s.Status.Phase, s.Status.SiloIP = "hv1", "Running", "10.64.0.2"
 		s.Status.Init = []v1.StepStatus{{Name: "x", State: "Done"}}
 		return s
 	}
@@ -110,7 +110,7 @@ func TestDecideOnHostLoss(t *testing.T) {
 	// Recreate, after RecreateAfter: a fresh instance on another host, nothing carried over.
 	st, changed, _, _ = silo.Decide(onHv1(v1.OnHostLossRecreate), []*v1.Host{lostHost("hv1", now.Add(-time.Minute)), readyHost("hv2")}, nil, now)
 	if c := meta.FindCondition(st.Conditions, "HostLost"); !changed || st.Host != "hv2" || st.Phase != silo.PhaseScheduled ||
-		st.Address != "" || st.Init != nil || c.Reason != "Recreated" {
+		st.SiloIP != "" || st.Init != nil || c.Reason != "Recreated" {
 		t.Fatalf("Recreate: %+v", st)
 	}
 	// …and if nowhere fits, it waits Pending (not back on the lost host).
@@ -206,7 +206,7 @@ func TestDecideOnHostLossMove(t *testing.T) {
 		s.Spec.Runtime = "docker"
 		s.Spec.Volumes = []v1.Volume{{Name: "data", Class: "juicefs", Size: "10Gi", MountPath: "/data"}}
 		s.Spec.Availability.OnHostLoss = v1.OnHostLossMove
-		s.Status.Host, s.Status.Phase, s.Status.Address = "hv1", "Running", "10.64.1.2"
+		s.Status.Host, s.Status.Phase, s.Status.SiloIP = "hv1", "Running", "10.64.1.2"
 		s.Status.Image = &v1.SiloImage{From: "app", Ref: "app:1", Running: "app:1"}
 		s.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "juicefs", Handle: "vol-1", AttachedTo: "hv1", Mounted: true}}
 		return s
@@ -217,7 +217,7 @@ func TestDecideOnHostLossMove(t *testing.T) {
 		return h
 	}
 	s := moving()
-	s.Spec.Image = "app"
+	s.Spec.Container = &v1.ContainerSource{Image: "app"}
 	st, _, again, _ := silo.DecideIn(s, []*v1.Host{docker(lostHost("hv1", now.Add(-10*time.Second))), docker(readyHost("hv2"))}, nil, now, env)
 	if c := meta.FindCondition(st.Conditions, "HostLost"); st.Host != "hv1" || c.Reason != "Fencing" || !strings.Contains(c.Message, "with its data") || again == 0 {
 		t.Fatalf("Move early: %+v", st)

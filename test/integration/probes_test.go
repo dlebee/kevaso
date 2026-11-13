@@ -20,6 +20,7 @@ import (
 	"kevaso.com/core/internal/clock"
 	servicecontroller "kevaso.com/core/internal/controllers/service"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/names"
 	"kevaso.com/core/internal/worker"
 	"kevaso.com/core/sdk/kri"
 	"kevaso.com/core/sdk/kri/fake"
@@ -92,7 +93,7 @@ func (r *probeRig) up(on bool) {
 	}
 }
 
-// place creates the silo and puts it on hv1 as the scheduler would (with its public address).
+// place creates the silo and puts it on hv1 as the scheduler would (with its service's name).
 func (r *probeRig) place(t *testing.T, s *v1.Silo) {
 	t.Helper()
 	if err := r.c.Create(r.ctx, s); err != nil {
@@ -100,7 +101,7 @@ func (r *probeRig) place(t *testing.T, s *v1.Silo) {
 	}
 	s.Status.Host, s.Status.Phase = "hv1", "Scheduled"
 	if s.Spec.Service != nil {
-		s.Status.Service = v1.SiloServiceStatus{Name: s.Name + ".web3.kevaso", PublicIP: "198.51.100.10"}
+		s.Status.Service = v1.SiloServiceStatus{Name: s.Name + ".web3.kevaso"}
 	}
 	if err := r.c.UpdateStatus(r.ctx, s); err != nil {
 		t.Fatal(err)
@@ -142,17 +143,17 @@ func (r *probeRig) outside() bool {
 			all = append(all, o.(*v1.Silo))
 		}
 	}
-	view := worker.NetworkView("hv1", &v1.Host{Spec: v1.HostSpec{Address: "198.51.100.10"}}, all, nil)
-	return strings.Contains(kni.Rules(view), "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 8545 dnat ip to 10.64.0.4:8545")
+	view := worker.NetworkView("hv1", &v1.Host{Spec: v1.HostSpec{ExternalIP: "198.51.100.10"}}, all, nil, nil)
+	return strings.Contains(kni.Rules(view), "ip daddr 198.51.100.10 tcp dport 8545 dnat ip to 10.64.0.4:8545")
 }
 
 // dns is what the host's resolver answers for rpc.web3.kevaso: an address, or "" while held.
 func (r *probeRig) dns() string {
-	ip, _, found := worker.Lookup("rpc.web3.kevaso", []*v1.Silo{r.silo("rpc")})
-	if !found || !ip.IsValid() {
+	a := names.Resolve(names.Question{Name: "rpc.web3.kevaso", From: names.FromSilo}, names.View{Silos: []*v1.Silo{r.silo("rpc")}})
+	if !a.Found || len(a.IPs) == 0 {
 		return ""
 	}
-	return ip.String()
+	return a.IPs[0].String()
 }
 
 func endpointNames(eps []v1.ServiceEndpoint) string {
@@ -166,7 +167,8 @@ func endpointNames(eps []v1.ServiceEndpoint) string {
 func rpcSilo(routeWhen string, probe bool) *v1.Silo {
 	s := silo("rpc", "web3")
 	s.Labels = map[string]string{"app": "rpc"}
-	s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Name: "rpc", Port: 8545}}, Expose: v1.ExposeHostPort, RouteWhen: routeWhen}
+	s.Spec.Ports = []v1.SiloPort{{Name: "rpc", Port: 8545}}
+	s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc", HostPort: []string{v1.NetworkExternal}}}, RouteWhen: routeWhen}
 	if probe {
 		s.Spec.Probes = &v1.Probes{Readiness: &v1.Probe{TCP: &v1.TCPProbe{Port: "rpc"}, Period: "1s", Failures: 1}}
 	}
@@ -195,7 +197,7 @@ func TestRouteWhen(t *testing.T) {
 
 	r.place(t, rpcSilo(v1.RouteWhenReady, true))
 	invalid("a Service stating nothing in front of a probed silo", r.c.Create(r.ctx, svcOf("bare", "")), "isn't stated")
-	if err := r.c.Create(r.ctx, svcOf("rpc", v1.RouteWhenReady)); err != nil {
+	if err := r.c.Create(r.ctx, svcOf("ready", v1.RouteWhenReady)); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.c.Create(r.ctx, svcOf("any", v1.RouteWhenRunning)); err != nil {
@@ -211,21 +213,21 @@ func TestRouteWhen(t *testing.T) {
 	held := func(phase string) {
 		t.Helper()
 		r.eventually(t, phase+": held everywhere", func() (bool, string) {
-			s, svc, any := r.silo("rpc"), r.service("rpc"), r.service("any")
+			s, svc, any := r.silo("rpc"), r.service("ready"), r.service("any")
 			ok := s.Status.Phase == "Running" && !meta.IsTrue(s.Status.Conditions, "Ready") &&
 				len(svc.Status.Endpoints) == 0 && endpointNames(svc.Status.Held) == "rpc" &&
 				endpointNames(any.Status.Endpoints) == "rpc" && // running: routed throughout
 				!r.outside() && r.dns() == "" && s.Status.Routing != nil && !s.Status.Routing.Routed
 			return ok, endpointNames(svc.Status.Endpoints) + "|" + endpointNames(svc.Status.Held) + "|" + endpointNames(any.Status.Endpoints) + " " + condMsgs(s.Status.Conditions)
 		})
-		if h := r.service("rpc").Status.Held[0]; !strings.Contains(h.Reason, "not ready") || h.Since == nil {
+		if h := r.service("ready").Status.Held[0]; !strings.Contains(h.Reason, "not ready") || h.Since == nil {
 			t.Fatalf("%s: held endpoint says %+v", phase, h)
 		}
 	}
 	routed := func(phase string) {
 		t.Helper()
 		r.eventually(t, phase+": routed everywhere", func() (bool, string) {
-			s, svc, any := r.silo("rpc"), r.service("rpc"), r.service("any")
+			s, svc, any := r.silo("rpc"), r.service("ready"), r.service("any")
 			ok := meta.IsTrue(s.Status.Conditions, "Ready") && endpointNames(svc.Status.Endpoints) == "rpc" && len(svc.Status.Held) == 0 &&
 				endpointNames(any.Status.Endpoints) == "rpc" && r.outside() && r.dns() == "10.64.0.4" && s.Status.Routing.Routed
 			return ok, endpointNames(svc.Status.Endpoints) + "|" + endpointNames(svc.Status.Held) + " " + condMsgs(s.Status.Conditions)
@@ -237,7 +239,7 @@ func TestRouteWhen(t *testing.T) {
 		!strings.Contains(out, "readiness") || !strings.Contains(out, "connection refused") {
 		t.Fatalf("describe silo while held:\n%s", out)
 	}
-	if out := r.h.ok("", "describe", "service", "rpc", "-n", "web3"); !strings.Contains(out, "0 routed, 1 held") || !strings.Contains(out, "held since") {
+	if out := r.h.ok("", "describe", "service", "ready", "-n", "web3"); !strings.Contains(out, "0 routed, 1 held") || !strings.Contains(out, "held since") {
 		t.Fatalf("describe service while held:\n%s", out)
 	}
 	if out := r.h.ok("", "get", "silos", "-n", "web3"); !strings.Contains(out, "no (NotReady)") {
@@ -246,7 +248,7 @@ func TestRouteWhen(t *testing.T) {
 
 	r.up(true)
 	routed("readiness passes")
-	if out := r.h.ok("", "describe", "service", "rpc", "-n", "web3"); !strings.Contains(out, "1 routed, 0 held") || !strings.Contains(out, "routed") {
+	if out := r.h.ok("", "describe", "service", "ready", "-n", "web3"); !strings.Contains(out, "1 routed, 0 held") || !strings.Contains(out, "routed") {
 		t.Fatalf("describe service while routed:\n%s", out)
 	}
 	if out := r.h.ok("", "get", "silos", "-n", "web3"); !strings.Contains(out, "yes") {

@@ -97,7 +97,7 @@ func ns(name string) *v1.Namespace {
 
 func host(name string) *v1.Host {
 	return &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: name},
-		Spec: v1.HostSpec{Address: "203.0.113.10", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}
+		Spec: v1.HostSpec{ExternalIP: "203.0.113.10", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}
 }
 
 func code(err error) int {
@@ -174,7 +174,7 @@ func TestEnrollmentWithJoinToken(t *testing.T) {
 	if err := worker.UpdateStatus(e.ctx, &other); code(err) != http.StatusForbidden {
 		t.Fatalf("worker writing another host's status: want 403, got %v", err)
 	}
-	h.Spec.Address = "198.51.100.1"
+	h.Spec.ExternalIP = "198.51.100.1"
 	if err := worker.Update(e.ctx, &h); code(err) != http.StatusForbidden {
 		t.Fatalf("worker writing its own spec: want 403, got %v", err)
 	}

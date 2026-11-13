@@ -10,18 +10,22 @@ import (
 // ports, and nothing is cut (established connections stay); private access stays. A port is open
 // only when its lease and its routing both say so.
 func TestHeldPorts(t *testing.T) {
-	spec := v1.SiloSpec{Service: &v1.SiloService{
-		Ports:  []v1.ServicePort{{Name: "rpc", Port: 8545}, {Name: "debug", Port: 9229, Lease: &v1.PortLease{}}},
-		Expose: v1.ExposeHostPort,
-	}, AllowFrom: []v1.AllowFrom{{Silo: "client"}}}
+	ext := []string{v1.NetworkExternal}
+	spec := v1.SiloSpec{
+		Ports: []v1.SiloPort{{Name: "rpc", Port: 8545}, {Name: "debug", Port: 9229}},
+		Service: &v1.SiloService{Ports: []v1.ServicePort{
+			{Port: "rpc", HostPort: ext, AllowFrom: []string{"client"}},
+			{Port: "debug", HostPort: ext, Lease: &v1.PortLease{}, AllowFrom: []string{"client"}},
+		}},
+	}
 	client := Silo{Key: "dev/client", IP: a("10.64.2.9")}
-	base := Silo{Key: "dev/rpc", IP: a("10.64.2.2"), Spec: spec, PublicIP: a("198.51.100.10"), Leased: []string{"debug"}}
+	base := Silo{Key: "dev/rpc", IP: a("10.64.2.2"), Spec: spec, Leased: []string{"debug"}}
 	const (
-		rpcDNAT   = "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 8545 dnat ip to 10.64.2.2:8545"
-		debugDNAT = "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 9229 dnat ip to 10.64.2.2:9229"
-		debugCut  = `oifname "kvbr0" ip daddr 10.64.2.2 tcp dport 9229 ct status dnat ct original ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16 } reject with tcp reset`
+		rpcDNAT   = "ip daddr 198.51.100.10 tcp dport 8545 dnat ip to 10.64.2.2:8545"
+		debugDNAT = "ip daddr 198.51.100.10 tcp dport 9229 dnat ip to 10.64.2.2:9229"
+		debugCut  = `oifname "kvbr0" ip daddr 10.64.2.2 tcp dport 9229 ct status dnat ct original ip daddr 198.51.100.10 reject with tcp reset`
 		private   = "ip saddr 10.64.2.9 ip daddr 10.64.2.2 tcp dport 8545 accept"
-		anyCut    = "ct original"
+		anyCut    = "ct status dnat ct original"
 	)
 	for _, c := range []struct {
 		name         string
@@ -54,14 +58,13 @@ func TestHeldPorts(t *testing.T) {
 }
 
 func TestHeldNodePorts(t *testing.T) {
-	s := Silo{Key: "dev/rpc", IP: a("10.64.2.2"), Spec: v1.SiloSpec{Service: &v1.SiloService{
-		Ports:        []v1.ServicePort{{Name: "rpc", Port: 8545}},
-		Expose:       v1.ExposeLoadBalancer,
+	s := Silo{Key: "dev/rpc", IP: a("10.64.2.2"), Spec: v1.SiloSpec{Ports: []v1.SiloPort{{Name: "rpc", Port: 8545}}, Service: &v1.SiloService{
+		Ports:        []v1.ServicePort{{Port: "rpc", LoadBalancer: true}},
 		LoadBalancer: &v1.LoadBalancerSpec{Class: "linode-nodebalancer"},
 	}}, NodePorts: []v1.NodePort{{Name: "rpc", Port: 8545, NodePort: 30001}}, SourceRanges: []string{"192.168.255.0/24"}}
 	const nodeDNAT = "ip saddr 192.168.255.0/24 tcp dport 30001 dnat ip to 10.64.2.2:8545"
 	has(t, Rules(host(s)), nodeDNAT)
 	s.Held = true
 	r := Rules(host(s))
-	hasNot(t, r, nodeDNAT, "ct original")
+	hasNot(t, r, nodeDNAT, "ct status dnat ct original")
 }

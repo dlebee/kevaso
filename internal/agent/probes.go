@@ -21,12 +21,12 @@ import (
 // Probes (design §0.6) run on the silo's own host, never from the control plane:
 //
 //   - exec goes through the runtime's exec, like init steps and upkeep;
-//   - tcp and http dial the silo's own private address (status.address) from the host itself.
+//   - tcp and http dial the silo's own silo IP (status.siloIP) from the host itself.
 //     The host is the silos' gateway on its bridge, so this traffic starts on the host and goes
 //     out through its own output path: it never crosses the forward chain, where silo-to-silo
-//     (allowFrom) and outside (exposed ports, grants) rules live, so it needs no allowFrom entry,
-//     no grant and no exposed port, and opens nothing to anyone else. The silo's replies to the
-//     gateway are let in as established traffic (the input chain). Never the public address: a
+//     (allowFrom) and outside (host ports, load balancers, grants) rules live, so it needs no allowFrom entry,
+//     no grant and no port on the host, and opens nothing to anyone else. The silo's replies to the
+//     gateway are let in as established traffic (the input chain). Never the host's or a load balancer's address: a
 //     probe says whether the silo answers, not whether the outside can reach it.
 //
 // A probe that can't run is CantRun, never a failure: the runtime has no exec, the silo has no
@@ -136,7 +136,7 @@ func (a *Agent) runProbe(ctx context.Context, rt kri.Runtime, s *v1.Silo, addres
 		}
 		num, ok := probes.ResolvePort(port, s.Spec)
 		if !ok {
-			return probes.Outcome{Result: v1.ResultCantRun, Reason: fmt.Sprintf("port %q isn't one of the service's ports", port)}
+			return probes.Outcome{Result: v1.ResultCantRun, Reason: fmt.Sprintf("port %q isn't one of the silo's declared ports", port)}
 		}
 		if address == "" {
 			return probes.Outcome{Result: v1.ResultCantRun, Reason: "the silo has no address its host can reach (runtime " + s.Spec.Runtime + ")"}

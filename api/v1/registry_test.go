@@ -63,30 +63,69 @@ func TestRegistryHost(t *testing.T) {
 	}
 }
 
-// Admission's image rule per runtime family: a disk runtime takes an Image name or a built-in OS
-// image; a registry runtime a registry reference, never an Image name.
-func TestImageProblem(t *testing.T) {
+// Admission for what a silo starts from (design §0.2): cloud-hypervisor takes vm:, the registry
+// runtimes container:, and each refusal names the right block.
+func TestSourceProblems(t *testing.T) {
 	images := map[string]bool{"geth": true}
-	isImage := func(n string) bool { return images[n] }
-	for _, tc := range []struct{ runtime, image, want string }{
-		{"cloud-hypervisor", "geth:v1", ""},
-		{"cloud-hypervisor", "ubuntu-24.04", ""},
-		{"cloud-hypervisor", "not-yet", ""}, // may come later: the controller waits (ImageMissing)
-		{"cloud-hypervisor", "ghcr.io/acme/api:v1", "boots a disk: spec.image is an Image name"},
-		{"cloud-hypervisor", "nginx@sha256:" + strings.Repeat("0", 64), "not a registry reference"},
-		{"docker", "geth:v1", "geth is an Image, a disk image for cloud-hypervisor"},
-		{"podman", "geth", "registry reference"},
-		{"openshell-container", "geth", "geth is an Image"},
-		{"docker", "nginx:1.27", ""},
-		{"docker", "ubuntu-24.04", ""},
-		{"docker", "", ""},
-		{"podman", "Bad/Name", "a podman silo's image is a registry reference"},
-		{"openshell", "ghcr.io/acme/agent:v1", ""},
-	} {
-		got := ImageProblem(tc.runtime, tc.image, isImage)
-		if (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
-			t.Errorf("%s on %s: %q, want %q", tc.image, tc.runtime, got, tc.want)
+	isVMImage := func(n string) bool { return images[n] }
+	sum := strings.Repeat("ab", 32)
+	disk := &VMDisk{URL: "https://x/geth.img", SHA256: sum}
+	ctr := func(image string) *ContainerSource { return &ContainerSource{Image: image} }
+	type tc struct {
+		name, runtime string
+		container     *ContainerSource
+		vm            *VMSource
+		want          string // "" = accepted; else a part of the one problem
+	}
+	var cases []tc
+	// Each runtime with each block.
+	cases = append(cases,
+		tc{"ch container", "cloud-hypervisor", ctr("nginx:1.27"), nil, "cloud-hypervisor runs a virtual machine: say what it boots in vm:"},
+		tc{"ch vm.image", "cloud-hypervisor", nil, &VMSource{Image: "geth:v1"}, ""},
+		tc{"ch vm.disk", "cloud-hypervisor", nil, &VMSource{Disk: disk}, ""},
+		tc{"ch none", "cloud-hypervisor", nil, nil, ""},
+	)
+	for _, rt := range []string{"docker", "podman", "openshell", "openshell-container"} {
+		cases = append(cases,
+			tc{rt + " container", rt, ctr("ghcr.io/acme/api:v1"), nil, ""},
+			tc{rt + " vm.image", rt, nil, &VMSource{Image: "geth:v1"}, rt + " runs an OCI image: say it in container:"},
+			tc{rt + " vm.disk", rt, nil, &VMSource{Disk: disk}, rt + " runs an OCI image: say it in container:"},
+			tc{rt + " none", rt, nil, nil, ""},
+		)
+	}
+	cases = append(cases,
+		// vm: exactly one of image and disk
+		tc{"vm both", "cloud-hypervisor", nil, &VMSource{Image: "geth", Disk: disk}, "not both"},
+		tc{"vm neither", "cloud-hypervisor", nil, &VMSource{}, "vm: needs image"},
+		// vm.disk: https and a sha256
+		tc{"vm.disk http", "cloud-hypervisor", nil, &VMSource{Disk: &VMDisk{URL: "http://x/geth.img", SHA256: sum}}, "vm.disk needs an https:// url"},
+		tc{"vm.disk bad sha256", "cloud-hypervisor", nil, &VMSource{Disk: &VMDisk{URL: "https://x/geth.img", SHA256: "abc"}}, "64 hex digits"},
+		tc{"vm.disk no sha256", "cloud-hypervisor", nil, &VMSource{Disk: &VMDisk{URL: "https://x/geth.img"}}, "64 hex digits"},
+		// vm.image: a VMImage name, not a registry reference
+		tc{"vm.image registry ref", "cloud-hypervisor", nil, &VMSource{Image: "ghcr.io/acme/api:v1"}, "not a registry reference (ghcr.io/acme/api:v1)"},
+		tc{"vm.image digest", "cloud-hypervisor", nil, &VMSource{Image: "nginx@sha256:" + strings.Repeat("0", 64)}, "not a registry reference"},
+		tc{"vm.image not yet there", "cloud-hypervisor", nil, &VMSource{Image: "not-yet"}, ""}, // may come later: the controller waits
+		// container.image: a registry reference, never a VMImage's name
+		tc{"container names a VMImage", "docker", ctr("geth:v1"), nil, "geth is a VMImage, a disk for cloud-hypervisor"},
+		tc{"container names a VMImage, bare", "podman", ctr("geth"), nil, "geth is a VMImage"},
+		tc{"container empty", "docker", ctr(""), nil, "container.image is required"},
+		tc{"container bad ref", "podman", ctr("Bad/Name"), nil, "container.image is a registry reference"},
+		// the built-in OS image, in both blocks
+		tc{"built-in container", "docker", ctr("ubuntu-24.04"), nil, ""},
+		tc{"built-in vm", "cloud-hypervisor", nil, &VMSource{Image: "ubuntu-24.04"}, ""},
+	)
+	for _, c := range cases {
+		got := SourceProblems(SiloSpec{Runtime: c.runtime, Container: c.container, VM: c.vm}, isVMImage)
+		switch {
+		case c.want == "" && len(got) != 0:
+			t.Errorf("%s: refused: %q", c.name, got)
+		case c.want != "" && (len(got) != 1 || !strings.Contains(got[0], c.want)):
+			t.Errorf("%s: %q, want one problem with %q", c.name, got, c.want)
 		}
+	}
+	// isVMImage nil: don't look, so a container image is never taken for a VMImage.
+	if got := SourceProblems(SiloSpec{Runtime: "docker", Container: ctr("geth:v1")}, nil); len(got) != 0 {
+		t.Errorf("nil lookup: %q", got)
 	}
 }
 

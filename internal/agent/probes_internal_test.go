@@ -47,7 +47,7 @@ func TestRunProbe(t *testing.T) {
 		}
 		return "ok", 0
 	}
-	s := &v1.Silo{Spec: v1.SiloSpec{Runtime: "fake", Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "rpc", Port: 8545}}}}}
+	s := &v1.Silo{Spec: v1.SiloSpec{Runtime: "fake", Ports: []v1.SiloPort{{Name: "rpc", Port: 8545}}, Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc"}}}}}
 	s.Namespace, s.Name, s.UID = "web3", "rpc", "u"
 	_ = rt.Create(context.Background(), kri.Spec{ID: idOf(s)})
 	_ = rt.Start(context.Background(), idOf(s))
@@ -67,12 +67,13 @@ func TestRunProbe(t *testing.T) {
 		{"http 200", 200, rt, "10.64.1.2", httpP, v1.ResultSuccess, "HTTP 200"},
 		{"http 302 passes", 302, rt, "10.64.1.2", httpP, v1.ResultSuccess, "HTTP 302"},
 		{"http 503 fails", 503, rt, "10.64.1.2", httpP, v1.ResultFailure, "503"},
-		{"tcp", 0, rt, "10.64.1.2", &v1.Probe{TCP: &v1.TCPProbe{Port: "8545"}}, v1.ResultSuccess, "connected"},
+		{"tcp", 0, rt, "10.64.1.2", &v1.Probe{TCP: &v1.TCPProbe{Port: "rpc"}}, v1.ResultSuccess, "connected"},
 		{"exec passes", 0, rt, "", &v1.Probe{Exec: &v1.ExecProbe{Command: []string{"true"}}}, v1.ResultSuccess, ""},
 		{"exec fails with the end of its output", 0, rt, "", &v1.Probe{Exec: &v1.ExecProbe{Command: []string{"false"}}}, v1.ResultFailure, "exit 1: not synced: block 12"},
 		{"no exec: can't run", 0, noExec{rt}, "", &v1.Probe{Exec: &v1.ExecProbe{Command: []string{"true"}}}, v1.ResultCantRun, "can't exec"},
 		{"no address: can't run", 0, rt, "", &v1.Probe{TCP: &v1.TCPProbe{Port: "rpc"}}, v1.ResultCantRun, "no address"},
-		{"not a service port: can't run", 0, rt, "10.64.1.2", &v1.Probe{TCP: &v1.TCPProbe{Port: "web"}}, v1.ResultCantRun, "isn't one of the service's ports"},
+		{"a number, not a declared port: can't run", 0, rt, "10.64.1.2", &v1.Probe{TCP: &v1.TCPProbe{Port: "8545"}}, v1.ResultCantRun, "isn't one of"},
+		{"not a declared port: can't run", 0, rt, "10.64.1.2", &v1.Probe{TCP: &v1.TCPProbe{Port: "web"}}, v1.ResultCantRun, "isn't one of the silo's declared ports"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			status, dialled = tc.status, ""

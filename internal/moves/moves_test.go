@@ -153,10 +153,10 @@ func TestPlanMove(t *testing.T) {
 
 func TestApplyAndHandoff(t *testing.T) {
 	s := silo("docker", "", v1.Volume{Name: "data", Class: "juicefs"})
-	s.Status.Address, s.Status.Phase = "10.64.1.5", "Running"
+	s.Status.SiloIP, s.Status.Phase = "10.64.1.5", "Running"
 	s.Status.Image = &v1.SiloImage{From: "app", Ref: "r1", Running: "r1"}
 	st := Apply(s.Status, Plan{From: "hv1", To: "hv3", WithData: true, Handoff: true})
-	if st.Host != "hv3" || st.MovingFrom != "hv1" || st.Address != "" || st.Phase != "Scheduled" || st.Image.Running != "r1" {
+	if st.Host != "hv3" || st.MovingFrom != "hv1" || st.SiloIP != "" || st.Phase != "Scheduled" || st.Image.Running != "r1" {
 		t.Fatalf("with data: %+v", st)
 	}
 	moved := *s

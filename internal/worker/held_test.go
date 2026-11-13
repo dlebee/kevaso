@@ -8,13 +8,15 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kni"
+	"kevaso.com/core/internal/names"
 )
 
 func heldSilo(ready bool) *v1.Silo {
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "rpc", Namespace: "web3", UID: "u1"},
 		Spec: v1.SiloSpec{Probes: &v1.Probes{Readiness: &v1.Probe{TCP: &v1.TCPProbe{Port: "rpc"}}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "rpc", Port: 8545}}, Expose: v1.ExposeHostPort, RouteWhen: v1.RouteWhenReady}},
-		Status: v1.SiloStatus{Phase: "Running", Host: "w1", Address: "10.64.1.2", Service: v1.SiloServiceStatus{PublicIP: "198.51.100.10"}}}
+			Ports:   []v1.SiloPort{{Name: "rpc", Port: 8545}},
+			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc", HostPort: []string{v1.NetworkExternal}}}, RouteWhen: v1.RouteWhenReady}},
+		Status: v1.SiloStatus{Phase: "Running", Host: "w1", SiloIP: "10.64.1.2"}}
 	st := meta.ConditionFalse
 	if ready {
 		st = meta.ConditionTrue
@@ -25,9 +27,9 @@ func heldSilo(ready bool) *v1.Silo {
 
 // The host's view marks a held silo, and its rules then have no outside rule for it.
 func TestNetworkViewHeld(t *testing.T) {
-	const dnat = "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 8545 dnat ip to 10.64.1.2:8545"
+	const dnat = "ip daddr 198.51.100.10 tcp dport 8545 dnat ip to 10.64.1.2:8545"
 	for _, ready := range []bool{false, true} {
-		view := NetworkView("w1", &v1.Host{Spec: v1.HostSpec{Address: "198.51.100.10"}}, []*v1.Silo{heldSilo(ready)}, nil)
+		view := NetworkView("w1", &v1.Host{Spec: v1.HostSpec{ExternalIP: "198.51.100.10"}}, []*v1.Silo{heldSilo(ready)}, nil, nil)
 		if len(view.Local) != 1 || view.Local[0].Held == ready {
 			t.Fatalf("ready %v: held %v", ready, view.Local[0].Held)
 		}
@@ -39,11 +41,11 @@ func TestNetworkViewHeld(t *testing.T) {
 
 // The private name of a held silo exists with no record; a routed one answers.
 func TestLookupHeld(t *testing.T) {
-	ip, inZone, found := Lookup("rpc.web3.kevaso", []*v1.Silo{heldSilo(false)})
-	if !inZone || !found || ip.IsValid() {
-		t.Fatalf("held: %v %v %v", ip, inZone, found)
+	q := names.Question{Name: "rpc.web3.kevaso", From: names.FromSilo}
+	if a := names.Resolve(q, names.View{Silos: []*v1.Silo{heldSilo(false)}}); !a.InZone || !a.Found || len(a.IPs) != 0 {
+		t.Fatalf("held: %+v", a)
 	}
-	if ip, _, found := Lookup("rpc.web3.kevaso", []*v1.Silo{heldSilo(true)}); !found || ip.String() != "10.64.1.2" {
-		t.Fatalf("routed: %v %v", ip, found)
+	if a := names.Resolve(q, names.View{Silos: []*v1.Silo{heldSilo(true)}}); len(a.IPs) != 1 || a.IPs[0].String() != "10.64.1.2" {
+		t.Fatalf("routed: %+v", a)
 	}
 }

@@ -85,7 +85,7 @@ type IngressDNS struct {
 	TTL      int    `json:"ttl,omitempty"` // seconds (default 300)
 }
 
-// Ingress routes HTTP(S) for some host names to silos. Namespaced. It is proxy-neutral: knobs for
+// Ingress routes HTTP(S) for some host names to services. Namespaced. It is proxy-neutral: knobs for
 // one proxy are annotations prefixed with its driver's name (nginx/proxy-body-size), which that
 // driver checks (an unknown one is refused, and shows as a condition) and the others ignore.
 type Ingress struct {
@@ -124,13 +124,14 @@ func TLSSecret(ing *Ingress) string {
 	return CertificateFor(ing)
 }
 
-// IngressRule sends a path (prefix) to a silo's port, in the Ingress's namespace.
+// IngressRule sends a path (prefix) to a service's port, in the Ingress's namespace.
 type IngressRule struct {
-	Path string        `json:"path,omitempty"` // prefix, default /
-	Silo IngressTarget `json:"silo"`
+	Path    string        `json:"path,omitempty"` // prefix, default /
+	Service IngressTarget `json:"service"`
 }
 
-// IngressTarget is a silo and one of its service ports (by name).
+// IngressTarget is a service, by its name (a silo's service.name, or a standalone Service), and
+// one of its ports: a port its service opens (by the declared port's name), or a Service's port.
 type IngressTarget struct {
 	Name string `json:"name"`
 	Port string `json:"port"`

@@ -66,7 +66,7 @@ func TestDigestRecordedAndPullFailures(t *testing.T) {
 	e := &env{c: c, ctx: ctx}
 
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "dev"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: img, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: img}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
 	if err := c.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}

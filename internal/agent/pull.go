@@ -12,7 +12,7 @@ import (
 
 // Pulls (design §0.2): on a runtime that pulls registry images itself (kri.Puller), the agent
 // pulls before Create and Reset, with the credential the control plane gives this host for that
-// silo (its imagePull secret, or its namespace's default for the image's registry). The
+// silo (its container.pull secret, or its namespace's default for the image's registry). The
 // credential is asked for each pull, so a rotated secret is used by the next one, and held only
 // for the pull: the runtime puts it in a throwaway auth file and removes it.
 

@@ -13,7 +13,7 @@ import (
 
 // Applying a Plan to a proxy from outside. Everything goes through commands run in the controller
 // silo by its runtime (the way init steps and daemons run) or through the proxy's admin API on the
-// silo's private address: the proxy's image is the vendor's, with nothing of Kevaso in it, and it
+// silo IP: the proxy's image is the vendor's, with nothing of Kevaso in it, and it
 // never calls out. The order keeps the running proxy whole whatever happens:
 //
 //  1. unchanged (the plan this agent last applied, or the config the proxy already has): nothing;

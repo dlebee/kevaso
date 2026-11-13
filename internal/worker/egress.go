@@ -64,7 +64,7 @@ func upstreamRoots(extraCA string) (*x509.CertPool, error) {
 // local finds the silo on this host with address ip.
 func (e *egress) local(ip netip.Addr) (*v1.Silo, bool) {
 	for _, s := range e.silos() {
-		if s.Status.Host == e.hostName && s.Status.Address == ip.String() {
+		if s.Status.Host == e.hostName && s.Status.SiloIP == ip.String() {
 			return s, true
 		}
 	}

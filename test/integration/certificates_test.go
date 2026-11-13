@@ -51,7 +51,7 @@ func TestCertificatesInAControlPlane(t *testing.T) {
 	other, _ := pki.NewCA("other", time.Now())
 	sg := &signing{ca: other, got: make(chan kcc.Request, 4)}
 	fl := &failing{}
-	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", Address: "127.0.0.1",
+	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond,
 		CertControllers: kcc.Registry{"signing": sg, "failing": fl}})
 	if err != nil {
@@ -69,7 +69,7 @@ func TestCertificatesInAControlPlane(t *testing.T) {
 			Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "ingress", Namespace: "kevaso-system"}}},
 		&v1.Ingress{TypeMeta: tm("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "payments"},
 			Spec: v1.IngressSpec{IngressClass: "private", Hosts: []string{"api.payments.kevaso"},
-				Rules: []v1.IngressRule{{Path: "/", Silo: v1.IngressTarget{Name: "api", Port: "http"}}}}},
+				Rules: []v1.IngressRule{{Path: "/", Service: v1.IngressTarget{Name: "api", Port: "http"}}}}},
 		&v1.Issuer{TypeMeta: tm("Issuer"), ObjectMeta: meta.ObjectMeta{Name: "signing"},
 			Spec: v1.IssuerSpec{Controller: "signing", Config: json.RawMessage(`{"team":"payments"}`)}},
 		&v1.Issuer{TypeMeta: tm("Issuer"), ObjectMeta: meta.ObjectMeta{Name: "down"}, Spec: v1.IssuerSpec{Controller: "failing"}},

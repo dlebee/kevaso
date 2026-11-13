@@ -161,10 +161,10 @@ NFT`); err != nil {
 
 	// The control plane, advertising its shared address (the mesh endpoint and what hosts dial).
 	t.Logf("%s", must(kvoadm.Run, "", append(append([]string{"init"}, sshArgs("cp")...),
-		"--name", "cp-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--address", cpIP)...))
+		"--name", "cp-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", cpIP)...))
 	server := "https://" + cpIP + ":6443"
 	t.Logf("%s", must(kvoadm.Run, "", append(append([]string{"host", "add"}, sshArgs("worker")...),
-		"--name", "worker-1", "--install", "worker", "--address", workerIP, "--server", server, "--loop-storage", "40G",
+		"--name", "worker-1", "--install", "worker", "--internal-ip", workerIP, "--server", server, "--loop-storage", "40G",
 		"--region", "lab", "--label", "kvm=yes")...))
 	for _, n := range []string{"home", "office"} {
 		t.Logf("%s", must(kvoadm.Run, "", append(append([]string{"host", "add"}, sshArgs(n)...),
@@ -241,7 +241,7 @@ kind: Silo
 metadata: { name: hello, namespace: demo }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 1Gi }
   disk: { size: 10Gi }
 `, "apply", "-f", "-")
@@ -251,7 +251,7 @@ spec:
 		kvo.Run(ctx, []string{"get", "silo", "hello", "-n", "demo", "-o", "yaml"}, nil, &o, io.Discard)
 		y := o.String()
 		if strings.Contains(y, "phase: Running") {
-			if !strings.Contains(y, "host: worker-1") || !strings.Contains(y, "address: "+strings.TrimSuffix(hostsByName["worker-1"].Status.Network.SiloSubnet, "0/24")) {
+			if !strings.Contains(y, "host: worker-1") || !strings.Contains(y, "siloIP: "+strings.TrimSuffix(hostsByName["worker-1"].Status.Network.SiloSubnet, "0/24")) {
 				t.Fatalf("ran, but not as expected:\n%s", y)
 			}
 			break

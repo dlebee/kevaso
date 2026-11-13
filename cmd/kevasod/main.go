@@ -1,6 +1,6 @@
 // Command kevasod is the agent on every host.
 //
-//	kevasod control-plane --name HOST --address ADDR [--listen 0.0.0.0:6443] [--data /var/lib/kevaso]
+//	kevasod control-plane --name HOST [--internal-ip IP] [--external-ip IP] [--listen 0.0.0.0:6443] [--data /var/lib/kevaso]
 //	        [--admin-socket /run/kevaso/admin.sock] [--cluster NAME] [--extra-name NAME]…
 //	        [--store sqlite|etcd] [--etcd-peer-listen HOST:PORT]
 //	    the control-plane component (installed by `kvoadm init` as a systemd service)
@@ -151,7 +151,9 @@ func runControlPlane(ctx context.Context, args []string) error {
 	var cfg controlplane.Config
 	var extra multi
 	fs.StringVar(&cfg.HostName, "name", "", "this host's name")
-	fs.StringVar(&cfg.Address, "address", "", "this host's address")
+	fs.StringVar(&cfg.InternalIP, "internal-ip", "", "this host's address on its own network")
+	fs.StringVar(&cfg.DNSSuffix, "dns-suffix", "", "the cluster's names' last label (default kevaso): SERVICE.NAMESPACE.SUFFIX")
+	fs.StringVar(&cfg.ExternalIP, "external-ip", "", "this host's address reachable from outside its network (at least one of the two)")
 	fs.StringVar(&cfg.Listen, "listen", "0.0.0.0:6443", "TLS API address")
 	fs.StringVar(&cfg.DataDir, "data", "/var/lib/kevaso", "data directory (store, CA)")
 	fs.StringVar(&cfg.AdminSocket, "admin-socket", defaultAdminSocket, "admin unix socket")

@@ -293,7 +293,7 @@ spec:
 	manifest := `apiVersion: kevaso/v1
 kind: Silo
 metadata: { name: web, namespace: demo }
-spec: { runtime: cloud-hypervisor, image: ubuntu-24.04, resources: { cpu: 1, memory: 1Gi } }
+spec: { runtime: cloud-hypervisor, vm: { image: ubuntu-24.04 }, resources: { cpu: 1, memory: 1Gi } }
 `
 	if out := h.ok(manifest, "apply", "-f", "-"); !strings.Contains(out, "silo/web created") {
 		t.Fatalf("first apply:\n%s", out)

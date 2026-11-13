@@ -652,8 +652,8 @@ func summary(obj meta.Object) string {
 			}
 			parts = append(parts, fmt.Sprintf("init=%d/%d", done, n))
 		}
-		if o.Status.Address != "" {
-			parts = append(parts, "address="+o.Status.Address)
+		if o.Status.SiloIP != "" {
+			parts = append(parts, "address="+o.Status.SiloIP)
 		}
 		conds = o.Status.Conditions
 	case *v1.Unstructured:
@@ -702,7 +702,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			head = append(head, "MOVABLE")
 		}
 	case "Host":
-		head = append(head, "ADDRESS", "REGION", "COMPONENTS", "RUNTIMES")
+		head = append(head, "INTERNAL IP", "EXTERNAL IP", "REGION", "COMPONENTS", "RUNTIMES")
 	case "Namespace":
 		head = append(head, "STATUS")
 	case "Secret":
@@ -716,10 +716,10 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 	case "SiloSet":
 		head = append(head, "IMAGE", "INSTANCES", "READY", "UPDATED")
 	case "Service":
-		head = append(head, "TYPE", "CLUSTER-IP", "PUBLIC-IP", "PORTS", "ENDPOINTS")
+		head = append(head, "TYPE", "CLUSTER IP", "LOAD-BALANCER IP", "PORTS", "ENDPOINTS")
 	case "IP":
 		head = append(head, ipHead...)
-	case "Image":
+	case "VMImage":
 		head = append(head, "VERSIONS", "DISK")
 	case "Approval":
 		head = append(head, "SILO", "SECRET", "USE", "FOR", "PHASE", "WHEN", "ANSWERED-BY")
@@ -769,7 +769,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			if o.Spec.Unschedulable {
 				comps = append(comps, "cordoned")
 			}
-			row = append(row, o.Spec.Address, region, strings.Join(comps, ","), dash(strings.Join(rts, ",")))
+			row = append(row, dash(o.Internal()), dash(o.External()), region, strings.Join(comps, ","), dash(strings.Join(rts, ",")))
 		case *v1.Namespace:
 			row = append(row, dash(o.Status.Phase))
 		case *v1.Secret:
@@ -829,7 +829,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			if o.Spec.Standby > 0 {
 				inst += fmt.Sprintf("+%d standby", o.Spec.Standby)
 			}
-			row = append(row, dash(o.InstanceSpec().Image), inst, fmt.Sprintf("%d/%d", o.Status.Ready, o.Spec.Instances), fmt.Sprint(o.Status.Updated))
+			row = append(row, dash(o.InstanceSpec().From()), inst, fmt.Sprintf("%d/%d", o.Status.Ready, o.Spec.Instances), fmt.Sprint(o.Status.Updated))
 		case *v1.Service:
 			typ := o.Spec.Type
 			if typ == "" {
@@ -843,10 +843,10 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 				}
 				ps = append(ps, fmt.Sprintf("%d/%s", p.Port, proto))
 			}
-			row = append(row, typ, dash(o.Status.ClusterIP), dash(o.Status.PublicIP), strings.Join(ps, ","), fmt.Sprint(len(o.Status.Endpoints)))
+			row = append(row, typ, dash(o.Status.ClusterIP), dash(o.Status.LoadBalancerIP), strings.Join(ps, ","), fmt.Sprint(len(o.Status.Endpoints)))
 		case *v1.IP:
 			row = append(row, ipRow(o)...)
-		case *v1.Image:
+		case *v1.VMImage:
 			var vs []string
 			for _, v := range o.Spec.Versions {
 				vs = append(vs, v.Name)

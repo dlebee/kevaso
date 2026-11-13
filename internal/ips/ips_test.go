@@ -24,13 +24,23 @@ func ip(name, class string, mut ...func(*v1.IP)) *v1.IP {
 
 func lbSilo(name, class, ipName string, created int, ports ...int) *v1.Silo {
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "web3", UID: "silo-" + name, CreationTimestamp: at(created)},
-		Spec: v1.SiloSpec{Service: &v1.SiloService{Expose: v1.ExposeLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Class: class, IP: ipName}}}}
+		Spec: v1.SiloSpec{Service: &v1.SiloService{LoadBalancer: &v1.LoadBalancerSpec{Class: class, IP: ipName}}}}
 	if len(ports) == 0 {
 		ports = []int{30303}
 	}
 	for _, p := range ports {
-		s.Spec.Service.Ports = append(s.Spec.Service.Ports, v1.ServicePort{Name: fmt.Sprint("p", p), Port: p})
+		n := fmt.Sprint("p", p)
+		s.Spec.Ports = append(s.Spec.Ports, v1.SiloPort{Name: n, Port: p})
+		s.Spec.Service.Ports = append(s.Spec.Service.Ports, v1.ServicePort{Port: n, LoadBalancer: true})
 	}
+	return s
+}
+
+// hostPortSilo opens its port on its host's external IP: no load balancer, so no IP.
+func hostPortSilo(name string) *v1.Silo {
+	s := lbSilo(name, "", "", 0)
+	s.Spec.Service.LoadBalancer = nil
+	s.Spec.Service.Ports[0] = v1.ServicePort{Port: "p30303", HostPort: []string{"external"}}
 	return s
 }
 
@@ -67,7 +77,7 @@ func TestClaims(t *testing.T) {
 		{"same name, not its own: doesn't take a kept one", ip("node", "fake-ip"), true, []*v1.Silo{lbSilo("node", "fake-ip", "", 0)}, nil, nil},
 		{"kept but still held by it: claims", ip("node", "fake-ip", func(x *v1.IP) { x.Status.BoundTo = []v1.IPHolder{{Holder: "silo/node", UID: "silo-node"}} }), true,
 			[]*v1.Silo{lbSilo("node", "fake-ip", "", 0)}, nil, []string{"silo/node"}},
-		{"worker-ip has no IP", ip("node", v1.LBWorkerIP), false, []*v1.Silo{lbSilo("node", v1.LBWorkerIP, "", 0)}, nil, nil},
+		{"a host port has no IP", ip("node", v1.LBIPPool), true, []*v1.Silo{hostPortSilo("node")}, nil, nil},
 		{"egress.ip claims", ip("out", v1.LBIPPool), true, []*v1.Silo{{ObjectMeta: meta.ObjectMeta{Name: "p", Namespace: "web3", UID: "silo-p"},
 			Spec: v1.SiloSpec{Network: v1.SiloNetwork{Egress: v1.Egress{Source: v1.EgressPool, IP: "out"}}}}}, nil, []string{"silo/p"}},
 	} {

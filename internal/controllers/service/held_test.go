@@ -16,7 +16,7 @@ func TestSplit(t *testing.T) {
 	t0 := time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
 	mk := func(name string, probe, ready bool) *v1.Silo {
 		s := silo(name, "w1", "10.64.1."+name, map[string]string{"app": "rpc"}, true)
-		s.Status.Address = "10.64.1." + map[string]string{"a": "2", "b": "3", "c": "4"}[name]
+		s.Status.SiloIP = "10.64.1." + map[string]string{"a": "2", "b": "3", "c": "4"}[name]
 		if probe {
 			s.Spec.Probes = &v1.Probes{Readiness: &v1.Probe{TCP: &v1.TCPProbe{Port: "rpc"}}}
 		}

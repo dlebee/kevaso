@@ -36,7 +36,7 @@ const (
 )
 
 // OpPullCredential is a host's agent asking for the credential to pull one of its silos' images
-// (Name: the image), from the silo's imagePull secret or its namespace's default for the image's
+// (Name: the image), from the silo's container.pull secret or its namespace's default for the image's
 // registry. Never forwarded from a silo: the agent hands it to the engine for that one pull.
 const OpPullCredential = "pull-credential"
 

@@ -7,10 +7,13 @@ import (
 	v1 "kevaso.com/core/api/v1"
 )
 
+// exposed is a P2P node: p2p and disc (30303 TCP and UDP) on its host's external IP, rpc only
+// on its silo IP.
 func exposed(name, host string, f func(*v1.Silo)) *v1.Silo {
 	s := silo(name)
-	s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}, {Name: "rpc", Port: 8545}},
-		Expose: v1.ExposeHostPort, HostPort: &v1.HostPortSpec{Ports: []string{"p2p", "disc"}}}
+	s.Spec.Ports = []v1.SiloPort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}, {Name: "rpc", Port: 8545}}
+	s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{
+		{Port: "p2p", HostPort: []string{v1.NetworkExternal}}, {Port: "disc", HostPort: []string{v1.NetworkExternal}}, {Port: "rpc"}}}
 	s.Status.Host = host
 	if f != nil {
 		f(s)
@@ -31,39 +34,119 @@ func boundTo(s *v1.Silo) func(*v1.IP) {
 	return func(x *v1.IP) { x.Status.BoundTo = []v1.IPHolder{{Holder: v1.HolderSiloPrefix + s.Name, UID: s.UID}} }
 }
 
-func TestHostPortScheduling(t *testing.T) {
-	behind := host("home", func(h *v1.Host) {
-		h.Spec.Network.BehindNAT, h.Spec.Address = true, "192.168.1.20"
-		h.Status.Addresses = []string{"192.168.1.20", "10.0.0.5"}
-	})
-	// Behind NAT, or with only LAN addresses, is a normal host (design §7.2a): its ports answer on
-	// the addresses it has; how the outside reaches them (a router's forward, a balancer) is the
-	// user's.
-	d, _ := Schedule(exposed("a", "", nil), hosts(behind), nil)
-	if d.Host != "home" {
-		t.Fatalf("behind NAT: %+v", d)
+// onLB puts every port of s on a load balancer of class (and nowhere else).
+func onLB(s *v1.Silo, class, ip string) {
+	for i := range s.Spec.Service.Ports {
+		s.Spec.Service.Ports[i].HostPort, s.Spec.Service.Ports[i].LoadBalancer = nil, true
 	}
-	st, _ := ServiceStatus(exposed("a", "home", nil), behind, nil, Env{})
-	if st.PublicIP != "192.168.1.20" || strings.Join(st.AnswersOn, " ") != "192.168.1.20 10.0.0.5" || st.EgressIP != "" {
-		t.Fatalf("on a LAN host behind NAT: %+v", st)
+	s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: class, IP: ip}
+}
+
+// Placement by address (design §7.0): a port's hostPort needs that address on the host, and the
+// address and number free there; each excluded host says which rule excluded it.
+func TestHostPortPlacement(t *testing.T) {
+	both := func(name string) *v1.Host {
+		return host(name, func(h *v1.Host) { h.Spec.InternalIP, h.Spec.ExternalIP = "10.0.0.5", "51.38.10.20" })
 	}
-	// The same port on the same host goes elsewhere; a private port of the same number doesn't count.
-	first := exposed("first", "metal-1", nil)
-	d, _ = Schedule(exposed("second", "", nil), hosts(host("metal-1"), host("metal-2")), []*v1.Silo{first})
-	if d.Host != "metal-2" || !strings.Contains(d.Excluded["metal-1"], "port 30303/TCP already open for dev/first") {
-		t.Fatalf("conflict: %+v", d)
+	lan := host("lan", func(h *v1.Host) { h.Spec.InternalIP, h.Spec.Network.BehindNAT = "192.168.1.20", true })
+	bare := host("bare", func(h *v1.Host) { h.Spec.ExternalIP = "203.0.113.9" })
+	https := func(name, host string, nets []string, as int) *v1.Silo {
+		s := silo(name)
+		s.Status.Host = host
+		s.Spec.Ports = []v1.SiloPort{{Name: "https", Port: 8443}}
+		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "https", HostPort: nets, As: as}}}
+		return s
 	}
-	rpcOnly := exposed("rpc", "", func(s *v1.Silo) {
-		s.Spec.Service.Ports = []v1.ServicePort{{Name: "x", Port: 8545}, {Name: "p", Port: 30303}}
-		s.Spec.Service.HostPort.Ports = []string{"x"}
-	})
-	if d, _ = Schedule(rpcOnly, hosts(host("metal-1")), []*v1.Silo{first}); d.Host != "metal-1" {
-		t.Fatalf("8545 is private on first: %+v", d)
+	cases := []struct {
+		name     string
+		silo     *v1.Silo
+		hosts    []*v1.Host
+		placed   []*v1.Silo
+		want     string            // "" : nowhere
+		excluded map[string]string // host → a substring of its reason
+	}{
+		{"external: only hosts with an external IP", https("a", "", []string{"external"}, 443), []*v1.Host{lan, bare}, nil,
+			"bare", map[string]string{"lan": "no external IP, which port 443/TCP asks for (hostPort: [external])"}},
+		{"internal: a host with only an external IP can't", https("a", "", []string{"internal"}, 0), []*v1.Host{bare}, nil,
+			"", map[string]string{"bare": "no internal IP, which port 8443/TCP asks for"}},
+		{"both: needs both", https("a", "", []string{"internal", "external"}, 0), []*v1.Host{lan, bare, both("hv1")}, nil,
+			"hv1", map[string]string{"lan": "no external IP", "bare": "no internal IP"}},
+		{"behind NAT with an internal IP is an ordinary host", https("a", "", []string{"internal"}, 0), []*v1.Host{lan}, nil, "lan", nil},
+		{"the same address and number: elsewhere", https("b", "", []string{"external"}, 443), []*v1.Host{both("hv1"), both("hv2")},
+			[]*v1.Silo{https("a", "hv1", []string{"external"}, 443)},
+			"hv2", map[string]string{"hv1": "port 443/TCP on the external IP (51.38.10.20) is held by dev/a"}},
+		{"as counts, not the silo's number", https("b", "", []string{"external"}, 443), []*v1.Host{both("hv1")},
+			[]*v1.Silo{func() *v1.Silo { s := https("a", "hv1", []string{"external"}, 0); s.Spec.Ports[0].Port = 443; return s }()},
+			"", map[string]string{"hv1": "port 443/TCP on the external IP (51.38.10.20) is held by dev/a"}},
+		{"the same number on the other address is free", https("b", "", []string{"internal"}, 443), []*v1.Host{both("hv1")},
+			[]*v1.Silo{https("a", "hv1", []string{"external"}, 443)}, "hv1", nil},
+		{"a number only on a silo IP holds nothing", https("b", "", []string{"external"}, 8443), []*v1.Host{both("hv1")},
+			[]*v1.Silo{func() *v1.Silo { s := https("a", "hv1", nil, 0); return s }()}, "hv1", nil},
+		{"no hostPort: anywhere", func() *v1.Silo { s := https("a", "", nil, 0); return s }(), []*v1.Host{lan, bare}, nil, "", nil},
 	}
-	// Private services don't care about NAT.
-	private := exposed("p", "", func(s *v1.Silo) { s.Spec.Service.Expose, s.Spec.Service.HostPort = "", nil })
-	if d, _ = Schedule(private, hosts(behind), nil); d.Host != "home" {
-		t.Fatalf("private silo behind NAT: %+v", d)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, _ := Schedule(c.silo, hosts(c.hosts...), c.placed)
+			if c.want != "" && d.Host != c.want {
+				t.Fatalf("placed on %q, want %s: %+v", d.Host, c.want, d)
+			}
+			if c.want == "" && c.excluded != nil && d.Host != "" {
+				t.Fatalf("placed on %s, want nowhere: %+v", d.Host, d)
+			}
+			for h, why := range c.excluded {
+				if !strings.Contains(d.Excluded[h], why) {
+					t.Errorf("%s excluded for %q, want %q", h, d.Excluded[h], why)
+				}
+			}
+		})
+	}
+	// A UDP and a TCP port of the same number are different holdings.
+	tcp, udp := https("a", "hv1", []string{"external"}, 0), https("b", "", []string{"external"}, 0)
+	udp.Spec.Ports[0].Protocol = "UDP"
+	if d, _ := Schedule(udp, hosts(both("hv1")), []*v1.Silo{tcp}); d.Host != "hv1" {
+		t.Fatalf("UDP next to TCP: %+v", d)
+	}
+}
+
+// Where each port is reachable, placed (status.service.ports): its silo IP, and the host
+// addresses and load-balancer address it opens on, at its as number.
+func TestPortStatus(t *testing.T) {
+	h := host("ovh-1", func(h *v1.Host) { h.Spec.InternalIP, h.Spec.ExternalIP = "10.0.0.5", "51.38.10.20" })
+	s := silo("api-blue")
+	s.Status.Host, s.Status.SiloIP = "ovh-1", "10.64.2.7"
+	s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 8080}, {Name: "https", Port: 8443}, {Name: "metrics", Port: 9090}, {Name: "debug", Port: 9229}, {Name: "unused", Port: 1}}
+	s.Spec.Service = &v1.SiloService{Name: "api", Ports: []v1.ServicePort{
+		{Port: "http", AllowFrom: []string{"nginx-public"}},
+		{Port: "https", HostPort: []string{"external"}, As: 443},
+		{Port: "metrics", HostPort: []string{"internal"}, Sources: []string{"10.0.0.0/24"}},
+		{Port: "debug", HostPort: []string{"internal", "external"}},
+	}}
+	st, err := ServiceStatus(s, h, nil, Env{})
+	want := []v1.ServicePortStatus{
+		{Port: "http", Mesh: "10.64.2.7:8080"},
+		{Port: "https", Mesh: "10.64.2.7:8443", External: "51.38.10.20:443"},
+		{Port: "metrics", Mesh: "10.64.2.7:9090", Internal: "10.0.0.5:9090"},
+		{Port: "debug", Mesh: "10.64.2.7:9229", Internal: "10.0.0.5:9229", External: "51.38.10.20:9229"},
+	}
+	if err != nil || st.Name != "api.dev.kevaso" || len(st.Ports) != len(want) {
+		t.Fatalf("%+v %v", st, err)
+	}
+	for i := range want {
+		if st.Ports[i] != want[i] {
+			t.Errorf("port %d: %+v, want %+v", i, st.Ports[i], want[i])
+		}
+	}
+	if got := strings.Join(st.OutsideIPs(), " "); got != "51.38.10.20 10.0.0.5" {
+		t.Errorf("outside IPs %q", got)
+	}
+	// Another suffix, for a cluster that set one.
+	if st, _ := ServiceStatus(s, h, nil, Env{Suffix: "corp"}); st.Name != "api.dev.corp" {
+		t.Errorf("suffix: %s", st.Name)
+	}
+	// No service: no name, nothing reachable; its traffic out still has an address.
+	s.Spec.Service = nil
+	if st, _ := ServiceStatus(s, h, nil, Env{}); st.Name != "" || len(st.Ports) != 0 || st.EgressIP != "51.38.10.20" {
+		t.Errorf("no service: %+v", st)
 	}
 }
 
@@ -71,13 +154,12 @@ func TestIPScheduling(t *testing.T) {
 	lb := func(name, class string) *v1.Silo {
 		return exposed(name, "", func(s *v1.Silo) {
 			s.UID = "uid-" + name
-			s.Spec.Service.Expose, s.Spec.Service.HostPort = v1.ExposeLoadBalancer, nil
-			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: class, IP: "eth"}
+			onLB(s, class, "eth")
 			s.Spec.Network.Egress.Source = v1.EgressSameAsService
 		})
 	}
 	m1 := host("metal-1", func(h *v1.Host) {
-		h.Spec.Address = "198.51.100.10"
+		h.Spec.ExternalIP = "198.51.100.10"
 		h.Spec.Network.Addresses = []string{"198.51.100.16/30"}
 	})
 	m2 := host("metal-2")
@@ -109,7 +191,7 @@ func TestIPScheduling(t *testing.T) {
 	}
 	a.Status.Host = "metal-1"
 	st, err := ServiceStatus(a, m1, nil, Env{IPs: []*v1.IP{res}})
-	if err != nil || st.IP != "eth" || st.PublicIP != "198.51.100.17" || st.EgressIP != "198.51.100.17" || st.EgressNote != "" ||
+	if err != nil || st.IP != "eth" || st.LoadBalancerIP != "198.51.100.17" || st.Ports[0].LoadBalancer != "198.51.100.17:30303" || st.EgressIP != "198.51.100.17" || st.EgressNote != "" ||
 		len(st.HostAddresses) != 1 || st.HostAddresses[0] != "198.51.100.17" || st.Name != "a.dev.kevaso" {
 		t.Fatalf("a: %+v %v", st, err)
 	}
@@ -128,24 +210,26 @@ func TestIPScheduling(t *testing.T) {
 	}
 }
 
-// Nothing assumes a host's address, or an IP's, is public: a host with only a LAN address answers
-// on it and on the rest it has, and an ip-pool IP from a private range is handed out, placed and
-// sent from like any other.
+// Nothing assumes a host's address, or an IP's, is public: a host with only an internal IP on a
+// LAN opens [internal] ports on it, and an ip-pool IP from a private range is handed out, placed
+// and sent from like any other.
 func TestPrivateAddresses(t *testing.T) {
 	lan := host("lan-1", func(h *v1.Host) {
-		h.Spec.Address = "192.168.1.10"
+		h.Spec.InternalIP = "192.168.1.10"
 		h.Spec.Network.Addresses = []string{"192.168.1.48/30"} // .49 and .50, on the LAN
-		h.Status.Addresses = []string{"192.168.1.10", "192.168.1.49"}
 	})
-	hp := exposed("hp", "lan-1", func(s *v1.Silo) { s.Spec.Network.Egress.Source = v1.EgressSameAsService })
+	hp := exposed("hp", "lan-1", func(s *v1.Silo) {
+		s.Spec.Service.Ports[0].HostPort = []string{v1.NetworkInternal}
+		s.Spec.Service.Ports[1].HostPort = []string{v1.NetworkInternal}
+		s.Spec.Network.Egress.Source = v1.EgressSameAsService
+	})
 	st, _ := ServiceStatus(hp, lan, nil, Env{})
-	if st.PublicIP != "192.168.1.10" || st.EgressIP != "192.168.1.10" || strings.Join(st.AnswersOn, " ") != "192.168.1.10 192.168.1.49" {
+	if st.Ports[0].Internal != "192.168.1.10:30303" || st.EgressIP != "192.168.1.10" || strings.Join(st.OutsideIPs(), " ") != "192.168.1.10" {
 		t.Fatalf("a host port on a LAN-only host: %+v", st)
 	}
 	s := exposed("p", "", func(s *v1.Silo) {
 		s.UID = "uid-p"
-		s.Spec.Service.Expose, s.Spec.Service.HostPort = v1.ExposeLoadBalancer, nil
-		s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: v1.LBIPPool, IP: "lan-ip"}
+		onLB(s, v1.LBIPPool, "lan-ip")
 		s.Spec.Network.Egress.Source = v1.EgressSameAsService
 	})
 	x := ipObj("lan-ip", v1.LBIPPool, func(x *v1.IP) { boundTo(s)(x); x.Status.Host, x.Status.Address = "lan-1", "192.168.1.50" })
@@ -154,27 +238,27 @@ func TestPrivateAddresses(t *testing.T) {
 	}
 	s.Status.Host = "lan-1"
 	st, _ = ServiceStatus(s, lan, nil, Env{IPs: []*v1.IP{x}})
-	if st.PublicIP != "192.168.1.50" || st.EgressIP != "192.168.1.50" || strings.Join(st.AnswersOn, " ") != "192.168.1.50" || st.HostAddresses[0] != "192.168.1.50" {
+	if st.LoadBalancerIP != "192.168.1.50" || st.EgressIP != "192.168.1.50" || strings.Join(st.OutsideIPs(), " ") != "192.168.1.50" || st.HostAddresses[0] != "192.168.1.50" {
 		t.Fatalf("on a private ip-pool address: %+v", st)
 	}
 }
 
 // The table of design §7.2b: can a silo use the same IP out as in?
 func TestEgressTable(t *testing.T) {
-	h := host("metal-1", func(h *v1.Host) { h.Spec.Address = "198.51.100.10" })
+	h := host("metal-1", func(h *v1.Host) { h.Spec.ExternalIP = "198.51.100.10" })
 	classes := map[string]Class{
 		"fake-ip": {Plugin: "fake", Reserve: true, SendsFrom: true, Exclusive: true},
 		"fake-lb": {Plugin: "fake", NodePorts: true},
 	}
-	mk := func(expose, class, source string) *v1.Silo {
+	const hostPort, loadBalancer, private = "hostPort", "loadBalancer", "private"
+	mk := func(way, class, source string) *v1.Silo {
 		s := exposed("n", "metal-1", nil)
 		s.UID = "uid-n"
-		s.Spec.Service.Expose = expose
-		if expose != v1.ExposeHostPort {
-			s.Spec.Service.HostPort = nil
-		}
-		if expose == v1.ExposeLoadBalancer {
-			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: class}
+		switch way {
+		case loadBalancer:
+			onLB(s, class, "")
+		case private:
+			s.Spec.Service.Ports = []v1.ServicePort{{Port: "rpc"}}
 		}
 		s.Spec.Network.Egress.Source = source
 		return s
@@ -188,26 +272,25 @@ func TestEgressTable(t *testing.T) {
 		note      string // substring; "" means no note
 		sameInOut bool
 	}{
-		{"hostPort, host", mk(v1.ExposeHostPort, "", ""), "198.51.100.10", nil, "198.51.100.10", "", true},
-		{"hostPort, sameAsService", mk(v1.ExposeHostPort, "", v1.EgressSameAsService), "198.51.100.10", nil, "198.51.100.10", "", true},
-		{"worker-ip, sameAsService", mk(v1.ExposeLoadBalancer, v1.LBWorkerIP, v1.EgressSameAsService), "198.51.100.10", nil, "198.51.100.10", "", true},
-		{"ip-pool, sameAsService", mk(v1.ExposeLoadBalancer, v1.LBIPPool, v1.EgressSameAsService), "198.51.100.17", nil, "198.51.100.17", "", true},
-		{"ip-pool, host", mk(v1.ExposeLoadBalancer, v1.LBIPPool, ""), "198.51.100.17", nil, "198.51.100.10", "sameAsService sends from 198.51.100.17", false},
-		{"announced, sameAsService", mk(v1.ExposeLoadBalancer, "fake-ip", v1.EgressSameAsService), "203.0.113.100",
+		{"hostPort, host", mk(hostPort, "", ""), "", nil, "198.51.100.10", "", false},
+		{"hostPort, sameAsService", mk(hostPort, "", v1.EgressSameAsService), "", nil, "198.51.100.10", "", false},
+		{"ip-pool, sameAsService", mk(loadBalancer, v1.LBIPPool, v1.EgressSameAsService), "198.51.100.17", nil, "198.51.100.17", "", true},
+		{"ip-pool, host", mk(loadBalancer, v1.LBIPPool, ""), "198.51.100.17", nil, "198.51.100.10", "sameAsService sends from 198.51.100.17", false},
+		{"announced, sameAsService", mk(loadBalancer, "fake-ip", v1.EgressSameAsService), "203.0.113.100",
 			ipObj("n", "fake-ip", func(x *v1.IP) { x.Status.Address = "203.0.113.100" }), "203.0.113.100", "", true},
-		{"announced, sameAsService, address not yet", mk(v1.ExposeLoadBalancer, "fake-ip", v1.EgressSameAsService), "", nil, "198.51.100.10", "waiting for IP n", false},
-		{"balancer in front, sameAsService: never its address", mk(v1.ExposeLoadBalancer, "fake-lb", v1.EgressSameAsService), "198.51.100.200", nil,
+		{"announced, sameAsService, address not yet", mk(loadBalancer, "fake-ip", v1.EgressSameAsService), "", nil, "198.51.100.10", "waiting for IP n", false},
+		{"balancer in front, sameAsService: never its address", mk(loadBalancer, "fake-lb", v1.EgressSameAsService), "198.51.100.200", nil,
 			"198.51.100.10", "on no host, so nothing can send from it", false},
-		{"balancer in front, host", mk(v1.ExposeLoadBalancer, "fake-lb", ""), "198.51.100.200", nil, "198.51.100.10", "balancer's, on no host", false},
-		{"no plugin serves the class: not applied", mk(v1.ExposeLoadBalancer, "gone-lb", v1.EgressSameAsService), "198.51.100.200", nil,
+		{"balancer in front, host", mk(loadBalancer, "fake-lb", ""), "198.51.100.200", nil, "198.51.100.10", "balancer's, on no host", false},
+		{"no plugin serves the class: not applied", mk(loadBalancer, "gone-lb", v1.EgressSameAsService), "198.51.100.200", nil,
 			"198.51.100.10", "not applied", false},
-		{"private", mk(v1.ExposePrivate, "", ""), "", nil, "198.51.100.10", "", false},
+		{"private", mk(private, "", ""), "", nil, "198.51.100.10", "", false},
 	} {
 		var held *v1.IP
 		if c.ip != nil {
 			held = c.ip
 		}
-		out, note := Egress(c.silo, h, c.in, held, nil, classes)
+		out, note := Egress(c.silo, h, v1.SiloServiceStatus{LoadBalancerIP: c.in}, held, nil, classes)
 		if out != c.want || (c.note == "" && note != "") || !strings.Contains(note, c.note) {
 			t.Errorf("%s: out %q (%s), want %q (%q)", c.name, out, note, c.want, c.note)
 		}
@@ -216,23 +299,23 @@ func TestEgressTable(t *testing.T) {
 		}
 	}
 	// pool: its own IP's address out, whatever it's reached on.
-	s := mk(v1.ExposeHostPort, "", v1.EgressPool)
+	s := mk(loadBalancer, v1.LBIPPool, v1.EgressPool)
 	s.Spec.Network.Egress.IP = "out"
 	own := ipObj("out", v1.LBIPPool, func(x *v1.IP) { x.Status.Address, x.Status.Host = "198.51.100.18", "metal-1" })
-	if out, note := Egress(s, h, "198.51.100.10", nil, own, classes); out != "198.51.100.18" || !strings.Contains(note, "IP out's own address") {
+	if out, note := Egress(s, h, v1.SiloServiceStatus{LoadBalancerIP: "198.51.100.17"}, nil, own, classes); out != "198.51.100.18" || !strings.Contains(note, "IP out's own address") {
 		t.Errorf("pool: %s %s", out, note)
 	}
 }
 
 func TestServiceStatusHostPort(t *testing.T) {
-	h := host("metal-1", func(h *v1.Host) { h.Spec.Address = "198.51.100.10" })
+	h := host("metal-1", func(h *v1.Host) { h.Spec.ExternalIP = "198.51.100.10" })
 	s := exposed("n", "metal-1", func(s *v1.Silo) { s.Spec.Network.Egress.Source = v1.EgressSameAsService })
 	st, _ := ServiceStatus(s, h, nil, Env{})
-	if st.PublicIP != "198.51.100.10" || st.EgressIP != "198.51.100.10" || len(st.HostAddresses) != 0 {
+	if st.Ports[0].External != "198.51.100.10:30303" || st.EgressIP != "198.51.100.10" || len(st.HostAddresses) != 0 || st.LoadBalancerIP != "" {
 		t.Fatalf("%+v", st)
 	}
 	plain := silo("plain")
-	if st, _ := ServiceStatus(plain, h, nil, Env{}); st.PublicIP != "" || st.EgressIP != "198.51.100.10" {
+	if st, _ := ServiceStatus(plain, h, nil, Env{}); len(st.OutsideIPs()) != 0 || st.EgressIP != "198.51.100.10" {
 		t.Fatalf("private: %+v", st)
 	}
 	if st, _ := ServiceStatus(plain, host("home", func(h *v1.Host) { h.Spec.Network.BehindNAT = true }), nil, Env{}); st.EgressIP != "" {

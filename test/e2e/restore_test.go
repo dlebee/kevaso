@@ -98,14 +98,14 @@ func TestBackupAndRestore(t *testing.T) {
 	// 1. A cluster, with a secret.
 	a, target, ipA := machine("cpa")
 	initOut := kvoadmRun("", append(append([]string{"init"}, target...), "--kevasod", bin, "--name", "cp-1", "--cluster", "e2e",
-		"--api-server", "https://127.0.0.1:6443", "--address", ipA)...)
+		"--api-server", "https://127.0.0.1:6443", "--internal-ip", ipA)...)
 	rk := regexp.MustCompile(`KVR1-[A-Z0-9-]+`).FindString(initOut)
 	if rk == "" {
 		t.Fatalf("no recovery key in:\n%s", initOut)
 	}
 	_, targetW, ipW := machine("w1")
 	t.Log(kvoadmRun("", append(append([]string{"host", "add"}, targetW...), "--kevasod", bin, "--name", "w1", "--install", "worker",
-		"--runtime", "none", "--address", ipW, "--server", "https://"+ipA+":6443")...))
+		"--runtime", "none", "--internal-ip", ipW, "--server", "https://"+ipA+":6443")...))
 	const password = "s3cret-db-password-0123"
 	kvoMust("apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: payments }\n", "apply", "-f", "-")
 	kvoMust(password, "create", "secret", "db", "-n", "payments", "--from-file", "-")
@@ -134,13 +134,13 @@ func TestBackupAndRestore(t *testing.T) {
 	_, targetB, ipB := machine("cpb")
 	var o, e bytes.Buffer
 	if code := kvoadm.Run(ctx, append(append([]string{"init"}, targetB...), "--kevasod", bin, "--restore", file,
-		"--api-server", "https://127.0.0.1:6443", "--address", ipB),
+		"--api-server", "https://127.0.0.1:6443", "--internal-ip", ipB),
 		strings.NewReader(kms.NewRecoveryKey().String()+"\n"), &o, &e); code == 0 {
 		t.Fatal("restored with a wrong recovery key")
 	}
 	t.Logf("wrong key: %s", strings.TrimSpace(e.String()))
 	restoreOut := kvoadmRun(rk+"\n", append(append([]string{"init"}, targetB...), "--kevasod", bin, "--restore", file,
-		"--api-server", "https://127.0.0.1:6443", "--address", ipB)...)
+		"--api-server", "https://127.0.0.1:6443", "--internal-ip", ipB)...)
 	t.Logf("kvoadm init --restore:\n%s", restoreOut)
 	if strings.Contains(restoreOut, "KVR1-") {
 		t.Error("restore printed a recovery key")
@@ -154,7 +154,7 @@ func TestBackupAndRestore(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
 		hosts := kvoMust("", "get", "host", "cp-1", "-o", "yaml")
-		if strings.Contains(hosts, "address: "+ipB) {
+		if strings.Contains(hosts, "internalIP: "+ipB) {
 			break
 		}
 		if time.Now().After(deadline) {

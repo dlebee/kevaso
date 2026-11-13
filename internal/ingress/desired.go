@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/names"
 	"kevaso.com/core/sdk/kic"
 )
 
@@ -20,8 +21,10 @@ type Inputs struct {
 	Class     *v1.IngressClass
 	Driver    kic.Driver // the class's driver; nil: not one this cluster knows
 	Ingresses []*v1.Ingress
-	// Silo returns a silo by namespace and name (nil: none).
-	Silo func(namespace, name string) *v1.Silo
+	// Silos and Services are the cluster's, to find the service a rule names: a silo's own
+	// service (by its name) or a standalone Service.
+	Silos    []*v1.Silo
+	Services []*v1.Service
 	// Bundle returns a TLS Secret's value (certificate chain, then key, PEM), nil if not issued yet.
 	Bundle func(namespace, secret string) []byte
 	// Challenges are the pending ACME HTTP-01 answers (token → key authorization).
@@ -46,7 +49,7 @@ type Desired struct {
 
 // Routed is the default Routed: the silo runs and has an address.
 func Routed(s *v1.Silo) bool {
-	return s != nil && s.Status.Address != "" && (s.Status.Phase == "" || s.Status.Phase == "Running")
+	return s != nil && s.Status.SiloIP != "" && (s.Status.Phase == "" || s.Status.Phase == "Running")
 }
 
 // CheckIngress is what d refuses in ing (nil: nothing): its annotations for d, and host names or
@@ -118,7 +121,7 @@ func Desire(in Inputs) Desired {
 		knobs := kic.Annotations(info.Name, ing.Annotations)
 		tls := !ing.Spec.TLS.None
 		for _, r := range ing.Spec.Rules {
-			b, ok := backend(in, ing.Namespace, r.Silo, routed)
+			b, ok := Backend(in.Silos, in.Services, ing.Namespace, r.Service, routed)
 			if !ok {
 				continue // the target or its port isn't there (yet), or it isn't routed to now
 			}
@@ -173,21 +176,62 @@ func Desire(in Inputs) Desired {
 	return out
 }
 
-// backend is a target silo's private address and the number of its named port.
-func backend(in Inputs, ns string, t v1.IngressTarget, routed func(*v1.Silo) bool) (kic.Backend, bool) {
-	if in.Silo == nil {
-		return kic.Backend{}, false
+// Backend is where a rule's service port is: a silo's own service, its silo IP and the declared
+// port it opens; a standalone Service, its cluster IP and that port of it (while it has an
+// endpoint). ok is false when the service, or that port of it, isn't there (yet), or isn't
+// routed to now.
+func Backend(silos []*v1.Silo, svcs []*v1.Service, ns string, t v1.IngressTarget, routed func(*v1.Silo) bool) (kic.Backend, bool) {
+	if routed == nil {
+		routed = Routed
 	}
-	s := in.Silo(ns, t.Name)
-	if s == nil || s.Spec.Service == nil || !routed(s) || s.Status.Address == "" {
-		return kic.Backend{}, false
-	}
-	for _, p := range s.Spec.Service.Ports {
-		if p.Name == t.Port {
-			return kic.Backend{Address: s.Status.Address, Port: p.Port}, true
+	s, svc := names.Owner(ns, t.Name, silos, svcs)
+	switch {
+	case svc != nil:
+		if svc.Status.ClusterIP == "" || len(svc.Status.Endpoints) == 0 {
+			return kic.Backend{}, false
+		}
+		for _, p := range svc.Spec.Ports {
+			if p.Name == t.Port {
+				return kic.Backend{Address: svc.Status.ClusterIP, Port: p.Port}, true
+			}
+		}
+	case s != nil:
+		if !routed(s) || s.Status.SiloIP == "" {
+			return kic.Backend{}, false
+		}
+		if p, ok := s.Spec.OpenPort(t.Port); ok {
+			return kic.Backend{Address: s.Status.SiloIP, Port: p.Number}, true
 		}
 	}
 	return kic.Backend{}, false
+}
+
+// Targets are the silos and declared ports a rule's service sends to: a silo's own service, that
+// silo and the port; a standalone Service, each silo it selects (standby left out) and the port
+// it targets there. An Ingress's controller is let through to each (its generated path).
+func Targets(silos []*v1.Silo, svcs []*v1.Service, ns string, t v1.IngressTarget) map[*v1.Silo]string {
+	out := map[*v1.Silo]string{}
+	s, svc := names.Owner(ns, t.Name, silos, svcs)
+	switch {
+	case s != nil:
+		out[s] = t.Port
+	case svc != nil:
+		for _, p := range svc.Spec.Ports {
+			if p.Name != t.Port {
+				continue
+			}
+			target := p.TargetPort
+			if target == "" {
+				target = p.Name
+			}
+			for _, x := range silos {
+				if x.Namespace == ns && x.DeletionTimestamp == nil && x.Labels[v1.LabelStandby] != "true" && v1.Selects(svc.Spec.Selector, x.Labels) {
+					out[x] = target
+				}
+			}
+		}
+	}
+	return out
 }
 
 // SplitBundle splits a TLS Secret's value into its certificate chain and its private key (PEM);

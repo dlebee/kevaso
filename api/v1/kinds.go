@@ -38,7 +38,7 @@ func init() {
 	register(KindInfo{Kind: "Ingress", Plural: "ingresses", ShortNames: []string{"ing"}, Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Ingress{} }})
 	register(KindInfo{Kind: "Issuer", Plural: "issuers", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &Issuer{} }})
 	register(KindInfo{Kind: "Certificate", Plural: "certificates", ShortNames: []string{"cert"}, Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Certificate{} }})
-	register(KindInfo{Kind: "Image", Plural: "images", ShortNames: []string{"img"}, Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Image{} }})
+	register(KindInfo{Kind: "VMImage", Plural: "vmimages", ShortNames: []string{"vmi"}, Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &VMImage{} }})
 	register(KindInfo{Kind: "SiloSet", Plural: "silosets", ShortNames: []string{"ss"}, Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &SiloSet{} }})
 	register(KindInfo{Kind: "Service", Plural: "services", ShortNames: []string{"svc"}, Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Service{} }})
 	register(KindInfo{Kind: "Approval", Plural: "approvals", Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Approval{} }})

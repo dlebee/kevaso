@@ -14,7 +14,7 @@ kind: Silo
 metadata: { name: hello, namespace: demo }
 spec:
   runtime: cloud-hypervisor       # a microVM with a real network card
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 1Gi }
   disk: { size: 10Gi }            # thin LVM on the host
   init:                           # run inside the VM, in order, before the silo is Ready

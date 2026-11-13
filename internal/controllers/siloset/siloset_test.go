@@ -14,8 +14,8 @@ var t0 = time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
 
 func newSet(instances int, mut ...func(*v1.SiloSet)) *v1.SiloSet {
 	s := &v1.SiloSet{ObjectMeta: meta.ObjectMeta{Name: "rpc", Namespace: "web3", UID: "set-uid", Generation: 1},
-		Spec: v1.SiloSetSpec{Image: "geth:v1", Instances: instances,
-			Template: v1.SiloTemplate{Labels: map[string]string{"app": "rpc"}, SiloSpec: v1.SiloSpec{Runtime: "docker"}}}}
+		Spec: v1.SiloSetSpec{Instances: instances,
+			Template: v1.SiloTemplate{Labels: map[string]string{"app": "rpc"}, SiloSpec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "geth:v1"}}}}}
 	for _, m := range mut {
 		m(s)
 	}
@@ -61,7 +61,7 @@ func materialize(set *v1.SiloSet, p siloset.Plan, have []*v1.Silo, ready bool) [
 }
 
 func equalSpec(a, b *v1.Silo) bool {
-	return a != nil && a.Spec.Image == b.Spec.Image && a.Spec.Reset == b.Spec.Reset
+	return a != nil && a.Spec.From() == b.Spec.From() && a.Spec.Reset == b.Spec.Reset
 }
 
 func names(l []*v1.Silo) []string {
@@ -80,7 +80,7 @@ func TestScaleOutAndIn(t *testing.T) {
 		t.Fatalf("create: %v", got)
 	}
 	c := p.Create[0]
-	if c.Spec.Image != "geth:v1" || c.Labels["app"] != "rpc" || c.Labels[v1.LabelSiloSet] != "rpc" || c.Labels[v1.LabelRevision] != set.Revision() ||
+	if c.Spec.From() != "geth:v1" || c.Labels["app"] != "rpc" || c.Labels[v1.LabelSiloSet] != "rpc" || c.Labels[v1.LabelRevision] != set.Revision() ||
 		len(c.OwnerReferences) != 1 || c.OwnerReferences[0].UID != "set-uid" {
 		t.Fatalf("instance: %+v", c)
 	}
@@ -170,26 +170,26 @@ func rollout(t *testing.T, set *v1.SiloSet, insts []*v1.Silo) (maxDown, maxTotal
 func TestRollingUpdate(t *testing.T) {
 	set := newSet(4, func(s *v1.SiloSet) { s.Spec.UpgradePolicy = v1.UpgradeRolling })
 	insts := materialize(set, siloset.Decide(set, nil), nil, true)
-	set.Spec.Image = "geth:v2"
+	set.Spec.Template.VM = &v1.VMSource{Image: "geth:v2"}
 	down, total, final := rollout(t, set, insts)
 	if down != 1 || total != 4 {
 		t.Fatalf("StopFirst, maxUnavailable 1: %d down at once, %d instances at most", down, total)
 	}
 	for _, s := range final {
-		if s.Spec.Image != "geth:v2" || s.Labels[v1.LabelRevision] != set.Revision() {
+		if s.Spec.From() != "geth:v2" || s.Labels[v1.LabelRevision] != set.Revision() {
 			t.Fatalf("%s not updated: %+v", s.Name, s.Spec)
 		}
 	}
 
 	// StartFirst: one extra first, never fewer than 4 Ready, back to 4 at the end.
-	set.Spec.Image, set.Spec.Update = "geth:v3", v1.SiloSetUpdate{Strategy: v1.StartFirst, MaxUnavailable: ptr(0)}
+	set.Spec.Template.VM, set.Spec.Update = &v1.VMSource{Image: "geth:v3"}, v1.SiloSetUpdate{Strategy: v1.StartFirst, MaxUnavailable: ptr(0)}
 	down, total, final = rollout(t, set, final)
 	if total != 5 || len(final) != 4 {
 		t.Fatalf("StartFirst: %d at most, %d after", total, len(final))
 	}
 	ready := 0
 	for _, s := range final {
-		if s.Spec.Image == "geth:v3" {
+		if s.Spec.From() == "geth:v3" {
 			ready++
 		}
 	}
@@ -200,7 +200,7 @@ func TestRollingUpdate(t *testing.T) {
 
 	// Exclusive instances: one at a time, never a surge, whatever is asked.
 	set.Spec.Template.Exclusive = true
-	set.Spec.Image, set.Spec.Update = "geth:v4", v1.SiloSetUpdate{MaxUnavailable: ptr(3), MaxSurge: ptr(2)}
+	set.Spec.Template.VM, set.Spec.Update = &v1.VMSource{Image: "geth:v4"}, v1.SiloSetUpdate{MaxUnavailable: ptr(3), MaxSurge: ptr(2)}
 	down, total, _ = rollout(t, set, final)
 	if down != 1 || total != 4 {
 		t.Fatalf("exclusive: %d down at once, %d at most", down, total)
@@ -210,7 +210,7 @@ func TestRollingUpdate(t *testing.T) {
 func TestManualUpgradeAndReset(t *testing.T) {
 	set := newSet(2) // Manual
 	insts := materialize(set, siloset.Decide(set, nil), nil, true)
-	set.Spec.Image = "geth:v2"
+	set.Spec.Template.VM = &v1.VMSource{Image: "geth:v2"}
 	p := siloset.Decide(set, insts)
 	if len(p.Update) != 0 {
 		t.Fatalf("Manual updated %v", names(p.Update))
@@ -220,7 +220,7 @@ func TestManualUpgradeAndReset(t *testing.T) {
 	}
 	// New instances get the new image.
 	set.Spec.Instances = 3
-	if p = siloset.Decide(set, insts); len(p.Create) != 1 || p.Create[0].Spec.Image != "geth:v2" {
+	if p = siloset.Decide(set, insts); len(p.Create) != 1 || p.Create[0].Spec.From() != "geth:v2" {
 		t.Fatalf("new instance image: %+v", p.Create)
 	}
 	set.Spec.Instances = 2
@@ -231,7 +231,7 @@ func TestManualUpgradeAndReset(t *testing.T) {
 		t.Fatalf("rolling reset: %d down at once", down)
 	}
 	for _, s := range final {
-		if s.Spec.Image != "geth:v2" || s.Spec.Reset != set.Spec.Reset {
+		if s.Spec.From() != "geth:v2" || s.Spec.Reset != set.Spec.Reset {
 			t.Fatalf("%s not reset: %+v", s.Name, s.Spec)
 		}
 	}
@@ -240,7 +240,7 @@ func TestManualUpgradeAndReset(t *testing.T) {
 func TestInstanceSpec(t *testing.T) {
 	set := newSet(1, func(s *v1.SiloSet) { s.Spec.Spread = "host" })
 	sp := set.InstanceSpec()
-	if sp.Image != "geth:v1" || sp.Placement.Spread == nil || sp.Placement.Spread.Selector[v1.LabelSiloSet] != "rpc" {
+	if sp.From() != "geth:v1" || sp.Placement.Spread == nil || sp.Placement.Spread.Selector[v1.LabelSiloSet] != "rpc" {
 		t.Fatalf("instance spec: %+v", sp)
 	}
 	r := set.Revision()

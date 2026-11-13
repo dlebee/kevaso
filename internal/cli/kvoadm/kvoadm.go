@@ -5,10 +5,13 @@
 //	             [--api-server URL] [--cluster NAME] [--user NAME]      the control plane, your kvo
 //	                                                                    context, the recovery key
 //	             [--store sqlite|etcd]                                  etcd: ready for more system nodes
+//	             [--internal-ip IP] [--external-ip IP]                  the machine's addresses (neither:
+//	                                                                    the SSH address, as internal)
 //	kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime R]… [--loop-storage SIZE]
 //	                                                                    the same machine runs silos too
 //	kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker …   another machine
-//	kvoadm host list | drain NAME | uncordon NAME
+//	             [--internal-ip IP] [--external-ip IP]
+//	kvoadm host list | drain NAME | uncordon NAME                     list: both IPs of every host
 //	kvoadm users invite NAME [--namespace NS [--role editor]] | list | disable NAME
 //	kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
 //
@@ -36,6 +39,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -118,12 +122,12 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if len(args) == 0 || args[0] != "init" {
 		_, _ = fmt.Fprintln(stderr, `usage:
-  kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL] [--store sqlite|etcd] [--restore BACKUP]
+  kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL] [--store sqlite|etcd] [--restore BACKUP] [--internal-ip IP] [--external-ip IP]
   kvoadm backup [USER@]ADDRESS --output FILE [--ssh-key PATH]
   kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime NAME]… [--loop-storage SIZE]
   kvoadm host reconnect [USER@]ADDRESS --ssh-key PATH [--server URL]
-  kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker [--runtime NAME]…
-  kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install control-plane [--state-only]
+  kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker [--runtime NAME]… [--internal-ip IP] [--external-ip IP]
+  kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install control-plane [--state-only] [--internal-ip IP] [--external-ip IP]
   kvoadm host install HOST control-plane [--state-only] | uninstall HOST control-plane | remove HOST
   kvoadm host list | drain NAME | uncordon NAME
   kvoadm store migrate [USER@]ADDRESS --ssh-key PATH
@@ -132,7 +136,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
   kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--credential NAME=FILE]… [--side controller|node]
   kvoadm plugin remove [USER@]ADDRESS --name NAME
-  kvoadm ingress install [--class public] [--driver nginx|caddy|kong] [--public] [--lb-class worker-ip] [--image REF] [--option K=V]…
+  kvoadm ingress install [--class public] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --lb-class CLASS] [--image REF] [--option K=V]…
 The step-by-step guide: https://dlebee.github.io/kevaso-docs/setup/prepare/`)
 		return 2
 	}
@@ -155,14 +159,17 @@ The step-by-step guide: https://dlebee.github.io/kevaso-docs/setup/prepare/`)
 type InitOptions struct {
 	User, Address, Name, SSHKey, HostKey, Kevasod, APIServer, Cluster, UserName, Home string
 	SSHPort                                                                           int
-	HostKeyFirstUse                                                                   bool     // trust the host key without asking (tests only)
-	Worker                                                                            bool     // also install the worker component (one-host cluster)
-	LoopStorage                                                                       string   // development: back silo disks with a loop file of this size
-	Advertise                                                                         string   // the address other hosts reach this one at, if not the SSH one
-	EgressExtraCA                                                                     string   // a PEM file on the host the egress gate also trusts upstream
-	Runtimes                                                                          []string // worker runtimes (default cloud-hypervisor)
-	GatewayScope                                                                      string   // OpenShell: host | namespace | silo
-	Password                                                                          bool     // log in with a password once (no --ssh-key): kvoadm then adds its own key
+	HostKeyFirstUse                                                                   bool   // trust the host key without asking (tests only)
+	Worker                                                                            bool   // also install the worker component (one-host cluster)
+	LoopStorage                                                                       string // development: back silo disks with a loop file of this size
+	// InternalIP and ExternalIP are the machine's addresses as the operator declares them (design
+	// §7.0): its address on its own network, and the one reachable from outside it. Neither
+	// given: the SSH address, as its internal IP (kvoadm can't know it's reachable from outside).
+	InternalIP, ExternalIP string
+	EgressExtraCA          string   // a PEM file on the host the egress gate also trusts upstream
+	Runtimes               []string // worker runtimes (default cloud-hypervisor)
+	GatewayScope           string   // OpenShell: host | namespace | silo
+	Password               bool     // log in with a password once (no --ssh-key): kvoadm then adds its own key
 	// Extra hardening, only when asked for (flags, or a question in a terminal).
 	DisablePasswordLogin bool
 	ChangeRootPassword   bool
@@ -202,6 +209,9 @@ func parseInit(args []string) (InitOptions, error) {
 	}
 	if o.Kevasod == "" {
 		return o, errors.New("--kevasod PATH is required: a kevasod binary for the host's OS and CPU (release downloads come later)")
+	}
+	if err := needIPs(o); err != nil {
+		return o, err
 	}
 	return o, needCredential(o)
 }
@@ -260,8 +270,10 @@ func parseTarget(args []string) (InitOptions, error) {
 			o.Worker = true
 		case "--loop-storage":
 			o.LoopStorage, err = next()
-		case "--address":
-			o.Advertise, err = next()
+		case "--internal-ip":
+			o.InternalIP, err = next()
+		case "--external-ip":
+			o.ExternalIP, err = next()
 		case "--egress-extra-ca":
 			o.EgressExtraCA, err = next()
 		case "--runtime":
@@ -292,6 +304,16 @@ func parseTarget(args []string) (InitOptions, error) {
 	}
 	if o.Name == "" {
 		o.Name = strings.ReplaceAll(o.Address, ".", "-")
+	}
+	for _, f := range []struct{ flag, v string }{{"--internal-ip", o.InternalIP}, {"--external-ip", o.ExternalIP}} {
+		if a, err := netip.ParseAddr(f.v); f.v != "" && (err != nil || !a.Is4()) {
+			return o, fmt.Errorf("%s %q: want an IPv4 address", f.flag, f.v)
+		}
+	}
+	if o.InternalIP == "" && o.ExternalIP == "" {
+		if a, err := netip.ParseAddr(o.Address); err == nil && a.Is4() {
+			o.InternalIP = o.Address
+		}
 	}
 	if o.UserName == "" {
 		if u, err := user.Current(); err == nil {
@@ -431,14 +453,44 @@ func SSHKey(dir string) (ssh.Signer, []byte, error) {
 	return s, ssh.MarshalAuthorizedKey(s.PublicKey()), nil
 }
 
+// Reach is where other hosts reach this machine: its external IP if it has one, else its internal
+// IP, else the SSH address (ADR 0010).
+func (o InitOptions) Reach() string {
+	switch {
+	case o.ExternalIP != "":
+		return o.ExternalIP
+	case o.InternalIP != "":
+		return o.InternalIP
+	}
+	return o.Address
+}
+
+// ipArgs are kevasod's flags for the machine's addresses.
+func (o InitOptions) ipArgs() []string {
+	var args []string
+	if o.InternalIP != "" {
+		args = append(args, "--internal-ip", o.InternalIP)
+	}
+	if o.ExternalIP != "" {
+		args = append(args, "--external-ip", o.ExternalIP)
+	}
+	return args
+}
+
+// needIPs says the machine needs an address of its own when neither flag gave one and the SSH
+// target is a name.
+func needIPs(o InitOptions) error {
+	if o.InternalIP == "" && o.ExternalIP == "" {
+		return fmt.Errorf("%s isn't an IPv4 address: say which addresses the machine has, --internal-ip IP (on its own network) and/or --external-ip IP (reachable from outside it)", o.Address)
+	}
+	return nil
+}
+
 // Unit is the control plane's systemd unit.
 func Unit(o InitOptions) string {
-	addr := o.Address
-	if o.Advertise != "" {
-		addr = o.Advertise
-	}
-	args := []string{"control-plane", "--name", o.Name, "--address", addr, "--cluster", o.Cluster}
-	if o.Advertise != "" && o.Advertise != o.Address {
+	addr := o.Reach()
+	args := append(append([]string{"control-plane", "--name", o.Name}, o.ipArgs()...), "--cluster", o.Cluster)
+	if o.Address != o.InternalIP && o.Address != o.ExternalIP {
 		args = append(args, "--extra-name", o.Address)
 	}
 	if o.Store == "etcd" {
@@ -561,11 +613,7 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	}
 	// 8. After a restore: the workers, pointed at this control plane.
 	if restore != nil {
-		addr := o.Address
-		if o.Advertise != "" {
-			addr = o.Advertise
-		}
-		if err := reconnectWorkers(ctx, o, c, "https://"+net.JoinHostPort(addr, "6443"), stdin, out); err != nil {
+		if err := reconnectWorkers(ctx, o, c, "https://"+net.JoinHostPort(o.Reach(), "6443"), stdin, out); err != nil {
 			return fmt.Errorf("reconnecting workers: %w", err)
 		}
 	}

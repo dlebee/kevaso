@@ -20,7 +20,7 @@ import (
 	"kevaso.com/core/sdk/kplugin/kplugintest"
 )
 
-// Example 07 in a real control plane (M12): an Image, a SiloSet of three instances from it spread
+// Example 07 in a real control plane (M12): a SiloSet of three container instances spread
 // over two hosts, and a Service of type LoadBalancer in front of them through a plugin's class.
 // Then a rolling upgrade to v2 (never more than one instance down), admission refusing what would
 // run two copies, a scale-in that spares a protected instance, and deleting the set deleting its
@@ -38,7 +38,7 @@ func TestSiloSetAndService(t *testing.T) {
 	if err := reg.Add(ctx, fake); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", Address: "127.0.0.1",
+	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond,
 		Plugins: reg}); err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func TestSiloSetAndService(t *testing.T) {
 	hostAddr := map[string]string{"w1": "203.0.113.5", "w2": "203.0.113.6"}
 	for name, addr := range hostAddr {
 		h := &v1.Host{TypeMeta: tm("Host"), ObjectMeta: meta.ObjectMeta{Name: name},
-			Spec: v1.HostSpec{Address: addr, Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "docker"}}}}}}
+			Spec: v1.HostSpec{ExternalIP: addr, Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "docker"}}}}}}
 		if err := admin.Create(ctx, h); err != nil {
 			t.Fatal(err)
 		}
@@ -117,7 +117,7 @@ func TestSiloSetAndService(t *testing.T) {
 						addrs[s.UID] = fmt.Sprintf("10.64.%d.%d", map[string]int{"w1": 1, "w2": 2}[s.Status.Host], 1+addr)
 						addr++
 					}
-					s.Status.Phase, s.Status.Address = "Running", addrs[s.UID]
+					s.Status.Phase, s.Status.SiloIP = "Running", addrs[s.UID]
 					s.Status.Image.Running, s.Status.Image.Reset = s.Status.Image.Ref, s.Spec.Reset
 					meta.SetCondition(&s.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "Running", ObservedGeneration: s.Generation}, now)
 					_ = admin.UpdateStatus(ctx, s)
@@ -142,19 +142,21 @@ func TestSiloSetAndService(t *testing.T) {
 	if err := admin.Create(ctx, ns("web3")); err != nil {
 		t.Fatal(err)
 	}
-	// A set of containers: its image is a registry reference, and it rolls when that changes. (Images
+	// A set of containers: its image is a registry reference, and it rolls when that changes. (VMImages
 	// are machine disks, for cloud-hypervisor: a version can't change once added.)
 	sum := strings.Repeat("ab", 32)
-	img := &v1.Image{TypeMeta: tm("Image"), ObjectMeta: meta.ObjectMeta{Name: "geth-disk", Namespace: "web3"},
-		Spec: v1.ImageSpec{Versions: []v1.ImageVersion{{Name: "v1", Disk: &v1.ImageDisk{URL: "https://images.example.com/geth-1.img", SHA256: sum}}}}}
+	img := &v1.VMImage{TypeMeta: tm("VMImage"), ObjectMeta: meta.ObjectMeta{Name: "geth-disk", Namespace: "web3"},
+		Spec: v1.VMImageSpec{Versions: []v1.VMImageVersion{{Name: "v1", Disk: &v1.VMDisk{URL: "https://images.example.com/geth-1.img", SHA256: sum}}}}}
 	if err := admin.Create(ctx, img); err != nil {
 		t.Fatal(err)
 	}
 	set := &v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: "rpc-pool", Namespace: "web3"},
-		Spec: v1.SiloSetSpec{Image: "docker.io/ethereum/client-go:v1.14.0", Instances: 3, Spread: "host", UpgradePolicy: v1.UpgradeRolling,
+		Spec: v1.SiloSetSpec{Instances: 3, Spread: "host", UpgradePolicy: v1.UpgradeRolling,
 			Template: v1.SiloTemplate{Labels: map[string]string{"app": "rpc"}, SiloSpec: v1.SiloSpec{Runtime: "docker",
+				Container: &v1.ContainerSource{Image: "docker.io/ethereum/client-go:v1.14.0"},
 				Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-				Service:   &v1.SiloService{Ports: []v1.ServicePort{{Name: "rpc", Port: 8545}}}}}}}
+				Ports:     []v1.SiloPort{{Name: "rpc", Port: 8545}},
+				Service:   &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc"}}}}}}}
 	if err := admin.Create(ctx, set); err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +210,7 @@ func TestSiloSetAndService(t *testing.T) {
 		_ = admin.Get(ctx, "Service", "web3", "rpc", &s)
 		lb, ok := fake.LBOf("web3", "service/rpc")
 		return s.Status.ClusterIP == "10.65.0.1" && len(s.Status.Endpoints) == 3 && len(s.Status.NodePorts) == 1 &&
-				s.Status.NodePorts[0].NodePort == v1.NodePortSiloMax+1 && s.Status.PublicIP != "" && ok && len(lb.Backends) == 2 &&
+				s.Status.NodePorts[0].NodePort == v1.NodePortSiloMax+1 && s.Status.LoadBalancerIP != "" && ok && len(lb.Backends) == 2 &&
 				lb.Ports[0].NodePort == v1.NodePortSiloMax+1,
 			fmt.Sprintf("%+v lb=%+v", s.Status, lb)
 	})
@@ -235,16 +237,16 @@ func TestSiloSetAndService(t *testing.T) {
 	if err := admin.Create(ctx, one); !client.IsInvalid(err) || !strings.Contains(err.Error(), "M14") {
 		t.Fatalf("StartFirst on one silo: %v", err)
 	}
-	_ = admin.Get(ctx, "Image", "web3", "geth-disk", img)
+	_ = admin.Get(ctx, "VMImage", "web3", "geth-disk", img)
 	img.Spec.Versions[0].Disk.URL = "https://images.example.com/geth-1b.img"
 	if err := admin.Update(ctx, img); !client.IsInvalid(err) || !strings.Contains(err.Error(), "can't change once added") {
 		t.Fatalf("changing a version: %v", err)
 	}
 	wrong := *set
 	wrong.ObjectMeta = meta.ObjectMeta{Name: "from-a-disk", Namespace: "web3"}
-	wrong.Spec.Image = "geth-disk:v1"
-	if err := admin.Create(ctx, &wrong); !client.IsInvalid(err) || !strings.Contains(err.Error(), "geth-disk is an Image, a disk image for cloud-hypervisor") {
-		t.Fatalf("a set of containers from an Image: %v", err)
+	wrong.Spec.Template.Container = &v1.ContainerSource{Image: "geth-disk:v1"}
+	if err := admin.Create(ctx, &wrong); !client.IsInvalid(err) || !strings.Contains(err.Error(), "geth-disk is a VMImage, a disk for cloud-hypervisor") {
+		t.Fatalf("a set of containers from a VMImage: %v", err)
 	}
 
 	// v2, rolled out by changing the reference: one instance down at a time, the service following.
@@ -252,7 +254,7 @@ func TestSiloSetAndService(t *testing.T) {
 	maxDown = 0
 	mu.Unlock()
 	_ = admin.Get(ctx, "SiloSet", "web3", "rpc-pool", set)
-	set.Spec.Image = "docker.io/ethereum/client-go:v1.15.0"
+	set.Spec.Template.Container.Image = "docker.io/ethereum/client-go:v1.15.0"
 	if err := admin.Update(ctx, set); err != nil {
 		t.Fatal(err)
 	}

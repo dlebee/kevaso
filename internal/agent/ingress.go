@@ -200,7 +200,7 @@ func (l *ingressLoop) apply(ctx context.Context, s *v1.Silo, classes []*v1.Ingre
 	return nil
 }
 
-// adminCall is an HTTP call to a proxy's admin API on its silo's private address.
+// adminCall is an HTTP call to a proxy's admin API on its silo IP.
 func adminCall(ctx context.Context, address string, c kic.Call) (int, string, error) {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

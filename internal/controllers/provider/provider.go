@@ -111,9 +111,9 @@ func (c *Hosts) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		return engine.Result{}, nil
 	}
 	h := o.(*v1.Host)
-	// Heartbeats change the Host every 30 s; the plugins only need asking when its address or the
+	// Heartbeats change the Host every 30 s; the plugins only need asking when its addresses or the
 	// plugins changed, and now and then.
-	key := h.Spec.Address + "|" + pluginsKey(c.Plugins)
+	key := h.Spec.InternalIP + "|" + h.Spec.ExternalIP + "|" + pluginsKey(c.Plugins)
 	if remember(&c.mu, &c.seen, h.Name, key, every) {
 		return engine.Result{}, nil
 	}
@@ -122,7 +122,7 @@ func (c *Hosts) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		if !p.Info.Hosts {
 			continue
 		}
-		infos, err := p.Conn.DescribeHosts(ctx, []kplugin.Host{{Name: h.Name, Address: h.Spec.Address}})
+		infos, err := p.Conn.DescribeHosts(ctx, []kplugin.Host{{Name: h.Name, InternalIP: h.Spec.InternalIP, ExternalIP: h.Spec.ExternalIP}})
 		if err != nil {
 			return engine.Result{}, fmt.Errorf("plugin %s: %w", p.Info.Name, err)
 		}

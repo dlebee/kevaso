@@ -14,8 +14,9 @@ var t0 = time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
 
 func silo(routeWhen string, readinessProbe bool, phase string, ready bool) *v1.Silo {
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "rpc-0", Namespace: "web3", Labels: map[string]string{"app": "rpc"}},
-		Spec:   v1.SiloSpec{Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "rpc", Port: 8545}}, RouteWhen: routeWhen}},
-		Status: v1.SiloStatus{Phase: phase, Address: "10.64.1.2", Host: "w1"}}
+		Spec: v1.SiloSpec{Ports: []v1.SiloPort{{Name: "rpc", Port: 8545}},
+			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc"}}, RouteWhen: routeWhen}},
+		Status: v1.SiloStatus{Phase: phase, SiloIP: "10.64.1.2", Host: "w1"}}
 	if readinessProbe {
 		s.Spec.Probes = &v1.Probes{Readiness: &v1.Probe{HTTP: &v1.HTTPProbe{Port: "rpc"}}}
 	}
@@ -61,7 +62,7 @@ func TestSilo(t *testing.T) {
 		t.Fatal("no service: nothing to route, nothing held")
 	}
 	noAddr := silo("running", false, "Running", true)
-	noAddr.Status.Address = ""
+	noAddr.Status.SiloIP = ""
 	if routing.Routed(noAddr) {
 		t.Fatal("no address: nothing to send to")
 	}

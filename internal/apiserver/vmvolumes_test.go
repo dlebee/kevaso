@@ -29,9 +29,9 @@ func TestVMVolumesAdmission(t *testing.T) {
 		t.Fatalf("a volume over the root: %v", err)
 	}
 	oshell := newSilo("os")
-	oshell.Spec.Runtime = "openshell"
+	oshell.Spec.Runtime, oshell.Spec.VM, oshell.Spec.Container = "openshell", nil, &v1.ContainerSource{Image: "ghcr.io/acme/agent:v1"}
 	oshell.Spec.Volumes = s.Spec.Volumes[:1]
-	if err := c.Create(ctx, oshell); !client.IsInvalid(err) {
+	if err := c.Create(ctx, oshell); !client.IsInvalid(err) || !strings.Contains(err.Error(), "volumes on openshell come later") {
 		t.Fatalf("openshell with volumes: %v", err)
 	}
 

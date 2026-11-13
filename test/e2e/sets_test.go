@@ -143,9 +143,9 @@ func TestSiloSetsAndServices(t *testing.T) {
 			"--host-key", strings.Fields(out)[1], "--kevasod", bin}
 	}
 	t.Logf("%s", must(kvoadm.Run, "", append(append([]string{"init"}, sshArgs("a")...),
-		"--name", "a", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--address", aIP, "--worker", "--runtime", "docker")...))
+		"--name", "a", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", aIP, "--worker", "--runtime", "docker")...))
 	t.Logf("%s", must(kvoadm.Run, "", append(append([]string{"host", "add"}, sshArgs("b")...),
-		"--name", "b", "--install", "worker", "--runtime", "docker", "--address", bIP, "--server", "https://"+aIP+":6443")...))
+		"--name", "b", "--install", "worker", "--runtime", "docker", "--internal-ip", bIP, "--server", "https://"+aIP+":6443")...))
 
 	// Both workers' docker Ready first: spread is a preference, and a placed silo never moves.
 	for deadline := time.Now().Add(15 * time.Minute); ; {
@@ -170,22 +170,21 @@ func TestSiloSetsAndServices(t *testing.T) {
 	objs := []any{
 		v1.Namespace{TypeMeta: tm("Namespace"), ObjectMeta: meta.ObjectMeta{Name: "web3"}},
 		v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: "echo", Namespace: "web3"},
-			Spec: v1.SiloSetSpec{Image: py("3.12"), Instances: 2, Spread: "host", UpgradePolicy: v1.UpgradeRolling,
+			Spec: v1.SiloSetSpec{Instances: 2, Spread: "host", UpgradePolicy: v1.UpgradeRolling,
 				Template: v1.SiloTemplate{Labels: map[string]string{"app": "echo"}, SiloSpec: v1.SiloSpec{
-					Runtime: "docker", Resources: v1.Resources{Memory: "256Mi"},
-					Command:   []string{"python3", "-c", echoServer},
-					Volumes:   []v1.Volume{{Name: "data", MountPath: "/data"}},
-					Init:      &v1.Init{Steps: []v1.InitStep{{Name: "first", Run: "test -s /data/first || date +%s%N > /data/first"}}},
-					Service:   &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}, RouteWhen: v1.RouteWhenReady},
-					AllowFrom: []v1.AllowFrom{{Silo: "client"}},
-					Probes:    &v1.Probes{Readiness: &v1.Probe{HTTP: &v1.HTTPProbe{Port: "http"}, Period: "3s"}},
+					Runtime: "docker", Container: &v1.ContainerSource{Image: py("3.12"), Command: []string{"python3", "-c", echoServer}}, Resources: v1.Resources{Memory: "256Mi"},
+					Volumes: []v1.Volume{{Name: "data", MountPath: "/data"}},
+					Init:    &v1.Init{Steps: []v1.InitStep{{Name: "first", Run: "test -s /data/first || date +%s%N > /data/first"}}},
+					Ports:   []v1.SiloPort{{Name: "http", Port: 8080}},
+					Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", AllowFrom: []string{"client"}}}, RouteWhen: v1.RouteWhenReady},
+					Probes:  &v1.Probes{Readiness: &v1.Probe{HTTP: &v1.HTTPProbe{Port: "http"}, Period: "3s"}},
 				}}}},
 		v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "echo", Namespace: "web3"},
 			Spec: v1.ServiceSpec{Selector: map[string]string{"app": "echo"}, Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "http"}}, RouteWhen: v1.RouteWhenReady}},
 	}
 	for _, n := range []string{"client", "stranger"} {
 		objs = append(objs, v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: n, Namespace: "web3"},
-			Spec: v1.SiloSpec{Runtime: "docker", Image: py("3.12"), Command: []string{"sleep", "infinity"}, Resources: v1.Resources{Memory: "128Mi"}}})
+			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: py("3.12"), Command: []string{"sleep", "infinity"}}, Resources: v1.Resources{Memory: "128Mi"}}})
 	}
 	var docs []string
 	for _, o := range objs {
@@ -278,7 +277,7 @@ except Exception as e: print("error", e)`
 	// A new reference, rolling: each instance reset onto python 3.13, its volume (first boot) kept.
 	var set v1.SiloSet
 	getJSON(&set, "get", "siloset", "echo")
-	set.Spec.Image = py("3.13")
+	set.Spec.Template.Container.Image = py("3.13")
 	b, _ := json.Marshal(set)
 	must(kvo.Run, string(b), "apply", "-f", "-")
 	waitFor("every instance on python 3.13 with its volume", 15*time.Minute, func() (bool, string) {

@@ -2,6 +2,8 @@
 
 **Status:** accepted · **Date:** 2026-11-13
 
+> **Note (2026-11-13):** exposing now means a service port with `hostPort` or `loadBalancer` (ADR 0010); there's no `expose` field.
+
 ## Context
 
 Design §4.2 lets a plugin or an operator add a kind with a `KindDefinition` and run its own

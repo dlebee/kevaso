@@ -49,7 +49,7 @@ Refused: write-only.
 ## 3. Grants and a silo
 
 ```bash
-printf 'apiVersion: kevaso/v1\nkind: Grant\nmetadata: { name: httpbin, namespace: dev }\nspec:\n  secrets:\n    - { name: api-key, deliver: inject, to: { host: httpbin.org } }\n---\napiVersion: kevaso/v1\nkind: Grant\nmetadata: { name: app, namespace: dev }\nspec:\n  secrets:\n    - { name: db-password }\n    - { name: db-password, deliver: file, path: /run/secrets/db }\n  operations:\n    sign: { keyRef: validator-key }\n---\napiVersion: kevaso/v1\nkind: Silo\nmetadata: { name: agent, namespace: dev }\nspec:\n  runtime: cloud-hypervisor\n  image: ubuntu-24.04\n  resources: { cpu: 1, memory: 1Gi }\n  disk: { size: 10Gi }\n  grants: [httpbin, app]\n' | bin/kvo apply -f -
+printf 'apiVersion: kevaso/v1\nkind: Grant\nmetadata: { name: httpbin, namespace: dev }\nspec:\n  secrets:\n    - { name: api-key, deliver: inject, to: { host: httpbin.org } }\n---\napiVersion: kevaso/v1\nkind: Grant\nmetadata: { name: app, namespace: dev }\nspec:\n  secrets:\n    - { name: db-password }\n    - { name: db-password, deliver: file, path: /run/secrets/db }\n  operations:\n    sign: { keyRef: validator-key }\n---\napiVersion: kevaso/v1\nkind: Silo\nmetadata: { name: agent, namespace: dev }\nspec:\n  runtime: cloud-hypervisor\n  vm: { image: ubuntu-24.04 }\n  resources: { cpu: 1, memory: 1Gi }\n  disk: { size: 10Gi }\n  grants: [httpbin, app]\n' | bin/kvo apply -f -
 ```
 
 ```bash

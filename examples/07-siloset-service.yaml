@@ -6,15 +6,16 @@
 #
 # A SiloSet makes N silos from one image (like a VM scale set: stateful instances with stable
 # names, rpc-pool-0, rpc-pool-1, …); a standalone Service picks them by label and is their public
-# face. These are containers, so the image is a registry reference, used as it is: the set rolls
-# when you change it (pin it by digest, IMAGE@sha256:…, so a moved tag never changes what runs; kvo
-# describe silo shows the digest each host pulled). Images are for machine disks: a set of
-# cloud-hypervisor silos names an Image's version instead (example 08). Each instance stays private: the Service's load balancer
-# reaches it through a node port on its host, from the load balancer's addresses only.
+# face. These are containers, so the template says container: { image }, a registry reference used
+# as it is: the set rolls when you change it (pin it by digest, IMAGE@sha256:…, so a moved tag never
+# changes what runs; kvo describe silo shows the digest each host pulled). VMImages are for machine
+# disks: a set of cloud-hypervisor silos says vm: { image: VMIMAGE:VERSION } instead (example 08).
+# Each instance stays private: the Service's load balancer reaches it through a node port on its
+# host, from the load balancer's addresses only.
 #
 # The Linode parts (provider: linode, linode-nodebalancer) need the plugin (kvoadm plugin install
 # linode); without one, drop the hostSelector and use the Service's default type, ClusterIP: a
-# virtual IP and the name rpc.web3.kevaso, for silos its instances allowFrom.
+# virtual IP and the name rpc.web3.kevaso, for the silos its instances' rpc port allows (allowFrom).
 #
 #   kvo scale siloset rpc-pool --instances 5      # more; fewer asks first (it deletes disks)
 #   kvo reset siloset rpc-pool --rolling          # every instance back onto its image, one at a time
@@ -28,7 +29,6 @@ apiVersion: kevaso/v1
 kind: SiloSet
 metadata: { name: rpc-pool, namespace: web3 }
 spec:
-  image: docker.io/ethereum/client-go:v1.14.13   # a new reference here is a rollout
   instances: 3
   spread: host                    # instances on different hosts where possible
   upgradePolicy: Rolling          # a new reference resets instances onto it, one at a time (Manual: you choose when)
@@ -36,7 +36,9 @@ spec:
   template:
     labels: { app: rpc }
     runtime: docker               # Linode hosts have no KVM (research E030); cloud-hypervisor on KVM hosts
-    command: [geth, --http, --http.addr, 0.0.0.0, --http.vhosts, "*", --syncmode, snap]
+    container:
+      image: docker.io/ethereum/client-go:v1.14.13   # a new reference here is a rollout
+      command: [geth, --http, --http.addr, 0.0.0.0, --http.vhosts, "*", --syncmode, snap]
     placement:
       hostSelector: { provider: linode }   # a label on your Linode workers (kvoadm host add … --label provider=linode)
     volumes: [{ name: chain, mountPath: /root/.ethereum, size: 100Gi }]
@@ -45,10 +47,10 @@ spec:
       readiness:                  # "it can take work now"
         exec: { command: [sh, -c, "geth attach --exec eth.blockNumber /root/.ethereum/geth.ipc"] }
         period: 15s
-    service:
-      ports: [{ name: rpc, port: 8545, protocol: TCP }]
-      expose: private
-      routeWhen: ready            # stated, never assumed: its private name answers only while ready
+    ports: [{ name: rpc, port: 8545, protocol: TCP }]
+    service:                      # each instance's own: rpc-pool-0.web3.kevaso…
+      ports: [{ port: rpc }]      # on its silo IP only; add allowFrom: [SILO] for silos that call it directly
+      routeWhen: ready            # stated, never assumed: its name answers only while ready
 ---
 apiVersion: kevaso/v1
 kind: Service
