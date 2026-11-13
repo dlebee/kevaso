@@ -92,8 +92,7 @@ func TestVMMUnitWithVolumes(t *testing.T) {
 func TestVirtiofsdUnit(t *testing.T) {
 	n := NamesFor(id("web"))
 	s := LayoutFor(n, vmVolumes(), "").Shares[0]
-	want := "--socket-path=" + s.Socket + " --socket-group=" + VMMUser + " --shared-dir=" + s.HostPath +
-		" --cache=auto --sandbox=chroot --rlimit-nofile=0 --modcaps=-fsetid:-mknod:-setfcap"
+	want := "--fd=3 --shared-dir=" + s.HostPath + " --cache=auto --sandbox=chroot --rlimit-nofile=0 --modcaps=-fsetid:-mknod:-setfcap"
 	if got := strings.Join(VirtiofsdArgs(s), " "); got != want {
 		t.Fatalf("virtiofsd args:\n got %s\nwant %s", got, want)
 	}
@@ -101,12 +100,13 @@ func TestVirtiofsdUnit(t *testing.T) {
 	caps := "CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETPCAP CAP_SETUID CAP_SYS_CHROOT"
 	for _, want := range []string{
 		"User=root\n", "Group=root\n",
-		"ExecStart=" + VirtiofsdBin + " --socket-path=" + s.Socket,
+		"ExecStart=" + VirtiofsdBin + " --fd=3 ",
 		"CapabilityBoundingSet=" + caps + "\n", "AmbientCapabilities=" + caps + "\n",
 		"NoNewPrivileges=yes", "PrivateNetwork=yes", "PrivateDevices=yes", "RestrictAddressFamilies=AF_UNIX\n",
 		"TemporaryFileSystem=/var/lib/kevaso:ro " + SilosDir + ":ro /run:ro\n",
 		"InaccessiblePaths=/root -/etc/kevaso -/etc/ssh -" + ImagesDir + "\n",
-		"BindPaths=" + s.HostPath + " " + n.Dir + "/vfs\n", "RestrictSUIDSGID=yes", "Restart=always\n", "LimitNOFILE=",
+		"BindPaths=" + s.HostPath + "\n", "RestrictSUIDSGID=yes", "Restart=no\n", "LimitNOFILE=",
+		"Requires=" + s.SocketUnit + "\n",
 	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("virtiofsd unit lacks %q:\n%s", want, u)
@@ -123,21 +123,44 @@ func TestVirtiofsdUnit(t *testing.T) {
 // with a virtiofs volume from booting: as any user but root it refuses --sandbox=chroot; it asks
 // for its default capabilities for serving and exits ("can't apply the child capabilities")
 // unless each is in the bounding set or dropped by --modcaps, and it needs CAP_SETPCAP to drop
-// them; it makes its socket 0700 (the VMM got "Permission denied") unless given --socket-group;
+// them; it makes its socket 0700 (the VMM got "Permission denied"), so the socket is a socket unit's;
 // it also fails to apply them unless they're ambient at start;
 // and it reads /proc/sys/fs/nr_open at start even with --rlimit-nofile=0, which ProcSubset=pid hides.
-// A reboot inside the guest makes Cloud Hypervisor reconnect to the share's socket; virtiofsd
-// exits when its first connection ends, so with Restart=no the VMM timed out and the silo died on
-// a real host (Lima: "Error rebooting VM … Timed out waiting for vhost-user connection").
+// A reboot inside the guest makes Cloud Hypervisor reconnect to the share's socket, and virtiofsd
+// exits when its first connection ends. On a real host (Lima) that killed the VM twice over: with
+// Restart=no nothing served the reconnect ("Timed out waiting for vhost-user connection"); with
+// virtiofsd restarted and making its own socket, the VMM reconnected while the new socket was still
+// 0700, before virtiofsd changed it, and died of "Permission denied". The socket is a socket unit's
+// now: made 0660 root:kevaso-vmm before anyone connects, kept across virtiofsd's exits, and each
+// connection starts a virtiofsd for it.
 func TestVirtiofsdOutlivesAGuestReboot(t *testing.T) {
 	n := NamesFor(id("web"))
-	u := VirtiofsdUnit(n, LayoutFor(n, vmVolumes(), "").Shares[0])
-	if !strings.Contains(u, "Restart=always\n") || strings.Contains(u, "Restart=no") {
-		t.Errorf("virtiofsd isn't started again for the VMM's next connection:\n%s", u)
+	s := LayoutFor(n, vmVolumes(), "").Shares[0]
+	sock := VirtiofsdSocketUnit(n, s)
+	for _, want := range []string{"[Socket]\n", "ListenStream=" + s.Socket + "\n", "SocketUser=root\n", "SocketGroup=" + VMMUser + "\n",
+		"SocketMode=0660\n", "Accept=no\n"} {
+		if !strings.Contains(sock, want) {
+			t.Errorf("socket unit lacks %q:\n%s", want, sock)
+		}
 	}
-	// Stopping stays an explicit systemctl stop (which systemd never restarts), after the VMM's.
+	if strings.TrimSuffix(s.SocketUnit, ".socket") != strings.TrimSuffix(s.Unit, ".service") {
+		t.Errorf("the socket unit %s doesn't start %s", s.SocketUnit, s.Unit)
+	}
+	args := strings.Join(VirtiofsdArgs(s), " ")
+	if !strings.Contains(args, "--fd=3") || strings.Contains(args, "--socket-path") {
+		t.Errorf("virtiofsd makes its own socket: %s", args)
+	}
+	// Stopping: the VMM, then the socket (so nothing starts virtiofsd again), then virtiofsd.
 	stop := StopPlan(n, LayoutFor(n, vmVolumes(), ""))
-	if len(stop) < 3 || stop[0][1] != "stop" || stop[0][2] != n.Unit || stop[2][1] != "stop" {
+	at := func(unit string) int {
+		for i, c := range stop {
+			if slices.Equal(c, []string{"systemctl", "stop", unit}) {
+				return i
+			}
+		}
+		return -1
+	}
+	if v, k, d := at(n.Unit), at(s.SocketUnit), at(s.Unit); v < 0 || k < v || d < k {
 		t.Errorf("stop plan: %v", stop)
 	}
 }
@@ -169,8 +192,8 @@ func TestVirtiofsdStartsOnARealHost(t *testing.T) {
 	if !strings.Contains(u, "AmbientCapabilities="+strings.Join(VirtiofsdCaps, " ")+"\n") {
 		t.Error("virtiofsd can't apply its capabilities unless it starts with them ambient")
 	}
-	if !strings.Contains(args, "--socket-group="+VMMUser) {
-		t.Error("the socket isn't the VMM's group's: virtiofsd makes it 0700")
+	if !strings.Contains(VirtiofsdSocketUnit(n, s), "SocketGroup="+VMMUser+"\nSocketMode=0660\n") {
+		t.Error("the socket isn't the VMM's group's")
 	}
 	if strings.Contains(u, "ProcSubset=pid") {
 		t.Error("ProcSubset=pid hides /proc/sys/fs/nr_open, which virtiofsd reads at start")
@@ -185,7 +208,8 @@ func TestStartStopPlans(t *testing.T) {
 	s := l.Shares[0]
 	start := StartPlan(n, l)
 	want := []Step{
-		{Cmd: []string{"systemctl", "restart", s.Unit}, Socket: s.Socket},
+		{Cmd: []string{"systemctl", "stop", s.Unit}},
+		{Cmd: []string{"systemctl", "restart", s.SocketUnit}, Socket: s.Socket},
 		{Cmd: []string{"ip", "link", "set", n.Tap, "up"}},
 		{Cmd: []string{"systemctl", "start", n.Unit}},
 	}
@@ -315,8 +339,8 @@ func TestStartStopWithShares(t *testing.T) {
 	n := NamesFor(sp.ID)
 	s := LayoutFor(n, sp.Volumes, "").Shares[0]
 	h.answer = func(cmd string) (string, error) {
-		if cmd == "systemctl restart "+s.Unit {
-			h.files[s.Socket] = nil // virtiofsd made its socket (called with h.mu held)
+		if cmd == "systemctl restart "+s.SocketUnit {
+			h.files[s.Socket] = nil // systemd made the socket (called with h.mu held)
 		}
 		if strings.HasPrefix(cmd, "systemctl is-active") {
 			return "inactive", errors.New("exit 3")
@@ -327,7 +351,7 @@ func TestStartStopWithShares(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmds := h.commands()
-	if a, b := indexOf(cmds, "systemctl restart "+s.Unit), indexOf(cmds, "systemctl start "+n.Unit); a < 0 || b < a {
+	if a, b := indexOf(cmds, "systemctl restart "+s.SocketUnit), indexOf(cmds, "systemctl start "+n.Unit); a < 0 || b < a {
 		t.Fatalf("virtiofsd after the VMM: %v", cmds)
 	}
 	if err := r.Stop(ctx, sp.ID); err != nil {
@@ -340,8 +364,10 @@ func TestStartStopWithShares(t *testing.T) {
 	if err := r.Delete(ctx, sp.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := h.files["/etc/systemd/system/"+s.Unit]; ok {
-		t.Fatal("delete left the virtiofsd unit")
+	for _, u := range []string{s.Unit, s.SocketUnit} {
+		if _, ok := h.files["/etc/systemd/system/"+u]; ok {
+			t.Fatalf("delete left %s", u)
+		}
 	}
 }
 

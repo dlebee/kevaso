@@ -86,6 +86,7 @@ type Share struct {
 	HostPath        string // the folder on the host
 	Tag             string // the guest mounts it by this (≤ 36 characters)
 	Unit            string // its virtiofsd's systemd unit
+	SocketUnit      string // the socket unit that holds its socket and starts Unit on a connection
 	Socket          string // the vhost-user socket between virtiofsd and the VMM, in the silo's directory
 }
 
@@ -128,8 +129,9 @@ func LayoutFor(n Names, vols []kri.Volume, diskHostPath string) Layout {
 			continue
 		}
 		l.Shares = append(l.Shares, Share{Name: v.Name, MountPath: v.MountPath, HostPath: v.HostPath, Tag: "kv" + k,
-			Unit:   unitPrefix + n.Short + "-fs-" + k + ".service",
-			Socket: n.Dir + "/vfs/" + k + ".sock"})
+			Unit:       unitPrefix + n.Short + "-fs-" + k + ".service",
+			SocketUnit: unitPrefix + n.Short + "-fs-" + k + ".socket",
+			Socket:     n.Dir + "/vfs/" + k + ".sock"})
 	}
 	if diskHostPath != "" {
 		l.RootFile = path.Join(diskHostPath, RootImage)
@@ -154,38 +156,56 @@ func VMMArgs(n Names, l Layout, memMiB int64) []string {
 	return args
 }
 
-// VirtiofsdArgs are one share's virtiofsd arguments (E029: --cache=auto, --sandbox=chroot). The
-// unit sets the open-files limit, so virtiofsd doesn't try to raise it (--rlimit-nofile=0); its
-// socket is the VMM's group's (virtiofsd makes it 0700 otherwise), and it drops VirtiofsdDrops.
+// VirtiofsdArgs are one share's virtiofsd arguments (E029: --cache=auto, --sandbox=chroot). Its
+// socket comes from its socket unit (--fd=3, systemd's first passed descriptor); the unit sets the
+// open-files limit, so virtiofsd doesn't try to raise it (--rlimit-nofile=0); it drops
+// VirtiofsdDrops.
 func VirtiofsdArgs(s Share) []string {
-	return []string{"--socket-path=" + s.Socket, "--socket-group=" + VMMUser, "--shared-dir=" + s.HostPath, "--cache=auto",
-		"--sandbox=chroot", "--rlimit-nofile=0", "--modcaps=" + modcaps()}
+	return []string{"--fd=3", "--shared-dir=" + s.HostPath, "--cache=auto", "--sandbox=chroot", "--rlimit-nofile=0", "--modcaps=" + modcaps()}
 }
 
-// VirtiofsdUnit is one share's virtiofsd: root bounded by VirtiofsdCaps (see there), its socket the
-// VMM's group's (so only the VMM can connect), no network, no devices, and of the host's files only
-// the shared folder and its socket's folder: the control plane's data, other silos and their
-// shares, /run (the admin socket) and Kevaso's keys are out of sight. It serves one VMM connection
-// and exits with it, so systemd starts it again at once: a reboot inside the guest is the VMM
-// reconnecting (it waits up to a minute for the socket), not a new start through StartPlan.
-// Stopping is StopPlan's systemctl stop, which never restarts it.
+// VirtiofsdSocketUnit holds a share's socket for the VMM: made by systemd 0660 root:kevaso-vmm
+// before anything connects, kept while virtiofsd comes and goes, and each connection (the first
+// boot, each reboot inside the guest) starts a virtiofsd for it. virtiofsd making its own socket
+// raced the VMM: it binds it 0700 and changes it after, and a VMM reconnecting in between (a reboot)
+// got Permission denied and died.
+func VirtiofsdSocketUnit(n Names, s Share) string {
+	return `[Unit]
+Description=Kevaso silo ` + n.Short + `: virtiofsd socket for volume ` + s.Name + `
+
+[Socket]
+ListenStream=` + s.Socket + `
+SocketUser=root
+SocketGroup=` + VMMUser + `
+SocketMode=0660
+DirectoryMode=0750
+Accept=no
+RemoveOnStop=yes
+`
+}
+
+// VirtiofsdUnit is one share's virtiofsd, started by its socket unit (VirtiofsdSocketUnit): root
+// bounded by VirtiofsdCaps (see there), no network, no devices, and of the host's files only the
+// shared folder: the control plane's data, other silos and their shares, /run (the admin socket)
+// and Kevaso's keys are out of sight. It serves one VMM connection and exits with it; the VMM's next
+// connection (a reboot inside the guest) starts another.
 //
 // No ProcSubset=pid: virtiofsd reads /proc/sys/fs/nr_open at start, even with --rlimit-nofile=0.
 func VirtiofsdUnit(n Names, s Share) string {
 	caps := strings.Join(VirtiofsdCaps, " ")
 	return `[Unit]
 Description=Kevaso silo ` + n.Short + `: virtiofsd for volume ` + s.Name + `
+Requires=` + s.SocketUnit + `
+After=` + s.SocketUnit + `
 
 [Service]
 # Root's own group: virtiofsd keeps its own credentials for the guest's root (uid 0, gid 0), so
-# files that root makes in the share get this group, and must get gid 0. The socket's group is
-# --socket-group's.
+# files that root makes in the share get this group, and must get gid 0. The socket is the socket
+# unit's.
 User=root
 Group=root
-ExecStartPre=+/bin/rm -f ` + s.Socket + `
 ExecStart=` + VirtiofsdBin + ` ` + strings.Join(VirtiofsdArgs(s), " ") + `
-Restart=always
-RestartSec=100ms
+Restart=no
 LimitNOFILE=1048576
 CapabilityBoundingSet=` + caps + `
 # virtiofsd fails to apply its own capabilities ("failed to sync capabilities with the kernel")
@@ -197,10 +217,10 @@ ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
 PrivateNetwork=yes
-# Only the shared folder and the socket's folder: the rest of /var/lib/kevaso (the control plane's
+# Only the shared folder: the rest of /var/lib/kevaso (the control plane's
 # data, other silos' volumes), other silos' directories and /run (kevasod's admin socket) are empty.
 TemporaryFileSystem=/var/lib/kevaso:ro ` + SilosDir + `:ro /run:ro
-BindPaths=` + s.HostPath + ` ` + path.Dir(s.Socket) + `
+BindPaths=` + s.HostPath + `
 InaccessiblePaths=/root -/etc/kevaso -/etc/ssh -` + ImagesDir + `
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
@@ -226,22 +246,25 @@ type Step struct {
 	Socket string
 }
 
-// StartPlan starts a VM: each share's virtiofsd afresh (restart: one that served the last boot has
-// exited), waiting for its socket, then the TAP and the VMM.
+// StartPlan starts a VM: each share's socket afresh (any virtiofsd left from the last boot
+// stopped first), waiting for it, then the TAP and the VMM, whose connection starts virtiofsd.
 func StartPlan(n Names, l Layout) []Step {
 	var p []Step
 	for _, s := range l.Shares {
-		p = append(p, Step{Cmd: []string{"systemctl", "restart", s.Unit}, Socket: s.Socket})
+		p = append(p, Step{Cmd: []string{"systemctl", "stop", s.Unit}},
+			Step{Cmd: []string{"systemctl", "restart", s.SocketUnit}, Socket: s.Socket})
 	}
 	return append(p, Step{Cmd: []string{"ip", "link", "set", n.Tap, "up"}}, Step{Cmd: []string{"systemctl", "start", n.Unit}})
 }
 
-// StopPlan is what stopping does once the guest has powered off (or didn't): the VMM, then the
-// virtiofsd daemons. Only after it is a shared folder free to unmount.
+// StopPlan is what stopping does once the guest has powered off (or didn't): the VMM, then each
+// share's socket (so nothing starts virtiofsd again) and virtiofsd. Only after it is a shared folder
+// free to unmount.
 func StopPlan(n Names, l Layout) [][]string {
 	p := [][]string{{"systemctl", "stop", n.Unit}, {"systemctl", "reset-failed", n.Unit}}
 	for _, s := range l.Shares {
-		p = append(p, []string{"systemctl", "stop", s.Unit}, []string{"systemctl", "reset-failed", s.Unit})
+		p = append(p, []string{"systemctl", "stop", s.SocketUnit}, []string{"systemctl", "stop", s.Unit},
+			[]string{"systemctl", "reset-failed", s.Unit, s.SocketUnit})
 	}
 	return p
 }
@@ -360,13 +383,17 @@ func (r *Runtime) applyLayout(ctx context.Context, st State, old, l Layout) erro
 	}
 	for _, s := range l.Shares {
 		keep[s.Unit] = true
+		if err := r.Host.WriteFile("/etc/systemd/system/"+s.SocketUnit, []byte(VirtiofsdSocketUnit(n, s)), 0o644); err != nil {
+			return err
+		}
 		if err := r.Host.WriteFile("/etc/systemd/system/"+s.Unit, []byte(VirtiofsdUnit(n, s)), 0o644); err != nil {
 			return err
 		}
 	}
 	for _, s := range old.Shares {
 		if !keep[s.Unit] {
-			_, _ = r.Host.Run(ctx, "systemctl", "stop", s.Unit)
+			_, _ = r.Host.Run(ctx, "systemctl", "stop", s.SocketUnit, s.Unit)
+			_ = r.Host.RemoveAll("/etc/systemd/system/" + s.SocketUnit)
 			_ = r.Host.RemoveAll("/etc/systemd/system/" + s.Unit)
 		}
 	}
