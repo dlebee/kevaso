@@ -186,7 +186,7 @@ func TestMigrateRefusesTwoStores(t *testing.T) {
 // swap is an http.Handler whose target changes: one API address across a control-plane restart.
 type swap struct{ h atomic.Pointer[http.Handler] }
 
-func (s *swap) set(h http.Handler)                                { s.h.Store(&h) }
+func (s *swap) set(h http.Handler)                               { s.h.Store(&h) }
 func (s *swap) ServeHTTP(w http.ResponseWriter, r *http.Request) { (*s.h.Load()).ServeHTTP(w, r) }
 
 // A real informer watching a control plane on SQLite, which restarts on etcd after the migration:

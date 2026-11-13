@@ -184,6 +184,9 @@ func Start(ctx context.Context, c Config) (*Server, error) {
 // without peers advertised unlistenedPeer, and opening its peer listener later must say so to the
 // cluster before a second member can join.
 func (s *Server) advertise(ctx context.Context) error {
+	if s.Etcd.Server.IsLearner() {
+		return nil // a learner just joined with the URL it was added with (and can't change members)
+	}
 	cli, err := s.Client()
 	if err != nil {
 		return err
