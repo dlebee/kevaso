@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,7 @@ import (
 	"kevaso.com/core/builtin/kri/hostexec"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/policy"
@@ -50,6 +52,10 @@ type Agent struct {
 	// elsewhere (onHostLoss: Recreate) and starts nothing, so two copies never run.
 	LastContact func() time.Time
 	FenceAfter  time.Duration // default 30s, under the control plane's 40s host lease
+	// FenceDir, if set, is where the agent writes its fence record every second (internal/fence):
+	// its last contact and its silos' onHostLoss, for the fence watcher, which stops the movable
+	// ones when this agent can no longer vouch for them, running or not.
+	FenceDir string
 	// GuestHelper is the kvo-guest binary copied into silos whose runtime has a broker channel
 	// (kevasod itself: it runs as kvo-guest by that name). Empty: no helper.
 	GuestHelper string
@@ -70,6 +76,8 @@ type Agent struct {
 	secrets     *informer.Informer
 	grants      *informer.Informer
 	fenced      atomic.Bool
+	silosSynced atomic.Bool
+	fencePrev   fence.Record // the fence record as an earlier run left it (FenceDir)
 	broker      *Broker
 	prepared    sync.Map // silo uid → struct{}: the guest helper is in place for this agent's run
 	kept        sync.Map // silo uid → keptState: its daemons and upkeep as this agent last decided
@@ -82,7 +90,7 @@ type Agent struct {
 
 // DefaultFenceAfter is under the host lease (40s), so a cut-off host has stopped its Recreate silos
 // before the control plane even considers it lost.
-const DefaultFenceAfter = 30 * time.Second
+const DefaultFenceAfter = fence.DefaultAfter
 
 func (a *Agent) fenceAfter() time.Duration {
 	if a.FenceAfter > 0 {
@@ -100,6 +108,39 @@ func (a *Agent) cutOff() bool {
 	return !last.IsZero() && a.Clock.Now().Sub(last) > a.fenceAfter()
 }
 
+// fenceRecord is what the fence watcher gets: the last contact, and this host's silos' policies
+// (once the silos are known; until then, what an earlier run recorded).
+func (a *Agent) fenceRecord() fence.Record {
+	r := fence.Record{Written: a.now().UTC(), LastContact: a.fencePrev.LastContact, Silos: a.fencePrev.Silos}
+	if a.LastContact != nil {
+		if last := a.LastContact(); last.After(r.LastContact) {
+			r.LastContact = last.UTC()
+		}
+	}
+	if a.silos == nil || !a.silosSynced.Load() {
+		return r
+	}
+	r.Silos = nil
+	for _, o := range a.silos.List() {
+		s := o.(*v1.Silo)
+		if s.Status.Host != a.HostName || s.DeletionTimestamp != nil {
+			continue
+		}
+		r.Silos = append(r.Silos, fence.Silo{ID: idOf(s), Runtime: s.Spec.Runtime, OnHostLoss: s.Policy()})
+	}
+	sort.Slice(r.Silos, func(i, j int) bool { return r.Silos[i].ID.UID < r.Silos[j].ID.UID })
+	return r
+}
+
+func (a *Agent) writeFenceRecord() {
+	if a.FenceDir == "" {
+		return
+	}
+	if err := fence.Write(a.FenceDir, a.fenceRecord()); err != nil {
+		a.log("fence record: %v", err)
+	}
+}
+
 // fence runs while the agent runs: on losing contact it stops Recreate silos; on getting it back
 // it looks at every silo again (the ones recreated elsewhere get removed).
 func (a *Agent) fence(ctx context.Context, e *engine.Engine) {
@@ -111,6 +152,7 @@ func (a *Agent) fence(ctx context.Context, e *engine.Engine) {
 			return
 		case <-t.C:
 		}
+		a.writeFenceRecord()
 		switch cut := a.cutOff(); {
 		case cut && !a.fenced.Load():
 			a.fenced.Store(true)
@@ -176,10 +218,16 @@ func (a *Agent) Run(ctx context.Context) {
 		go inf.Run(ctx)
 	}
 	go a.RunTunnels(ctx)
+	if a.FenceDir != "" {
+		// What an earlier run of this agent recorded stands until this run knows better: a restart
+		// while cut off must not make the watcher forget the last contact, or the silos.
+		a.fencePrev, _ = fence.Read(a.FenceDir)
+	}
 	go a.fence(ctx, e)
 	go a.resync(ctx, e)
 	go func() { // after the first sync, look for runtime silos the API no longer knows
 		if a.silos.WaitSynced(ctx) {
+			a.silosSynced.Store(true)
 			a.collectGarbage(ctx, e)
 		}
 	}()
