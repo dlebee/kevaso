@@ -139,7 +139,8 @@ func (s *Server) putPane(ctx context.Context, silo *v1.Silo, r v1.PaneReport, no
 		p.Status.UpdatedAt = &at
 		cur, err := s.store.Get(ctx, key)
 		var rev int64
-		if err == nil {
+		switch {
+		case err == nil:
 			obj, _, derr := v1.Decode(cur.Data)
 			if derr != nil {
 				return derr
@@ -151,10 +152,10 @@ func (s *Server) putPane(ctx context.Context, silo *v1.Silo, r v1.PaneReport, no
 				p.UID, p.CreationTimestamp = newUID(), &at
 			}
 			p.ResourceVersion, rev = "", cur.Revision
-		} else if !errors.Is(err, store.ErrNotFound) {
-			return err
-		} else {
+		case errors.Is(err, store.ErrNotFound):
 			p.UID, p.CreationTimestamp = newUID(), &at
+		default:
+			return err
 		}
 		p.Status.Updates++
 		p.Generation = p.Status.Updates

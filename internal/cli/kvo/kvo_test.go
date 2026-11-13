@@ -102,8 +102,8 @@ func TestApprovalColumns(t *testing.T) {
 
 // A silo's text never reaches the terminal as escapes or direction overrides.
 func TestPlainStripsEscapes(t *testing.T) {
-	got := plain("ok\x1b[2J\x1b]0;pwned\x07 ‮moc.live\nnext\u0085", 0)
-	if strings.ContainsAny(got, "\x1b\x07‮\u0085\n") || !strings.Contains(got, "ok") || !strings.Contains(got, "next") {
+	got := plain("ok\x1b[2J\x1b]0;pwned\x07 \u202emoc.live\nnext\u0085", 0)
+	if strings.ContainsAny(got, "\x1b\x07\u202e\u0085\n") || !strings.Contains(got, "ok") || !strings.Contains(got, "next") {
 		t.Fatalf("plain = %q", got)
 	}
 	if got := plain(strings.Repeat("x", 50), 10); got != strings.Repeat("x", 10)+"…" {
