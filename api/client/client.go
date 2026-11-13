@@ -257,11 +257,42 @@ func (c *Client) UpdateStatus(ctx context.Context, obj meta.Object) error {
 	return c.do(ctx, http.MethodPut, p, obj, obj)
 }
 
-// Delete deletes an object (or starts deleting it, while it has finalizers).
-func (c *Client) Delete(ctx context.Context, kind, namespace, name string) error {
+// Precondition says which object a delete is for: the one with this UID and, when set, at this
+// resourceVersion. Anything else under the name is not deleted (a Conflict error).
+type Precondition struct {
+	UID             string
+	ResourceVersion string
+}
+
+// Seen is the precondition "exactly what I read": obj's UID and version.
+func Seen(obj meta.Object) Precondition {
+	m := obj.GetObjectMeta()
+	return Precondition{UID: m.UID, ResourceVersion: m.ResourceVersion}
+}
+
+// SameObject is the precondition "this object, whatever changed since": obj's UID only.
+func SameObject(obj meta.Object) Precondition {
+	return Precondition{UID: obj.GetObjectMeta().UID}
+}
+
+// Delete deletes an object (or starts deleting it, while it has finalizers). With a precondition,
+// only the object the caller decided on; without one, whatever has the name.
+func (c *Client) Delete(ctx context.Context, kind, namespace, name string, pre ...Precondition) error {
 	p, err := c.pathFor(ctx, kind, namespace, name)
 	if err != nil {
 		return err
+	}
+	q := url.Values{}
+	for _, x := range pre {
+		if x.UID != "" {
+			q.Set("uid", x.UID)
+		}
+		if x.ResourceVersion != "" {
+			q.Set("resourceVersion", x.ResourceVersion)
+		}
+	}
+	if len(q) > 0 {
+		p += "?" + q.Encode()
 	}
 	return c.do(ctx, http.MethodDelete, p, nil, nil)
 }

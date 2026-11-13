@@ -98,13 +98,16 @@ func (s *Server) moveSilo(w http.ResponseWriter, r *http.Request, t target) {
 			writeErr(w, err)
 			return
 		}
-		var from, to *v1.Host
+		var from, to, source *v1.Host
 		for _, h := range hosts {
-			switch h.Name {
-			case silo.Status.Host:
+			if h.Name == silo.Status.Host {
 				from = h
-			case req.To:
+			}
+			if h.Name == req.To {
 				to = h
+			}
+			if h.Name == silo.Status.MovingFrom {
+				source = h
 			}
 		}
 		if to == nil {
@@ -120,7 +123,11 @@ func (s *Server) moveSilo(w http.ResponseWriter, r *http.Request, t target) {
 			writeErr(w, err)
 			return
 		}
-		plan, err := moves.PlanMove(silo, moves.Of(silo, s.classMap()), req, fromLost, fits)
+		sourceLost := source == nil
+		if source != nil {
+			sourceLost, _ = hostctl.Lost(source)
+		}
+		plan, err := moves.PlanMove(silo, moves.Of(silo, s.classMap()), req, fromLost, sourceLost, fits)
 		if err != nil {
 			code := http.StatusUnprocessableEntity
 			if errors.Is(err, moves.ErrMoving) {

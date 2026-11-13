@@ -3,7 +3,7 @@
 //	kvo apply -f FILE|-             create or update every object in a YAML/JSON file
 //	kvo get KIND [NAME] [-n NS|-A] [-o yaml|json]
 //	kvo describe KIND NAME [-n NS]   everything about one object, for people
-//	kvo delete KIND NAME [-n NS]
+//	kvo delete KIND NAME [-n NS] [--uid UID] [--resource-version V]   only that object, as it was
 //	kvo watch KIND [-n NS|-A]
 //	kvo exec silo NAME [-n NS] [-it] -- CMD [ARGS…]   run a command in a silo (-t: on a terminal); exits with its code
 //	kvo ssh silo NAME [-n NS]     a login shell in the silo, on a terminal (through the relay; no SSH)
@@ -26,7 +26,8 @@
 //	kvo get approvals | kvo watch approvals    silos waiting for a person's yes to use a secret
 //	kvo pane watch SILO                        follow a silo's panes (plain text; one way)
 //	kvo pane bundle PANE -o FILE               save an HTML pane's bundle (for the panes app)
-//	kvo approve NAME | kvo deny NAME [--reason R]   answer one (approve on that secret; people only)
+//	kvo approve NAME [--request ID] | kvo deny NAME [--reason R]   answer one (approve on that secret;
+//	        people only); a yes is for the request ID read in kvo get approvals
 //	kvo plugin search|install|list|upgrade|remove|index …   client plugins; kvo NAME runs one (plugins.go)
 //
 // The cluster comes from --server or $KVO_SERVER (plain HTTP, for `kevasod dev`), otherwise from the
@@ -69,6 +70,8 @@ type opts struct {
 	reason                                   string // kvo deny / approve
 	moveTo                                   string // kvo move --to
 	recreate, confirmFenced                  bool   // kvo move
+	uid, resourceVersion                     string // kvo delete: only the object seen
+	request                                  string // kvo approve: the request read
 	all, noBrowser                           bool
 	secret                                   secretOpts
 	sets                                     setOpts
@@ -136,6 +139,12 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.recreate = true
 		case "--confirm-fenced":
 			o.confirmFenced = true
+		case "--request":
+			o.request, err = val()
+		case "--uid":
+			o.uid, err = val()
+		case "--resource-version":
+			o.resourceVersion, err = val()
 		case "--from-file":
 			o.secret.fromFile, err = val()
 		case "--from-literal":
@@ -270,7 +279,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "pane":
 		err = paneCommand(ctx, c, o, stdout)
 	case "approve", "deny":
-		err = approve(ctx, c, o, args[0], stdout)
+		err = approve(ctx, c, o, args[0], stdin, stdout)
 	case "open", "close":
 		err = leaseCommand(ctx, c, o, args[0], stdout, stderr)
 	case "delete":
@@ -723,7 +732,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 	case "VMImage":
 		head = append(head, "VERSIONS", "DISK")
 	case "Approval":
-		head = append(head, "SILO", "SECRET", "USE", "FOR", "PHASE", "WHEN", "ANSWERED-BY")
+		head = append(head, "SILO", "SECRET", "USE", "FOR", "PHASE", "WHEN", "ANSWERED-BY", "REQUEST")
 	case "Lease":
 		head = append(head, leaseHead...)
 	case "Pane":
@@ -878,7 +887,9 @@ func del(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	if k.Scope == v1.Namespaced {
 		ns = defaultNS(o)
 	}
-	if err := c.Delete(ctx, k.Kind, ns, o.args[1]); err != nil {
+	// By name, whatever has it; with --uid (and --resource-version), only the object the person
+	// looked at (K-031): another one under the name, or that one changed since, is not deleted.
+	if err := c.Delete(ctx, k.Kind, ns, o.args[1], client.Precondition{UID: o.uid, ResourceVersion: o.resourceVersion}); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "%s/%s deleted\n", strings.ToLower(k.Kind), o.args[1])

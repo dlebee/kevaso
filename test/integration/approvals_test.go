@@ -12,6 +12,7 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/approvals"
 )
 
 // Design §8.7 through the real API and the host's broker: a secret whose grant needs a person's yes
@@ -91,7 +92,11 @@ func TestApprovals(t *testing.T) {
 	bot.Token = func(context.Context) (string, error) { return tok.Token, nil }
 
 	answer := func(who *client.Client, name, verb, reason string) error {
-		return who.Call(c.ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/web3/approvals/"+name+"/"+verb, client.ApprovalAnswer{Reason: reason}, nil)
+		var a v1.Approval // the request as the person reads it, then answered (K-017)
+		if err := c.admin.Get(c.ctx, "Approval", "web3", name, &a); err != nil {
+			return err
+		}
+		return who.Call(c.ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/web3/approvals/"+name+"/"+verb, client.ApprovalAnswer{Reason: reason, Request: approvals.RequestID(&a)}, nil)
 	}
 	pendingOf := func(use, secret string) *v1.Approval {
 		t.Helper()

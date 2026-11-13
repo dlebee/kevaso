@@ -96,10 +96,10 @@ func TestCheckPolicy(t *testing.T) {
 		t.Fatalf("Recreate with volumes that follow: %v", err)
 	}
 	// kvo move --recreate follows the same rule.
-	if _, err := PlanMove(one, Of(one, classes), Request{To: "hv3", Recreate: true}, false, ""); err == nil || !strings.Contains(err.Error(), "volume keys") {
+	if _, err := PlanMove(one, Of(one, classes), Request{To: "hv3", Recreate: true}, false, false, ""); err == nil || !strings.Contains(err.Error(), "volume keys") {
 		t.Fatalf("--recreate with a local volume: %v", err)
 	}
-	if p, err := PlanMove(travels, Of(travels, classes), Request{To: "hv3", Recreate: true}, false, ""); err != nil || p.WithData {
+	if p, err := PlanMove(travels, Of(travels, classes), Request{To: "hv3", Recreate: true}, false, false, ""); err != nil || p.WithData {
 		t.Fatalf("--recreate with volumes that follow: %+v %v", p, err)
 	}
 	// MOVABLE stays truthful: a VM on its local disk with no volumes can only be recreated.
@@ -112,7 +112,7 @@ func TestCheckPolicy(t *testing.T) {
 func TestPlanMove(t *testing.T) {
 	movable := silo("docker", "", v1.Volume{Name: "data", Class: "juicefs"})
 	m := Of(movable, classes)
-	p, err := PlanMove(movable, m, Request{To: "hv3"}, false, "")
+	p, err := PlanMove(movable, m, Request{To: "hv3"}, false, false, "")
 	if err != nil || !p.WithData || !p.Handoff || p.From != "hv1" || p.To != "hv3" {
 		t.Fatalf("plan = %+v, %v", p, err)
 	}
@@ -131,21 +131,21 @@ func TestPlanMove(t *testing.T) {
 		"lost, unconfirmed": {movable, Request{To: "hv3"}, true, "", ErrNeedsFenced},
 		"already moving":    {func() *v1.Silo { s := silo("docker", ""); s.Status.MovingFrom = "hv0"; return s }(), Request{To: "hv3"}, false, "", ErrMoving},
 	} {
-		if _, err := PlanMove(tc.s, Of(tc.s, classes), tc.r, tc.lost, tc.fits); !errors.Is(err, tc.want) {
+		if _, err := PlanMove(tc.s, Of(tc.s, classes), tc.r, tc.lost, false, tc.fits); !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v, want %v", name, err, tc.want)
 		}
 	}
-	if _, err := PlanMove(movable, m, Request{To: "hv3"}, false, "runtime docker isn't installed"); err == nil || !strings.Contains(err.Error(), "hv3 can't take it: runtime docker") {
+	if _, err := PlanMove(movable, m, Request{To: "hv3"}, false, false, "runtime docker isn't installed"); err == nil || !strings.Contains(err.Error(), "hv3 can't take it: runtime docker") {
 		t.Fatalf("target doesn't fit: %v", err)
 	}
 	// From a lost host, confirmed: no handoff (nobody is there to answer).
-	p, err = PlanMove(movable, m, Request{To: "hv3", ConfirmFenced: true}, true, "")
+	p, err = PlanMove(movable, m, Request{To: "hv3", ConfirmFenced: true}, true, false, "")
 	if err != nil || p.Handoff {
 		t.Fatalf("confirmed move from a lost host = %+v, %v", p, err)
 	}
 	// Recreate: allowed for a Recreate silo, a fresh copy.
 	rec := silo("cloud-hypervisor", v1.OnHostLossRecreate)
-	p, err = PlanMove(rec, Of(rec, classes), Request{To: "hv3", Recreate: true}, false, "")
+	p, err = PlanMove(rec, Of(rec, classes), Request{To: "hv3", Recreate: true}, false, false, "")
 	if err != nil || p.WithData {
 		t.Fatalf("recreate = %+v, %v", p, err)
 	}

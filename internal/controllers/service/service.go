@@ -11,13 +11,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
+	"slices"
+	"strconv"
+	"sync"
 	"time"
 
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/informer"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/claims"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/routing"
@@ -62,8 +67,16 @@ func Split(svc *v1.Service, silos []*v1.Silo) (routed, held []v1.ServiceEndpoint
 
 // ClusterIP keeps svc's virtual IP, or gives it the lowest free one. Pure.
 func ClusterIP(svc *v1.Service, all []*v1.Service) (string, error) {
+	return clusterIP(svc, all, nil)
+}
+
+// clusterIP is ClusterIP, also avoiding the addresses in avoid (claimed by others in the store).
+func clusterIP(svc *v1.Service, all []*v1.Service, avoid map[string]bool) (string, error) {
 	cidr := netip.MustParsePrefix(v1.ServiceCIDR)
-	taken := map[string]bool{}
+	taken := maps.Clone(avoid)
+	if taken == nil {
+		taken = map[string]bool{}
+	}
 	for _, o := range all {
 		if o.UID != svc.UID && o.Status.ClusterIP != "" {
 			taken[o.Status.ClusterIP] = true
@@ -88,10 +101,18 @@ func ClusterIP(svc *v1.Service, all []*v1.Service) (string, error) {
 // NodePorts keeps a LoadBalancer service's node ports, or gives each port the lowest free one in
 // NodePortSiloMax+1…NodePortMax, among all services. Pure.
 func NodePorts(svc *v1.Service, all []*v1.Service) ([]v1.NodePort, error) {
+	return nodePorts(svc, all, nil)
+}
+
+// nodePorts is NodePorts, also avoiding the ports in avoid (claimed by others in the store).
+func nodePorts(svc *v1.Service, all []*v1.Service, avoid map[int]bool) ([]v1.NodePort, error) {
 	if svc.Spec.Type != v1.ServiceLoadBalancer {
 		return nil, nil
 	}
-	taken := map[int]bool{}
+	taken := maps.Clone(avoid)
+	if taken == nil {
+		taken = map[int]bool{}
+	}
 	for _, o := range all {
 		if o.UID != svc.UID {
 			for _, p := range o.Status.NodePorts {
@@ -130,6 +151,10 @@ type Controller struct {
 	Services *informer.Informer
 	Silos    *informer.Informer
 	Clock    clock.Clock
+	// Claims make each cluster IP and node port one Service's in the store (K-028).
+	Claims *claims.Claims
+
+	mine sync.Map // POOL/VALUE → UID: claimed by this controller, so not claimed again
 }
 
 // Name implements engine.Controller.
@@ -163,32 +188,29 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	for _, x := range c.Silos.List() {
 		silos = append(silos, x.(*v1.Silo))
 	}
-	ip, err := ClusterIP(svc, all)
-	if err != nil {
-		return engine.Result{}, err
-	}
-	nps, err := NodePorts(svc, all)
-	if err != nil {
-		return engine.Result{}, err
-	}
 	eps, held := Split(svc, silos)
-	cond := meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "Endpoints", ObservedGeneration: svc.Generation,
-		Message: fmt.Sprintf("%d endpoint(s) at %s", len(eps), ip)}
-	if len(held) > 0 {
-		cond.Message += fmt.Sprintf(", %d held", len(held))
-	}
-	if len(eps) == 0 {
-		cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "NoEndpoints", "no running silo matches the selector"
-		if len(held) > 0 {
-			cond.Message = fmt.Sprintf("every selected silo is held (%d): %s", len(held), held[0].Reason)
-		}
-	}
 	for attempt := 0; attempt < 5; attempt++ {
 		var cur v1.Service
 		if err := c.Client.Get(ctx, "Service", svc.Namespace, svc.Name, &cur); err != nil {
 			return engine.Result{}, client.IgnoreNotFound(err)
 		}
+		ip, nps, err := c.allocate(ctx, &cur, all)
+		if err != nil {
+			return engine.Result{}, err
+		}
+		cond := meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "Endpoints", ObservedGeneration: svc.Generation,
+			Message: fmt.Sprintf("%d endpoint(s) at %s", len(eps), ip)}
+		if len(held) > 0 {
+			cond.Message += fmt.Sprintf(", %d held", len(held))
+		}
+		if len(eps) == 0 {
+			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "NoEndpoints", "no running silo matches the selector"
+			if len(held) > 0 {
+				cond.Message = fmt.Sprintf("every selected silo is held (%d): %s", len(held), held[0].Reason)
+			}
+		}
 		before := jsonOf(cur.Status)
+		hadIP, hadPorts := cur.Status.ClusterIP, cur.Status.NodePorts
 		cur.Status.ClusterIP, cur.Status.Name, cur.Status.Endpoints, cur.Status.Held, cur.Status.NodePorts = ip, svc.Name+"."+svc.Namespace+".kevaso", eps, held, nps
 		if svc.Spec.Type != v1.ServiceLoadBalancer {
 			cur.Status.LoadBalancerIP, cur.Status.IP, cur.Status.SourceRanges = "", "", nil
@@ -197,13 +219,119 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		if jsonOf(cur.Status) == before {
 			return engine.Result{}, nil
 		}
-		err := c.Client.UpdateStatus(ctx, &cur)
+		err = c.Client.UpdateStatus(ctx, &cur)
 		if client.IsConflict(err) {
 			continue
+		}
+		if err == nil {
+			err = c.letGo(ctx, &cur, hadIP, hadPorts)
 		}
 		return engine.Result{}, err
 	}
 	return engine.Result{}, errors.New("service kept changing; will retry")
+}
+
+// The pools a Service's values are claimed in (claims.Claims, K-028).
+const (
+	PoolClusterIP = "service-cluster-ip"
+	PoolNodePort  = "service-node-port"
+)
+
+// UsesClusterIP and UsesNodePort say whether a stored Service still has the value.
+func UsesClusterIP(obj []byte, value string) bool {
+	var s v1.Service
+	return json.Unmarshal(obj, &s) == nil && s.Status.ClusterIP == value
+}
+
+func UsesNodePort(obj []byte, value string) bool {
+	var s v1.Service
+	if json.Unmarshal(obj, &s) != nil {
+		return false
+	}
+	return slices.ContainsFunc(s.Status.NodePorts, func(p v1.NodePort) bool { return strconv.Itoa(p.NodePort) == value })
+}
+
+// allocate picks cur's cluster IP and node ports (kept, or the lowest free in the cache), each
+// claimed in the store for cur at its version before it is written: one another Service holds
+// already is avoided, and the next is tried. Without Claims (tests), the cache alone decides.
+func (c *Controller) allocate(ctx context.Context, cur *v1.Service, all []*v1.Service) (string, []v1.NodePort, error) {
+	if c.Claims == nil {
+		ip, err := ClusterIP(cur, all)
+		if err != nil {
+			return "", nil, err
+		}
+		nps, err := NodePorts(cur, all)
+		return ip, nps, err
+	}
+	h := claims.Holder{Kind: "Service", Namespace: cur.Namespace, Name: cur.Name, UID: cur.UID, Version: cur.ResourceVersion}
+	// A value cur already has, claimed by this controller: still its own (the claim is only taken
+	// over once the stored Service stops having it). Anything else is claimed now.
+	take := func(pool, value string, has bool, uses claims.Uses) (bool, error) {
+		if u, ok := c.mine.Load(pool + "/" + value); has && ok && u == h.UID {
+			return true, nil
+		}
+		ok, err := c.Claims.Take(ctx, pool, value, h, uses)
+		if ok {
+			c.mine.Store(pool+"/"+value, h.UID)
+		}
+		return ok, err
+	}
+	avoidIP := map[string]bool{}
+	var ip string
+	for {
+		var err error
+		if ip, err = clusterIP(cur, all, avoidIP); err != nil {
+			return "", nil, err
+		}
+		ok, err := take(PoolClusterIP, ip, ip == cur.Status.ClusterIP, UsesClusterIP)
+		if err != nil {
+			return "", nil, err
+		}
+		if ok {
+			break
+		}
+		avoidIP[ip] = true
+	}
+	avoidPort := map[int]bool{}
+	for {
+		nps, err := nodePorts(cur, all, avoidPort)
+		if err != nil {
+			return "", nil, err
+		}
+		taken := false
+		for _, p := range nps {
+			has := slices.ContainsFunc(cur.Status.NodePorts, func(q v1.NodePort) bool { return q.NodePort == p.NodePort })
+			ok, err := take(PoolNodePort, strconv.Itoa(p.NodePort), has, UsesNodePort)
+			if err != nil {
+				return "", nil, err
+			}
+			if !ok {
+				avoidPort[p.NodePort], taken = true, true
+			}
+		}
+		if !taken {
+			return ip, nps, nil
+		}
+	}
+}
+
+// letGo gives back the claims of values svc had and has no more.
+func (c *Controller) letGo(ctx context.Context, svc *v1.Service, hadIP string, hadPorts []v1.NodePort) error {
+	if c.Claims == nil {
+		return nil
+	}
+	var errs []error
+	if hadIP != "" && hadIP != svc.Status.ClusterIP {
+		errs = append(errs, c.Claims.LetGo(ctx, PoolClusterIP, svc.UID, svc.Status.ClusterIP))
+	}
+	if fmt.Sprint(hadPorts) != fmt.Sprint(svc.Status.NodePorts) {
+		var keep []string
+		for _, p := range svc.Status.NodePorts {
+			keep = append(keep, strconv.Itoa(p.NodePort))
+		}
+		errs = append(errs, c.Claims.LetGo(ctx, PoolNodePort, svc.UID, keep...))
+	}
+	return errors.Join(errs...)
 }
 
 func jsonOf(v any) string {

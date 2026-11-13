@@ -163,17 +163,27 @@ var (
 	ErrMoving      = errors.New("a move is already under way")
 )
 
-// PlanMove decides a person's move. fromLost: the silo's current host is lost (no heartbeat).
-// fits is why the target can't take it ("" when it can), from the scheduler.
-func PlanMove(s *v1.Silo, m Movability, r Request, fromLost bool, fits string) (Plan, error) {
+// PlanMove decides a person's move. fromLost: the silo's current host is lost (no heartbeat);
+// sourceLost: so is the host a handoff under way is waiting for (status.movingFrom). fits is why
+// the target can't take it ("" when it can), from the scheduler.
+//
+// A handoff under way is refused, unless its source is lost and the person confirms it is fenced
+// (K-013): that host never let go and never will, so the handoff ends here, to the same
+// destination (which never started it) or to another one.
+func PlanMove(s *v1.Silo, m Movability, r Request, fromLost, sourceLost bool, fits string) (Plan, error) {
 	p := Plan{From: s.Status.Host, To: r.To}
+	ending := false
 	switch {
 	case s.Status.Host == "":
 		return p, ErrNotPlaced
+	case s.Status.MovingFrom != "" && sourceLost && !r.ConfirmFenced:
+		return p, fmt.Errorf("%w (from %s, which is lost): %w", ErrMoving, s.Status.MovingFrom, ErrNeedsFenced)
+	case s.Status.MovingFrom != "" && !sourceLost:
+		return p, fmt.Errorf("%w (from %s)", ErrMoving, s.Status.MovingFrom)
+	case s.Status.MovingFrom != "":
+		ending = true
 	case r.To == s.Status.Host:
 		return p, ErrSameHost
-	case s.Status.MovingFrom != "":
-		return p, fmt.Errorf("%w (from %s)", ErrMoving, s.Status.MovingFrom)
 	}
 	if r.Recreate {
 		if s.Policy() != v1.OnHostLossRecreate {
@@ -193,6 +203,10 @@ func PlanMove(s *v1.Silo, m Movability, r Request, fromLost bool, fits string) (
 	}
 	if fits != "" {
 		return p, fmt.Errorf("%s can't take it: %s", r.To, fits)
+	}
+	if ending && r.To == s.Status.Host {
+		p.From = s.Status.MovingFrom // the destination stays; only the lost source is let off
+		return p, nil
 	}
 	p.Handoff = !fromLost
 	return p, nil

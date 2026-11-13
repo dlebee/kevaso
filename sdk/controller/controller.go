@@ -126,7 +126,8 @@ func (c *Controller) done(k informer.Key) {
 	}
 }
 
-// Run starts the informers, waits for the first list, and reconciles until ctx ends.
+// Run starts the informers, waits for every one's first list (its own and Also's), and
+// reconciles until ctx ends.
 func (c *Controller) Run(ctx context.Context) {
 	c.init()
 	c.Informer.AddHandler(c.Add)
@@ -168,8 +169,22 @@ func informers(ws []Watch) []*informer.Informer {
 	return out
 }
 
+// waitingFor is told the kind of each cache a worker waits for before it reconciles (tests).
+var waitingFor = func(kind string) {}
+
+// waitSynced waits until every one of infs has its first list.
+func waitSynced(ctx context.Context, infs []*informer.Informer) bool {
+	for _, inf := range infs {
+		waitingFor(inf.Kind())
+		if !inf.WaitSynced(ctx) {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Controller) work(ctx context.Context) {
-	if !c.Informer.WaitSynced(ctx) {
+	if !waitSynced(ctx, append([]*informer.Informer{c.Informer}, informers(c.Also)...)) { // every cache it reads (K-027)
 		return
 	}
 	for {

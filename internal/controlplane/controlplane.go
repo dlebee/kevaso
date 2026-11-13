@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/audit"
 	"kevaso.com/core/internal/backup"
+	"kevaso.com/core/internal/claims"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controllers/certificate"
 	hostcontroller "kevaso.com/core/internal/controllers/host"
@@ -376,8 +378,16 @@ type certDeps struct {
 }
 
 func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDeps) {
-	silos, hosts, ipInf := informer.New(c, "Silo"), informer.New(c, "Host"), informer.New(c, "IP")
-	certs, ingresses, classes, issuers := informer.New(c, "Certificate"), informer.New(c, "Ingress"), informer.New(c, "IngressClass"), informer.New(c, "Issuer")
+	// Every cache a controller reads is made here, and no controller runs before all of them have
+	// their first list (K-027): an empty cache is not an empty cluster.
+	var caches []engine.Cache
+	newInf := func(kind string) *informer.Informer {
+		inf := informer.New(c, kind)
+		caches = append(caches, inf)
+		return inf
+	}
+	silos, hosts, ipInf := newInf("Silo"), newInf("Host"), newInf("IP")
+	certs, ingresses, classes, issuers := newInf("Certificate"), newInf("Ingress"), newInf("IngressClass"), newInf("Issuer")
 	if err := certificate.EnsureIssuers(ctx, c); err != nil {
 		cfg.Log("built-in issuers: %v", err)
 	}
@@ -385,22 +395,26 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	e.OnError = func(ctrl string, k engine.Key, err error, retry time.Duration) {
 		cfg.Log("%s: %s: %v (retry in %v)", ctrl, k, err, retry)
 	}
-	images, sets, services := informer.New(c, "VMImage"), informer.New(c, "SiloSet"), informer.New(c, "Service")
-	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, IPs: ipInf, Images: images, Clock: cfg.Clock}
+	images, sets, services := newInf("VMImage"), newInf("SiloSet"), newInf("Service")
+	var uniq *claims.Claims // cluster IPs, node ports, host ports: one holder each, by the store
+	if cd.store != nil {
+		uniq = &claims.Claims{Store: cd.store}
+	}
+	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, IPs: ipInf, Images: images, Clock: cfg.Clock, Claims: uniq}
 	if cfg.Plugins != nil {
 		reg := cfg.Plugins
 		sc.Classes = func() map[string]scheduler.Class { return provider.Classes(reg) }
 	}
 	e.Register(sc, engine.Options{Workers: 1})
-	e.Register(&hostcontroller.Controller{Client: c, Hosts: hosts, Clock: cfg.Clock, Lease: cfg.HostLease}, engine.Options{Workers: 1})
+	e.Register(&hostcontroller.Controller{Client: c, Hosts: hosts, Clock: cfg.Clock, Lease: cfg.HostLease, Claims: uniq}, engine.Options{Workers: 1})
 	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
 	ipInf.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IP", Namespace: k.Namespace, Name: k.Name}) })
-	e.Register(&ipcontroller.Controller{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Plugins: cfg.Plugins, Clock: cfg.Clock}, engine.Options{Workers: 1})
+	e.Register(&ipcontroller.Controller{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Plugins: cfg.Plugins, Clock: cfg.Clock, Claims: uniq}, engine.Options{Workers: 1})
 	e.Register(&ipcontroller.Made{Client: c, IPs: ipInf, For: silos, ForKind: "Silo", Plugins: cfg.Plugins}, engine.Options{Workers: 1})
 	e.Register(&ipcontroller.Made{Client: c, IPs: ipInf, For: services, ForKind: "Service", Plugins: cfg.Plugins}, engine.Options{Workers: 1})
 	e.Register(&siloset.Controller{Client: c, Sets: sets, Silos: silos, Clock: cfg.Clock}, engine.Options{Workers: 2})
-	e.Register(&servicecontroller.Controller{Client: c, Services: services, Silos: silos, Clock: cfg.Clock}, engine.Options{Workers: 2})
+	e.Register(&servicecontroller.Controller{Client: c, Services: services, Silos: silos, Clock: cfg.Clock, Claims: uniq}, engine.Options{Workers: 2})
 	images.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "VMImage", Namespace: k.Namespace, Name: k.Name}) })
 	sets.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "SiloSet", Namespace: k.Namespace, Name: k.Name}) })
 	services.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Service", Namespace: k.Namespace, Name: k.Name}) })
@@ -446,7 +460,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	})
 	if reg := cfg.Plugins; reg != nil {
 		e.Register(&provider.Hosts{Client: c, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 1})
-		leaseInf := informer.New(c, "Lease") // a plugin's load balancer has no backend for a closed leased port
+		leaseInf := newInf("Lease") // a plugin's load balancer has no backend for a closed leased port
 		leaseInf.AddHandler(func(k informer.Key) {
 			if o, ok := leaseInf.Get(k.Namespace, k.Name); ok {
 				e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: o.(*v1.Lease).Spec.Silo})
@@ -486,6 +500,8 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	go images.Run(ctx)
 	go sets.Run(ctx)
 	go services.Run(ctx)
+	e.WaitFor(caches...)
+	e.OnWait = func(kinds []string) { cfg.Log("controllers wait for their caches: %s", strings.Join(kinds, ", ")) }
 	e.Run(ctx)
 }
 

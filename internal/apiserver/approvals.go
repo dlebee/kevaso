@@ -194,13 +194,17 @@ func (s *Server) answerApproval(w http.ResponseWriter, r *http.Request, t target
 		writeErr(w, err)
 		return
 	}
-	answered, err := approvals.Answer(a, t.answer == "approve", who, body.Reason, s.clock.Now())
+	answered, err := approvals.Answer(a, t.answer == "approve", body.Request, who, body.Reason, s.clock.Now())
 	if errors.Is(err, approvals.ErrTooLate) {
 		if perr := s.putApproval(ctx, answered, rev, a); perr == nil {
 			s.auditApproval("approval-expired", who, whoType, answered, false, "answered too late")
 			s.leaseAnswered(ctx, answered, who, whoType)
 		}
 		writeErr(w, errf(http.StatusConflict, "Expired", "%v", err))
+		return
+	}
+	if errors.Is(err, approvals.ErrWhich) {
+		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%v", err))
 		return
 	}
 	if err != nil {

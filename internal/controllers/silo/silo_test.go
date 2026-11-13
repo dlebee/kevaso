@@ -15,6 +15,7 @@ import (
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/internal/store"
 	"kevaso.com/core/sdk/kplugin"
@@ -276,4 +277,39 @@ func TestControllerSeesItsOwnPlacementsHostLost(t *testing.T) {
 		c := meta.FindCondition(s.Status.Conditions, "HostLost")
 		return c != nil && c.Status == meta.ConditionTrue
 	})
+}
+
+// K-005: a handoff in progress (hv1 still has to let go) when the destination hv2 is lost. Moving
+// on to hv3 must keep the record that hv1 has not let go: hv3 may not start the silo until it has,
+// or two copies run on the same data. Recreate keeps it the same way.
+func TestK005LosingTheDestinationKeepsTheHandoff(t *testing.T) {
+	env := scheduler.Env{Classes: map[string]scheduler.Class{"juicefs": {Plugin: "juicefs", Topology: kplugin.TopologyGlobal}}}
+	docker := func(h *v1.Host) *v1.Host {
+		h.Spec.Components.Worker.Runtimes = []v1.RuntimeSpec{{Name: "docker"}}
+		h.Status.Runtimes = map[string]v1.RuntimeStatus{"docker": {State: "Ready"}}
+		return h
+	}
+	for _, policy := range []string{v1.OnHostLossMove, v1.OnHostLossRecreate} {
+		s := newSilo("files")
+		s.Spec.Runtime, s.Spec.Container = "docker", &v1.ContainerSource{Image: "app"}
+		s.Spec.Availability.OnHostLoss = policy
+		if policy == v1.OnHostLossMove {
+			s.Spec.Volumes = []v1.Volume{{Name: "data", Class: "juicefs", Size: "10Gi", MountPath: "/data"}}
+			s.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "juicefs", Handle: "vol-1", AttachedTo: "hv1", Mounted: true}}
+		}
+		s.Status.Host, s.Status.MovingFrom, s.Status.Phase = "hv2", "hv1", "Scheduled"
+		s.Status.Image = &v1.SiloImage{From: "app", Ref: "app:1", Running: "app:1"}
+		hv1 := docker(readyHost("hv1"))
+		hv1.Spec.Unschedulable = true // being drained
+		hosts := []*v1.Host{hv1, docker(lostHost("hv2", now.Add(-time.Minute))), docker(readyHost("hv3"))}
+		st, changed, _, err := silo.DecideIn(s, hosts, nil, now, env)
+		if err != nil || !changed || st.Host != "hv3" {
+			t.Fatalf("%s: not placed on hv3: %v %+v", policy, err, st)
+		}
+		next := *s
+		next.Status = st
+		if st.MovingFrom != "hv1" || moves.MayStart(&next, "hv3") {
+			t.Fatalf("%s: hv3 may start it while hv1 has not let go (movingFrom %q)", policy, st.MovingFrom)
+		}
+	}
 }

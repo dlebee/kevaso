@@ -167,7 +167,11 @@ func TestPortLeases(t *testing.T) {
 	bot.Token = func(context.Context) (string, error) { return tok.Token, nil }
 
 	answer := func(who *client.Client, name, verb, reason string) error {
-		return who.Call(c.ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/web3/approvals/"+name+"/"+verb, client.ApprovalAnswer{Reason: reason}, nil)
+		var a v1.Approval // the request as the person reads it, then answered (K-017)
+		if err := c.admin.Get(c.ctx, "Approval", "web3", name, &a); err != nil {
+			return err
+		}
+		return who.Call(c.ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/web3/approvals/"+name+"/"+verb, client.ApprovalAnswer{Reason: reason, Request: approvals.RequestID(&a)}, nil)
 	}
 	openAs := func(who *client.Client, verb, port, d string) (client.LeaseAnswer, error) {
 		var ans client.LeaseAnswer

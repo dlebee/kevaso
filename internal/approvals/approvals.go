@@ -11,6 +11,7 @@ package approvals
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -203,17 +204,37 @@ func expire(a *v1.Approval) *v1.Approval {
 	return &c
 }
 
+// RequestID names what a request asks for: its silo, secret or port, use, grant, destination,
+// payload and the access wanted. A request asked again with anything different has another ID
+// (when it was asked, and until when it waits, are not part of it). A person's answer carries the
+// ID of the request they read, so a yes is for exactly that (K-017).
+func RequestID(a *v1.Approval) string {
+	sp := a.Spec
+	b, _ := json.Marshal([]any{sp.Silo, sp.SiloUID, sp.Secret, sp.Port, sp.Use, sp.Grant, sp.Destination, sp.PayloadHash, sp.Summary, sp.For})
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:6])
+}
+
 // Answer errors.
 var (
 	ErrAnswered = errors.New("already answered")
 	ErrTooLate  = errors.New("expired before the answer")
+	ErrChanged  = errors.New("the request changed since it was read")
+	ErrWhich    = errors.New("a yes must say which request it is for")
 )
 
-// Answer records a person's yes or no. It returns the approval to store; on ErrTooLate that's
-// the request marked expired (store it too).
-func Answer(a *v1.Approval, approve bool, who, reason string, now time.Time) (*v1.Approval, error) {
+// Answer records a person's yes or no to the request they read, request being its RequestID. A
+// yes needs it; a request asked again with anything else since is not answered (ErrChanged). It
+// returns the approval to store; on ErrTooLate that's the request marked expired (store it too).
+func Answer(a *v1.Approval, approve bool, request, who, reason string, now time.Time) (*v1.Approval, error) {
 	if a.Status.Phase != v1.ApprovalPending && a.Status.Phase != "" {
 		return nil, fmt.Errorf("approval %s: %w (%s by %s)", a.Name, ErrAnswered, a.Status.Phase, a.Status.AnsweredBy)
+	}
+	switch id := RequestID(a); {
+	case request == "" && approve:
+		return nil, fmt.Errorf("approval %s: %w (request %s: %s, for %s)", a.Name, ErrWhich, id, a.Spec.Summary, a.Spec.For)
+	case request != "" && request != id:
+		return nil, fmt.Errorf("approval %s: %w: it is request %s now (%s, for %s); read it again and answer that one", a.Name, ErrChanged, id, a.Spec.Summary, a.Spec.For)
 	}
 	if !now.Before(a.Spec.ExpiresAt) {
 		return expire(a), fmt.Errorf("approval %s: %w", a.Name, ErrTooLate)

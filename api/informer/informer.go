@@ -57,6 +57,29 @@ func (i *Informer) WaitSynced(ctx context.Context) bool {
 	}
 }
 
+// Synced reports, without waiting, whether the first list has been loaded. Before it has, an
+// object missing from the cache may well exist.
+func (i *Informer) Synced() bool {
+	select {
+	case <-i.synced:
+		return true
+	default:
+		return false
+	}
+}
+
+// AllSynced reports whether every one of infs has loaded its first list (a nil one is left out:
+// a cache a controller was not given). A controller that would unbind, release or delete because
+// it does not see something checks this first.
+func AllSynced(infs ...*Informer) bool {
+	for _, i := range infs {
+		if i != nil && !i.Synced() {
+			return false
+		}
+	}
+	return true
+}
+
 // Get returns a copy of a cached object.
 func (i *Informer) Get(namespace, name string) (meta.Object, bool) {
 	i.mu.RLock()
