@@ -47,8 +47,12 @@ type Agent struct {
 	Client   *client.Client
 	HostName string
 	Runtimes map[string]kri.Runtime // by name, e.g. "cloud-hypervisor"
-	Clock    clock.Clock
-	Log      func(format string, args ...any)
+	// RuntimeReady says whether a runtime has finished installing (nil: all are). Until it has, its
+	// silos are neither made nor started: a microVM started before its runtime's storage is up
+	// fails, and a failed one stays failed.
+	RuntimeReady func(name string) bool
+	Clock        clock.Clock
+	Log          func(format string, args ...any)
 	// LastContact, if set, says when this host last reached the control plane. Past FenceAfter
 	// without contact, the agent fences: it stops the silos the control plane may recreate
 	// elsewhere (onHostLoss: Recreate) and starts nothing, so two copies never run.
@@ -335,6 +339,9 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			setCond(st, "Ready", meta.ConditionFalse, "RuntimeMissing", "runtime "+s.Spec.Runtime+" isn't installed on "+a.HostName, s.Generation, a.now())
 		})
 	}
+	if a.RuntimeReady != nil && !a.RuntimeReady(s.Spec.Runtime) {
+		return engine.Result{RequeueAfter: 2 * time.Second}, nil // still installing (a boot, a new host)
+	}
 	// Provider volumes first: attached by the control plane, formatted once and mounted here. Also
 	// after a reboot, before the silo starts again.
 	vols, ready, msg, err := a.mountVolumes(ctx, s)
@@ -406,6 +413,13 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			st.Image.Digest = digest
 		})
 	case kri.Created, kri.Stopped:
+		hs, hostSecrets := rt.(kri.HostSecrets)
+		if hostSecrets {
+			// Its file and env secrets are there before anything of it starts (init containers too).
+			if err := a.deliverFromHost(ctx, hs, s, true); err != nil {
+				return engine.Result{}, err
+			}
+		}
 		if ic, ok := rt.(kri.InitContainers); ok {
 			// Init containers: the steps run before the main process, each in its own container.
 			if rs.State == kri.Stopped && s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" && initDone(s) {
@@ -425,7 +439,9 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		if err := a.recordForFence(s); err != nil {
 			return engine.Result{}, err
 		}
-		a.delivered.Delete(s.UID) // a fresh boot: an empty /run, its secrets are written again
+		if !hostSecrets {
+			a.delivered.Delete(s.UID) // a fresh boot: an empty /run, its secrets are written again
+		}
 		// Every start begins its probes afresh: startup's deadline counts from this boot.
 		a.probed.Delete(s.UID)
 		if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Probes, st.StartedAt = nil, nil }); err != nil {

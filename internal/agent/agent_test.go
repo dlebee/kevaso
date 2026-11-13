@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -392,4 +393,30 @@ func TestOldCopyWithLocalVolumesIsKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	until("keep removed once deleted", func() bool { return !has("keep") })
+}
+
+// Found on the metal machine after a reboot: the agent started a microVM while its runtime was
+// still installing (its storage not up yet); the start failed and the silo stayed failed.
+func TestNothingStartsBeforeItsRuntimeIsReady(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	c := client.New(ts.URL)
+	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
+	rt := fake.New()
+	var ready atomic.Bool
+	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{},
+		RuntimeReady: func(name string) bool { return name == "cloud-hypervisor" && ready.Load() }}
+	go a.Run(ctx)
+	e := &env{c: c, rt: rt, ctx: ctx}
+	e.place(t, "web", "hv1", nil)
+	time.Sleep(500 * time.Millisecond)
+	var s v1.Silo
+	if err := c.Get(ctx, "Silo", "dev", "web", &s); err != nil || s.Status.Phase != "Scheduled" {
+		t.Fatalf("the agent went ahead before the runtime was ready: %+v %v", s.Status, err)
+	}
+	ready.Store(true)
+	e.wait(t, "web", func(s *v1.Silo) bool { return meta.IsTrue(s.Status.Conditions, "Ready") })
 }

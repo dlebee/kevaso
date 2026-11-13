@@ -21,8 +21,13 @@ import (
 // silo's file and env secrets into it through its runtime's exec, before its init steps and again
 // whenever what it receives changes, and removes what's no longer delivered. Nothing is installed
 // in the silo: the scripts are POSIX sh, and the values travel on exec's stdin (never argv, never a
-// file on the host). A secret is only ever written onto tmpfs (or ramfs): every silo container
-// gets --tmpfs /run, and a microVM's /run is a tmpfs.
+// file on the host). A secret is only ever written onto tmpfs (or ramfs): a microVM's /run is a
+// tmpfs.
+//
+// A runtime that delivers them from the host itself (kri.HostSecrets: docker and podman, whose
+// files come from a tmpfs of the host's mounted read-only and whose variables are the container's
+// environment) gets them through SetSecrets instead, before the silo starts and whenever they
+// change: nothing is exec'd into the silo, and its image needs no shell.
 
 // Where env deliveries go and what was written, inside the silo.
 const (
@@ -190,18 +195,11 @@ func (a *Agent) deliver(ctx context.Context, rt kri.Runtime, s *v1.Silo) error {
 	if !v1.HostWrites(s, grants) && !wantsCA && !had {
 		return nil
 	}
-	id := idOf(s)
-	ask := func(op string) (client.BrokerResponse, error) {
-		var resp client.BrokerResponse
-		if err := a.Client.Call(ctx, http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{
-			Namespace: s.Namespace, Name: s.Name, UID: s.UID, Host: a.HostName, Request: client.BrokerRequest{Op: op}}, &resp); err != nil {
-			return resp, err
-		}
-		if resp.Error != "" {
-			return resp, fmt.Errorf("%s", resp.Error)
-		}
-		return resp, nil
+	if hs, ok := rt.(kri.HostSecrets); ok {
+		return a.deliverFromHost(ctx, hs, s, false)
 	}
+	id := idOf(s)
+	ask := a.asker(ctx, s)
 	list, err := ask(client.OpDeliveries)
 	if err != nil {
 		return fmt.Errorf("deliveries: %w", err)
@@ -234,6 +232,111 @@ func (a *Agent) deliver(ctx context.Context, rt kri.Runtime, s *v1.Silo) error {
 	}
 	a.delivered.Store(s.UID, delivered{key: key, note: note})
 	return nil
+}
+
+// asker asks the control plane for the silo's deliveries (op: OpDeliveries, OpDeliveryValues).
+func (a *Agent) asker(ctx context.Context, s *v1.Silo) func(op string) (client.BrokerResponse, error) {
+	return func(op string) (client.BrokerResponse, error) {
+		var resp client.BrokerResponse
+		if err := a.Client.Call(ctx, http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{
+			Namespace: s.Namespace, Name: s.Name, UID: s.UID, Host: a.HostName, Request: client.BrokerRequest{Op: op}}, &resp); err != nil {
+			return resp, err
+		}
+		if resp.Error != "" {
+			return resp, fmt.Errorf("%s", resp.Error)
+		}
+		return resp, nil
+	}
+}
+
+// EnvInEngineNote is what SecretsDelivered adds for env secrets on a container runtime: the
+// engine holds their values (ADR 0009 addendum).
+const EnvInEngineNote = "environment variables are in the engine's container config: anyone with the host's docker or podman sees their values (inspect)"
+
+// EnvOutsideEngineNote is what it adds when they go through Kevaso's OCI runtime instead.
+const EnvOutsideEngineNote = "environment variables set by Kevaso's OCI runtime as the container starts: not in the engine's config, inspect or its disk"
+
+// deliverFromHost gives a HostSecrets runtime the silo's file and env deliveries: always before it
+// starts (its values went with its last stop), and while it runs when they changed since.
+func (a *Agent) deliverFromHost(ctx context.Context, hs kri.HostSecrets, s *v1.Silo, starting bool) error {
+	last, had := a.delivered.Load(s.UID)
+	var ds []client.Delivery
+	ask := a.asker(ctx, s)
+	if v1.HostWrites(s, a.grantList()) || had {
+		list, err := ask(client.OpDeliveries)
+		if err != nil {
+			return fmt.Errorf("deliveries: %w", err)
+		}
+		ds = list.Deliveries
+	}
+	key := deliveriesKey(ds, "")
+	if !starting && (!had && len(ds) == 0 || had && last.(delivered).key == key) {
+		return nil
+	}
+	note, werr := a.setHostSecrets(ctx, hs, s, ds, ask)
+	cond, reason, msg := meta.ConditionTrue, "Delivered", note
+	if werr != nil {
+		cond, reason, msg = meta.ConditionFalse, "DeliveryFailed", werr.Error()
+	}
+	if len(ds) > 0 || werr != nil || findCond(s.Status.Conditions, "SecretsDelivered") != nil {
+		if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			setCond(st, "SecretsDelivered", cond, reason, msg, s.Generation, a.now())
+		}); err != nil {
+			return err
+		}
+	}
+	if werr != nil {
+		return werr
+	}
+	a.delivered.Store(s.UID, delivered{key: key, note: note})
+	return nil
+}
+
+// setHostSecrets fetches the values and hands them to the runtime; note is the condition's message.
+func (a *Agent) setHostSecrets(ctx context.Context, hs kri.HostSecrets, s *v1.Silo, ds []client.Delivery, ask func(string) (client.BrokerResponse, error)) (string, error) {
+	var sec kri.Secrets
+	if len(ds) > 0 {
+		vals, err := ask(client.OpDeliveryValues)
+		if err != nil {
+			return "", fmt.Errorf("deliveries: %w", err)
+		}
+		defer func() {
+			for _, d := range vals.Deliveries {
+				clear(d.Value)
+			}
+		}()
+		for _, d := range vals.Deliveries {
+			switch d.Mode {
+			case v1.DeliverFile:
+				sec.Files = append(sec.Files, kri.SecretFile{Secret: d.Name, Path: path.Clean(d.Path), Mode: 0o400, Value: d.Value, Version: d.Version})
+			case v1.DeliverEnv:
+				sec.Env = append(sec.Env, kri.SecretEnv{Secret: d.Name, Name: d.Env, Value: d.Value, Version: d.Version})
+			}
+		}
+	}
+	pending, err := hs.SetSecrets(ctx, idOf(s), sec)
+	if err != nil {
+		return "", err
+	}
+	note := fmt.Sprintf("%d files (a tmpfs of the host's, mounted read-only), %d environment variables", len(sec.Files), len(sec.Env))
+	if len(sec.Env) > 0 {
+		inEngine, why := true, ""
+		if p, ok := hs.(kri.EnvPath); ok {
+			inEngine, why = p.EnvInEngine(idOf(s))
+		}
+		switch {
+		case !inEngine:
+			note += "; " + EnvOutsideEngineNote
+		case why != "":
+			note += "; " + EnvInEngineNote + " (" + why + ")"
+		default:
+			note += "; " + EnvInEngineNote
+		}
+	}
+	if pending != "" {
+		note += "; " + pending
+	}
+	return note, nil
 }
 
 // writeDeliveries does the writing; note is the condition's message.

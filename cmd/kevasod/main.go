@@ -28,6 +28,10 @@
 //
 //	kevasod dev [--listen 127.0.0.1:8080] [--data PATH]
 //	    the API without auth on loopback, for trying kvo locally
+//
+//	kevaso-oci … (kevasod linked as /usr/local/lib/kevaso/kevaso-oci)
+//	    Kevaso's OCI runtime, which docker calls as it would runc for container silos with env
+//	    secrets: it sets their variables in the bundle, then execs runc (builtin/kri/container/ocienv)
 package main
 
 import (
@@ -51,6 +55,7 @@ import (
 	"kevaso.com/core/builtin/kcc/acme"
 	kccexec "kevaso.com/core/builtin/kcc/exec"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
+	"kevaso.com/core/builtin/kri/container/ocienv"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/backup"
 	"kevaso.com/core/internal/clock"
@@ -58,6 +63,7 @@ import (
 	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/mesh"
+	"kevaso.com/core/internal/platform"
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/secrets"
 	"kevaso.com/core/internal/store"
@@ -86,6 +92,11 @@ func usage() {
 }
 
 func main() {
+	// Kevaso's OCI runtime for container silos with env secrets (builtin/kri/container/ocienv): the
+	// engine calls it as runc, it sets their variables in the bundle and execs the real runtime.
+	if filepath.Base(os.Args[0]) == ocienv.Name {
+		os.Exit(ocienv.Main(os.Args[1:]))
+	}
 	// A container silo's pause container: hold the network namespace, nothing else.
 	if filepath.Base(os.Args[0]) == "kevaso-pause" {
 		sig := make(chan os.Signal, 1)
@@ -131,6 +142,10 @@ func main() {
 		err = runDev(ctx, os.Args[2:])
 	case "version":
 		fmt.Println(version.Version)
+	case "platforms":
+		// The systems this kevasod supports (tested end to end); kvoadm reads the same list
+		// out of the binary before installing it.
+		fmt.Println(platform.Names(platform.Supported()))
 	default:
 		usage()
 	}

@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/platform"
 )
 
 func TestParseInit(t *testing.T) {
@@ -209,7 +210,7 @@ func TestDrainPlan(t *testing.T) {
 }
 
 func TestAssess(t *testing.T) {
-	good := map[string]string{"os": "Ubuntu 24.04.1 LTS", "arch": "x86_64", "uid": "0", "systemd": "yes", "openssl": "yes", "apt": "yes",
+	good := map[string]string{"os": "Ubuntu 24.04.1 LTS", "os_id": "ubuntu", "os_version": "24.04", "arch": "x86_64", "uid": "0", "systemd": "yes", "openssl": "yes", "apt": "yes",
 		"kvm": "yes", "cpus": "4", "memory_mib": "8000", "disk_free_gib": "70", "password_login": "no", "kevasod": "absent", "port_6443": "free"}
 	for _, r := range Assess(good) {
 		if r.Level != "ok" {
@@ -229,6 +230,42 @@ func TestAssess(t *testing.T) {
 		if levels[what] != want {
 			t.Errorf("%s: %s, want %s", what, levels[what], want)
 		}
+	}
+}
+
+func TestAssessAsksTheKevasodBinary(t *testing.T) {
+	facts := map[string]string{"os": "Ubuntu 26.04.1 LTS", "os_id": "ubuntu", "os_version": "26.04", "arch": "x86_64", "uid": "0"}
+	osLine := func(sup Supported) CheckResult {
+		for _, r := range AssessWith(facts, sup) {
+			if r.What == "operating system" {
+				return r
+			}
+		}
+		t.Fatal("no operating system line")
+		return CheckResult{}
+	}
+	// A kevasod that lists 26.04: ok, whatever kvoadm's own build says.
+	bin := filepath.Join(t.TempDir(), "kevasod")
+	if err := os.WriteFile(bin, []byte("\x7fELF…"+platform.Marker+"ubuntu/24.04,ubuntu/26.04;…"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sup := supportedFor(bin)
+	if sup.From != "kevasod" || osLine(sup).Level != "ok" {
+		t.Fatalf("from the binary: %+v → %+v", sup, osLine(sup))
+	}
+	// One that doesn't list it: a warning naming what it supports.
+	if err := os.WriteFile(bin, []byte(platform.Marker+"ubuntu/24.04;"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if r := osLine(supportedFor(bin)); r.Level != "warn" || !strings.Contains(r.Note, "this kevasod supports: ubuntu 24.04") {
+		t.Fatalf("not listed: %+v", r)
+	}
+	// An older kevasod with no list: kvoadm's own, and it says so.
+	if err := os.WriteFile(bin, []byte("\x7fELF old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if sup := supportedFor(bin); sup.From != "kvoadm" || !strings.Contains(osLine(sup).Note, "kvoadm's list") {
+		t.Fatalf("an older binary: %+v %+v", sup, osLine(sup))
 	}
 }
 

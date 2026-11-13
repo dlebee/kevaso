@@ -132,3 +132,20 @@ func TestNginxAcceptsIt(t *testing.T) {
 		t.Fatalf("nginx -t: %v\n%s", err, out)
 	}
 }
+
+// The pid file must be the stock image's, spelled as its nginx.conf spells it: otherwise the
+// first reload deletes it and every reload after fails (found on the metal machine: ACME
+// challenges never reached nginx). If the image changes, check its nginx.conf's pid line.
+func TestPIDIsTheStockImages(t *testing.T) {
+	info := Driver{}.Info()
+	if info.Image != "docker.io/library/nginx:1.27" || DefaultPID != "/run/nginx.pid" {
+		t.Fatalf("image %s, pid %s: check the image's own nginx.conf (pid line) and keep them the same", info.Image, DefaultPID)
+	}
+	plan, err := Driver{}.Render(kic.State{Class: "public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.Config.Data), "\npid /run/nginx.pid;\n") {
+		t.Errorf("the rendered config's pid line:\n%s", plan.Config.Data)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -431,6 +432,20 @@ func DrainPlan(host string, silos []*v1.Silo) (move, stay []*v1.Silo) {
 }
 
 // hostDrain cordons a host and moves off what can move. uncordon undoes the cordon.
+// DrainStatus is the status kvoadm host drain writes for a silo it moves off host: placed
+// afresh, and handed off as kvo move does (movingFrom: host). The host it lands on may start it
+// only once host has stopped it and let go (its agent clears movingFrom), so it never runs
+// twice. Pure.
+func DrainStatus(s *v1.Silo, host string, now time.Time) v1.SiloStatus {
+	st := s.Status
+	st.Conditions = slices.Clone(st.Conditions)
+	st.Host, st.Phase, st.SiloIP, st.Init = "", "Pending", "", nil
+	st.MovingFrom = host
+	meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Drained",
+		Message: "moved off " + host + " by kvoadm host drain: a fresh instance from its image (onHostLoss: Recreate)", ObservedGeneration: s.Generation}, now)
+	return st
+}
+
 func hostDrain(ctx context.Context, name, kctx string, uncordon bool, out io.Writer) error {
 	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
 	c, _, err := adminClient(kctx)
@@ -471,9 +486,7 @@ func hostDrain(ctx context.Context, name, kctx string, uncordon bool, out io.Wri
 	move, stay := DrainPlan(name, silos)
 	now := time.Now().UTC().Truncate(time.Second)
 	for _, s := range move {
-		s.Status.Host, s.Status.Phase, s.Status.SiloIP, s.Status.Init = "", "Pending", "", nil
-		meta.SetCondition(&s.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Drained",
-			Message: "moved off " + name + " by kvoadm host drain: a fresh instance from its image (onHostLoss: Recreate)", ObservedGeneration: s.Generation}, now)
+		s.Status = DrainStatus(s, name, now)
 		if err := c.UpdateStatus(ctx, s); err != nil {
 			return fmt.Errorf("move %s/%s: %w", s.Namespace, s.Name, err)
 		}

@@ -251,6 +251,15 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
 	}
 	n := NamesFor(id)
+	// A TAP doesn't outlive a reboot of the host: make it again, as Create did.
+	if _, err := r.Host.Run(ctx, "ip", "link", "show", n.Tap); err != nil {
+		if err := r.run(ctx, "ip", "tuntap", "add", "dev", n.Tap, "mode", "tap", "user", VMMUser); err != nil {
+			return err
+		}
+		if err := r.run(ctx, "ip", "link", "set", n.Tap, "master", Bridge); err != nil {
+			return err
+		}
+	}
 	for _, step := range StartPlan(n, st.layout()) {
 		if err := r.run(ctx, step.Cmd[0], step.Cmd[1:]...); err != nil {
 			return err

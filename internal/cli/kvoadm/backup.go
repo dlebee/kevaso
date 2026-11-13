@@ -28,59 +28,9 @@ import (
 // The file is sealed to the recovery key: it opens nothing without it, so it can sit in ordinary
 // storage. kvoadm init --restore FILE puts it on a fresh machine.
 func backupCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
-	usage := errors.New("usage: kvoadm backup [USER@]ADDRESS --output FILE [--ssh-key PATH] [--ssh-port N] [--host-key SHA256:…]")
-	o := InitOptions{SSHPort: 22}
-	var target, output string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		next := func() (string, error) {
-			if i+1 >= len(args) {
-				return "", fmt.Errorf("%s needs a value", a)
-			}
-			i++
-			return args[i], nil
-		}
-		var err error
-		switch a {
-		case "--output", "-o":
-			output, err = next()
-		case "--ssh-key":
-			o.SSHKey, err = next()
-		case "--host-key":
-			o.HostKey, err = next()
-		case "--ssh-port":
-			var v string
-			if v, err = next(); err == nil {
-				o.SSHPort, err = strconv.Atoi(v)
-			}
-		case "--accept-host-key-on-first-use":
-			o.HostKeyFirstUse = true
-		default:
-			if strings.HasPrefix(a, "-") || target != "" {
-				return usage
-			}
-			target = a
-		}
-		if err != nil {
-			return err
-		}
-	}
-	if target == "" || output == "" {
-		return usage
-	}
-	if _, err := os.Stat(output); err == nil {
-		return fmt.Errorf("%s exists: give a new file name (backups are never overwritten)", output)
-	}
-	o.User, o.Address = "root", target
-	if u, a, ok := strings.Cut(target, "@"); ok {
-		o.User, o.Address = u, a
-	}
-	if o.SSHKey == "" {
-		if h, err := os.UserHomeDir(); err == nil {
-			if p := filepath.Join(h, ".kevaso", "ssh", "id_ed25519"); fileExists(p) {
-				o.SSHKey = p
-			}
-		}
+	o, output, err := parseBackup(args)
+	if err != nil {
+		return err
 	}
 	conn, _, err := dialHost(ctx, o, bufio.NewReader(stdin), stdin, out)
 	if err != nil {
@@ -166,4 +116,61 @@ func prepareRestore(o *InitOptions, stdin io.Reader, out io.Writer) ([]byte, err
 	_, _ = fmt.Fprintf(out, "→ backup of cluster %q (control plane %s), taken %s: the recovery key opens it\n",
 		m.Cluster, m.Host, m.Created.Local().Format(time.DateTime))
 	return json.Marshal(client.RestoreRequest{Backup: blob, RecoveryKey: rk.String()})
+}
+
+// parseBackup reads kvoadm backup's arguments: the target (its login, root by default), the
+// output file (which must not exist) and the SSH options.
+func parseBackup(args []string) (InitOptions, string, error) {
+	usage := errors.New("usage: kvoadm backup [USER@]ADDRESS --output FILE [--ssh-key PATH] [--ssh-port N] [--host-key SHA256:…]")
+	o := InitOptions{SSHPort: 22}
+	var target, output string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		next := func() (string, error) {
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("%s needs a value", a)
+			}
+			i++
+			return args[i], nil
+		}
+		var err error
+		switch a {
+		case "--output", "-o":
+			output, err = next()
+		case "--ssh-key":
+			o.SSHKey, err = next()
+		case "--host-key":
+			o.HostKey, err = next()
+		case "--ssh-port":
+			var v string
+			if v, err = next(); err == nil {
+				o.SSHPort, err = strconv.Atoi(v)
+			}
+		case "--accept-host-key-on-first-use":
+			o.HostKeyFirstUse = true
+		default:
+			if strings.HasPrefix(a, "-") || target != "" {
+				return o, "", usage
+			}
+			target = a
+		}
+		if err != nil {
+			return o, "", err
+		}
+	}
+	if target == "" || output == "" {
+		return o, "", usage
+	}
+	if _, err := os.Stat(output); err == nil {
+		return o, "", fmt.Errorf("%s exists: give a new file name (backups are never overwritten)", output)
+	}
+	o.User, o.Address = splitTarget(target)
+	if o.SSHKey == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			if p := filepath.Join(h, ".kevaso", "ssh", "id_ed25519"); fileExists(p) {
+				o.SSHKey = p
+			}
+		}
+	}
+	return o, output, nil
 }

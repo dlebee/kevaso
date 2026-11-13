@@ -111,7 +111,7 @@ kind: Silo
 metadata: { name: vm, namespace: notes }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 2, memory: 2Gi }
   volumes:
     - { name: home, class: juicefs, size: 5Gi, mountPath: /home/data }

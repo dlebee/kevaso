@@ -483,8 +483,10 @@ func (s *Server) checkRuntimeFit(ctx context.Context, t target, obj meta.Object)
 // containerRuntime reports the container family's own runtimes (on the host's bridge).
 func containerRuntime(rt string) bool { return rt == "docker" || rt == "podman" }
 
-// checkContainerFit: command and volumes are container features for now; containers get secrets
-// through the broker socket and the egress gate, not yet as files or environment variables.
+// checkContainerFit: command and volumes are container features for now. Containers get every
+// delivery: a file secret in a folder under /run (the host mounts that folder read-only), and an
+// env secret with a warning, since the engine keeps its value where whoever runs the host's docker
+// or podman sees it (ADR 0009 addendum).
 func (s *Server) checkContainerFit(ctx context.Context, t target, silo *v1.Silo) error {
 	rt := silo.Spec.Runtime
 	var problems []string
@@ -511,8 +513,19 @@ func (s *Server) checkContainerFit(ctx context.Context, t target, silo *v1.Silo)
 				continue
 			}
 			for _, sec := range g.(*v1.Grant).Spec.Secrets {
-				if d := sec.Delivery(); d == v1.DeliverFile || d == v1.DeliverEnv {
-					problems = append(problems, fmt.Sprintf("grant %s: secret %s: deliver %s isn't available on %s yet (broker and inject are)", name, sec.Name, d, rt))
+				switch sec.Delivery() {
+				case v1.DeliverFile:
+					p := sec.Path
+					if p == "" {
+						p = "/run/secrets/" + sec.Name
+					}
+					if why := v1.ContainerFileProblem(p); why != "" {
+						problems = append(problems, fmt.Sprintf("grant %s: secret %s: %s", name, sec.Name, why))
+					}
+				case v1.DeliverEnv:
+					if !s.envKeptOut(ctx, silo) {
+						warn(ctx, EnvOnContainerWarning(silo.Name, name, sec.Name, rt))
+					}
 				}
 			}
 		}
@@ -521,6 +534,41 @@ func (s *Server) checkContainerFit(ctx context.Context, t target, silo *v1.Silo)
 		return errf(http.StatusUnprocessableEntity, "Invalid", "Silo %s: %s", silo.Name, strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// envKeptOut reports whether the silo's variables stay out of the engine's records wherever it can
+// run: every Ready host of its runtime (only its own once it's placed) starts its containers
+// through Kevaso's OCI runtime (the worker reports it, RuntimeStatus.EnvOutsideEngine). With no
+// such host known yet, no.
+func (s *Server) envKeptOut(ctx context.Context, silo *v1.Silo) bool {
+	hosts, err := listAs[*v1.Host](ctx, s.store, "Host")
+	if err != nil {
+		return false
+	}
+	n := 0
+	for _, h := range hosts {
+		if silo.Status.Host != "" && h.Name != silo.Status.Host {
+			continue
+		}
+		rs, ok := h.Status.Runtimes[silo.Spec.Runtime]
+		if !ok || rs.State != "Ready" {
+			continue
+		}
+		if !rs.EnvOutsideEngine {
+			return false
+		}
+		n++
+	}
+	return n > 0
+}
+
+// EnvOnContainerWarning is the warning for an env secret on a container silo where the host can't
+// keep the value from the engine (podman, rootless docker, a default runtime other than runc, no
+// Kevaso OCI runtime registered): with --env-file the engine keeps it in the container's config.
+func EnvOnContainerWarning(silo, grant, secret, rt string) string {
+	return fmt.Sprintf("silo %s: grant %s: secret %s goes in as an environment variable, which %s keeps in the container's config on a host without Kevaso's OCI runtime: "+
+		"anyone with access to the host's %s sees its value (%s inspect), and it's on the host's disk with that config; "+
+		"deliver it as a file or through the local endpoint to keep it out", silo, grant, secret, rt, rt, rt)
 }
 
 // vmVolumeProblems: what a cloud-hypervisor silo's volumes and disk can't be (ADR 0006). A volume

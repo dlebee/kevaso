@@ -22,7 +22,7 @@ type Driver struct{}
 
 var options = []kic.Knob{
 	{Name: "user", Help: "the user worker processes run as (the image's: nginx)", Valid: kic.Name},
-	{Name: "pid", Help: "the pid file the image's nginx uses (/var/run/nginx.pid)", Valid: kic.Path},
+	{Name: "pid", Help: "the pid file the image's nginx uses, spelled exactly as its own nginx.conf does (" + DefaultPID + ")", Valid: kic.Path},
 	{Name: "worker-connections", Help: "per worker (1024)", Valid: kic.Count},
 	{Name: "client-max-body-size", Help: "largest request body (16m)", Valid: kic.Size},
 	{Name: "proxy-connect-timeout", Help: "to a backend (5s)", Valid: kic.Duration},
@@ -39,6 +39,13 @@ var annotations = []kic.Knob{
 	{Name: "ssl-redirect", Help: "false: also serve these routes on plain HTTP instead of redirecting", Valid: kic.Bool},
 	{Name: "buffering", Help: "false: stream responses as they come (server-sent events)", Valid: kic.Bool},
 }
+
+// DefaultPID is the pid file of the stock image (docker.io/library/nginx:1.27's nginx.conf says
+// /run/nginx.pid). It must be the same path, spelled the same way: on a reload to a config whose
+// pid path differs, nginx writes the new file and deletes the old one, so /var/run/nginx.pid
+// (the same file, through the /var/run → /run link) was deleted, the next nginx -t made it
+// again empty, and every reload after the first failed ("invalid PID number").
+const DefaultPID = "/run/nginx.pid"
 
 // Info implements kic.Driver.
 func (Driver) Info() kic.Info {
@@ -76,7 +83,7 @@ func (Driver) Render(s kic.State) (kic.Plan, error) {
 	w(0, "# Rendered by Kevaso's nginx ingress driver for class %s: rewritten on every change.", s.Class)
 	w(0, "user %s;", opt(s, "user", "nginx"))
 	w(0, "worker_processes auto;")
-	w(0, "pid %s;", opt(s, "pid", "/var/run/nginx.pid"))
+	w(0, "pid %s;", opt(s, "pid", DefaultPID))
 	w(0, "error_log /var/log/nginx/error.log notice;")
 	w(0, "events {")
 	w(1, "worker_connections %s;", opt(s, "worker-connections", "1024"))

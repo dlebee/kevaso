@@ -6,16 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"text/tabwriter"
 
+	"kevaso.com/core/internal/platform"
 	"kevaso.com/core/internal/sshboot"
 )
 
 // checkScript prints what kvoadm needs to know about a machine, one KEY=VALUE per line. It only
 // reads.
-const checkScript = `. /etc/os-release 2>/dev/null; echo "os=$PRETTY_NAME"
+const checkScript = `. /etc/os-release 2>/dev/null; echo "os=$PRETTY_NAME"; echo "os_id=$ID"; echo "os_version=$VERSION_ID"
 echo "arch=$(uname -m)"
 echo "kernel=$(uname -r)"
 echo "uid=$(id -u)"
@@ -37,17 +39,45 @@ type CheckResult struct {
 	Level             string // ok | warn | fail
 }
 
-// Assess turns the machine's facts into findings. Pure.
+// Supported is the list of systems a check judges by, and where it came from.
+type Supported struct {
+	List []platform.Platform
+	From string // "kevasod" (read from the binary being installed) or "kvoadm" (its own build's)
+}
+
+// supportedFor reads the list out of the kevasod binary at path; without one (no path, or a
+// kevasod older than the list), kvoadm's own build's list.
+func supportedFor(path string) Supported {
+	if path != "" {
+		if b, err := os.ReadFile(path); err == nil {
+			if list, ok, err := platform.FromBinary(b); ok && err == nil {
+				return Supported{List: list, From: "kevasod"}
+			}
+		}
+	}
+	return Supported{List: platform.Supported(), From: "kvoadm"}
+}
+
+// Assess turns the machine's facts into findings, judging the OS by kvoadm's own list. Pure.
 func Assess(facts map[string]string) []CheckResult {
+	return AssessWith(facts, Supported{List: platform.Supported(), From: "kvoadm"})
+}
+
+// AssessWith turns the machine's facts into findings, judging the OS by sup. Pure.
+func AssessWith(facts map[string]string, sup Supported) []CheckResult {
 	var out []CheckResult
 	add := func(level, what, found, note string) {
 		out = append(out, CheckResult{What: what, Found: found, Note: note, Level: level})
 	}
-	os := facts["os"]
-	if strings.Contains(os, "Ubuntu 24.04") || strings.Contains(os, "Debian GNU/Linux 12") {
-		add("ok", "operating system", os, "")
+	osName := facts["os"]
+	if platform.Supports(sup.List, facts["os_id"], facts["os_version"]) {
+		add("ok", "operating system", osName, "")
 	} else {
-		add("warn", "operating system", os, "tested on Ubuntu 24.04; others may work")
+		who := "this kevasod supports"
+		if sup.From != "kevasod" {
+			who = "supported (kvoadm's list: the kevasod binary doesn't say)"
+		}
+		add("warn", "operating system", osName, who+": "+platform.Names(sup.List)+"; others may work")
 	}
 	switch facts["arch"] {
 	case "x86_64", "aarch64":
@@ -105,7 +135,7 @@ var ErrDryRun = errors.New("dry run: nothing was changed")
 
 // inspectMachine reads the machine (changing nothing), prints what it found, and reports whether
 // it's fit (no ✗). Every command that sets a machine up does this first.
-func inspectMachine(ctx context.Context, conn *sshboot.Conn, out io.Writer) (map[string]string, bool, error) {
+func inspectMachine(ctx context.Context, conn *sshboot.Conn, kevasod string, out io.Writer) (map[string]string, bool, error) {
 	raw, err := conn.Run(ctx, "sh -c "+shQuote(checkScript), nil)
 	if err != nil {
 		return nil, false, fmt.Errorf("reading the machine: %w", err)
@@ -122,7 +152,7 @@ func inspectMachine(ctx context.Context, conn *sshboot.Conn, out io.Writer) (map
 	_, _ = fmt.Fprintln(out, "\nWhat's on this machine:")
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	ok := true
-	for _, r := range Assess(facts) {
+	for _, r := range AssessWith(facts, supportedFor(kevasod)) {
 		mark := map[string]string{"ok": "✓", "warn": "!", "fail": "✗"}[r.Level]
 		if r.Level == "fail" {
 			ok = false
@@ -146,7 +176,7 @@ func lookFirst(ctx context.Context, o InitOptions, stdin io.Reader, out io.Write
 		return err
 	}
 	defer func() { _ = conn.Close() }()
-	_, fit, err := inspectMachine(ctx, conn, out)
+	_, fit, err := inspectMachine(ctx, conn, o.Kevasod, out)
 	switch {
 	case err != nil:
 		return err
