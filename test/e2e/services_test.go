@@ -51,8 +51,8 @@ func echoInit(ports ...string) string {
 
 // TestServicesAndExposure is M6's "done when": examples 03 (hostPort: raw TCP+UDP on the host's
 // address, the client's IP kept, a private port that stays private, a source-restricted port,
-// outbound from the same IP) and 06 (an IPPool: two silos on the same port, each on its own
-// address, in and out), plus default-deny between silos opened by allowFrom, and private names.
+// outbound from the same IP) and 06 (ip-pool: metal-1's extra addresses, one IP per silo on the
+// same port, in and out), plus default-deny between silos opened by allowFrom, and private names.
 //
 //	metal-1  control plane + KVM worker (one host), shared network
 //	client   "the internet": another machine on the same network
@@ -151,6 +151,8 @@ func TestServicesAndExposure(t *testing.T) {
 	must(kvoadm.Run, "", "init", info.User+"@"+info.Host, "--ssh-port", strconv.Itoa(info.Port), "--ssh-key", info.KeyFile,
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
 		"--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker", "--loop-storage", "40G")
+	// The two extra addresses routed to metal-1, for ip-pool to hand out.
+	must(kvoadm.Run, "", "host", "addresses", "metal-1", "add", pool1, pool2)
 
 	silo := func(ns, name, spec string) string {
 		return fmt.Sprintf(`---
@@ -180,11 +182,6 @@ kind: Grant
 metadata: { name: to-client, namespace: web3 }
 spec:
   egress: [{ to: "` + clientIP + `/32", ports: ["9100"] }]
----
-apiVersion: kevaso/v1
-kind: IPPool
-metadata: { name: metal-1-extra }
-spec: { host: metal-1, addresses: ["` + pool1 + `", "` + pool2 + `"] }
 ` +
 		// Example 03's P2P node: TCP+UDP 30303 public, rpc private, outbound from the same IP;
 		// and rpc open to one other silo.
@@ -208,17 +205,17 @@ spec: { host: metal-1, addresses: ["` + pool1 + `", "` + pool2 + `"] }
     ports: [{ name: web, port: 3001 }]
     expose: hostPort
     hostPort: { ports: [web], allowFrom: ["203.0.113.0/24"] }`+echoInit("tcp/3001")) +
-		// Example 06: both on 30303, each on its own pool address, in and out.
+		// Example 06: both on 30303, each on an IP of its own from metal-1's addresses, in and out.
 		silo("web3", "eth-node-a", `  service:
     ports: [{ name: p2p, port: 30303, protocol: TCP }, { name: disc, port: 30303, protocol: UDP }]
     expose: loadBalancer
-    loadBalancer: { class: ip-pool, pool: metal-1-extra, stableIP: true }
+    loadBalancer: { class: ip-pool }
   network: { egress: { source: sameAsService } }
   grants: [to-client]`+echoInit("tcp/30303", "udp/30303")) +
 		silo("web3", "eth-node-b", `  service:
     ports: [{ name: p2p, port: 30303, protocol: TCP }, { name: disc, port: 30303, protocol: UDP }]
     expose: loadBalancer
-    loadBalancer: { class: ip-pool, pool: metal-1-extra, stableIP: true }
+    loadBalancer: { class: ip-pool }
   network: { egress: { source: sameAsService } }`+echoInit("tcp/30303", "udp/30303"))
 	must(kvo.Run, manifest, "apply", "-f", "-")
 

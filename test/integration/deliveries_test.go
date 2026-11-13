@@ -21,7 +21,7 @@ import (
 	"kevaso.com/core/sdk/kri/fake"
 )
 
-// File and env secrets written by the host (design §8.2, ADR 0008), end to end in one process: the
+// File and env secrets written by the host (design §8.2, ADR 0009), end to end in one process: the
 // real agent, on a host's own credentials, writes them into its silos through the runtime's exec
 // (here: the real sh, in a folder per silo standing in for its root, /run a tmpfs), rewrites them in
 // every silo when the one secret rotates, and removes them when the grant goes. Nothing runs in

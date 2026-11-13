@@ -24,7 +24,7 @@ func TestNetworkView(t *testing.T) {
 		s.Status.Service = v1.SiloServiceStatus{PublicIP: "198.51.100.10", EgressIP: "198.51.100.10"}
 	})
 	plain := mk("plain", "metal-1", "10.64.0.3", func(s *v1.Silo) { s.Status.Service.EgressIP = "198.51.100.10" })
-	pooled := mk("pooled", "metal-1", "10.64.0.4", func(s *v1.Silo) { s.Status.Service.PoolIP = "198.51.100.17" })
+	pooled := mk("pooled", "metal-1", "10.64.0.4", func(s *v1.Silo) { s.Status.Service.HostAddresses = []string{"198.51.100.17"} })
 	elsewhere := mk("far", "metal-2", "10.64.9.2", nil)
 	pending := mk("pending", "", "", nil)
 	node.Spec.Grants = []string{"p2p-anywhere", "missing"}
@@ -62,12 +62,13 @@ func TestNetworkView(t *testing.T) {
 func TestWithIngressPaths(t *testing.T) {
 	api := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "payments"}, Spec: v1.SiloSpec{AllowFrom: []v1.AllowFrom{{Silo: "worker"}}}}
 	other := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "other", Namespace: "payments"}}
-	class := &v1.IngressClass{ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{Controller: v1.SiloRef{Silo: "ingress-public", Namespace: "kevaso-system"}}}
+	class := &v1.IngressClass{ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "ingress-public", Namespace: "kevaso-system"}}}
 	ing := &v1.Ingress{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "payments"}, Spec: v1.IngressSpec{IngressClass: "public",
 		Rules: []v1.IngressRule{{Path: "/", Silo: v1.IngressTarget{Name: "api", Port: "http"}}}}}
 	stray := &v1.Ingress{ObjectMeta: meta.ObjectMeta{Name: "x", Namespace: "payments"}, Spec: v1.IngressSpec{IngressClass: "missing",
 		Rules: []v1.IngressRule{{Silo: v1.IngressTarget{Name: "other", Port: "http"}}}}}
-	got := WithIngressPaths([]*v1.Silo{api, other}, []*v1.Ingress{ing, stray}, []*v1.IngressClass{class})
+	ctl := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "ingress-public", Namespace: "kevaso-system"}}
+	got := WithIngressPaths([]*v1.Silo{api, other, ctl}, []*v1.Ingress{ing, stray}, []*v1.IngressClass{class})
 	if len(got[0].Spec.AllowFrom) != 2 || got[0].Spec.AllowFrom[1].Silo != "kevaso-system/ingress-public" || got[0].Spec.AllowFrom[1].Ports[0] != "http" {
 		t.Fatalf("api allowFrom %+v", got[0].Spec.AllowFrom)
 	}
@@ -76,5 +77,13 @@ func TestWithIngressPaths(t *testing.T) {
 	}
 	if len(got[1].Spec.AllowFrom) != 0 {
 		t.Fatal("an Ingress of a class that doesn't exist opened a path")
+	}
+	// A SiloSet runs the controller: every one of its silos gets the path.
+	class.Spec.Controller = v1.IngressController{Driver: "nginx", SiloSet: "edge", Namespace: "kevaso-system"}
+	e0 := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "edge-0", Namespace: "kevaso-system", Labels: map[string]string{v1.LabelSiloSet: "edge"}}}
+	e1 := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "edge-1", Namespace: "kevaso-system", Labels: map[string]string{v1.LabelSiloSet: "edge"}}}
+	got = WithIngressPaths([]*v1.Silo{api, e0, e1, ctl}, []*v1.Ingress{ing}, []*v1.IngressClass{class})
+	if len(got[0].Spec.AllowFrom) != 3 || got[0].Spec.AllowFrom[1].Silo != "kevaso-system/edge-0" || got[0].Spec.AllowFrom[2].Silo != "kevaso-system/edge-1" {
+		t.Fatalf("a SiloSet's silos: %+v", got[0].Spec.AllowFrom)
 	}
 }

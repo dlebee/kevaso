@@ -7,7 +7,7 @@ import (
 )
 
 // The secret broker (design §8.2): a host relays to the control plane (POST /agent/broker) what
-// one of its silos asked its local endpoint (internal/agent/endpoint.go, ADR 0008), and asks for
+// one of its silos asked its local endpoint (internal/agent/endpoint.go, ADR 0009), and asks for
 // what it does for its silos itself (file and env deliveries, injections, panes it fetched). A
 // request names a secret; which silo it's for is the host's to say, from where the silo's request
 // arrived, never from the silo's words, and the control plane checks the silo is placed on that
@@ -22,10 +22,6 @@ const (
 	OpPortClose = "port-close" // close a leased port early
 )
 
-// OpIngress is an ingress controller silo's routes, certificates and ACME answers. No silo can ask
-// for it any more (the local endpoint doesn't serve it): only the control plane's side is left.
-const OpIngress = "ingress"
-
 // Ops a host asks for its own silos (never forwarded from a silo): the file and env deliveries it
 // writes into them (names and versions; with the values), the egress gate's injections and, for
 // one that needs a person's yes, whether this request may have it (design §8.7), and the panes it
@@ -38,6 +34,19 @@ const (
 	OpPane           = "pane"
 	OpPaneBundle     = "pane-bundle"
 )
+
+// OpPullCredential is a host's agent asking for the credential to pull one of its silos' images
+// (Name: the image), from the silo's imagePull secret or its namespace's default for the image's
+// registry. Never forwarded from a silo: the agent hands it to the engine for that one pull.
+const OpPullCredential = "pull-credential"
+
+// RegistryCredential is a registry secret, for one pull.
+type RegistryCredential struct {
+	Secret   string `json:"secret"`
+	Server   string `json:"server"`
+	Username string `json:"username"`
+	Password []byte `json:"password"`
+}
 
 // BrokerRequest is one request, as the host relays it.
 type BrokerRequest struct {
@@ -64,14 +73,15 @@ type BrokerResponse struct {
 	Error string `json:"error,omitempty"`
 	// Code says what kind of refusal Error is, for the endpoint's status: CodeNotFound, CodeConflict,
 	// or "" (refused).
-	Code       string         `json:"code,omitempty"`
-	Value      []byte         `json:"value,omitempty"`
-	Version    int64          `json:"version,omitempty"`
-	Signature  []byte         `json:"signature,omitempty"`
-	PublicKey  string         `json:"publicKey,omitempty"`
-	Deliveries []Delivery     `json:"deliveries,omitempty"`
-	Injections []Injection    `json:"injections,omitempty"`
-	Ingress    *IngressConfig `json:"ingress,omitempty"`
+	Code       string      `json:"code,omitempty"`
+	Value      []byte      `json:"value,omitempty"`
+	Version    int64       `json:"version,omitempty"`
+	Signature  []byte      `json:"signature,omitempty"`
+	PublicKey  string      `json:"publicKey,omitempty"`
+	Deliveries []Delivery  `json:"deliveries,omitempty"`
+	Injections []Injection `json:"injections,omitempty"`
+	// Registry: pull-credential, the credential (nil: none applies, pull anonymously).
+	Registry *RegistryCredential `json:"registry,omitempty"`
 	// Digest: pane-bundle, the name the bundle is stored under (sha256:…).
 	Digest string `json:"digest,omitempty"`
 	// Pending: the use waits for a person's yes. Ask again with Request.Approval set to its name.
@@ -132,30 +142,6 @@ type AgentBrokerRequest struct {
 
 // PathAgentBroker is where hosts relay broker requests.
 const PathAgentBroker = "/agent/broker"
-
-// IngressConfig is what an ingress controller silo serves.
-type IngressConfig struct {
-	Routes []IngressRoute `json:"routes"`
-	// Certs are certificate bundles (chain then key, PEM) for TLS hosts.
-	Certs []IngressCert `json:"certs"`
-	// Challenges are ACME HTTP-01 answers to serve on port 80 (token → key authorization).
-	Challenges map[string]string `json:"challenges"`
-}
-
-// IngressRoute sends a host and path prefix to a backend.
-type IngressRoute struct {
-	Host    string `json:"host"`
-	Path    string `json:"path"`
-	Backend string `json:"backend"` // host:port, a private name
-	TLS     bool   `json:"tls"`     // served on 443; port 80 redirects
-	Ingress string `json:"ingress"` // namespace/name, for logs
-}
-
-// IngressCert is a certificate for some hosts.
-type IngressCert struct {
-	Hosts  []string `json:"hosts"`
-	Bundle []byte   `json:"bundle"`
-}
 
 // ApprovalAnswer is the body of POST …/approvals/NAME/approve or /deny (optional).
 type ApprovalAnswer struct {

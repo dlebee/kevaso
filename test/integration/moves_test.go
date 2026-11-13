@@ -49,14 +49,15 @@ func TestMoves(t *testing.T) {
 	if err := c.admin.Create(c.ctx, vm); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "disk root uses local") {
 		t.Fatalf("Move on a local disk: %v", err)
 	}
-	// …and a Recreate silo with a local important volume.
+	// …and a Recreate silo with a host-local volume (a volume is kept data), naming it.
 	rec := silo("rec", "web3")
 	rec.Spec.Runtime = "docker"
 	rec.Spec.Availability.OnHostLoss = v1.OnHostLossRecreate
-	rec.Spec.Volumes = []v1.Volume{{Name: "keys", MountPath: "/keys", Important: true}}
-	if err := c.admin.Create(c.ctx, rec); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "important volume keys") {
-		t.Fatalf("Recreate leaving an important volume: %v", err)
+	rec.Spec.Volumes = []v1.Volume{{Name: "keys", MountPath: "/keys"}}
+	if err := c.admin.Create(c.ctx, rec); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "leave volume keys behind") {
+		t.Fatalf("Recreate leaving a local volume: %v", err)
 	}
+	rec.Spec.Volumes = nil
 
 	place := func(s *v1.Silo, host string) *v1.Silo {
 		t.Helper()
@@ -73,6 +74,7 @@ func TestMoves(t *testing.T) {
 	web.Spec.Runtime = "docker"
 	place(web, "hv1")
 	pinned := place(silo("pinned", "web3"), "hv1")
+	place(rec, "hv1") // no volume: Recreate is fine
 
 	c.bind(t, "ed", "ClusterRole", "editor")
 	c.bind(t, "vi", "ClusterRole", "viewer")
@@ -94,6 +96,17 @@ func TestMoves(t *testing.T) {
 	}
 	if _, err := mv(ed, "web", moves.Request{To: "nowhere"}); status(err) != http.StatusUnprocessableEntity {
 		t.Fatalf("unknown target: %v", err)
+	}
+
+	// kvo move --recreate: fine with no local volume, and a local one can't be added after.
+	if fresh, err := mv(ed, "rec", moves.Request{To: "hv2", Recreate: true}); err != nil || fresh.Status.Host != "hv2" {
+		t.Fatalf("--recreate without a local volume: %+v %v", fresh.Status, err)
+	}
+	var r2 v1.Silo
+	_ = c.admin.Get(c.ctx, "Silo", "web3", "rec", &r2)
+	r2.Spec.Volumes = append(r2.Spec.Volumes, v1.Volume{Name: "keys", MountPath: "/keys"})
+	if err := c.admin.Update(c.ctx, &r2); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "leave volume keys behind") {
+		t.Fatalf("adding a local volume to a Recreate silo: %v", err)
 	}
 
 	// The move: placed on hv2, hv1 lets go first.

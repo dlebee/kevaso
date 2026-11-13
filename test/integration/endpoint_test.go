@@ -19,7 +19,7 @@ import (
 	"kevaso.com/core/sdk/kri"
 )
 
-// endpoints is one host's local endpoint (ADR 0008) as its silos reach it. On a real host a
+// endpoints is one host's local endpoint (ADR 0009) as its silos reach it. On a real host a
 // silo's source address on the bridge says who asks; here each silo gets a loopback listener of
 // its own and the listener a request arrived on says who asks: the arrival point, never the
 // request. Silos call it with a plain HTTP client, as curl in a silo would.

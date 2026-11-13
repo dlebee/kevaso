@@ -174,7 +174,7 @@ func TestRenderedFiles(t *testing.T) {
 		}
 	}
 	if strings.Contains(u, "--vsock") {
-		t.Error("a VM has no vsock device: nothing in it talks to the host that way (ADR 0008)")
+		t.Error("a VM has no vsock device: nothing in it talks to the host that way (ADR 0009)")
 	}
 	nc := NetworkConfig("52:4b:00:00:00:01", AllocateIPMust(t), "web3")
 	if !strings.Contains(nc, "nameservers: { addresses: [10.64.0.1], search: [web3.kevaso, kevaso] }") {

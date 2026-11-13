@@ -13,10 +13,10 @@ func TestLeasedPorts(t *testing.T) {
 	spec := func() v1.SiloSpec {
 		return v1.SiloSpec{
 			Service: &v1.SiloService{
-				Ports:    []v1.ServicePort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}, {Name: "disc", Port: 30303, Protocol: "UDP"}},
+				Ports: []v1.ServicePort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229, Lease: &v1.PortLease{}},
+					{Name: "disc", Port: 30303, Protocol: "UDP", Lease: &v1.PortLease{}}},
 				Expose:   v1.ExposeHostPort,
 				HostPort: &v1.HostPortSpec{AllowFrom: []string{"203.0.113.0/24"}},
-				Lease:    &v1.ServiceLease{Ports: []string{"debug", "disc"}},
 			},
 			AllowFrom: []v1.AllowFrom{{Silo: "worker", Ports: []string{"debug"}}},
 		}
@@ -26,13 +26,13 @@ func TestLeasedPorts(t *testing.T) {
 		return Silo{Key: "dev/api", IP: a("10.64.2.2"), Spec: spec(), PublicIP: a("198.51.100.10"), Leased: []string{"debug", "disc"}}
 	}
 	const (
-		webDNAT    = "ip daddr 198.51.100.10 tcp dport 8080 dnat ip to 10.64.2.2:8080"
+		webDNAT    = "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 8080 dnat ip to 10.64.2.2:8080"
 		webFwd     = `oifname "kvbr0" ip daddr 10.64.2.2 ip saddr 203.0.113.0/24 tcp dport 8080 ct status dnat accept`
-		debugDNAT  = "ip daddr 198.51.100.10 tcp dport 9229 dnat ip to 10.64.2.2:9229"
-		discDNAT   = "ip daddr 198.51.100.10 udp dport 30303 dnat ip to 10.64.2.2:30303"
-		debugCut   = `oifname "kvbr0" ip daddr 10.64.2.2 tcp dport 9229 ct status dnat ct original ip daddr 198.51.100.10 reject with tcp reset`
-		debugCutRx = `iifname "kvbr0" ip saddr 10.64.2.2 tcp sport 9229 ct status dnat ct original ip daddr 198.51.100.10 reject with tcp reset`
-		discCut    = `oifname "kvbr0" ip daddr 10.64.2.2 udp dport 30303 ct status dnat ct original ip daddr 198.51.100.10 drop`
+		debugDNAT  = "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 9229 dnat ip to 10.64.2.2:9229"
+		discDNAT   = "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } udp dport 30303 dnat ip to 10.64.2.2:30303"
+		debugCut   = `oifname "kvbr0" ip daddr 10.64.2.2 tcp dport 9229 ct status dnat ct original ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16 } reject with tcp reset`
+		debugCutRx = `iifname "kvbr0" ip saddr 10.64.2.2 tcp sport 9229 ct status dnat ct original ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16 } reject with tcp reset`
+		discCut    = `oifname "kvbr0" ip daddr 10.64.2.2 udp dport 30303 ct status dnat ct original ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16 } drop`
 		private    = "ip saddr 10.64.2.9 ip daddr 10.64.2.2 tcp dport 9229 accept"
 	)
 	for _, c := range []struct {
@@ -45,13 +45,24 @@ func TestLeasedPorts(t *testing.T) {
 		{"open: the service's sources", func(s *Silo) { s.Closed = []string{"disc"} },
 			[]string{webDNAT, debugDNAT, `oifname "kvbr0" ip daddr 10.64.2.2 ip saddr 203.0.113.0/24 tcp dport 9229 ct status dnat accept`, discCut, private},
 			[]string{debugCut, discDNAT}},
-		{"open: narrowed by the lease", func(s *Silo) { s.LeaseFrom = []string{"203.0.113.7"} },
+		{"open: each narrowed by its own lease", func(s *Silo) {
+			s.LeaseFrom = map[string][]string{"debug": {"203.0.113.7"}, "disc": {"203.0.113.64/26"}}
+		},
 			[]string{webFwd, debugDNAT, discDNAT,
 				`oifname "kvbr0" ip daddr 10.64.2.2 ip saddr 203.0.113.7 tcp dport 9229 ct status dnat accept`,
-				`oifname "kvbr0" ip daddr 10.64.2.2 ip saddr 203.0.113.7 udp dport 30303 ct status dnat accept`},
-			[]string{debugCut, discCut, "ip saddr 203.0.113.0/24 tcp dport 9229"}},
-		{"open, but no source may use it", func(s *Silo) { s.LeaseFrom = []string{} },
-			[]string{webDNAT, debugCut, discCut}, []string{debugDNAT, discDNAT}},
+				`oifname "kvbr0" ip daddr 10.64.2.2 ip saddr 203.0.113.64/26 udp dport 30303 ct status dnat accept`},
+			[]string{debugCut, discCut, "ip saddr 203.0.113.0/24 tcp dport 9229", "ip saddr 203.0.113.7 udp"}},
+		{"open: one narrowed, one with the service's sources", func(s *Silo) { s.LeaseFrom = map[string][]string{"debug": {"203.0.113.7"}} },
+			[]string{`ip saddr 203.0.113.7 tcp dport 9229 ct status dnat accept`,
+				`oifname "kvbr0" ip daddr 10.64.2.2 ip saddr 203.0.113.0/24 udp dport 30303 ct status dnat accept`},
+			[]string{debugCut, discCut}},
+		{"one open, one closed, on their own", func(s *Silo) {
+			s.Closed = []string{"disc"}
+			s.LeaseFrom = map[string][]string{"debug": {"203.0.113.7"}}
+		},
+			[]string{`ip saddr 203.0.113.7 tcp dport 9229 ct status dnat accept`, discCut}, []string{debugCut, discDNAT}},
+		{"open, but no source may use it", func(s *Silo) { s.LeaseFrom = map[string][]string{"debug": {}} },
+			[]string{webDNAT, debugCut, discDNAT}, []string{debugDNAT, discCut}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := base()
@@ -71,10 +82,9 @@ func TestLeasedPorts(t *testing.T) {
 
 func TestLeasedNodePorts(t *testing.T) {
 	s := Silo{Key: "dev/api", IP: a("10.64.2.2"), Spec: v1.SiloSpec{Service: &v1.SiloService{
-		Ports:        []v1.ServicePort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}},
+		Ports:        []v1.ServicePort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229, Lease: &v1.PortLease{}}},
 		Expose:       v1.ExposeLoadBalancer,
 		LoadBalancer: &v1.LoadBalancerSpec{Class: "linode-nodebalancer"},
-		Lease:        &v1.ServiceLease{Ports: []string{"debug"}},
 	}}, NodePorts: []v1.NodePort{{Name: "web", Port: 8080, NodePort: 30001}, {Name: "debug", Port: 9229, NodePort: 30002}},
 		SourceRanges: []string{"192.168.255.0/24"}, Leased: []string{"debug"}, Closed: []string{"debug"}}
 	r := Rules(host(s))

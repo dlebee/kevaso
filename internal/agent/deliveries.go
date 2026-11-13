@@ -17,7 +17,7 @@ import (
 	"kevaso.com/core/sdk/kri"
 )
 
-// File and env deliveries, written by the host (design §8.2, §8.5, ADR 0008): the agent writes a
+// File and env deliveries, written by the host (design §8.2, §8.5, ADR 0009): the agent writes a
 // silo's file and env secrets into it through its runtime's exec, before its init steps and again
 // whenever what it receives changes, and removes what's no longer delivered. Nothing is installed
 // in the silo: the scripts are POSIX sh, and the values travel on exec's stdin (never argv, never a

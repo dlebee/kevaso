@@ -19,7 +19,7 @@ import (
 )
 
 // paneServer is the silo's own software: a small HTTP server answering the pane protocol's two
-// GETs (ADR 0008), whatever the test puts in it.
+// GETs (ADR 0009), whatever the test puts in it.
 type paneServer struct {
 	mu      sync.Mutex
 	list    string

@@ -41,6 +41,10 @@ message Class {
   string topology = 6;     // storage: host | zone | region | global (where it can attach from)
   string reach = 7;        // storage: device (attached, the host mounts it; the default) | mount (the node side mounts it)
   bool filters_sources = 8; // load balancers not announced: it accepts only Port.allow_from's client sources
+  bool reserve = 9;         // load balancers: it holds an address apart from a load balancer (Addresses)
+  string follows = 10;      // load balancers: where an address goes with its silo: host | region (default) | global
+  bool sends_from = 11;     // load balancers: the address is on the silo's host, so the silo can send from it
+  bool exclusive = 12;      // load balancers: one host has the address at a time, so it's never shared
 }
 
 // ── Hosts ────────────────────────────────────────────────────────────────────
@@ -78,17 +82,22 @@ message Port {
   int32 node_port = 4;
   // where clients may connect from (CIDRs); empty: anywhere. Only sent to classes that filter sources.
   repeated string allow_from = 5;
+  string service = 6;              // who it's for: silo/NAME | service/NAME
+  repeated HostInfo backends = 7;  // where it goes
+  map<string, string> annotations = 8; // its service's, in the plugin's domain, untouched
 }
 
+// The balancer behind one address (an IP): every port of every service on it.
 message LoadBalancer {
   string class = 1;
-  string id = 2; // the silo's UID
-  string namespace = 3;
-  string name = 4;
-  string address = 5; // a requested address, for classes that let you pick
+  string id = 2; // the UID of the IP object it serves
+  string namespace = 3; // the IP's
+  string name = 4;      // the IP's
+  string address = 5; // the IP's reserved address, for classes that reserve
   repeated Port ports = 6;
-  repeated HostInfo backends = 7; // the silo's host
+  repeated HostInfo backends = 7; // every port's backends together
   repeated HostInfo hosts = 8;    // every host of the plugin's
+  map<string, string> annotations = 9; // the IP's, in the plugin's domain, untouched
 }
 
 message LoadBalancerStatus {
@@ -103,6 +112,41 @@ message LoadBalancerRef {
 }
 
 message DeleteLoadBalancerResponse {}
+
+// ── Addresses ────────────────────────────────────────────────────────────────
+
+// Addresses: an address held apart from any load balancer, for one IP object (classes with
+// reserve). For a class without it, ReleaseAddress deletes the load balancer keyed by the IP.
+
+service Addresses {
+  rpc ReserveAddress(AddressReservation) returns (AddressStatus);
+  rpc ReleaseAddress(AddressRef) returns (ReleaseAddressResponse);
+}
+
+message AddressReservation {
+  string class = 1;
+  string id = 2; // the IP's UID
+  string namespace = 3;
+  string name = 4;
+  string region = 5;
+  string address = 6; // one you already own; empty: any
+  map<string, string> annotations = 7;
+}
+
+message AddressStatus {
+  string address = 1;
+  string region = 2;
+  string handle = 3;
+}
+
+message AddressRef {
+  string class = 1;
+  string id = 2;
+  string address = 3;
+  string handle = 4;
+}
+
+message ReleaseAddressResponse {}
 
 // ── Volumes ──────────────────────────────────────────────────────────────────
 

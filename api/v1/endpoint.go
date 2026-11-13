@@ -1,6 +1,6 @@
 package v1
 
-// The local endpoint (design §8.2, ADR 0008): a plain HTTP endpoint every silo on the bridge
+// The local endpoint (design §8.2, ADR 0009): a plain HTTP endpoint every silo on the bridge
 // reaches at the same link-local address, answered by its own host, for what the silo asks for
 // itself: a broker secret, a signature or a public key, a port lease. Who is asking is where the
 // request arrived (its source address on the bridge, which a silo can't fake), never anything in
@@ -18,8 +18,12 @@ const (
 // NeedsEndpoint reports whether a silo has anything to ask its endpoint for: a broker secret, a
 // signing key or a leased port. A silo that doesn't has no endpoint at all. Pure.
 func NeedsEndpoint(s *Silo, grants []*Grant) bool {
-	if s.Spec.Service != nil && s.Spec.Service.Lease != nil {
-		return true
+	if s.Spec.Service != nil {
+		for _, p := range s.Spec.Service.Ports {
+			if p.Lease != nil {
+				return true
+			}
+		}
 	}
 	for _, g := range GrantsFor(s, grants) {
 		if g.Spec.Operations != nil && g.Spec.Operations.Sign != nil {

@@ -92,7 +92,10 @@ public final class PaneAPI: @unchecked Sendable {
         c.percentEncodedPath = (c.percentEncodedPath.hasSuffix("/") ? String(c.percentEncodedPath.dropLast()) : c.percentEncodedPath) + path
         if !query.isEmpty { c.queryItems = query }
         var r = URLRequest(url: c.url!, timeoutInterval: timeout)
-        if let t = config.tokens { r.setValue("Bearer " + (try await t.token()), forHTTPHeaderField: "Authorization") }
+        if let t = config.tokens {
+            let token = try await t.token() // empty: a dev cluster that takes no token
+            if !token.isEmpty { r.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
+        }
         r.setValue("application/json", forHTTPHeaderField: "Accept")
         return r
     }

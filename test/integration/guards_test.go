@@ -25,11 +25,11 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 	c.bind(t, "dev", "Role", "no-secrets")
 	ed, ada, dev := c.as(t, "ed"), c.as(t, "ada"), c.as(t, "dev")
 	if err := c.admin.Create(c.ctx, &v1.IngressClass{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IngressClass"},
-		ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{Public: true, Controller: v1.SiloRef{Silo: "edge", Namespace: "web3"}}}); err != nil {
+		ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{Public: true, Controller: v1.IngressController{Driver: "nginx", Silo: "edge", Namespace: "web3"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.admin.Create(c.ctx, &v1.IngressClass{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IngressClass"},
-		ObjectMeta: meta.ObjectMeta{Name: "office"}, Spec: v1.IngressClassSpec{Controller: v1.SiloRef{Silo: "edge", Namespace: "web3"}}}); err != nil {
+		ObjectMeta: meta.ObjectMeta{Name: "office"}, Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "edge", Namespace: "web3"}}}); err != nil {
 		t.Fatal(err)
 	}
 	// A secret ed may not use, and a grant naming it.
@@ -89,6 +89,22 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 		}
 		want(t, "dev", dev.Update(c.ctx, &g), http.StatusForbidden, "may not use secret root-key")
 	})
+	t.Run("ip use", func(t *testing.T) {
+		// Naming an IP needs use on it (editors and admins have it; dev's role doesn't), and only
+		// admins reserve addresses.
+		policy(t, "Silo", "spec.network", `{'egress': {'source': 'pool', 'ip': 'kept'}}`)
+		want(t, "dev", dev.Create(c.ctx, silo("p1", "web3")), http.StatusForbidden, "may not use IP kept")
+		want(t, "admin socket", c.admin.Create(c.ctx, silo("p2", "web3")), http.StatusForbidden, "policies can't grant privileges")
+		if err := ed.Create(c.ctx, silo("p3", "web3")); err != nil {
+			t.Errorf("editor, who may use IPs: %v", err)
+		}
+		ip := &v1.IP{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IP"}, ObjectMeta: meta.ObjectMeta{Name: "mine", Namespace: "web3"},
+			Spec: v1.IPSpec{Class: v1.LBIPPool}}
+		want(t, "editor reserving an address", ed.Create(c.ctx, ip), http.StatusForbidden, "")
+		if err := ada.Create(c.ctx, ip); err != nil {
+			t.Errorf("admin reserving an address: %v", err)
+		}
+	})
 	t.Run("runtime fit", func(t *testing.T) {
 		policy(t, "Silo", "spec.runtime", `'openshell'`)
 		s := silo("r1", "web3")
@@ -104,7 +120,7 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 		want(t, "Move on local disks", ed.Create(c.ctx, silo("m1", "web3")), http.StatusUnprocessableEntity, "onHostLoss: Move")
 	})
 	t.Run("lease", func(t *testing.T) {
-		policy(t, "Silo", "spec.service.lease", `{'max': '9999h'}`)
+		policy(t, "Silo", "spec.service.ports", `[{'name': 'http', 'port': 8080, 'lease': {'max': '9999h'}}]`)
 		s := silo("l1", "web3")
 		s.Spec.Service = &v1.SiloService{Expose: v1.ExposeHostPort, Ports: []v1.ServicePort{{Name: "http", Port: 8080}}}
 		want(t, "a lease past the cluster's limit", ada.Create(c.ctx, s), http.StatusUnprocessableEntity, "more than this cluster allows")
@@ -115,11 +131,11 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 	})
 	t.Run("image versions", func(t *testing.T) {
 		img := &v1.Image{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Image"}, ObjectMeta: meta.ObjectMeta{Name: "app", Namespace: "web3"},
-			Spec: v1.ImageSpec{Versions: []v1.ImageVersion{{Name: "v1", Container: "docker.io/library/nginx:1.27"}}}}
+			Spec: v1.ImageSpec{Versions: []v1.ImageVersion{{Name: "v1", Disk: &v1.ImageDisk{URL: "https://images.example.com/app.img", SHA256: strings.Repeat("ab", 32)}}}}}
 		if err := ada.Create(c.ctx, img); err != nil {
 			t.Fatal(err)
 		}
-		policy(t, "Image", "spec.versions", `[{'name': 'v1', 'container': 'docker.io/evil/nginx:1.27'}]`)
+		policy(t, "Image", "spec.versions", `[{'name': 'v1', 'disk': {'url': 'https://evil.example.com/app.img', 'sha256': '`+strings.Repeat("ab", 32)+`'}}]`)
 		if err := ada.Get(c.ctx, "Image", "web3", "app", img); err != nil {
 			t.Fatal(err)
 		}

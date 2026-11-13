@@ -7,14 +7,18 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 
 	"kevaso.com/core/sdk/kplugin"
 )
 
-// Fake is an in-memory plugin named "fake" with classes fake-lb (node ports), fake-lb-filtered
-// (node ports, filters client sources), fake-ip (announced),
+// Fake is an in-memory plugin named "fake" with classes fake-lb (node ports: its address is the
+// balancer's, so it can't reserve or send), fake-lb-filtered (the same, filtering client
+// sources), fake-ip (announced: reserves addresses apart from load balancers, which follow the
+// silo in a region and can be sent from),
 // fake-block (a device), fake-share (mounted by the node side, global topology)
 // and DNS provider fake-dns. Node returns its node side on one host; all node sides share the
 // fake's volumes, like hosts sharing a network filesystem.
@@ -23,16 +27,19 @@ type Fake struct {
 	// Machines: host address → what the plugin knows about it (only these are its own).
 	Machines map[string]kplugin.HostInfo
 	LBs      map[string]kplugin.LoadBalancer // by ID
-	Volumes  map[string]*FakeVolume          // by handle
-	Records  map[string]kplugin.Record       // by name/type
+	// Reserved are fake-ip's reserved addresses, by ID (an IP's UID).
+	Reserved map[string]kplugin.AddressStatus
+	Volumes  map[string]*FakeVolume    // by handle
+	Records  map[string]kplugin.Record // by name/type
 	// Mounts are the node sides' mounts of fake-share volumes: "HOST:PATH" → handle.
 	Mounts map[string]string
 	// DetachCalls before a detach completes (0: at once); counts down per volume.
 	DetachSlow int
 	// Fail, if set, is returned by every mutating call.
-	Fail  error
-	Calls []string
-	next  int
+	Fail   error
+	Calls  []string
+	next   int
+	lbAddr map[string]string // a node-port balancer's address, by ID
 }
 
 // FakeVolume is a fake block volume.
@@ -45,7 +52,7 @@ type FakeVolume struct {
 
 // New returns an empty fake.
 func New() *Fake {
-	return &Fake{Machines: map[string]kplugin.HostInfo{}, LBs: map[string]kplugin.LoadBalancer{},
+	return &Fake{Machines: map[string]kplugin.HostInfo{}, LBs: map[string]kplugin.LoadBalancer{}, Reserved: map[string]kplugin.AddressStatus{}, lbAddr: map[string]string{},
 		Volumes: map[string]*FakeVolume{}, Records: map[string]kplugin.Record{}, Mounts: map[string]string{}}
 }
 
@@ -55,6 +62,9 @@ const (
 	ClassShare = "fake-share"
 	// ClassFilteredLB is a node-port class whose load balancer filters client sources.
 	ClassFilteredLB = "fake-lb-filtered"
+	// ClassLB is the node-port class; ClassIP the announced one, which reserves addresses.
+	ClassLB = "fake-lb"
+	ClassIP = "fake-ip"
 )
 
 func (f *Fake) call(s string, args ...any) error {
@@ -66,9 +76,9 @@ func (f *Fake) call(s string, args ...any) error {
 func (f *Fake) Info(context.Context) (kplugin.Info, error) {
 	return kplugin.Info{Name: "fake", Version: "0.0.0", Protocol: kplugin.Protocol, Hosts: true,
 		LoadBalancers: []kplugin.Class{
-			{Name: "fake-lb", OwnHostsOnly: true, NodePorts: true},
-			{Name: ClassFilteredLB, OwnHostsOnly: true, NodePorts: true, FiltersSources: true},
-			{Name: "fake-ip", OwnHostsOnly: true, Announce: true},
+			{Name: ClassLB, OwnHostsOnly: true, NodePorts: true, Follows: kplugin.FollowsRegion},
+			{Name: ClassFilteredLB, OwnHostsOnly: true, NodePorts: true, FiltersSources: true, Follows: kplugin.FollowsRegion},
+			{Name: ClassIP, OwnHostsOnly: true, Announce: true, Reserve: true, SendsFrom: true, Exclusive: true, Follows: kplugin.FollowsRegion},
 		},
 		Storage: []kplugin.Class{
 			{Name: ClassBlock, OwnHostsOnly: true},
@@ -98,29 +108,95 @@ func (f *Fake) EnsureLoadBalancer(_ context.Context, lb kplugin.LoadBalancer) (k
 	if err := f.call("ensure-lb %s %s", lb.Class, lb.ID); err != nil {
 		return kplugin.LoadBalancerStatus{}, err
 	}
+	if len(lb.Backends) == 0 && len(lb.Ports) == 0 { // parked: it keeps its address, sends nowhere
+		if _, ok := f.LBs[lb.ID]; !ok {
+			return kplugin.LoadBalancerStatus{}, kplugin.ErrNotFound
+		}
+		f.LBs[lb.ID] = lb
+		return kplugin.LoadBalancerStatus{Address: f.lbAddr[lb.ID]}, nil
+	}
+	for k := range lb.Annotations {
+		if err := fakeAnnotation(k); err != nil {
+			return kplugin.LoadBalancerStatus{}, err
+		}
+	}
+	for _, p := range lb.Ports {
+		for k := range p.Annotations {
+			if err := fakeAnnotation(k); err != nil {
+				return kplugin.LoadBalancerStatus{}, fmt.Errorf("port %s of %s: %w", p.Name, p.Service, err)
+			}
+		}
+		if lb.Class != ClassIP && len(p.Backends) == 0 {
+			return kplugin.LoadBalancerStatus{}, fmt.Errorf("port %s of %s has no backends", p.Name, p.Service)
+		}
+	}
 	if len(lb.Backends) == 0 {
 		return kplugin.LoadBalancerStatus{}, fmt.Errorf("no backends")
 	}
+	if lb.Class == ClassIP {
+		if lb.Address == "" {
+			return kplugin.LoadBalancerStatus{}, fmt.Errorf("fake-ip needs an address")
+		}
+		if r, ok := f.Reserved[lb.ID]; !ok || r.Address != lb.Address {
+			return kplugin.LoadBalancerStatus{}, fmt.Errorf("fake-ip: %s isn't reserved for %s", lb.Address, lb.ID)
+		}
+		f.LBs[lb.ID] = lb
+		return kplugin.LoadBalancerStatus{Address: lb.Address}, nil
+	}
 	f.LBs[lb.ID] = lb
+	// A balancer's address is its own for its whole life: the lowest free from 198.51.100.10.
+	if f.lbAddr[lb.ID] == "" {
+		taken := map[string]bool{}
+		for _, a := range f.lbAddr {
+			taken[a] = true
+		}
+		for n := 10; ; n++ {
+			if a := netip.AddrFrom4([4]byte{198, 51, 100, byte(n)}).String(); !taken[a] {
+				f.lbAddr[lb.ID] = a
+				break
+			}
+		}
+	}
+	return kplugin.LoadBalancerStatus{Address: f.lbAddr[lb.ID], SourceRanges: []string{"192.168.255.0/24"}}, nil
+}
+
+// FakeAnnotations are the annotations the fake knows (it refuses others in its domain).
+var FakeAnnotations = []string{"fake.kevaso.com/algorithm"}
+
+func fakeAnnotation(k string) error {
+	if strings.HasPrefix(k, "fake.kevaso.com/") && !slices.Contains(FakeAnnotations, k) {
+		return fmt.Errorf("unknown annotation %s (the fake knows %s): %w", k, strings.Join(FakeAnnotations, ", "), kplugin.ErrUnsupported)
+	}
+	return nil
+}
+
+// LBOf is the load balancer in namespace ns with a port for holder (silo/NAME or service/NAME),
+// with only that holder's ports (ok false if none).
+func (f *Fake) LBOf(ns, holder string) (kplugin.LoadBalancer, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	ids := make([]string, 0, len(f.LBs))
 	for id := range f.LBs {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	if lb.Class == "fake-ip" {
-		if lb.Address == "" {
-			return kplugin.LoadBalancerStatus{}, fmt.Errorf("fake-ip needs an address")
+	for _, id := range ids {
+		lb := f.LBs[id]
+		if lb.Namespace != ns {
+			continue
 		}
-		return kplugin.LoadBalancerStatus{Address: lb.Address}, nil
-	}
-	n := 0
-	for i, id := range ids {
-		if id == lb.ID {
-			n = i
+		var mine []kplugin.Port
+		for _, p := range lb.Ports {
+			if p.Service == holder {
+				mine = append(mine, p)
+			}
+		}
+		if len(mine) > 0 {
+			lb.Ports = mine
+			return lb, true
 		}
 	}
-	addr := netip.AddrFrom4([4]byte{198, 51, 100, byte(10 + n)})
-	return kplugin.LoadBalancerStatus{Address: addr.String(), SourceRanges: []string{"192.168.255.0/24"}}, nil
+	return kplugin.LoadBalancer{}, false
 }
 
 // DeleteLoadBalancer implements kplugin.LoadBalancers.
@@ -134,6 +210,71 @@ func (f *Fake) DeleteLoadBalancer(_ context.Context, ref kplugin.LoadBalancerRef
 		return kplugin.ErrNotFound
 	}
 	delete(f.LBs, ref.ID)
+	return nil
+}
+
+// ReserveAddress implements kplugin.Addresses: fake-ip only, 203.0.113.100 onwards (or the one
+// asked for), idempotent by ID.
+func (f *Fake) ReserveAddress(_ context.Context, r kplugin.AddressReservation) (kplugin.AddressStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("reserve-address %s %s", r.Class, r.ID); err != nil {
+		return kplugin.AddressStatus{}, err
+	}
+	if r.Class != ClassIP {
+		return kplugin.AddressStatus{}, fmt.Errorf("class %s holds no address apart from a load balancer: %w", r.Class, kplugin.ErrUnsupported)
+	}
+	if st, ok := f.Reserved[r.ID]; ok {
+		return st, nil
+	}
+	if r.Region == "" {
+		return kplugin.AddressStatus{}, fmt.Errorf("reserving an address needs a region")
+	}
+	taken := map[string]bool{}
+	for _, st := range f.Reserved {
+		taken[st.Address] = true
+	}
+	addr := r.Address
+	handle := "adopted:" + addr
+	if addr == "" {
+		for n := 100; ; n++ {
+			a := netip.AddrFrom4([4]byte{203, 0, 113, byte(n)}).String()
+			if !taken[a] {
+				addr, handle = a, "reserved:"+a
+				break
+			}
+		}
+	} else if taken[addr] {
+		return kplugin.AddressStatus{}, fmt.Errorf("%s is reserved for another IP: %w", addr, kplugin.ErrConflict)
+	}
+	st := kplugin.AddressStatus{Address: addr, Region: r.Region, Handle: handle}
+	f.Reserved[r.ID] = st
+	return st, nil
+}
+
+// ReleaseAddress implements kplugin.Addresses: fake-ip's reservation (refused while a load
+// balancer still shares it), or for the node-port classes the load balancer keyed by the IP.
+func (f *Fake) ReleaseAddress(_ context.Context, ref kplugin.AddressRef) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("release-address %s %s", ref.Class, ref.ID); err != nil {
+		return err
+	}
+	if ref.Class != ClassIP {
+		if _, ok := f.LBs[ref.ID]; !ok {
+			return kplugin.ErrNotFound
+		}
+		delete(f.LBs, ref.ID)
+		delete(f.lbAddr, ref.ID)
+		return nil
+	}
+	if _, ok := f.Reserved[ref.ID]; !ok {
+		return kplugin.ErrNotFound
+	}
+	if _, ok := f.LBs[ref.ID]; ok {
+		return fmt.Errorf("%s is still shared with a silo's host: %w", ref.Address, kplugin.ErrConflict)
+	}
+	delete(f.Reserved, ref.ID)
 	return nil
 }
 
@@ -377,6 +518,7 @@ var (
 	_ kplugin.Plugin        = (*Fake)(nil)
 	_ kplugin.HostDescriber = (*Fake)(nil)
 	_ kplugin.LoadBalancers = (*Fake)(nil)
+	_ kplugin.Addresses     = (*Fake)(nil)
 	_ kplugin.Volumes       = (*Fake)(nil)
 	_ kplugin.DNS           = (*Fake)(nil)
 	_ kplugin.Node          = (*Fake)(nil)

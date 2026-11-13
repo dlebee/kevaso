@@ -226,7 +226,7 @@ spec:
 				t.Fatalf("upload: %d %s", code, e.String())
 			}
 			// Nothing of Kevaso's is in a user's container: no socket, no program; /run is a tmpfs
-			// (where the host writes file secrets), and the local endpoint is plain HTTP (ADR 0008).
+			// (where the host writes file secrets), and the local endpoint is plain HTTP (ADR 0009).
 			if got := in(s, "ls /run/kevaso/broker.sock 2>/dev/null || echo none"); got != "none" {
 				t.Errorf("a broker socket in a user's container: %q", got)
 			}

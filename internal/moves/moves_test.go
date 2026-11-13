@@ -76,13 +76,36 @@ func TestCheckPolicy(t *testing.T) {
 	if err := CheckPolicy(ok, Of(ok, classes)); err != nil {
 		t.Fatal(err)
 	}
-	imp := silo("docker", v1.OnHostLossRecreate, v1.Volume{Name: "keys", Important: true})
-	if err := CheckPolicy(imp, Of(imp, classes)); err == nil || !strings.Contains(err.Error(), "important volume keys") {
-		t.Fatalf("Recreate with a local important volume: %v", err)
+	// A volume is kept data, no flag: Recreate is refused with any host-local volume, naming them.
+	local := silo("docker", v1.OnHostLossRecreate, v1.Volume{Name: "keys"}, v1.Volume{Name: "db", Class: v1.VolumeLocal}, v1.Volume{Name: "data", Class: "juicefs"})
+	err := CheckPolicy(local, Of(local, classes))
+	if err == nil || !strings.Contains(err.Error(), "leave volumes db, keys behind") || !strings.Contains(err.Error(), "on the silo's own disk instead") {
+		t.Fatalf("Recreate with local volumes: %v", err)
 	}
-	impGlobal := silo("docker", v1.OnHostLossRecreate, v1.Volume{Name: "keys", Important: true, Class: "juicefs"})
-	if err := CheckPolicy(impGlobal, Of(impGlobal, classes)); err != nil {
-		t.Fatalf("an important volume that follows: %v", err)
+	one := silo("docker", v1.OnHostLossRecreate, v1.Volume{Name: "keys"})
+	if err := CheckPolicy(one, Of(one, classes)); err == nil || !strings.Contains(err.Error(), "leave volume keys behind") {
+		t.Fatalf("Recreate with one local volume: %v", err)
+	}
+	hostClass := silo("docker", v1.OnHostLossRecreate, v1.Volume{Name: "scratch", Class: "vague"})
+	if err := CheckPolicy(hostClass, Of(hostClass, classes)); err == nil || !strings.Contains(err.Error(), "volume scratch") {
+		t.Fatalf("Recreate with a host-bound plugin volume: %v", err)
+	}
+	// Volumes on a class that travels follow the silo: they never block Recreate.
+	travels := silo("docker", v1.OnHostLossRecreate, v1.Volume{Name: "data", Class: "juicefs"}, v1.Volume{Name: "blk", Class: "linode-block"})
+	if err := CheckPolicy(travels, Of(travels, classes)); err != nil {
+		t.Fatalf("Recreate with volumes that follow: %v", err)
+	}
+	// kvo move --recreate follows the same rule.
+	if _, err := PlanMove(one, Of(one, classes), Request{To: "hv3", Recreate: true}, false, ""); err == nil || !strings.Contains(err.Error(), "volume keys") {
+		t.Fatalf("--recreate with a local volume: %v", err)
+	}
+	if p, err := PlanMove(travels, Of(travels, classes), Request{To: "hv3", Recreate: true}, false, ""); err != nil || p.WithData {
+		t.Fatalf("--recreate with volumes that follow: %+v %v", p, err)
+	}
+	// MOVABLE stays truthful: a VM on its local disk with no volumes can only be recreated.
+	vm := silo("cloud-hypervisor", v1.OnHostLossRecreate)
+	if m := Of(vm, classes); CheckPolicy(vm, m) != nil || Summary(vm, m) != "Recreate" {
+		t.Errorf("MOVABLE of a recreatable VM: %q %v", Summary(vm, m), CheckPolicy(vm, m))
 	}
 }
 
@@ -147,9 +170,12 @@ func TestApplyAndHandoff(t *testing.T) {
 	if _, ok := Released(st, "hv3"); ok {
 		t.Fatal("the new host released the handoff")
 	}
+	// The old host's volumes are said unmounted in the same write: it may write nothing else of
+	// a silo placed elsewhere (on real machines a move waited forever for "w1 to unmount it").
+	st.Volumes = []v1.VolumeStatus{{Name: "data", Class: "juicefs", AttachedTo: "hv1", Mounted: true}}
 	rel, ok := Released(st, "hv1")
-	if !ok || rel.MovingFrom != "" {
-		t.Fatalf("released = %+v", rel)
+	if !ok || rel.MovingFrom != "" || rel.Volumes[0].Mounted || !st.Volumes[0].Mounted {
+		t.Fatalf("released = %+v (input changed: %v)", rel, !st.Volumes[0].Mounted)
 	}
 	moved.Status = rel
 	if !MayStart(&moved, "hv3") {

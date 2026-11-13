@@ -13,17 +13,18 @@ import (
 // letsencrypt on public classes, internal-ca on private ones), and a Certificate is made for it,
 // whose certificate and key land in a Secret, renewed before they expire.
 
-// IngressClass is a set of ingress controllers: which silo serves Ingresses of this class. Cluster
-// scope.
+// IngressClass is a set of ingress controllers: which stock proxy serves Ingresses of this class
+// (its driver) and which silos run it. Cluster scope.
 type IngressClass struct {
 	meta.TypeMeta   `json:",inline"`
 	meta.ObjectMeta `json:"metadata"`
-	Spec            IngressClassSpec `json:"spec"`
+	Spec            IngressClassSpec   `json:"spec"`
+	Status          IngressClassStatus `json:"status,omitempty"`
 }
 
 // IngressClassSpec is the class's controller and what it means to publish on it.
 type IngressClassSpec struct {
-	Controller SiloRef `json:"controller"`
+	Controller IngressController `json:"controller"`
 	// Public: reachable from the internet. Publishing an Ingress on a public class needs create on
 	// ingresses/publish-public in its namespace.
 	Public bool `json:"public,omitempty"`
@@ -32,19 +33,61 @@ type IngressClassSpec struct {
 	DNS *IngressDNS `json:"dns,omitempty"`
 }
 
+// IngressController is a stock proxy (nginx, caddy, kong…) driven from outside (design §7.3): its
+// driver turns the class's routes, certificates and ACME challenges into the proxy's own
+// configuration, which the agent of each controller silo's host writes into it, checks and
+// reloads. The proxy's image is the vendor's: it never calls Kevaso.
+type IngressController struct {
+	Driver string `json:"driver"`
+	// Options are the driver's own settings (each driver lists the ones it knows; others are
+	// refused).
+	Options map[string]string `json:"options,omitempty"`
+	// The silo, or every silo of the SiloSet, that runs the proxy, in Namespace.
+	Namespace string `json:"namespace"`
+	Silo      string `json:"silo,omitempty"`
+	SiloSet   string `json:"siloSet,omitempty"`
+}
+
+// Runs reports whether s is one of the controller's silos.
+func (c IngressController) Runs(s *Silo) bool {
+	if s == nil || s.Namespace != c.Namespace {
+		return false
+	}
+	if c.SiloSet != "" {
+		return s.Labels[LabelSiloSet] == c.SiloSet
+	}
+	return c.Silo != "" && s.Name == c.Silo
+}
+
+// IngressClassStatus is how applying the class's configuration went, per controller silo.
+type IngressClassStatus struct {
+	Controllers []IngressControllerStatus `json:"controllers,omitempty"`
+	Conditions  []meta.Condition          `json:"conditions,omitempty"`
+}
+
+// IngressControllerStatus is one controller silo's proxy, as its host's agent last left it.
+type IngressControllerStatus struct {
+	Silo string `json:"silo"`
+	Host string `json:"host,omitempty"`
+	// Applied is the configuration in effect (its hash), since AppliedAt.
+	Applied   string     `json:"applied,omitempty"`
+	AppliedAt *time.Time `json:"appliedAt,omitempty"`
+	// Rejected is why the proxy refused the latest configuration (its own check's words); the
+	// last good one stays in effect. Blamed are the Ingresses the refusal points at, when it can
+	// be told.
+	Rejected string   `json:"rejected,omitempty"`
+	Blamed   []string `json:"blamed,omitempty"`
+}
+
 // IngressDNS is the DNS provider an IngressClass publishes host names with.
 type IngressDNS struct {
 	Provider string `json:"provider"`      // a DNS provider name, e.g. linode
 	TTL      int    `json:"ttl,omitempty"` // seconds (default 300)
 }
 
-// SiloRef names a silo in a namespace.
-type SiloRef struct {
-	Silo      string `json:"silo"`
-	Namespace string `json:"namespace"`
-}
-
-// Ingress routes HTTP(S) for some host names to silos. Namespaced.
+// Ingress routes HTTP(S) for some host names to silos. Namespaced. It is proxy-neutral: knobs for
+// one proxy are annotations prefixed with its driver's name (nginx/proxy-body-size), which that
+// driver checks (an unknown one is refused, and shows as a condition) and the others ignore.
 type Ingress struct {
 	meta.TypeMeta   `json:",inline"`
 	meta.ObjectMeta `json:"metadata"`

@@ -1,0 +1,134 @@
+{
+  "_format_version": "3.0",
+  "services": [
+    {
+      "name": "payments.api.0",
+      "url": "http://10.64.0.5:9000",
+      "connect_timeout": 5000,
+      "read_timeout": 300000,
+      "write_timeout": 60000,
+      "routes": [
+        {
+          "name": "payments.api.0",
+          "hosts": [
+            "api.example.com"
+          ],
+          "paths": [
+            "/ws"
+          ],
+          "protocols": [
+            "https"
+          ],
+          "strip_path": true,
+          "preserve_host": true,
+          "https_redirect_status_code": 308
+        }
+      ]
+    },
+    {
+      "name": "payments.api.1",
+      "url": "http://10.64.0.4:8080",
+      "connect_timeout": 5000,
+      "read_timeout": 300000,
+      "write_timeout": 60000,
+      "routes": [
+        {
+          "name": "payments.api.1",
+          "hosts": [
+            "api.example.com"
+          ],
+          "paths": [
+            "/"
+          ],
+          "protocols": [
+            "https"
+          ],
+          "strip_path": true,
+          "preserve_host": true,
+          "https_redirect_status_code": 308
+        }
+      ]
+    },
+    {
+      "name": "shop.pending.2",
+      "url": "http://10.64.0.7:80",
+      "connect_timeout": 5000,
+      "read_timeout": 60000,
+      "write_timeout": 60000,
+      "routes": [
+        {
+          "name": "shop.pending.2",
+          "hosts": [
+            "pending.example.com"
+          ],
+          "paths": [
+            "/"
+          ],
+          "protocols": [
+            "https"
+          ],
+          "strip_path": false,
+          "preserve_host": true,
+          "https_redirect_status_code": 308
+        }
+      ]
+    },
+    {
+      "name": "shop.plain.3",
+      "url": "http://10.64.0.6:3000",
+      "connect_timeout": 5000,
+      "read_timeout": 60000,
+      "write_timeout": 60000,
+      "routes": [
+        {
+          "name": "shop.plain.3",
+          "hosts": [
+            "plain.example.com"
+          ],
+          "paths": [
+            "/"
+          ],
+          "protocols": [
+            "http"
+          ],
+          "strip_path": false,
+          "preserve_host": true
+        }
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "name": "acme.tok-123_abc",
+      "paths": [
+        "/.well-known/acme-challenge/tok-123_abc"
+      ],
+      "protocols": [
+        "http"
+      ],
+      "strip_path": false,
+      "preserve_host": false,
+      "plugins": [
+        {
+          "name": "request-termination",
+          "config": {
+            "body": "tok-123_abc.thumbprint-XYZ",
+            "content_type": "text/plain",
+            "status_code": 200
+          }
+        }
+      ]
+    }
+  ],
+  "certificates": [
+    {
+      "cert": "-----BEGIN CERTIFICATE-----\nMIIBc2FtcGxl\n-----END CERTIFICATE-----\n",
+      "key": "-----BEGIN EC PRIVATE KEY-----\nMHcCc2FtcGxl\n-----END EC PRIVATE KEY-----\n",
+      "snis": [
+        {
+          "name": "api.example.com"
+        }
+      ]
+    }
+  ]
+}

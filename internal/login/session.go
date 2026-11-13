@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -51,38 +49,56 @@ func fresh(s Saved) bool { return s.AccessToken != "" && time.Until(s.Expiry) > 
 // saving the rotated refresh token) when it's about to expire. Concurrent kvo commands take turns
 // through a lock file, so they don't present the same refresh token twice.
 func Tokens(server string, caPEM []byte, st tokenstore.Store, name, lockDir string) func(context.Context) (string, error) {
+	f := AccessTokens(server, caPEM, st, name, lockDir)
+	return func(ctx context.Context) (string, error) {
+		t, _, err := f(ctx)
+		return t, err
+	}
+}
+
+// AccessTokens is Tokens with each access token's expiry (what kvo plugin token hands a plugin:
+// the access token only, never the refresh token).
+func AccessTokens(server string, caPEM []byte, st tokenstore.Store, name, lockDir string) func(context.Context) (string, time.Time, error) {
+	f := tokens(server, caPEM, st, name, lockDir)
+	return func(ctx context.Context) (string, time.Time, error) {
+		s, err := f(ctx)
+		return s.AccessToken, s.Expiry, err
+	}
+}
+
+func tokens(server string, caPEM []byte, st tokenstore.Store, name, lockDir string) func(context.Context) (Saved, error) {
 	var mu sync.Mutex
 	var cached Saved
-	return func(ctx context.Context) (string, error) {
+	return func(ctx context.Context) (Saved, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		if fresh(cached) {
-			return cached.AccessToken, nil
+			return cached, nil
 		}
 		s, err := load(st, name)
 		if err != nil {
-			return "", err
+			return Saved{}, err
 		}
 		if fresh(s) {
 			cached = s
-			return s.AccessToken, nil
+			return s, nil
 		}
 		unlock, err := lockFile(filepath.Join(lockDir, name+".lock"))
 		if err != nil {
-			return "", err
+			return Saved{}, err
 		}
 		defer unlock()
 		for attempt := 0; attempt < 3; attempt++ {
 			if s, err = load(st, name); err != nil { // another command may have refreshed meanwhile
-				return "", err
+				return Saved{}, err
 			}
 			if fresh(s) {
 				cached = s
-				return s.AccessToken, nil
+				return s, nil
 			}
 			hc, err := HTTPClient(caPEM)
 			if err != nil {
-				return "", err
+				return Saved{}, err
 			}
 			cfg := Config(server, "http://127.0.0.1")
 			t, err := cfg.TokenSource(context.WithValue(ctx, oauth2.HTTPClient, hc), &oauth2.Token{RefreshToken: s.RefreshToken, Expiry: time.Unix(1, 0)}).Token()
@@ -91,29 +107,14 @@ func Tokens(server string, caPEM []byte, st tokenstore.Store, name, lockDir stri
 					time.Sleep(200 * time.Millisecond)
 					continue
 				}
-				return "", fmt.Errorf("session ended, run kvo login again (%w)", err)
+				return Saved{}, fmt.Errorf("session ended, run kvo login again (%w)", err)
 			}
 			if err := Save(st, name, t); err != nil {
-				return "", err
+				return Saved{}, err
 			}
 			cached = Saved{AccessToken: t.AccessToken, RefreshToken: t.RefreshToken, Expiry: t.Expiry}
-			return t.AccessToken, nil
+			return cached, nil
 		}
-		return "", errors.New("couldn't refresh the session")
+		return Saved{}, errors.New("couldn't refresh the session")
 	}
-}
-
-func lockFile(path string) (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
 }

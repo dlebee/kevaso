@@ -133,17 +133,12 @@ func (a *Agent) keepInside(ctx context.Context, rt kri.Runtime, s *v1.Silo) (tim
 	}
 
 	a.kept.Store(s.UID, keptState{daemons: daemons, upkeep: upkeep})
-	failed := keep.Degraded(upkeep)
 	if reflect.DeepEqual(daemons, s.Status.Daemons) && reflect.DeepEqual(upkeep, s.Status.Upkeep) &&
-		(len(failed) > 0) == meta.IsTrue(s.Status.Conditions, "Degraded") {
+		degradedWanted(s, upkeep, s.Status.Probes) == meta.IsTrue(s.Status.Conditions, "Degraded") {
 		return again, nil
 	}
 	return again, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		st.Daemons, st.Upkeep = daemons, upkeep
-		if len(failed) > 0 {
-			setCond(st, "Degraded", meta.ConditionTrue, "UpkeepFailed", "upkeep failed: "+strings.Join(failed, ", "), s.Generation, a.now())
-		} else if meta.FindCondition(st.Conditions, "Degraded") != nil {
-			setCond(st, "Degraded", meta.ConditionFalse, "UpkeepOK", "every upkeep task passes", s.Generation, a.now())
-		}
+		setDegraded(st, s, a.now()) // with liveness: both can make it Degraded
 	})
 }

@@ -7,11 +7,14 @@ import (
 	"sort"
 	"strings"
 
-	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	kicdrivers "kevaso.com/core/builtin/kic"
+	"kevaso.com/core/internal/audit"
 	"kevaso.com/core/internal/controllers/certificate"
+	"kevaso.com/core/internal/ingress"
 	"kevaso.com/core/internal/rbac"
+	"kevaso.com/core/internal/routing"
 	"kevaso.com/core/internal/store"
 )
 
@@ -55,95 +58,124 @@ func (s *Server) checkPublishPublic(ctx context.Context, t target, obj meta.Obje
 	return nil
 }
 
-// ingressConfig is what an ingress controller silo serves: the routes of every Ingress of the
-// classes it's the controller of, their certificates, and pending ACME answers. A silo that
-// controls no class gets nothing.
-func (s *Server) ingressConfig(ctx context.Context, silo *v1.Silo) (*client.IngressConfig, int, error) {
-	classes, _, err := s.store.List(ctx, store.Selector{Kind: "IngressClass"})
+// agentIngress answers a host's agent with the desired state of an ingress controller silo placed
+// on it (design §7.3): the routes, certificates (keys included) and ACME challenges of its class,
+// for the agent to render with the class's driver and apply to the stock proxy from outside. Only
+// the silo's own host gets it, as the broker gives secrets only to a silo's host; every answer
+// carrying keys is audited.
+func (s *Server) agentIngress(w http.ResponseWriter, r *http.Request) {
+	id, ok := IdentityFrom(r.Context())
+	if s.auth == nil { // kevasod dev: no authentication, it's all one process
+		id, ok = Component, true
+	}
+	if !ok || (id.Type != "host" && id != Component) || r.Method != http.MethodGet {
+		writeErr(w, errf(http.StatusForbidden, "Forbidden", "only hosts get ingress controllers' configuration"))
+		return
+	}
+	ctx := r.Context()
+	ns, name := r.URL.Query().Get("namespace"), r.URL.Query().Get("name")
+	o, err := s.store.Get(ctx, store.Key{Kind: "Silo", Namespace: ns, Name: name})
 	if err != nil {
-		return nil, 0, err
-	}
-	mine := map[string]*v1.IngressClass{}
-	for _, o := range classes {
-		if c, _, err := v1.Decode(o.Data); err == nil {
-			ic := c.(*v1.IngressClass)
-			if ic.Spec.Controller.Namespace == silo.Namespace && ic.Spec.Controller.Silo == silo.Name {
-				mine[ic.Name] = ic
-			}
-		}
-	}
-	if len(mine) == 0 {
-		return nil, 0, fmt.Errorf("silo %s/%s isn't the controller of any ingress class", silo.Namespace, silo.Name)
-	}
-	cfg := &client.IngressConfig{Challenges: map[string]string{}}
-	ingresses, _, err := s.store.List(ctx, store.Selector{Kind: "Ingress"})
-	if err != nil {
-		return nil, 0, err
-	}
-	for _, o := range ingresses {
-		obj, _, err := v1.Decode(o.Data)
-		if err != nil {
-			continue
-		}
-		ing := obj.(*v1.Ingress)
-		if _, ok := mine[ing.Spec.IngressClass]; !ok || ing.DeletionTimestamp != nil {
-			continue
-		}
-		tls := !ing.Spec.TLS.None
-		for _, r := range ing.Spec.Rules {
-			backend, ok := s.backend(ctx, ing.Namespace, r.Silo)
-			if !ok {
-				continue // the target or its port isn't there (yet)
-			}
-			path := r.Path
-			if path == "" {
-				path = "/"
-			}
-			for _, h := range ing.Spec.Hosts {
-				cfg.Routes = append(cfg.Routes, client.IngressRoute{Host: strings.ToLower(h), Path: path, Backend: backend, TLS: tls, Ingress: ing.Namespace + "/" + ing.Name})
-			}
-		}
-		if !tls || s.vault == nil {
-			continue
-		}
-		cert := s.secretNamed(ctx, ing.Namespace, v1.TLSSecret(ing))
-		if cert == nil {
-			continue
-		}
-		bundle, _, err := s.vault.Value(ctx, cert)
-		if err != nil {
-			continue // not issued yet
-		}
-		cfg.Certs = append(cfg.Certs, client.IngressCert{Hosts: ing.Spec.Hosts, Bundle: bundle})
-	}
-	if cfg.Challenges, err = certificate.Pending(ctx, s.store, s.clock.Now()); err != nil {
-		return nil, 0, err
-	}
-	sort.Slice(cfg.Routes, func(i, j int) bool {
-		a, b := cfg.Routes[i], cfg.Routes[j]
-		return a.Host < b.Host || (a.Host == b.Host && len(a.Path) > len(b.Path))
-	})
-	return cfg, len(mine), nil
-}
-
-// backend is a target silo's private name and the number of its named port.
-func (s *Server) backend(ctx context.Context, ns string, t v1.IngressTarget) (string, bool) {
-	o, err := s.store.Get(ctx, store.Key{Kind: "Silo", Namespace: ns, Name: t.Name})
-	if err != nil {
-		return "", false
+		writeErr(w, errf(http.StatusNotFound, "NotFound", "silo %s/%s: %v", ns, name, err))
+		return
 	}
 	obj, _, err := v1.Decode(o.Data)
 	if err != nil {
-		return "", false
+		writeErr(w, err)
+		return
 	}
-	sv := obj.(*v1.Silo).Spec.Service
-	if sv == nil {
-		return "", false
+	silo := obj.(*v1.Silo)
+	if id != Component && silo.Status.Host != id.Name {
+		writeErr(w, errf(http.StatusForbidden, "Forbidden", "silo %s/%s isn't placed on host %s", ns, name, id.Name))
+		return
 	}
-	for _, p := range sv.Ports {
-		if p.Name == t.Port {
-			return fmt.Sprintf("%s.%s.kevaso:%d", t.Name, ns, p.Port), true
+	d, err := s.ingressDesired(ctx, silo)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if s.auth != nil && s.auth.Audit != nil && len(d.State.Certificates) > 0 {
+		names := make([]string, 0, len(d.State.Certificates))
+		for _, c := range d.State.Certificates {
+			names = append(names, c.Name)
+		}
+		s.auth.Audit.Record(audit.Entry{Time: s.clock.Now(), Event: "ingress", User: "system:host:" + id.Name, Type: "host", Verb: "get",
+			Resource: "secrets", Namespace: ns, Name: name, Allowed: true,
+			Reason: "ingress class " + d.Class + " certificates for its controller silo: " + strings.Join(names, ", ")})
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
+// ingressDesired is the desired state of the class silo is the controller of.
+func (s *Server) ingressDesired(ctx context.Context, silo *v1.Silo) (ingress.Desired, error) {
+	classes, _, err := s.store.List(ctx, store.Selector{Kind: "IngressClass"})
+	if err != nil {
+		return ingress.Desired{}, err
+	}
+	var mine []*v1.IngressClass
+	for _, o := range classes {
+		if c, _, err := v1.Decode(o.Data); err == nil && c.(*v1.IngressClass).Spec.Controller.Runs(silo) {
+			mine = append(mine, c.(*v1.IngressClass))
 		}
 	}
-	return "", false
+	switch len(mine) {
+	case 0:
+		return ingress.Desired{}, errf(http.StatusNotFound, "NotFound", "silo %s/%s isn't the controller of any ingress class", silo.Namespace, silo.Name)
+	case 1:
+	default:
+		sort.Slice(mine, func(i, j int) bool { return mine[i].Name < mine[j].Name })
+		return ingress.Desired{Class: mine[0].Name, Driver: mine[0].Spec.Controller.Driver,
+			Problem: fmt.Sprintf("silo %s/%s is the controller of classes %s and %s: one class per controller", silo.Namespace, silo.Name, mine[0].Name, mine[1].Name)}, nil
+	}
+	class := mine[0]
+	objs, _, err := s.store.List(ctx, store.Selector{Kind: "Ingress"})
+	if err != nil {
+		return ingress.Desired{}, err
+	}
+	var ings []*v1.Ingress
+	for _, o := range objs {
+		if obj, _, err := v1.Decode(o.Data); err == nil {
+			ings = append(ings, obj.(*v1.Ingress))
+		}
+	}
+	challenges, err := certificate.Pending(ctx, s.store, s.clock.Now())
+	if err != nil {
+		return ingress.Desired{}, err
+	}
+	in := ingress.Inputs{Class: class, Ingresses: ings, Challenges: challenges,
+		Silo: func(ns, name string) *v1.Silo {
+			o, err := s.store.Get(ctx, store.Key{Kind: "Silo", Namespace: ns, Name: name})
+			if err != nil {
+				return nil
+			}
+			obj, _, err := v1.Decode(o.Data)
+			if err != nil {
+				return nil
+			}
+			return obj.(*v1.Silo)
+		},
+		// A backend takes traffic when it runs and its routeWhen isn't holding it (design §0.6).
+		Routed: func(silo *v1.Silo) bool { return ingress.Routed(silo) && routing.Routed(silo) },
+	}
+	if d, err := kicdrivers.Builtin().Get(class.Spec.Controller.Driver); err == nil {
+		in.Driver = d
+	}
+	if s.vault != nil {
+		in.Bundle = func(ns, name string) []byte {
+			o, err := s.store.Get(ctx, store.Key{Kind: "Secret", Namespace: ns, Name: name})
+			if err != nil {
+				return nil
+			}
+			obj, _, err := v1.Decode(o.Data)
+			if err != nil {
+				return nil
+			}
+			value, _, err := s.vault.Value(ctx, obj.(*v1.Secret))
+			if err != nil {
+				return nil // not issued yet
+			}
+			return value
+		}
+	}
+	return ingress.Desire(in), nil
 }

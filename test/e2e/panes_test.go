@@ -20,7 +20,7 @@ import (
 	"kevaso.com/core/testbed"
 )
 
-// TestPanes is design §10.1 on real machines (ADR 0008): a cloud-hypervisor silo with spec.panes
+// TestPanes is design §10.1 on real machines (ADR 0009): a cloud-hypervisor silo with spec.panes
 // runs a small pane server of its own (python3, nothing of Kevaso's) and its host fetches from it:
 // a status pane and an HTML pane; kvo get panes and kvo pane watch show the status pane, and follow
 // an update; kvo pane bundle -o FILE saves the HTML pane's bundle byte for byte; a silo without
@@ -177,7 +177,7 @@ func (s *safeBuffer) String() string {
 	return s.b.String()
 }
 
-// paneServer is what a silo runs to answer the pane protocol (ADR 0008): GET /panes is
+// paneServer is what a silo runs to answer the pane protocol (ADR 0009): GET /panes is
 // /srv/panes/list.json, GET /panes/bundles/sha256:HEX is /srv/panes/HEX.
 const paneServer = `#!/usr/bin/env python3
 import http.server, re

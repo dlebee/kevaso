@@ -22,7 +22,7 @@ import (
 	"kevaso.com/core/sdk/kri"
 )
 
-// Endpoint is a host's local endpoint for its silos (design §8.2, ADR 0008): plain HTTP at
+// Endpoint is a host's local endpoint for its silos (design §8.2, ADR 0009): plain HTTP at
 // http://169.254.42.1 inside every silo on the bridge, for what a silo asks for itself. It relays
 // each request to the control plane, which decides; only the transport is here.
 //

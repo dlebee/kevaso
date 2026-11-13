@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"kevaso.com/core/api/meta"
 )
@@ -16,11 +17,11 @@ import (
 
 // ── Image ────────────────────────────────────────────────────────────────────
 
-// Image is a named base ("seed") with immutable versions: what silos and sets start from
-// (`image: geth-node:v1`). Each version says where its bits are for each runtime family: an OCI
-// reference for container runtimes and OpenShell, a disk image (URL and SHA-256) for
-// cloud-hypervisor. A version never changes once added, so an instance on v1 always runs the same
-// thing; a new release is a new version. Namespaced.
+// Image is a named bootable OS disk ("seed") with immutable versions, for microVM silos and the
+// sets built from them (`image: geth-node:v1` on cloud-hypervisor). Each version is a disk image:
+// a URL and its SHA-256, which hosts check when they fetch it. A version never changes once added,
+// so an instance on v1 always boots the same disk; a new release is a new version. Container silos
+// don't use Images: their spec.image is a registry reference (design §0.2). Namespaced.
 type Image struct {
 	meta.TypeMeta   `json:",inline"`
 	meta.ObjectMeta `json:"metadata"`
@@ -32,12 +33,10 @@ type ImageSpec struct {
 	Versions []ImageVersion `json:"versions"`
 }
 
-// ImageVersion is one immutable version.
+// ImageVersion is one immutable version: a bootable disk.
 type ImageVersion struct {
-	Name string `json:"name"` // e.g. v1
-	// Container is an OCI reference (pin it by digest to make it truly immutable).
-	Container string     `json:"container,omitempty"`
-	Disk      *ImageDisk `json:"disk,omitempty"`
+	Name string     `json:"name"`           // e.g. v1
+	Disk *ImageDisk `json:"disk,omitempty"` // required
 }
 
 // ImageDisk is a bootable disk image, checked against its hash when a host fetches it.
@@ -59,10 +58,14 @@ func SplitImage(ref string) (name, version string) {
 	return ref[:i], ref[i+1:]
 }
 
-// ResolveImage turns a silo's spec.image into what its runtime gets. An Image of that name in
-// the silo's namespace wins (its version, or its newest); anything else is used as it is (Kevaso's
-// built-in names like ubuntu-24.04, or an OCI reference). images are the namespace's Images.
+// ResolveImage turns a silo's spec.image into what its runtime gets. On a runtime that runs
+// registry images it's the reference as it is. On one that boots a disk it's an Image of that
+// name in the silo's namespace (its version, or its newest), or one of Kevaso's built-in OS images.
+// images are the namespace's Images.
 func ResolveImage(spec, runtime string, images []*Image) (string, error) {
+	if !DiskRuntime(runtime) || spec == "" || BuiltinImage(spec) {
+		return spec, nil
+	}
 	name, version := SplitImage(spec)
 	var img *Image
 	for _, i := range images {
@@ -71,7 +74,8 @@ func ResolveImage(spec, runtime string, images []*Image) (string, error) {
 		}
 	}
 	if img == nil {
-		return spec, nil
+		return "", fmt.Errorf("no Image %s in the namespace (a %s silo's image is an Image name or a built-in OS image: %s)",
+			name, runtime, strings.Join(BuiltinImages, ", "))
 	}
 	if len(img.Spec.Versions) == 0 {
 		return "", fmt.Errorf("image %s has no versions", name)
@@ -88,16 +92,10 @@ func ResolveImage(spec, runtime string, images []*Image) (string, error) {
 			return "", fmt.Errorf("image %s has no version %s", name, version)
 		}
 	}
-	if runtime == "cloud-hypervisor" {
-		if v.Disk == nil {
-			return "", fmt.Errorf("image %s:%s has no disk image, which %s needs", name, v.Name, runtime)
-		}
-		return DiskRef(*v.Disk), nil
+	if v.Disk == nil {
+		return "", fmt.Errorf("image %s:%s has no disk", name, v.Name)
 	}
-	if v.Container == "" {
-		return "", fmt.Errorf("image %s:%s has no container image, which %s needs", name, v.Name, runtime)
-	}
-	return v.Container, nil
+	return DiskRef(*v.Disk), nil
 }
 
 // ── SiloSet ──────────────────────────────────────────────────────────────────
@@ -246,6 +244,13 @@ type ServiceSpec struct {
 	Type     string            `json:"type,omitempty"` // ClusterIP (default) | LoadBalancer
 	// LoadBalancerClass: a plugin's class (e.g. linode-nodebalancer) for type LoadBalancer.
 	LoadBalancerClass string `json:"loadBalancerClass,omitempty"`
+	// LoadBalancerIP names the IP object (design §7.2c-1) whose address it's reached on. Empty:
+	// the namespace's shared one for the class, or with LoadBalancerDedicated one of its own.
+	LoadBalancerIP        string `json:"loadBalancerIP,omitempty"`
+	LoadBalancerDedicated bool   `json:"loadBalancerDedicated,omitempty"`
+	// RouteWhen: ready (an endpoint only while its readiness probe passes) or running (as soon as
+	// it runs). Required when it selects silos with a readiness probe (design §0.6).
+	RouteWhen string `json:"routeWhen,omitempty"`
 }
 
 // ServicePortSpec is one port: Port on the virtual IP goes to TargetPort on each endpoint (a
@@ -261,11 +266,14 @@ type ServicePortSpec struct {
 type ServiceStatus struct {
 	ClusterIP string `json:"clusterIP,omitempty"`
 	Name      string `json:"name,omitempty"` // NAME.NAMESPACE.kevaso
-	// Endpoints are the Ready silos it sends to now.
+	// Endpoints are the silos it sends to now (routed); Held the ones it selects but holds back,
+	// each with why and since when (routeWhen: ready and not ready, say).
 	Endpoints []ServiceEndpoint `json:"endpoints,omitempty"`
+	Held      []ServiceEndpoint `json:"held,omitempty"`
 	// For type LoadBalancer: the outside address, the node port each port arrives on at the
 	// endpoints' hosts, and where the load balancer's traffic comes from.
 	PublicIP     string           `json:"publicIP,omitempty"`
+	IP           string           `json:"ip,omitempty"` // the IP object PublicIP is
 	NodePorts    []NodePort       `json:"nodePorts,omitempty"`
 	SourceRanges []string         `json:"sourceRanges,omitempty"`
 	Conditions   []meta.Condition `json:"conditions,omitempty"`
@@ -277,6 +285,9 @@ type ServiceEndpoint struct {
 	Host    string     `json:"host"`
 	Address string     `json:"address"`
 	Ports   []NodePort `json:"ports"` // Name: the service port, Port: the service's, NodePort: the silo's target
+	// Reason and Since: why a held endpoint is held, and since when.
+	Reason string     `json:"reason,omitempty"`
+	Since  *time.Time `json:"since,omitempty"`
 }
 
 // Selects reports whether a selector picks these labels (an empty selector picks nothing).

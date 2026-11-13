@@ -48,8 +48,8 @@ func TestHostPortAndSameAsService(t *testing.T) {
 	s := Silo{Key: "web3/eth-node", IP: a("10.64.2.2"), Tap: "kvt0011223344", Spec: p2p(), PublicIP: a("198.51.100.10"), EgressIP: a("198.51.100.10")}
 	r := Rules(host(s))
 	has(t, r,
-		"ip daddr 198.51.100.10 tcp dport 30303 dnat ip to 10.64.2.2:30303",
-		"ip daddr 198.51.100.10 udp dport 30303 dnat ip to 10.64.2.2:30303",
+		"fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 30303 dnat ip to 10.64.2.2:30303",
+		"fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } udp dport 30303 dnat ip to 10.64.2.2:30303",
 		`oifname "kvbr0" ip daddr 10.64.2.2 tcp dport 30303 ct status dnat accept`,
 		`ip saddr 10.64.2.2 ip daddr != { 10.64.0.0/16, 10.62.0.0/16, 10.63.0.0/16 } oifname != "kvbr0" snat ip to 198.51.100.10`,
 		`iifname "kvt0011223344" ip saddr != 10.64.2.2 drop`,
@@ -75,10 +75,10 @@ func TestHostPortAllowFromCIDRs(t *testing.T) {
 	has(t, r, "ip saddr { 203.0.113.0/24, 192.0.2.7 } tcp dport 3000")
 }
 
-// Example 06: two silos, both 30303, each on its own pool address, in and out.
+// Example 06: two silos, both 30303, each on its own ip-pool IP, in and out.
 func TestPoolAddresses(t *testing.T) {
 	spec := v1.SiloSpec{Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}},
-		Expose: v1.ExposeLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Class: v1.LBIPPool, Pool: "metal-1-extra"}},
+		Expose: v1.ExposeLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Class: v1.LBIPPool}},
 		Network: v1.SiloNetwork{Egress: v1.Egress{Source: v1.EgressSameAsService}}}
 	r := Rules(host(
 		Silo{Key: "web3/eth-node-a", IP: a("10.64.2.2"), Spec: spec, PublicIP: a("198.51.100.17"), EgressIP: a("198.51.100.17")},
@@ -90,6 +90,36 @@ func TestPoolAddresses(t *testing.T) {
 		"ip saddr 10.64.2.2 ip daddr", "snat ip to 198.51.100.17",
 		"ip saddr 10.64.2.3 ip daddr", "snat ip to 198.51.100.18",
 	)
+}
+
+// The address out (design §7.2b), as the host's rules write it from the silo's status: an
+// announced shared IP and an ip-pool IP send from themselves; behind a balancer (node ports) the
+// silo sends from the host's address, and nothing ever sends from the balancer's.
+func TestEgressCases(t *testing.T) {
+	ports := []v1.ServicePort{{Name: "p2p", Port: 30303}}
+	lb := func(class string) v1.SiloSpec {
+		return v1.SiloSpec{Service: &v1.SiloService{Ports: ports, Expose: v1.ExposeLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Class: class}},
+			Network: v1.SiloNetwork{Egress: v1.Egress{Source: v1.EgressSameAsService}}}
+	}
+	shared := Silo{Key: "web3/shared", IP: a("10.64.2.2"), Spec: lb("linode-shared-ip"), PublicIP: a("203.0.113.100"), EgressIP: a("203.0.113.100")}
+	pooled := Silo{Key: "web3/pooled", IP: a("10.64.2.3"), Spec: lb(v1.LBIPPool), PublicIP: a("198.51.100.17"), EgressIP: a("198.51.100.17")}
+	behind := Silo{Key: "web3/behind", IP: a("10.64.2.4"), Spec: lb("linode-nodebalancer"), EgressIP: a("198.51.100.10"),
+		NodePorts: []v1.NodePort{{Name: "p2p", Port: 30303, NodePort: 30000}}, SourceRanges: []string{"192.168.255.0/24"}}
+	plain := Silo{Key: "web3/plain", IP: a("10.64.2.5")}
+	r := Rules(host(shared, pooled, behind, plain))
+	has(t, r,
+		"ip saddr 10.64.2.2 ip daddr", "snat ip to 203.0.113.100",
+		"ip saddr 10.64.2.3 ip daddr", "snat ip to 198.51.100.17",
+		"ip saddr 10.64.2.4 ip daddr", "snat ip to 198.51.100.10",
+	)
+	for _, l := range strings.Split(r, "\n") {
+		if strings.Contains(l, "ip saddr 10.64.2.5 ") && strings.Contains(l, "snat") {
+			t.Errorf("a silo with egress.source host gets the host's default, no snat of its own: %s", l)
+		}
+		if strings.Contains(l, "ip saddr 10.64.2.4 ") && strings.Contains(l, "snat") && !strings.Contains(l, "198.51.100.10") {
+			t.Errorf("behind a balancer, out is the host's address: %s", l)
+		}
+	}
 }
 
 // allowFrom: same host (bridged) and across the mesh (routed); the source must be running.
@@ -232,7 +262,7 @@ func TestServiceRules(t *testing.T) {
 	hasNot(t, Rules(h), "10.65.0.1")
 }
 
-// The local endpoint (ADR 0008): only the silos that have one reach it, only from the bridge; and
+// The local endpoint (ADR 0009): only the silos that have one reach it, only from the bridge; and
 // the anti-spoofing rules sit where frames for the host itself pass too, so the source address
 // the endpoint goes by is the silo's own.
 func TestLocalEndpoint(t *testing.T) {

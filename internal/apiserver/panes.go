@@ -19,7 +19,7 @@ import (
 )
 
 // Panes on the control plane (design §10.1). The silo's host fetches its reports and bundles and
-// relays them (the silo named by the host, as for secrets: ADR 0008); the control plane checks the
+// relays them (the silo named by the host, as for secrets: ADR 0009); the control plane checks the
 // limits again, keeps the latest report
 // per pane as a Pane object, and keeps HTML bundles as opaque blobs: weighed and hashed, never
 // read. A bundle leaves only through GET …/panes/NAME/bundle, as a download no browser renders.

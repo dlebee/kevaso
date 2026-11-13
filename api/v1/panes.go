@@ -7,7 +7,7 @@ import (
 	"kevaso.com/core/api/meta"
 )
 
-// Panes (design §10.1, ADR 0008): a silo says what its status looks like; its host fetches the
+// Panes (design §10.1, ADR 0009): a silo says what its status looks like; its host fetches the
 // reports from where the silo answers, the control plane keeps the latest report per pane and
 // relays it; clients render it. One way only: nothing flows back to the silo, and the host's
 // request carries nothing. Off unless the silo says where it answers (spec.panes.http), and a

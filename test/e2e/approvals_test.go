@@ -22,7 +22,7 @@ import (
 
 // TestApprovals is design §8.7 on real machines: a grant makes a secret's use wait for a person's
 // yes. On a cloud-hypervisor silo (curl) and a docker silo (a small HTTP client copied in), both
-// calling their local endpoint (ADR 0008) and polling on 428: a broker get waits as a pending Approval until
+// calling their local endpoint (ADR 0009) and polling on 428: a broker get waits as a pending Approval until
 // `kvo approve`, and a second get within the access asked for needs no new yes; `kvo deny` fails the
 // call, saying who; an injected key with approval: required holds the HTTPS request at the egress
 // gate until approved, and the key itself never reaches the silo.

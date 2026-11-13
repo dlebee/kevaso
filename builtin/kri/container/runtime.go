@@ -8,12 +8,12 @@
 // containers and main container join it. The pause image is built on the host from kevasod itself:
 // nothing is pulled for it.
 //
-// A container reaches its host's local endpoint (ADR 0008) over the bridge like a VM, and gets a
+// A container reaches its host's local endpoint (ADR 0009) over the bridge like a VM, and gets a
 // tmpfs at /run, where its host writes its file and env secrets through exec (memory only: an exec
 // into the engine's overlay would put them on the host's disk). The host's CA bundle with the
 // egress CA is mounted in read-only. Nothing else of Kevaso's goes into a user's container
-// (design §12: Kevaso's own pieces are built and isolated properly): Kevaso's own silos run from
-// images of their own (KevasoImages below), with the same isolation.
+// (design §12: Kevaso's own pieces are built and isolated properly); an ingress controller is a
+// vendor's proxy image, driven from outside (design §7.3).
 package container
 
 import (
@@ -32,6 +32,7 @@ import (
 	"sync"
 	"time"
 
+	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/builtin/kri/hostexec"
 	"kevaso.com/core/sdk/kri"
@@ -39,9 +40,6 @@ import (
 
 // Dir is where silos are kept (shared with the VM runtime's address allocation).
 const Dir = cloudhypervisor.ContainersDir
-
-// Images maps Kevaso's image names to registry references; anything else is used as is.
-var Images = map[string]string{"ubuntu-24.04": "docker.io/library/ubuntu:24.04"}
 
 // Runtime is one container engine as a KRI runtime.
 type Runtime struct {
@@ -85,18 +83,9 @@ func NamesFor(id kri.ID) Names {
 // VolumeName is a silo volume's name in the engine.
 func VolumeName(id kri.ID, vol string) string { return "kv-" + NamesFor(id).Short + "-" + vol }
 
-// KevasoImages are Kevaso's own images, by name: built on the host from kevasod itself (its only
-// file, /usr/local/bin/NAME, run with this entrypoint), never pulled. Their tag is the binary's
-// hash, so a new kevasod makes a new image. None today.
-var KevasoImages = map[string][]string{}
-
-// ImageRef is the reference an image name pulls.
-func ImageRef(image string) string {
-	if r, ok := Images[image]; ok {
-		return r
-	}
-	return image
-}
+// ImageRef is the reference an image pulls: a silo's image is a registry reference, used as it
+// is; only Kevaso's built-in OS image (ubuntu-24.04) has a name of its own (design §0.2).
+func ImageRef(image string) string { return v1.PullRef(image) }
 
 // MainCommand is the main process: the silo's command, or for the ubuntu-24.04 image (whose own
 // command exits at once) one that stays up, so the silo is a machine to exec into.
@@ -225,12 +214,9 @@ func (r *Runtime) pauseImage(ctx context.Context) (string, error) {
 	return r.selfImage(ctx, "kevaso-pause", "kevaso-pause", []string{"/kevaso-pause"})
 }
 
-// ref is what the engine runs for an image name: one of Kevaso's own (built here), or what it pulls.
-func (r *Runtime) ref(ctx context.Context, image string) (string, bool, error) {
-	if ep, ok := KevasoImages[image]; ok {
-		tag, err := r.selfImage(ctx, image, "usr/local/bin/"+image, ep)
-		return tag, true, err
-	}
+// ref is what the engine runs for an image name: what it pulls. (own: an image built here; none
+// is any more, since ingress controllers run their vendors' images, design §7.3.)
+func (r *Runtime) ref(_ context.Context, image string) (string, bool, error) {
 	return ImageRef(image), false, nil
 }
 
@@ -360,11 +346,15 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 			return err
 		}
 	}
+	// The agent pulls first (Pull, with the silo's credential); an image not there yet is pulled
+	// anonymously.
 	if ref, own, err := r.ref(ctx, s.Image); err != nil {
 		return err
 	} else if !own {
-		if _, err := r.eng(ctx, nil, "pull", "--quiet", ref); err != nil {
-			return err
+		if _, ierr := r.eng(ctx, nil, "image", "inspect", ref); ierr != nil {
+			if _, err := r.eng(ctx, nil, PullArgs(r.engine(), "", ref)...); err != nil {
+				return &kri.PullError{Image: ref, Reason: pullReason(err)}
+			}
 		}
 	}
 	for _, v := range s.Volumes {
@@ -386,7 +376,9 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 // /run (for secrets the host writes) and the CA bundle, limits, no new privileges.
 func (r *Runtime) runArgs(s state, name string) []string {
 	n := NamesFor(s.ID)
-	args := []string{"--name", name, "--network", "container:" + n.Pause,
+	// --pull never: every pull is the agent's (Pull, with the silo's credential), never the
+	// engine's own on a run.
+	args := []string{"--name", name, "--pull", "never", "--network", "container:" + n.Pause,
 		"--security-opt", "no-new-privileges", "--pids-limit", "4096",
 		"--label", "kevaso.com/namespace=" + s.ID.Namespace, "--label", "kevaso.com/name=" + s.ID.Name, "--label", "kevaso.com/uid=" + s.ID.UID,
 		"-v", n.Dir + "/resolv.conf:/etc/resolv.conf:ro",

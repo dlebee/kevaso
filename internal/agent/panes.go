@@ -21,7 +21,7 @@ import (
 	"kevaso.com/core/internal/panes"
 )
 
-// Panes fetched by the host (design §10.1, ADR 0008). A silo that says where it answers
+// Panes fetched by the host (design §10.1, ADR 0009). A silo that says where it answers
 // (spec.panes.http) is asked, every spec.panes.every, from the host itself at the silo's own
 // private address: GET PATH for its reports ({"panes": [...]}), and GET PATH/bundles/sha256:HEX
 // once per HTML bundle. The request carries nothing (no parameters, identity or state), no
@@ -345,7 +345,7 @@ func (a *Agent) keepPanes(ctx context.Context, s *v1.Silo, address string) {
 	a.paneRuns.Store(s.UID, paneRun{key: key, cancel: cancel})
 	silo := &v1.Silo{TypeMeta: s.TypeMeta, ObjectMeta: s.ObjectMeta, Spec: s.Spec}
 	var lastOK *bool
-	f := &PaneFetcher{Client: a.Client, HostName: a.HostName, Silo: silo, Address: address, Clock: a.Clock, Dial: a.PaneDial,
+	f := &PaneFetcher{Client: a.Client, HostName: a.HostName, Silo: silo, Address: address, Clock: a.Clock, Dial: a.dial, // as the probes reach it
 		OnState: func(ok bool, reason, msg string) {
 			if lastOK != nil && *lastOK && ok {
 				return // still fine: nothing to write

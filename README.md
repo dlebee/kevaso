@@ -34,15 +34,19 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   leases, `onHostLoss: Wait | Recreate` with agent-side fencing, `kvoadm host drain / uncordon / list`;
 - services: every silo can carry its own (`spec.service`): a private name
   (`NAME.NAMESPACE.kevaso`, served on each worker), and exposure with `hostPort` or a load balancer
-  (`worker-ip`, `ip-pool` from an `IPPool`), raw TCP/UDP with the client's IP kept. Its outbound
-  address can be the host's, the service's, or its own pool address. Silo-to-silo traffic is denied
+  (`worker-ip`, `ip-pool` from a host's extra addresses, or a plugin's class), raw TCP/UDP with the
+  client's IP kept. An outside address is an `IP` object you keep (`kvo create ip`, `kvo get ips`,
+  `kvo ip keep`), and there's no load-balancer object: a namespace's services of a class share one
+  address and balancer on their own ports unless they name an `IP` or ask for a `dedicated` one.
+  Its outbound address can be the host's, the service's (where the address is on the host; never a
+  balancer's), or an IP of its own; `kvo describe silo` says whether in and out match, and why not. Silo-to-silo traffic is denied
   until the receiving silo's `allowFrom` opens it; exposing publicly needs its own permission;
 - secrets: `Secret` values sealed with envelope encryption under a local KMS (a recovery key printed
   once by `kvoadm init`), never returned by reads; `Grant`s say what a silo may reach and use.
   Silos reach nothing outside the cluster without one. API keys are **injected** at the host's
   egress gate, so they never enter the silo; other secrets are written into the silo's tmpfs by its
   host (files, env for legacy apps) or fetched on demand from a plain HTTP endpoint only that silo
-  reaches (`curl -H 'Kevaso-Local: 1' http://169.254.42.1/v1/secrets/NAME`, ADR 0008); nothing of
+  reaches (`curl -H 'Kevaso-Local: 1' http://169.254.42.1/v1/secrets/NAME`, ADR 0009); nothing of
   Kevaso's is installed in a silo; signing keys stay outside (`Sign`, with slashing protection). Per-secret RBAC (`list`, `use`, `read-value`, `write`, by name or
   label), write-only secrets, and rotation that reaches every silo using a secret;
 - OpenShell runtimes: `runtime: openshell` (NVIDIA OpenShell's microVM, no network card) and
@@ -55,7 +59,11 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   default-deny egress, exposure and the egress gate apply unchanged), init steps as init containers,
   volumes that persist, the same local endpoint as VMs, and a tmpfs `/run` for the secrets the
   host writes;
-- HTTPS: an ingress controller is a silo; `IngressClass` and `Ingress` route
+- HTTPS: an ingress controller is a silo running a stock proxy (nginx, Caddy, Kong) exactly as its
+  vendor ships it, driven from outside: an **ingress driver** (`sdk/kic`) renders the routes,
+  certificates and ACME challenges into that proxy's config, and the host's agent writes it in,
+  runs the proxy's own check and only then reloads (`kvoadm ingress install` makes a class with a
+  stock nginx behind a load balancer); `IngressClass` and `Ingress` route
   host names and paths to private silos, each Ingress opening exactly one path through the
   firewall. Certificates are automatic and renewed: Kevaso makes the key and keeps the lifecycle,
   and a **cert-controller** (`sdk/kcc`) turns a CSR into a chain. Built in: `acme` (Let's Encrypt or
@@ -70,13 +78,15 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   cloud token alone. The first is [Linode](https://github.com/dlebee/kevaso-provider-linode):
   NodeBalancers, Block Storage volumes (formatted once, deleted with the silo), shared IPs announced
   over BGP that follow their silo to another Linode, and Linode DNS for Ingress host names;
-- sets and images: an `Image` names what silos start from, with versions that never change (an OCI
-  reference for containers, a checked disk image for VMs). A `SiloSet` is a scale set of stateful
+- sets and images: an `Image` is a bootable disk for VMs, with versions that never change (a URL
+  and its SHA-256, checked by every host); a container silo's image is just its registry reference,
+  pulled from a private registry with a `registry` secret only its host's agent ever gets. A `SiloSet` is a scale set of stateful
   silos with stable names (`rpc-0`, `rpc-1`, …), spread over hosts, with booted standby instances,
   protected ones scale-in never removes (`kvo protect`), and rollouts that reset instances onto a new
   image a few at a time (or start extra ones first), volumes kept. `exclusive: true` guarantees one
   copy only. A standalone `Service` puts a virtual IP and a name in front of a set, on every worker,
-  sending to the instances whose `readiness` check passes, and can take an outside address from a
+  sending to the instances its `routeWhen` says (`ready`: while their readiness probe passes;
+  `running`: as soon as they run; probes are startup, readiness and liveness), and can take an outside address from a
   plugin's load balancer. `kvo scale`, `kvo reset`;
 - under the hood: a store with global revisions and resumable watches, CEL validation, a controller
   engine; the testbed and end-to-end loop (`make e2e`).

@@ -1,6 +1,9 @@
 # Kevaso Panes (macOS)
 
-The desktop client of the pane protocol (design §7, §10.1). Sign in to your clusters like `kvo login`,
+The desktop client of the pane protocol (design §7, §10.1), and kvo's first plugin: people install it
+with `kvo plugin install panes` and run it with `kvo panes` (core ADR 0008). This folder is the macOS
+build; another platform's build is a second artifact under the same plugin name, held to the
+contract in "Builds for other platforms" below. Sign in to your clusters like `kvo login`,
 pick a namespace, turn panes on: each one floats in its own small always-on-top window, with the
 identity (rim, silo, namespace, host) drawn by the app. A silo reports what its status looks like;
 the control plane keeps the latest report per pane and relays it; this app draws it. Nothing flows
@@ -34,7 +37,91 @@ back to the silo.
 Needs macOS 14 or later (the tests' TLS server: macOS 15) and Swift 6 (Xcode or the command line
 tools). No admin rights.
 
-## Build and run
+## Through kvo (how people run it)
+
+```bash
+kvo plugin install panes
+```
+
+```bash
+kvo panes
+```
+
+Started by kvo, the app takes kvo's current context: the server, the CA to pin and the namespace
+from `KVO_PLUGIN_SERVER`, `KVO_PLUGIN_CA_FILE` and `KVO_PLUGIN_NAMESPACE`, and access tokens from
+`"$KVO_PLUGIN_KVO" plugin token` when it needs one (`KvoPluginContext`, `KvoPluginTokens`). It
+signs nothing in and keeps nothing: no keychain item, the refresh token stays with kvo. A token is
+reused until 30 s before it expires and dropped on a 401; a token kvo can't give (signed out, a
+client-certificate context) shows kvo's message in the window. The sidebar says "From kvo (CONTEXT)"
+and that cluster wins over the clusters added in the app, as the environment does.
+
+## The plugin artifact
+
+```bash
+make archive
+```
+
+builds `.build/plugin/KevasoPanes.app` (release build for this Mac's CPU, `Support/Info.plist`,
+bundle id `com.kevaso.panes`, `VERSION=0.1.0` by default) and packs it as
+`.build/plugin/panes-darwin.tar.gz`, with the app at the top. Its index entry is kind `tar.gz`,
+entry `KevasoPanes.app/Contents/MacOS/KevasoPanes`. kvo runs that executable directly, so the
+process is the bundle: notifications (`UNUserNotificationCenter` needs a bundle id) and the keychain
+work as for an app opened from Finder. `make plugins` at the repo root puts it in a local signed index.
+
+The bundle is **ad-hoc signed** (`codesign --sign -`), which is enough for kvo's install (kvo
+downloads it itself, so it carries no quarantine flag and Gatekeeper never assesses it) and keeps
+its signature through kvo's unpacking (tested). For a release, not done yet:
+
+- **Signing:** a Developer ID Application certificate, `codesign --sign "Developer ID Application:
+  …" --options runtime --timestamp`, with an entitlements file. The hardened runtime must allow what
+  the sealed view needs: WebKit's JIT runs in its own processes, so the app itself needs no JIT
+  entitlement; check that the private WebKit settings still apply under the hardened runtime (rerun
+  the suite on the signed build).
+- **Notarisation:** `xcrun notarytool submit` of a zip of the signed app with an App Store Connect
+  API key, then `xcrun stapler staple` the app before it's archived, so it opens without a network
+  check when someone copies it elsewhere.
+- **Keychain:** a stable Developer ID signature lets macOS keep the keychain item's access across
+  updates (an ad-hoc build asks again after every rebuild).
+- **Both CPUs:** `swift build --arch arm64 --arch x86_64` for one universal app, listed for
+  `darwin/arm64` and `darwin/amd64` with the same hash; today only this Mac's CPU is built.
+- The index entry's hash is of the final archive: sign, notarise and staple first, archive last.
+
+## Builds for other platforms
+
+The panes client must exist for every OS kvo runs on (design §10). A Windows or Linux build can be
+written in anything and use any web view or toolkit; it is added as a second (third) artifact under
+the plugin name `panes` and is accepted when it meets all of this:
+
+1. **The sealed-view rules** of design §10.1 and "The sealed view" above, translated to its web view:
+   its own CSP and a block-all request filter; WebRTC, clipboard, link clicks, peer connections, media
+   devices and DNS prefetching off; a non-persistent store and a folder per pane behind a handler
+   that serves nothing outside it; no channel from the page to the app; `data` only as a call
+   argument; no JavaScript for status panes; a watchdog that kills an unresponsive pane; no window,
+   focus, notification, download or navigation a pane can cause; the identity (rim, silo, namespace,
+   host, untrusted stripes) drawn by the client from the Pane and Silo objects, never by the pane.
+2. **The hostile-pane suite as its acceptance test:** the bundles in `Tests/PaneKitTests/Hostile`
+   (t01–t17), measured the same way: a collector on loopback and the LAN address (TCP, UDP, every
+   connection, request and datagram) must record nothing, each page must report every attempt
+   failed, the positive controls (an unsealed view reaching the collector) must still work, and t10a
+   (busy loop), t12 (≈ 60 fps legit pane) and t17 (window tampering) hold in its own floating
+   windows. The suite runs on every update of the web view it uses, as it does here on every macOS
+   and WebKit update.
+3. **The artifact:** Windows, a `zip` of a folder with the entry `kvo-panes.exe` (or the folder's
+   own executable name, given as `entry`), for `windows/amd64` and `windows/arm64`; Linux, a single
+   executable (`binary`) or a `tar.gz` with its entry, for `linux/amd64` and `linux/arm64`. It runs
+   from the user's own plugin folder without admin rights or an installer, and is signed the way
+   its OS expects (Authenticode on Windows).
+4. **The context hand-off:** started through kvo, it reads `KVO_PLUGIN_SERVER`,
+   `KVO_PLUGIN_CA_FILE` (trust that CA only, never the system's), `KVO_PLUGIN_NAMESPACE` and
+   `KVO_PLUGIN_CONTEXT`, gets access tokens from `"$KVO_PLUGIN_KVO" plugin token` (JSON `token` and
+   `expiresAt`; ask again 30 s before expiry and after a 401), keeps no credential of its own, and
+   shows kvo's error when there is no token. Started alone, it may offer its own sign-in like
+   `kvo login` (PKCE on a loopback redirect, the refresh token in the OS's credential store).
+5. **The same behaviour:** the panes API (list, watch, bundle download with the digest check, the
+   Silo's host and trust label), needs-you notifications whose text is the client's, floating panes
+   whose places are remembered.
+
+## Build and run from source
 
 ```bash
 cd apps/panes
@@ -241,8 +328,10 @@ A new digest reopens the pane in a new folder and a new origin; other reports on
 
 ## What is not done
 
-- **Signing, notarisation, distribution**: out of scope; the app runs with `swift run`. So macOS
-  notifications fall back to bouncing the Dock icon, and the keychain may ask again after a rebuild.
+- **Signing and notarisation**: the plugin artifact is ad-hoc signed (see "The plugin artifact" for
+  what a release needs). With `swift run` there is no bundle, so notifications fall back to
+  bouncing the Dock icon; the keychain may ask again after a rebuild.
+- **Builds for Windows and Linux**: not in this folder; the contract is above.
 - **Several clusters at once**: clusters are added and switched; the panes of one cluster float at a
   time (switching closes the other's windows, which come back where they were).
 - **Docking to an edge and the collapsed pill** of the mockup: panes float and resize; they don't dock

@@ -32,6 +32,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/clock"
+	"kevaso.com/core/internal/ingress"
 	"kevaso.com/core/internal/leases"
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/rbac"
@@ -99,6 +100,7 @@ func NewWithAuth(s store.Store, c clock.Clock, auth *Auth) (*Server, error) {
 	srv.registerDefined()
 	srv.mux.HandleFunc("/agent/connect", srv.agentConnect)
 	srv.mux.HandleFunc(client.PathAgentBroker, srv.agentBroker)
+	srv.mux.HandleFunc(client.PathAgentIngress, srv.agentIngress)
 	srv.mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	srv.h = srv.wrap(srv.mux)
 	return srv, nil
@@ -579,6 +581,11 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%v", err)
 		}
 	}
+	if id, ok := IdentityFrom(ctx); ok && id.Type == "host" && id.Role == "worker" && t.kind.Kind == "IngressClass" {
+		if err := ingress.HostWrite(old.(*v1.IngressClass).Status, obj.(*v1.IngressClass).Status, id.Name); err != nil {
+			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%v", err)
+		}
+	}
 	var next meta.Object
 	if t.status {
 		// /status: everything from the stored object except status.
@@ -628,6 +635,10 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, t target) {
 		}
 		obj, _, err := v1.Decode(cur.Data)
 		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		if err := checkDeleteIP(obj); err != nil {
 			writeErr(w, err)
 			return
 		}

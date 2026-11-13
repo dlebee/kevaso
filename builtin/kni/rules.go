@@ -7,7 +7,7 @@
 // unless its service is exposed; a silo reaches nothing outside the cluster unless one of its
 // Grants opens it (raw TCP/UDP to a CIDR here; host names through the egress gate); silos can't
 // reach the mesh's host addresses, nor their own host beyond DNS, ping and, for a silo whose grants
-// need one, its local endpoint (ADR 0008). Exposed ports are DNAT (the client's address is kept: E009), and a silo's
+// need one, its local endpoint (ADR 0009). Exposed ports are DNAT (the client's address is kept: E009), and a silo's
 // outbound source is SNAT to its service's or its pool's address when it asks.
 package kni
 
@@ -44,12 +44,27 @@ type Silo struct {
 	Endpoint bool
 	// Leases (design §7.2d): Leased are the exposed ports (by name) that open only on a lease, and
 	// Closed those of them with no active lease now: a closed port has no outside rule at all, and
-	// connections that a lease let in are cut (reset) once it ends. An open leased port takes
-	// LeaseFrom as its sources when set (the service's allowFrom narrowed by the lease's). Private
-	// access (allowFrom on the silo) is never leased.
+	// connections that a lease let in are cut (reset) once it ends. An open leased port takes its
+	// LeaseFrom entry as its sources when it has one (the service's allowFrom narrowed by that
+	// port's lease.allowFrom). Private access (allowFrom on the silo) is never leased.
 	Leased    []string
 	Closed    []string
-	LeaseFrom []string
+	LeaseFrom map[string][]string
+	// Held (design §0.6): its service's routeWhen holds traffic back now (ready, and it isn't).
+	// Its exposed ports and node ports get no outside rule, as if closed, but nothing is cut:
+	// connections it has stay (a lease is access, readiness is load). Private access (allowFrom)
+	// stays too: the private name is held where names are answered (no DNS record).
+	Held bool
+}
+
+// Outside is what one exposed port's outside rule is now: open (a rule) only when its lease, if
+// it's leased, is open and its routing isn't held; cut (end what a lease let in) only when its
+// lease is closed. The two decisions stay apart: either one closes it.
+func Outside(s Silo, port string) (open, cut bool) {
+	if contains(s.Closed, port) {
+		return false, true
+	}
+	return !s.Held, false
 }
 
 // Service is a standalone Service as the rules need it (design §7.1): its virtual IP, sent to its
@@ -100,6 +115,20 @@ const silosAll = "10.64.0.0/16"
 
 // servicesAll is where Services' virtual IPs are (v1.ServiceCIDR).
 const servicesAll = "10.65.0.0/16"
+
+// hostLocal matches traffic to any of the host's own addresses (public, LAN, behind NAT: whatever
+// the kernel has, so a new address needs no rule change), but not Kevaso's mesh and silo ranges
+// (a silo on another host would reach the port over the mesh without its allowFrom) nor loopback.
+// A destination match: a local silo's own traffic to the same port elsewhere is never caught.
+const hostLocal = "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 }"
+
+// onHost reports whether s's exposed ports open on its host's own addresses (hostPort, worker-ip)
+// rather than on an address of its own (ip-pool, a plugin's).
+func onHost(s v1.SiloSpec) bool {
+	sv := s.Service
+	return sv != nil && (sv.Expose == v1.ExposeHostPort ||
+		(sv.Expose == v1.ExposeLoadBalancer && sv.LoadBalancer != nil && sv.LoadBalancer.Class == v1.LBWorkerIP))
+}
 
 // pick sends to one of targets, chosen at random per connection.
 func pick(ts []Target) string {
@@ -212,21 +241,33 @@ func Rules(h Host) string {
 		if !s.IP.IsValid() {
 			continue
 		}
-		// Exposure: DNAT from its public address, then let through only the allowed sources.
+		// Exposure: DNAT from its address (a host port: every address of the host), then let
+		// through only the allowed sources.
 		exp, from := Exposed(s.Spec)
-		if s.PublicIP.IsValid() {
+		daddr, orig := "", ""
+		switch {
+		case onHost(s.Spec):
+			daddr, orig = hostLocal, "ct original ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16 }"
+		case s.PublicIP.IsValid():
+			daddr, orig = "ip daddr "+s.PublicIP.String(), fmt.Sprintf("ct original ip daddr %s", s.PublicIP)
+		}
+		if daddr != "" {
 			for _, r := range exp {
 				sources := from
-				if contains(s.Leased, r.name) && s.LeaseFrom != nil {
-					sources = s.LeaseFrom
+				if f, ok := s.LeaseFrom[r.name]; ok && contains(s.Leased, r.name) {
+					sources = f
 				}
 				// Leased with no lease now (or a lease no source may use): no rule; cut what a
-				// lease let in.
-				if contains(s.Closed, r.name) || (sources != nil && len(sources) == 0) {
-					cut = append(cut, cutRules(h.Bridge, s.IP, r.proto, r.port, fmt.Sprintf("ct original ip daddr %s", s.PublicIP))...)
+				// lease let in. Held by routing: no rule, nothing cut.
+				open, closed := Outside(s, r.name)
+				if closed || (sources != nil && len(sources) == 0) {
+					cut = append(cut, cutRules(h.Bridge, s.IP, r.proto, r.port, orig)...)
 					continue
 				}
-				dnat = append(dnat, fmt.Sprintf("ip daddr %s %s dport %d dnat ip to %s:%d", s.PublicIP, r.proto, r.port, s.IP, r.port))
+				if !open {
+					continue
+				}
+				dnat = append(dnat, fmt.Sprintf("%s %s dport %d dnat ip to %s:%d", daddr, r.proto, r.port, s.IP, r.port))
 				src := ""
 				if len(sources) > 0 {
 					src = "ip saddr " + set(sources) + " "
@@ -248,8 +289,12 @@ func Rules(h Host) string {
 				if proto == "" {
 					continue
 				}
-				if contains(s.Closed, np.Name) {
+				open, closed := Outside(s, np.Name)
+				if closed {
 					cut = append(cut, cutRules(h.Bridge, s.IP, proto, np.Port, fmt.Sprintf("ct original proto-dst %d", np.NodePort))...)
+					continue
+				}
+				if !open {
 					continue
 				}
 				dnat = append(dnat, fmt.Sprintf("%s%s dport %d dnat ip to %s:%d", src, proto, np.NodePort, s.IP, np.Port))
@@ -436,4 +481,33 @@ func Rules(h Host) string {
 		w("delete table %s", old)
 	}
 	return b.String()
+}
+
+// OwnAddresses are the addresses a host port answers on, out of a host's interface addresses: its
+// IPv4 ones (public, LAN, behind NAT alike), without loopback, link-local, or Kevaso's own ranges
+// (the mesh, the silos' bridge, the Services' virtual IPs). The same set hostLocal matches; the
+// agent reports it on the Host (status.addresses), sorted.
+func OwnAddresses(addrs []netip.Addr) []string {
+	var kevaso []netip.Prefix
+	for _, r := range v1.KevasoRanges {
+		kevaso = append(kevaso, netip.MustParsePrefix(r))
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, a := range addrs {
+		a = a.Unmap()
+		if !a.Is4() || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsUnspecified() {
+			continue
+		}
+		inKevaso := false
+		for _, p := range kevaso {
+			inKevaso = inKevaso || p.Contains(a)
+		}
+		if !inKevaso && !seen[a.String()] {
+			seen[a.String()] = true
+			out = append(out, a.String())
+		}
+	}
+	sort.Strings(out)
+	return out
 }

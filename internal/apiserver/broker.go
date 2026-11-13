@@ -17,7 +17,7 @@ import (
 
 // The broker's decisions (design §8.2), on the control plane. A host relays what one of its silos
 // asked its local endpoint, and the silo's identity is what the host says from where the request
-// arrived (its source address on the bridge, ADR 0008), never the silo's own words. The control plane then checks:
+// arrived (its source address on the bridge, ADR 0009), never the silo's own words. The control plane then checks:
 //   - the host is the silo's host (a host only ever gets secrets for silos placed on it);
 //   - one of the silo's grants gives it that secret, that way, and the secret allows it;
 //   - the grant's required assurance is one the silo has (host only, for now).
@@ -48,7 +48,8 @@ func (s *Server) agentBroker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	portOp := req.Request.Op == client.OpPortOpen || req.Request.Op == client.OpPortClose // leases need no KMS
-	if s.vault == nil && !portOp {
+	pullOp := req.Request.Op == client.OpPullCredential                                   // only a credential found needs it
+	if s.vault == nil && !portOp && !pullOp {
 		writeErr(w, errf(http.StatusServiceUnavailable, "Unavailable", "this server has no KMS"))
 		return
 	}
@@ -168,16 +169,12 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 		return client.BrokerResponse{Deliveries: out}, fmt.Sprintf("%d file/env deliveries", len(out)), true
 	case client.OpAskInject:
 		return s.askInject(ctx, call, op)
+	case client.OpPullCredential:
+		return s.brokerPull(ctx, call, op)
 	case client.OpPane, client.OpPaneBundle:
 		return s.brokerPane(ctx, call, op)
 	case client.OpPortOpen, client.OpPortClose:
 		return s.brokerPort(ctx, call, op)
-	case client.OpIngress:
-		cfg, n, err := s.ingressConfig(ctx, call.silo)
-		if err != nil {
-			return client.BrokerResponse{Error: err.Error()}, err.Error(), false
-		}
-		return client.BrokerResponse{Ingress: cfg}, fmt.Sprintf("ingress controller for %d classes: %d routes, %d certificates", n, len(cfg.Routes), len(cfg.Certs)), true
 	case client.OpInjections:
 		var out []client.Injection
 		for _, g := range call.grants {

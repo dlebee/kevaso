@@ -1,4 +1,4 @@
-# ADR 0008: Nothing inside a silo: the local endpoint, host-written secrets, host-fetched panes
+# ADR 0009: Nothing inside a silo: the local endpoint, host-written secrets, host-fetched panes
 
 **Status:** accepted · **Date:** 2026-11-13 · **Design:** §8.2 ("there is no guest helper"), §8.5,
 §8.7, §7.2d, §10.1
@@ -81,6 +81,12 @@ approved, how long the request may wait for an answer; the cluster's defaults ot
 | `GET /v1/keys/KEY` | `200`, the public key, hex, `text/plain` |
 | `POST /v1/ports/NAME/open[?for=D&wait=D&approval=A]` | `200` `{"port":"debug","until":"2026-11-13T15:04:05Z","clamped":false}` |
 | `POST /v1/ports/NAME/close` | `200` `{"port":"debug","closed":true}` |
+
+**Several ports: one call each.** A lease belongs to its port (§7.2d): each has its own terms, its
+own lease and, when its lease needs one, its own approval. A silo opening `debug` and `preview` makes
+two calls and polls each one's approval on its own, the way `kvo open --port debug --port preview`
+makes one ask per port. There is no multi-port route: one answer would have to carry several
+pendings and partial successes, and a client would have to poll them apart anyway.
 
 | Status | Meaning |
 |---|---|
@@ -176,11 +182,15 @@ The protocol is two GETs a silo implements with any web server:
 - `GET PATH` answers `application/json` `{"panes": [REPORT, …]}`, each report as in design §10.1
   (`pane`, `kind`, `title`, `state`, `progress`, `message`, `fields`, `bundle`, `data`, `ttl`;
   `silo` / `siloUID` are ignored: the control plane fills them in);
-- `GET PATH/bundles/sha256:HEX` answers an HTML pane's bundle (ADR 0007's format), asked once per
-  digest.
+- `GET PATH/bundles/sha256:HEX` answers an HTML pane's bundle, asked once per digest. **The silo
+  builds it**: ADR 0007's format and limits stand (a ustar archive with `index.html`, or one HTML
+  file; at most 512 KiB, 256 files, 8 MiB unpacked), and packing a folder deterministically
+  (sorted names, zeroed times and owners, modes 0644 / 0755) is how a silo keeps an unchanged pane
+  at the same digest. Kevaso no longer ships a packer; the panes app still refuses a bundle outside
+  the format when it opens it, and the host and control plane only weigh and hash it.
 
-The host's agent asks from the host itself, at the silo's own private address (as probes do, never
-a public one), with nothing from clients or the control plane in the request: no parameters, no
+The host's agent asks from the host itself, at the silo's own private address, dialled exactly as
+its probes dial it (`internal/agent/probes.go`; never a public address), with nothing from clients or the control plane in the request: no parameters, no
 identity, no cookies. It follows no redirect, reads at most `maxPanes × 81 KiB` for the list and
 512 KiB for a bundle, gives the list 2 s and a bundle 5 s, decodes strictly (unknown fields refused),
 checks every report with `internal/panes` (kinds allowed, `maxPanes`, sizes, TTL), checks a
@@ -202,7 +212,9 @@ an answer that's fine. Meanwhile its panes go stale. The silo's `Panes` conditio
 VMs and its systemd service; `kri.Broker` and the per-silo JSON-lines listeners (vsock, the
 containers' `/run/kevaso/broker.sock` and `KVO_GUEST_BROKER`); the silo-side ops `deliveries`
 (now the host's own, with `delivery-values`), `watch`, `pane`, `pane-bundle` (now ops the host uses
-after fetching). The gate's `injections` and `ask-inject` were always the host's own and stay.
+after fetching). The host's own ops stay as they were: the gate's `injections` and `ask-inject`,
+and `pull-credential` (a registry secret for one image pull, handed to the engine; the endpoint
+has no route to it, and the integration tests check a silo can't reach it).
 
 ## Consequences
 

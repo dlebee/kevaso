@@ -3,43 +3,39 @@
 // storage class, and DNS records for Ingress host names. The plugins hold the cloud token and call
 // the cloud's API; these controllers decide when, and keep the API's objects saying what is where.
 //
-// Every cloud resource a silo gets carries a finalizer on the silo, so deleting the silo deletes
-// the resource first: a load balancer (lb.kevaso.com/CLASS) and volumes (kevaso.com/volumes).
+// Volumes carry a finalizer on the silo (kevaso.com/volumes), so deleting the silo deletes them
+// first. A load balancer is its IP's (design §7.2c-1): keyed by the IP's UID, ensured while the
+// silo holds the IP; the IP controller lets go of it (unshares or parks it) when the silo goes, and
+// releases it with the IP.
 package provider
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/informer"
-	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
-	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/sdk/kplugin"
 )
 
-// Finalizers.
-const (
-	FinalizerLBPrefix = "lb.kevaso.com/"
-	FinalizerVolumes  = "kevaso.com/volumes"
-)
+// FinalizerVolumes holds a silo until its plugin volumes are deleted.
+const FinalizerVolumes = "kevaso.com/volumes"
 
 // Classes are the registered plugins' classes, for the scheduler.
 func Classes(r *plugins.Registry) map[string]scheduler.Class {
 	out := map[string]scheduler.Class{}
 	for _, p := range r.All() {
 		for _, c := range p.Info.LoadBalancers {
-			out[c.Name] = scheduler.Class{Plugin: p.Info.Name, OwnHostsOnly: c.OwnHostsOnly, NodePorts: c.NodePorts}
+			out[c.Name] = scheduler.Class{Plugin: p.Info.Name, OwnHostsOnly: c.OwnHostsOnly, NodePorts: c.NodePorts,
+				Reserve: c.Reserve, Follows: c.Follows, SendsFrom: c.SendsFrom, Exclusive: c.Exclusive}
 		}
 		for _, c := range p.Info.Storage {
 			out[c.Name] = scheduler.Class{Plugin: p.Info.Name, OwnHostsOnly: c.OwnHostsOnly, Topology: c.Topology, Mount: c.Mounted()}
@@ -87,12 +83,6 @@ func record(mu *sync.Mutex, m *map[string]asked, id, key string) {
 		*m = map[string]asked{}
 	}
 	(*m)[id] = asked{key: key, at: time.Now()}
-}
-
-func forget(mu *sync.Mutex, m *map[string]asked, id string) {
-	mu.Lock()
-	defer mu.Unlock()
-	delete(*m, id)
 }
 
 // pluginsKey changes when a plugin comes, goes or changes.
@@ -162,240 +152,40 @@ func same(a, b *v1.HostProvider) bool {
 	return *a == *b
 }
 
-// ── Load balancers ───────────────────────────────────────────────────────────
-
-// LoadBalancers gives silos exposed on a plugin's load-balancer class their address.
-type LoadBalancers struct {
-	Client  *client.Client
-	Silos   *informer.Informer
-	Hosts   *informer.Informer
-	Plugins *plugins.Registry
-	Clock   clock.Clock
-	// Leases (optional): a leased port with no active lease has no backend (design §7.2d).
-	Leases *informer.Informer
-	// Resync is how often an unchanged load balancer is ensured anyway, to repair changes made
-	// outside Kevaso (default 10m).
-	Resync time.Duration
-
-	mu        sync.Mutex
-	ensured   map[string]asked  // silo UID → the request last ensured
-	hostsSeen map[string]string // host → what load balancers depend on, last seen
-}
-
-// Name implements engine.Controller.
-func (c *LoadBalancers) Name() string { return "load-balancers" }
-
-// Kind implements engine.Controller.
-func (c *LoadBalancers) Kind() string { return "Silo" }
-
-func lbFinalizer(s *v1.Silo) string {
-	for _, f := range s.Finalizers {
-		if strings.HasPrefix(f, FinalizerLBPrefix) {
-			return f
-		}
-	}
-	return ""
-}
-
-// Reconcile implements engine.Controller.
-func (c *LoadBalancers) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
-	o, ok := c.Silos.Get(k.Namespace, k.Name)
-	if !ok {
-		return engine.Result{}, nil
-	}
-	s := o.(*v1.Silo)
-	class := v1.PluginLB(s)
-	fin := lbFinalizer(s)
-	if s.DeletionTimestamp != nil {
-		class = ""
-	}
-	// No (more) plugin load balancer, or a different class: delete the one it had.
-	if fin != "" && fin != FinalizerLBPrefix+class {
-		old := strings.TrimPrefix(fin, FinalizerLBPrefix)
-		p, _, ok := c.Plugins.LoadBalancer(old)
-		if !ok {
-			return c.condition(ctx, s, meta.ConditionFalse, "PluginMissing", "deleting its "+old+" load balancer needs the plugin serving "+old, 30*time.Second)
-		}
-		forget(&c.mu, &c.ensured, s.UID)
-		err := p.Conn.DeleteLoadBalancer(ctx, kplugin.LoadBalancerRef{Class: old, ID: s.UID, Address: s.Status.Service.PublicIP})
-		if err != nil && !errors.Is(err, kplugin.ErrNotFound) {
-			return engine.Result{}, fmt.Errorf("delete %s load balancer: %w", old, err)
-		}
-		if class == "" && s.DeletionTimestamp == nil {
-			if err := c.status(ctx, s, func(st *v1.SiloStatus) {
-				st.Service.PublicIP, st.Service.SourceRanges, st.Service.Announce = "", nil, false
-			}); err != nil {
-				return engine.Result{}, err
-			}
-		}
-		return engine.Result{}, c.finalizers(ctx, s, fin, "")
-	}
-	if class == "" {
-		return engine.Result{}, nil
-	}
-	if fin == "" {
-		return engine.Result{}, c.finalizers(ctx, s, "", FinalizerLBPrefix+class)
-	}
-	p, pc, ok := c.Plugins.LoadBalancer(class)
-	if !ok {
-		return c.condition(ctx, s, meta.ConditionFalse, "PluginMissing", "no plugin serves load-balancer class "+class, 30*time.Second)
-	}
-	if s.Status.Host == "" {
-		return engine.Result{}, nil // the scheduler first
-	}
-	ho, ok := c.Hosts.Get("", s.Status.Host)
-	if !ok {
-		return engine.Result{}, nil
-	}
-	h := ho.(*v1.Host)
-	if h.Status.Provider == nil || h.Status.Provider.Name != p.Info.Name {
-		return c.condition(ctx, s, meta.ConditionFalse, "NotOnProvider", s.Status.Host+" isn't a "+p.Info.Name+" machine", time.Minute)
-	}
-	if pc.NodePorts && len(s.Status.Service.NodePorts) == 0 {
-		return engine.Result{}, nil // the scheduler gives node ports first
-	}
-	lb := kplugin.LoadBalancer{Class: class, ID: s.UID, Namespace: s.Namespace, Name: s.Name,
-		Address: s.Spec.Service.LoadBalancer.Address, Backends: []kplugin.HostInfo{info(h)}}
-	for _, o := range c.Hosts.List() {
-		if x := o.(*v1.Host); x.Status.Provider != nil && x.Status.Provider.Name == p.Info.Name {
-			lb.Hosts = append(lb.Hosts, info(x))
-		}
-	}
-	sort.Slice(lb.Hosts, func(i, j int) bool { return lb.Hosts[i].Name < lb.Hosts[j].Name })
-	nps := map[string]int{}
-	for _, np := range s.Status.Service.NodePorts {
-		nps[np.Name] = np.NodePort
-	}
-	closed, leaseEnd := c.leased(s)
-	from := sources(s)
-	var unenforced []string // ports with sources this class can't limit: left out
-	for _, sp := range s.Spec.Service.Ports {
-		if slices.Contains(closed, sp.Name) {
-			continue
-		}
-		src := from[sp.Name]
-		if src != nil && len(src) == 0 {
-			continue // no source may reach it
-		}
-		// An announced address arrives at the silo's host with the client's own source, and the
-		// host's rules check it. Otherwise only the load balancer sees clients.
-		if !pc.Announce {
-			if src != nil && !pc.FiltersSources {
-				unenforced = append(unenforced, sp.Name)
-				continue
-			}
-		} else {
-			src = nil
-		}
-		proto := "TCP"
-		if strings.EqualFold(sp.Protocol, "UDP") {
-			proto = "UDP"
-		}
-		lb.Ports = append(lb.Ports, kplugin.Port{Name: sp.Name, Protocol: proto, Port: sp.Port, NodePort: nps[sp.Name], AllowFrom: src})
-	}
-	// Silos and hosts change all the time (status, heartbeats); the cloud only when this does.
-	reqKey := fmt.Sprintf("%+v %v", lb, unenforced) // what's left out shows in its condition
-	resync := c.Resync
-	if resync <= 0 {
-		resync = 10 * time.Minute
-	}
-	var again time.Duration // look again when a lease ends, even if nothing else changes
-	if !leaseEnd.IsZero() {
-		again = max(leaseEnd.Sub(c.now()), time.Second)
-	}
-	if s.Status.Service.PublicIP != "" && remember(&c.mu, &c.ensured, s.UID, reqKey, resync) {
-		return engine.Result{RequeueAfter: again}, nil
-	}
-	st, err := p.Conn.EnsureLoadBalancer(ctx, lb)
-	if errors.Is(err, kplugin.ErrInProgress) {
-		_, _ = c.condition(ctx, s, meta.ConditionFalse, "Provisioning", err.Error(), 0)
-		return engine.Result{RequeueAfter: 10 * time.Second}, nil
-	}
-	if err != nil {
-		_, _ = c.condition(ctx, s, meta.ConditionFalse, "Failed", err.Error(), 0)
-		return engine.Result{}, err
-	}
-	if err := c.status(ctx, s, func(ss *v1.SiloStatus) {
-		ss.Service.PublicIP, ss.Service.SourceRanges, ss.Service.Announce = st.Address, st.SourceRanges, pc.Announce
-		if s.Spec.Network.Egress.Source == v1.EgressSameAsService {
-			ss.Service.EgressIP = st.Address
-		}
-		cond := meta.Condition{Type: "LoadBalancer", Status: meta.ConditionTrue, Reason: "Ready",
-			Message: class + " at " + st.Address, ObservedGeneration: s.Generation}
-		if len(unenforced) > 0 {
-			cond.Status, cond.Reason = meta.ConditionFalse, "SourcesNotEnforced"
-			cond.Message = fmt.Sprintf("%s at %s without %s: class %s can't limit client sources (allowFrom), and its hosts only see the load balancer's; use an announced class or hostPort, or drop allowFrom",
-				class, st.Address, strings.Join(unenforced, ", "), class)
-		}
-		meta.SetCondition(&ss.Conditions, cond, c.now())
-	}); err != nil {
-		return engine.Result{}, err
-	}
-	record(&c.mu, &c.ensured, s.UID, reqKey)
-	if again > 0 && again < resync {
-		return engine.Result{RequeueAfter: again}, nil
-	}
-	return engine.Result{RequeueAfter: resync}, nil // and again now and then: someone may change it outside
-}
-
 func info(h *v1.Host) kplugin.HostInfo {
 	p := h.Status.Provider
 	return kplugin.HostInfo{Name: h.Name, ID: p.ID, Region: p.Region, PrivateAddress: p.PrivateAddress}
 }
 
-func (c *LoadBalancers) now() time.Time {
-	if c.Clock == nil {
-		return time.Now().UTC().Truncate(time.Second)
-	}
-	return c.Clock.Now().UTC().Truncate(time.Second)
-}
-
-func (c *LoadBalancers) condition(ctx context.Context, s *v1.Silo, status meta.ConditionStatus, reason, msg string, again time.Duration) (engine.Result, error) {
-	err := c.status(ctx, s, func(st *v1.SiloStatus) {
-		meta.SetCondition(&st.Conditions, meta.Condition{Type: "LoadBalancer", Status: status, Reason: reason, Message: msg, ObservedGeneration: s.Generation}, c.now())
-	})
-	return engine.Result{RequeueAfter: again}, err
-}
-
-func (c *LoadBalancers) status(ctx context.Context, s *v1.Silo, mutate func(*v1.SiloStatus)) error {
-	return updateStatus(ctx, c.Client, s, mutate)
-}
-
-func (c *LoadBalancers) finalizers(ctx context.Context, s *v1.Silo, remove, add string) error {
-	return setFinalizers(ctx, c.Client, s, remove, add)
-}
-
-// Map implements engine.Mapper: a host's provider details reach the silos with load balancers
-// (only when they changed: not on every heartbeat).
-func (c *LoadBalancers) Map(changed engine.Key) []engine.Key {
-	if changed.Kind != "Host" {
-		return nil
-	}
-	key := ""
-	if o, ok := c.Hosts.Get("", changed.Name); ok {
-		h := o.(*v1.Host)
-		key = fmt.Sprintf("%v|%+v", meta.IsTrue(h.Status.Conditions, "Ready"), h.Status.Provider)
-	}
-	c.mu.Lock()
-	if c.hostsSeen == nil {
-		c.hostsSeen = map[string]string{}
-	}
-	prev, had := c.hostsSeen[changed.Name]
-	c.hostsSeen[changed.Name] = key
-	c.mu.Unlock()
-	if had && prev == key {
-		return nil
-	}
-	var keys []engine.Key
-	for _, o := range c.Silos.List() {
-		if s := o.(*v1.Silo); v1.PluginLB(s) != "" || lbFinalizer(s) != "" {
-			keys = append(keys, engine.Key{Kind: "Silo", Namespace: s.Namespace, Name: s.Name})
-		}
-	}
-	return keys
-}
-
 // ── Shared helpers ───────────────────────────────────────────────────────────
+
+// ipAddress records a load balancer's address on the IP it is, for a class that can't reserve:
+// the balancer is the IP's, so its address is.
+func ipAddress(ctx context.Context, c *client.Client, ip *v1.IP, addr string, h *v1.Host) error {
+	region := ""
+	if h != nil && h.Status.Provider != nil {
+		region = h.Status.Provider.Region
+	}
+	for attempt := 0; attempt < 5; attempt++ {
+		var cur v1.IP
+		if err := c.Get(ctx, "IP", ip.Namespace, ip.Name, &cur); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		if cur.UID != ip.UID || (cur.Status.Address == addr && (cur.Status.Region == region || region == "")) {
+			return nil
+		}
+		cur.Status.Address = addr
+		if region != "" {
+			cur.Status.Region = region
+		}
+		err := c.UpdateStatus(ctx, &cur)
+		if client.IsConflict(err) {
+			continue
+		}
+		return err
+	}
+	return errors.New("IP kept changing; will retry")
+}
 
 // updateStatus applies mutate to the latest copy of s's status (retrying conflicts).
 func updateStatus(ctx context.Context, c *client.Client, s *v1.Silo, mutate func(*v1.SiloStatus)) error {
@@ -465,8 +255,4 @@ func setFinalizers(ctx context.Context, c *client.Client, s *v1.Silo, remove, ad
 	return errors.New("silo kept changing; will retry")
 }
 
-var (
-	_ engine.Controller = (*Hosts)(nil)
-	_ engine.Controller = (*LoadBalancers)(nil)
-	_ engine.Mapper     = (*LoadBalancers)(nil)
-)
+var _ engine.Controller = (*Hosts)(nil)

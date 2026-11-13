@@ -26,6 +26,7 @@ import (
 
 	"kevaso.com/core/api/client"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/builtin/kni"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/builtin/kri/container"
 	"kevaso.com/core/builtin/kri/hostexec"
@@ -289,7 +290,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 		a.EgressCA = egressCA.PEM
 	}
 	for _, rt := range rts {
-		if usesBridge(rt) && runtime.GOOS == "linux" { // the local endpoint, on the silo bridge (ADR 0008)
+		if usesBridge(rt) && runtime.GOOS == "linux" { // the local endpoint, on the silo bridge (ADR 0009)
 			a.EndpointListen = net.JoinHostPort(v1.EndpointAddress, strconv.Itoa(v1.EndpointPort))
 		}
 	}
@@ -347,6 +348,7 @@ func updateHost(ctx context.Context, c *client.Client, cfg Config, states map[st
 		h.Status.Runtimes = states
 		h.Status.Allocatable = allocatable()
 		h.Status.MountClasses = mountClasses
+		h.Status.Addresses = ownAddresses()
 		err := c.UpdateStatus(ctx, &h)
 		if client.IsConflict(err) {
 			continue
@@ -354,6 +356,23 @@ func updateHost(ctx context.Context, c *client.Client, cfg Config, states map[st
 		return err
 	}
 	return errors.New("host kept changing")
+}
+
+// ownAddresses are this host's own addresses a host port answers on (kni.OwnAddresses).
+func ownAddresses() []string {
+	ifs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	var addrs []netip.Addr
+	for _, a := range ifs {
+		if n, ok := a.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(n.IP); ok {
+				addrs = append(addrs, ip)
+			}
+		}
+	}
+	return kni.OwnAddresses(addrs)
 }
 
 // allocatable is what silos may use: all CPUs but one, and memory minus 1Gi for the host itself.

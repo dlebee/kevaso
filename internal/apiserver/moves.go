@@ -163,7 +163,11 @@ func (s *Server) fits(ctx context.Context, silo *v1.Silo, to *v1.Host) (string, 
 	if err != nil {
 		return "", err
 	}
-	pools, err := listAs[*v1.IPPool](ctx, s.store, "IPPool")
+	ipList, err := listAs[*v1.IP](ctx, s.store, "IP")
+	if err != nil {
+		return "", err
+	}
+	hosts, err := listAs[*v1.Host](ctx, s.store, "Host")
 	if err != nil {
 		return "", err
 	}
@@ -175,7 +179,7 @@ func (s *Server) fits(ctx context.Context, silo *v1.Silo, to *v1.Host) (string, 
 	}
 	c := *silo
 	c.Status.Host = ""
-	d, err := scheduler.ScheduleIn(&c, []*v1.Host{to}, placed, scheduler.Env{Pools: pools, Classes: s.classMap()})
+	d, err := scheduler.ScheduleIn(&c, []*v1.Host{to}, placed, scheduler.Env{IPs: ipList, Hosts: hosts, Classes: s.classMap()})
 	if err != nil {
 		return "", err
 	}

@@ -70,7 +70,7 @@ func authHash(v string) string {
 // TestSecretsInASilo is M7's "done when": a key works in a silo but never appears inside it. On
 // real machines: the egress gate injects an API key for the one host a grant names (and replaces
 // what the silo sends, refuses everything else), the host writes file secrets into the silo's
-// tmpfs and its local endpoint answers what grants say (ADR 0008),
+// tmpfs and its local endpoint answers what grants say (ADR 0009),
 // signs with a key that stays outside, rotations reach the silo, and then the silo's whole memory
 // (a Cloud Hypervisor snapshot) and disk are searched for the key, from the host: zero times.
 //

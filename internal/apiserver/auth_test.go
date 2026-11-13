@@ -19,6 +19,7 @@ import (
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/jointoken"
+	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/store"
 	"kevaso.com/core/sdk/kri"
@@ -248,6 +249,25 @@ func TestWorkerWritesOnlyItsOwnSilosStatus(t *testing.T) {
 	stale.Status.Phase = "Starting"
 	if err := worker.UpdateStatus(e.ctx, &stale); code(err) != http.StatusConflict {
 		t.Fatalf("a stale write: want 409, got %v", err)
+	}
+	// Moved away from hv2 with its data: hv2 may also say it has let go and its volume is
+	// unmounted in one write (on real machines a refused "unmounted" write once made a move wait forever).
+	var moving v1.Silo
+	_ = e.admin.Get(e.ctx, "Silo", "dev", "mine", &moving)
+	moving.Status.Host, moving.Status.MovingFrom = "hv3", "hv2"
+	moving.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "juicefs", Handle: "volumes/u/data", AttachedTo: "hv2", Mounted: true}}
+	if err := e.admin.UpdateStatus(e.ctx, &moving); err != nil {
+		t.Fatal(err)
+	}
+	_ = worker.Get(e.ctx, "Silo", "dev", "mine", &moving)
+	released, _ := moves.Released(moving.Status, "hv2")
+	moving.Status = released
+	if err := worker.UpdateStatus(e.ctx, &moving); err != nil {
+		t.Fatalf("old host releasing a move with its volume unmounted: %v", err)
+	}
+	_ = e.admin.Get(e.ctx, "Silo", "dev", "mine", &moving)
+	if moving.Status.MovingFrom != "" || moving.Status.Volumes[0].Mounted {
+		t.Fatalf("after the release: %+v", moving.Status)
 	}
 	// Hosts read everything but a secret's value: values reach a host only through the broker,
 	// for silos placed on it.

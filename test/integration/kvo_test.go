@@ -166,7 +166,7 @@ func TestKvoUsageErrors(t *testing.T) {
 
 // The examples are the contract: each one applies as it is, every object admitted.
 func TestExamplesApply(t *testing.T) {
-	for _, f := range []string{"01-one-host.yaml", "07-siloset-service.yaml"} {
+	for _, f := range []string{"01-one-host.yaml", "07-siloset-service.yaml", "08-images-and-registries.yaml"} {
 		t.Run(f, func(t *testing.T) {
 			b, err := os.ReadFile(filepath.Join("..", "..", "examples", f))
 			if err != nil {
