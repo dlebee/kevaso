@@ -12,13 +12,13 @@ import (
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/clock"
-	"kevaso.com/core/internal/fence"
-	"kevaso.com/core/internal/store"
-	"kevaso.com/core/sdk/kri"
-	"kevaso.com/core/sdk/kri/fake"
 	hostctl "kevaso.com/core/internal/controllers/host"
 	siloctl "kevaso.com/core/internal/controllers/silo"
+	"kevaso.com/core/internal/fence"
+	"kevaso.com/core/internal/store"
 	"kevaso.com/core/internal/worker"
+	"kevaso.com/core/sdk/kri"
+	"kevaso.com/core/sdk/kri/fake"
 )
 
 // The order that keeps two copies from running: the old host fences (its agent, or the fence

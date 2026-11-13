@@ -153,6 +153,22 @@ func TestParseHostAdd(t *testing.T) {
 	}
 }
 
+// A worker-only host gets a fence of its own: the same runtimes, and nothing tying it to
+// kevasod.service (it must keep running when kevasod stops or dies).
+func TestFenceUnit(t *testing.T) {
+	o := HostAddOptions{InitOptions: InitOptions{Name: "w2"}, Runtimes: []string{"docker", "podman"}}
+	u := FenceUnit(o)
+	if !strings.Contains(u, "ExecStart=/usr/local/bin/kevasod fence-watch --fence-after 30s --runtime docker --runtime podman\n") ||
+		!strings.Contains(u, "Restart=always") {
+		t.Fatalf("fence unit:\n%s", u)
+	}
+	for _, tie := range []string{"PartOf", "BindsTo", "Requires", "kevasod.service"} {
+		if strings.Contains(u, tie) {
+			t.Errorf("fence unit is tied to kevasod (%s):\n%s", tie, u)
+		}
+	}
+}
+
 func TestUnitAdvertisesAnotherAddress(t *testing.T) {
 	u := Unit(InitOptions{Name: "cp-1", Address: "127.0.0.1", Advertise: "192.168.105.2", Cluster: "c"})
 	if !strings.Contains(u, "--address 192.168.105.2 --cluster c --extra-name 127.0.0.1") {

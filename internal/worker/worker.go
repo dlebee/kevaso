@@ -30,6 +30,7 @@ import (
 	"kevaso.com/core/builtin/kri/openshell"
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/clock"
+	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/gate"
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/sdk/kplugin"
@@ -269,6 +270,9 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes}
 	if cfg.Contact != nil {
 		a.LastContact = cfg.Contact.Last
+		if runtime.GOOS == "linux" {
+			a.FenceDir = fence.Dir // for kevasod fence-watch, which fences even when this agent is gone
+		}
 	}
 	if runtime.GOOS == "linux" {
 		a.Host = hostexec.Local{} // provider volumes: format once, mount

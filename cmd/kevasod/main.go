@@ -10,6 +10,11 @@
 //	    a worker-only host (installed by `kvoadm host add`): joins with the one-time token the first
 //	    time, then runs silos and reports to the control plane, dialing out only
 //
+//	kevasod fence-watch [--runtime NAME]… [--fence-after 30s] [--dir /run/kevaso-fence]
+//	    a worker host's fence (kevaso-fence.service, installed by `kvoadm host add`): stops the
+//	    host's Recreate and Move silos when its agent hasn't reached the control plane for too long,
+//	    cut off or not running at all
+//
 //	kevasod admin sign-user --name NAME [--admin-socket PATH] < csr.pem
 //	    on a control-plane host, as root: sign a user's CSR through the admin socket; prints JSON
 //	    {certificate, ca}. kvoadm runs it over SSH, so the user's key never leaves their machine.
@@ -50,6 +55,7 @@ import (
 	"kevaso.com/core/internal/backup"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controlplane"
+	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/guest"
 	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/mesh"
@@ -60,6 +66,7 @@ import (
 	"kevaso.com/core/internal/worker"
 	"kevaso.com/core/sdk/kcc"
 	"kevaso.com/core/sdk/kplugin"
+	"kevaso.com/core/sdk/kri"
 )
 
 const defaultAdminSocket = "/run/kevaso/admin.sock"
@@ -71,6 +78,7 @@ func usage() {
                         [--join https://CP:6443]… [--join-token-file F] [--ca-file F] [--state-only]
   kevasod version
   kevasod worker --name HOST --server https://CP:6443 [--ca-file F] [--token-file F] [--data D]
+  kevasod fence-watch [--runtime NAME]… [--fence-after 30s]
   kevasod admin sign-user --name NAME < csr.pem
   kevasod admin recovery-key | kms-rotate [--new-recovery-key] | backup
   kevasod admin restore [--data /var/lib/kevaso] < {"backup":…,"recoveryKey":…}
@@ -103,6 +111,8 @@ func main() {
 		err = runControlPlane(ctx, os.Args[2:])
 	case "worker":
 		err = runWorker(ctx, os.Args[2:])
+	case "fence-watch":
+		err = runFenceWatch(ctx, os.Args[2:])
 	case "admin":
 		switch {
 		case len(os.Args) >= 3 && os.Args[2] == "sign-user":
@@ -272,7 +282,7 @@ func runWorker(ctx context.Context, args []string) error {
 	fs.Var(&runtimes, "runtime", "runtime to install (repeatable; default cloud-hypervisor)")
 	loop := fs.String("loop-storage", "", "development only: back silo disks with this sparse file")
 	loopSize := fs.String("loop-size", "64G", "size of the loop storage file")
-	every := fs.Duration("heartbeat", 10*time.Second, "how often to report")
+	every := fs.Duration("heartbeat", worker.DefaultHeartbeat, "how often to report")
 	withMesh := fs.Bool("mesh", true, "put this host on the WireGuard mesh")
 	egressCA := fs.String("egress-extra-ca", "", "PEM file the egress gate also trusts for upstream hosts (a company TLS proxy)")
 	gwScope := fs.String("openshell-gateway-scope", "namespace", "OpenShell gateways: one per host, namespace or silo")
@@ -318,6 +328,31 @@ func runWorker(ctx context.Context, args []string) error {
 		}()
 	}
 	worker.Run(ctx, c, wc, rts)
+	return nil
+}
+
+// runFenceWatch is a worker host's fence, its own unit (kevaso-fence.service): when the agent's
+// record says it last reached the control plane over --fence-after ago (cut off, or not running at
+// all), it stops this host's silos with onHostLoss Recreate or Move, so the control plane can start
+// them elsewhere without two copies running.
+func runFenceWatch(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("fence-watch", flag.ExitOnError)
+	var runtimes multi
+	fs.Var(&runtimes, "runtime", "a runtime this host runs silos with (repeatable)")
+	dataDir := fs.String("data", "/var/lib/kevaso", "the worker's data directory")
+	dir := fs.String("dir", fence.Dir, "where the agent writes its fence record")
+	after := fs.Duration("fence-after", fence.DefaultAfter, "fence when the last contact is older than this (under the host lease)")
+	_ = fs.Parse(args)
+	rts, err := worker.NewRuntimes(worker.Config{Runtimes: runtimes, DataDir: *dataDir})
+	if err != nil {
+		return err
+	}
+	w := &fence.Watcher{Dir: *dir, Runtimes: map[string]kri.Runtime{}, FenceAfter: *after, Log: log.New(os.Stderr, "", log.LstdFlags).Printf}
+	for name, rt := range rts {
+		w.Runtimes[name] = rt
+	}
+	w.Log("fence: watching %s (fence after %s; runtimes %s)", *dir, *after, strings.Join(runtimes, ", "))
+	w.Run(ctx)
 	return nil
 }
 
