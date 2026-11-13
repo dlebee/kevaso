@@ -178,10 +178,25 @@ func SetupNetwork(ctx context.Context, h Host) error {
 }
 
 func (r *Runtime) setupStorage(ctx context.Context, o StorageOptions) error {
-	if out, err := r.Host.Run(ctx, "lvs", "--noheadings", VG+"/"+ThinPool); err == nil && len(strings.TrimSpace(string(out))) > 0 {
+	if r.poolReady(ctx) {
 		return nil
 	}
-	if _, err := r.Host.Run(ctx, "vgs", VG); err != nil {
+	_, vgErr := r.Host.Run(ctx, "vgs", VG)
+	if vgErr != nil && o.LoopFile != "" {
+		// A loop file from an earlier start: a reboot detaches it, and the volume group on it is
+		// gone until it's attached again. Attach it (to the device it's on already, if any) and
+		// let LVM find the group: never truncate it or write a new physical volume over it.
+		if _, err := r.Host.Run(ctx, "test", "-e", o.LoopFile); err == nil {
+			if _, err := r.loopDevice(ctx, o.LoopFile); err != nil {
+				return err
+			}
+			_, _ = r.Host.Run(ctx, "pvscan", "--cache")
+			if _, vgErr = r.Host.Run(ctx, "vgs", VG); vgErr != nil {
+				return fmt.Errorf("%s exists but holds no volume group %q: Kevaso won't write over it (move it away to start with an empty one)", o.LoopFile, VG)
+			}
+		}
+	}
+	if vgErr != nil {
 		if o.LoopFile == "" {
 			return fmt.Errorf("volume group %q missing: create it on a disk, or allow a loop file for development", VG)
 		}
@@ -192,11 +207,10 @@ func (r *Runtime) setupStorage(ctx context.Context, o StorageOptions) error {
 		if err := r.run(ctx, "truncate", "-s", size, o.LoopFile); err != nil {
 			return err
 		}
-		dev, err := r.Host.Run(ctx, "losetup", "--find", "--show", o.LoopFile)
+		d, err := r.loopDevice(ctx, o.LoopFile)
 		if err != nil {
-			return fmt.Errorf("losetup: %w", err)
+			return err
 		}
-		d := strings.TrimSpace(string(dev))
 		if err := r.run(ctx, "pvcreate", "-q", d); err != nil {
 			return err
 		}
@@ -204,11 +218,38 @@ func (r *Runtime) setupStorage(ctx context.Context, o StorageOptions) error {
 			return err
 		}
 	}
+	// Active (after a boot, the group is found but its volumes may not be).
+	if err := r.run(ctx, "vgchange", "-q", "-ay", VG); err != nil {
+		return err
+	}
+	if r.poolReady(ctx) {
+		return nil
+	}
 	if err := r.run(ctx, "lvcreate", "-q", "--type", "thin-pool", "-l", "90%FREE", "-n", ThinPool, VG); err != nil {
 		return err
 	}
 	// A full pool fails writes fast instead of hanging guests (E012).
 	return r.run(ctx, "lvchange", "-q", "--errorwhenfull", "y", VG+"/"+ThinPool)
+}
+
+// poolReady says whether the thin pool exists.
+func (r *Runtime) poolReady(ctx context.Context) bool {
+	out, err := r.Host.Run(ctx, "lvs", "--noheadings", VG+"/"+ThinPool)
+	return err == nil && len(strings.TrimSpace(string(out))) > 0
+}
+
+// loopDevice is the loop device file is attached to, attaching it when it isn't.
+func (r *Runtime) loopDevice(ctx context.Context, file string) (string, error) {
+	if out, err := r.Host.Run(ctx, "losetup", "-n", "-O", "NAME", "-j", file); err == nil {
+		if f := strings.Fields(string(out)); len(f) > 0 {
+			return f[0], nil
+		}
+	}
+	dev, err := r.Host.Run(ctx, "losetup", "--find", "--show", file)
+	if err != nil {
+		return "", fmt.Errorf("losetup: %w", err)
+	}
+	return strings.TrimSpace(string(dev)), nil
 }
 
 // Fetch downloads an asset to dst, verifying its digest; an existing file with the right digest
