@@ -136,6 +136,13 @@ func (s *Server) siloExec(w http.ResponseWriter, r *http.Request, ns, name strin
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "body: want {\"command\": [...]}"))
 		return
 	}
+	s.siloStream(w, r, ns, name, client.ExecHeader{Command: req.Command, TTY: req.TTY, Rows: req.Rows, Cols: req.Cols}, 0)
+}
+
+// siloStream runs h (its command and terminal) in a silo over its host's tunnel and relays the
+// stream: bytes as they are, or, with limit, frames, ending the stream once either way's data is
+// over limit.
+func (s *Server) siloStream(w http.ResponseWriter, r *http.Request, ns, name string, h client.ExecHeader, limit int64) {
 	o, err := s.store.Get(r.Context(), store.Key{Kind: "Silo", Namespace: ns, Name: name})
 	if err != nil {
 		writeErr(w, err)
@@ -162,7 +169,8 @@ func (s *Server) siloExec(w http.ResponseWriter, r *http.Request, ns, name strin
 		return
 	}
 	defer func() { _ = stream.Close() }()
-	hdr, _ := json.Marshal(client.ExecHeader{Namespace: ns, Name: name, UID: silo.UID, Runtime: silo.Spec.Runtime, Command: req.Command})
+	h.Namespace, h.Name, h.UID, h.Runtime = ns, name, silo.UID, silo.Spec.Runtime
+	hdr, _ := json.Marshal(h)
 	if _, err := stream.Write(append(hdr, '\n')); err != nil {
 		writeErr(w, err)
 		return
@@ -173,6 +181,10 @@ func (s *Server) siloExec(w http.ResponseWriter, r *http.Request, ns, name strin
 		return
 	}
 	defer func() { _ = conn.Close() }()
+	if limit > 0 {
+		relayLimited(conn, rw.Reader, stream, limit)
+		return
+	}
 	// Both legs speak the same frames: relay bytes until either side is done.
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(stream, rw.Reader); done <- struct{}{} }()

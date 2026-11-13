@@ -94,6 +94,11 @@ func (a *Agent) serveExec(ctx context.Context, st net.Conn) {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	var tty *kri.TTY
+	resize := make(chan kri.WindowSize, 1)
+	if h.TTY {
+		tty = &kri.TTY{Size: kri.WindowSize{Rows: h.Rows, Cols: h.Cols}, Resize: resize}
+	}
 	pr, pw := io.Pipe()
 	go func() { // stdin frames → the command; the stream ending ends the command
 		defer cancel()
@@ -108,6 +113,10 @@ func (a *Agent) serveExec(ctx context.Context, st net.Conn) {
 				if _, err := pw.Write(p); err != nil {
 					// the command stopped reading; keep draining for FrameStdinClose
 					continue
+				}
+			case client.FrameResize:
+				if r, c, ok := client.ParseResize(p); ok && tty != nil {
+					latest(resize, kri.WindowSize{Rows: r, Cols: c})
 				}
 			case client.FrameStdinClose:
 				_ = pw.Close()
@@ -124,6 +133,7 @@ func (a *Agent) serveExec(ctx context.Context, st net.Conn) {
 		Stdin:   pr,
 		Stdout:  client.FrameWriter{W: st, Typ: client.FrameStdout, Mu: &mu},
 		Stderr:  client.FrameWriter{W: st, Typ: client.FrameStderr, Mu: &mu},
+		TTY:     tty,
 	})
 	_ = pr.Close()
 	if err != nil {
@@ -135,4 +145,19 @@ func (a *Agent) serveExec(ctx context.Context, st net.Conn) {
 	mu.Lock()
 	_ = client.WriteFrame(st, client.FrameExit, b[:])
 	mu.Unlock()
+}
+
+// latest puts sz on a one-slot channel, replacing a size the runtime hasn't taken yet.
+func latest(ch chan kri.WindowSize, sz kri.WindowSize) {
+	for {
+		select {
+		case ch <- sz:
+			return
+		default:
+			select {
+			case <-ch:
+			default:
+			}
+		}
+	}
 }

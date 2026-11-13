@@ -326,6 +326,30 @@ type guest struct {
 	allowed ssh.PublicKey
 	mu      sync.Mutex
 	ran     []string
+	reqs    []string // every channel request, with sizes for terminals
+}
+
+func describeReq(r *ssh.Request) string {
+	switch r.Type {
+	case "pty-req":
+		var p struct {
+			Term          string
+			Cols, Rows    uint32
+			Width, Height uint32
+			Modes         string
+		}
+		_ = ssh.Unmarshal(r.Payload, &p)
+		return fmt.Sprintf("pty-req %s %dx%d", p.Term, p.Cols, p.Rows)
+	case "window-change":
+		var p struct{ Cols, Rows, Width, Height uint32 }
+		_ = ssh.Unmarshal(r.Payload, &p)
+		return fmt.Sprintf("window-change %dx%d", p.Cols, p.Rows)
+	case "signal":
+		var p struct{ Signal string }
+		_ = ssh.Unmarshal(r.Payload, &p)
+		return "signal " + p.Signal
+	}
+	return r.Type
 }
 
 func startGuest(t *testing.T, allowed ssh.PublicKey) *guest {
@@ -361,27 +385,54 @@ func startGuest(t *testing.T, allowed ssh.PublicKey) *guest {
 					ch, creqs, _ := nch.Accept()
 					go func() {
 						defer func() { _ = ch.Close() }()
+						killed := make(chan struct{})
+						var once sync.Once
 						for req := range creqs {
-							if req.Type != "exec" {
+							g.mu.Lock()
+							g.reqs = append(g.reqs, describeReq(req))
+							g.mu.Unlock()
+							switch req.Type {
+							case "pty-req", "window-change", "signal":
+								if req.Type == "signal" {
+									once.Do(func() { close(killed) })
+								}
+								if req.WantReply {
+									_ = req.Reply(true, nil)
+								}
+								continue
+							case "exec":
+							default:
 								_ = req.Reply(false, nil)
 								continue
 							}
 							cmd := string(req.Payload[4:])
 							_ = req.Reply(true, nil)
-							_, _ = io.ReadAll(ch)
 							g.mu.Lock()
 							g.ran = append(g.ran, cmd)
 							g.mu.Unlock()
-							code := 0
-							if strings.Contains(cmd, "exit 4") {
-								code = 4
-							} else {
-								_, _ = ch.Write([]byte("hi\n"))
-							}
-							st := make([]byte, 4)
-							binary.BigEndian.PutUint32(st, uint32(code))
-							_, _ = ch.SendRequest("exit-status", false, st)
-							return
+							go func() {
+								code := 0
+								switch {
+								case strings.Contains(cmd, "'sleep'"): // runs until signalled or its channel goes
+									gone := make(chan struct{})
+									go func() { _, _ = io.Copy(io.Discard, ch); close(gone) }()
+									select {
+									case <-killed:
+									case <-gone:
+									}
+									return
+								case strings.Contains(cmd, "exit 4"):
+									_, _ = io.ReadAll(ch)
+									code = 4
+								default:
+									_, _ = io.ReadAll(ch)
+									_, _ = ch.Write([]byte("hi\n"))
+								}
+								st := make([]byte, 4)
+								binary.BigEndian.PutUint32(st, uint32(code))
+								_, _ = ch.SendRequest("exit-status", false, st)
+								_ = ch.Close()
+							}()
 						}
 					}()
 				}
@@ -425,7 +476,7 @@ func TestExecPinsTheGuestKeyAndRunsWithSudo(t *testing.T) {
 	g.mu.Lock()
 	ran := g.ran[0]
 	g.mu.Unlock()
-	if ran != `sudo -n -- 'echo' 'it'\''s'` {
+	if !strings.HasPrefix(ran, "sudo -n -- env KEVASO_EXEC=") || !strings.HasSuffix(ran, ` 'echo' 'it'\''s'`) {
 		t.Fatalf("guest ran %q", ran)
 	}
 	code, err = r2.Exec(ctx, id("web"), kri.ExecRequest{Command: []string{"sh", "-c", "exit 4"}})

@@ -28,6 +28,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"kevaso.com/core/builtin/kri/hostexec"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -373,21 +374,67 @@ func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int
 		}
 	}
 	defer func() { _ = c.Close() }()
+	return runGuest(ctx, c, req)
+}
+
+// runGuest runs req on the guest over ssh, as root through sudo. The command carries a marker in
+// its environment; if ctx is cancelled (the client went away) the session is signalled and closed,
+// and a second session kills whatever still has the marker, since sshd doesn't kill a command
+// without a terminal when its channel closes.
+func runGuest(ctx context.Context, c *ssh.Client, req kri.ExecRequest) (int, error) {
 	sess, err := c.NewSession()
 	if err != nil {
 		return -1, err
 	}
 	defer func() { _ = sess.Close() }()
 	sess.Stdin, sess.Stdout, sess.Stderr = req.Stdin, orDiscard(req.Stdout), orDiscard(req.Stderr)
-	err = sess.Run("sudo -n -- " + shellQuote(req.Command))
-	var exitErr *ssh.ExitError
-	switch {
-	case err == nil:
-		return 0, nil
-	case errors.As(err, &exitErr):
-		return exitErr.ExitStatus(), nil
-	default:
+	if req.TTY != nil {
+		sz := req.TTY.Size
+		if sz.Rows == 0 || sz.Cols == 0 {
+			sz = kri.WindowSize{Rows: 24, Cols: 80}
+		}
+		if err := sess.RequestPty("xterm-256color", int(sz.Rows), int(sz.Cols), ssh.TerminalModes{ssh.ECHO: 1}); err != nil {
+			return -1, fmt.Errorf("terminal: %w", err)
+		}
+		sess.Stderr = nil // the terminal carries both
+	}
+	marker := hostexec.NewMarker()
+	if err := sess.Start("sudo -n -- env " + kri.ExecMarkerEnv + "=" + marker + " " + shellQuote(req.Command)); err != nil {
 		return -1, err
+	}
+	done := make(chan error, 1)
+	go func() { done <- sess.Wait() }()
+	var resize <-chan kri.WindowSize
+	if req.TTY != nil {
+		resize = req.TTY.Resize
+	}
+	for {
+		select {
+		case sz, ok := <-resize:
+			if !ok {
+				resize = nil
+				continue
+			}
+			_ = sess.WindowChange(int(sz.Rows), int(sz.Cols))
+		case err := <-done:
+			var exitErr *ssh.ExitError
+			switch {
+			case err == nil:
+				return 0, nil
+			case errors.As(err, &exitErr):
+				return exitErr.ExitStatus(), nil
+			default:
+				return -1, err
+			}
+		case <-ctx.Done():
+			_ = sess.Signal(ssh.SIGKILL)
+			_ = sess.Close()
+			if sw, err := c.NewSession(); err == nil {
+				_ = sw.Run("sudo -n -- sh -c " + shellQuote([]string{hostexec.SweepScript}) + " sh " + marker)
+				_ = sw.Close()
+			}
+			return -1, ctx.Err()
+		}
 	}
 }
 

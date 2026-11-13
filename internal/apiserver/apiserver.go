@@ -144,6 +144,7 @@ type target struct {
 	move      bool   // a silo's /move
 	answer    string // an approval's /approve or /deny
 	bundle    bool   // a pane's /bundle
+	stream    string // a silo's /ssh or /files (silostreams.go)
 }
 
 func parsePath(path string) (target, error) {
@@ -171,6 +172,8 @@ func parsePath(path string) (target, error) {
 		t.status = true
 	case len(parts) == 3 && parts[2] == "exec" && k.Kind == "Silo":
 		t.exec = true
+	case len(parts) == 3 && (parts[2] == "ssh" || parts[2] == "files") && k.Kind == "Silo":
+		t.stream = parts[2]
 	case len(parts) == 3 && parts[2] == "move" && k.Kind == "Silo":
 		t.move = true
 	case len(parts) == 3 && parts[2] == "token" && k.Kind == "ServiceAccount":
@@ -201,6 +204,10 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case t.exec:
 		s.siloExec(w, r, t.namespace, t.name)
+	case t.stream == "ssh":
+		s.siloSSH(w, r, t.namespace, t.name)
+	case t.stream == "files":
+		s.siloFiles(w, r, t.namespace, t.name)
 	case t.move:
 		s.moveSilo(w, r, t)
 	case t.token:

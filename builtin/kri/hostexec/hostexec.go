@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"kevaso.com/core/sdk/kri"
 )
 
 // Cmd is one command on the host.
@@ -20,6 +22,9 @@ type Cmd struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
+	// TTY runs the command on a new pseudo-terminal (stdin, stdout and stderr all on it), resized
+	// as TTY.Resize says: a CLI like docker exec -t wants its own terminal to pass on.
+	TTY *kri.TTY
 }
 
 // Runner runs commands and touches files. The real one is Local; tests use a fake.
@@ -38,6 +43,9 @@ type Local struct{}
 func (Local) Run(ctx context.Context, c Cmd) (int, error) {
 	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
 	cmd.Env = append([]string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"}, c.Env...)
+	if c.TTY != nil {
+		return runTTY(cmd, c)
+	}
 	cmd.Stdout, cmd.Stderr = c.Stdout, c.Stderr
 	// Stdin through our own pipe: exec.Cmd would otherwise wait for the copy to finish, so a caller
 	// that never closes stdin (an interactive kvo exec) would hang after the command exited.
