@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 
@@ -17,9 +16,9 @@ import (
 // paneCommand reports a pane (design §10.1). Nothing comes back but "ok": panes are one way.
 //
 //	pane report NAME [--state S] [--progress P] [--title T] [--message M] [--field LABEL=VALUE]… [--ttl D]
-//	pane html NAME --bundle FILE [--data JSON | --data -] [--ttl D]
+//	pane html NAME --bundle DIR|FILE [--data JSON | --data -] [--ttl D]
 func paneCommand(ctx context.Context, dial Dialer, args []string, stdin io.Reader, stdout io.Writer) error {
-	usage := errors.New("usage: kvo-guest pane report NAME [--state S] [--progress P] [--title T] [--message M] [--field L=V]… [--ttl D] | pane html NAME --bundle FILE [--data JSON|-] [--ttl D]")
+	usage := errors.New("usage: kvo-guest pane report NAME [--state S] [--progress P] [--title T] [--message M] [--field L=V]… [--ttl D] | pane html NAME --bundle DIR|FILE [--data JSON|-] [--ttl D]")
 	if len(args) < 2 || (args[0] != "report" && args[0] != "html") {
 		return usage
 	}
@@ -77,9 +76,9 @@ func paneCommand(ctx context.Context, dial Dialer, args []string, stdin io.Reade
 	}
 	if r.Kind == v1.PaneHTML {
 		if bundle == "" {
-			return errors.New("pane html needs --bundle FILE (the pane's HTML, or an archive the client unpacks)")
+			return errors.New("pane html needs --bundle PATH: a folder holding index.html, an HTML file, or a ustar archive (ADR 0007)")
 		}
-		b, err := os.ReadFile(bundle)
+		b, err := ReadBundle(bundle)
 		if err != nil {
 			return err
 		}
