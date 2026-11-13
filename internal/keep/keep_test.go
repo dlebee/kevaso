@@ -79,7 +79,9 @@ func TestAsUserWraps(t *testing.T) {
 func TestParseProbe(t *testing.T) {
 	for out, want := range map[string]Probe{
 		"running\n": {Running: true}, "exited 0\n": {Exit: 0}, "exited 137": {Exit: 137},
-		"exited x": {Exit: -1}, "absent\n": {Absent: true}, "": {Absent: true},
+		"exited x": {Exit: -1}, "absent\n": {Absent: true},
+		// Anything else is unknown, never absent: absent starts the daemon.
+		"": {Unknown: true}, "sudo: unable to resolve host vm\nrunning\n": {Unknown: true}, "sh: 1: Syntax error": {Unknown: true},
 	} {
 		if got := ParseProbe(out); got != want {
 			t.Errorf("ParseProbe(%q) = %+v, want %+v", out, got, want)
@@ -270,5 +272,19 @@ func TestUpkeepKeepsLastFix(t *testing.T) {
 	failed := Result(u, ok, Outcome{Check: 1, FixRan: true, Fix: 1, Output: "no"}, later.Add(time.Minute))
 	if failed.LastFix == nil || !failed.LastFix.Equal(later.Add(time.Minute)) {
 		t.Fatalf("a fix that ran and failed: %+v", failed)
+	}
+}
+
+// An unknown probe starts nothing and changes nothing: a running daemon isn't started twice.
+func TestDecideDaemonUnknownProbe(t *testing.T) {
+	d := v1.Daemon{Name: "w"}
+	started := t0
+	st := v1.DaemonStatus{Name: "w", State: v1.DaemonRunning, StartedAt: &started, Restarts: 2}
+	got, start, again := DecideDaemon(d, st, Probe{Unknown: true}, t0.Add(time.Minute))
+	if start || again != ProbeEvery || got.State != v1.DaemonRunning || got.Restarts != 2 || !got.StartedAt.Equal(started) {
+		t.Fatalf("unknown probe: %+v start=%v again=%v", got, start, again)
+	}
+	if _, start, _ := DecideDaemon(d, v1.DaemonStatus{}, Probe{Unknown: true}, t0); start {
+		t.Fatal("unknown probe of a new daemon started it")
 	}
 }

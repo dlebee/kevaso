@@ -82,6 +82,9 @@ type Probe struct {
 	Running bool
 	Absent  bool // never started here (a new silo, or after a reboot)
 	Exit    int  // exited: its code (-1: unknown, killed with the wrapper)
+	// Unknown: the probe said something else (an error, a warning, nothing): nothing is known, so
+	// nothing is started. Taking it for absent would start a second copy of a running daemon.
+	Unknown bool
 }
 
 // ParseProbe reads ProbeCommand's output.
@@ -96,8 +99,10 @@ func ParseProbe(out string) Probe {
 			code = -1
 		}
 		return Probe{Exit: code}
+	case len(f) == 1 && f[0] == "absent":
+		return Probe{Absent: true}
 	}
-	return Probe{Absent: true}
+	return Probe{Unknown: true}
 }
 
 // Backoff is the wait before restart number n+1: 10s, 20s, 40s, … at most 5m.
@@ -119,6 +124,9 @@ const ProbeEvery = 15 * time.Second
 // to look again.
 func DecideDaemon(d v1.Daemon, st v1.DaemonStatus, p Probe, now time.Time) (v1.DaemonStatus, bool, time.Duration) {
 	st.Name = d.Name
+	if p.Unknown { // look again soon; change nothing meanwhile
+		return st, false, ProbeEvery
+	}
 	if p.Running {
 		st.State, st.NextStart = v1.DaemonRunning, nil
 		if st.StartedAt == nil {

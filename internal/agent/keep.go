@@ -57,11 +57,18 @@ func (a *Agent) keepInside(ctx context.Context, rt kri.Runtime, s *v1.Silo) (tim
 	inSpec := map[string]bool{}
 	for _, d := range s.Spec.Daemons {
 		inSpec[d.Name] = true
-		_, out, err := run(ctx, keep.ProbeCommand(d))
+		code, out, err := run(ctx, keep.ProbeCommand(d))
 		if err != nil {
 			return 0, err
 		}
-		st, start, next := keep.DecideDaemon(d, prevD[d.Name], keep.ParseProbe(out), now)
+		p := keep.ParseProbe(out)
+		if code != 0 {
+			p = keep.Probe{Unknown: true}
+		}
+		if p.Unknown {
+			a.log("%s/%s: daemon %s: the probe said %q (exit %d): looking again", s.Namespace, s.Name, d.Name, tail(strings.TrimSpace(out), 200), code)
+		}
+		st, start, next := keep.DecideDaemon(d, prevD[d.Name], p, now)
 		if start {
 			if code, out, err := run(ctx, keep.StartCommand(d)); err != nil {
 				return 0, err
