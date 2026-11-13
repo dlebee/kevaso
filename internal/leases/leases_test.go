@@ -193,7 +193,7 @@ func TestTwoLeasedPorts(t *testing.T) {
 		t.Fatalf("states %+v", st)
 	}
 	// Approved, debug opens on its own clock (2h from the yes); preview keeps its 6h.
-	yes, _ := approvals.Answer(dbg.Approval, true, "ada", "", t0.Add(time.Minute))
+	yes, _ := approvals.Answer(dbg.Approval, true, approvals.RequestID(dbg.Approval), "ada", "", t0.Add(time.Minute))
 	all[1] = Answered(dbg.Lease, yes, t0.Add(time.Minute))
 	if got := Closed(s, all, t0.Add(time.Minute)); len(got) != 0 {
 		t.Fatalf("both open: %v", got)
@@ -286,7 +286,7 @@ func TestApprovalFlow(t *testing.T) {
 	}
 	appr, lease = again.Approval, again.Lease
 	// A person says yes: the port opens for the time asked, from the answer.
-	yes, err := approvals.Answer(appr, true, "ada", "", t0.Add(3*time.Minute))
+	yes, err := approvals.Answer(appr, true, approvals.RequestID(appr), "ada", "", t0.Add(3*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,14 +317,14 @@ func TestApprovalFlow(t *testing.T) {
 	if st := States(s, []*v1.Lease{ext.Lease}, t0.Add(30*time.Minute)); st[0].Phase != v1.LeaseOpen || !st[0].Pending {
 		t.Errorf("extension states %+v", st)
 	}
-	no, _ := approvals.Answer(ext.Approval, false, "ada", "enough", t0.Add(31*time.Minute))
+	no, _ := approvals.Answer(ext.Approval, false, approvals.RequestID(ext.Approval), "ada", "enough", t0.Add(31*time.Minute))
 	denied := Answered(ext.Lease, no, t0.Add(31*time.Minute))
 	if denied.Status.Phase != v1.LeaseOpen || denied.Status.Pending != nil || denied.Status.Reason != "denied by ada: enough" {
 		t.Fatalf("denied extension: %+v", denied.Status)
 	}
 	// Denied when closed: Denied; the poll says by whom.
 	first := Decide(a, s, nil, nil, limits, alim, t0)
-	no2, _ := approvals.Answer(first.Approval, false, "ada", "", t0.Add(time.Minute))
+	no2, _ := approvals.Answer(first.Approval, false, approvals.RequestID(first.Approval), "ada", "", t0.Add(time.Minute))
 	if d := Answered(first.Lease, no2, t0.Add(time.Minute)); d.Status.Phase != v1.LeaseDenied {
 		t.Fatalf("denied: %+v", d.Status)
 	}

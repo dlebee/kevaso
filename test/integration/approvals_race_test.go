@@ -9,6 +9,7 @@ import (
 
 	"kevaso.com/core/api/client"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/approvals"
 )
 
 // One approval, answered by several people at once, some yes, some no: exactly one answer
@@ -72,7 +73,7 @@ func TestApprovalAnsweredAtOnce(t *testing.T) {
 			defer wg.Done()
 			verb := []string{"approve", "deny"}[i%2]
 			start.Wait()
-			errs[i] = cl.Call(c.ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/web3/approvals/"+pending.Name+"/"+verb, client.ApprovalAnswer{Reason: people[i]}, nil)
+			errs[i] = cl.Call(c.ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/web3/approvals/"+pending.Name+"/"+verb, client.ApprovalAnswer{Reason: people[i], Request: approvals.RequestID(pending)}, nil)
 		}()
 	}
 	start.Done()

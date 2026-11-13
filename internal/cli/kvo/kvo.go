@@ -26,7 +26,8 @@
 //	kvo get approvals | kvo watch approvals    silos waiting for a person's yes to use a secret
 //	kvo pane watch SILO                        follow a silo's panes (plain text; one way)
 //	kvo pane bundle PANE -o FILE               save an HTML pane's bundle (for the panes app)
-//	kvo approve NAME | kvo deny NAME [--reason R]   answer one (approve on that secret; people only)
+//	kvo approve NAME [--request ID] | kvo deny NAME [--reason R]   answer one (approve on that secret;
+//	        people only); a yes is for the request ID read in kvo get approvals
 //	kvo plugin search|install|list|upgrade|remove|index …   client plugins; kvo NAME runs one (plugins.go)
 //
 // The cluster comes from --server or $KVO_SERVER (plain HTTP, for `kevasod dev`), otherwise from the
@@ -70,6 +71,7 @@ type opts struct {
 	moveTo                                   string // kvo move --to
 	recreate, confirmFenced                  bool   // kvo move
 	uid, resourceVersion                     string // kvo delete: only the object seen
+	request                                  string // kvo approve: the request read
 	all, noBrowser                           bool
 	secret                                   secretOpts
 	sets                                     setOpts
@@ -137,6 +139,8 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.recreate = true
 		case "--confirm-fenced":
 			o.confirmFenced = true
+		case "--request":
+			o.request, err = val()
 		case "--uid":
 			o.uid, err = val()
 		case "--resource-version":
@@ -275,7 +279,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "pane":
 		err = paneCommand(ctx, c, o, stdout)
 	case "approve", "deny":
-		err = approve(ctx, c, o, args[0], stdout)
+		err = approve(ctx, c, o, args[0], stdin, stdout)
 	case "open", "close":
 		err = leaseCommand(ctx, c, o, args[0], stdout, stderr)
 	case "delete":
@@ -728,7 +732,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 	case "VMImage":
 		head = append(head, "VERSIONS", "DISK")
 	case "Approval":
-		head = append(head, "SILO", "SECRET", "USE", "FOR", "PHASE", "WHEN", "ANSWERED-BY")
+		head = append(head, "SILO", "SECRET", "USE", "FOR", "PHASE", "WHEN", "ANSWERED-BY", "REQUEST")
 	case "Lease":
 		head = append(head, leaseHead...)
 	case "Pane":

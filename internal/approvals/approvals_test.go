@@ -106,7 +106,7 @@ func TestAskingAgainReplacesThePendingRequest(t *testing.T) {
 
 func TestApprovedAccessLastsItsTime(t *testing.T) {
 	a := pending()
-	ok, err := Answer(a, true, "alice", "", t0.Add(2*time.Minute))
+	ok, err := Answer(a, true, RequestID(a), "alice", "", t0.Add(2*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,8 @@ func TestApprovedAccessLastsItsTime(t *testing.T) {
 }
 
 func TestApprovalOfAnEarlierSiloDoesNothing(t *testing.T) {
-	ok, _ := Answer(pending(), true, "alice", "", t0)
+	p := pending()
+	ok, _ := Answer(p, true, RequestID(p), "alice", "", t0)
 	c := call()
 	c.SiloUID = "uid-2" // deleted and created again with the same name
 	if out := Decide(c, ok, Limits{}, t0.Add(time.Minute)); out.Allow {
@@ -144,7 +145,7 @@ func TestApprovalOfAnEarlierSiloDoesNothing(t *testing.T) {
 
 func TestDeniedFailsThePollAndSaysWho(t *testing.T) {
 	a := pending()
-	no, err := Answer(a, false, "bob", "not during the freeze", t0.Add(time.Minute))
+	no, err := Answer(a, false, RequestID(a), "bob", "not during the freeze", t0.Add(time.Minute))
 	if err != nil || no.Status.Phase != v1.ApprovalDenied || no.Status.AccessUntil != nil {
 		t.Fatalf("deny = %+v, %v", no, err)
 	}
@@ -168,7 +169,7 @@ func TestUnansweredExpires(t *testing.T) {
 	if !errors.Is(out.Err, ErrExpired) || out.Store == nil || out.Store.Status.Phase != v1.ApprovalExpired {
 		t.Fatalf("poll at expiry = %+v", out)
 	}
-	if _, err := Answer(a, true, "alice", "", t0.Add(10*time.Minute)); !errors.Is(err, ErrTooLate) {
+	if _, err := Answer(a, true, RequestID(a), "alice", "", t0.Add(10*time.Minute)); !errors.Is(err, ErrTooLate) {
 		t.Fatalf("late answer: %v", err)
 	}
 	if out := Decide(c, out.Store, Limits{}, t0.Add(11*time.Minute)); !errors.Is(out.Err, ErrExpired) || out.Store != nil {
@@ -177,16 +178,18 @@ func TestUnansweredExpires(t *testing.T) {
 }
 
 func TestAnswerOnlyOnce(t *testing.T) {
-	ok, _ := Answer(pending(), true, "alice", "", t0)
-	if _, err := Answer(ok, false, "mallory", "", t0); !errors.Is(err, ErrAnswered) {
+	p := pending()
+	ok, _ := Answer(p, true, RequestID(p), "alice", "", t0)
+	if _, err := Answer(ok, false, RequestID(ok), "mallory", "", t0); !errors.Is(err, ErrAnswered) {
 		t.Fatalf("second answer: %v", err)
 	}
 }
 
 func TestExpireSweep(t *testing.T) {
 	old, fresh := pending(), pending()
+	p := pending()
 	fresh.Spec.ExpiresAt = t0.Add(time.Hour)
-	done, _ := Answer(pending(), true, "alice", "", t0)
+	done, _ := Answer(p, true, RequestID(p), "alice", "", t0)
 	got := Expire([]*v1.Approval{old, fresh, done}, t0.Add(10*time.Minute))
 	if len(got) != 1 || got[0].Status.Phase != v1.ApprovalExpired || old.Status.Phase != v1.ApprovalPending {
 		t.Fatalf("Expire = %+v", got)
@@ -204,5 +207,34 @@ func TestOnlyPeopleAnswer(t *testing.T) {
 func TestStateNames(t *testing.T) {
 	if Pending.String() != "Pending" || Active.String() != "Active" {
 		t.Fatal(Pending.String())
+	}
+}
+
+// K-017, in the package: a yes names the request it is for, and a request asked again with
+// anything else is another request.
+func TestK017AnswerIsBoundToTheRequest(t *testing.T) {
+	c := Call{Namespace: "dev", Silo: "s", SiloUID: "u1", Secret: "key", Use: v1.ApprovalForSign, Grant: "g", For: "1m", PayloadHash: "aaaa", Summary: "sign 32 bytes"}
+	first := Decide(c, nil, Limits{}, t0).Store
+	read := RequestID(first)
+	c.For, c.PayloadHash = "12h", "bbbb"
+	second := Decide(c, first, Limits{}, t0.Add(time.Second)).Store
+	if second.Name != first.Name || RequestID(second) == read {
+		t.Fatalf("asked again: same name %v, same request %v", second.Name == first.Name, RequestID(second) == read)
+	}
+	if _, err := Answer(second, true, read, "alice", "", t0.Add(2*time.Second)); !errors.Is(err, ErrChanged) {
+		t.Fatalf("a yes for what was read, on the changed request: %v", err)
+	}
+	if _, err := Answer(second, true, "", "alice", "", t0.Add(2*time.Second)); !errors.Is(err, ErrWhich) {
+		t.Fatalf("a yes for no request in particular: %v", err)
+	}
+	// Only when it was asked and until when it waits: the same request.
+	c2 := c
+	c2.Wait = "5m"
+	again := Decide(c2, second, Limits{}, t0.Add(3*time.Second)).Store
+	if RequestID(again) != RequestID(second) {
+		t.Fatal("asking again with only another wait changed the request")
+	}
+	if a, err := Answer(second, true, RequestID(second), "alice", "", t0.Add(2*time.Second)); err != nil || a.Status.Phase != v1.ApprovalApproved {
+		t.Fatalf("a yes for the request as it is: %v", err)
 	}
 }
