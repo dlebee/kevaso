@@ -1,0 +1,16 @@
+NAMESPACE   NAME       IMAGE                                   INSTANCES   READY   UPDATED   AGE
+web3        rpc-pool   docker.io/ethereum/client-go:v1.14.13   3           0/3     0         -
+
+NAMESPACE   NAME       IMAGE                                   INSTANCES   READY   UPDATED   AGE
+web3        rpc-pool   docker.io/ethereum/client-go:v1.14.13   3           0/3     0         -
+
+Name:             rpc-pool
+Namespace:        web3
+Labels:           -
+Container image:  docker.io/ethereum/client-go:v1.14.13
+Runtime:          docker
+Instances:        3 wanted, 0 ready, 0 on revision -
+Upgrades:         Rolling; at most 1 not ready at a time, 1 extra started first
+Scale-in:         NewestFirst (not ready ones first; protected ones never)
+Spread:           by host
+---

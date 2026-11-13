@@ -214,6 +214,15 @@ var pluginHardening = []string{
 	"UMask=0077", "Restart=always", "RestartSec=2",
 }
 
+// PluginUnitName is a side's unit: each side its own, so a control plane that is also a worker can
+// run both (they share the program, its credentials and its config).
+func PluginUnitName(name, side string) string {
+	if side == "node" {
+		return "kevaso-plugin-" + name + "-node.service"
+	}
+	return "kevaso-plugin-" + name + ".service"
+}
+
 func (o PluginOptions) side() string {
 	if o.Side == "" {
 		return "controller"
@@ -407,7 +416,7 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 			return err
 		}
 	}
-	unit := name + ".service"
+	unit := PluginUnitName(o.Name, o.side())
 	if err := conn.InstallUnit(ctx, unit, []byte(PluginUnit(o))); err != nil {
 		return err
 	}
@@ -429,12 +438,22 @@ func pluginRemove(ctx context.Context, o PluginOptions, stdin io.Reader, out io.
 		return err
 	}
 	defer func() { _ = conn.Close() }()
-	name := "kevaso-plugin-" + o.Name
-	unit := sshboot.Quote(name + ".service")
-	if _, err := conn.Run(ctx, "systemctl disable --now "+unit+" 2>/dev/null; rm -f /etc/systemd/system/"+unit+
-		" "+sshboot.InstallDir+"/"+name+"; rm -rf "+sshboot.Quote(pluginEtc(o.Name))+"; systemctl daemon-reload", nil); err != nil {
+	if _, err := conn.Run(ctx, PluginRemoveScript(o.Name, o.side()), nil); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(out, "→ plugin %s removed (unit, program, credentials)\n", o.Name)
+	_, _ = fmt.Fprintf(out, "→ plugin %s's %s side removed (its unit; the program and credentials once no side is left)\n", o.Name, o.side())
 	return nil
+}
+
+// PluginRemoveScript removes one side's unit, and the program, credentials and config the sides
+// share once the other side isn't installed either.
+func PluginRemoveScript(name, side string) string {
+	other := "node"
+	if side == "node" {
+		other = "controller"
+	}
+	unit := sshboot.Quote(PluginUnitName(name, side))
+	return "systemctl disable --now " + unit + " 2>/dev/null; rm -f /etc/systemd/system/" + unit + "; systemctl daemon-reload; " +
+		"if [ ! -e /etc/systemd/system/" + sshboot.Quote(PluginUnitName(name, other)) + " ]; then rm -f " +
+		sshboot.InstallDir + "/" + sshboot.Quote("kevaso-plugin-"+name) + "; rm -rf " + sshboot.Quote(pluginEtc(name)) + "; fi"
 }

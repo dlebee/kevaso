@@ -308,17 +308,20 @@ spec:
 
 	// Tiers 3 and 4: the local endpoint (curl, nothing of Kevaso's in the silo) and a file the host wrote.
 	// ep prints the body, then the status.
-	ep := func(silo, path, extra string) string {
-		return in(silo, "curl -sS --max-time 10 -w ' %{http_code}' -H 'Kevaso-Local: 1' "+extra+" 'http://169.254.42.1"+path+"' 2>&1")
+	// ep asks the local endpoint with exactly these headers.
+	ep := func(silo, path, headers string) string {
+		return in(silo, "curl -sS --max-time 10 -w ' %{http_code}' "+headers+" 'http://169.254.42.1"+path+"' 2>&1")
 	}
-	expect("broker: db-password", ep("agent", "/v1/secrets/db-password", ""), dbPassword+" 200")
+	const local = "-H 'Kevaso-Local: 1'"
+	expect("broker: db-password", ep("agent", "/v1/secrets/db-password", local), dbPassword+" 200")
 	expect("file delivery in tmpfs", in("agent", "cat /run/secrets/tls.pem; echo; stat -c '%a %U' /run/secrets/tls.pem; df --output=fstype /run/secrets | tail -1"), tlsValue+"\n400 root\ntmpfs")
-	expect("broker: an inject-only key", ep("agent", "/v1/secrets/api-key", ""), "no secret")
-	expect("broker: the signing key itself", ep("agent", "/v1/secrets/validator-key", ""), "no secret")
-	expect("broker: a file secret isn't the endpoint's", ep("agent", "/v1/secrets/tls-key", ""), " 404")
-	expect("broker: no header, nothing", ep("agent", "/v1/secrets/db-password", "-H 'Kevaso-Local:'"), " 403")
-	expect("broker: a browser's request, nothing", ep("agent", "/v1/secrets/db-password", "-H 'Origin: http://evil.example'"), " 403")
-	if got := ep("plain", "/v1/secrets/db-password", ""); strings.Contains(got, dbPassword) || strings.Contains(got, " 200") {
+	expect("broker: an inject-only key", ep("agent", "/v1/secrets/api-key", local), "no secret")
+	expect("broker: the signing key itself", ep("agent", "/v1/secrets/validator-key", local), "no secret")
+	expect("broker: a file secret isn't the endpoint's", ep("agent", "/v1/secrets/tls-key", local), " 404")
+	// No header at all (a second -H 'Kevaso-Local:' wouldn't take the first one away: curl sends the first).
+	expect("broker: no header, nothing", ep("agent", "/v1/secrets/db-password", ""), " 403")
+	expect("broker: a browser's request, nothing", ep("agent", "/v1/secrets/db-password", local+" -H 'Origin: http://evil.example'"), " 403")
+	if got := ep("plain", "/v1/secrets/db-password", local); strings.Contains(got, dbPassword) || strings.Contains(got, " 200") {
 		t.Errorf("a silo whose grants need no endpoint reached it: %q", got)
 	} else {
 		t.Logf("a silo whose grants need no endpoint has none: %s", firstLine(got))

@@ -1,0 +1,13 @@
+NAMESPACE   NAME          VERSIONS   DISK                                                                     AGE
+payments    payments-os   v1         https://images.example.com/payments-os-v1.qcow2 (sha256 4b2d8f0e9a7c…)   -
+
+NAMESPACE   NAME          VERSIONS   DISK                                                                     AGE
+payments    payments-os   v1         https://images.example.com/payments-os-v1.qcow2 (sha256 4b2d8f0e9a7c…)   -
+
+Name:       payments-os
+Namespace:  payments
+Labels:     -
+Versions:
+  NAME  DISK
+  v1    https://images.example.com/payments-os-v1.qcow2 (sha256 4b2d8f0e9a7c…)
+---

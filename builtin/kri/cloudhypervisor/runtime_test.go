@@ -13,12 +13,14 @@ import (
 	"net/netip"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"go.yaml.in/yaml/v3"
 	"golang.org/x/crypto/ssh"
 
 	"kevaso.com/core/sdk/kri"
@@ -157,6 +159,24 @@ func TestRenderedFiles(t *testing.T) {
 		if !strings.Contains(ud, want) {
 			t.Errorf("user-data missing %q:\n%s", want, ud)
 		}
+	}
+	// A disk that moved here kept the old host's exec key until cloud-init's final stage (seen on
+	// Lima: two keys in authorized_keys once the silo was Running on the new host). bootcmd
+	// replaces them first, at every boot, before ssh.
+	if b := strings.Index(ud, "bootcmd:"); b < 0 {
+		t.Errorf("no bootcmd replacing the exec key:\n%s", ud)
+	} else if !strings.Contains(ud[b:], `printf '%s\\n' 'ssh-ed25519 AAAA exec' > /root/.ssh/authorized_keys.new`) {
+		t.Errorf("bootcmd:\n%s", ud[b:])
+	}
+	var parsed struct {
+		Bootcmd [][]string `yaml:"bootcmd"`
+	}
+	if err := yaml.Unmarshal([]byte(ud), &parsed); err != nil || len(parsed.Bootcmd) != 1 ||
+		!slices.Equal(parsed.Bootcmd[0], []string{"sh", "-c", BootKeysScript("ssh-ed25519 AAAA exec")}) {
+		t.Errorf("user-data's bootcmd: %v %q", err, parsed.Bootcmd)
+	}
+	if !strings.Contains(BootKeysScript("k"), "mv -f /root/.ssh/authorized_keys.new /root/.ssh/authorized_keys") {
+		t.Error(BootKeysScript("k"))
 	}
 	// No user with sudo: exec command lines must not reach sudo's log or SUDO_COMMAND.
 	if strings.Contains(ud, "sudo") || strings.Contains(ud, "NOPASSWD") {

@@ -77,9 +77,18 @@ func TestMountClassFollowsTheSilo(t *testing.T) {
 		if err := admin.Create(ctx, h); err != nil {
 			t.Fatal(err)
 		}
-		heartbeat(name, h)
-		if err := admin.UpdateStatus(ctx, h); err != nil {
-			t.Fatal(err)
+		for i := 0; ; i++ { // the host controller writes a new host's status too (its mesh index)
+			heartbeat(name, h)
+			err := admin.UpdateStatus(ctx, h)
+			if err == nil {
+				break
+			}
+			if !client.IsConflict(err) || i > 20 {
+				t.Fatal(err)
+			}
+			if err := admin.Get(ctx, "Host", "", name, h); err != nil {
+				t.Fatal(err)
+			}
 		}
 		rt := fake.New()
 		runtimes[name] = rt

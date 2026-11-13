@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
 	"kevaso.com/core/api/client"
@@ -37,6 +38,12 @@ type Controller struct {
 	Hosts    *informer.Informer
 	Plugins  *plugins.Registry // nil: only ip-pool
 	Clock    clock.Clock
+
+	// ip-pool addresses are handed out one at a time, and each is "assumed" (like the silo
+	// controller's placements) until the informer shows it: otherwise the next IP, decided before
+	// the watch brings the last one's address, would be given the same address.
+	pool    sync.Mutex
+	assumed map[string]v1.IPStatus // by NAMESPACE/NAME
 }
 
 // Name implements engine.Controller.
@@ -96,6 +103,10 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		return engine.Result{}, nil
 	}
 	x := o.(*v1.IP)
+	if x.Spec.Class == v1.LBIPPool {
+		c.pool.Lock()
+		defer c.pool.Unlock()
+	}
 	silos, svcs := c.lists(x.Namespace)
 	excl := exclusive(c.Plugins, x.Spec.Class)
 	claims := ips.Claims(x, excl, silos, svcs)
@@ -148,8 +159,42 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		if err := c.Client.UpdateStatus(ctx, x); err != nil {
 			return engine.Result{}, err
 		}
+		if x.Spec.Class == v1.LBIPPool && st.Address != "" {
+			if c.assumed == nil {
+				c.assumed = map[string]v1.IPStatus{}
+			}
+			c.assumed[x.Namespace+"/"+x.Name] = st
+		}
 	}
 	return engine.Result{RequeueAfter: again}, nil
+}
+
+// poolIPs are the IPs as the informer has them, with the addresses this controller handed out and
+// the informer hasn't shown yet (called with c.pool held).
+func (c *Controller) poolIPs() []*v1.IP {
+	var all []*v1.IP
+	seen := map[string]bool{}
+	for _, o := range c.IPs.List() {
+		x := o.(*v1.IP)
+		key := x.Namespace + "/" + x.Name
+		seen[key] = true
+		if st, ok := c.assumed[key]; ok {
+			if x.Status.Address == st.Address {
+				delete(c.assumed, key) // the informer caught up
+			} else {
+				y := *x
+				y.Status = st
+				x = &y
+			}
+		}
+		all = append(all, x)
+	}
+	for key := range c.assumed {
+		if !seen[key] {
+			delete(c.assumed, key) // gone
+		}
+	}
+	return all
 }
 
 // reserve gives x its address if it has none yet, into st, with the Reserved condition.
@@ -178,11 +223,7 @@ func (c *Controller) reserve(ctx context.Context, x *v1.IP, st *v1.IPStatus, d i
 		for _, o := range c.Hosts.List() {
 			hosts = append(hosts, o.(*v1.Host))
 		}
-		var all []*v1.IP
-		for _, o := range c.IPs.List() {
-			all = append(all, o.(*v1.IP))
-		}
-		h, addr, err := ips.Allocate(x, hosts, all, placed)
+		h, addr, err := ips.Allocate(x, hosts, c.poolIPs(), placed)
 		if err != nil {
 			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "NoAddress", err.Error()
 			return time.Minute

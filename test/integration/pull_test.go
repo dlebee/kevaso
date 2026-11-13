@@ -45,8 +45,17 @@ func (h *pullHost) Run(_ context.Context, c hostexec.Cmd) (int, error) {
 	switch {
 	case len(a) > 0 && a[len(a)-2] != "inspect" && strings.Contains(strings.Join(a, " "), "pull --quiet"):
 		seen := pullSeen{args: c.Name + " " + strings.Join(a, " ")}
+		dir := "" // this pull's own auth file: --config DIR or --authfile FILE (others may be in flight)
+		for i := 0; i+1 < len(a); i++ {
+			switch a[i] {
+			case "--config":
+				dir = a[i+1] + "/"
+			case "--authfile":
+				dir = a[i+1]
+			}
+		}
 		for p, b := range h.files {
-			if strings.HasPrefix(p, container.PullDir+"/") {
+			if dir != "" && strings.HasPrefix(p, dir) {
 				var cfg struct {
 					Auths map[string]struct{ Auth string } `json:"auths"`
 				}

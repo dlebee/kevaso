@@ -119,6 +119,10 @@ type Host struct {
 const meshHosts = "{ 10.62.0.0/16, 10.63.0.0/16 }"
 const silosAll = "10.64.0.0/16"
 
+// MeshDevices are the mesh's interfaces (internal/mesh's Outer and Inner): the only way a silo on
+// another host reaches this one.
+var MeshDevices = []string{"kevaso0", "kevaso1"}
+
 // servicesAll is where Services' virtual IPs are (v1.ServiceCIDR).
 const servicesAll = "10.65.0.0/16"
 
@@ -365,6 +369,9 @@ func Rules(h Host) string {
 	w("  chain forward {")
 	w("    type filter hook forward priority filter; policy accept;")
 	w("    iifname %q ip daddr %s drop", h.Bridge, meshHosts)
+	// A silo's address comes from the bridge (this host's silos) or the mesh (the others'), never
+	// from the uplink: allowFrom trusts the source address, so a spoofed one stops here.
+	w("    oifname %q ip saddr %s iifname != { %q, %q, %q } drop", h.Bridge, silosAll, h.Bridge, MeshDevices[0], MeshDevices[1])
 	for _, r := range cut {
 		w("    %s", r)
 	}

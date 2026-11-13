@@ -1,0 +1,18 @@
+NAMESPACE   NAME   TYPE           CLUSTER IP   LOAD-BALANCER IP   PORTS      ENDPOINTS   AGE
+web3        rpc    LoadBalancer   -            -                  8545/TCP   0           -
+
+NAMESPACE   NAME   TYPE           CLUSTER IP   LOAD-BALANCER IP   PORTS      ENDPOINTS   AGE
+web3        rpc    LoadBalancer   -            -                  8545/TCP   0           -
+
+Name:              rpc
+Namespace:         web3
+Labels:            -
+Type:              LoadBalancer (linode-nodebalancer)
+Selector:          app=rpc
+Name:              -
+Cluster IP:        -
+Load-balancer IP:  -
+Ports:             rpc 8545/TCP → each silo's port rpc
+Route when:        ready
+Endpoints:         0 routed, 0 held
+---

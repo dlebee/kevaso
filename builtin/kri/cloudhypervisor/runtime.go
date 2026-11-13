@@ -277,7 +277,7 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 	return nil
 }
 
-// waitFor waits for a virtiofsd's socket (it's up once it's there).
+// waitFor waits for a share's socket (systemd made it once it's there).
 func (r *Runtime) waitFor(ctx context.Context, socket string) error {
 	for deadline := time.Now().Add(10 * time.Second); ; {
 		if m, _ := r.Host.Glob(socket); len(m) > 0 {
@@ -347,6 +347,7 @@ func (r *Runtime) deleteLocked(ctx context.Context, id kri.ID) error {
 	}
 	_ = r.Host.RemoveAll("/etc/systemd/system/" + n.Unit)
 	for _, s := range l.Shares {
+		_ = r.Host.RemoveAll("/etc/systemd/system/" + s.SocketUnit)
 		_ = r.Host.RemoveAll("/etc/systemd/system/" + s.Unit)
 	}
 	_, _ = r.Host.Run(ctx, "systemctl", "daemon-reload")
@@ -402,12 +403,15 @@ func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, s
 }
 
 // RootFilePlan makes a root disk image file from an image: written next to it, grown to the disk's
-// size (never shrunk), then put in place, so a half-written image is never booted.
+// size (never shrunk), made the VMM's alone (qemu-img leaves it world-readable: the whole disk),
+// then put in place, so a half-written image is never booted.
 func RootFilePlan(img, tmp, file string, size int64) [][]string {
 	return [][]string{
 		{"rm", "-f", tmp},
 		{"qemu-img", "convert", "-O", "raw", img, tmp},
 		{"qemu-img", "resize", "-f", "raw", tmp, strconv.FormatInt(size, 10)},
+		{"chown", VMMUser + ":" + VMMUser, tmp},
+		{"chmod", "0600", tmp},
 		{"mv", "-f", tmp, file},
 	}
 }

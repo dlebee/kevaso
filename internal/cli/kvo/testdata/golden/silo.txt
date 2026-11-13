@@ -1,0 +1,157 @@
+NAMESPACE   NAME         RUNTIME            PHASE      READY               HOST   AGE
+demo        hello        cloud-hypervisor   -          -                   -      -
+demo        hello        cloud-hypervisor   Starting   no (Initializing)   hv1    <age>
+payments    api          docker             -          -                   -      -
+payments    ledger       cloud-hypervisor   -          -                   -      -
+web3        eth-node-a   cloud-hypervisor   -          -                   -      -
+web3        eth-node-b   cloud-hypervisor   -          -                   -      -
+
+NAMESPACE   NAME         RUNTIME            PHASE      READY               HOST   MOVABLE   AGE
+demo        hello        cloud-hypervisor   -          -                   -      -         -
+demo        hello        cloud-hypervisor   Starting   no (Initializing)   hv1    -         <age>
+payments    api          docker             -          -                   -      -         -
+payments    ledger       cloud-hypervisor   -          -                   -      -         -
+web3        eth-node-a   cloud-hypervisor   -          -                   -      -         -
+web3        eth-node-b   cloud-hypervisor   -          -                   -      -         -
+
+Name:       hello
+Namespace:  demo
+Labels:     -
+Runtime:    cloud-hypervisor
+VM image:   ubuntu-24.04
+Resources:  1 CPU, 1Gi memory
+Disk:       10Gi
+Phase:      -
+Host:       -
+Movable:    - (onHostLoss: Wait)
+Silo IP:    -
+Service:    none: no name, nothing reachable (a silo IP for its own traffic only)
+Grants:     -
+Assurance:  host (kevasod on its host vouches for it; no vTPM or confidential VM)
+Init steps:
+  NAME     STATE    EXIT  DURATION
+  hello    Pending  -     -
+  python   Pending  -     -
+  gateway  Pending  -     -
+---
+Name:        hello
+Namespace:   demo
+Labels:      a=1, b=2
+Created:     YYYY-MM-DD hh:mm:ss (<age> ago)
+Runtime:     cloud-hypervisor
+VM image:    ubuntu-24.04
+Resources:   1 CPU, 1Gi memory
+Disk:        10Gi
+Phase:       Starting
+Host:        hv1
+Movable:     - (onHostLoss: Wait)
+Silo IP:     10.64.2.7
+Service:     api
+Egress IP:   -
+In and out:  no outside address in or out
+Grants:      -
+Assurance:   host (kevasod on its host vouches for it; no vTPM or confidential VM)
+Ports:
+  PORT       NUMBER    SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP         LOAD BALANCER  ALLOW FROM  SOURCES
+  http       8080/TCP  (when running) (no silo allowed)  -            (when placed) :443  -              -           192.0.2.0/24
+  metrics    9090/TCP  (when running)                    -            -                   -              prom        -
+Route when:  running (not stated: the silo has no readiness probe)
+Traffic:
+  PORT          TRAFFIC
+  http 8080     held since <age> (not running (Starting))
+  metrics 9090  held since <age> (not running (Starting))
+Init steps:
+  NAME   STATE    EXIT  DURATION
+  one    Done     0     <age>
+  two    Running  -     -
+  three  Pending  -     -
+Conditions:
+  TYPE   STATUS  REASON        SINCE  MESSAGE
+  Ready  False   Initializing  <age>     init step two
+---
+Name:             api
+Namespace:        payments
+Labels:           -
+Runtime:          docker
+Container image:  ghcr.io/acme/api:v12
+Pinned:           no: tag v12 is mutable (it can move to another image); pin it by digest, ghcr.io/acme/api@sha256:…
+Pull secret:      ghcr-pull
+Resources:        1 CPU, 1Gi memory
+Disk:             -
+Phase:            -
+Host:             -
+Movable:          - (onHostLoss: Wait)
+Silo IP:          -
+Service:          none: no name, nothing reachable (a silo IP for its own traffic only)
+Grants:           -
+Assurance:        host (kevasod on its host vouches for it; no vTPM or confidential VM)
+---
+Name:       ledger
+Namespace:  payments
+Labels:     -
+Runtime:    cloud-hypervisor
+VM image:   payments-os:v1
+Resources:  2 CPU, 4Gi memory
+Disk:       20Gi
+Phase:      -
+Host:       -
+Movable:    - (onHostLoss: Wait)
+Silo IP:    -
+Service:    none: no name, nothing reachable (a silo IP for its own traffic only)
+Grants:     -
+Assurance:  host (kevasod on its host vouches for it; no vTPM or confidential VM)
+---
+Name:           eth-node-a
+Namespace:      web3
+Labels:         -
+Runtime:        cloud-hypervisor
+VM image:       ubuntu-24.04
+Resources:      2 CPU, 4Gi memory
+Disk:           100Gi
+Phase:          -
+Host:           -
+Movable:        - (onHostLoss: Wait)
+Silo IP:        -
+Service:        eth-node-a
+Load balancer:  ip-pool
+Egress IP:      - (sameAsService)
+In and out:     no outside address in or out
+Grants:         -
+Assurance:      host (kevasod on its host vouches for it; no vTPM or confidential VM)
+Ports:
+  PORT       NUMBER     SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER         ALLOW FROM  SOURCES
+  p2p        30303/TCP  (when running) (no silo allowed)  -            -            (when placed) :30303  -           -
+  disc       30303/UDP  (when running) (no silo allowed)  -            -            (when placed) :30303  -           -
+Route when:  running (not stated: the silo has no readiness probe)
+Traffic:
+  PORT        TRAFFIC
+  p2p 30303   held (not running)
+  disc 30303  held (not running)
+---
+Name:           eth-node-b
+Namespace:      web3
+Labels:         -
+Runtime:        cloud-hypervisor
+VM image:       ubuntu-24.04
+Resources:      2 CPU, 4Gi memory
+Disk:           100Gi
+Phase:          -
+Host:           -
+Movable:        - (onHostLoss: Wait)
+Silo IP:        -
+Service:        eth-node-b
+Load balancer:  ip-pool
+Egress IP:      - (sameAsService)
+In and out:     no outside address in or out
+Grants:         -
+Assurance:      host (kevasod on its host vouches for it; no vTPM or confidential VM)
+Ports:
+  PORT       NUMBER     SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER         ALLOW FROM  SOURCES
+  p2p        30303/TCP  (when running) (no silo allowed)  -            -            (when placed) :30303  -           -
+  disc       30303/UDP  (when running) (no silo allowed)  -            -            (when placed) :30303  -           -
+Route when:  running (not stated: the silo has no readiness probe)
+Traffic:
+  PORT        TRAFFIC
+  p2p 30303   held (not running)
+  disc 30303  held (not running)
+---
