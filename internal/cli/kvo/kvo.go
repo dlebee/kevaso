@@ -144,7 +144,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.secret.labels = append(o.secret.labels, v)
 		case "--reveal":
 			o.secret.reveal = true
-		case "--instances":
+		case "--instances", "--replicas":
 			var v string
 			if v, err = val(); err == nil {
 				o.sets.instances, err = strconv.Atoi(v)

@@ -123,6 +123,8 @@ func (s *Server) parseDefined(ctx context.Context, path string) (target, error) 
 	switch {
 	case len(parts) == 3 && parts[2] == "status" && dk.res.Status:
 		t.status = true
+	case len(parts) == 3 && parts[2] == "scale" && dk.res.Scale:
+		t.scale = true
 	case len(parts) > 2:
 		return t, errf(http.StatusNotFound, "NotFound", "unknown path %q", path)
 	}
@@ -164,6 +166,8 @@ func (s *Server) routeDefined(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case t.scale:
+		s.serveScale(ctx, w, r, t)
 	case r.Method == http.MethodGet && t.name == "" && r.URL.Query().Get("watch") == "true":
 		s.watch(ctx, w, r, t)
 	case r.Method == http.MethodGet && t.name == "":
@@ -464,13 +468,15 @@ func (s *Server) admitDefined(ctx context.Context, t target, old, u *v1.Unstruct
 		return nil, err
 	}
 	full := v.(map[string]any)
-	fields := map[string]any{}
-	for k, v := range full {
-		if k != "apiVersion" && k != "kind" && k != "metadata" {
-			fields[k] = v
+	fields := withoutTypeAndMeta(full)
+	var oldFields, oldFull map[string]any
+	if old != nil {
+		if oldFull, err = plainOf(old); err != nil {
+			return nil, err
 		}
+		oldFields = withoutTypeAndMeta(oldFull)
 	}
-	failed := t.def.schema.Validate(fields, full, t.part())
+	failed := t.def.schema.ValidateUpdate(fields, full, oldFields, oldFull, t.part())
 	if !t.status && len(failed) == 0 {
 		pf, err := s.validatePolicies(ctx, t, old, full, t.def.res.Kind)
 		if err != nil {

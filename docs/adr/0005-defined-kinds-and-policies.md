@@ -47,6 +47,13 @@ defined. The product built on Kevaso (its `Session` and `Task` kinds, §10) is t
    node). The root lists the object's top-level fields other than `apiVersion`, `kind` and
    `metadata`. Anything else in a schema is refused when the definition is written, and so is a
    CEL rule that doesn't compile.
+8a. **Transition rules.** A rule in `x-kevaso-validations` may use `oldSelf`, the node's value in
+    the stored object, as in Kubernetes: `self == oldSelf` (immutable), `self >= oldSelf` (only
+    grows). A rule that compiles only with `oldSelf` is a transition rule; it's checked on updates,
+    and skipped on creates and when the old object didn't have the node (so a field can be set
+    for the first time). Object properties and a map's values keep their old values by name and
+    key; a list's items have none, so a transition rule inside `items` is refused when the
+    definition is written (put it on the list).
 9. **Writes, in order:** decode (metadata strictly) → system metadata (uid, timestamps, generation)
    → schema defaults → mutation policies → schema and CEL rules → validation policies → store.
    `generation` moves when anything outside `metadata` and `status` changes.
@@ -76,6 +83,14 @@ defined. The product built on Kevaso (its `Session` and `Task` kinds, §10) is t
 13. **Built-in roles don't reach defined kinds**, except cluster-admin's `*`: an operator grants
     them explicitly (a plugin's controller gets a role on its own resources).
 
+10b. **The scale subresource.** `subresources.scale` names `specReplicasPath` (under `.spec`) and
+     optionally `statusReplicasPath` (under `.status`), dotted paths to integers in the schema,
+     checked when the definition is written. `GET …/NAME/scale` answers a `Scale`
+     (`kevaso/v1`, `spec.replicas`, `status.replicas`, the object's resourceVersion); `PUT` sets the
+     wanted count as an update of the main resource, so defaults, mutation policies, the schema
+     (its bounds), rules and validation policies all apply and generation moves. Without a
+     resourceVersion it scales what's stored now. RBAC calls it `PLURAL.GROUP/scale` (`get`,
+     `update`); `GET /apis` says `scale: true`, and `kvo scale KIND NAME --replicas N` uses it.
 10a. **Dry runs.** A create or update with `?dryRun=All` goes through every step above, including
      the resourceVersion check, and answers with the object it would store, storing nothing.
      `kvo apply` dry-runs an update and compares that answer with what's stored (every top-level
@@ -107,6 +122,6 @@ defined. The product built on Kevaso (its `Session` and `Task` kinds, §10) is t
 
 ## Left for later
 
-Plugin-installed definitions (`kvoadm plugin install`, owner references, forced uninstall), the
-scale subresource, transition rules (`oldSelf`) in schemas, server-side apply's field managers for
-defined kinds, more than one served version and conversion, and policy parameters.
+Server-side apply's field managers for defined kinds, more than one served version and
+conversion, policy parameters, a label selector in `Scale` (for autoscalers), and transition rules
+on list items (lists keyed by a field, Kubernetes' `listType: map`).

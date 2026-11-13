@@ -37,13 +37,22 @@ type node struct {
 
 type rule struct {
 	v1.ValidationRule
-	prg cel.Program
+	prg        cel.Program
+	transition bool // uses oldSelf: checked only on updates, against the node's old value
 }
 
 var types = []string{"object", "array", "string", "integer", "number", "boolean"}
 
 // Env is the CEL environment of schema rules: `self` is the node the rule is on.
 func Env() (*cel.Env, error) { return cel.NewEnv(cel.Variable("self", cel.DynType)) }
+
+// TransitionEnv adds `oldSelf`, the node's value before an update: a rule that uses it is a
+// transition rule (ADR 0005 §8a).
+func TransitionEnv() (*cel.Env, error) {
+	return cel.NewEnv(cel.Variable("self", cel.DynType), cel.Variable("oldSelf", cel.DynType))
+}
+
+type envs struct{ plain, transition *cel.Env }
 
 // Compile checks a schema and compiles its rules. The root must be an object.
 func Compile(s v1.JSONSchema) (*Schema, error) {
@@ -55,11 +64,15 @@ func Compile(s v1.JSONSchema) (*Schema, error) {
 			return nil, fmt.Errorf("schema: %s isn't the schema's to describe (every object has it)", f)
 		}
 	}
-	env, err := Env()
+	plain, err := Env()
 	if err != nil {
 		return nil, err
 	}
-	n, err := compile(env, s, "")
+	trans, err := TransitionEnv()
+	if err != nil {
+		return nil, err
+	}
+	n, err := compile(envs{plain, trans}, s, "")
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +86,7 @@ func at(path string) string {
 	return "schema " + path
 }
 
-func compile(env *cel.Env, s v1.JSONSchema, path string) (*node, error) {
+func compile(env envs, s v1.JSONSchema, path string) (*node, error) {
 	n := &node{s: s}
 	switch {
 	case s.Type == "" && !s.PreserveUnknown:
@@ -136,20 +149,29 @@ func compile(env *cel.Env, s v1.JSONSchema, path string) (*node, error) {
 		}
 	}
 	for i, r := range s.Validations {
-		prg, err := CompileRule(env, r.Rule)
+		prg, err := CompileRule(env.plain, r.Rule)
+		transition := false
+		if err != nil { // a rule that compiles only with oldSelf is a transition rule
+			if tprg, terr := CompileRule(env.transition, r.Rule); terr == nil {
+				prg, err, transition = tprg, nil, true
+			}
+		}
 		if err != nil {
 			return nil, fmt.Errorf("%s: x-kevaso-validations[%d]: %v", at(path), i, err)
 		}
-		n.rules = append(n.rules, rule{ValidationRule: r, prg: prg})
+		if transition && strings.Contains(path, "[]") {
+			return nil, fmt.Errorf("%s: x-kevaso-validations[%d]: oldSelf can't be used inside a list's items (an item has no old value to compare with): put the rule on the list", at(path), i)
+		}
+		n.rules = append(n.rules, rule{ValidationRule: r, prg: prg, transition: transition})
 	}
 	// enum values and the default must themselves be valid here (rules aside: they may need more).
 	for i, e := range s.Enum {
-		if errs := n.check(normalize(e), path, false); len(errs) > 0 {
+		if errs := n.check(normalize(e), absent, path, false); len(errs) > 0 {
 			return nil, fmt.Errorf("%s: enum[%d]: %s", at(path), i, errs[0])
 		}
 	}
 	if s.Default != nil {
-		if errs := n.check(normalize(s.Default), path, false); len(errs) > 0 {
+		if errs := n.check(normalize(s.Default), absent, path, false); len(errs) > 0 {
 			return nil, fmt.Errorf("%s: default: %s", at(path), errs[0])
 		}
 	}
@@ -251,11 +273,39 @@ func (n *node) defaults(v any) {
 	}
 }
 
-// Validate checks an object: fields are its top-level fields other than apiVersion, kind and
-// metadata; full is the whole object, what root rules see as self. It returns every problem.
+// old is a node's value before an update, for transition rules (oldSelf); absent when there is
+// none (a create, or a field the old object didn't have), and then they're skipped.
+type old struct {
+	v  any
+	ok bool
+}
+
+var absent = old{}
+
+func (o old) field(name string) old {
+	if m, isMap := o.v.(map[string]any); o.ok && isMap {
+		v, ok := m[name]
+		return old{v, ok}
+	}
+	return absent
+}
+
+// Validate checks an object being created: fields are its top-level fields other than apiVersion,
+// kind and metadata; full is the whole object, what root rules see as self. It returns every
+// problem.
 func (s *Schema) Validate(fields, full map[string]any, part Part) []string {
+	return s.ValidateUpdate(fields, full, nil, nil, part)
+}
+
+// ValidateUpdate is Validate for an update, with the stored object's fields and whole object
+// (nil on a create): transition rules compare each node with its old value.
+func (s *Schema) ValidateUpdate(fields, full, oldFields, oldFull map[string]any, part Part) []string {
 	var errs []string
 	r := s.root
+	prev, prevFull := absent, absent
+	if oldFields != nil {
+		prev, prevFull = old{oldFields, true}, old{oldFull, true}
+	}
 	for _, name := range slices.Sorted(maps.Keys(fields)) {
 		if !covers(part, name) {
 			continue
@@ -263,7 +313,7 @@ func (s *Schema) Validate(fields, full map[string]any, part Part) []string {
 		c, ok := r.props[name]
 		switch {
 		case ok:
-			errs = append(errs, c.check(fields[name], name, true)...)
+			errs = append(errs, c.check(fields[name], prev.field(name), name, true)...)
 		case !r.s.PreserveUnknown:
 			errs = append(errs, fmt.Sprintf("%s: unknown field", name))
 		}
@@ -274,14 +324,21 @@ func (s *Schema) Validate(fields, full map[string]any, part Part) []string {
 		}
 	}
 	if part != Status && len(errs) == 0 {
-		errs = append(errs, evalRules(r.rules, full, "")...)
+		errs = append(errs, evalRules(r.rules, full, prevFull, "")...)
 	}
 	return errs
 }
 
-func evalRules(rules []rule, self any, path string) []string {
+func evalRules(rules []rule, self any, prev old, path string) []string {
 	var errs []string
 	for _, r := range rules {
+		vars := map[string]any{"self": self}
+		if r.transition {
+			if !prev.ok {
+				continue // nothing to compare with: a create, or a field that's new
+			}
+			vars["oldSelf"] = prev.v
+		}
 		msg := r.Message
 		if msg == "" {
 			msg = "failed rule: " + r.Rule
@@ -289,7 +346,7 @@ func evalRules(rules []rule, self any, path string) []string {
 		if path != "" {
 			msg = path + ": " + msg
 		}
-		out, _, err := r.prg.Eval(map[string]any{"self": self})
+		out, _, err := r.prg.Eval(vars)
 		if err != nil {
 			// A rule that can't evaluate counts as failed, so a malformed object never slips through.
 			errs = append(errs, fmt.Sprintf("%s (%v)", msg, err))
@@ -302,7 +359,7 @@ func evalRules(rules []rule, self any, path string) []string {
 	return errs
 }
 
-func (n *node) check(v any, path string, withRules bool) []string {
+func (n *node) check(v any, prev old, path string, withRules bool) []string {
 	fail := func(format string, args ...any) []string {
 		return []string{path + ": " + fmt.Sprintf(format, args...)}
 	}
@@ -320,9 +377,9 @@ func (n *node) check(v any, path string, withRules bool) []string {
 			c, ok := n.props[k]
 			switch {
 			case ok:
-				errs = append(errs, c.check(m[k], join(path, k), withRules)...)
-			case n.addl != nil:
-				errs = append(errs, n.addl.check(m[k], path+"["+strconv.Quote(k)+"]", withRules)...)
+				errs = append(errs, c.check(m[k], prev.field(k), join(path, k), withRules)...)
+			case n.addl != nil: // a map's values keep their old ones by key
+				errs = append(errs, n.addl.check(m[k], prev.field(k), path+"["+strconv.Quote(k)+"]", withRules)...)
 			case !n.s.PreserveUnknown:
 				errs = append(errs, fmt.Sprintf("%s: unknown field", join(path, k)))
 			}
@@ -344,7 +401,7 @@ func (n *node) check(v any, path string, withRules bool) []string {
 			errs = append(errs, fmt.Sprintf("%s: at most %d items", path, *n.s.MaxItems))
 		}
 		for i, e := range l {
-			errs = append(errs, n.items.check(e, fmt.Sprintf("%s[%d]", path, i), withRules)...)
+			errs = append(errs, n.items.check(e, absent, fmt.Sprintf("%s[%d]", path, i), withRules)...)
 		}
 	case "string":
 		s, ok := v.(string)
@@ -389,7 +446,7 @@ func (n *node) check(v any, path string, withRules bool) []string {
 		errs = append(errs, fmt.Sprintf("%s: must be one of %s", path, enumList(n.s.Enum)))
 	}
 	if withRules && len(errs) == 0 {
-		errs = append(errs, evalRules(n.rules, v, path)...)
+		errs = append(errs, evalRules(n.rules, v, prev, path)...)
 	}
 	return errs
 }

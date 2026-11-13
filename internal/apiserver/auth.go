@@ -156,6 +156,9 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 	if t.status {
 		a.Resource = t.kind.Plural + "/status"
 	}
+	if t.scale {
+		a.Resource = t.kind.Plural + "/scale"
+	}
 	return a
 }
 

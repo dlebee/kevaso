@@ -150,7 +150,8 @@ type target struct {
 	bundle    bool   // a pane's /bundle
 	stream    string // a silo's /ssh or /files (silostreams.go)
 
-	def *definedKind // a kind defined by a KindDefinition (kinds.go); nil for built-ins
+	def   *definedKind // a kind defined by a KindDefinition (kinds.go); nil for built-ins
+	scale bool         // a defined kind's /scale (scale.go)
 }
 
 func parsePath(path string) (target, error) {
