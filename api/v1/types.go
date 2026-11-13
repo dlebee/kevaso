@@ -237,13 +237,15 @@ type Readiness struct {
 	Timeout string   `json:"timeout,omitempty"` // each run's limit (default 5s)
 }
 
-// Volume is a silo's extra storage.
+// Volume is a silo's extra storage. A volume is kept data, with no flag to say otherwise (design
+// §0.3): onHostLoss: Recreate (and kvo move --recreate) is refused while the silo has a host-local
+// volume, since a fresh copy elsewhere would leave it behind. Disposable data (a cache, scratch
+// space) lives on the silo's own disk instead; volumes on a class that travels follow the silo.
 type Volume struct {
 	Name      string `json:"name"`
 	Class     string `json:"class,omitempty"` // default: local
 	Size      string `json:"size,omitempty"`  // e.g. 10Gi (on container runtimes: not enforced yet)
 	MountPath string `json:"mountPath"`
-	Important bool   `json:"important,omitempty"` // never left behind by a Recreate
 }
 
 // Availability is the silo's answer to losing its host.

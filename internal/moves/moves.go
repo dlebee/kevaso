@@ -1,7 +1,9 @@
 // Package moves decides where a silo can go and how a move happens (design §0.3). Pure.
 //
 // Storage decides what's possible: a silo moves with its data only if every disk and volume it
-// keeps is on a class that can attach elsewhere (zone, region, global). The silo decides what's
+// keeps is on a class that can attach elsewhere (zone, region, global). A volume is always kept
+// data: a Recreate, which leaves the old host's local disks behind, is refused while the silo has
+// a host-local volume. The silo decides what's
 // wanted: onHostLoss (Wait, Recreate, Move) for when its host is lost, and `kvo move` for a person.
 // Either way two copies never run: a move from a live host waits for that host to stop the silo
 // and let go of its volumes (status.movingFrom); a move from a lost host waits for fencing, and a
@@ -14,6 +16,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/scheduler"
@@ -25,6 +28,9 @@ type Movability struct {
 	WithData bool   // every disk and volume it keeps can attach elsewhere
 	Scope    string // the narrowest topology among them: host | zone | region | global
 	Pinned   string // why it can't move with its data ("" when it can)
+	// Local are the host-local volumes (class local, or a plugin class bound to its host): a
+	// fresh copy elsewhere (Recreate) would leave them behind.
+	Local []string
 }
 
 // containerRuntime: the container's own files aren't kept (volumes are), so its root isn't data.
@@ -81,6 +87,9 @@ func Of(s *v1.Silo, classes map[string]scheduler.Class) Movability {
 	vols := append([]v1.Volume(nil), s.Spec.Volumes...)
 	sort.Slice(vols, func(i, j int) bool { return vols[i].Name < vols[j].Name })
 	for _, v := range vols {
+		if t, err := topologyOf(v.Class, classes); err == nil && t == kplugin.TopologyHost {
+			m.Local = append(m.Local, v.Name)
+		}
 		narrow("volume "+v.Name, v.Class)
 	}
 	return m
@@ -109,8 +118,8 @@ func Summary(s *v1.Silo, m Movability) string {
 	return "Pinned"
 }
 
-// CheckPolicy is admission's rule: Move needs every disk movable, and Recreate never leaves an
-// important volume behind.
+// CheckPolicy is admission's rule: Move needs every disk movable, and Recreate never leaves a
+// volume behind.
 func CheckPolicy(s *v1.Silo, m Movability) error {
 	switch s.Policy() {
 	case v1.OnHostLossMove:
@@ -118,11 +127,12 @@ func CheckPolicy(s *v1.Silo, m Movability) error {
 			return fmt.Errorf("onHostLoss: Move needs every disk and volume on a movable storage class: %s (use Wait, or Recreate if its image is enough)", m.Pinned)
 		}
 	case v1.OnHostLossRecreate:
-		for _, v := range s.Spec.Volumes {
-			t := v.Class
-			if v.Important && (t == "" || t == v1.VolumeLocal) {
-				return fmt.Errorf("onHostLoss: Recreate would leave important volume %s behind (it's local): use Wait, or put it on a movable class", v.Name)
+		if len(m.Local) > 0 {
+			what := "volume " + m.Local[0]
+			if len(m.Local) > 1 {
+				what = "volumes " + strings.Join(m.Local, ", ")
 			}
+			return fmt.Errorf("onHostLoss: Recreate would leave %s behind on its host (volumes are kept data): keep disposable data (a cache, scratch space) on the silo's own disk instead, put the volume on a class that travels (e.g. juicefs, linode-block), or use Wait", what)
 		}
 	}
 	return nil

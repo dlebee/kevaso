@@ -334,3 +334,62 @@ func TestReadiness(t *testing.T) {
 	mu.Unlock()
 	e.wait(t, "rpc", func(s *v1.Silo) bool { return meta.IsTrue(s.Status.Conditions, "Ready") })
 }
+
+// A volume is kept data (design §0.3). A host that finds the old copy of a silo now placed on
+// another host removes that copy, and with it (every runtime does, on Delete) its local volumes.
+// Admission never lets a silo with a host-local volume be recreated elsewhere, so that copy should
+// never hold one; if it does anyway (here: its status moved by hand), the host stops the copy and
+// keeps it, volumes and all, until the silo is deleted. A copy without local volumes goes as before.
+func TestOldCopyWithLocalVolumesIsKept(t *testing.T) {
+	e := setup(t)
+	mk := func(name string, vols []v1.Volume) *v1.Silo {
+		t.Helper()
+		s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev"},
+			Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 1, Memory: "1Gi"}, Volumes: vols}}
+		if err := e.c.Create(e.ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		s.Status.Host, s.Status.Phase = "hv1", "Scheduled"
+		if err := e.c.UpdateStatus(e.ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		return e.wait(t, name, func(s *v1.Silo) bool { return meta.IsTrue(s.Status.Conditions, "Ready") })
+	}
+	keep := mk("keep", []v1.Volume{{Name: "db", MountPath: "/var/lib/db"}})
+	plain := mk("plain", nil)
+	for _, s := range []*v1.Silo{keep, plain} {
+		s.Status.Host = "hv2" // recreated elsewhere, as the control plane would after losing hv1
+		if err := e.c.UpdateStatus(e.ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	has := func(name string) bool {
+		ids, _ := e.rt.List(e.ctx)
+		return slices.ContainsFunc(ids, func(id kri.ID) bool { return id.Name == name })
+	}
+	calls := func() []string { return slices.Clone(e.rt.Calls) }
+	until := func(what string, ok func() bool) {
+		t.Helper()
+		for !ok() {
+			select {
+			case <-e.ctx.Done():
+				t.Fatalf("%s: calls %v", what, calls())
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+	until("plain removed", func() bool { return !has("plain") })
+	until("keep stopped", func() bool { return slices.Contains(calls(), "stop dev/keep") })
+	time.Sleep(200 * time.Millisecond) // more reconciles: still kept
+	if !has("keep") || slices.Contains(calls(), "delete dev/keep") {
+		t.Fatalf("the copy with a local volume was removed: %v", calls())
+	}
+	if st, err := e.rt.Status(e.ctx, kri.ID{Namespace: "dev", Name: "keep", UID: keep.UID}); err != nil || st.State == kri.Running {
+		t.Fatalf("kept copy still running: %+v %v", st, err)
+	}
+	// Deleting the silo removes it, volumes too.
+	if err := e.c.Delete(e.ctx, "Silo", "dev", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	until("keep removed once deleted", func() bool { return !has("keep") })
+}

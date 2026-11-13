@@ -164,7 +164,7 @@ func DiskVolume(s *Silo) (Volume, bool) {
 	if s.Spec.Runtime != "cloud-hypervisor" || c == "" || c == VolumeLocal {
 		return Volume{}, false
 	}
-	return Volume{Name: RootDiskVolume, Class: c, Size: s.Spec.Disk.Size, Important: true}, true
+	return Volume{Name: RootDiskVolume, Class: c, Size: s.Spec.Disk.Size}, true
 }
 
 // IPPool is addresses routed to one host, for silos to have their own (design §7.2b).
