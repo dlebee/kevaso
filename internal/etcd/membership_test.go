@@ -234,3 +234,21 @@ func TestReconcileGrowAndShrink(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A system node's Host being deleted (kvoadm host remove, held by FinalizerMember) asks for no
+// member, so the member controller removes it before the Host goes.
+func TestDesiredMembersSkipsHostsBeingDeleted(t *testing.T) {
+	now := time.Now()
+	mk := func(name string, deleting bool) v1.Host {
+		h := v1.Host{ObjectMeta: meta.ObjectMeta{Name: name}, Spec: v1.HostSpec{Address: "203.0.113.1",
+			Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{}}}}
+		if deleting {
+			h.DeletionTimestamp, h.Finalizers = &now, []string{FinalizerMember}
+		}
+		return h
+	}
+	d := DesiredMembers([]v1.Host{mk("cp-1", false), mk("cp-2", true)})
+	if len(d) != 1 || d[0].Name != "cp-1" {
+		t.Fatalf("desired: %+v", d)
+	}
+}

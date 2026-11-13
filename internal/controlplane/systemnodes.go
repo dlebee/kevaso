@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -356,7 +357,38 @@ func memberRound(ctx context.Context, c *client.Client, cli *clientv3.Client, st
 		why = step.Reason
 	}
 	showMembers(ctx, c, hosts, ms, cfg.HostName, cfg)
+	releaseRemoved(ctx, c, hosts, ms, cfg)
 	return why
+}
+
+// releaseRemoved lets deleted system nodes' Hosts go once their store member is gone.
+func releaseRemoved(ctx context.Context, c *client.Client, hosts []v1.Host, ms []etcd.Member, cfg Config) {
+	member := map[string]bool{}
+	for _, m := range ms {
+		member[m.Name] = true
+	}
+	for _, h := range hosts {
+		if h.DeletionTimestamp == nil || member[h.Name] || !slices.Contains(h.Finalizers, etcd.FinalizerMember) {
+			continue
+		}
+		for attempt := 0; attempt < 3; attempt++ {
+			var fresh v1.Host
+			if err := c.Get(ctx, "Host", "", h.Name, &fresh); err != nil {
+				break
+			}
+			fresh.Finalizers = slices.DeleteFunc(fresh.Finalizers, func(f string) bool { return f == etcd.FinalizerMember })
+			err := c.Update(ctx, &fresh)
+			if err == nil {
+				cfg.Log("member controller: %s left the store; its Host goes", h.Name)
+			}
+			if err == nil || !client.IsConflict(err) {
+				if err != nil && ctx.Err() == nil {
+					cfg.Log("release %s: %v", h.Name, err)
+				}
+				break
+			}
+		}
+	}
 }
 
 // showMembers writes each system node's membership and who leads into its Host's status.

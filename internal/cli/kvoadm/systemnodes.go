@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -438,11 +439,20 @@ func runtimesOf(h *v1.Host) []string {
 // first (the leader's member controller removes it, keeping the majority), refused when it
 // would lose the majority. remove also deletes the Host when nothing else is installed.
 func hostRemoveSystemNode(ctx context.Context, name, kctx string, deleteHost bool, out io.Writer) error {
-	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
 	c, _, err := adminClient(kctx)
 	if err != nil {
 		return err
 	}
+	return RemoveSystemNode(ctx, c, name, deleteHost, out)
+}
+
+// RemoveSystemNode is host uninstall … control-plane (deleteHost false) and host remove (true)
+// through an admin client. A system node that is a worker too keeps its Host, without the
+// control-plane component; one that is only a system node can't be left with no component, so
+// uninstall is refused and remove deletes the Host held by etcd.FinalizerMember: a Host being
+// deleted asks for no member, the member controller removes the member, then lets the Host go.
+func RemoveSystemNode(ctx context.Context, c *client.Client, name string, deleteHost bool, out io.Writer) error {
+	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
 	hosts, err := listHosts(ctx, c)
 	if err != nil {
 		return err
@@ -462,6 +472,10 @@ func hostRemoveSystemNode(ctx context.Context, name, kctx string, deleteHost boo
 		}
 		return removeWorkerHost(ctx, c, name, say)
 	}
+	onlySystem := h.Spec.Components.Worker == nil
+	if onlySystem && !deleteHost {
+		return fmt.Errorf("%s runs only the control-plane component: a host needs one, so remove the host instead (kvoadm host remove %s)", name, name)
+	}
 	if err := RemovalCheck(hosts, name, time.Now(), 40*time.Second); err != nil {
 		return err
 	}
@@ -470,7 +484,13 @@ func hostRemoveSystemNode(ctx context.Context, name, kctx string, deleteHost boo
 		if err := c.Get(ctx, "Host", "", name, &cur); err != nil {
 			return err
 		}
-		cur.Spec.Components.ControlPlane = nil
+		if onlySystem {
+			if !slices.Contains(cur.Finalizers, etcd.FinalizerMember) {
+				cur.Finalizers = append(cur.Finalizers, etcd.FinalizerMember)
+			}
+		} else {
+			cur.Spec.Components.ControlPlane = nil
+		}
 		err := c.Update(ctx, &cur)
 		if err == nil {
 			break
@@ -479,16 +499,28 @@ func hostRemoveSystemNode(ctx context.Context, name, kctx string, deleteHost boo
 			return err
 		}
 	}
+	if onlySystem {
+		if err := c.Delete(ctx, "Host", "", name); err != nil && !client.IsNotFound(err) {
+			return err
+		}
+	}
 	say("%s no longer asks for a store member; waiting for the member to be removed", name)
 	wctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	for {
 		var cur v1.Host
-		if err := c.Get(wctx, "Host", "", name, &cur); err != nil {
+		err := c.Get(wctx, "Host", "", name, &cur)
+		if client.IsNotFound(err) { // held until its member was removed
+			say("%s left the store", name)
+			say("host %s removed from the cluster; the machine itself is yours (stop it: systemctl disable --now kevasod)", name)
+			return nil
+		}
+		if err != nil {
 			return err
 		}
-		if cur.Status.ControlPlane == nil || cur.Status.ControlPlane.Member == "" {
-			break
+		if !onlySystem && (cur.Status.ControlPlane == nil || cur.Status.ControlPlane.Member == "") {
+			say("%s left the store; its kevasod stops serving the control plane (its worker part stays)", name)
+			return nil
 		}
 		select {
 		case <-wctx.Done():
@@ -496,14 +528,6 @@ func hostRemoveSystemNode(ctx context.Context, name, kctx string, deleteHost boo
 		case <-time.After(time.Second):
 		}
 	}
-	say("%s left the store; its kevasod stops serving (stop it: systemctl disable --now kevasod)", name)
-	if deleteHost && h.Spec.Components.Worker == nil {
-		if err := c.Delete(ctx, "Host", "", name); err != nil {
-			return err
-		}
-		say("host %s removed from the cluster; the machine itself is yours", name)
-	}
-	return nil
 }
 
 func removeWorkerHost(ctx context.Context, c *client.Client, name string, say func(string, ...any)) error {
