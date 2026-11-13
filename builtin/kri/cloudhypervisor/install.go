@@ -84,12 +84,6 @@ func (r *Runtime) Install(ctx context.Context, store StorageOptions, progress fu
 			}
 			return r.run(ctx, "useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "--groups", "kvm", VMMUser)
 		}},
-		{"virtiofsd user", func() error { // serves volume folders to VMs (ADR 0006); in no group of its own that matters
-			if _, err := r.Host.Run(ctx, "id", VFSUser); err == nil {
-				return nil
-			}
-			return r.run(ctx, "useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "--user-group", VFSUser)
-		}},
 		{"directories", func() error {
 			if err := r.run(ctx, "install", "-d", "-m", "0755", BinDir, SilosDir); err != nil {
 				return err

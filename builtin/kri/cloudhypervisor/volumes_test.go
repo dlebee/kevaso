@@ -92,27 +92,67 @@ func TestVMMUnitWithVolumes(t *testing.T) {
 func TestVirtiofsdUnit(t *testing.T) {
 	n := NamesFor(id("web"))
 	s := LayoutFor(n, vmVolumes(), "").Shares[0]
-	if got := strings.Join(VirtiofsdArgs(s), " "); got != "--socket-path="+s.Socket+" --shared-dir="+s.HostPath+" --cache=auto --sandbox=chroot --rlimit-nofile=0" {
-		t.Fatalf("virtiofsd args: %s", got)
+	want := "--socket-path=" + s.Socket + " --socket-group=" + VMMUser + " --shared-dir=" + s.HostPath +
+		" --cache=auto --sandbox=chroot --rlimit-nofile=0 --modcaps=-fsetid:-mknod:-setfcap"
+	if got := strings.Join(VirtiofsdArgs(s), " "); got != want {
+		t.Fatalf("virtiofsd args:\n got %s\nwant %s", got, want)
 	}
 	u := VirtiofsdUnit(n, s)
-	caps := "CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID CAP_SYS_CHROOT"
+	caps := "CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETPCAP CAP_SETUID CAP_SYS_CHROOT"
 	for _, want := range []string{
-		"User=" + VFSUser + "\n", "Group=" + VMMUser + "\n",
+		"User=root\n", "Group=" + VMMUser + "\n",
 		"ExecStart=" + VirtiofsdBin + " --socket-path=" + s.Socket,
 		"CapabilityBoundingSet=" + caps + "\n", "AmbientCapabilities=" + caps + "\n",
 		"NoNewPrivileges=yes", "PrivateNetwork=yes", "PrivateDevices=yes", "RestrictAddressFamilies=AF_UNIX\n",
-		"TemporaryFileSystem=/var/lib/kevaso:ro " + SilosDir + ":ro\n",
+		"TemporaryFileSystem=/var/lib/kevaso:ro " + SilosDir + ":ro /run:ro\n",
+		"InaccessiblePaths=/root -/etc/kevaso -/etc/ssh -" + ImagesDir + "\n",
 		"BindPaths=" + s.HostPath + " " + n.Dir + "/vfs\n", "RestrictSUIDSGID=yes", "Restart=no", "LimitNOFILE=",
 	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("virtiofsd unit lacks %q:\n%s", want, u)
 		}
 	}
-	for _, never := range []string{"CAP_SYS_ADMIN", "CAP_MKNOD", "CAP_SETFCAP", "CAP_FSETID", "User=root", "DynamicUser"} {
-		if strings.Contains(u, never) {
+	for _, never := range []string{"CAP_SYS_ADMIN", "CAP_MKNOD", "CAP_SETFCAP", "CAP_FSETID", "DynamicUser", "ProcSubset"} {
+		if strings.Contains(strings.ReplaceAll(u, "--modcaps=-fsetid:-mknod:-setfcap", ""), never) {
 			t.Errorf("virtiofsd unit has %q:\n%s", never, u)
 		}
+	}
+}
+
+// What virtiofsd 1.10 did on a real host (Lima, Ubuntu 24.04), each of which stopped every VM
+// with a virtiofs volume from booting: as any user but root it refuses --sandbox=chroot; it asks
+// for its default capabilities for serving and exits ("can't apply the child capabilities")
+// unless each is in the bounding set or dropped by --modcaps, and it needs CAP_SETPCAP to drop
+// them; it makes its socket 0700 (the VMM got "Permission denied") unless given --socket-group;
+// it also fails to apply them unless they're ambient at start;
+// and it reads /proc/sys/fs/nr_open at start even with --rlimit-nofile=0, which ProcSubset=pid hides.
+func TestVirtiofsdStartsOnARealHost(t *testing.T) {
+	n := NamesFor(id("web"))
+	s := LayoutFor(n, vmVolumes(), "").Shares[0]
+	u := VirtiofsdUnit(n, s)
+	args := strings.Join(VirtiofsdArgs(s), " ")
+	if strings.Contains(args, "--sandbox=chroot") && !strings.Contains(u, "User=root\n") {
+		t.Error("--sandbox=chroot without root")
+	}
+	for _, c := range VirtiofsdDefaults {
+		if !slices.Contains(VirtiofsdCaps, c) && !slices.Contains(VirtiofsdDrops, c) {
+			t.Errorf("virtiofsd asks for %s: neither bounded in nor dropped", c)
+		}
+		if slices.Contains(VirtiofsdDrops, c) && !strings.Contains(args, "-"+strings.ToLower(strings.TrimPrefix(c, "CAP_"))) {
+			t.Errorf("%s not dropped in %s", c, args)
+		}
+	}
+	if !slices.Contains(VirtiofsdCaps, "CAP_SETPCAP") {
+		t.Error("no CAP_SETPCAP: virtiofsd can't drop its capabilities")
+	}
+	if !strings.Contains(u, "AmbientCapabilities="+strings.Join(VirtiofsdCaps, " ")+"\n") {
+		t.Error("virtiofsd can't apply its capabilities unless it starts with them ambient")
+	}
+	if !strings.Contains(args, "--socket-group="+VMMUser) {
+		t.Error("the socket isn't the VMM's group's: virtiofsd makes it 0700")
+	}
+	if strings.Contains(u, "ProcSubset=pid") {
+		t.Error("ProcSubset=pid hides /proc/sys/fs/nr_open, which virtiofsd reads at start")
 	}
 }
 

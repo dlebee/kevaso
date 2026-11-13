@@ -31,22 +31,43 @@ import (
 // VirtiofsdBin is virtiofsd (Ubuntu's package; E029 used 1.10).
 const VirtiofsdBin = "/usr/libexec/virtiofsd"
 
-// VFSUser runs every virtiofsd: not root, not the VMM's user (a VMM taken over through its guest
-// can't become the file server), with only the capabilities a file server needs (VirtiofsdCaps).
-const VFSUser = "kevaso-vfs"
+// virtiofsd runs as root, bounded (VirtiofsdCaps), and chroots itself into its share before it
+// serves anything (--sandbox=chroot, which virtiofsd 1.10 refuses to do for any other user, real
+// machines showed). A separate user would gain nothing: CAP_SETUID, which it needs to act as the
+// guest's callers, makes any user root. Once in the share it keeps only VirtiofsdKeeps and empties
+// its bounding set, so it can't chroot out again.
 
-// VirtiofsdCaps are what virtiofsd keeps, and why:
+// VirtiofsdCaps bound what virtiofsd may ever hold, and why:
 //   - CAP_CHOWN, CAP_FOWNER, CAP_DAC_OVERRIDE: the guest's root owns and changes files of any user
 //     in its volume; virtiofsd acts for it on the host;
 //   - CAP_SETUID, CAP_SETGID: it switches its file-system identity to the guest caller's, so
 //     files are created with the guest's owners;
-//   - CAP_SYS_CHROOT: --sandbox=chroot, so it can't see anything but the shared folder.
+//   - CAP_SYS_CHROOT: --sandbox=chroot, so it can't see anything but the shared folder (it drops it
+//     once in);
+//   - CAP_SETPCAP: to drop its own capabilities and bounding set for the serving process (without
+//     it virtiofsd fails: "can't apply the child capabilities").
 //
 // Left out on purpose: CAP_MKNOD (no device nodes from a guest on the host's disks), CAP_SETFCAP
 // and CAP_FSETID (no file capabilities, no set-uid or set-gid files: a volume is data, never a way
 // into the host); CAP_SYS_ADMIN and CAP_SYS_RESOURCE (no namespaces, no raised limits: the unit
-// sets LimitNOFILE and virtiofsd leaves it alone).
-var VirtiofsdCaps = []string{"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_SETGID", "CAP_SETUID", "CAP_SYS_CHROOT"}
+// sets LimitNOFILE and virtiofsd leaves it alone). VirtiofsdDrops tells virtiofsd not to ask for them.
+var VirtiofsdCaps = []string{"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_SETGID", "CAP_SETPCAP", "CAP_SETUID", "CAP_SYS_CHROOT"}
+
+// VirtiofsdDefaults are the capabilities virtiofsd 1.10 keeps for serving unless told otherwise
+// (--modcaps); each must be in VirtiofsdCaps or in VirtiofsdDrops, or it exits at start.
+var VirtiofsdDefaults = []string{"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_FSETID", "CAP_SETGID", "CAP_SETUID", "CAP_MKNOD", "CAP_SETFCAP"}
+
+// VirtiofsdDrops are virtiofsd's defaults it's told to leave out (--modcaps=-…).
+var VirtiofsdDrops = []string{"CAP_FSETID", "CAP_MKNOD", "CAP_SETFCAP"}
+
+// modcaps is VirtiofsdDrops as virtiofsd's --modcaps value (-fsetid:-mknod:…).
+func modcaps() string {
+	parts := make([]string, len(VirtiofsdDrops))
+	for i, c := range VirtiofsdDrops {
+		parts[i] = "-" + strings.ToLower(strings.TrimPrefix(c, "CAP_"))
+	}
+	return strings.Join(parts, ":")
+}
 
 // VolumeDisk is a local volume: a thin LV attached as an extra disk.
 type VolumeDisk struct {
@@ -134,28 +155,35 @@ func VMMArgs(n Names, l Layout, memMiB int64) []string {
 }
 
 // VirtiofsdArgs are one share's virtiofsd arguments (E029: --cache=auto, --sandbox=chroot). The
-// unit sets the open-files limit, so virtiofsd doesn't try to raise it (--rlimit-nofile=0).
+// unit sets the open-files limit, so virtiofsd doesn't try to raise it (--rlimit-nofile=0); its
+// socket is the VMM's group's (virtiofsd makes it 0700 otherwise), and it drops VirtiofsdDrops.
 func VirtiofsdArgs(s Share) []string {
-	return []string{"--socket-path=" + s.Socket, "--shared-dir=" + s.HostPath, "--cache=auto", "--sandbox=chroot", "--rlimit-nofile=0"}
+	return []string{"--socket-path=" + s.Socket, "--socket-group=" + VMMUser, "--shared-dir=" + s.HostPath, "--cache=auto",
+		"--sandbox=chroot", "--rlimit-nofile=0", "--modcaps=" + modcaps()}
 }
 
-// VirtiofsdUnit is one share's virtiofsd: its own user (VFSUser) in the VMM's group (so only the
-// VMM can connect to its socket), the least capabilities (VirtiofsdCaps), no network, no devices,
-// and of the host's files only the shared folder and its socket's folder: the control plane's data,
-// other silos and their shares are out of sight. It serves one VMM connection and exits with it.
+// VirtiofsdUnit is one share's virtiofsd: root bounded by VirtiofsdCaps (see there), its socket the
+// VMM's group's (so only the VMM can connect), no network, no devices, and of the host's files only
+// the shared folder and its socket's folder: the control plane's data, other silos and their
+// shares, /run (the admin socket) and Kevaso's keys are out of sight. It serves one VMM connection
+// and exits with it.
+//
+// No ProcSubset=pid: virtiofsd reads /proc/sys/fs/nr_open at start, even with --rlimit-nofile=0.
 func VirtiofsdUnit(n Names, s Share) string {
 	caps := strings.Join(VirtiofsdCaps, " ")
 	return `[Unit]
 Description=Kevaso silo ` + n.Short + `: virtiofsd for volume ` + s.Name + `
 
 [Service]
-User=` + VFSUser + `
+User=root
 Group=` + VMMUser + `
 ExecStartPre=+/bin/rm -f ` + s.Socket + `
 ExecStart=` + VirtiofsdBin + ` ` + strings.Join(VirtiofsdArgs(s), " ") + `
 Restart=no
 LimitNOFILE=1048576
 CapabilityBoundingSet=` + caps + `
+# virtiofsd fails to apply its own capabilities ("failed to sync capabilities with the kernel")
+# unless it starts with them ambient too.
 AmbientCapabilities=` + caps + `
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -164,10 +192,10 @@ PrivateTmp=yes
 PrivateDevices=yes
 PrivateNetwork=yes
 # Only the shared folder and the socket's folder: the rest of /var/lib/kevaso (the control plane's
-# data, other silos' volumes) and other silos' directories are empty here.
-TemporaryFileSystem=/var/lib/kevaso:ro ` + SilosDir + `:ro
+# data, other silos' volumes), other silos' directories and /run (kevasod's admin socket) are empty.
+TemporaryFileSystem=/var/lib/kevaso:ro ` + SilosDir + `:ro /run:ro
 BindPaths=` + s.HostPath + ` ` + path.Dir(s.Socket) + `
-InaccessiblePaths=/root -` + ImagesDir + `
+InaccessiblePaths=/root -/etc/kevaso -/etc/ssh -` + ImagesDir + `
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
@@ -175,7 +203,6 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 ProtectProc=invisible
-ProcSubset=pid
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
@@ -321,7 +348,7 @@ func (r *Runtime) applyLayout(ctx context.Context, st State, old, l Layout) erro
 	}
 	keep := map[string]bool{}
 	if len(l.Shares) > 0 {
-		if err := r.run(ctx, "install", "-d", "-m", "0750", "-o", VFSUser, "-g", VMMUser, n.Dir+"/vfs"); err != nil {
+		if err := r.run(ctx, "install", "-d", "-m", "0750", "-o", "root", "-g", VMMUser, n.Dir+"/vfs"); err != nil {
 			return err
 		}
 	}
