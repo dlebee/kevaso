@@ -8,11 +8,12 @@
 // containers and main container join it. The pause image is built on the host from kevasod itself:
 // nothing is pulled for it.
 //
-// The broker reaches a container through a unix socket of its own, mounted at /run/kevaso: the
-// socket a connection arrives on says which silo it is, as vsock does for VMs. The host's CA bundle
-// with the egress CA is mounted in read-only. Nothing else of Kevaso's goes into a user's container
-// (design §12: Kevaso's own pieces are built and isolated properly): Kevaso's own silos, like the
-// ingress controller, run from images of their own (Images below), with the same isolation.
+// A container reaches its host's local endpoint (ADR 0008) over the bridge like a VM, and gets a
+// tmpfs at /run, where its host writes its file and env secrets through exec (memory only: an exec
+// into the engine's overlay would put them on the host's disk). The host's CA bundle with the
+// egress CA is mounted in read-only. Nothing else of Kevaso's goes into a user's container
+// (design §12: Kevaso's own pieces are built and isolated properly): Kevaso's own silos run from
+// images of their own (KevasoImages below), with the same isolation.
 package container
 
 import (
@@ -24,7 +25,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path"
 	"strconv"
@@ -86,11 +86,9 @@ func NamesFor(id kri.ID) Names {
 func VolumeName(id kri.ID, vol string) string { return "kv-" + NamesFor(id).Short + "-" + vol }
 
 // KevasoImages are Kevaso's own images, by name: built on the host from kevasod itself (its only
-// file, /usr/local/bin/kvo-guest, with this entrypoint), never pulled. Their tag is the binary's
-// hash, so a new kevasod makes a new image.
-var KevasoImages = map[string][]string{
-	"kevaso-ingress": {"/usr/local/bin/kvo-guest", "ingress"}, // the ingress controller (design §7.3)
-}
+// file, /usr/local/bin/NAME, run with this entrypoint), never pulled. Their tag is the binary's
+// hash, so a new kevasod makes a new image. None today.
+var KevasoImages = map[string][]string{}
 
 // ImageRef is the reference an image name pulls.
 func ImageRef(image string) string {
@@ -230,7 +228,7 @@ func (r *Runtime) pauseImage(ctx context.Context) (string, error) {
 // ref is what the engine runs for an image name: one of Kevaso's own (built here), or what it pulls.
 func (r *Runtime) ref(ctx context.Context, image string) (string, bool, error) {
 	if ep, ok := KevasoImages[image]; ok {
-		tag, err := r.selfImage(ctx, image, "usr/local/bin/kvo-guest", ep)
+		tag, err := r.selfImage(ctx, image, "usr/local/bin/"+image, ep)
 		return tag, true, err
 	}
 	return ImageRef(image), false, nil
@@ -362,9 +360,6 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 			return err
 		}
 	}
-	if _, err := r.cmd(ctx, nil, "install", "-d", "-m", "0700", n.Dir+"/broker"); err != nil {
-		return err
-	}
 	if ref, own, err := r.ref(ctx, s.Image); err != nil {
 		return err
 	} else if !own {
@@ -387,16 +382,15 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	return r.ensurePause(ctx, s)
 }
 
-// runArgs are a silo container's settings: the pause container's network, the volumes, the
-// broker socket and the CA bundle, limits, no new privileges.
+// runArgs are a silo container's settings: the pause container's network, the volumes, a tmpfs at
+// /run (for secrets the host writes) and the CA bundle, limits, no new privileges.
 func (r *Runtime) runArgs(s state, name string) []string {
 	n := NamesFor(s.ID)
 	args := []string{"--name", name, "--network", "container:" + n.Pause,
 		"--security-opt", "no-new-privileges", "--pids-limit", "4096",
 		"--label", "kevaso.com/namespace=" + s.ID.Namespace, "--label", "kevaso.com/name=" + s.ID.Name, "--label", "kevaso.com/uid=" + s.ID.UID,
 		"-v", n.Dir + "/resolv.conf:/etc/resolv.conf:ro",
-		"-v", n.Dir + "/broker:/run/kevaso",
-		"-e", "KVO_GUEST_BROKER=unix:/run/kevaso/broker.sock"}
+		"--tmpfs", "/run:rw,nosuid,nodev,mode=0755"}
 	if r.engine() == "podman" { // docker shares the hostname with the network; podman needs asking
 		args = append(args, "--uts", "container:"+n.Pause)
 	}
@@ -684,25 +678,6 @@ func orDiscard(w io.Writer) io.Writer {
 	return w
 }
 
-// BrokerListen implements kri.Broker: a unix socket in the silo's own directory, which only its
-// containers mount (at /run/kevaso/broker.sock).
-func (r *Runtime) BrokerListen(id kri.ID, _ uint32) (net.Listener, error) {
-	if _, ok := r.load(id); !ok {
-		return nil, fmt.Errorf("%s: %w", id, kri.ErrNotFound)
-	}
-	path := NamesFor(id).Dir + "/broker/broker.sock"
-	_ = r.Host.RemoveAll(path)
-	l, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(path, 0o666); err != nil { // any user in the silo; no one outside sees the dir
-		_ = l.Close()
-		return nil, err
-	}
-	return l, nil
-}
-
 // chHost adapts the runner to the VM runtime's host interface (for the shared address pool).
 type chHost struct{ h hostexec.Runner }
 
@@ -722,5 +697,4 @@ func (c chHost) Glob(p string) ([]string, error)                   { return c.h.
 var (
 	_ kri.Runtime        = (*Runtime)(nil)
 	_ kri.InitContainers = (*Runtime)(nil)
-	_ kri.Broker         = (*Runtime)(nil)
 )

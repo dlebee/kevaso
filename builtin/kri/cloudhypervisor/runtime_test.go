@@ -167,11 +167,14 @@ func TestRenderedFiles(t *testing.T) {
 	for _, want := range []string{
 		"User=kevaso-vmm", "NoNewPrivileges=yes", "CapabilityBoundingSet=\n", "DevicePolicy=closed",
 		"DeviceAllow=/dev/kvm rw", "DeviceAllow=/dev/kevaso/" + n.LV + " rw", "InaccessiblePaths=/var/lib/kevaso ",
-		"--memory size=4096M", "image_type=raw", "tap=" + n.Tap, "TemporaryFileSystem=" + SilosDir + "\n", "BindPaths=" + n.Dir + "\n", "--vsock cid=3,socket=" + n.Vsock + " ",
+		"--memory size=4096M", "image_type=raw", "tap=" + n.Tap, "TemporaryFileSystem=" + SilosDir + "\n", "BindPaths=" + n.Dir + "\n",
 	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("unit missing %q", want)
 		}
+	}
+	if strings.Contains(u, "--vsock") {
+		t.Error("a VM has no vsock device: nothing in it talks to the host that way (ADR 0008)")
 	}
 	nc := NetworkConfig("52:4b:00:00:00:01", AllocateIPMust(t), "web3")
 	if !strings.Contains(nc, "nameservers: { addresses: [10.64.0.1], search: [web3.kevaso, kevaso] }") {

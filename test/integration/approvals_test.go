@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,9 +12,6 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
-	"kevaso.com/core/internal/agent"
-	"kevaso.com/core/internal/guest"
-	"kevaso.com/core/sdk/kri"
 )
 
 // Design §8.7 through the real API and the host's broker: a secret whose grant needs a person's yes
@@ -58,17 +54,11 @@ func TestApprovals(t *testing.T) {
 	if err := c.admin.UpdateStatus(c.ctx, node); err != nil {
 		t.Fatal(err)
 	}
-	dir, _ := os.MkdirTemp("/tmp", "kva")
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	ch := channels{dir}
 	hv1Client := c.host(t, "hv1")
-	hv1 := &agent.Broker{Client: hv1Client}
+	eps := newEndpoints(t, hv1Client, "hv1")
+	eps.add(t, node)
 	ctx, cancel := context.WithCancel(c.ctx)
 	defer cancel()
-	if err := hv1.Ensure(ctx, ch, kri.ID{Namespace: "web3", Name: "agent", UID: node.UID}); err != nil {
-		t.Fatal(err)
-	}
-	dial := ch.dialer(node.UID)
 
 	// People: ada (admin: approve on every secret), ed (editor: no approve), dee (approve on
 	// secrets labelled danger=high only).
@@ -128,21 +118,15 @@ func TestApprovals(t *testing.T) {
 	}
 
 	// A secret without approval in the same grant: straight through.
-	if r, err := guest.Call(ctx, dial, client.BrokerRequest{Op: client.OpGetSecret, Name: "db-password"}); err != nil || string(r.Value) != "pw" {
-		t.Fatalf("ungated secret: %q %v", r.Value, err)
+	if a := eps.call(t, node, http.MethodGet, "/v1/secrets/db-password", nil); a.code != 200 || a.body != "pw" {
+		t.Fatalf("ungated secret: %d %q", a.code, a.body)
 	}
 
-	// 1. The silo asks for gh-admin: the call waits.
-	type result struct {
-		resp client.BrokerResponse
-		err  error
-	}
-	got := make(chan result, 1)
-	var waitedOn client.ApprovalWait
+	// 1. The silo asks for gh-admin: 428 with the approval's name, and it asks again until answered.
+	got := make(chan epAnswer, 1)
+	var waitedOn string
 	go func() {
-		r, err := guest.Ask(ctx, dial, client.BrokerRequest{Op: client.OpGetSecret, Name: "gh-admin", For: "20m"}, 20*time.Millisecond,
-			func(a client.ApprovalWait) { waitedOn = a })
-		got <- result{r, err}
+		got <- eps.ask(t, ctx, node, http.MethodGet, "/v1/secrets/gh-admin?for=20m", nil, 20*time.Millisecond, func(name string) { waitedOn = name })
 	}()
 	a := pendingOf(v1.ApprovalForSecret, "gh-admin")
 	if a.Spec.Silo != "agent" || a.Spec.Grant != "dangerous" || a.Spec.For != "20m0s" || a.Spec.ExpiresAt.IsZero() {
@@ -176,26 +160,26 @@ func TestApprovals(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := <-got
-	if r.err != nil || string(r.resp.Value) != "ghp-admin" || waitedOn.Name != a.Name {
-		t.Fatalf("after approval: %q %v (waited on %q)", r.resp.Value, r.err, waitedOn.Name)
+	if r.code != 200 || r.body != "ghp-admin" || waitedOn != a.Name {
+		t.Fatalf("after approval: %d %q (waited on %q)", r.code, r.body, waitedOn)
 	}
 	if err := answer(ada, a.Name, "deny", ""); status(err) != http.StatusConflict {
 		t.Fatalf("second answer: %v", err)
 	}
 	// While access lasts, the silo doesn't ask again.
-	if r, err := guest.Call(ctx, dial, client.BrokerRequest{Op: client.OpGetSecret, Name: "gh-admin"}); err != nil || string(r.Value) != "ghp-admin" || r.Pending != nil {
-		t.Fatalf("within access: %+v %v", r, err)
+	if r := eps.call(t, node, http.MethodGet, "/v1/secrets/gh-admin", nil); r.code != 200 || r.body != "ghp-admin" {
+		t.Fatalf("within access: %d %q", r.code, r.body)
 	}
 
 	// 4. Signing: dee can't approve the key (no danger=high label), ada can deny it.
-	pk, err := guest.Call(ctx, dial, client.BrokerRequest{Op: client.OpPublicKey, Name: "deploy-key"})
-	if err != nil {
-		t.Fatalf("public key needs no yes: %v", err)
+	pk := eps.call(t, node, http.MethodGet, "/v1/keys/deploy-key", nil)
+	if pk.code != 200 {
+		t.Fatalf("public key needs no yes: %d %s", pk.code, pk.body)
 	}
-	go func() {
-		r, err := guest.Ask(ctx, dial, client.BrokerRequest{Op: client.OpSign, Name: "deploy-key", Payload: []byte("release v1")}, 20*time.Millisecond, nil)
-		got <- result{r, err}
-	}()
+	sign := func() {
+		got <- eps.ask(t, ctx, node, http.MethodPost, "/v1/sign/deploy-key", []byte("release v1"), 20*time.Millisecond, nil)
+	}
+	go sign()
 	s := pendingOf(v1.ApprovalForSign, "deploy-key")
 	if !strings.Contains(s.Spec.Summary, "sign 10 bytes") || len(s.Spec.PayloadHash) != 64 {
 		t.Fatalf("sign approval: %+v", s.Spec)
@@ -206,21 +190,20 @@ func TestApprovals(t *testing.T) {
 	if err := answer(ada, s.Name, "deny", "not before the freeze ends"); err != nil {
 		t.Fatal(err)
 	}
-	if r := <-got; r.err == nil || !strings.Contains(r.err.Error(), "denied by ada: not before the freeze ends") {
+	if r := <-got; r.code != 403 || !strings.Contains(r.msg(), "denied by ada: not before the freeze ends") {
 		t.Fatalf("after deny: %+v", r)
 	}
 	// Asking again is a new request; approved, the signature verifies.
-	go func() {
-		r, err := guest.Ask(ctx, dial, client.BrokerRequest{Op: client.OpSign, Name: "deploy-key", Payload: []byte("release v1")}, 20*time.Millisecond, nil)
-		got <- result{r, err}
-	}()
+	go sign()
 	s = pendingOf(v1.ApprovalForSign, "deploy-key")
 	if err := answer(ada, s.Name, "approve", ""); err != nil {
 		t.Fatal(err)
 	}
-	pub, _ := hex.DecodeString(pk.PublicKey)
-	if r := <-got; r.err != nil || !ed25519.Verify(pub, []byte("release v1"), r.resp.Signature) {
-		t.Fatalf("approved sign: %v", r.err)
+	pub, _ := hex.DecodeString(strings.TrimSpace(pk.body))
+	r = <-got
+	sig, _ := hex.DecodeString(strings.TrimSpace(r.body))
+	if r.code != 200 || !ed25519.Verify(pub, []byte("release v1"), sig) {
+		t.Fatalf("approved sign: %d %s", r.code, r.body)
 	}
 
 	// 5. Nobody answers: the request expires and the call says so; a late answer is refused.
@@ -230,12 +213,9 @@ func TestApprovals(t *testing.T) {
 	_ = c.admin.Create(c.ctx, late)
 	late.Status.Host = "hv1"
 	_ = c.admin.UpdateStatus(c.ctx, late)
-	if err := hv1.Ensure(ctx, ch, kri.ID{Namespace: "web3", Name: "late", UID: late.UID}); err != nil {
-		t.Fatal(err)
-	}
-	_, err = guest.Ask(ctx, ch.dialer(late.UID), client.BrokerRequest{Op: client.OpGetSecret, Name: "gh-admin", Wait: "1s"}, 100*time.Millisecond, nil)
-	if err == nil || !strings.Contains(err.Error(), "expired") {
-		t.Fatalf("unanswered: %v", err)
+	eps.add(t, late)
+	if r := eps.ask(t, ctx, late, http.MethodGet, "/v1/secrets/gh-admin?wait=1s", nil, 100*time.Millisecond, nil); r.code != 403 || !strings.Contains(r.msg(), "expired") {
+		t.Fatalf("unanswered: %d %s", r.code, r.body)
 	}
 	var expired *v1.Approval
 	l, _ := ada.List(c.ctx, "Approval", "web3")
@@ -252,8 +232,8 @@ func TestApprovals(t *testing.T) {
 		t.Fatalf("answer after expiry: %v", err)
 	}
 	// Limits: more access than the cluster allows is refused up front.
-	if _, err := guest.Call(ctx, ch.dialer(late.UID), client.BrokerRequest{Op: client.OpGetSecret, Name: "gh-admin", For: "100h"}); err == nil || !strings.Contains(err.Error(), "more than this cluster allows") {
-		t.Fatalf("too long: %v", err)
+	if r := eps.call(t, late, http.MethodGet, "/v1/secrets/gh-admin?for=100h", nil); r.code != 403 || !strings.Contains(r.msg(), "more than this cluster allows") {
+		t.Fatalf("too long: %d %s", r.code, r.body)
 	}
 
 	// 6. The audit log has each request and answer, with who answered.

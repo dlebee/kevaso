@@ -238,7 +238,7 @@ kind: Silo
 metadata: { name: ingress-public, namespace: kevaso-system }
 spec:
   runtime: docker
-  image: kevaso-ingress              # Kevaso's own image, built on the host: kvo-guest ingress
+  image: kevaso-ingress              # the ingress controller image: gone with the guest helper (ADR 0008); phase/ingress-drivers replaces this
   service:
     ports: [{ name: http, port: 80 }, { name: https, port: 443 }]
     expose: hostPort

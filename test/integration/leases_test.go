@@ -2,9 +2,9 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -17,10 +17,8 @@ import (
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/clock"
-	"kevaso.com/core/internal/guest"
 	"kevaso.com/core/internal/leases"
 	"kevaso.com/core/internal/worker"
-	"kevaso.com/core/sdk/kri"
 )
 
 // Design §7.2d through the real API and the host's broker: a leased port is closed by default; the
@@ -122,18 +120,12 @@ func TestPortLeases(t *testing.T) {
 	}
 	closed("closed by default")
 
-	// The silo's broker channel.
-	dir, _ := os.MkdirTemp("/tmp", "kvl")
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	ch := channels{dir}
+	// The silo's local endpoint.
 	hv1Client := c.host(t, "hv1")
-	hv1 := &agent.Broker{Client: hv1Client}
+	eps := newEndpoints(t, hv1Client, "hv1")
+	eps.add(t, api)
 	ctx, cancel := context.WithCancel(c.ctx)
 	defer cancel()
-	if err := hv1.Ensure(ctx, ch, kri.ID{Namespace: "web3", Name: "api", UID: api.UID}); err != nil {
-		t.Fatal(err)
-	}
-	dial := ch.dialer(api.UID)
 
 	// People: ada (admin: open and approve), ed (editor: open only); bot, a service account with
 	// the admin role.
@@ -177,21 +169,16 @@ func TestPortLeases(t *testing.T) {
 		t.Fatal("no pending expose approval")
 		return nil
 	}
-	type result struct {
-		resp client.BrokerResponse
-		err  error
-	}
-	got := make(chan result, 1)
+	got := make(chan epAnswer, 1)
 	silosAsk := func(d string) {
 		go func() {
-			r, err := guest.Ask(ctx, dial, client.BrokerRequest{Op: client.OpPortOpen, Name: "debug", For: d}, 20*time.Millisecond, nil)
-			got <- result{r, err}
+			got <- eps.ask(t, ctx, api, http.MethodPost, "/v1/ports/debug/open?for="+d, nil, 20*time.Millisecond, nil)
 		}()
 	}
 
 	// A port that isn't leased can't be asked for.
-	if _, err := guest.Call(ctx, dial, client.BrokerRequest{Op: client.OpPortOpen, Name: "web"}); err == nil || !strings.Contains(err.Error(), "not a leased port") {
-		t.Fatalf("web: %v", err)
+	if r := eps.call(t, api, http.MethodPost, "/v1/ports/web/open", nil); r.code != 403 || !strings.Contains(r.msg(), "not a leased port") {
+		t.Fatalf("web: %d %s", r.code, r.body)
 	}
 
 	// 1. The silo asks for 5h: cut to its max (1h), and it waits for a yes.
@@ -238,8 +225,10 @@ func TestPortLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := <-got
-	if r.err != nil || r.resp.Until == nil || !r.resp.Clamped || time.Until(*r.resp.Until) > time.Hour || time.Until(*r.resp.Until) < 59*time.Minute {
-		t.Fatalf("after yes: %+v %v", r.resp, r.err)
+	var open agent.PortOpened
+	if r.code != 200 || json.Unmarshal([]byte(r.body), &open) != nil || open.Port != "debug" || !open.Clamped ||
+		time.Until(open.Until) > time.Hour || time.Until(open.Until) < 59*time.Minute {
+		t.Fatalf("after yes: %d %s", r.code, r.body)
 	}
 	opened("approved")
 
@@ -270,7 +259,7 @@ func TestPortLeases(t *testing.T) {
 	if err := answer(ada, a.Name, "deny", "use the staging silo"); err != nil {
 		t.Fatal(err)
 	}
-	if r := <-got; r.err == nil || !strings.Contains(r.err.Error(), "denied by ada: use the staging silo") {
+	if r := <-got; r.code != 403 || !strings.Contains(r.msg(), "denied by ada: use the staging silo") {
 		t.Fatalf("denied: %+v", r)
 	}
 	closed("denied")

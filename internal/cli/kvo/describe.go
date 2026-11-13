@@ -433,13 +433,13 @@ func describeObject(w io.Writer, obj meta.Object) error {
 				}
 				how = fmt.Sprintf("tier 2, injection: the egress gate adds %s: %s for %s; never in the silo", h, f, t.Host)
 			case v1.DeliverBroker:
-				how = "tier 4, broker: fetched over vsock when needed (kvo-guest secret get " + sec.Name + ")"
+				how = "tier 4, broker: the silo fetches it when needed (curl -fsS -H '" + v1.EndpointHeader + ": 1' http://" + v1.EndpointAddress + "/v1/secrets/" + sec.Name + ")"
 			case v1.DeliverFile:
 				path := sec.Path
 				if path == "" {
 					path = "/run/secrets/" + sec.Name
 				}
-				how = "tier 4, file: " + path + " (tmpfs, rewritten on rotation)"
+				how = "tier 4, file: " + path + " (tmpfs, written by the host, rewritten on rotation)"
 			case v1.DeliverEnv:
 				how = "tier 4, env " + envName(sec) + " — FLAGGED: leaks into child processes, dumps, logs and an agent's context"
 			}

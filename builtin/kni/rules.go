@@ -6,7 +6,8 @@
 // across the mesh) unless the receiving silo's allowFrom opens them; nothing outside reaches a silo
 // unless its service is exposed; a silo reaches nothing outside the cluster unless one of its
 // Grants opens it (raw TCP/UDP to a CIDR here; host names through the egress gate); silos can't
-// reach the mesh's host addresses, nor their own host beyond DNS and ping. Exposed ports are DNAT (the client's address is kept: E009), and a silo's
+// reach the mesh's host addresses, nor their own host beyond DNS, ping and, for a silo whose grants
+// need one, its local endpoint (ADR 0008). Exposed ports are DNAT (the client's address is kept: E009), and a silo's
 // outbound source is SNAT to its service's or its pool's address when it asks.
 package kni
 
@@ -39,6 +40,8 @@ type Silo struct {
 	// SourceRanges only (a NodeBalancer's addresses).
 	NodePorts    []v1.NodePort
 	SourceRanges []string
+	// Endpoint: the silo reaches its host's local endpoint (Host.Endpoint, port 80).
+	Endpoint bool
 	// Leases (design §7.2d): Leased are the exposed ports (by name) that open only on a lease, and
 	// Closed those of them with no active lease now: a closed port has no outside rule at all, and
 	// connections that a lease let in are cut (reset) once it ends. An open leased port takes
@@ -84,6 +87,9 @@ type Host struct {
 	All     []Silo     // every silo in the cluster with an address, to resolve allowFrom sources
 	// GatePort is where the egress gate listens on the gateway (0: no gate).
 	GatePort int
+	// Endpoint is the silos' local endpoint's address on the bridge (invalid: none): reached on
+	// port 80 from the bridge only, by the silos that have one.
+	Endpoint netip.Addr
 	// Services are the cluster's standalone Services with endpoints.
 	Services []Service
 }
@@ -380,6 +386,9 @@ func Rules(h Host) string {
 	w("  }")
 	w("  chain input {")
 	w("    type filter hook input priority filter; policy accept;")
+	if h.Endpoint.IsValid() { // the local endpoint is the bridge's only: never from the mesh or the uplink
+		w("    iifname != %q ip daddr %s drop", h.Bridge, h.Endpoint)
+	}
 	w("    iifname %q ct state established,related accept", h.Bridge)
 	w("    iifname %q ip daddr %s udp dport 53 accept", h.Bridge, h.Gateway)
 	w("    iifname %q ip daddr %s tcp dport 53 accept", h.Bridge, h.Gateway)
@@ -387,20 +396,32 @@ func Rules(h Host) string {
 	if h.GatePort > 0 && len(redirect) > 0 {
 		w("    iifname %q ip daddr %s tcp dport %d accept", h.Bridge, h.Gateway, h.GatePort)
 	}
+	if h.Endpoint.IsValid() {
+		for _, s := range local {
+			if s.Endpoint && s.IP.IsValid() {
+				w("    iifname %q ip saddr %s ip daddr %s tcp dport 80 accept", h.Bridge, s.IP, h.Endpoint)
+			}
+		}
+	}
 	w("    iifname %q drop", h.Bridge)
 	w("  }")
 	w("}")
 	w("table bridge kevaso")
 	w("delete table bridge kevaso")
 	w("table bridge kevaso {")
-	w("  chain forward {")
-	w("    type filter hook forward priority filter; policy accept;")
+	// Prerouting, not forward: frames for the host itself (its DNS, the egress gate, the local
+	// endpoint, ARP to it) never cross forward, and the host tells silos apart by these addresses.
+	w("  chain prerouting {")
+	w("    type filter hook prerouting priority filter; policy accept;")
 	for _, s := range local {
 		if s.Tap != "" && s.IP.IsValid() {
 			w("    iifname %q ip saddr != %s drop", s.Tap, s.IP)     // no silo speaks for another…
 			w("    iifname %q arp saddr ip != %s drop", s.Tap, s.IP) // …nor claims its address
 		}
 	}
+	w("  }")
+	w("  chain forward {")
+	w("    type filter hook forward priority filter; policy accept;")
 	w("    ether type arp accept") // silos must find each other's MAC before allowFrom can matter
 	w("    ct state established,related accept")
 	for _, r := range br {

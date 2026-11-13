@@ -21,8 +21,8 @@ import (
 )
 
 // TestApprovals is design §8.7 on real machines: a grant makes a secret's use wait for a person's
-// yes. On a cloud-hypervisor silo (kvo-guest over vsock) and a docker silo (kvo-guest copied in, the
-// broker on the container's own socket): a broker get waits as a pending Approval until
+// yes. On a cloud-hypervisor silo (curl) and a docker silo (a small HTTP client copied in), both
+// calling their local endpoint (ADR 0008) and polling on 428: a broker get waits as a pending Approval until
 // `kvo approve`, and a second get within the access asked for needs no new yes; `kvo deny` fails the
 // call, saying who; an injected key with approval: required holds the HTTPS request at the egress
 // gate until approved, and the key itself never reaches the silo.
@@ -83,13 +83,8 @@ spec:
 `, "apply", "-f", "-")
 	r.waitRunning("ops", 30*time.Minute, "metal", "vm", "box")
 
-	// The docker silo has nothing of Kevaso's: it brings its own broker client (kvo-guest, copied in
-	// like any program) and an HTTPS client that waits as long as the gate holds a request.
-	guestBin, err := os.ReadFile(r.bin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.upload("ops", "box", "/usr/local/bin/kvo-guest", guestBin)
+	// The docker silo has nothing of Kevaso's (and no curl): it brings its own HTTP client, which
+	// also waits as long as the gate holds a request.
 	tmp := t.TempDir()
 	hget := filepath.Join(tmp, "hget")
 	_ = os.WriteFile(filepath.Join(tmp, "hget.go"), []byte(strings.Replace(hgetGo, "15 * time.Second", "4 * time.Minute", 1)), 0o644)
@@ -97,12 +92,13 @@ spec:
 	hgetBin, _ := os.ReadFile(hget)
 	r.upload("ops", "box", "/usr/local/bin/hget", hgetBin)
 
-	for _, c := range []struct{ silo, get string }{
-		{"vm", "curl -sS --max-time 240 https://" + apiHost + "/v1/models 2>&1"},
-		{"box", "hget https://" + apiHost + "/v1/models 2>&1"},
+	for _, c := range []struct{ silo, get, client string }{
+		{"vm", "curl -sS --max-time 240 https://" + apiHost + "/v1/models 2>&1", "curl"},
+		{"box", "hget https://" + apiHost + "/v1/models 2>&1", "hget"},
 	} {
 		t.Run(c.silo, func(t *testing.T) {
-			approvalFlow(t, r.on(t), c.silo, c.get, apiHost, ghToken, deployPw, dbPassword, apiKey)
+			approvalFlow(t, r.on(t), c.silo, c.get, func(name, query string) string { return secretAsk(c.client, name, query) },
+				apiHost, ghToken, deployPw, dbPassword, apiKey)
 		})
 	}
 
@@ -121,8 +117,34 @@ spec:
 	}
 }
 
-// approvalFlow is the whole flow on one silo.
-func approvalFlow(t *testing.T, r *rig, silo, get, apiHost, ghToken, deployPw, dbPassword, apiKey string) {
+// secretAsk is the sh a silo runs to read a secret from its local endpoint, waiting for a person's
+// yes as long as the answer is 428: the first pending answer (which says what to approve) is
+// printed, then the value alone, or the refusal. With curl, or with hget (which prints "STATUS
+// BODY"). Exit 0 only with the value.
+func secretAsk(client, name, query string) string {
+	u := "http://169.254.42.1/v1/secrets/" + name + "?" + query
+	if client == "curl" {
+		return `u='` + u + `'; a=
+while :; do
+  code=$(curl -sS -o /tmp/answer -w '%{http_code}' -H 'Kevaso-Local: 1' "$u${a:+&approval=$a}")
+  [ "$code" = 428 ] || break
+  [ -n "$a" ] || { cat /tmp/answer; echo; }
+  a=$(sed -n 's/.*"name":"\([^"]*\)".*/\1/p' /tmp/answer); sleep 2
+done
+cat /tmp/answer; [ "$code" = 200 ]`
+	}
+	return `u='` + u + `'; a=
+while :; do
+  out=$(hget "$u${a:+&approval=$a}" Kevaso-Local=1)
+  case "$out" in "428 "*) ;; *) break ;; esac
+  [ -n "$a" ] || echo "$out"
+  a=$(printf '%s' "$out" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p'); sleep 2
+done
+printf '%s' "${out#200 }"; case "$out" in "200 "*) exit 0 ;; esac; exit 1`
+}
+
+// approvalFlow is the whole flow on one silo; ask(NAME, QUERY) is how it reads a secret.
+func approvalFlow(t *testing.T, r *rig, silo, get string, ask func(name, query string) string, apiHost, ghToken, deployPw, dbPassword, apiKey string) {
 	type result struct {
 		out  string
 		code int
@@ -157,11 +179,11 @@ func approvalFlow(t *testing.T, r *rig, silo, get, apiHost, ghToken, deployPw, d
 	}
 
 	// Without approval in the same grant: straight through.
-	got, _ := r.in("ops", silo, "kvo-guest secret get db-password")
+	got, _ := r.in("ops", silo, ask("db-password", "wait=20s"))
 	expect(t, "a secret without approval", got, dbPassword)
 
 	// 1. A get waits for a yes; kvo approve lets it through.
-	ch := background("kvo-guest secret get gh-token --for 5m --wait 3m")
+	ch := background(ask("gh-token", "for=5m&wait=3m"))
 	a := pendingApproval(t, r, silo, "gh-token", v1.ApprovalForSecret)
 	if a.Spec.For != "5m0s" || a.Spec.Grant != "careful" {
 		t.Errorf("approval %s: %+v", a.Name, a.Spec)
@@ -179,7 +201,7 @@ func approvalFlow(t *testing.T, r *rig, silo, get, apiHost, ghToken, deployPw, d
 
 	// 2. Within the access asked for: no new yes.
 	start := time.Now()
-	got, code := r.in("ops", silo, "kvo-guest secret get gh-token --wait 20s")
+	got, code := r.in("ops", silo, ask("gh-token", "wait=20s"))
 	if code != 0 || got != ghToken || time.Since(start) > 15*time.Second {
 		t.Errorf("a second get within the access: exit %d after %s: %q", code, time.Since(start), got)
 	} else {
@@ -190,7 +212,7 @@ func approvalFlow(t *testing.T, r *rig, silo, get, apiHost, ghToken, deployPw, d
 	}
 
 	// 3. A no fails the call, saying who.
-	ch = background("kvo-guest secret get deploy-pw --wait 3m")
+	ch = background(ask("deploy-pw", "wait=3m"))
 	d := pendingApproval(t, r, silo, "deploy-pw", v1.ApprovalForSecret)
 	held("secret get deploy-pw", ch)
 	expect(t, "kvo deny", r.must(kvo.Run, "", "deny", d.Name, "-n", "ops", "--reason", "not during the freeze"), "denied")

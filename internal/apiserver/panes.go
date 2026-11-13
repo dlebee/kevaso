@@ -18,8 +18,9 @@ import (
 	"kevaso.com/core/internal/store"
 )
 
-// Panes on the control plane (design §10.1). A silo reports over its broker channel (identity
-// from the channel, as for secrets); the control plane checks the limits, keeps the latest report
+// Panes on the control plane (design §10.1). The silo's host fetches its reports and bundles and
+// relays them (the silo named by the host, as for secrets: ADR 0008); the control plane checks the
+// limits again, keeps the latest report
 // per pane as a Pane object, and keeps HTML bundles as opaque blobs: weighed and hashed, never
 // read. A bundle leaves only through GET …/panes/NAME/bundle, as a download no browser renders.
 // Its format (ADR 0007, v1.PaneBundleMaxBytes) is between the silo and the panes app: nothing
@@ -82,7 +83,7 @@ func (s *Server) brokerPane(ctx context.Context, call *brokerCall, req client.Br
 		return client.BrokerResponse{Error: "pane: " + err.Error()}, err.Error(), false
 	}
 	silo, l, now := call.silo, panes.Defaults, s.clock.Now()
-	if silo.Spec.Panes == nil || !silo.Spec.Panes.Enabled {
+	if !silo.Spec.Panes.On() {
 		return fail(panes.ErrOff)
 	}
 	if !s.paneRates.take(silo.UID, l, now) {
@@ -109,7 +110,7 @@ func (s *Server) brokerPane(ctx context.Context, call *brokerCall, req client.Br
 		return fail(errors.New("no report"))
 	}
 	r := *req.Pane
-	r.Silo, r.SiloUID = silo.Name, silo.UID // who it is comes from the channel
+	r.Silo, r.SiloUID = silo.Name, silo.UID // who it is comes from the host, never the report
 	existing, err := s.silosPanes(ctx, silo)
 	if err != nil {
 		return fail(err)

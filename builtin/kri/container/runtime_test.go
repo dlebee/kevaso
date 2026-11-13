@@ -219,14 +219,14 @@ func TestLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	main := f.last("docker run -d --name " + n.Main)
-	for _, want := range []string{"--network container:" + n.Pause, "--security-opt no-new-privileges", "-v " + n.Dir + "/broker:/run/kevaso",
+	for _, want := range []string{"--network container:" + n.Pause, "--security-opt no-new-privileges", "--tmpfs /run:rw,nosuid,nodev,mode=0755",
 		"SSL_CERT_FILE=/etc/ssl/certs/kevaso-ca-bundle.crt", "--cpus 2", "--memory 536870912",
 		"-v " + n.Dir + "/resolv.conf:/etc/resolv.conf:ro", "--init docker.io/library/ubuntu:24.04 sleep infinity"} {
 		if !strings.Contains(main, want) {
 			t.Errorf("main container %q missing %q", main, want)
 		}
 	}
-	if strings.Contains(main, "kvo-guest") || strings.Contains(main, r.Self) {
+	if strings.Contains(main, "broker") || strings.Contains(main, r.Self) {
 		t.Errorf("something of Kevaso's in a user's container: %s", main)
 	}
 	if strings.Contains(main, "--hostname") || strings.Contains(main, "--uts") {
@@ -286,23 +286,25 @@ func TestKevasoImages(t *testing.T) {
 	ctx := context.Background()
 	f := newFake()
 	r := runtime(t, f)
+	KevasoImages["kevaso-test"] = []string{"/usr/local/bin/kevaso-test", "serve"}
+	t.Cleanup(func() { delete(KevasoImages, "kevaso-test") })
 	id := kri.ID{Namespace: "kevaso-system", Name: "ingress", UID: "u9"}
-	if err := r.Create(ctx, kri.Spec{ID: id, Image: "kevaso-ingress"}); err != nil {
+	if err := r.Create(ctx, kri.Spec{ID: id, Image: "kevaso-test"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Start(ctx, id); err != nil {
 		t.Fatal(err)
 	}
 	all := strings.Join(f.cmds, "\n")
-	if strings.Contains(all, "pull") && strings.Contains(all, "kevaso-ingress") {
+	if strings.Contains(all, "pull") && strings.Contains(all, "kevaso-test") {
 		t.Fatalf("pulled Kevaso's own image:\n%s", all)
 	}
-	imp := f.last("docker import --change ENTRYPOINT [\"/usr/local/bin/kvo-guest\",\"ingress\"]")
-	if !strings.Contains(imp, "localhost/kevaso-ingress:") {
-		t.Fatalf("ingress image not built: %s", imp)
+	imp := f.last("docker import --change ENTRYPOINT [\"/usr/local/bin/kevaso-test\",\"serve\"]")
+	if !strings.Contains(imp, "localhost/kevaso-test:") {
+		t.Fatalf("image not built: %s", imp)
 	}
 	main := f.last("docker run -d --name " + NamesFor(id).Main)
-	if !strings.HasSuffix(main, strings.Fields(imp)[len(strings.Fields(imp))-1]) || strings.Contains(main, "kvo-guest:ro") {
+	if !strings.HasSuffix(main, strings.Fields(imp)[len(strings.Fields(imp))-1]) || strings.Contains(main, r.Self+":") {
 		t.Fatalf("main container: %s", main)
 	}
 }

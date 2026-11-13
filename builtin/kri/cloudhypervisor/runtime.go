@@ -678,30 +678,4 @@ func imagePath(image, arch string) (string, error) {
 	return filepath.Join(ImagesDir, f.File), nil
 }
 
-// BrokerListen implements kri.Broker: a unix socket at the VM's Vsock_PORT, which only that VM's
-// VMM can reach (it runs with only its own silo directory visible) and only that VM's guest uses.
-func (r *Runtime) BrokerListen(id kri.ID, port uint32) (net.Listener, error) {
-	if _, ok := r.state(id); !ok {
-		return nil, fmt.Errorf("%s: %w", id, kri.ErrNotFound)
-	}
-	path := fmt.Sprintf("%s_%d", NamesFor(id).Vsock, port)
-	_ = r.Host.RemoveAll(path) // a stale socket from before a restart
-	l, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		_ = l.Close()
-		return nil, err
-	}
-	if err := r.run(context.Background(), "chown", VMMUser+":"+VMMUser, path); err != nil {
-		_ = l.Close()
-		return nil, err
-	}
-	return l, nil
-}
-
-var (
-	_ kri.Runtime = (*Runtime)(nil)
-	_ kri.Broker  = (*Runtime)(nil)
-)
+var _ kri.Runtime = (*Runtime)(nil)

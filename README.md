@@ -40,9 +40,10 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
 - secrets: `Secret` values sealed with envelope encryption under a local KMS (a recovery key printed
   once by `kvoadm init`), never returned by reads; `Grant`s say what a silo may reach and use.
   Silos reach nothing outside the cluster without one. API keys are **injected** at the host's
-  egress gate, so they never enter the silo; other secrets come over the silo's own vsock channel
-  (`kvo-guest secret get`, tmpfs files, env for legacy apps); signing keys stay outside (`Sign`,
-  with slashing protection). Per-secret RBAC (`list`, `use`, `read-value`, `write`, by name or
+  egress gate, so they never enter the silo; other secrets are written into the silo's tmpfs by its
+  host (files, env for legacy apps) or fetched on demand from a plain HTTP endpoint only that silo
+  reaches (`curl -H 'Kevaso-Local: 1' http://169.254.42.1/v1/secrets/NAME`, ADR 0008); nothing of
+  Kevaso's is installed in a silo; signing keys stay outside (`Sign`, with slashing protection). Per-secret RBAC (`list`, `use`, `read-value`, `write`, by name or
   label), write-only secrets, and rotation that reaches every silo using a secret;
 - OpenShell runtimes: `runtime: openshell` (NVIDIA OpenShell's microVM, no network card) and
   `openshell-container` (its Docker driver, no KVM needed). kevasod installs the pinned release and runs
@@ -52,8 +53,9 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   OpenShell can't do (services, address ranges, UDP, file/env/broker/sign) is refused when you apply;
 - container runtimes: `runtime: docker` / `podman` on the same silo bridge as the VMs (firewall,
   default-deny egress, exposure and the egress gate apply unchanged), init steps as init containers,
-  volumes that persist, the broker over a socket of their own;
-- HTTPS: an ingress controller is a silo (`kvo-guest ingress`); `IngressClass` and `Ingress` route
+  volumes that persist, the same local endpoint as VMs, and a tmpfs `/run` for the secrets the
+  host writes;
+- HTTPS: an ingress controller is a silo; `IngressClass` and `Ingress` route
   host names and paths to private silos, each Ingress opening exactly one path through the
   firewall. Certificates are automatic and renewed: Kevaso makes the key and keeps the lifecycle,
   and a **cert-controller** (`sdk/kcc`) turns a CSR into a chain. Built in: `acme` (Let's Encrypt or

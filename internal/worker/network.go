@@ -53,6 +53,7 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 			}
 		}
 		ks.GatePorts = gate.PolicyFor(s, grants).Ports()
+		ks.Endpoint = v1.NeedsEndpoint(s, grants)
 		view.Local = append(view.Local, ks)
 	}
 	return view
@@ -190,6 +191,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		go eg.run(ctx)
 		gatePort = GatePort
 	}
+	endpointAddr := netip.MustParseAddr(v1.EndpointAddress) // the silos' local endpoint, on the bridge (ADR 0008)
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	last := ""
@@ -212,6 +214,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		}
 		view := NetworkView(hostName, me, WithIngressPaths(all, ings, classes), currentGrants())
 		view.GatePort = gatePort
+		view.Endpoint = endpointAddr
 		view.Services = ServiceView(hostName, currentServices())
 		now, ls := time.Now(), currentLeases()
 		view = WithLeases(view, all, ls, now)
@@ -231,6 +234,9 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		}
 		if err := syncAddresses(ctx, "lo", "lo:kv", AnnouncedAddresses(hostName, all)); err != nil {
 			log("announced addresses: %v", err)
+		}
+		if err := syncAddresses(ctx, cloudhypervisor.Bridge, cloudhypervisor.Bridge+":kv", []string{v1.EndpointAddress}); err != nil {
+			log("the local endpoint's address: %v", err)
 		}
 		select {
 		case <-ctx.Done():

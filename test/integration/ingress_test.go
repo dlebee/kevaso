@@ -1,18 +1,14 @@
 package integration
 
 import (
-	"context"
+	"errors"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
-	"kevaso.com/core/internal/agent"
-	"kevaso.com/core/internal/guest"
-	"kevaso.com/core/sdk/kri"
 )
 
 // The ingress path through the API: publishing on a public class is its own permission, and only
@@ -70,18 +66,19 @@ func TestIngress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dir, _ := os.MkdirTemp("/tmp", "kvg")
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	ch := channels{dir}
-	hv1 := &agent.Broker{Client: c.host(t, "hv1")}
-	ctx, cancel := context.WithCancel(c.ctx)
-	defer cancel()
-	for _, s := range []*v1.Silo{ctrl, other} {
-		if err := hv1.Ensure(ctx, ch, kri.ID{Namespace: s.Namespace, Name: s.Name, UID: s.UID}); err != nil {
-			t.Fatal(err)
+	// What the control plane serves a controller (no silo can ask for it any more: the local
+	// endpoint doesn't serve it; the control plane's side is asked directly here).
+	hv1 := c.host(t, "hv1")
+	ask := func(s *v1.Silo) (client.BrokerResponse, error) {
+		var r client.BrokerResponse
+		err := hv1.Call(c.ctx, http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{Namespace: s.Namespace, Name: s.Name, UID: s.UID,
+			Request: client.BrokerRequest{Op: client.OpIngress}}, &r)
+		if err == nil && r.Error != "" {
+			err = errors.New(r.Error)
 		}
+		return r, err
 	}
-	r, err := guest.Call(ctx, ch.dialer(ctrl.UID), client.BrokerRequest{Op: client.OpIngress})
+	r, err := ask(ctrl)
 	if err != nil || r.Ingress == nil {
 		t.Fatalf("controller: %v", err)
 	}
@@ -91,7 +88,7 @@ func TestIngress(t *testing.T) {
 	if len(r.Ingress.Certs) != 1 || !strings.HasPrefix(string(r.Ingress.Certs[0].Bundle), "-----BEGIN CERTIFICATE") {
 		t.Fatalf("certs %+v", r.Ingress.Certs)
 	}
-	if _, err := guest.Call(ctx, ch.dialer(other.UID), client.BrokerRequest{Op: client.OpIngress}); err == nil || !strings.Contains(err.Error(), "isn't the controller") {
+	if _, err := ask(other); err == nil || !strings.Contains(err.Error(), "isn't the controller") {
 		t.Fatalf("a silo that controls no class: %v", err)
 	}
 }
