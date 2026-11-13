@@ -43,7 +43,10 @@ func TestApprovalAnsweredAtOnce(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(c.ctx)
 	defer cancel()
-	go eps.ask(t, ctx, node, http.MethodGet, "/v1/secrets/gh-admin?for=5m", nil, 20*time.Millisecond, nil)
+	asked := make(chan epAnswer, 1)
+	go func() {
+		asked <- eps.ask(t, ctx, node, http.MethodGet, "/v1/secrets/gh-admin?for=5m", nil, 20*time.Millisecond, nil)
+	}()
 	var pending *v1.Approval
 	for deadline := time.Now().Add(5 * time.Second); pending == nil && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
 		l, err := clients[0].List(c.ctx, "Approval", "web3")
@@ -92,6 +95,15 @@ func TestApprovalAnsweredAtOnce(t *testing.T) {
 	var got v1.Approval
 	if err := c.admin.Get(c.ctx, "Approval", "web3", pending.Name, &got); err != nil {
 		t.Fatal(err)
+	}
+	// The silo's call ends with the answer that counted (before the endpoints go away).
+	select {
+	case r := <-asked:
+		if (winner%2 == 0) != (r.code == http.StatusOK) {
+			t.Fatalf("%s's answer counted, the silo got %d %q", people[winner], r.code, r.body)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the silo's call never ended")
 	}
 	want := map[int]string{0: v1.ApprovalApproved, 1: v1.ApprovalDenied}[winner%2]
 	if got.Status.Phase != want || got.Status.AnsweredBy != people[winner] {
