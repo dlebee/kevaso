@@ -16,70 +16,123 @@ import (
 	"kevaso.com/core/internal/leases"
 )
 
-// Ports opened on a lease (design §7.2d): kvo open silo NAME --port P [--for D] [--no-wait] and
-// kvo close silo NAME --port P. Opening needs the verb open on silos/exposure; when the silo's
-// lease needs a yes, it waits for one (kvo approve) unless you hold approve there yourself.
+// Ports opened on a lease (design §7.2d): kvo open silo NAME --port P [--port Q …] [--for D]
+// [--no-wait] and kvo close silo NAME --port P [--port Q …]. Opening needs the verb open on
+// silos/exposure. Each port named is its own ask, on its own terms: its own lease, its own max and,
+// when its lease needs a yes, its own approval (kvo approve), unless you hold approve there
+// yourself. One port refused doesn't stop the others: kvo says which ones were refused and why,
+// opens (or waits for) the rest, and exits non-zero.
 
 type leaseOpts struct {
-	port, forDur string
-	noWait       bool
+	ports  []string
+	forDur string
+	noWait bool
 }
 
 // leasePoll is how often kvo open looks at a lease waiting for a yes.
 var leasePoll = 2 * time.Second
 
+// leaseWait is a port whose ask waits for a yes.
+type leaseWait struct {
+	port, what, lease, approval string
+}
+
 func leaseCommand(ctx context.Context, c *client.Client, o opts, verb string, stdout, stderr io.Writer) error {
-	if len(o.args) != 2 || (o.args[0] != "silo" && o.args[0] != "silos") || o.lease.port == "" {
-		return fmt.Errorf("usage: kvo %s silo NAME --port PORT%s", verb, map[bool]string{true: " [--for 1h] [--no-wait]"}[verb == "open"])
+	if len(o.args) != 2 || (o.args[0] != "silo" && o.args[0] != "silos") || len(o.lease.ports) == 0 {
+		return fmt.Errorf("usage: kvo %s silo NAME --port PORT [--port PORT …]%s", verb, map[bool]string{true: " [--for 1h] [--no-wait]"}[verb == "open"])
 	}
 	ns, name := defaultNS(o), o.args[1]
 	path := "/apis/kevaso/v1/namespaces/" + url.PathEscape(ns) + "/silos/" + url.PathEscape(name) + "/" + verb
-	var ans client.LeaseAnswer
-	if err := c.Call(ctx, http.MethodPost, path, v1.LeaseOpenRequest{Port: o.lease.port, For: o.lease.forDur}, &ans); err != nil {
-		return err
+	var refused []string
+	var waits []leaseWait
+	seen := map[string]bool{}
+	for _, port := range o.lease.ports {
+		if seen[port] {
+			continue
+		}
+		seen[port] = true
+		what := fmt.Sprintf("silo/%s port %s", name, port)
+		var ans client.LeaseAnswer
+		if err := c.Call(ctx, http.MethodPost, path, v1.LeaseOpenRequest{Port: port, For: o.lease.forDur}, &ans); err != nil {
+			if len(o.lease.ports) == 1 {
+				return err
+			}
+			_, _ = fmt.Fprintf(stderr, "kvo: %s: refused: %v\n", what, err)
+			refused = append(refused, port)
+			continue
+		}
+		w, err := leaseAnswered(ns, port, what, verb, o.lease.forDur, &ans, stdout, stderr)
+		switch {
+		case err != nil && len(o.lease.ports) == 1:
+			return err
+		case err != nil:
+			_, _ = fmt.Fprintf(stderr, "kvo: %v\n", err)
+			refused = append(refused, port)
+		case w != nil:
+			waits = append(waits, *w)
+		}
 	}
+	if !o.lease.noWait {
+		for _, w := range waits {
+			if err := leaseAwait(ctx, c, ns, w, stdout); err != nil {
+				if len(o.lease.ports) == 1 {
+					return err
+				}
+				_, _ = fmt.Fprintf(stderr, "kvo: %v\n", err)
+				refused = append(refused, w.port)
+			}
+		}
+	}
+	if len(refused) > 0 {
+		return fmt.Errorf("silo/%s: %d of %d ports not %s: %s", name, len(refused), len(seen), map[string]string{"open": "opened", "close": "closed"}[verb], strings.Join(refused, ", "))
+	}
+	return nil
+}
+
+// leaseAnswered prints one port's answer; a non-nil wait is an ask waiting for a yes.
+func leaseAnswered(ns, port, what, verb, forDur string, ans *client.LeaseAnswer, stdout, stderr io.Writer) (*leaseWait, error) {
 	l := ans.Lease
-	what := fmt.Sprintf("silo/%s port %s", name, o.lease.port)
 	if verb == "close" {
 		_, err := fmt.Fprintln(stdout, what+": closed")
-		return err
+		return nil, err
 	}
 	if ans.Clamped {
-		_, _ = fmt.Fprintf(stderr, "kvo: %s: %s is more than its lease's max: asked for the max instead\n", what, o.lease.forDur)
+		_, _ = fmt.Fprintf(stderr, "kvo: %s: %s is more than this port's lease max: asked for the max instead\n", what, forDur)
 	}
 	if l.IsOpen(l.Spec.SiloUID, time.Now()) && l.Status.Pending == nil {
 		_, err := fmt.Fprintf(stdout, "%s: open until %s\n", what, l.Status.Until.Local().Format(time.Kitchen))
-		return err
+		return nil, err
 	}
 	p := l.Status.Pending
 	if p == nil {
-		return fmt.Errorf("%s: %s", what, dash(l.Status.Reason))
+		return nil, fmt.Errorf("%s: %s", what, dash(l.Status.Reason))
 	}
 	_, _ = fmt.Fprintf(stdout, "%s: waiting for a yes: kvo approve %s -n %s (expires %s)\n", what, p.Approval, ns, p.ExpiresAt.Local().Format(time.Kitchen))
-	if o.lease.noWait {
-		return nil
-	}
+	return &leaseWait{port: port, what: what, lease: l.Name, approval: p.Approval}, nil
+}
+
+// leaseAwait waits for one port's ask to be answered.
+func leaseAwait(ctx context.Context, c *client.Client, ns string, w leaseWait, stdout io.Writer) error {
 	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("stopped waiting for approval %s: %w", p.Approval, ctx.Err())
-		case <-time.After(leasePoll):
-		}
 		var cur v1.Lease
-		if err := c.Get(ctx, "Lease", ns, l.Name, &cur); err != nil {
+		if err := c.Get(ctx, "Lease", ns, w.lease, &cur); err != nil {
 			return err
 		}
-		if cur.Status.Pending != nil && cur.Status.Pending.Approval == p.Approval && time.Now().Before(cur.Status.Pending.ExpiresAt) {
+		switch {
+		case cur.Status.Pending != nil && cur.Status.Pending.Approval == w.approval && time.Now().Before(cur.Status.Pending.ExpiresAt):
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("stopped waiting for approval %s: %w", w.approval, ctx.Err())
+			case <-time.After(leasePoll):
+			}
 			continue
-		}
-		if cur.Status.ApprovedBy != "" && cur.IsOpen(cur.Spec.SiloUID, time.Now()) && cur.Status.Reason == "" {
-			_, err := fmt.Fprintf(stdout, "%s: approved by %s: open until %s\n", what, cur.Status.ApprovedBy, cur.Status.Until.Local().Format(time.Kitchen))
+		case cur.Status.ApprovedBy != "" && cur.IsOpen(cur.Spec.SiloUID, time.Now()) && cur.Status.Reason == "":
+			_, err := fmt.Fprintf(stdout, "%s: approved by %s: open until %s\n", w.what, cur.Status.ApprovedBy, cur.Status.Until.Local().Format(time.Kitchen))
 			return err
+		case cur.Status.Pending != nil && !time.Now().Before(cur.Status.Pending.ExpiresAt):
+			return fmt.Errorf("%s: approval %s expired: nobody answered in time", w.what, w.approval)
 		}
-		if cur.Status.Pending != nil && !time.Now().Before(cur.Status.Pending.ExpiresAt) {
-			return fmt.Errorf("%s: approval %s expired: nobody answered in time", what, p.Approval)
-		}
-		return fmt.Errorf("%s: %s", what, dash(cur.Status.Reason))
+		return fmt.Errorf("%s: %s", w.what, dash(cur.Status.Reason))
 	}
 }
 
@@ -116,20 +169,12 @@ func leaseColumns(l *v1.Lease, now time.Time) []string {
 	return []string{l.Spec.Silo, l.Spec.Port, phase, when, dash(by)}
 }
 
-// describeLeases adds a silo's leased ports to kvo describe silo: each closed, pending or open
-// until a time.
+// describeLeases adds a silo's outside ports to kvo describe silo: each always open, or leased with
+// its own terms and whether it's closed, pending or open until a time.
 func describeLeases(ctx context.Context, c *client.Client, s *v1.Silo, w io.Writer) error {
 	sv := s.Spec.Service
-	if sv == nil || sv.Lease == nil {
+	if !leases.Any(sv) {
 		return nil
-	}
-	ls := sv.Lease
-	terms := []string{"default " + orDash(ls.Default, "30m or its max"), "max " + orDash(ls.Max, "the cluster's")}
-	if ls.Approval != nil && ls.Approval.Required {
-		terms = append(terms, "a person's yes first")
-	}
-	if len(ls.AllowFrom) > 0 {
-		terms = append(terms, "from "+strings.Join(ls.AllowFrom, ", "))
 	}
 	var all []*v1.Lease
 	list, err := c.List(ctx, "Lease", s.Namespace)
@@ -144,28 +189,61 @@ func describeLeases(ctx context.Context, c *client.Client, s *v1.Silo, w io.Writ
 			}
 		}
 	}
+	return writePorts(w, s, all, err, time.Now())
+}
+
+// writePorts writes each outside port of s at now (readErr: the leases couldn't be read).
+func writePorts(w io.Writer, s *v1.Silo, all []*v1.Lease, readErr error, now time.Time) error {
+	sv := s.Spec.Service
+	err := readErr
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintf(tw, "Leased ports:\t%s\n", strings.Join(terms, ", "))
+	_, _ = fmt.Fprintln(tw, "Outside ports:")
+	_, _ = fmt.Fprintln(tw, "  PORT\tLEASE\tSTATE")
+	states := map[string]leases.State{}
+	if err == nil {
+		for _, st := range leases.States(s, all, now) {
+			states[st.Port] = st
+		}
+	}
+	for _, p := range leases.Exposed(sv) {
+		pl := leases.Of(sv, p)
+		if pl == nil {
+			_, _ = fmt.Fprintf(tw, "  %s\t-\talways open\n", p)
+			continue
+		}
+		state := "closed"
+		if err != nil {
+			state = "?"
+		}
+		if st, ok := states[p]; ok {
+			switch st.Phase {
+			case v1.LeaseOpen:
+				state = "open until " + st.Until.Local().Format(time.Kitchen)
+				if st.Pending {
+					state += " (an extension waits for a yes)"
+				}
+			case v1.LeasePending:
+				state = "pending: waiting for a yes until " + st.Until.Local().Format(time.Kitchen)
+			}
+		}
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\n", p, leaseTerms(pl), state)
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(tw, "  (can't read leases: %v)\n", err)
-		return tw.Flush()
-	}
-	_, _ = fmt.Fprintln(tw, "  PORT\tSTATE")
-	now := time.Now()
-	for _, st := range leases.States(s, all, now) {
-		state := "closed"
-		switch st.Phase {
-		case v1.LeaseOpen:
-			state = "open until " + st.Until.Local().Format(time.Kitchen)
-			if st.Pending {
-				state += " (an extension waits for a yes)"
-			}
-		case v1.LeasePending:
-			state = "pending: waiting for a yes until " + st.Until.Local().Format(time.Kitchen)
-		}
-		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", st.Port, state)
 	}
 	return tw.Flush()
+}
+
+// leaseTerms are one port's lease terms, for people.
+func leaseTerms(pl *v1.PortLease) string {
+	terms := []string{"default " + orDash(pl.Default, "30m or its max"), "max " + orDash(pl.Max, "the cluster's")}
+	if pl.Approval != nil && pl.Approval.Required {
+		terms = append(terms, "a person's yes first")
+	}
+	if len(pl.AllowFrom) > 0 {
+		terms = append(terms, "from "+strings.Join(pl.AllowFrom, ", "))
+	}
+	return strings.Join(terms, ", ")
 }
 
 func orDash(s, def string) string {

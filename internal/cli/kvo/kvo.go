@@ -124,7 +124,9 @@ func parse(args []string, env func(string) string) (opts, error) {
 		case "--to":
 			o.moveTo, err = val()
 		case "--port":
-			o.lease.port, err = val()
+			var p string
+			p, err = val()
+			o.lease.ports = append(o.lease.ports, p)
 		case "--for":
 			o.lease.forDur, err = val()
 		case "--no-wait":

@@ -32,8 +32,6 @@ type SiloService struct {
 	Expose       string            `json:"expose,omitempty"` // private | hostPort | loadBalancer
 	HostPort     *HostPortSpec     `json:"hostPort,omitempty"`
 	LoadBalancer *LoadBalancerSpec `json:"loadBalancer,omitempty"`
-	// Lease: some exposed ports open only on a lease (design §7.2d).
-	Lease *ServiceLease `json:"lease,omitempty"`
 }
 
 // ServicePort is one port of a service.
@@ -41,6 +39,8 @@ type ServicePort struct {
 	Name     string `json:"name"`
 	Port     int    `json:"port"`
 	Protocol string `json:"protocol,omitempty"` // TCP (default) | UDP
+	// Lease: this exposed port opens only on a lease, on its own terms (design §7.2d).
+	Lease *PortLease `json:"lease,omitempty"`
 }
 
 // HostPortSpec opens ports on the host's address (layer 4, client IP preserved; E009).
@@ -164,7 +164,7 @@ func DiskVolume(s *Silo) (Volume, bool) {
 	if s.Spec.Runtime != "cloud-hypervisor" || c == "" || c == VolumeLocal {
 		return Volume{}, false
 	}
-	return Volume{Name: RootDiskVolume, Class: c, Size: s.Spec.Disk.Size, Important: true}, true
+	return Volume{Name: RootDiskVolume, Class: c, Size: s.Spec.Disk.Size}, true
 }
 
 // IPPool is addresses routed to one host, for silos to have their own (design §7.2b).

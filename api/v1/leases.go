@@ -6,22 +6,24 @@ import (
 	"kevaso.com/core/api/meta"
 )
 
-// Ports opened on a lease (design §7.2d). A silo's outside exposure (hostPort or loadBalancer) can
-// say some of its ports are leased: closed until someone opens them for a while, closing by
-// themselves when that time is up. A lease can need a person's yes, as an Approval with the use
-// expose. Private silo-to-silo access (allowFrom) is never leased.
+// Ports opened on a lease (design §7.2d). Each port of a silo's outside exposure (hostPort or
+// loadBalancer) says for itself whether it is leased: closed until someone opens it for a while,
+// closing by itself when that time is up. A leased port has its own terms and its own lease (its
+// own max, approval rule, sources and clock); a port without lease is always open. A lease can
+// need a person's yes, as an Approval with the use expose. Private silo-to-silo access (allowFrom)
+// is never leased.
 
-// ServiceLease is a silo service's `lease:`.
-type ServiceLease struct {
-	// Ports are the leased ports, by name (default: every exposed port).
-	Ports []string `json:"ports,omitempty"`
-	// Default is a lease's length when the ask names none; Max the longest this silo may ever get
+// PortLease is a service port's `lease:`. Present (even empty: `lease: {}`), the port is closed
+// until leased.
+type PortLease struct {
+	// Default is a lease's length when the ask names none; Max the longest this port may ever get
 	// (Go durations). No max: the control plane's default limit applies.
 	Default string `json:"default,omitempty"`
 	Max     string `json:"max,omitempty"`
-	// Approval: each lease needs a person's yes first.
+	// Approval: each lease of this port needs a person's yes first.
 	Approval *ApprovalRule `json:"approval,omitempty"`
-	// AllowFrom narrows the service's own sources while a lease is open (CIDRs); never wider.
+	// AllowFrom narrows the service's own sources while this port's lease is open (CIDRs); never
+	// wider.
 	AllowFrom []string `json:"allowFrom,omitempty"`
 }
 
@@ -91,7 +93,7 @@ type LeaseAsk struct {
 // …/close (Port only).
 type LeaseOpenRequest struct {
 	Port string `json:"port"`
-	For  string `json:"for,omitempty"` // "" → the silo's lease.default
+	For  string `json:"for,omitempty"` // "" → the port's lease.default
 }
 
 // IsOpen reports whether the lease opens its port, for the silo with uid siloUID, at now.

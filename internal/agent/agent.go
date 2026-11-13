@@ -94,7 +94,10 @@ type Agent struct {
 	nodeMounts sync.Map
 	// guestMounted: silo uid → the volumes its guest last mounted (runtimes with kri.GuestVolumes).
 	guestMounted sync.Map
-	engine       *engine.Engine
+	// heldBack: silo uid → struct{}: an old copy kept here, stopped, for its host-local volumes
+	// (removeEverywhere).
+	heldBack sync.Map
+	engine   *engine.Engine
 }
 
 // DefaultFenceAfter is under the host lease (40s), so a cut-off host has stopped its Recreate silos
@@ -765,6 +768,22 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {
 				continue
 			}
+			// The same silo, placed elsewhere but not deleted, with volumes on this host's disks:
+			// deleting the copy would delete them (every runtime removes a silo's local volumes on
+			// Delete). A volume is kept data (design §0.3): admission never lets such a silo be
+			// recreated elsewhere, so this shouldn't happen; if it does, stop the copy and keep it.
+			if local := hostLocalVolumes(s); s != nil && s.DeletionTimestamp == nil && id.UID == s.UID && len(local) > 0 {
+				if _, seen := a.heldBack.LoadOrStore(id.UID, struct{}{}); !seen {
+					a.log("%s isn't placed here any more (host %q), but keeps local volume(s) %s here: stopped, not removed (delete the silo to remove them)",
+						id, s.Status.Host, strings.Join(local, ", "))
+					if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
+						a.heldBack.Delete(id.UID)
+						return err
+					}
+				}
+				continue
+			}
+			a.heldBack.Delete(id.UID)
 			a.log("removing %s from %s", id, rt.Info().Name)
 			if a.broker != nil {
 				a.broker.Close(id.UID)
@@ -784,6 +803,20 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 		}
 	}
 	return nil
+}
+
+// hostLocalVolumes are the names of s's volumes on this host's own disks (class local).
+func hostLocalVolumes(s *v1.Silo) []string {
+	if s == nil {
+		return nil
+	}
+	var out []string
+	for _, v := range s.Spec.Volumes {
+		if v.Class == "" || v.Class == v1.VolumeLocal {
+			out = append(out, v.Name)
+		}
+	}
+	return out
 }
 
 // fanOut notifies the local silos a changed secret or grant reaches.

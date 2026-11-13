@@ -32,7 +32,7 @@ func portCommand(ctx context.Context, dial Dialer, args []string, stdout, stderr
 			return fmt.Errorf("port %s: no end time in the answer", args[1])
 		}
 		if resp.Clamped {
-			_, _ = fmt.Fprintf(stderr, "kvo-guest: port %s: that's more than its lease's max: open for the max instead\n", args[1])
+			_, _ = fmt.Fprintf(stderr, "kvo-guest: port %s: that's more than this port's lease max: open for the max instead\n", args[1])
 		}
 		_, err = fmt.Fprintf(stdout, "port %s open until %s\n", args[1], resp.Until.Local().Format(time.RFC3339))
 		return err

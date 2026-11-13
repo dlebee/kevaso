@@ -41,12 +41,12 @@ type Silo struct {
 	SourceRanges []string
 	// Leases (design §7.2d): Leased are the exposed ports (by name) that open only on a lease, and
 	// Closed those of them with no active lease now: a closed port has no outside rule at all, and
-	// connections that a lease let in are cut (reset) once it ends. An open leased port takes
-	// LeaseFrom as its sources when set (the service's allowFrom narrowed by the lease's). Private
-	// access (allowFrom on the silo) is never leased.
+	// connections that a lease let in are cut (reset) once it ends. An open leased port takes its
+	// LeaseFrom entry as its sources when it has one (the service's allowFrom narrowed by that
+	// port's lease.allowFrom). Private access (allowFrom on the silo) is never leased.
 	Leased    []string
 	Closed    []string
-	LeaseFrom []string
+	LeaseFrom map[string][]string
 }
 
 // Service is a standalone Service as the rules need it (design §7.1): its virtual IP, sent to its
@@ -211,8 +211,8 @@ func Rules(h Host) string {
 		if s.PublicIP.IsValid() {
 			for _, r := range exp {
 				sources := from
-				if contains(s.Leased, r.name) && s.LeaseFrom != nil {
-					sources = s.LeaseFrom
+				if f, ok := s.LeaseFrom[r.name]; ok && contains(s.Leased, r.name) {
+					sources = f
 				}
 				// Leased with no lease now (or a lease no source may use): no rule; cut what a
 				// lease let in.
