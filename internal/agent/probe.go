@@ -20,15 +20,15 @@ import (
 
 // DefaultProbeTimeout is how long a volume's folder may take to answer before the silo's status
 // says it isn't answering (Agent.ProbeTimeout).
-const DefaultProbeTimeout = 10 * time.Second
+const DefaultProbeTimeout = 5 * time.Second
 
-// probeWait is how long a reconcile waits for a probe it started (a probe still going is looked
-// at again on the next pass, never started twice).
-var probeWait = 2 * time.Second
+// probeWait is how long a reconcile waits for a probe it started, a fifth of the timeout (a probe
+// still going is looked at again on the next pass, never started twice).
+func (a *Agent) probeWait() time.Duration { return a.probeTimeout() / 5 }
 
 // DefaultProbeEvery is how often a running silo with mount-reach volumes is looked at again
 // (Agent.ProbeEvery).
-const DefaultProbeEvery = 15 * time.Second
+const DefaultProbeEvery = 10 * time.Second
 
 func (a *Agent) probeTimeout() time.Duration {
 	if a.ProbeTimeout > 0 {
@@ -86,6 +86,7 @@ type trouble struct {
 
 // probeVolumes looks at each of the silo's mount-reach volumes: bad are the ones whose folder has
 // not answered for the probe timeout, or answered with an error; pending says a probe is still going.
+// While a probe is going (and not yet late), a volume keeps what the last one found.
 func (a *Agent) probeVolumes(dirs map[string]string) (bad map[string]trouble, pending bool) {
 	look := a.Probe
 	if look == nil {
@@ -93,42 +94,59 @@ func (a *Agent) probeVolumes(dirs map[string]string) (bad map[string]trouble, pe
 	}
 	bad = map[string]trouble{}
 	for name, dir := range dirs {
-		p := &probe{started: a.Clock.Now(), done: make(chan struct{})}
-		if o, loaded := a.probes.LoadOrStore(dir, p); loaded {
-			old := o.(*probe)
-			select {
-			case <-old.done: // the last one answered: what it said holds until this one answers
-				if old.err != nil {
-					bad[name] = trouble{err: old.err.Error()}
-				}
-				a.probes.CompareAndDelete(dir, old)
-				if _, loaded := a.probes.LoadOrStore(dir, p); loaded {
-					continue // another pass started one just now
-				}
-			default:
-				if d := a.Clock.Now().Sub(old.started); d >= a.probeTimeout() {
-					bad[name] = trouble{hung: true}
-				} else {
-					pending = true
-				}
-				continue
+		found, known := a.probeOnce(dir, look)
+		if !known {
+			pending = true
+			if o, ok := a.probeSaid.Load(dir); ok {
+				found = o.(trouble)
 			}
 		}
-		go func() {
-			p.err = look(dir)
-			close(p.done)
-		}()
-		select {
-		case <-p.done:
-			delete(bad, name)
-			if p.err != nil {
-				bad[name] = trouble{err: p.err.Error()}
-			}
-		case <-time.After(min(probeWait, a.probeTimeout())):
-			pending = true
+		a.probeSaid.Store(dir, found)
+		if found.hung || found.err != "" {
+			bad[name] = found
 		}
 	}
 	return bad, pending
+}
+
+// probeOnce is what the folder's probe says now: known is false while it's going and not yet late.
+// A finished probe's answer is taken and a new one started (never two at once for one folder).
+func (a *Agent) probeOnce(dir string, look func(string) error) (found trouble, known bool) {
+	if o, ok := a.probes.Load(dir); ok {
+		old := o.(*probe)
+		select {
+		case <-old.done:
+			a.probes.CompareAndDelete(dir, old)
+			if old.err != nil {
+				found, known = trouble{err: old.err.Error()}, true
+			} else {
+				found, known = trouble{}, true
+			}
+		default:
+			if a.Clock.Now().Sub(old.started) >= a.probeTimeout() {
+				return trouble{hung: true}, true
+			}
+			return trouble{}, false
+		}
+	}
+	p := &probe{started: a.Clock.Now(), done: make(chan struct{})}
+	if _, loaded := a.probes.LoadOrStore(dir, p); loaded {
+		return found, known // another pass started one just now
+	}
+	go func() {
+		p.err = look(dir)
+		close(p.done)
+	}()
+	select {
+	case <-p.done:
+		a.probes.CompareAndDelete(dir, p)
+		if p.err != nil {
+			return trouble{err: p.err.Error()}, true
+		}
+		return trouble{}, true
+	case <-time.After(a.probeWait()):
+		return found, known
+	}
 }
 
 // volumesResponding sets the VolumesResponding condition on a running silo with mount-reach volumes.

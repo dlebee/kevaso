@@ -81,8 +81,9 @@ type Agent struct {
 	kept        sync.Map // silo uid → keptState: its daemons and upkeep as this agent last decided
 	// nodeMounts: volume path → handle, mounted here by a node side during this agent's run.
 	nodeMounts sync.Map
-	// probes: a mount-reach volume's folder → its probe (probe.go).
-	probes sync.Map
+	// probes: a mount-reach volume's folder → its probe going (probe.go); probeSaid: → what the
+	// last finished one found.
+	probes, probeSaid sync.Map
 	// guestMounted: silo uid → the volumes its guest last mounted (runtimes with kri.GuestVolumes).
 	guestMounted sync.Map
 	engine       *engine.Engine

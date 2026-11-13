@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -130,6 +131,9 @@ func TestVolumeNotAnsweringIsSaid(t *testing.T) {
 				return errors.New("lstat: input/output error")
 			case "fail":
 				return errors.New("lstat /var/lib/kevaso/volumes/u/home/.kevaso-probe: input/output error")
+			case "slowfail": // what a JuiceFS client does once it gives up: each call waits its retries out, then fails
+				time.Sleep(500 * time.Millisecond)
+				return errors.New("lstat: input/output error")
 			}
 			return nil
 		}}
@@ -179,6 +183,21 @@ func TestVolumeNotAnsweringIsSaid(t *testing.T) {
 		return c != nil && c.Status == meta.ConditionFalse && c.Reason == "Failing" &&
 			strings.Contains(c.Message, "input/output error") && x.Status.Phase == agent.PhaseRunning
 	})
+	// Each call hanging, then failing: never "answering" in between (on Linodes the condition went
+	// back to True while the next probe was still under its timeout).
+	// Other changes to the silo make the agent look at it at any time, also just after a probe began.
+	set("slowfail")
+	for i, end := 0, time.Now().Add(3*time.Second); time.Now().Before(end); i++ {
+		var x v1.Silo
+		if err := c.Get(ctx, "Silo", "dev", "pad", &x); err == nil {
+			if c := meta.FindCondition(x.Status.Conditions, "VolumesResponding"); c == nil || c.Status != meta.ConditionFalse {
+				t.Fatalf("a volume whose calls hang then fail was said answering: %+v", c)
+			}
+			x.Labels = map[string]string{"poke": strconv.Itoa(i)}
+			_ = c.Update(ctx, &x)
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
 	set("ok")
 	wait("answering again", func(x *v1.Silo, c *meta.Condition) bool { return c != nil && c.Status == meta.ConditionTrue })
 }
