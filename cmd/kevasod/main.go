@@ -187,6 +187,7 @@ func runControlPlane(ctx context.Context, args []string) error {
 	fs.Var(&labels, "label", "worker label key=value (repeatable)")
 	loop := fs.String("loop-storage", "", "development only: back silo disks with this sparse file when the host has no 'kevaso' volume group")
 	loopSize := fs.String("loop-size", "64G", "size of the loop storage file")
+	device := fs.String("storage-device", "", "a whole, empty disk for the silos' volume group when the host has none (refused if anything is on it)")
 	egressCA := fs.String("egress-extra-ca", "", "PEM file the egress gate also trusts for upstream hosts (a company TLS proxy)")
 	gwScope := fs.String("openshell-gateway-scope", "namespace", "OpenShell gateways: one per host, namespace or silo")
 	var certCtrls, dnsProviders multi
@@ -265,7 +266,7 @@ func runControlPlane(ctx context.Context, args []string) error {
 			lbl[k] = v
 		}
 		cfg.Worker = &worker.Config{Runtimes: runtimes, Labels: lbl, EgressExtraCA: *egressCA, GatewayScope: *gwScope,
-			Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize}}
+			Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize, Device: *device}}
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	cfg.Log = logger.Printf
@@ -291,6 +292,7 @@ func runWorker(ctx context.Context, args []string) error {
 	fs.Var(&runtimes, "runtime", "runtime to install (repeatable; default cloud-hypervisor)")
 	loop := fs.String("loop-storage", "", "development only: back silo disks with this sparse file")
 	loopSize := fs.String("loop-size", "64G", "size of the loop storage file")
+	device := fs.String("storage-device", "", "a whole, empty disk for the silos' volume group when the host has none (refused if anything is on it)")
 	every := fs.Duration("heartbeat", worker.DefaultHeartbeat, "how often to report")
 	withMesh := fs.Bool("mesh", true, "put this host on the WireGuard mesh")
 	egressCA := fs.String("egress-extra-ca", "", "PEM file the egress gate also trusts for upstream hosts (a company TLS proxy)")
@@ -323,7 +325,7 @@ func runWorker(ctx context.Context, args []string) error {
 	contact := &worker.Contact{}
 	contact.SetFence(true) // a worker only: the control plane is elsewhere and carries on without it
 	wc := worker.Config{HostName: jc.HostName, Runtimes: runtimes, DataDir: jc.DataDir, Clock: clock.Real{}, Log: logger.Printf,
-		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize}, Contact: contact, MeshSubnet: *withMesh, EgressExtraCA: *egressCA, GatewayScope: *gwScope}
+		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize, Device: *device}, Contact: contact, MeshSubnet: *withMesh, EgressExtraCA: *egressCA, GatewayScope: *gwScope}
 	rts, err := worker.NewRuntimes(wc)
 	if err != nil {
 		return err

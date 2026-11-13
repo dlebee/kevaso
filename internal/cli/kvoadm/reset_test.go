@@ -268,3 +268,18 @@ func (a answerRunner) Run(_ context.Context, cmd string, _ []byte) ([]byte, erro
 	}
 	return []byte(a), nil
 }
+
+func TestStorageDeviceFlag(t *testing.T) {
+	o, err := parseTarget([]string{"ubuntu@h", "--storage-device", "/dev/nvme1n1"})
+	if err != nil || o.StorageDevice != "/dev/nvme1n1" {
+		t.Fatalf("%+v %v", o, err)
+	}
+	if args := strings.Join(workerArgs(o), " "); !strings.Contains(args, "--storage-device /dev/nvme1n1") || strings.Contains(args, "loop") {
+		t.Errorf("worker args: %s", args)
+	}
+	for _, bad := range [][]string{{"h", "--storage-device", "nvme1n1"}, {"h", "--storage-device", "/dev/x", "--loop-storage", "60G"}} {
+		if _, err := parseTarget(bad); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
+	}
+}
