@@ -158,7 +158,7 @@ func (s *Server) leaseAsk(ctx context.Context, silo *v1.Silo, a leases.Ask, byTy
 	if out.Event != "" {
 		why := leaseWhy(out.Lease)
 		if out.Clamped {
-			why += fmt.Sprintf(" (asked for %s, more than its max %s)", a.For, leases.MaxOf(silo.Spec.Service, s.limitsForLeases()))
+			why += fmt.Sprintf(" (asked for %s, more than its max %s)", a.For, leases.MaxOf(leases.Of(silo.Spec.Service, a.Port), s.limitsForLeases()))
 		}
 		s.auditLease(out.Event, a.By, byType, silo.Namespace, silo.Name, a.Port, out.Err == nil, why)
 	} else if out.Err != nil && a.Poll == "" {

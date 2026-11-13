@@ -13,7 +13,9 @@ func silo(name, host, addr string, labels map[string]string, ready bool) *v1.Sil
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "web3", Labels: labels},
 		Spec:   v1.SiloSpec{Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "rpc", Port: 8546}}}},
 		Status: v1.SiloStatus{Host: host, Address: addr}}
+	s.Status.Phase = "Starting"
 	if ready {
+		s.Status.Phase = "Running"
 		meta.SetCondition(&s.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue}, time.Now())
 	}
 	return s
@@ -30,7 +32,7 @@ func TestEndpoints(t *testing.T) {
 	eps := service.Endpoints(svc, []*v1.Silo{
 		silo("c", "w2", "10.64.2.2", app, true),
 		silo("a", "w1", "10.64.1.2", app, true),
-		silo("d", "w1", "10.64.1.4", app, false),                           // not Ready
+		silo("d", "w1", "10.64.1.4", app, false),                           // not running yet
 		silo("e", "w1", "10.64.1.5", standby, true),                        // standby
 		silo("f", "w1", "10.64.1.6", map[string]string{"app": "db"}, true), // not selected
 		other, // other namespace

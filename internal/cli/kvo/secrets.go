@@ -19,6 +19,7 @@ import (
 //
 //	kvo create secret NAME (--from-file F | --from-file - | --generate) [--type opaque|ed25519|ecdsa-p256]
 //	        [--write-only] [--allow broker,inject,…] [-l KEY=VALUE]…
+//	kvo create secret NAME --type registry --server HOST --username U --from-file - [--default-pull]
 //	kvo secret set NAME --from-file F|-       a new value (rotation): every silo using it gets it
 //	kvo get secret NAME --reveal              print the value (needs read-value; never write-only)
 type secretOpts struct {
@@ -27,6 +28,8 @@ type secretOpts struct {
 	generate, writeOnly        bool
 	reveal                     bool
 	allow, labels              []string
+	server, username           string // type registry
+	defaultPull                bool   // type registry: the namespace's default for its server
 }
 
 func (o secretOpts) value(stdin io.Reader) ([]byte, error) {
@@ -73,6 +76,9 @@ func createSecret(ctx context.Context, c *client.Client, o opts, stdin io.Reader
 	if o.secret.writeOnly {
 		f := false
 		s.Spec.ValueReadable = &f
+	}
+	if err := registrySecret(s, o.secret); err != nil {
+		return err
 	}
 	for _, l := range o.secret.labels {
 		k, v, ok := strings.Cut(l, "=")

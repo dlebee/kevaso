@@ -16,10 +16,11 @@ func TestWithLeases(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "api", UID: "u1"},
 		Spec: v1.SiloSpec{Service: &v1.SiloService{
-			Ports:    []v1.ServicePort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}},
+			Ports: []v1.ServicePort{{Name: "web", Port: 8080},
+				{Name: "debug", Port: 9229, Lease: &v1.PortLease{AllowFrom: []string{"203.0.113.7", "198.51.100.0/24"}}},
+				{Name: "preview", Port: 3000, Lease: &v1.PortLease{Max: "8h"}}},
 			Expose:   v1.ExposeHostPort,
 			HostPort: &v1.HostPortSpec{AllowFrom: []string{"203.0.113.0/24"}},
-			Lease:    &v1.ServiceLease{Ports: []string{"debug"}, AllowFrom: []string{"203.0.113.7", "198.51.100.0/24"}},
 		}},
 		Status: v1.SiloStatus{Host: "hv1", Address: "10.64.2.2", Service: v1.SiloServiceStatus{PublicIP: "198.51.100.10"}}}
 	silos := []*v1.Silo{s}
@@ -29,7 +30,8 @@ func TestWithLeases(t *testing.T) {
 		Spec: v1.LeaseSpec{Silo: "api", SiloUID: "u1", Port: "debug"}, Status: v1.LeaseStatus{Phase: v1.LeaseOpen, Until: &until}}
 
 	closed := WithLeases(view, silos, nil, now)
-	if ks := closed.Local[0]; !slices.Equal(ks.Leased, []string{"debug"}) || !slices.Equal(ks.Closed, []string{"debug"}) || !slices.Equal(ks.LeaseFrom, []string{"203.0.113.7"}) {
+	if ks := closed.Local[0]; !slices.Equal(ks.Leased, []string{"debug", "preview"}) || !slices.Equal(ks.Closed, []string{"debug", "preview"}) ||
+		len(ks.LeaseFrom) != 1 || !slices.Equal(ks.LeaseFrom["debug"], []string{"203.0.113.7"}) {
 		t.Fatalf("no lease: %+v", ks)
 	}
 	if len(view.Local[0].Closed) != 0 {
@@ -40,10 +42,10 @@ func TestWithLeases(t *testing.T) {
 		t.Fatalf("closed rules:\n%s", closedRules)
 	}
 	opened := WithLeases(view, silos, []*v1.Lease{open}, now)
-	if ks := opened.Local[0]; len(ks.Closed) != 0 {
-		t.Fatalf("open: %+v", ks)
+	if ks := opened.Local[0]; !slices.Equal(ks.Closed, []string{"preview"}) {
+		t.Fatalf("debug open, preview not: %+v", ks)
 	}
-	if r := kni.Rules(opened); !strings.Contains(r, "ip saddr 203.0.113.7 tcp dport 9229 ct status dnat accept") {
+	if r := kni.Rules(opened); !strings.Contains(r, "ip saddr 203.0.113.7 tcp dport 9229 ct status dnat accept") || strings.Contains(r, "dport 3000 dnat") {
 		t.Fatalf("open rules:\n%s", r)
 	}
 	// At its end, the same inputs give the closed rules again.

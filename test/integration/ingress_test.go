@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -33,7 +34,7 @@ func TestIngress(t *testing.T) {
 		if err := c.admin.Create(c.ctx, s); err != nil {
 			t.Fatal(err)
 		}
-		s.Status.Host = "hv1"
+		s.Status.Host, s.Status.Phase, s.Status.Address = "hv1", "Running", "10.64.1."+fmt.Sprint(2+len(name)) // running: routed (routeWhen running)
 		if err := c.admin.UpdateStatus(c.ctx, s); err != nil {
 			t.Fatal(err)
 		}

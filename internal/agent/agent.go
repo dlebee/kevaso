@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/policy"
+	"kevaso.com/core/internal/routing"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -73,6 +75,8 @@ type Agent struct {
 	Nodes *plugins.Registry
 	// TunnelRefresh is how often the agent looks for system nodes to hold a tunnel to (tunnels.go).
 	TunnelRefresh time.Duration
+	// ProbeDial, if set, dials tcp and http probes instead of the host's own dialer (tests).
+	ProbeDial func(ctx context.Context, network, addr string) (net.Conn, error)
 	// OnEndpoints, if set, hears the control planes the agent's client may use whenever it learns
 	// more from the system nodes (the worker keeps them for its next start).
 	OnEndpoints func([]string)
@@ -90,11 +94,15 @@ type Agent struct {
 	broker      *Broker
 	prepared    sync.Map // silo uid → struct{}: the guest helper is in place for this agent's run
 	kept        sync.Map // silo uid → keptState: its daemons and upkeep as this agent last decided
+	probed      sync.Map // silo uid → probeState: its probes as this agent last decided
 	// nodeMounts: volume path → handle, mounted here by a node side during this agent's run.
 	nodeMounts sync.Map
 	// guestMounted: silo uid → the volumes its guest last mounted (runtimes with kri.GuestVolumes).
 	guestMounted sync.Map
-	engine       *engine.Engine
+	// heldBack: silo uid → struct{}: an old copy kept here, stopped, for its host-local volumes
+	// (removeEverywhere).
+	heldBack sync.Map
+	engine   *engine.Engine
 }
 
 // DefaultFenceAfter is under the host lease (40s), so a cut-off host has stopped its Recreate silos
@@ -360,16 +368,21 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		if err := a.recordForFence(s); err != nil {
 			return engine.Result{}, err
 		}
-		if err := rt.Create(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
-			Volumes: vols, Command: s.Spec.Command, DiskHostPath: diskPath}); err != nil {
+		digest, err := a.pull(ctx, rt, s, image)
+		if err == nil {
+			err = rt.Create(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
+				Volumes: vols, Command: s.Spec.Command, DiskHostPath: diskPath})
+		}
+		if err != nil {
 			_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 				st.Phase = PhaseFailed
-				setCond(st, "Ready", meta.ConditionFalse, "CreateFailed", err.Error(), s.Generation, a.now())
+				setCond(st, "Ready", meta.ConditionFalse, failReason(err, "CreateFailed"), err.Error(), s.Generation, a.now())
 			})
 			return engine.Result{}, err
 		}
 		return engine.Result{RequeueAfter: time.Millisecond}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 			st.Image = running(st.Image, s, image)
+			st.Image.Digest = digest
 		})
 	case kri.Created, kri.Stopped:
 		if ic, ok := rt.(kri.InitContainers); ok {
@@ -389,6 +402,11 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		}
 		// Its policy is in the fence record before it runs, never after: a fence must know it.
 		if err := a.recordForFence(s); err != nil {
+			return engine.Result{}, err
+		}
+		// Every start begins its probes afresh: startup's deadline counts from this boot.
+		a.probed.Delete(s.UID)
+		if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Probes, st.StartedAt = nil, nil }); err != nil {
 			return engine.Result{}, err
 		}
 		if err := rt.Start(ctx, id); err != nil {
@@ -430,23 +448,29 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	if done, err := a.runInit(ctx, rt, s); err != nil || !done {
 		return engine.Result{}, err
 	}
-	reason, msg, again := "Running", "running on "+a.HostName, time.Duration(0)
-	status := meta.ConditionTrue
-	if r := s.Spec.Readiness; r != nil {
-		// Ready only while its check passes: looked at again every period.
-		again = duration(r.Period, 10*time.Second)
-		if ok, out := a.ready(ctx, rt, s); !ok {
-			status, reason, msg = meta.ConditionFalse, "NotReady", "readiness: "+out
-		} else {
-			msg += ", readiness passing"
-		}
+	// Probes (design §0.6), if it has any: Started, Ready and Degraded follow them. Without any,
+	// it's Started and Ready now, and nothing else is ensured.
+	startedAt := a.now()
+	if s.Status.StartedAt != nil {
+		startedAt = *s.Status.StartedAt
 	}
+	po := a.probe(ctx, rt, s, rs.Address, startedAt)
+	if po.restart {
+		return engine.Result{RequeueAfter: time.Millisecond}, a.restartForLiveness(ctx, rt, s, po)
+	}
+	again := po.next
 	if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		st.Phase, st.Address = PhaseRunning, rs.Address
 		if st.Image == nil || st.Image.Running == "" {
 			st.Image = running(st.Image, s, image) // created before images were recorded
 		}
-		setCond(st, "Ready", status, reason, msg, s.Generation, a.now())
+		if st.StartedAt == nil {
+			st.StartedAt = &startedAt
+		}
+		applyProbes(st, s, po, a.now())
+		if c := meta.FindCondition(st.Conditions, "Ready"); c != nil && c.Reason == "Running" {
+			c.Message = "running on " + a.HostName
+		}
 	}); err != nil {
 		return engine.Result{}, err
 	}
@@ -484,6 +508,9 @@ func running(cur *v1.SiloImage, s *v1.Silo, image string) *v1.SiloImage {
 			next.From, next.Ref = s.Spec.Image, image
 		}
 	}
+	if cur != nil && cur.Running == image {
+		next.Digest = cur.Digest // what was pulled for it (Create and Reset set a new one)
+	}
 	next.Running, next.Reset = image, s.Spec.Reset
 	return next
 }
@@ -519,6 +546,15 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 			setCond(st, "Updated", meta.ConditionFalse, "ResetUnsupported", "runtime "+s.Spec.Runtime+" can't reset a silo: "+what+" waits", s.Generation, a.now())
 		})
 	}
+	// The pull first, while the old copy still runs: a registry that refuses leaves it running
+	// (and Ready), with Updated saying why the update waits.
+	digest, err := a.pull(ctx, rt, s, image)
+	if err != nil {
+		_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			setCond(st, "Updated", meta.ConditionFalse, failReason(err, "ResetFailed"), err.Error()+" (still running the old image)", s.Generation, a.now())
+		})
+		return true, fmt.Errorf("reset onto %s: %w", image, err)
+	}
 	if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		st.Phase = PhaseStarting
 		setCond(st, "Ready", meta.ConditionFalse, "Updating", "stopping for "+what+" (StopFirst; volumes kept)", s.Generation, a.now())
@@ -540,7 +576,7 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 	if err := rr.Reset(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
 		Volumes: vols, Command: s.Spec.Command, DiskHostPath: diskPath}); err != nil {
 		_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
-			setCond(st, "Updated", meta.ConditionFalse, "ResetFailed", err.Error(), s.Generation, a.now())
+			setCond(st, "Updated", meta.ConditionFalse, failReason(err, "ResetFailed"), err.Error(), s.Generation, a.now())
 		})
 		return true, fmt.Errorf("reset onto %s: %w", image, err)
 	}
@@ -549,31 +585,9 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 	a.log("silo %s/%s: reset onto %s (%s)", s.Namespace, s.Name, image, what)
 	return true, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		st.Image, st.Init, st.Address = running(st.Image, s, image), nil, ""
+		st.Image.Digest = digest
 		setCond(st, "Updated", meta.ConditionTrue, "Reset", "reset onto "+image+" (stop-first, volumes kept)", s.Generation, a.now())
 	})
-}
-
-// ready runs the silo's readiness command once.
-func (a *Agent) ready(ctx context.Context, rt kri.Runtime, s *v1.Silo) (bool, string) {
-	r := s.Spec.Readiness
-	cctx, cancel := context.WithTimeout(ctx, duration(r.Timeout, 5*time.Second))
-	defer cancel()
-	var out bytes.Buffer
-	code, err := rt.Exec(cctx, idOf(s), kri.ExecRequest{Command: r.Command, Stdout: &out, Stderr: &out})
-	switch {
-	case err != nil:
-		return false, err.Error()
-	case code != 0:
-		return false, fmt.Sprintf("exit %d: %s", code, tail(out.String(), 200))
-	}
-	return true, ""
-}
-
-func duration(s string, def time.Duration) time.Duration {
-	if d, err := time.ParseDuration(s); err == nil && d > 0 {
-		return d
-	}
-	return def
 }
 
 // runInit runs the init steps that haven't run yet inside the running silo (through Exec).
@@ -697,6 +711,7 @@ func (a *Agent) setStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.SiloS
 		}
 		before := statusKey(cur.Status)
 		mutate(&cur.Status)
+		cur.Status.Routing = routing.Silo(cur.Spec, cur.Status) // always as its status says now
 		if statusKey(cur.Status) == before {
 			return nil
 		}
@@ -747,6 +762,22 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {
 				continue
 			}
+			// The same silo, placed elsewhere but not deleted, with volumes on this host's disks:
+			// deleting the copy would delete them (every runtime removes a silo's local volumes on
+			// Delete). A volume is kept data (design §0.3): admission never lets such a silo be
+			// recreated elsewhere, so this shouldn't happen; if it does, stop the copy and keep it.
+			if local := hostLocalVolumes(s); s != nil && s.DeletionTimestamp == nil && id.UID == s.UID && len(local) > 0 {
+				if _, seen := a.heldBack.LoadOrStore(id.UID, struct{}{}); !seen {
+					a.log("%s isn't placed here any more (host %q), but keeps local volume(s) %s here: stopped, not removed (delete the silo to remove them)",
+						id, s.Status.Host, strings.Join(local, ", "))
+					if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
+						a.heldBack.Delete(id.UID)
+						return err
+					}
+				}
+				continue
+			}
+			a.heldBack.Delete(id.UID)
 			a.log("removing %s from %s", id, rt.Info().Name)
 			if a.broker != nil {
 				a.broker.Close(id.UID)
@@ -766,6 +797,20 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 		}
 	}
 	return nil
+}
+
+// hostLocalVolumes are the names of s's volumes on this host's own disks (class local).
+func hostLocalVolumes(s *v1.Silo) []string {
+	if s == nil {
+		return nil
+	}
+	var out []string
+	for _, v := range s.Spec.Volumes {
+		if v.Class == "" || v.Class == v1.VolumeLocal {
+			out = append(out, v.Name)
+		}
+	}
+	return out
 }
 
 // fanOut notifies the local silos a changed secret or grant reaches.

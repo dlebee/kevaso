@@ -12,6 +12,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/ips"
+	"kevaso.com/core/internal/probes"
 )
 
 // semantic checks what CEL can't say well: addresses and ranges.
@@ -46,16 +47,7 @@ func semantic(obj meta.Object) []string {
 				errs = append(errs, fmt.Sprintf("allowFrom: %q: want NAME or NAMESPACE/NAME", a.Silo))
 			}
 		}
-		if r := o.Spec.Readiness; r != nil {
-			for field, d := range map[string]string{"readiness.period": r.Period, "readiness.timeout": r.Timeout} {
-				if d == "" {
-					continue
-				}
-				if v, err := time.ParseDuration(d); err != nil || v <= 0 {
-					errs = append(errs, fmt.Sprintf("%s: %q isn't a duration (e.g. 10s)", field, d))
-				}
-			}
-		}
+		errs = append(errs, probes.Validate(o.Spec)...)
 	case *v1.Service:
 		for _, p := range o.Spec.Ports {
 			if t := p.TargetPort; t != "" {

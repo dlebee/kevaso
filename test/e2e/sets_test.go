@@ -36,10 +36,11 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(("", 8080), H).serve_forever()
 `
 
-// TestSiloSetsAndServices is M12 on real machines (example 07 without the cloud): an Image with two
-// versions, a SiloSet of two instances spread over two hosts, and a Service in front of them,
+// TestSiloSetsAndServices is M12 on real machines (example 07 without the cloud): a SiloSet of
+// containers from a registry reference (python 3.12), a SiloSet of two instances spread over two hosts, and a Service in front of them,
 // reached by name from a client silo through its virtual IP, on this host and across the mesh;
-// a silo its endpoints don't allow is refused. Then a rolling upgrade to v2 that keeps each
+// a silo its endpoints don't allow is refused. Then a rolling upgrade to python 3.13 (a new
+// reference in the set) that keeps each
 // instance's volume, a scale-in that asks first, and a reset.
 //
 //	a  control plane + worker (docker)
@@ -168,21 +169,19 @@ func TestSiloSetsAndServices(t *testing.T) {
 	py := func(v string) string { return "docker.io/library/python:" + v + "-slim" }
 	objs := []any{
 		v1.Namespace{TypeMeta: tm("Namespace"), ObjectMeta: meta.ObjectMeta{Name: "web3"}},
-		v1.Image{TypeMeta: tm("Image"), ObjectMeta: meta.ObjectMeta{Name: "echo", Namespace: "web3"},
-			Spec: v1.ImageSpec{Versions: []v1.ImageVersion{{Name: "v1", Container: py("3.12")}, {Name: "v2", Container: py("3.13")}}}},
 		v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: "echo", Namespace: "web3"},
-			Spec: v1.SiloSetSpec{Image: "echo:v1", Instances: 2, Spread: "host", UpgradePolicy: v1.UpgradeRolling,
+			Spec: v1.SiloSetSpec{Image: py("3.12"), Instances: 2, Spread: "host", UpgradePolicy: v1.UpgradeRolling,
 				Template: v1.SiloTemplate{Labels: map[string]string{"app": "echo"}, SiloSpec: v1.SiloSpec{
 					Runtime: "docker", Resources: v1.Resources{Memory: "256Mi"},
 					Command:   []string{"python3", "-c", echoServer},
 					Volumes:   []v1.Volume{{Name: "data", MountPath: "/data"}},
 					Init:      &v1.Init{Steps: []v1.InitStep{{Name: "first", Run: "test -s /data/first || date +%s%N > /data/first"}}},
-					Service:   &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}},
+					Service:   &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}, RouteWhen: v1.RouteWhenReady},
 					AllowFrom: []v1.AllowFrom{{Silo: "client"}},
-					Readiness: &v1.Readiness{Command: []string{"python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/')"}, Period: "3s"},
+					Probes:    &v1.Probes{Readiness: &v1.Probe{HTTP: &v1.HTTPProbe{Port: "http"}, Period: "3s"}},
 				}}}},
 		v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "echo", Namespace: "web3"},
-			Spec: v1.ServiceSpec{Selector: map[string]string{"app": "echo"}, Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "http"}}}},
+			Spec: v1.ServiceSpec{Selector: map[string]string{"app": "echo"}, Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "http"}}, RouteWhen: v1.RouteWhenReady}},
 	}
 	for _, n := range []string{"client", "stranger"} {
 		objs = append(objs, v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: n, Namespace: "web3"},
@@ -276,13 +275,13 @@ except Exception as e: print("error", e)`
 		t.Fatalf("service status: %+v", svc.Status)
 	}
 
-	// v2, rolling: each instance reset onto python 3.13, its volume (first boot) kept.
+	// A new reference, rolling: each instance reset onto python 3.13, its volume (first boot) kept.
 	var set v1.SiloSet
 	getJSON(&set, "get", "siloset", "echo")
-	set.Spec.Image = "echo:v2"
+	set.Spec.Image = py("3.13")
 	b, _ := json.Marshal(set)
 	must(kvo.Run, string(b), "apply", "-f", "-")
-	waitFor("every instance on v2 with its volume", 15*time.Minute, func() (bool, string) {
+	waitFor("every instance on python 3.13 with its volume", 15*time.Minute, func() (bool, string) {
 		seen := ask("client", 16)
 		var st v1.SiloSet
 		getJSON(&st, "get", "siloset", "echo")

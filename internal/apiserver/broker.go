@@ -48,7 +48,8 @@ func (s *Server) agentBroker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	portOp := req.Request.Op == client.OpPortOpen || req.Request.Op == client.OpPortClose // leases need no KMS
-	if s.vault == nil && !portOp {
+	pullOp := req.Request.Op == client.OpPullCredential                                   // only a credential found needs it
+	if s.vault == nil && !portOp && !pullOp {
 		writeErr(w, errf(http.StatusServiceUnavailable, "Unavailable", "this server has no KMS"))
 		return
 	}
@@ -155,6 +156,8 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 		return client.BrokerResponse{Deliveries: out}, fmt.Sprintf("%d file/env deliveries", len(out)), true
 	case client.OpAskInject:
 		return s.askInject(ctx, call, op)
+	case client.OpPullCredential:
+		return s.brokerPull(ctx, call, op)
 	case client.OpPane, client.OpPaneBundle:
 		return s.brokerPane(ctx, call, op)
 	case client.OpPortOpen, client.OpPortClose:

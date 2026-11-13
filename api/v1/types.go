@@ -180,8 +180,12 @@ type Silo struct {
 
 // SiloSpec is what the user declares.
 type SiloSpec struct {
-	Runtime     string       `json:"runtime"`
-	Image       string       `json:"image,omitempty"`
+	Runtime string `json:"runtime"`
+	// Image: on cloud-hypervisor an Image name (NAME[:VERSION]) or a built-in OS image; on docker,
+	// podman and OpenShell a registry reference, used as it is (pin it by digest: a tag can move).
+	Image string `json:"image,omitempty"`
+	// ImagePull says how a registry image is pulled (a private registry's credential).
+	ImagePull   *ImagePull   `json:"imagePull,omitempty"`
 	Resources   Resources    `json:"resources,omitempty"`
 	Disk        Disk         `json:"disk,omitempty"`
 	Placement   Placement    `json:"placement,omitempty"`
@@ -212,9 +216,10 @@ type SiloSpec struct {
 	Exclusive bool `json:"exclusive,omitempty"`
 	// Update says how a change that needs a fresh copy (a new image, a reset) is applied.
 	Update *UpdatePolicy `json:"update,omitempty"`
-	// Readiness is what "ready" means beyond running: a command run inside the silo now and then.
-	// Until it passes the silo isn't Ready, so it's no Service's endpoint and a rolling update waits.
-	Readiness *Readiness `json:"readiness,omitempty"`
+	// Probes say what started, ready and alive mean beyond running (design §0.6). None: the silo
+	// is Ready as soon as it runs. Until readiness passes it isn't Ready, so a rolling update
+	// waits, and a service with routeWhen: ready gets no traffic.
+	Probes *Probes `json:"probes,omitempty"`
 	// Reset, when it changes, puts the silo back onto its image (`kvo reset silo`): a fresh disk
 	// (or container) from the image, the same name, address and volumes. Any new value will do;
 	// kvo sets the time.
@@ -234,20 +239,15 @@ type UpdatePolicy struct {
 	Strategy string `json:"strategy,omitempty"`
 }
 
-// Readiness is a check run inside the silo.
-type Readiness struct {
-	Command []string `json:"command"`           // argv, run directly (use sh -c for a script)
-	Period  string   `json:"period,omitempty"`  // how often (default 10s)
-	Timeout string   `json:"timeout,omitempty"` // each run's limit (default 5s)
-}
-
-// Volume is a silo's extra storage.
+// Volume is a silo's extra storage. A volume is kept data, with no flag to say otherwise (design
+// §0.3): onHostLoss: Recreate (and kvo move --recreate) is refused while the silo has a host-local
+// volume, since a fresh copy elsewhere would leave it behind. Disposable data (a cache, scratch
+// space) lives on the silo's own disk instead; volumes on a class that travels follow the silo.
 type Volume struct {
 	Name      string `json:"name"`
 	Class     string `json:"class,omitempty"` // default: local
 	Size      string `json:"size,omitempty"`  // e.g. 10Gi (on container runtimes: not enforced yet)
 	MountPath string `json:"mountPath"`
-	Important bool   `json:"important,omitempty"` // never left behind by a Recreate
 }
 
 // Availability is the silo's answer to losing its host.
@@ -358,6 +358,14 @@ type SiloStatus struct {
 	// Movable says where the silo could go with its data, from its storage: Pinned (HOST),
 	// Region (R), Anywhere; or Recreate when only a fresh copy can go elsewhere.
 	Movable string `json:"movable,omitempty"`
+	// Probes are its probes' states (design §0.6); Restarts what liveness onFailure: restart did.
+	// StartedAt is when its workload last came up (running, init done): startup's deadline
+	// counts from it, and every start begins the probes afresh.
+	Probes    []ProbeStatus     `json:"probes,omitempty"`
+	StartedAt *time.Time        `json:"startedAt,omitempty"`
+	Restarts  *LivenessRestarts `json:"restarts,omitempty"`
+	// Routing is whether its own service gets traffic now (routeWhen), and why not.
+	Routing *Routing `json:"routing,omitempty"`
 }
 
 // SiloImage is a silo's image: resolved by the control plane (an Image's version, or the name as
@@ -367,6 +375,9 @@ type SiloImage struct {
 	Ref     string `json:"ref"`               // what the runtime is given
 	Running string `json:"running,omitempty"` // the ref the silo was created or last reset with
 	Reset   string `json:"reset,omitempty"`   // the spec.reset last applied
+	// Digest is what the host actually pulled for Running (registry images: sha256:…), so an
+	// update shows even when a tag moved.
+	Digest string `json:"digest,omitempty"`
 }
 
 // VolumeStatus is one provider volume of a silo. The control plane creates and attaches it (Handle,

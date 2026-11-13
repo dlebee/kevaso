@@ -72,13 +72,15 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   cloud token alone. The first is [Linode](https://github.com/dlebee/kevaso-provider-linode):
   NodeBalancers, Block Storage volumes (formatted once, deleted with the silo), shared IPs announced
   over BGP that follow their silo to another Linode, and Linode DNS for Ingress host names;
-- sets and images: an `Image` names what silos start from, with versions that never change (an OCI
-  reference for containers, a checked disk image for VMs). A `SiloSet` is a scale set of stateful
+- sets and images: an `Image` is a bootable disk for VMs, with versions that never change (a URL
+  and its SHA-256, checked by every host); a container silo's image is just its registry reference,
+  pulled from a private registry with a `registry` secret only its host's agent ever gets. A `SiloSet` is a scale set of stateful
   silos with stable names (`rpc-0`, `rpc-1`, …), spread over hosts, with booted standby instances,
   protected ones scale-in never removes (`kvo protect`), and rollouts that reset instances onto a new
   image a few at a time (or start extra ones first), volumes kept. `exclusive: true` guarantees one
   copy only. A standalone `Service` puts a virtual IP and a name in front of a set, on every worker,
-  sending to the instances whose `readiness` check passes, and can take an outside address from a
+  sending to the instances its `routeWhen` says (`ready`: while their readiness probe passes;
+  `running`: as soon as they run; probes are startup, readiness and liveness), and can take an outside address from a
   plugin's load balancer. `kvo scale`, `kvo reset`;
 - under the hood: a store with global revisions and resumable watches, CEL validation, a controller
   engine; the testbed and end-to-end loop (`make e2e`).

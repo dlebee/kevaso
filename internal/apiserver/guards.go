@@ -41,10 +41,12 @@ func (s *Server) guard(ctx context.Context, t target, old, obj meta.Object) erro
 		s.checkExposure,
 		s.checkPublishPublic,
 		s.checkSecretUse,
+		s.checkImages,
 		s.checkRuntimeFit,
 		s.checkIPs,
 		func(_ context.Context, t target, obj meta.Object) error { return s.checkMovability(t, obj) },
 		func(_ context.Context, t target, obj meta.Object) error { return s.checkLease(t, obj) },
+		s.checkRouting,
 	} {
 		if err := check(ctx, t, obj); err != nil {
 			return err
@@ -61,15 +63,19 @@ func privileges(obj meta.Object) string {
 	case *v1.Silo:
 		g := slices.Clone(o.Spec.Grants)
 		slices.Sort(g)
-		p += fmt.Sprint("|grants:", g)
+		p += fmt.Sprint("|grants:", g) + pullOf(o.Spec.ImagePull)
 	case *v1.SiloSet:
 		g := slices.Clone(o.Spec.Template.Grants)
 		slices.Sort(g)
-		p += fmt.Sprint("|grants:", g)
+		p += fmt.Sprint("|grants:", g) + pullOf(o.Spec.Template.ImagePull)
 	case *v1.Grant:
 		p += "|uses:" + fmt.Sprint(grantUses(o))
 	case *v1.Ingress:
 		p += "|class:" + o.Spec.IngressClass
+	case *v1.Secret:
+		if o.DefaultPull() {
+			p += "|default-pull:" + o.Spec.Server
+		}
 	}
 	return p + namedIPs(obj)
 }

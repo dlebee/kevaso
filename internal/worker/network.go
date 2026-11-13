@@ -15,6 +15,7 @@ import (
 	"kevaso.com/core/builtin/kni"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/gate"
+	"kevaso.com/core/internal/routing"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -53,6 +54,7 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 			}
 		}
 		ks.GatePorts = gate.PolicyFor(s, grants).Ports()
+		ks.Held = !routing.Routed(s) // routeWhen (design §0.6): no outside rule while held
 		view.Local = append(view.Local, ks)
 	}
 	return view
