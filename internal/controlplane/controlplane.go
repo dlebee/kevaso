@@ -27,6 +27,7 @@ import (
 	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/audit"
 	"kevaso.com/core/internal/backup"
+	"kevaso.com/core/internal/claims"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controllers/certificate"
 	hostcontroller "kevaso.com/core/internal/controllers/host"
@@ -409,7 +410,11 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	e.Register(&ipcontroller.Made{Client: c, IPs: ipInf, For: silos, ForKind: "Silo", Plugins: cfg.Plugins}, engine.Options{Workers: 1})
 	e.Register(&ipcontroller.Made{Client: c, IPs: ipInf, For: services, ForKind: "Service", Plugins: cfg.Plugins}, engine.Options{Workers: 1})
 	e.Register(&siloset.Controller{Client: c, Sets: sets, Silos: silos, Clock: cfg.Clock}, engine.Options{Workers: 2})
-	e.Register(&servicecontroller.Controller{Client: c, Services: services, Silos: silos, Clock: cfg.Clock}, engine.Options{Workers: 2})
+	var uniq *claims.Claims // cluster IPs, node ports, host ports: one holder each, by the store
+	if cd.store != nil {
+		uniq = &claims.Claims{Store: cd.store}
+	}
+	e.Register(&servicecontroller.Controller{Client: c, Services: services, Silos: silos, Clock: cfg.Clock, Claims: uniq}, engine.Options{Workers: 2})
 	images.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "VMImage", Namespace: k.Namespace, Name: k.Name}) })
 	sets.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "SiloSet", Namespace: k.Namespace, Name: k.Name}) })
 	services.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Service", Namespace: k.Namespace, Name: k.Name}) })

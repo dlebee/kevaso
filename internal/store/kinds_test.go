@@ -58,6 +58,7 @@ func TestInternalStoreKindsAreNotAPIKinds(t *testing.T) {
 		"k":                 true, // rbac: the role and binding kinds
 		"sel.Kind":          true, // the store itself, echoing a caller's selector
 		"parts[0]":          true, // the etcd store parsing its own keys
+		"h.Kind":            true, // claims: a claim's holder, an API object (Service, Silo, IP, Host)
 	}
 	for expr, where := range dynamic {
 		if !allowed[expr] {
