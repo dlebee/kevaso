@@ -234,6 +234,7 @@ func decodeDefined(body []byte, dk *definedKind) (*v1.Unstructured, error) {
 type definedWrite func(ctx context.Context, t target, u *v1.Unstructured) (store.Object, error)
 
 func (s *Server) writeDefined(ctx context.Context, w http.ResponseWriter, r *http.Request, t target, fn definedWrite, okCode int) {
+	ctx = withDryRun(ctx, r)
 	body, err := readBody(r)
 	if err != nil {
 		writeErr(w, err)
@@ -320,7 +321,7 @@ func (s *Server) createDefined(ctx context.Context, t target, u *v1.Unstructured
 	if err != nil {
 		return store.Object{}, err
 	}
-	return s.store.Create(ctx, t.key(), data)
+	return s.commitCreate(ctx, t.key(), data)
 }
 
 func (s *Server) updateDefined(ctx context.Context, t target, u *v1.Unstructured) (store.Object, error) {
@@ -365,7 +366,7 @@ func (s *Server) updateDefined(ctx context.Context, t target, u *v1.Unstructured
 		nm.UID, nm.CreationTimestamp, nm.DeletionTimestamp = om.UID, om.CreationTimestamp, om.DeletionTimestamp
 		if om.DeletionTimestamp != nil {
 			if len(nm.Finalizers) == 0 {
-				d, err := s.store.Delete(ctx, t.key(), expected)
+				d, err := s.commitDelete(ctx, t.key(), expected)
 				return store.Object{Key: d.Key}, err
 			}
 			if !isSubset(nm.Finalizers, om.Finalizers) {
@@ -384,7 +385,7 @@ func (s *Server) updateDefined(ctx context.Context, t target, u *v1.Unstructured
 	if err != nil {
 		return store.Object{}, err
 	}
-	return s.store.Update(ctx, t.key(), data, expected)
+	return s.commitUpdate(ctx, t.key(), data, expected)
 }
 
 // specPart is what bumps generation: every field but metadata and status.

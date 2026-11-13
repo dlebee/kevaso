@@ -76,6 +76,13 @@ defined. The product built on Kevaso (its `Session` and `Task` kinds, §10) is t
 13. **Built-in roles don't reach defined kinds**, except cluster-admin's `*`: an operator grants
     them explicitly (a plugin's controller gets a role on its own resources).
 
+10a. **Dry runs.** A create or update with `?dryRun=All` goes through every step above, including
+     the resourceVersion check, and answers with the object it would store, storing nothing.
+     `kvo apply` dry-runs an update and compares that answer with what's stored (every top-level
+     field but `status`, and the user-owned metadata), so a manifest that leaves out what the
+     server defaults or a policy sets is `unchanged`; a Secret whose manifest carries a value is
+     always written.
+
 ### Admission policies
 
 14. **Both are cluster-scoped** and match by `match.kinds` (a built-in kind's name or plural, a

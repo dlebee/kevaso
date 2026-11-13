@@ -373,6 +373,7 @@ func (s *Server) watch(ctx context.Context, w http.ResponseWriter, r *http.Reque
 type writeFunc func(ctx context.Context, t target, obj meta.Object) (store.Object, error)
 
 func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Request, t target, fn writeFunc, okCode int) {
+	ctx = withDryRun(ctx, r) // dryrun.go
 	body, err := readBody(r)
 	if err != nil {
 		writeErr(w, err)
@@ -417,7 +418,7 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		writeErr(w, err)
 		return
 	}
-	if value != nil && o.Data != nil {
+	if value != nil && o.Data != nil && !dryRun(ctx) {
 		if o, err = s.storeSecretValue(ctx, o, value); err != nil {
 			writeErr(w, err)
 			return
@@ -522,7 +523,7 @@ func (s *Server) create(ctx context.Context, t target, obj meta.Object) (store.O
 	if err != nil {
 		return store.Object{}, err
 	}
-	return s.store.Create(ctx, t.key(), data)
+	return s.commitCreate(ctx, t.key(), data)
 }
 
 // update replaces an object (or only its status, for /status). It needs the resourceVersion the
@@ -574,7 +575,7 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		// Once deleting, finalizers may only be removed; when the last one goes, the object goes.
 		if oldMeta.DeletionTimestamp != nil {
 			if len(nm.Finalizers) == 0 {
-				d, err := s.store.Delete(ctx, t.key(), expected)
+				d, err := s.commitDelete(ctx, t.key(), expected)
 				return store.Object{Key: d.Key}, err // no Data: tells write() the object is gone
 			}
 			if !isSubset(nm.Finalizers, oldMeta.Finalizers) {
@@ -590,7 +591,7 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 	if err != nil {
 		return store.Object{}, err
 	}
-	return s.store.Update(ctx, t.key(), data, expected)
+	return s.commitUpdate(ctx, t.key(), data, expected)
 }
 
 // delete removes an object, or, while it has finalizers, marks it as being deleted and leaves the
