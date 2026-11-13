@@ -25,7 +25,7 @@ func TestMeshPlansAgree(t *testing.T) {
 	defer cancel()
 	dir, _ := os.MkdirTemp("/tmp", "kvm")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", Address: "203.0.113.10",
+	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", ExternalIP: "203.0.113.10",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond}); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestMeshPlansAgree(t *testing.T) {
 		nat        bool
 	}{{"worker-1", "198.51.100.30", false}, {"home", "192.168.1.20", true}, {"office", "192.168.2.20", true}} {
 		if err := admin.Create(ctx, &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: h.name},
-			Spec: v1.HostSpec{Address: h.addr, Network: v1.HostNetwork{BehindNAT: h.nat}, Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}); err != nil {
+			Spec: v1.HostSpec{InternalIP: h.addr, Network: v1.HostNetwork{BehindNAT: h.nat}, Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}); err != nil {
 			t.Fatal(err)
 		}
 	}

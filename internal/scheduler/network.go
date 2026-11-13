@@ -109,7 +109,7 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloS
 	}
 	switch {
 	case UsesHostAddress(s):
-		st.PublicIP = h.Spec.Address
+		st.PublicIP = h.Reach()
 	case svcIP != nil && svcIP.Spec.Class == v1.LBIPPool:
 		if svcIP.Status.Host == h.Name {
 			st.PublicIP = svcIP.Status.Address
@@ -131,11 +131,8 @@ func AnswersOn(s *v1.Silo, h *v1.Host, in string) []string {
 		return []string{in}
 	}
 	var out []string
-	if h.Spec.Address != "" {
-		out = append(out, h.Spec.Address)
-	}
-	for _, a := range h.Status.Addresses {
-		if !slices.Contains(out, a) {
+	for _, a := range []string{h.Internal(), h.External()} {
+		if a != "" && !slices.Contains(out, a) {
 			out = append(out, a)
 		}
 	}

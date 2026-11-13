@@ -150,7 +150,7 @@ func TestServicesAndExposure(t *testing.T) {
 	hk, _ := d.Exec(ctx, machines["metal"], "ssh-keygen", "-lf", "/etc/ssh/ssh_host_ed25519_key.pub")
 	must(kvoadm.Run, "", "init", info.User+"@"+info.Host, "--ssh-port", strconv.Itoa(info.Port), "--ssh-key", info.KeyFile,
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
-		"--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker", "--loop-storage", "40G")
+		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker", "--loop-storage", "40G")
 	// The two extra addresses routed to metal-1, for ip-pool to hand out.
 	must(kvoadm.Run, "", "host", "addresses", "metal-1", "add", pool1, pool2)
 

@@ -31,7 +31,7 @@ func TestPanes(t *testing.T) {
 	})
 	metalIP := r.ip("metal")
 	r.must(kvoadm.Run, "", append(append([]string{"init"}, r.sshArgs("metal")...),
-		"--name", "metal-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker",
+		"--name", "metal-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker",
 		"--runtime", "cloud-hypervisor", "--runtime", "docker", "--loop-storage", "20G")...)
 	r.must(kvo.Run, `apiVersion: kevaso/v1
 kind: Namespace

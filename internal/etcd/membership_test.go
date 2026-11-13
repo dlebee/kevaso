@@ -16,7 +16,7 @@ import (
 )
 
 func host(name, addr string, cp *v1.ControlPlaneSpec) v1.Host {
-	return v1.Host{ObjectMeta: meta.ObjectMeta{Name: name}, Spec: v1.HostSpec{Address: addr, Components: v1.HostComponents{ControlPlane: cp}}}
+	return v1.Host{ObjectMeta: meta.ObjectMeta{Name: name}, Spec: v1.HostSpec{InternalIP: addr, Components: v1.HostComponents{ControlPlane: cp}}}
 }
 
 func TestDesiredMembers(t *testing.T) {
@@ -240,7 +240,7 @@ func TestReconcileGrowAndShrink(t *testing.T) {
 func TestDesiredMembersSkipsHostsBeingDeleted(t *testing.T) {
 	now := time.Now()
 	mk := func(name string, deleting bool) v1.Host {
-		h := v1.Host{ObjectMeta: meta.ObjectMeta{Name: name}, Spec: v1.HostSpec{Address: "203.0.113.1",
+		h := v1.Host{ObjectMeta: meta.ObjectMeta{Name: name}, Spec: v1.HostSpec{ExternalIP: "203.0.113.1",
 			Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{}}}}
 		if deleting {
 			h.DeletionTimestamp, h.Finalizers = &now, []string{FinalizerMember}

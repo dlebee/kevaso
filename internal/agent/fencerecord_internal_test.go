@@ -127,7 +127,7 @@ func TestAgentReportsFenceFaults(t *testing.T) {
 	defer ts.Close()
 	c := client.New(ts.URL)
 	if err := c.Create(ctx, &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: "hv1"},
-		Spec: v1.HostSpec{Address: "192.0.2.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}); err != nil {
+		Spec: v1.HostSpec{ExternalIP: "192.0.2.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()

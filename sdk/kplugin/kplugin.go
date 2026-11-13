@@ -57,7 +57,7 @@ type Class struct {
 	// (a node port), which the host forwards to the silo.
 	NodePorts bool `json:"nodePorts,omitempty"`
 	// FiltersSources (load balancers): the load balancer itself accepts clients only from each
-	// port's AllowFrom. A class whose address isn't announced must, for any port with sources: its
+	// port's Sources. A class whose address isn't announced must, for any port with sources: its
 	// hosts see only the load balancer's addresses (SourceRanges), never the clients'. Without it,
 	// such ports are left out of the load balancer (design §7.2d: never open wider than asked).
 	FiltersSources bool `json:"filtersSources,omitempty"`
@@ -115,8 +115,9 @@ const (
 
 // Host is a cluster host, as the control plane knows it.
 type Host struct {
-	Name    string `json:"name"`
-	Address string `json:"address"` // its public address (Host spec.address)
+	Name       string `json:"name"`
+	InternalIP string `json:"internalIP,omitempty"` // spec.internalIP, as the operator declared it
+	ExternalIP string `json:"externalIP,omitempty"` // spec.externalIP
 }
 
 // HostInfo is what a plugin knows about one of its own machines.
@@ -154,9 +155,9 @@ type Port struct {
 	Protocol string `json:"protocol"` // TCP | UDP
 	Port     int    `json:"port"`
 	NodePort int    `json:"nodePort,omitempty"`
-	// AllowFrom are the client sources (CIDRs) the port accepts; nil: anywhere. Set only for
-	// classes with FiltersSources: the service's allowFrom, narrowed by an open lease's.
-	AllowFrom []string `json:"allowFrom,omitempty"`
+	// Sources are the client ranges (CIDRs) the port accepts: its service port's sources; nil:
+	// anywhere. Set only for classes with FiltersSources.
+	Sources []string `json:"sources,omitempty"`
 	// Service is who the port is for (silo/NAME or service/NAME); Backends where it goes.
 	Service  string     `json:"service,omitempty"`
 	Backends []HostInfo `json:"backends,omitempty"`

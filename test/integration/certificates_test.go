@@ -51,7 +51,7 @@ func TestCertificatesInAControlPlane(t *testing.T) {
 	other, _ := pki.NewCA("other", time.Now())
 	sg := &signing{ca: other, got: make(chan kcc.Request, 4)}
 	fl := &failing{}
-	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", Address: "127.0.0.1",
+	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond,
 		CertControllers: kcc.Registry{"signing": sg, "failing": fl}})
 	if err != nil {

@@ -33,8 +33,7 @@ func boundTo(s *v1.Silo) func(*v1.IP) {
 
 func TestHostPortScheduling(t *testing.T) {
 	behind := host("home", func(h *v1.Host) {
-		h.Spec.Network.BehindNAT, h.Spec.Address = true, "192.168.1.20"
-		h.Status.Addresses = []string{"192.168.1.20", "10.0.0.5"}
+		h.Spec.Network.BehindNAT, h.Spec.InternalIP = true, "192.168.1.20"
 	})
 	// Behind NAT, or with only LAN addresses, is a normal host (design §7.2a): its ports answer on
 	// the addresses it has; how the outside reaches them (a router's forward, a balancer) is the
@@ -44,7 +43,7 @@ func TestHostPortScheduling(t *testing.T) {
 		t.Fatalf("behind NAT: %+v", d)
 	}
 	st, _ := ServiceStatus(exposed("a", "home", nil), behind, nil, Env{})
-	if st.PublicIP != "192.168.1.20" || strings.Join(st.AnswersOn, " ") != "192.168.1.20 10.0.0.5" || st.EgressIP != "" {
+	if st.PublicIP != "192.168.1.20" || strings.Join(st.AnswersOn, " ") != "192.168.1.20" || st.EgressIP != "" {
 		t.Fatalf("on a LAN host behind NAT: %+v", st)
 	}
 	// The same port on the same host goes elsewhere; a private port of the same number doesn't count.
@@ -77,7 +76,7 @@ func TestIPScheduling(t *testing.T) {
 		})
 	}
 	m1 := host("metal-1", func(h *v1.Host) {
-		h.Spec.Address = "198.51.100.10"
+		h.Spec.ExternalIP = "198.51.100.10"
 		h.Spec.Network.Addresses = []string{"198.51.100.16/30"}
 	})
 	m2 := host("metal-2")
@@ -133,13 +132,12 @@ func TestIPScheduling(t *testing.T) {
 // sent from like any other.
 func TestPrivateAddresses(t *testing.T) {
 	lan := host("lan-1", func(h *v1.Host) {
-		h.Spec.Address = "192.168.1.10"
+		h.Spec.InternalIP = "192.168.1.10"
 		h.Spec.Network.Addresses = []string{"192.168.1.48/30"} // .49 and .50, on the LAN
-		h.Status.Addresses = []string{"192.168.1.10", "192.168.1.49"}
 	})
 	hp := exposed("hp", "lan-1", func(s *v1.Silo) { s.Spec.Network.Egress.Source = v1.EgressSameAsService })
 	st, _ := ServiceStatus(hp, lan, nil, Env{})
-	if st.PublicIP != "192.168.1.10" || st.EgressIP != "192.168.1.10" || strings.Join(st.AnswersOn, " ") != "192.168.1.10 192.168.1.49" {
+	if st.PublicIP != "192.168.1.10" || st.EgressIP != "192.168.1.10" || strings.Join(st.AnswersOn, " ") != "192.168.1.10" {
 		t.Fatalf("a host port on a LAN-only host: %+v", st)
 	}
 	s := exposed("p", "", func(s *v1.Silo) {
@@ -161,7 +159,7 @@ func TestPrivateAddresses(t *testing.T) {
 
 // The table of design §7.2b: can a silo use the same IP out as in?
 func TestEgressTable(t *testing.T) {
-	h := host("metal-1", func(h *v1.Host) { h.Spec.Address = "198.51.100.10" })
+	h := host("metal-1", func(h *v1.Host) { h.Spec.ExternalIP = "198.51.100.10" })
 	classes := map[string]Class{
 		"fake-ip": {Plugin: "fake", Reserve: true, SendsFrom: true, Exclusive: true},
 		"fake-lb": {Plugin: "fake", NodePorts: true},
@@ -225,7 +223,7 @@ func TestEgressTable(t *testing.T) {
 }
 
 func TestServiceStatusHostPort(t *testing.T) {
-	h := host("metal-1", func(h *v1.Host) { h.Spec.Address = "198.51.100.10" })
+	h := host("metal-1", func(h *v1.Host) { h.Spec.ExternalIP = "198.51.100.10" })
 	s := exposed("n", "metal-1", func(s *v1.Silo) { s.Spec.Network.Egress.Source = v1.EgressSameAsService })
 	st, _ := ServiceStatus(s, h, nil, Env{})
 	if st.PublicIP != "198.51.100.10" || st.EgressIP != "198.51.100.10" || len(st.HostAddresses) != 0 {

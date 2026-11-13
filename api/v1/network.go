@@ -13,6 +13,18 @@ const (
 	ExposeLoadBalancer = "loadBalancer" // an address from a load-balancer class
 )
 
+// Networks (design §7.0): where an address is. A host has an internal and/or an external IP and a
+// mesh IP; a service's name answers on each (SERVICE.NAMESPACE.NETWORK.kevaso), and a host port
+// opens on internal and/or external. They're also the names no namespace may take.
+const (
+	NetworkMesh     = "mesh"
+	NetworkInternal = "internal"
+	NetworkExternal = "external"
+)
+
+// Networks are the three, in the order names list them.
+var Networks = []string{NetworkMesh, NetworkInternal, NetworkExternal}
+
 // Load-balancer classes built in.
 const (
 	LBWorkerIP = "worker-ip" // the host's own address, the service's ports

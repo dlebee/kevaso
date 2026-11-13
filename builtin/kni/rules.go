@@ -94,9 +94,12 @@ type Host struct {
 	Bridge  string
 	Subnet  netip.Prefix // this host's silos
 	Gateway netip.Addr
-	Address netip.Addr // the host's own (public, if it has one) address
-	Local   []Silo     // silos on this host
-	All     []Silo     // every silo in the cluster with an address, to resolve allowFrom sources
+	// InternalIP and ExternalIP are the host's addresses (design §7.0; invalid: it has none
+	// there). A host port opens on the ones its service port asks for.
+	InternalIP netip.Addr
+	ExternalIP netip.Addr
+	Local      []Silo // silos on this host
+	All        []Silo // every silo in the cluster with an address, to resolve allowFrom sources
 	// GatePort is where the egress gate listens on the gateway (0: no gate).
 	GatePort int
 	// Services are the cluster's standalone Services with endpoints.
@@ -109,12 +112,6 @@ const silosAll = "10.64.0.0/16"
 
 // servicesAll is where Services' virtual IPs are (v1.ServiceCIDR).
 const servicesAll = "10.65.0.0/16"
-
-// hostLocal matches traffic to any of the host's own addresses (public, LAN, behind NAT: whatever
-// the kernel has, so a new address needs no rule change), but not Kevaso's mesh and silo ranges
-// (a silo on another host would reach the port over the mesh without its allowFrom) nor loopback.
-// A destination match: a local silo's own traffic to the same port elsewhere is never caught.
-const hostLocal = "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 }"
 
 // onHost reports whether s's exposed ports open on its host's own addresses (hostPort, worker-ip)
 // rather than on an address of its own (ip-pool, a plugin's).
@@ -241,7 +238,15 @@ func Rules(h Host) string {
 		daddr, orig := "", ""
 		switch {
 		case onHost(s.Spec):
-			daddr, orig = hostLocal, "ct original ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16 }"
+			var ips []string
+			for _, a := range []netip.Addr{h.InternalIP, h.ExternalIP} {
+				if a.IsValid() {
+					ips = append(ips, a.String())
+				}
+			}
+			if len(ips) > 0 {
+				daddr, orig = "ip daddr "+set(ips), "ct original ip daddr "+set(ips)
+			}
 		case s.PublicIP.IsValid():
 			daddr, orig = "ip daddr "+s.PublicIP.String(), fmt.Sprintf("ct original ip daddr %s", s.PublicIP)
 		}
@@ -460,33 +465,4 @@ func Rules(h Host) string {
 		w("delete table %s", old)
 	}
 	return b.String()
-}
-
-// OwnAddresses are the addresses a host port answers on, out of a host's interface addresses: its
-// IPv4 ones (public, LAN, behind NAT alike), without loopback, link-local, or Kevaso's own ranges
-// (the mesh, the silos' bridge, the Services' virtual IPs). The same set hostLocal matches; the
-// agent reports it on the Host (status.addresses), sorted.
-func OwnAddresses(addrs []netip.Addr) []string {
-	var kevaso []netip.Prefix
-	for _, r := range v1.KevasoRanges {
-		kevaso = append(kevaso, netip.MustParsePrefix(r))
-	}
-	seen := map[string]bool{}
-	var out []string
-	for _, a := range addrs {
-		a = a.Unmap()
-		if !a.Is4() || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsUnspecified() {
-			continue
-		}
-		inKevaso := false
-		for _, p := range kevaso {
-			inKevaso = inKevaso || p.Contains(a)
-		}
-		if !inKevaso && !seen[a.String()] {
-			seen[a.String()] = true
-			out = append(out, a.String())
-		}
-	}
-	sort.Strings(out)
-	return out
 }

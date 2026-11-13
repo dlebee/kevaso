@@ -142,8 +142,8 @@ func (r *probeRig) outside() bool {
 			all = append(all, o.(*v1.Silo))
 		}
 	}
-	view := worker.NetworkView("hv1", &v1.Host{Spec: v1.HostSpec{Address: "198.51.100.10"}}, all, nil)
-	return strings.Contains(kni.Rules(view), "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 8545 dnat ip to 10.64.0.4:8545")
+	view := worker.NetworkView("hv1", &v1.Host{Spec: v1.HostSpec{ExternalIP: "198.51.100.10"}}, all, nil)
+	return strings.Contains(kni.Rules(view), "ip daddr 198.51.100.10 tcp dport 8545 dnat ip to 10.64.0.4:8545")
 }
 
 // dns is what the host's resolver answers for rpc.web3.kevaso: an address, or "" while held.

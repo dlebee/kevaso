@@ -34,7 +34,7 @@ func TestPortLeaseOnPluginLoadBalancer(t *testing.T) {
 	if err := reg.Add(ctx, fake); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", Address: "127.0.0.1",
+	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond,
 		Plugins: reg}); err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestPortLeaseOnPluginLoadBalancer(t *testing.T) {
 		h.Status.Allocatable = v1.Resources{CPU: 8, Memory: "16Gi"}
 	}
 	h := &v1.Host{TypeMeta: tm("Host"), ObjectMeta: meta.ObjectMeta{Name: "w1"},
-		Spec: v1.HostSpec{Address: "203.0.113.5", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "docker"}}}}}}
+		Spec: v1.HostSpec{ExternalIP: "203.0.113.5", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "docker"}}}}}}
 	if err := admin.Create(ctx, h); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestLeaseSourcesOnPluginLoadBalancer(t *testing.T) {
 	if err := reg.Add(ctx, fake); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", Address: "127.0.0.1",
+	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond,
 		Plugins: reg}); err != nil {
 		t.Fatal(err)
@@ -166,7 +166,7 @@ func TestLeaseSourcesOnPluginLoadBalancer(t *testing.T) {
 		h.Status.Allocatable = v1.Resources{CPU: 8, Memory: "16Gi"}
 	}
 	h := &v1.Host{TypeMeta: tm("Host"), ObjectMeta: meta.ObjectMeta{Name: "w1"},
-		Spec: v1.HostSpec{Address: "203.0.113.5", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "docker"}}}}}}
+		Spec: v1.HostSpec{ExternalIP: "203.0.113.5", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "docker"}}}}}}
 	if err := admin.Create(ctx, h); err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestLeaseSourcesOnPluginLoadBalancer(t *testing.T) {
 		}
 		out := map[string][]string{}
 		for _, p := range lb.Ports {
-			out[p.Name] = p.AllowFrom
+			out[p.Name] = p.Sources
 		}
 		return out, cur
 	}

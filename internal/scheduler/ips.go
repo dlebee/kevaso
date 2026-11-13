@@ -106,7 +106,7 @@ func ipFilter(s *v1.Silo, h *v1.Host, env Env) string {
 func Egress(s *v1.Silo, h *v1.Host, in string, svcIP, egIP *v1.IP, classes map[string]Class) (out, note string) {
 	hostOut := ""
 	if !h.Spec.Network.BehindNAT {
-		hostOut = h.Spec.Address
+		hostOut = h.Reach()
 	}
 	class := ""
 	if sv := s.Spec.Service; sv != nil && sv.Expose == v1.ExposeLoadBalancer && sv.LoadBalancer != nil {

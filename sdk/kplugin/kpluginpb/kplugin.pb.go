@@ -295,7 +295,8 @@ func (x *Class) GetExclusive() bool {
 type Host struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Address       string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	InternalIp    string                 `protobuf:"bytes,2,opt,name=internal_ip,json=internalIp,proto3" json:"internal_ip,omitempty"` // its internal IP, as the operator declared it ("" if none)
+	ExternalIp    string                 `protobuf:"bytes,3,opt,name=external_ip,json=externalIp,proto3" json:"external_ip,omitempty"` // its external IP ("" if none)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -337,9 +338,16 @@ func (x *Host) GetName() string {
 	return ""
 }
 
-func (x *Host) GetAddress() string {
+func (x *Host) GetInternalIp() string {
 	if x != nil {
-		return x.Address
+		return x.InternalIp
+	}
+	return ""
+}
+
+func (x *Host) GetExternalIp() string {
+	if x != nil {
+		return x.ExternalIp
 	}
 	return ""
 }
@@ -506,8 +514,9 @@ type Port struct {
 	Protocol string                 `protobuf:"bytes,2,opt,name=protocol,proto3" json:"protocol,omitempty"` // TCP | UDP
 	Port     int32                  `protobuf:"varint,3,opt,name=port,proto3" json:"port,omitempty"`
 	NodePort int32                  `protobuf:"varint,4,opt,name=node_port,json=nodePort,proto3" json:"node_port,omitempty"`
-	// where clients may connect from (CIDRs); empty: anywhere. Only sent to classes that filter sources.
-	AllowFrom     []string          `protobuf:"bytes,5,rep,name=allow_from,json=allowFrom,proto3" json:"allow_from,omitempty"`
+	// where clients may connect from (CIDRs): the port's sources; empty: anywhere. Only sent to
+	// classes that filter sources.
+	Sources       []string          `protobuf:"bytes,5,rep,name=sources,proto3" json:"sources,omitempty"`
 	Service       string            `protobuf:"bytes,6,opt,name=service,proto3" json:"service,omitempty"`                                                                                   // who it's for: silo/NAME | service/NAME
 	Backends      []*HostInfo       `protobuf:"bytes,7,rep,name=backends,proto3" json:"backends,omitempty"`                                                                                 // where it goes
 	Annotations   map[string]string `protobuf:"bytes,8,rep,name=annotations,proto3" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // its service's, in the plugin's domain, untouched
@@ -573,9 +582,9 @@ func (x *Port) GetNodePort() int32 {
 	return 0
 }
 
-func (x *Port) GetAllowFrom() []string {
+func (x *Port) GetSources() []string {
 	if x != nil {
-		return x.AllowFrom
+		return x.Sources
 	}
 	return nil
 }
@@ -1814,10 +1823,13 @@ const file_kplugin_proto_rawDesc = "" +
 	" \x01(\tR\afollows\x12\x1d\n" +
 	"\n" +
 	"sends_from\x18\v \x01(\bR\tsendsFrom\x12\x1c\n" +
-	"\texclusive\x18\f \x01(\bR\texclusive\"4\n" +
+	"\texclusive\x18\f \x01(\bR\texclusive\"\\\n" +
 	"\x04Host\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
-	"\aaddress\x18\x02 \x01(\tR\aaddress\"o\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
+	"\vinternal_ip\x18\x02 \x01(\tR\n" +
+	"internalIp\x12\x1f\n" +
+	"\vexternal_ip\x18\x03 \x01(\tR\n" +
+	"externalIp\"o\n" +
 	"\bHostInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x16\n" +
@@ -1826,14 +1838,13 @@ const file_kplugin_proto_rawDesc = "" +
 	"\x14DescribeHostsRequest\x12,\n" +
 	"\x05hosts\x18\x01 \x03(\v2\x16.kevaso.plugin.v1.HostR\x05hosts\"I\n" +
 	"\x15DescribeHostsResponse\x120\n" +
-	"\x05hosts\x18\x01 \x03(\v2\x1a.kevaso.plugin.v1.HostInfoR\x05hosts\"\xe3\x02\n" +
+	"\x05hosts\x18\x01 \x03(\v2\x1a.kevaso.plugin.v1.HostInfoR\x05hosts\"\xde\x02\n" +
 	"\x04Port\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\bprotocol\x18\x02 \x01(\tR\bprotocol\x12\x12\n" +
 	"\x04port\x18\x03 \x01(\x05R\x04port\x12\x1b\n" +
-	"\tnode_port\x18\x04 \x01(\x05R\bnodePort\x12\x1d\n" +
-	"\n" +
-	"allow_from\x18\x05 \x03(\tR\tallowFrom\x12\x18\n" +
+	"\tnode_port\x18\x04 \x01(\x05R\bnodePort\x12\x18\n" +
+	"\asources\x18\x05 \x03(\tR\asources\x12\x18\n" +
 	"\aservice\x18\x06 \x01(\tR\aservice\x126\n" +
 	"\bbackends\x18\a \x03(\v2\x1a.kevaso.plugin.v1.HostInfoR\bbackends\x12I\n" +
 	"\vannotations\x18\b \x03(\v2'.kevaso.plugin.v1.Port.AnnotationsEntryR\vannotations\x1a>\n" +

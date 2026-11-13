@@ -24,7 +24,8 @@ import (
 func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Grant) kni.Host {
 	view := kni.Host{Bridge: cloudhypervisor.Bridge, Subnet: cloudhypervisor.Network, Gateway: cloudhypervisor.Gateway}
 	if h != nil {
-		view.Address, _ = netip.ParseAddr(h.Spec.Address)
+		view.InternalIP, _ = netip.ParseAddr(h.Internal())
+		view.ExternalIP, _ = netip.ParseAddr(h.External())
 	}
 	for _, s := range silos {
 		ip, err := netip.ParseAddr(s.Status.Address)
@@ -228,7 +229,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 			}
 		}
 		if me != nil {
-			if err := syncPoolAddresses(ctx, me.Spec.Address, PoolAddresses(hostName, all)); err != nil {
+			if err := syncPoolAddresses(ctx, me.Reach(), PoolAddresses(hostName, all)); err != nil {
 				log("pool addresses: %v", err)
 			}
 		}

@@ -24,7 +24,7 @@ func TestWithLeases(t *testing.T) {
 		}},
 		Status: v1.SiloStatus{Host: "hv1", Address: "10.64.2.2", Service: v1.SiloServiceStatus{PublicIP: "198.51.100.10"}}}
 	silos := []*v1.Silo{s}
-	view := NetworkView("hv1", nil, silos, nil)
+	view := NetworkView("hv1", &v1.Host{Spec: v1.HostSpec{ExternalIP: "198.51.100.10"}}, silos, nil)
 	until := now.Add(time.Hour)
 	open := &v1.Lease{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: leases.Name("api", "debug")},
 		Spec: v1.LeaseSpec{Silo: "api", SiloUID: "u1", Port: "debug"}, Status: v1.LeaseStatus{Phase: v1.LeaseOpen, Until: &until}}

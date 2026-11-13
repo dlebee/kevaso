@@ -146,7 +146,7 @@ func TestValidation(t *testing.T) {
 		}
 	}
 	host := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: "hv1"},
-		Spec: v1.HostSpec{Address: "203.0.113.10"}}
+		Spec: v1.HostSpec{ExternalIP: "203.0.113.10"}}
 	if err := c.Create(ctx, host); !client.IsInvalid(err) || !strings.Contains(err.Error(), "at least one component") {
 		t.Errorf("host without components: got %v", err)
 	}
@@ -351,7 +351,7 @@ func TestServiceAndPoolValidation(t *testing.T) {
 	// A host's extra addresses: IPv4 CIDRs and single addresses.
 	for name, addrs := range map[string][]string{"garbage": {"nope"}, "IPv6 for now": {"2001:db8:42::/64"}, "too wide": {"198.51.0.0/16"}} {
 		h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: "addr-" + strings.ReplaceAll(strings.ToLower(name), " ", "-")},
-			Spec: v1.HostSpec{Address: "198.51.100.9", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}, Network: v1.HostNetwork{Addresses: addrs}}}
+			Spec: v1.HostSpec{ExternalIP: "198.51.100.9", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}, Network: v1.HostNetwork{Addresses: addrs}}}
 		if err := c.Create(ctx, h); !client.IsInvalid(err) {
 			t.Errorf("host addresses %s: want Invalid, got %v", name, err)
 		}

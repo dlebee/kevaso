@@ -161,10 +161,10 @@ NFT`); err != nil {
 
 	// The control plane, advertising its shared address (the mesh endpoint and what hosts dial).
 	t.Logf("%s", must(kvoadm.Run, "", append(append([]string{"init"}, sshArgs("cp")...),
-		"--name", "cp-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--address", cpIP)...))
+		"--name", "cp-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", cpIP)...))
 	server := "https://" + cpIP + ":6443"
 	t.Logf("%s", must(kvoadm.Run, "", append(append([]string{"host", "add"}, sshArgs("worker")...),
-		"--name", "worker-1", "--install", "worker", "--address", workerIP, "--server", server, "--loop-storage", "40G",
+		"--name", "worker-1", "--install", "worker", "--internal-ip", workerIP, "--server", server, "--loop-storage", "40G",
 		"--region", "lab", "--label", "kvm=yes")...))
 	for _, n := range []string{"home", "office"} {
 		t.Logf("%s", must(kvoadm.Run, "", append(append([]string{"host", "add"}, sshArgs(n)...),

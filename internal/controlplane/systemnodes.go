@@ -458,7 +458,7 @@ func (cfg Config) self(apiAddr string, st *cpStore) selfReport {
 	r := selfReport{store: StoreSQLite}
 	if apiAddr != "" {
 		_, port, _ := net.SplitHostPort(apiAddr)
-		r.apiURL = "https://" + net.JoinHostPort(cfg.Address, port)
+		r.apiURL = "https://" + net.JoinHostPort(cfg.Reach(), port)
 	}
 	if st.etcd != nil {
 		srv := st.etcd

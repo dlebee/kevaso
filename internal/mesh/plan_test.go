@@ -10,7 +10,7 @@ import (
 
 func host(name string, index int, addr string, nat bool) *v1.Host {
 	h := &v1.Host{}
-	h.Name, h.Spec.Address, h.Spec.Network.BehindNAT = name, addr, nat
+	h.Name, h.Spec.ExternalIP, h.Spec.Network.BehindNAT = name, addr, nat
 	m, sub, in := Addresses(index)
 	h.Status.Network = v1.NetworkStatus{Index: index, MeshIP: m, SiloSubnet: sub, PublicKey: "pk-" + name}
 	if nat {

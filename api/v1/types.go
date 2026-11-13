@@ -45,7 +45,12 @@ type Host struct {
 
 // HostSpec is what the operator declares.
 type HostSpec struct {
-	Address    string         `json:"address"`
+	// InternalIP is the machine's address on its own network; ExternalIP its address reachable
+	// from outside that network (design §7.0). The operator says which is which: at least one.
+	// With no internalIP, a provider's private address (status.provider.privateAddress) is its
+	// internal IP.
+	InternalIP string         `json:"internalIP,omitempty"`
+	ExternalIP string         `json:"externalIP,omitempty"`
 	Components HostComponents `json:"components"`
 	// Region and Zone say where the machine is (design §3.4): shown everywhere, used for placement.
 	Region string `json:"region,omitempty"`
@@ -62,7 +67,8 @@ type HostNetwork struct {
 	// BehindNAT: nothing unsolicited reaches this machine (a box at home). It dials out to public
 	// hosts; to other NAT'd hosts it goes through a relay, end-to-end encrypted.
 	BehindNAT bool `json:"behindNAT,omitempty"`
-	// ListenPort is the WireGuard port on Address (default 51820), for public hosts.
+	// ListenPort is the WireGuard port on the host's reach address (Reach: default 51820), for
+	// hosts not behind NAT.
 	ListenPort int `json:"listenPort,omitempty"`
 	// Addresses are extra addresses routed to this machine (IPv4 CIDRs or single addresses), which
 	// the built-in ip-pool class hands out as IP objects (design §7.2c-1). The operator declares
@@ -124,9 +130,6 @@ type HostStatus struct {
 	// Provider is what a provider plugin knows about this machine, if it's one of its own (a
 	// Linode): the plugin's classes (volumes, load balancers) only reach such hosts.
 	Provider *HostProvider `json:"provider,omitempty"`
-	// Addresses are the host's own IPv4 addresses as its agent sees them (public, LAN, whatever it
-	// has), Kevaso's mesh and silo ranges and loopback left out: a host port answers on all of them.
-	Addresses []string `json:"addresses,omitempty"`
 	// MountClasses are the storage classes whose plugin's node side runs on this host (reach
 	// mount, e.g. juicefs): only such hosts can take a silo with a volume on one.
 	MountClasses []string `json:"mountClasses,omitempty"`
@@ -144,6 +147,40 @@ type ControlPlaneStatus struct {
 	PeerURL string `json:"peerURL,omitempty"` // its etcd member's peer URL; empty: no peer listener
 	Member  string `json:"member,omitempty"`  // voter | learner | "" (not a store member)
 	Leader  bool   `json:"leader,omitempty"`  // runs the controllers and the scheduler now
+}
+
+// Internal is the host's internal IP: spec.internalIP, or else its provider's private address.
+func (h *Host) Internal() string {
+	if h.Spec.InternalIP != "" {
+		return h.Spec.InternalIP
+	}
+	if h.Status.Provider != nil {
+		return h.Status.Provider.PrivateAddress
+	}
+	return ""
+}
+
+// External is the host's external IP ("" if it has none).
+func (h *Host) External() string { return h.Spec.ExternalIP }
+
+// Reach is where other hosts reach this one (the mesh's WireGuard endpoint, the API and store
+// peer URLs): its external IP if it has one, else its internal IP (ADR 0009).
+func (h *Host) Reach() string {
+	if h.Spec.ExternalIP != "" {
+		return h.Spec.ExternalIP
+	}
+	return h.Internal()
+}
+
+// IPOn is the host's address on a network: internal or external ("" if it has none there).
+func (h *Host) IPOn(network string) string {
+	switch network {
+	case NetworkInternal:
+		return h.Internal()
+	case NetworkExternal:
+		return h.External()
+	}
+	return ""
 }
 
 // HostProvider is a machine as its provider sees it.

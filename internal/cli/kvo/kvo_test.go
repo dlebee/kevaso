@@ -69,7 +69,7 @@ func TestDescribeSilo(t *testing.T) {
 
 func TestDescribeHost(t *testing.T) {
 	h := &v1.Host{ObjectMeta: meta.ObjectMeta{Name: "hv1"},
-		Spec: v1.HostSpec{Address: "203.0.113.10", Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{},
+		Spec: v1.HostSpec{ExternalIP: "203.0.113.10", Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{},
 			Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}}, Taints: []v1.Taint{{Key: "gpu", Value: "yes", Effect: v1.NoSchedule}}}}},
 		Status: v1.HostStatus{Allocatable: v1.Resources{CPU: 3, Memory: "4886Mi"},
 			Runtimes: map[string]v1.RuntimeStatus{"cloud-hypervisor": {State: "Failed", Version: "v54.1", Message: "install image: checksum mismatch"}}}}

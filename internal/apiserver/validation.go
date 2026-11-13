@@ -214,7 +214,8 @@ var builtinRules = map[string][]Rule{
 		{`!has(self.spec.host) || self.spec.class == 'ip-pool'`, "spec.host is for class ip-pool; a plugin's address is in a region (spec.region)"},
 	},
 	"Host": {
-		{`self.spec.address != ''`, "spec.address is required"},
+		{`(has(self.spec.internalIP) && self.spec.internalIP != '') || (has(self.spec.externalIP) && self.spec.externalIP != '')`,
+			"a host needs spec.internalIP (its address on its own network), spec.externalIP (its address reachable from outside it), or both"},
 		{`has(self.spec.components.controlPlane) || has(self.spec.components.worker)`,
 			"a host needs at least one component: controlPlane or worker"},
 		{`!has(self.spec.components.worker) || !has(self.spec.components.worker.taints) || self.spec.components.worker.taints.all(t, t.key != '' && t.effect in ['NoSchedule', 'PreferNoSchedule'])`,

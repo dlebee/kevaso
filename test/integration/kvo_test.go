@@ -28,7 +28,7 @@ apiVersion: kevaso/v1
 kind: Host
 metadata: { name: hv1 }
 spec:
-  address: 203.0.113.10
+  externalIP: 203.0.113.10
   components:
     controlPlane: {}
     worker:

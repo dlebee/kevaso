@@ -24,7 +24,7 @@ var now = time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
 
 func readyHost(name string) *v1.Host {
 	h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: name}}
-	h.Spec.Address = "203.0.113.10"
+	h.Spec.ExternalIP = "203.0.113.10"
 	h.Spec.Components.Worker = &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}}}
 	h.Status.Conditions = []meta.Condition{{Type: "Ready", Status: meta.ConditionTrue}}
 	h.Status.Runtimes = map[string]v1.RuntimeStatus{"cloud-hypervisor": {State: "Ready"}}

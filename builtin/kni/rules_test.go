@@ -21,7 +21,7 @@ func p2p() v1.SiloSpec {
 }
 
 func host(local ...Silo) Host {
-	return Host{Bridge: "kvbr0", Subnet: netip.MustParsePrefix("10.64.2.0/24"), Gateway: a("10.64.2.1"), Address: a("198.51.100.10"), Local: local}
+	return Host{Bridge: "kvbr0", Subnet: netip.MustParsePrefix("10.64.2.0/24"), Gateway: a("10.64.2.1"), InternalIP: a("10.0.0.5"), ExternalIP: a("198.51.100.10"), Local: local}
 }
 
 func has(t *testing.T, rules string, want ...string) {
@@ -48,8 +48,8 @@ func TestHostPortAndSameAsService(t *testing.T) {
 	s := Silo{Key: "web3/eth-node", IP: a("10.64.2.2"), Tap: "kvt0011223344", Spec: p2p(), PublicIP: a("198.51.100.10"), EgressIP: a("198.51.100.10")}
 	r := Rules(host(s))
 	has(t, r,
-		"fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 30303 dnat ip to 10.64.2.2:30303",
-		"fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } udp dport 30303 dnat ip to 10.64.2.2:30303",
+		"ip daddr { 10.0.0.5, 198.51.100.10 } tcp dport 30303 dnat ip to 10.64.2.2:30303",
+		"ip daddr { 10.0.0.5, 198.51.100.10 } udp dport 30303 dnat ip to 10.64.2.2:30303",
 		`oifname "kvbr0" ip daddr 10.64.2.2 tcp dport 30303 ct status dnat accept`,
 		`ip saddr 10.64.2.2 ip daddr != { 10.64.0.0/16, 10.62.0.0/16, 10.63.0.0/16 } oifname != "kvbr0" snat ip to 198.51.100.10`,
 		`iifname "kvt0011223344" ip saddr != 10.64.2.2 drop`,

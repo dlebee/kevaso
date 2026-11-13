@@ -143,9 +143,9 @@ func TestSiloSetsAndServices(t *testing.T) {
 			"--host-key", strings.Fields(out)[1], "--kevasod", bin}
 	}
 	t.Logf("%s", must(kvoadm.Run, "", append(append([]string{"init"}, sshArgs("a")...),
-		"--name", "a", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--address", aIP, "--worker", "--runtime", "docker")...))
+		"--name", "a", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", aIP, "--worker", "--runtime", "docker")...))
 	t.Logf("%s", must(kvoadm.Run, "", append(append([]string{"host", "add"}, sshArgs("b")...),
-		"--name", "b", "--install", "worker", "--runtime", "docker", "--address", bIP, "--server", "https://"+aIP+":6443")...))
+		"--name", "b", "--install", "worker", "--runtime", "docker", "--internal-ip", bIP, "--server", "https://"+aIP+":6443")...))
 
 	// Both workers' docker Ready first: spread is a preference, and a placed silo never moves.
 	for deadline := time.Now().Add(15 * time.Minute); ; {

@@ -101,6 +101,14 @@ func semantic(obj meta.Object) []string {
 			}
 		}
 	case *v1.Host:
+		for _, f := range []struct{ field, v string }{{"spec.internalIP", o.Spec.InternalIP}, {"spec.externalIP", o.Spec.ExternalIP}} {
+			if a, err := netip.ParseAddr(f.v); f.v != "" && (err != nil || !a.Is4()) {
+				errs = append(errs, fmt.Sprintf("%s: %q isn't an IPv4 address", f.field, f.v))
+			}
+		}
+		if o.Spec.InternalIP != "" && o.Spec.InternalIP == o.Spec.ExternalIP {
+			errs = append(errs, "spec.internalIP and spec.externalIP are the same address: a machine with one address has one of the two (external if it's reachable from outside its network)")
+		}
 		for _, a := range o.Spec.Network.Addresses {
 			if _, err := ips.Parse(a); err != nil {
 				errs = append(errs, "spec.network.addresses: "+err.Error())

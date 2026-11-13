@@ -702,7 +702,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			head = append(head, "MOVABLE")
 		}
 	case "Host":
-		head = append(head, "ADDRESS", "REGION", "COMPONENTS", "RUNTIMES")
+		head = append(head, "INTERNAL IP", "EXTERNAL IP", "REGION", "COMPONENTS", "RUNTIMES")
 	case "Namespace":
 		head = append(head, "STATUS")
 	case "Secret":
@@ -769,7 +769,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			if o.Spec.Unschedulable {
 				comps = append(comps, "cordoned")
 			}
-			row = append(row, o.Spec.Address, region, strings.Join(comps, ","), dash(strings.Join(rts, ",")))
+			row = append(row, dash(o.Internal()), dash(o.External()), region, strings.Join(comps, ","), dash(strings.Join(rts, ",")))
 		case *v1.Namespace:
 			row = append(row, dash(o.Status.Phase))
 		case *v1.Secret:

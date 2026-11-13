@@ -51,10 +51,10 @@ func JoinReady(hosts []v1.Host) error {
 		}
 		n++
 		if cp.Store != "etcd" {
-			return fmt.Errorf("the cluster keeps its state in SQLite on %s: switch it to etcd first, once:\n    kvoadm store migrate %s --ssh-key PATH\n(the API restarts once; silos keep running)", h.Name, h.Spec.Address)
+			return fmt.Errorf("the cluster keeps its state in SQLite on %s: switch it to etcd first, once:\n    kvoadm store migrate %s --ssh-key PATH\n(the API restarts once; silos keep running)", h.Name, sshAddress(&h))
 		}
 		if cp.PeerURL == "" {
-			return fmt.Errorf("%s's etcd member listens for no peers: run kvoadm store migrate %s --ssh-key PATH (it adds the peer listener)", h.Name, h.Spec.Address)
+			return fmt.Errorf("%s's etcd member listens for no peers: run kvoadm store migrate %s --ssh-key PATH (it adds the peer listener)", h.Name, sshAddress(&h))
 		}
 		if cp.Member == "learner" {
 			return fmt.Errorf("%s is still joining (a learner): one system node joins at a time", h.Name)
@@ -124,10 +124,10 @@ func RemovalCheck(hosts []v1.Host, name string, now time.Time, lease time.Durati
 // SystemNodeUnit is the systemd unit of a joining system node (pure). servers are control planes
 // it may ask to join; worker adds the worker component (HA compact).
 func SystemNodeUnit(o HostAddOptions, servers []string, stateOnly, worker bool) string {
-	addr := o.Advertise
-	args := []string{"control-plane", "--name", o.Name, "--address", addr, "--cluster", o.Cluster,
+	addr := o.Reach()
+	args := append(append([]string{"control-plane", "--name", o.Name}, o.ipArgs()...), "--cluster", o.Cluster,
 		"--store", "etcd", "--etcd-peer-listen", net.JoinHostPort(addr, etcd.DefaultPeerPort),
-		"--join", strings.Join(servers, ","), "--join-token-file", "/etc/kevaso/join-token", "--ca-file", "/etc/kevaso/ca.crt"}
+		"--join", strings.Join(servers, ","), "--join-token-file", "/etc/kevaso/join-token", "--ca-file", "/etc/kevaso/ca.crt")
 	if o.ClusterDNS != "" {
 		args = append(args, "--cluster-dns", o.ClusterDNS)
 	}
@@ -253,7 +253,7 @@ func hostAddSystemNode(ctx context.Context, o HostAddOptions, stdin io.Reader, o
 		home = filepath.Join(h, ".kevaso")
 	}
 	h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: o.Name},
-		Spec: v1.HostSpec{Address: o.Advertise, Region: o.Region, Zone: o.Zone,
+		Spec: v1.HostSpec{InternalIP: o.InternalIP, ExternalIP: o.ExternalIP, Region: o.Region, Zone: o.Zone,
 			Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{StateOnly: o.StateOnly}}}}
 	if err := c.Create(ctx, h); err != nil && !client.IsAlreadyExists(err) {
 		return fmt.Errorf("register host %s: %w", o.Name, err)
@@ -413,7 +413,7 @@ func hostInstallControlPlane(ctx context.Context, name string, o HostAddOptions,
 		return err
 	}
 	o.InitOptions = io2
-	o.Advertise = h.Spec.Address
+	o.InternalIP, o.ExternalIP = h.Spec.InternalIP, h.Spec.ExternalIP
 	o.Runtimes = append(o.Runtimes, runtimesOf(h)...)
 	o.InitOptions.Runtimes = o.Runtimes
 	worker := h.Spec.Components.Worker != nil && !o.StateOnly
@@ -588,7 +588,10 @@ func storeMigrate(ctx context.Context, args []string, stdin io.Reader, out io.Wr
 		return err
 	}
 	name := unitFlag(string(unit), "--name")
-	addr := unitFlag(string(unit), "--address")
+	addr := unitFlag(string(unit), "--external-ip")
+	if addr == "" {
+		addr = unitFlag(string(unit), "--internal-ip")
+	}
 	if addr == "" {
 		addr = o.Address
 	}

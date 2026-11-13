@@ -175,7 +175,7 @@ func TestSecretsInASilo(t *testing.T) {
 	hk, _ := d.Exec(ctx, machines["metal"], "ssh-keygen", "-lf", "/etc/ssh/ssh_host_ed25519_key.pub")
 	initOut := must(kvoadm.Run, "", "init", info.User+"@"+info.Host, "--ssh-port", strconv.Itoa(info.Port), "--ssh-key", info.KeyFile,
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
-		"--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker", "--loop-storage", "30G",
+		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker", "--loop-storage", "30G",
 		"--egress-extra-ca", "/etc/kevaso/test-internet-ca.pem")
 	if !strings.Contains(initOut, "Recovery key for secrets") || !strings.Contains(initOut, "KVR1-") {
 		t.Fatal("kvoadm init didn't print the recovery key")

@@ -123,10 +123,10 @@ func Plan(self string, hosts []*v1.Host) (Desired, error) {
 		peer := Peer{Host: p.Name, PublicKey: pn.PublicKey, AllowedIPs: []string{pn.MeshIP + "/32", pn.SiloSubnet}}
 		switch {
 		case !nat(me) && !nat(p): // both public: direct
-			peer.Endpoint = fmt.Sprintf("%s:%d", p.Spec.Address, port(p))
+			peer.Endpoint = fmt.Sprintf("%s:%d", p.Reach(), port(p))
 		case !nat(me) && nat(p): // it dials us; WireGuard learns where it is
 		case nat(me) && !nat(p): // we dial it, and keep our NAT mapping open
-			peer.Endpoint, peer.Keepalive = fmt.Sprintf("%s:%d", p.Spec.Address, port(p)), Keepalive
+			peer.Endpoint, peer.Keepalive = fmt.Sprintf("%s:%d", p.Reach(), port(p)), Keepalive
 			if p.Name == relay { // the other NAT'd hosts' outer addresses are reached through it
 				for _, q := range natPeers {
 					peer.AllowedIPs = append(peer.AllowedIPs, q.Status.Network.MeshIP+"/32")

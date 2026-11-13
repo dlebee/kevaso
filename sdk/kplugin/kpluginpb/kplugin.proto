@@ -55,7 +55,8 @@ service Hosts {
 
 message Host {
   string name = 1;
-  string address = 2;
+  string internal_ip = 2; // its internal IP, as the operator declared it ("" if none)
+  string external_ip = 3; // its external IP ("" if none)
 }
 
 message HostInfo {
@@ -80,8 +81,9 @@ message Port {
   string protocol = 2; // TCP | UDP
   int32 port = 3;
   int32 node_port = 4;
-  // where clients may connect from (CIDRs); empty: anywhere. Only sent to classes that filter sources.
-  repeated string allow_from = 5;
+  // where clients may connect from (CIDRs): the port's sources; empty: anywhere. Only sent to
+  // classes that filter sources.
+  repeated string sources = 5;
   string service = 6;              // who it's for: silo/NAME | service/NAME
   repeated HostInfo backends = 7;  // where it goes
   map<string, string> annotations = 8; // its service's, in the plugin's domain, untouched

@@ -36,7 +36,7 @@ func TestIPs(t *testing.T) {
 	if err := reg.Add(ctx, fake); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", Address: "127.0.0.1",
+	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond,
 		Plugins: reg}); err != nil {
 		t.Fatal(err)
@@ -58,7 +58,7 @@ func TestIPs(t *testing.T) {
 	}
 	for _, name := range []string{"w1"} {
 		h := &v1.Host{TypeMeta: tm("Host"), ObjectMeta: meta.ObjectMeta{Name: name},
-			Spec: v1.HostSpec{Address: "203.0.113.5", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "docker"}}}},
+			Spec: v1.HostSpec{ExternalIP: "203.0.113.5", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "docker"}}}},
 				Network: v1.HostNetwork{Addresses: []string{"192.0.2.16/30"}}}}
 		if err := admin.Create(ctx, h); err != nil {
 			t.Fatal(err)

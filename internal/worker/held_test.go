@@ -25,9 +25,9 @@ func heldSilo(ready bool) *v1.Silo {
 
 // The host's view marks a held silo, and its rules then have no outside rule for it.
 func TestNetworkViewHeld(t *testing.T) {
-	const dnat = "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 8545 dnat ip to 10.64.1.2:8545"
+	const dnat = "ip daddr 198.51.100.10 tcp dport 8545 dnat ip to 10.64.1.2:8545"
 	for _, ready := range []bool{false, true} {
-		view := NetworkView("w1", &v1.Host{Spec: v1.HostSpec{Address: "198.51.100.10"}}, []*v1.Silo{heldSilo(ready)}, nil)
+		view := NetworkView("w1", &v1.Host{Spec: v1.HostSpec{ExternalIP: "198.51.100.10"}}, []*v1.Silo{heldSilo(ready)}, nil)
 		if len(view.Local) != 1 || view.Local[0].Held == ready {
 			t.Fatalf("ready %v: held %v", ready, view.Local[0].Held)
 		}

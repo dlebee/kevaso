@@ -188,7 +188,7 @@ chmod 0755 /etc/kevaso/dns-providers/challtest`); err != nil {
 	hk, _ := d.Exec(ctx, machines["metal"], "ssh-keygen", "-lf", "/etc/ssh/ssh_host_ed25519_key.pub")
 	must(kvoadm.Run, "", "init", info.User+"@"+info.Host, "--ssh-port", strconv.Itoa(info.Port), "--ssh-key", info.KeyFile,
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
-		"--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker", "--runtime", "docker")
+		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker", "--runtime", "docker")
 
 	app := func(name, ns, port, page string) string {
 		return fmt.Sprintf(`---

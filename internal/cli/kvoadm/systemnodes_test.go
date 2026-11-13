@@ -14,7 +14,7 @@ var now = time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 
 // sys is a system node as its Host shows it: member role, heartbeat age (<0: none).
 func sys(name, member string, stateOnly bool, age time.Duration) v1.Host {
-	h := v1.Host{ObjectMeta: meta.ObjectMeta{Name: name}, Spec: v1.HostSpec{Address: "10.0.0." + name[len(name)-1:],
+	h := v1.Host{ObjectMeta: meta.ObjectMeta{Name: name}, Spec: v1.HostSpec{InternalIP: "10.0.0." + name[len(name)-1:],
 		Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{StateOnly: stateOnly}}},
 		Status: v1.HostStatus{ControlPlane: &v1.ControlPlaneStatus{Store: "etcd", PeerURL: "https://x:2380", Member: member}}}
 	if age >= 0 {
@@ -76,9 +76,9 @@ func TestRemovalCheck(t *testing.T) {
 }
 
 func TestSystemNodeUnit(t *testing.T) {
-	o := kvoadm.HostAddOptions{InitOptions: kvoadm.InitOptions{Name: "hv2", Cluster: "home"}, Advertise: "198.51.100.7"}
+	o := kvoadm.HostAddOptions{InitOptions: kvoadm.InitOptions{Name: "hv2", Cluster: "home", ExternalIP: "198.51.100.7"}}
 	u := kvoadm.SystemNodeUnit(o, []string{"https://203.0.113.10:6443"}, false, false)
-	for _, want := range []string{"control-plane --name hv2 --address 198.51.100.7", "--store etcd --etcd-peer-listen 198.51.100.7:2380", "--join https://203.0.113.10:6443"} {
+	for _, want := range []string{"control-plane --name hv2 --external-ip 198.51.100.7", "--store etcd --etcd-peer-listen 198.51.100.7:2380", "--join https://203.0.113.10:6443"} {
 		if !strings.Contains(u, want) {
 			t.Fatalf("unit lacks %q:\n%s", want, u)
 		}

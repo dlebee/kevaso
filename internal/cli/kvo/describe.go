@@ -282,7 +282,13 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			})
 		}
 	case *v1.Host:
-		kv(0, "Address", o.Spec.Address)
+		internal := dash(o.Internal())
+		if o.Spec.InternalIP == "" && o.Internal() != "" {
+			internal += " (the provider's private address)"
+		}
+		kv(0, "Internal IP", internal)
+		kv(0, "External IP", dash(o.External()))
+		kv(0, "Mesh IP", dash(o.Status.Network.MeshIP))
 		kv(0, "Region", dash(o.Spec.Region))
 		kv(0, "Zone", dash(o.Spec.Zone))
 		if p := o.Status.Provider; p != nil {

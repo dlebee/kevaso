@@ -9,7 +9,7 @@ import (
 )
 
 func TestNetworkView(t *testing.T) {
-	h := &v1.Host{ObjectMeta: meta.ObjectMeta{Name: "metal-1"}, Spec: v1.HostSpec{Address: "198.51.100.10"}}
+	h := &v1.Host{ObjectMeta: meta.ObjectMeta{Name: "metal-1"}, Spec: v1.HostSpec{ExternalIP: "198.51.100.10"}}
 	mk := func(name, host, addr string, f func(*v1.Silo)) *v1.Silo {
 		s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "web3", UID: "u-" + name}}
 		s.Status.Host, s.Status.Address = host, addr
@@ -33,7 +33,7 @@ func TestNetworkView(t *testing.T) {
 		{ObjectMeta: meta.ObjectMeta{Name: "p2p-anywhere", Namespace: "other"}, Spec: v1.GrantSpec{Egress: []v1.EgressRule{{To: "10.0.0.0/8"}}}},
 	}
 	v := NetworkView("metal-1", h, []*v1.Silo{node, plain, pooled, elsewhere, pending}, grants)
-	if len(v.Local) != 3 || len(v.All) != 4 || v.Address.String() != "198.51.100.10" {
+	if len(v.Local) != 3 || len(v.All) != 4 || v.ExternalIP.String() != "198.51.100.10" {
 		t.Fatalf("view %+v", v)
 	}
 	for _, s := range v.Local {

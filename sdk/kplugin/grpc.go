@@ -127,7 +127,7 @@ func lbTo(lb LoadBalancer) *pb.LoadBalancer {
 	m := &pb.LoadBalancer{Class: lb.Class, Id: lb.ID, Namespace: lb.Namespace, Name: lb.Name, Address: lb.Address,
 		Backends: hostInfosTo(lb.Backends), Hosts: hostInfosTo(lb.Hosts), Annotations: lb.Annotations}
 	for _, p := range lb.Ports {
-		m.Ports = append(m.Ports, &pb.Port{Name: p.Name, Protocol: p.Protocol, Port: int32(p.Port), NodePort: int32(p.NodePort), AllowFrom: p.AllowFrom,
+		m.Ports = append(m.Ports, &pb.Port{Name: p.Name, Protocol: p.Protocol, Port: int32(p.Port), NodePort: int32(p.NodePort), Sources: p.Sources,
 			Service: p.Service, Backends: hostInfosTo(p.Backends), Annotations: p.Annotations})
 	}
 	return m
@@ -137,7 +137,7 @@ func lbFrom(m *pb.LoadBalancer) LoadBalancer {
 	lb := LoadBalancer{Class: m.GetClass(), ID: m.GetId(), Namespace: m.GetNamespace(), Name: m.GetName(), Address: m.GetAddress(),
 		Backends: hostInfosFrom(m.GetBackends()), Hosts: hostInfosFrom(m.GetHosts()), Annotations: m.GetAnnotations()}
 	for _, p := range m.GetPorts() {
-		lb.Ports = append(lb.Ports, Port{Name: p.GetName(), Protocol: p.GetProtocol(), Port: int(p.GetPort()), NodePort: int(p.GetNodePort()), AllowFrom: p.GetAllowFrom(),
+		lb.Ports = append(lb.Ports, Port{Name: p.GetName(), Protocol: p.GetProtocol(), Port: int(p.GetPort()), NodePort: int(p.GetNodePort()), Sources: p.GetSources(),
 			Service: p.GetService(), Backends: hostInfosFrom(p.GetBackends()), Annotations: p.GetAnnotations()})
 	}
 	return lb
@@ -179,7 +179,7 @@ type hostsServer struct {
 func (s hostsServer) DescribeHosts(ctx context.Context, r *pb.DescribeHostsRequest) (*pb.DescribeHostsResponse, error) {
 	var in []Host
 	for _, h := range r.GetHosts() {
-		in = append(in, Host{Name: h.GetName(), Address: h.GetAddress()})
+		in = append(in, Host{Name: h.GetName(), InternalIP: h.GetInternalIp(), ExternalIP: h.GetExternalIp()})
 	}
 	out, err := s.p.DescribeHosts(ctx, in)
 	if err != nil {
@@ -397,7 +397,7 @@ func (c *Client) Info(ctx context.Context) (Info, error) {
 func (c *Client) DescribeHosts(ctx context.Context, hosts []Host) ([]HostInfo, error) {
 	req := &pb.DescribeHostsRequest{}
 	for _, h := range hosts {
-		req.Hosts = append(req.Hosts, &pb.Host{Name: h.Name, Address: h.Address})
+		req.Hosts = append(req.Hosts, &pb.Host{Name: h.Name, InternalIp: h.InternalIP, ExternalIp: h.ExternalIP})
 	}
 	r, err := c.hosts.DescribeHosts(ctx, req)
 	if err != nil {

@@ -293,7 +293,7 @@ func (c *Balancers) siloPorts(s *v1.Silo, p *plugins.Plugin, pc kplugin.Class, u
 		if strings.EqualFold(sp.Protocol, "UDP") {
 			proto = "UDP"
 		}
-		ports = append(ports, kplugin.Port{Name: sp.Name, Protocol: proto, Port: sp.Port, NodePort: nps[sp.Name], AllowFrom: src,
+		ports = append(ports, kplugin.Port{Name: sp.Name, Protocol: proto, Port: sp.Port, NodePort: nps[sp.Name], Sources: src,
 			Service: v1.HolderSiloPrefix + s.Name, Backends: []kplugin.HostInfo{info(h)}, Annotations: ann})
 	}
 	return ports, h, end, "", ""

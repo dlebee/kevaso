@@ -22,7 +22,7 @@ func TestMoves(t *testing.T) {
 	worker := func(name string, runtimes ...string) {
 		t.Helper()
 		h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: name},
-			Spec: v1.HostSpec{Address: "203.0.113.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}
+			Spec: v1.HostSpec{ExternalIP: "203.0.113.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}
 		h.Status.Runtimes = map[string]v1.RuntimeStatus{}
 		for _, r := range runtimes {
 			h.Spec.Components.Worker.Runtimes = append(h.Spec.Components.Worker.Runtimes, v1.RuntimeSpec{Name: r})

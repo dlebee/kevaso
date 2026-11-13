@@ -107,15 +107,15 @@ func TestPortLeases(t *testing.T) {
 			o, _, _ := v1.Decode(raw)
 			ls = append(ls, o.(*v1.Lease))
 		}
-		return kni.Rules(worker.WithLeases(worker.NetworkView("hv1", nil, silos, nil), silos, ls, time.Now()))
+		return kni.Rules(worker.WithLeases(worker.NetworkView("hv1", &v1.Host{Spec: v1.HostSpec{ExternalIP: "198.51.100.10"}}, silos, nil), silos, ls, time.Now()))
 	}
 	const (
-		debugDNAT = "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 9229 dnat ip to 10.64.2.2:9229"
+		debugDNAT = "ip daddr 198.51.100.10 tcp dport 9229 dnat ip to 10.64.2.2:9229"
 		debugFwd  = `ip daddr 10.64.2.2 ip saddr 203.0.113.7 tcp dport 9229 ct status dnat accept`
-		debugCut  = `tcp dport 9229 ct status dnat ct original ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16 } reject with tcp reset`
-		webDNAT   = "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 8080 dnat ip to 10.64.2.2:8080"
+		debugCut  = `tcp dport 9229 ct status dnat ct original ip daddr 198.51.100.10 reject with tcp reset`
+		webDNAT   = "ip daddr 198.51.100.10 tcp dport 8080 dnat ip to 10.64.2.2:8080"
 		private   = "ip saddr 10.64.2.9 ip daddr 10.64.2.2 tcp dport 9229 accept"
-		prevDNAT  = "fib daddr type local ip daddr != { 10.62.0.0/16, 10.63.0.0/16, 10.64.0.0/16, 10.65.0.0/16, 127.0.0.0/8 } tcp dport 3000 dnat ip to 10.64.2.2:3000"
+		prevDNAT  = "ip daddr 198.51.100.10 tcp dport 3000 dnat ip to 10.64.2.2:3000"
 		prevFwd   = `ip daddr 10.64.2.2 ip saddr 203.0.113.0/24 tcp dport 3000 ct status dnat accept`
 	)
 	preview := func(when string, open bool) {
