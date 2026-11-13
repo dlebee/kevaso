@@ -258,6 +258,12 @@ func (a *Agent) Run(ctx context.Context) {
 			a.collectGarbage(ctx, e)
 		}
 	}()
+	// Nothing is reconciled before the agent knows the grants and secrets: with their caches still
+	// empty (a restart) a silo would seem to receive nothing, and start, or run its init steps,
+	// without its secrets.
+	if !a.grants.WaitSynced(ctx) || !a.secrets.WaitSynced(ctx) {
+		return
+	}
 	e.Run(ctx)
 }
 
