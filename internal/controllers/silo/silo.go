@@ -259,7 +259,7 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		delete(c.assumed, key) // it has: from now on the cache is what's true (a lost host, a move)
 	}
 	hosts, silos := c.lists()
-	env := scheduler.Env{Hosts: hosts}
+	env := scheduler.Env{Hosts: hosts, Suffix: v1.ClusterSuffix(hosts)}
 	if c.IPs != nil {
 		for _, o := range c.IPs.List() {
 			env.IPs = append(env.IPs, o.(*v1.IP))

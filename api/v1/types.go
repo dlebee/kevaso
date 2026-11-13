@@ -74,6 +74,10 @@ type HostNetwork struct {
 	// the built-in ip-pool class hands out as IP objects (design §7.2c-1). The operator declares
 	// them: kvoadm host addresses HOST add CIDR.
 	Addresses []string `json:"addresses,omitempty"`
+	// DNS: the networks (internal, external) this host also answers Kevaso's names on, at its
+	// address there on port 53, besides its silos and the mesh. Off unless listed: an external
+	// listener answers anyone who can reach it (external names only, nothing forwarded).
+	DNS []string `json:"dns,omitempty"`
 }
 
 // HostComponents are installed explicitly; there's no hidden all-in-one mode.
@@ -147,6 +151,19 @@ type ControlPlaneStatus struct {
 	PeerURL string `json:"peerURL,omitempty"` // its etcd member's peer URL; empty: no peer listener
 	Member  string `json:"member,omitempty"`  // voter | learner | "" (not a store member)
 	Leader  bool   `json:"leader,omitempty"`  // runs the controllers and the scheduler now
+	// DNSSuffix is the cluster's names' last label (kevasod control-plane --dns-suffix; empty:
+	// kevaso). Every host answers names with the one its system nodes say.
+	DNSSuffix string `json:"dnsSuffix,omitempty"`
+}
+
+// ClusterSuffix is the names' suffix the cluster's system nodes publish (the default if none does).
+func ClusterSuffix(hosts []*Host) string {
+	for _, h := range hosts {
+		if cp := h.Status.ControlPlane; cp != nil && cp.DNSSuffix != "" {
+			return cp.DNSSuffix
+		}
+	}
+	return DefaultSuffix
 }
 
 // Internal is the host's internal IP: spec.internalIP, or else its provider's private address.

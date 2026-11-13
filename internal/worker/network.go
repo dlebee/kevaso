@@ -17,6 +17,7 @@ import (
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/gate"
 	"kevaso.com/core/internal/ingress"
+	"kevaso.com/core/internal/names"
 	"kevaso.com/core/internal/routing"
 	"kevaso.com/core/sdk/kri"
 )
@@ -189,7 +190,19 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		}
 		return out
 	}
-	go (&DNS{Listen: net.JoinHostPort(cloudhypervisor.Gateway.String(), "53"), Silos: current, Services: currentServices, Log: log}).Run(ctx)
+	currentHosts := func() []*v1.Host {
+		var out []*v1.Host
+		for _, o := range hosts.List() {
+			out = append(out, o.(*v1.Host))
+		}
+		return out
+	}
+	nameView := func() names.View {
+		hs := currentHosts()
+		return names.View{Silos: current(), Services: currentServices(), Hosts: hs, Suffix: v1.ClusterSuffix(hs)}
+	}
+	dnsOn := &dnsListeners{run: map[string]context.CancelFunc{}}
+	defer dnsOn.stop()
 	gatePort := 0
 	if ca != nil {
 		eg := &egress{c: c, hostName: hostName, ca: ca, upstream: upstream, log: log, silos: current, grants: currentGrants}
@@ -233,6 +246,10 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 				last = rules
 			}
 		}
+		dnsOn.keep(ctx, DNSListeners(me), func(addr string, from names.Asker) *DNS {
+			return &DNS{Listen: addr, From: from, View: nameView, Log: log,
+				SiloNamespace: func(a netip.Addr) (string, bool) { return SiloNamespaces(current())(a) }}
+		})
 		if me != nil {
 			if err := syncPoolAddresses(ctx, me.Reach(), PoolAddresses(hostName, all)); err != nil {
 				log("pool addresses: %v", err)
@@ -383,4 +400,58 @@ func WithIngressPaths(silos []*v1.Silo, svcs []*v1.Service, ingresses []*v1.Ingr
 		}
 	}
 	return out
+}
+
+// DNSListeners are where a host answers names, and who asks on each (ADR 0009 §5): its silos'
+// gateway (silos) and its mesh IP (hosts) always; its internal IP (machines on its network) and
+// external IP (anyone) only when its spec.network.dns lists them. Pure.
+func DNSListeners(h *v1.Host) map[string]names.Asker {
+	out := map[string]names.Asker{net.JoinHostPort(cloudhypervisor.Gateway.String(), "53"): names.FromSilo}
+	if h == nil {
+		return out
+	}
+	if ip := h.Status.Network.MeshIP; ip != "" {
+		out[net.JoinHostPort(ip, "53")] = names.FromHost
+	}
+	for _, n := range h.Spec.Network.DNS {
+		switch ip := h.IPOn(n); {
+		case ip == "":
+		case n == v1.NetworkInternal:
+			out[net.JoinHostPort(ip, "53")] = names.FromNetwork
+		case n == v1.NetworkExternal:
+			out[net.JoinHostPort(ip, "53")] = names.FromOutside
+		}
+	}
+	return out
+}
+
+// dnsListeners runs one DNS server per wanted address, restarting none that stays the same.
+type dnsListeners struct {
+	run map[string]context.CancelFunc // ADDR/asker → its server's stop
+}
+
+func (l *dnsListeners) keep(ctx context.Context, want map[string]names.Asker, mk func(string, names.Asker) *DNS) {
+	keys := map[string]bool{}
+	for addr, from := range want {
+		k := addr + "/" + from.String()
+		keys[k] = true
+		if _, ok := l.run[k]; ok {
+			continue
+		}
+		c, cancel := context.WithCancel(ctx)
+		l.run[k] = cancel
+		go mk(addr, from).Run(c)
+	}
+	for k, stop := range l.run {
+		if !keys[k] {
+			stop()
+			delete(l.run, k)
+		}
+	}
+}
+
+func (l *dnsListeners) stop() {
+	for _, stop := range l.run {
+		stop()
+	}
 }

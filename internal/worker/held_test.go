@@ -8,6 +8,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kni"
+	"kevaso.com/core/internal/names"
 )
 
 func heldSilo(ready bool) *v1.Silo {
@@ -40,11 +41,11 @@ func TestNetworkViewHeld(t *testing.T) {
 
 // The private name of a held silo exists with no record; a routed one answers.
 func TestLookupHeld(t *testing.T) {
-	ip, inZone, found := Lookup("rpc.web3.kevaso", []*v1.Silo{heldSilo(false)})
-	if !inZone || !found || ip.IsValid() {
-		t.Fatalf("held: %v %v %v", ip, inZone, found)
+	q := names.Question{Name: "rpc.web3.kevaso", From: names.FromSilo}
+	if a := names.Resolve(q, names.View{Silos: []*v1.Silo{heldSilo(false)}}); !a.InZone || !a.Found || len(a.IPs) != 0 {
+		t.Fatalf("held: %+v", a)
 	}
-	if ip, _, found := Lookup("rpc.web3.kevaso", []*v1.Silo{heldSilo(true)}); !found || ip.String() != "10.64.1.2" {
-		t.Fatalf("routed: %v %v", ip, found)
+	if a := names.Resolve(q, names.View{Silos: []*v1.Silo{heldSilo(true)}}); len(a.IPs) != 1 || a.IPs[0].String() != "10.64.1.2" {
+		t.Fatalf("routed: %+v", a)
 	}
 }

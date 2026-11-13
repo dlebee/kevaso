@@ -20,6 +20,7 @@ import (
 	"kevaso.com/core/internal/clock"
 	servicecontroller "kevaso.com/core/internal/controllers/service"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/names"
 	"kevaso.com/core/internal/worker"
 	"kevaso.com/core/sdk/kri"
 	"kevaso.com/core/sdk/kri/fake"
@@ -148,11 +149,11 @@ func (r *probeRig) outside() bool {
 
 // dns is what the host's resolver answers for rpc.web3.kevaso: an address, or "" while held.
 func (r *probeRig) dns() string {
-	ip, _, found := worker.Lookup("rpc.web3.kevaso", []*v1.Silo{r.silo("rpc")})
-	if !found || !ip.IsValid() {
+	a := names.Resolve(names.Question{Name: "rpc.web3.kevaso", From: names.FromSilo}, names.View{Silos: []*v1.Silo{r.silo("rpc")}})
+	if !a.Found || len(a.IPs) == 0 {
 		return ""
 	}
-	return ip.String()
+	return a.IPs[0].String()
 }
 
 func endpointNames(eps []v1.ServiceEndpoint) string {

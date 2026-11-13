@@ -160,6 +160,7 @@ func runControlPlane(ctx context.Context, args []string) error {
 	var extra multi
 	fs.StringVar(&cfg.HostName, "name", "", "this host's name")
 	fs.StringVar(&cfg.InternalIP, "internal-ip", "", "this host's address on its own network")
+	fs.StringVar(&cfg.DNSSuffix, "dns-suffix", "", "the cluster's names' last label (default kevaso): SERVICE.NAMESPACE.SUFFIX")
 	fs.StringVar(&cfg.ExternalIP, "external-ip", "", "this host's address reachable from outside its network (at least one of the two)")
 	fs.StringVar(&cfg.Listen, "listen", "0.0.0.0:6443", "TLS API address")
 	fs.StringVar(&cfg.DataDir, "data", "/var/lib/kevaso", "data directory (store, CA)")

@@ -90,6 +90,14 @@ func semantic(obj meta.Object) []string {
 		if o.Spec.InternalIP != "" && o.Spec.InternalIP == o.Spec.ExternalIP {
 			errs = append(errs, "spec.internalIP and spec.externalIP are the same address: a machine with one address has one of the two (external if it's reachable from outside its network)")
 		}
+		for _, n := range o.Spec.Network.DNS {
+			switch {
+			case n != v1.NetworkInternal && n != v1.NetworkExternal:
+				errs = append(errs, fmt.Sprintf("spec.network.dns: %q: internal or external (silos and the mesh are always answered)", n))
+			case n == v1.NetworkExternal && o.Spec.ExternalIP == "":
+				errs = append(errs, fmt.Sprintf("spec.network.dns: %s: the host has no %s IP", n, n))
+			}
+		}
 		for _, a := range o.Spec.Network.Addresses {
 			if _, err := ips.Parse(a); err != nil {
 				errs = append(errs, "spec.network.addresses: "+err.Error())

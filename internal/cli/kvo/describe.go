@@ -273,6 +273,11 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		kv(0, "Internal IP", internal)
 		kv(0, "External IP", dash(o.External()))
 		kv(0, "Mesh IP", dash(o.Status.Network.MeshIP))
+		dnsOn := "its silos and the mesh"
+		for _, n := range o.Spec.Network.DNS {
+			dnsOn += ", its " + n + " IP"
+		}
+		kv(0, "Names answered on", dnsOn)
 		kv(0, "Region", dash(o.Spec.Region))
 		kv(0, "Zone", dash(o.Spec.Zone))
 		if p := o.Status.Provider; p != nil {

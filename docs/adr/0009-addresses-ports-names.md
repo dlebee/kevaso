@@ -77,3 +77,54 @@ excluded for a `[external]` port, with the reason ("no external IP, which port 4
 `as`) and protocol ("port 443/TCP on the external IP (51.38.10.20) is held by web/api-blue"). Both
 reasons are the scheduler's, so `kvo describe silo` lists them per host as before. A leased port
 holds its number while closed.
+
+## 4. Service names
+
+- `service.name` (default: the silo's name) is the name; a silo without a service has none. A
+  name is unique in its namespace across silos' services and standalone `Service`s: admission
+  (`checkServiceName`) refuses a second holder with 409 `NameTaken`, saying who holds it
+  (`silo/api-blue`, `service/rpc`). A SiloSet checks the names its instances will take
+  (`NAME-0`, `NAME-1`…); `template.service.name` is refused, since every instance would claim it.
+  Two writes racing for one name can both pass (the guard reads, then the store writes); the next
+  write of either is refused. Good enough until a name index exists in the store.
+- **Ingress rules name a service** (`service: {name, port}`), not a silo: the name is what's unique
+  and stable when the silo behind it changes (api-blue, then api-green, both `service.name: api`),
+  and it lets an Ingress front a standalone `Service` (its cluster IP and port) as well as a
+  silo's own service (its silo IP and the declared port the service opens). The generated path
+  from the controller opens the target port on every silo behind the name.
+- `allowFrom` keeps naming silos: it says who is calling, and a caller needn't have a service.
+
+## 5. Names and DNS
+
+The resolver is `internal/names.Resolve` (pure, table-tested); `internal/worker/dns.go` serves it.
+
+- Grammar, under the cluster's suffix: `SERVICE.NAMESPACE` (the plain name),
+  `SERVICE.NAMESPACE.NETWORK`, `HOST.NETWORK`; short names `SERVICE` and `SERVICE.NAMESPACE` from a
+  silo only, and only when they name a service (so `example.com` is still forwarded). `mesh`,
+  `internal` and `external` can't be namespace names (admission), which keeps the grammar
+  unambiguous.
+- Answers: mesh, the silo IP (a `Service`: its cluster IP); internal/external, the host's address
+  of that kind where a port opens on it (a `Service`: its endpoints' hosts). A silo held by
+  `routeWhen`, or not running, answers with no address (NODATA, TTL 5 s). The plain name is the
+  mesh answer for a silo or a host, internal for a machine on a host's network, external for anyone
+  else. **Choice:** a machine on a host's network that gets no internal answer gets the external
+  one, if any ("the best of the three"): it may resolve external names anyway. Load-balancer
+  addresses aren't in the answers (the design names hostPort only); public names for them are a
+  DNS plugin's job.
+- Who may resolve what (refused names get REFUSED, saying nothing about existence): a silo, plain
+  and short service names; a host (the mesh), everything; a machine on the network, internal and
+  external names; anyone else, external names. Only silos' other names are forwarded upstream.
+- **Where it listens.** The asker is known by where the question arrives: the silos' gateway
+  (`10.64.0.1:53`, the asking silo's namespace from its source address; a source that isn't a
+  silo is refused), the host's mesh IP (hosts), and, **off unless the operator lists them in
+  `Host.spec.network.dns`**, the host's internal IP (machines on its network) and external IP
+  (anyone). An external listener is a real exposure (anyone can ask it, and it's a reflection
+  target), so it's opt-in per host; it answers external names only and never forwards. Kevaso's
+  firewall doesn't manage the host's own input chain, so opening port 53 there is the operator's
+  call as well. `kvo describe host` says where names are answered.
+- **The suffix** is set per cluster with `kevasod control-plane --dns-suffix` (default `kevaso`),
+  published on each system node's `status.controlPlane.dnsSuffix`; the scheduler's status names and
+  every host's DNS take it from there (`v1.ClusterSuffix`). Silos' resolver search lists still say
+  `NS.kevaso kevaso`; with another suffix, short names reach the server bare after the search list
+  misses (a few forwarded lookups first). Making the runtimes write the cluster's suffix is a
+  follow-up (it touches the runtimes' network config).
