@@ -57,10 +57,7 @@ func contains(l []string, v string) bool {
 
 // netFilter: the network rules a host must meet for the silo (empty: fine).
 func netFilter(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) string {
-	if UsesHostAddress(s) {
-		if h.Spec.Network.BehindNAT {
-			return "behind NAT: no public address to open ports on"
-		}
+	if UsesHostAddress(s) { // any host will do: its ports answer on whatever addresses it has (§7.2a)
 		want := openedPorts(s)
 		for _, o := range placed {
 			if o.Status.Host != h.Name || (o.Namespace == s.Namespace && o.Name == s.Name) {
@@ -118,8 +115,31 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloS
 			st.PublicIP = svcIP.Status.Address
 		}
 	}
+	st.AnswersOn = AnswersOn(s, h, st.PublicIP)
 	st.EgressIP, st.EgressNote = Egress(s, h, st.PublicIP, svcIP, egIP, env.Classes)
 	return st, nil
+}
+
+// AnswersOn are the addresses s's exposed ports answer on, placed on h: for hostPort and worker-ip
+// every address the host has (its main one first, then what its agent reports: LAN, behind NAT),
+// whether public or not; otherwise the address it's reached on (its IP's), if any.
+func AnswersOn(s *v1.Silo, h *v1.Host, in string) []string {
+	if !UsesHostAddress(s) {
+		if in == "" {
+			return nil
+		}
+		return []string{in}
+	}
+	var out []string
+	if h.Spec.Address != "" {
+		out = append(out, h.Spec.Address)
+	}
+	for _, a := range h.Status.Addresses {
+		if !slices.Contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // NodePorts gives each of s's service ports a host port on host, kept if it already has them there:

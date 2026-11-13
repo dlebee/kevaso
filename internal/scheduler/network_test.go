@@ -32,11 +32,20 @@ func boundTo(s *v1.Silo) func(*v1.IP) {
 }
 
 func TestHostPortScheduling(t *testing.T) {
-	behind := host("home", func(h *v1.Host) { h.Spec.Network.BehindNAT = true })
-	// Behind NAT: no.
+	behind := host("home", func(h *v1.Host) {
+		h.Spec.Network.BehindNAT, h.Spec.Address = true, "192.168.1.20"
+		h.Status.Addresses = []string{"192.168.1.20", "10.0.0.5"}
+	})
+	// Behind NAT, or with only LAN addresses, is a normal host (design §7.2a): its ports answer on
+	// the addresses it has; how the outside reaches them (a router's forward, a balancer) is the
+	// user's.
 	d, _ := Schedule(exposed("a", "", nil), hosts(behind), nil)
-	if d.Host != "" || !strings.Contains(d.Excluded["home"], "behind NAT") {
+	if d.Host != "home" {
 		t.Fatalf("behind NAT: %+v", d)
+	}
+	st, _ := ServiceStatus(exposed("a", "home", nil), behind, nil, Env{})
+	if st.PublicIP != "192.168.1.20" || strings.Join(st.AnswersOn, " ") != "192.168.1.20 10.0.0.5" || st.EgressIP != "" {
+		t.Fatalf("on a LAN host behind NAT: %+v", st)
 	}
 	// The same port on the same host goes elsewhere; a private port of the same number doesn't count.
 	first := exposed("first", "metal-1", nil)
@@ -116,6 +125,37 @@ func TestIPScheduling(t *testing.T) {
 	env.Classes["fake-ip"] = Class{Plugin: "fake", Follows: "global"}
 	if d, _ := ScheduleIn(p, hosts(away), nil, env); d.Host != "lin-2" {
 		t.Fatalf("global: %+v", d)
+	}
+}
+
+// Nothing assumes a host's address, or an IP's, is public: a host with only a LAN address answers
+// on it and on the rest it has, and an ip-pool IP from a private range is handed out, placed and
+// sent from like any other.
+func TestPrivateAddresses(t *testing.T) {
+	lan := host("lan-1", func(h *v1.Host) {
+		h.Spec.Address = "192.168.1.10"
+		h.Spec.Network.Addresses = []string{"192.168.1.48/30"} // .49 and .50, on the LAN
+		h.Status.Addresses = []string{"192.168.1.10", "192.168.1.49"}
+	})
+	hp := exposed("hp", "lan-1", func(s *v1.Silo) { s.Spec.Network.Egress.Source = v1.EgressSameAsService })
+	st, _ := ServiceStatus(hp, lan, nil, Env{})
+	if st.PublicIP != "192.168.1.10" || st.EgressIP != "192.168.1.10" || strings.Join(st.AnswersOn, " ") != "192.168.1.10 192.168.1.49" {
+		t.Fatalf("a host port on a LAN-only host: %+v", st)
+	}
+	s := exposed("p", "", func(s *v1.Silo) {
+		s.UID = "uid-p"
+		s.Spec.Service.Expose, s.Spec.Service.HostPort = v1.ExposeLoadBalancer, nil
+		s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: v1.LBIPPool, IP: "lan-ip"}
+		s.Spec.Network.Egress.Source = v1.EgressSameAsService
+	})
+	x := ipObj("lan-ip", v1.LBIPPool, func(x *v1.IP) { boundTo(s)(x); x.Status.Host, x.Status.Address = "lan-1", "192.168.1.50" })
+	if d, _ := Schedule(s, hosts(lan), nil, x); d.Host != "lan-1" {
+		t.Fatalf("a private ip-pool address: %+v", d)
+	}
+	s.Status.Host = "lan-1"
+	st, _ = ServiceStatus(s, lan, nil, Env{IPs: []*v1.IP{x}})
+	if st.PublicIP != "192.168.1.50" || st.EgressIP != "192.168.1.50" || strings.Join(st.AnswersOn, " ") != "192.168.1.50" || st.HostAddresses[0] != "192.168.1.50" {
+		t.Fatalf("on a private ip-pool address: %+v", st)
 	}
 }
 

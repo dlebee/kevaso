@@ -124,6 +124,9 @@ type HostStatus struct {
 	// Provider is what a provider plugin knows about this machine, if it's one of its own (a
 	// Linode): the plugin's classes (volumes, load balancers) only reach such hosts.
 	Provider *HostProvider `json:"provider,omitempty"`
+	// Addresses are the host's own IPv4 addresses as its agent sees them (public, LAN, whatever it
+	// has), Kevaso's mesh and silo ranges and loopback left out: a host port answers on all of them.
+	Addresses []string `json:"addresses,omitempty"`
 	// MountClasses are the storage classes whose plugin's node side runs on this host (reach
 	// mount, e.g. juicefs): only such hosts can take a silo with a volume on one.
 	MountClasses []string `json:"mountClasses,omitempty"`

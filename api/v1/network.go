@@ -89,6 +89,10 @@ type SiloServiceStatus struct {
 	Name     string `json:"name,omitempty"`     // its private name, e.g. api.payments.kevaso
 	PublicIP string `json:"publicIP,omitempty"` // the outside address, if exposed: the address in
 	EgressIP string `json:"egressIP,omitempty"` // where its outgoing traffic comes from: the address out
+	// AnswersOn are the addresses its exposed ports answer on: every address of its host for
+	// hostPort and worker-ip (public, LAN, behind NAT alike: design §7.2a), its IP's for a load
+	// balancer.
+	AnswersOn []string `json:"answersOn,omitempty"`
 	// EgressNote says why the address out isn't the address in, when it isn't (design §7.2b).
 	EgressNote string `json:"egressNote,omitempty"`
 	// IP is the IP object the service's address is, when it has one (design §7.2c-1).
@@ -115,7 +119,7 @@ type NodePort struct {
 // Equal reports whether two service statuses are the same.
 func (a SiloServiceStatus) Equal(b SiloServiceStatus) bool {
 	if a.Name != b.Name || a.PublicIP != b.PublicIP || a.EgressIP != b.EgressIP || a.EgressNote != b.EgressNote || a.IP != b.IP || a.Announce != b.Announce ||
-		len(a.NodePorts) != len(b.NodePorts) || len(a.SourceRanges) != len(b.SourceRanges) || !slices.Equal(a.HostAddresses, b.HostAddresses) {
+		len(a.NodePorts) != len(b.NodePorts) || len(a.SourceRanges) != len(b.SourceRanges) || !slices.Equal(a.HostAddresses, b.HostAddresses) || !slices.Equal(a.AnswersOn, b.AnswersOn) {
 		return false
 	}
 	for i := range a.NodePorts {
@@ -130,6 +134,11 @@ func (a SiloServiceStatus) Equal(b SiloServiceStatus) bool {
 	}
 	return true
 }
+
+// KevasoRanges are Kevaso's own networks: the mesh (10.62/16, 10.63/16), the silos (10.64/16) and
+// the Services' virtual IPs (10.65/16). A host port never answers on them, or a silo on another
+// host could reach it over the mesh without its allowFrom.
+var KevasoRanges = []string{"10.62.0.0/16", "10.63.0.0/16", "10.64.0.0/16", "10.65.0.0/16"}
 
 // NodePort range: like Kubernetes'.
 const (

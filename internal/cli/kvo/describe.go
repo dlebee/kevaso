@@ -136,6 +136,9 @@ func describeObject(w io.Writer, obj meta.Object) error {
 				egress += " (" + src + ")"
 			}
 			kv(0, "Egress IP", egress)
+			if len(st.AnswersOn) > 0 {
+				kv(0, "Answers on", strings.Join(st.AnswersOn, ", "))
+			}
 			kv(0, "In and out", st.AddressesLine())
 			if st.IP != "" {
 				kv(0, "IP", st.IP+" (kvo describe ip "+st.IP+")")
