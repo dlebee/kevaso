@@ -94,6 +94,9 @@ type holderState struct {
 
 // Reconcile implements engine.Controller.
 func (c *Balancers) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
+	if !informer.AllSynced(c.IPs, c.Silos, c.Services, c.Hosts, c.Leases) {
+		return engine.Result{RequeueAfter: time.Second}, nil // a holder not seen yet would park its balancer
+	}
 	o, ok := c.IPs.Get(k.Namespace, k.Name)
 	if !ok {
 		return engine.Result{}, nil

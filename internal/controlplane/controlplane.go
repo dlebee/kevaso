@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -376,8 +377,16 @@ type certDeps struct {
 }
 
 func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDeps) {
-	silos, hosts, ipInf := informer.New(c, "Silo"), informer.New(c, "Host"), informer.New(c, "IP")
-	certs, ingresses, classes, issuers := informer.New(c, "Certificate"), informer.New(c, "Ingress"), informer.New(c, "IngressClass"), informer.New(c, "Issuer")
+	// Every cache a controller reads is made here, and no controller runs before all of them have
+	// their first list (K-027): an empty cache is not an empty cluster.
+	var caches []engine.Cache
+	newInf := func(kind string) *informer.Informer {
+		inf := informer.New(c, kind)
+		caches = append(caches, inf)
+		return inf
+	}
+	silos, hosts, ipInf := newInf("Silo"), newInf("Host"), newInf("IP")
+	certs, ingresses, classes, issuers := newInf("Certificate"), newInf("Ingress"), newInf("IngressClass"), newInf("Issuer")
 	if err := certificate.EnsureIssuers(ctx, c); err != nil {
 		cfg.Log("built-in issuers: %v", err)
 	}
@@ -385,7 +394,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	e.OnError = func(ctrl string, k engine.Key, err error, retry time.Duration) {
 		cfg.Log("%s: %s: %v (retry in %v)", ctrl, k, err, retry)
 	}
-	images, sets, services := informer.New(c, "VMImage"), informer.New(c, "SiloSet"), informer.New(c, "Service")
+	images, sets, services := newInf("VMImage"), newInf("SiloSet"), newInf("Service")
 	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, IPs: ipInf, Images: images, Clock: cfg.Clock}
 	if cfg.Plugins != nil {
 		reg := cfg.Plugins
@@ -446,7 +455,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	})
 	if reg := cfg.Plugins; reg != nil {
 		e.Register(&provider.Hosts{Client: c, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 1})
-		leaseInf := informer.New(c, "Lease") // a plugin's load balancer has no backend for a closed leased port
+		leaseInf := newInf("Lease") // a plugin's load balancer has no backend for a closed leased port
 		leaseInf.AddHandler(func(k informer.Key) {
 			if o, ok := leaseInf.Get(k.Namespace, k.Name); ok {
 				e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: o.(*v1.Lease).Spec.Silo})
@@ -486,6 +495,8 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	go images.Run(ctx)
 	go sets.Run(ctx)
 	go services.Run(ctx)
+	e.WaitFor(caches...)
+	e.OnWait = func(kinds []string) { cfg.Log("controllers wait for their caches: %s", strings.Join(kinds, ", ")) }
 	e.Run(ctx)
 }
 

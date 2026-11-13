@@ -319,6 +319,9 @@ func (c *Controller) instances(set *v1.SiloSet) []*v1.Silo {
 
 // Reconcile implements engine.Controller.
 func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
+	if !informer.AllSynced(c.Sets, c.Silos) {
+		return engine.Result{RequeueAfter: time.Second}, nil // instances not seen yet are not missing ones
+	}
 	o, ok := c.Sets.Get(k.Namespace, k.Name)
 	if !ok {
 		return engine.Result{}, nil

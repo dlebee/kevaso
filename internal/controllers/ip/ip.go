@@ -98,6 +98,9 @@ func (c *Controller) lists(ns string) ([]*v1.Silo, []*v1.Service) {
 
 // Reconcile implements engine.Controller.
 func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
+	if !informer.AllSynced(c.IPs, c.Silos, c.Services, c.Hosts) {
+		return engine.Result{RequeueAfter: time.Second}, nil // no claimant seen is not no claimant
+	}
 	o, ok := c.IPs.Get(k.Namespace, k.Name)
 	if !ok {
 		return engine.Result{}, nil

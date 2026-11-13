@@ -107,6 +107,9 @@ type ingressController struct{ c *Controller }
 func (i ingressController) Name() string { return "ingress-certificate" }
 func (i ingressController) Kind() string { return "Ingress" }
 func (i ingressController) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
+	if !informer.AllSynced(i.c.Ingresses, i.c.Certificates, i.c.Classes, i.c.Silos) {
+		return engine.Result{RequeueAfter: time.Second}, nil // an Ingress not seen yet is not a deleted one
+	}
 	return engine.Result{}, i.c.reconcileIngress(ctx, k)
 }
 
