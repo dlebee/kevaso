@@ -240,17 +240,23 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	return r, nil
 }
 
-// expireApprovals marks requests for a person's yes that nobody answered in time.
+// expireApprovals marks requests for a person's yes that nobody answered in time, and, less
+// often, removes the panes and bundles of silos that are gone.
 func expireApprovals(ctx context.Context, srv *apiserver.Server, cfg Config) {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
-	for {
+	for n := 0; ; n++ {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 			if err := srv.ExpireApprovals(ctx); err != nil && ctx.Err() == nil {
 				cfg.Log("approvals: %v", err)
+			}
+			if n%6 == 0 {
+				if err := srv.SweepPanes(ctx); err != nil && ctx.Err() == nil {
+					cfg.Log("panes: %v", err)
+				}
 			}
 		}
 	}

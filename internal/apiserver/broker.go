@@ -154,6 +154,8 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 		return client.BrokerResponse{Deliveries: out}, fmt.Sprintf("%d file/env deliveries", len(out)), true
 	case client.OpAskInject:
 		return s.askInject(ctx, call, op)
+	case client.OpPane, client.OpPaneBundle:
+		return s.brokerPane(ctx, call, op)
 	case client.OpIngress:
 		cfg, n, err := s.ingressConfig(ctx, call.silo)
 		if err != nil {

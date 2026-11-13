@@ -19,6 +19,8 @@
 //	kvo secret set NAME --from-file F|-        rotate: every silo using it follows
 //	kvo get secret NAME --reveal               the value (read-value; never a write-only secret)
 //	kvo get approvals | kvo watch approvals    silos waiting for a person's yes to use a secret
+//	kvo pane watch SILO                        follow a silo's panes (plain text; one way)
+//	kvo pane bundle PANE -o FILE               save an HTML pane's bundle (for the panes app)
 //	kvo approve NAME | kvo deny NAME [--reason R]   answer one (approve on that secret; people only)
 //
 // The cluster comes from --server or $KVO_SERVER (plain HTTP, for `kevasod dev`), otherwise from the
@@ -166,7 +168,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|scale|reset|protect|move|create|secret|approve|deny|login|logout|ctx|ns|auth …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|scale|reset|protect|move|pane|create|secret|approve|deny|login|logout|ctx|ns|auth …")
 		return 2
 	}
 	o, err := parse(args[1:], os.Getenv)
@@ -210,6 +212,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		err = secretCommand(ctx, c, o, stdin, stdout)
 	case "move":
 		err = move(ctx, c, o, stdout)
+	case "pane":
+		err = paneCommand(ctx, c, o, stdout)
 	case "approve", "deny":
 		err = approve(ctx, c, o, args[0], stdout)
 	case "delete":
@@ -660,6 +664,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 		head = append(head, "VERSIONS")
 	case "Approval":
 		head = append(head, "SILO", "SECRET", "USE", "FOR", "PHASE", "WHEN", "ANSWERED-BY")
+	case "Pane":
+		head = append(head, "SILO", "PANE", "KIND", "STATE", "UPDATED")
 	}
 	head = append(head, "AGE")
 	_, _ = fmt.Fprintln(tw, strings.Join(head, "\t"))
@@ -743,6 +749,18 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			row = append(row, strings.Join(o.Spec.Hosts, ","), o.Spec.Issuer, exp, readiness(o.Status.Conditions))
 		case *v1.Approval:
 			row = append(row, approvalColumns(o, time.Now())...)
+		case *v1.Pane:
+			state, updated := plain(o.Spec.State, 16), "-"
+			if o.Spec.Kind == v1.PaneHTML {
+				state = "-"
+			}
+			if o.Status.UpdatedAt != nil {
+				updated = since(*o.Status.UpdatedAt) + " ago"
+				if o.Stale(time.Now()) {
+					updated += " (stale)"
+				}
+			}
+			row = append(row, o.Spec.Silo, o.Spec.Pane, o.Spec.Kind, dash(state), updated)
 		case *v1.SiloSet:
 			inst := fmt.Sprint(o.Spec.Instances)
 			if o.Spec.Standby > 0 {

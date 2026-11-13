@@ -1,6 +1,10 @@
 package client
 
-import "time"
+import (
+	"time"
+
+	v1 "kevaso.com/core/api/v1"
+)
 
 // The secret broker (design §8.2): one protocol, JSON lines over the silo's own vsock channel to its
 // host. A request names a secret; it never says which silo is asking, because the channel says.
@@ -11,12 +15,14 @@ const BrokerPort = 5000
 
 // Broker operations a silo may ask for.
 const (
-	OpGetSecret  = "get-secret" // a value, for broker / file / env deliveries
-	OpSign       = "sign"       // a signature; the key stays outside
-	OpPublicKey  = "public-key" // the public half of a key the silo may sign with
-	OpDeliveries = "deliveries" // which secrets go to files and env vars (names and versions only)
-	OpWatch      = "watch"      // a stream of events: a secret or grant changed, re-read
-	OpIngress    = "ingress"    // an ingress controller silo's routes, certificates and ACME answers
+	OpGetSecret  = "get-secret"  // a value, for broker / file / env deliveries
+	OpSign       = "sign"        // a signature; the key stays outside
+	OpPublicKey  = "public-key"  // the public half of a key the silo may sign with
+	OpDeliveries = "deliveries"  // which secrets go to files and env vars (names and versions only)
+	OpWatch      = "watch"       // a stream of events: a secret or grant changed, re-read
+	OpIngress    = "ingress"     // an ingress controller silo's routes, certificates and ACME answers
+	OpPane       = "pane"        // report a pane's latest state (design §10.1); nothing comes back
+	OpPaneBundle = "pane-bundle" // upload an HTML pane's bundle (Payload), named by its digest
 )
 
 // Ops only a host's egress gate asks for its silos (never forwarded from a silo): the injections,
@@ -38,6 +44,8 @@ type BrokerRequest struct {
 	For      string `json:"for,omitempty"`
 	Wait     string `json:"wait,omitempty"`
 	Approval string `json:"approval,omitempty"`
+	// pane: the report (its silo fields are filled in by the control plane, never taken from here).
+	Pane *v1.PaneReport `json:"pane,omitempty"`
 	// ask-inject: the request the gate would add the secret to.
 	Host   string `json:"host,omitempty"`
 	Method string `json:"method,omitempty"`
@@ -56,6 +64,8 @@ type BrokerResponse struct {
 	Ingress    *IngressConfig `json:"ingress,omitempty"`
 	Event      string         `json:"event,omitempty"` // watch: "changed" (a secret or grant), "ready"
 	Secret     string         `json:"secret,omitempty"`
+	// Digest: pane-bundle, the name the bundle is stored under (sha256:…).
+	Digest string `json:"digest,omitempty"`
 	// Pending: the use waits for a person's yes. Ask again with Request.Approval set to its name.
 	Pending *ApprovalWait `json:"pending,omitempty"`
 }

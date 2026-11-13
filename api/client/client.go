@@ -139,6 +139,38 @@ func (c *Client) do(ctx context.Context, method, path string, in any, out any) e
 	return nil
 }
 
+// Raw sends a request without a body and returns the answer's body as it is (a pane's bundle:
+// never decoded).
+func (c *Client) Raw(ctx context.Context, method, path string) ([]byte, error) {
+	b, _, err := c.Fetch(ctx, method, path)
+	return b, err
+}
+
+// Fetch is Raw with the response headers.
+func (c *Client) Fetch(ctx context.Context, method, path string) ([]byte, http.Header, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := c.send(c.http(), req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return nil, nil, err
+	}
+	if resp.StatusCode >= 300 {
+		e := &Error{Code: resp.StatusCode}
+		if json.Unmarshal(data, e) != nil || e.Reason == "" {
+			e.Reason, e.Message = http.StatusText(resp.StatusCode), strings.TrimSpace(string(data))
+		}
+		return nil, nil, e
+	}
+	return data, resp.Header, nil
+}
+
 func objPath(obj meta.Object, status bool) (string, error) {
 	m := obj.GetObjectMeta()
 	p, err := Path(obj.GetTypeMeta().Kind, m.Namespace, m.Name)

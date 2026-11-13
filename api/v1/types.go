@@ -169,6 +169,8 @@ type SiloSpec struct {
 	// Daemons and Upkeep keep the inside in its desired state after init (design §0.5).
 	Daemons []Daemon `json:"daemons,omitempty"`
 	Upkeep  []Upkeep `json:"upkeep,omitempty"`
+	// Panes lets the silo report its UX status to clients that ask (design §10.1). Off by default.
+	Panes *PaneConfig `json:"panes,omitempty"`
 	// Availability says what happens when the silo's host is lost (design §0.3).
 	Availability Availability `json:"availability,omitempty"`
 	// Service is the silo's own service (design §7.1); AllowFrom opens it to other silos.

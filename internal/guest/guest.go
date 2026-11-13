@@ -10,6 +10,8 @@
 // asked for once approved, --wait how long to wait (the cluster's defaults otherwise).
 //
 //	kvo-guest public-key KEY            the key's public half, hex
+//	kvo-guest pane report NAME [--state S] [--progress 0.4] [--title T] [--message M] [--field L=V]… [--ttl 60s]
+//	kvo-guest pane html NAME --bundle FILE [--data JSON|-] [--ttl 30s]   report a pane (one way, §10.1)
 //	kvo-guest sync [--once]             write file and env deliveries, and keep them up to date
 //	kvo-guest ingress [--install]       be an ingress controller (--install: as a service, in a VM)
 //
@@ -148,7 +150,7 @@ func Main(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io
 }
 
 func run(ctx context.Context, dial Dialer, root string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	usage := errors.New("usage: kvo-guest secret get NAME [--for D] [--wait D] | sign KEY [--slot N] [--for D] [--wait D] < payload | public-key KEY | sync [--once] | ingress [--install]")
+	usage := errors.New("usage: kvo-guest secret get NAME [--for D] [--wait D] | sign KEY [--slot N] [--for D] [--wait D] < payload | public-key KEY | pane report NAME … | pane html NAME --bundle FILE … | sync [--once] | ingress [--install]")
 	if len(args) == 0 {
 		return usage
 	}
@@ -195,6 +197,8 @@ func run(ctx context.Context, dial Dialer, root string, args []string, stdin io.
 		}
 		_, err = fmt.Fprintln(stdout, hex.EncodeToString(resp.Signature))
 		return err
+	case "pane":
+		return paneCommand(ctx, dial, args[1:], stdin, stdout)
 	case "public-key":
 		if len(args) != 2 {
 			return usage

@@ -26,11 +26,11 @@ var (
 	secretsViewer = v1.PolicyRule{Verbs: []string{"list"}, Resources: []string{"secrets"}}
 )
 
-// Approvals (design §8.7): everyone with a role in the namespace sees the queue; admins also answer
+// Approvals (design §8.7) and panes (§10.1): everyone with a role in the namespace sees the queue; admins also answer
 // (approve on secrets, above) and clear old ones. Nobody creates them: the broker does.
 var (
-	approvalsRead  = v1.PolicyRule{Verbs: read, Resources: []string{"approvals"}}
-	approvalsAdmin = v1.PolicyRule{Verbs: []string{"get", "list", "watch", "delete"}, Resources: []string{"approvals"}}
+	approvalsRead  = v1.PolicyRule{Verbs: read, Resources: []string{"approvals", "panes"}}
+	approvalsAdmin = v1.PolicyRule{Verbs: []string{"get", "list", "watch", "delete"}, Resources: []string{"approvals", "panes"}}
 )
 
 // BuiltinRoles are the roles of design §9.3: cluster-admin (everything), admin (a namespace, its

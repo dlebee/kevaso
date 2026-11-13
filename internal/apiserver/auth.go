@@ -130,6 +130,8 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 		a.Verb = "read-value"
 	case t.answer != "":
 		a.Verb, a.Resource = "create", t.kind.Plural+"/"+t.answer
+	case t.bundle:
+		a.Verb = "get" // the pane's own get: a bundle is part of what the pane shows
 	case r.Method == http.MethodGet && t.name == "" && r.URL.Query().Get("watch") == "true":
 		a.Verb = "watch"
 	case r.Method == http.MethodGet && t.name == "":
@@ -192,6 +194,8 @@ func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
 	case t.value: // values reach hosts only for their own silos, through the broker
 		return false
 	case t.answer != "": // only people answer approvals
+		return false
+	case t.bundle: // bundles are for people's clients, never for hosts
 		return false
 	case id.Role == "control-plane" && id.Type == "host":
 		return true

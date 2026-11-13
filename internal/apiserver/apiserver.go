@@ -58,6 +58,7 @@ type Server struct {
 
 	approvalLimits approvals.Limits
 	classes        func() map[string]scheduler.Class // the plugins' classes; nil: none
+	paneRates      paneRates
 }
 
 // New returns a server over a store, without authentication (kevasod dev, tests).
@@ -142,6 +143,7 @@ type target struct {
 	value     bool   // a secret's /value
 	move      bool   // a silo's /move
 	answer    string // an approval's /approve or /deny
+	bundle    bool   // a pane's /bundle
 }
 
 func parsePath(path string) (target, error) {
@@ -175,6 +177,8 @@ func parsePath(path string) (target, error) {
 		t.token = true
 	case len(parts) == 3 && parts[2] == "value" && k.Kind == "Secret":
 		t.value = true
+	case len(parts) == 3 && parts[2] == "bundle" && k.Kind == "Pane":
+		t.bundle = true
 	case len(parts) == 3 && (parts[2] == "approve" || parts[2] == "deny") && k.Kind == "Approval":
 		t.answer = parts[2]
 	case len(parts) > 2:
@@ -205,8 +209,12 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.secretValue(ctx, w, t)
 	case t.answer != "":
 		s.answerApproval(w, r, t)
+	case t.bundle:
+		s.paneBundle(w, r, t)
 	case t.kind.Kind == "Approval" && (r.Method == http.MethodPost || r.Method == http.MethodPut) && !internal(ctx):
 		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "approvals are made by the broker when a silo asks; answer one with kvo approve or kvo deny"))
+	case t.kind.Kind == "Pane" && (r.Method == http.MethodPost || r.Method == http.MethodPut) && !internal(ctx):
+		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "panes are reported by their silo (spec.panes); they can't be written through the API"))
 	case t.value:
 		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "%s %s: set a value with an update of the secret", r.Method, r.URL.Path))
 	case r.Method == http.MethodGet && t.name == "" && r.URL.Query().Get("watch") == "true":

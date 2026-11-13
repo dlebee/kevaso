@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -90,5 +91,38 @@ func TestSecretGetFlags(t *testing.T) {
 		if err := run(context.Background(), f.dial, "/", bad, nil, &out, &errs); err == nil {
 			t.Errorf("%v accepted", bad)
 		}
+	}
+}
+
+func TestPaneReportFlags(t *testing.T) {
+	f := &fakeBroker{answers: []client.BrokerResponse{{}}}
+	var out, errs bytes.Buffer
+	err := run(context.Background(), f.dial, "/", []string{"pane", "report", "overview", "--state", "needs-you", "--progress", "0.5",
+		"--title", "claude", "--field", "tests=212/240", "--ttl", "60s"}, nil, &out, &errs)
+	if err != nil || out.String() != "ok\n" {
+		t.Fatalf("%q %v", out.String(), err)
+	}
+	p := f.got[0].Pane
+	if f.got[0].Op != client.OpPane || p.Kind != "status" || p.State != "needs-you" || *p.Progress != 0.5 || p.Fields[0].Value != "212/240" {
+		t.Fatalf("report %+v", p)
+	}
+	for _, bad := range [][]string{{"pane", "report", "x", "--progress", "lots"}, {"pane", "report", "x", "--bundle", "f"}, {"pane", "html", "x"}, {"pane", "nope", "x"}} {
+		if err := run(context.Background(), f.dial, "/", bad, nil, &out, &errs); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
+	}
+}
+
+func TestPaneHTMLUploadsThenReports(t *testing.T) {
+	f := &fakeBroker{answers: []client.BrokerResponse{{Digest: "sha256:" + strings.Repeat("a", 64)}, {}}}
+	dir := t.TempDir()
+	bundle := dir + "/pane.html"
+	_ = os.WriteFile(bundle, []byte("<canvas></canvas>"), 0o600)
+	var out, errs bytes.Buffer
+	if err := run(context.Background(), f.dial, "/", []string{"pane", "html", "fleet", "--bundle", bundle, "--data", `{"lit":3}`}, nil, &out, &errs); err != nil {
+		t.Fatal(err)
+	}
+	if f.got[0].Op != client.OpPaneBundle || string(f.got[0].Payload) != "<canvas></canvas>" || f.got[1].Pane.Bundle != "sha256:"+strings.Repeat("a", 64) {
+		t.Fatalf("requests %+v", f.got)
 	}
 }

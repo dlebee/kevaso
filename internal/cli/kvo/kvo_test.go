@@ -99,3 +99,26 @@ func TestApprovalColumns(t *testing.T) {
 		t.Fatalf("after access: %v", got)
 	}
 }
+
+// A silo's text never reaches the terminal as escapes or direction overrides.
+func TestPlainStripsEscapes(t *testing.T) {
+	got := plain("ok\x1b[2J\x1b]0;pwned\x07 ‮moc.live\nnext\u0085", 0)
+	if strings.ContainsAny(got, "\x1b\x07‮\u0085\n") || !strings.Contains(got, "ok") || !strings.Contains(got, "next") {
+		t.Fatalf("plain = %q", got)
+	}
+	if got := plain(strings.Repeat("x", 50), 10); got != strings.Repeat("x", 10)+"…" {
+		t.Fatalf("cut = %q", got)
+	}
+}
+
+func TestPaneLine(t *testing.T) {
+	p, at := 0.57, time.Now().Add(-2*time.Minute)
+	pane := &v1.Pane{ObjectMeta: meta.ObjectMeta{Namespace: "agents"}, Spec: v1.PaneReport{Silo: "claude-1", Pane: "overview", Kind: "status",
+		State: "needs-you", Progress: &p, Title: "refactor", Message: "Keep legacy rounding?", TTL: "60s"}, Status: v1.PaneState{UpdatedAt: &at}}
+	got := paneLine(pane, time.Now())
+	for _, want := range []string{"agents/claude-1", "[overview]", "(stale)", "needs-you", "57%", "Keep legacy rounding?"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("line %q is missing %q", got, want)
+		}
+	}
+}
