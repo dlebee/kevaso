@@ -27,3 +27,13 @@ func TestPluginRolesNeverHoldPeoplesVerbs(t *testing.T) {
 		t.Errorf("open on silos/exposure (a controller opening its silos' leases): %v", errs)
 	}
 }
+
+// K-003: who may sign in and what may join as a host are people's: a plugin role never holds
+// invites, jointokens or users, on any subresource.
+func TestPluginRolesNeverMintPeople(t *testing.T) {
+	for _, res := range []string{"invites", "jointokens", "users", "invites/x", "users/status"} {
+		if errs := RuleProblems(v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{res}}); len(errs) == 0 {
+			t.Errorf("a plugin role on %q was accepted", res)
+		}
+	}
+}
