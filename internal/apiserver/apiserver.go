@@ -65,6 +65,17 @@ type Server struct {
 
 	kinds    kindCache   // the served KindDefinitions (kinds.go)
 	policies policyCache // the admission policies (policies.go)
+	logf     func(string, ...any)
+	drain    time.Duration // silo streams' drain (default streamDrain): tests shorten it
+}
+
+// SetLog is where the server logs what no client hears of (a silo stream that broke).
+func (s *Server) SetLog(f func(string, ...any)) { s.logf = f }
+
+func (s *Server) log(format string, args ...any) {
+	if s.logf != nil {
+		s.logf(format, args...)
+	}
 }
 
 // New returns a server over a store, without authentication (kevasod dev, tests).
@@ -564,13 +575,8 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		if cur.Revision != expected {
 			return store.Object{}, errf(http.StatusConflict, "Conflict", "%s: %v", t.key(), store.ErrConflict)
 		}
-		oldS, newS := old.(*v1.Silo), obj.(*v1.Silo)
-		oldHost, newHost := oldS.Status.Host, newS.Status.Host
-		if (oldHost != id.Name || newHost != id.Name) && !releasesMove(oldS, newS, id.Name) {
-			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s may only write the status of silos placed on it", id)
-		}
-		if oldS.Status.MovingFrom != newS.Status.MovingFrom && !releasesMove(oldS, newS, id.Name) {
-			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s: only %s can say it has let go of this silo", id, oldS.Status.MovingFrom)
+		if err := moves.HostWrite(old.(*v1.Silo).Status, obj.(*v1.Silo).Status, id.Name); err != nil {
+			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%v", err)
 		}
 	}
 	var next meta.Object
@@ -767,19 +773,4 @@ func exposure(obj meta.Object) string {
 		return ""
 	}
 	return svc.Expose
-}
-
-// releasesMove: the host a silo is moving away from may write one thing, that it has let go
-// (status.movingFrom cleared), and nothing else.
-func releasesMove(old, next *v1.Silo, host string) bool {
-	if old.Status.MovingFrom != host {
-		return false
-	}
-	// Unmounting its volumes, then (or at once) letting go.
-	for _, step := range []func(v1.SiloStatus, string) (v1.SiloStatus, bool){moves.LetGo, moves.Released} {
-		if want, ok := step(old.Status, host); ok && reflect.DeepEqual(want, next.Status) {
-			return true
-		}
-	}
-	return false
 }

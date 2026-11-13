@@ -296,7 +296,7 @@ func installSystemNode(ctx context.Context, conn *sshboot.Conn, o HostAddOptions
 	if err := conn.Upload(ctx, "/etc/kevaso/join-token", []byte(token), 0o600); err != nil {
 		return err
 	}
-	return conn.InstallUnit(ctx, "kevasod.service", []byte(SystemNodeUnit(o, servers, o.StateOnly, worker)))
+	return installUnits(ctx, conn, UnitsFor(SystemNodeUnit(o, servers, o.StateOnly, worker), worker && !o.StateOnly, o.InitOptions.Runtimes))
 }
 
 // finishSystemNode waits for the new node to vote, and adds its API to the kvo context.

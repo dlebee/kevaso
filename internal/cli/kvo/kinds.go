@@ -62,7 +62,7 @@ func objectKind(ctx context.Context, c *client.Client, obj meta.Object, k v1.Kin
 }
 
 // getKinds is `kvo get kinds`: every kind the cluster serves.
-func getKinds(ctx context.Context, c *client.Client, stdout io.Writer) error {
+func getKinds(ctx context.Context, c *client.Client, output string, stdout io.Writer) error {
 	rs, err := c.Resources(ctx)
 	if err != nil {
 		return err
@@ -73,6 +73,13 @@ func getKinds(ctx context.Context, c *client.Client, stdout io.Writer) error {
 		}
 		return rs[i].Resource < rs[j].Resource
 	})
+	switch output {
+	case "", "wide":
+	case "json", "yaml":
+		return printList(stdout, output, rs)
+	default:
+		return fmt.Errorf("unknown output %q: use yaml, json or wide", output)
+	}
 	tw := tabwriter.NewWriter(stdout, 0, 0, 3, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "NAME\tSHORTNAMES\tAPIVERSION\tKIND\tSCOPE\tSTATUS")
 	for _, r := range rs {
@@ -176,7 +183,7 @@ func describeFields(u *v1.Unstructured) []string {
 	var out []string
 	for _, k := range slices.Sorted(maps.Keys(u.Fields)) {
 		var buf strings.Builder
-		if err := printYAML(&buf, []meta.Object{&fieldDoc{u.Fields[k]}}); err != nil {
+		if err := printYAML(&buf, []meta.Object{&fieldDoc{u.Fields[k]}}, false); err != nil {
 			continue
 		}
 		lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
@@ -194,3 +201,16 @@ type fieldDoc struct{ v any }
 func (f *fieldDoc) GetTypeMeta() *meta.TypeMeta     { return &meta.TypeMeta{} }
 func (f *fieldDoc) GetObjectMeta() *meta.ObjectMeta { return &meta.ObjectMeta{} }
 func (f *fieldDoc) MarshalJSON() ([]byte, error)    { return json.Marshal(f.v) }
+
+// printList prints a list that isn't of objects as a JSON array or YAML sequence ([] for none).
+func printList[T any](w io.Writer, output string, items []T) error {
+	if items == nil {
+		items = []T{}
+	}
+	if output == "yaml" {
+		return writeYAML(w, items)
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(items)
+}

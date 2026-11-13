@@ -26,6 +26,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -109,6 +110,44 @@ func MainCommand(image string, command []string) []string {
 		return []string{"sleep", "infinity"}
 	}
 	return nil
+}
+
+// Inits are the programs that, as a container's PID 1, reap orphaned processes (and forward
+// signals): an image whose PID 1 is one of them needs no init of the engine's.
+var Inits = map[string]bool{"tini": true, "tini-static": true, "dumb-init": true, "catatonit": true, "docker-init": true,
+	"init": true, "systemd": true, "s6-svscan": true, "runit": true}
+
+// NeedsInit reports whether the main container needs the engine's init (`run --init`: tini for
+// docker, catatonit for podman) as its PID 1. Without one, nothing reaps the processes orphaned in
+// it (every daemon restart left a zombie under `sleep infinity`), and a PID 1 that installs no
+// handlers ignores SIGTERM, so every stop waited out its grace period. The image's own PID 1 is
+// its entrypoint, else the command (the silo's, else the image's). Unknown (the image can't be
+// inspected): an init. Pure.
+func NeedsInit(entrypoint, imageCmd, command []string) bool {
+	pid1 := entrypoint
+	if len(pid1) == 0 {
+		pid1 = command
+	}
+	if len(pid1) == 0 {
+		pid1 = imageCmd
+	}
+	if len(pid1) == 0 {
+		return true
+	}
+	return !Inits[path.Base(pid1[0])]
+}
+
+// imagePID1 is the image's entrypoint and command (ok false if it can't be inspected).
+func (r *Runtime) imagePID1(ctx context.Context, ref string) (entrypoint, cmd []string, ok bool) {
+	out, err := r.eng(ctx, nil, "image", "inspect", "--format", "{{json .Config.Entrypoint}}\n{{json .Config.Cmd}}", ref)
+	if err != nil {
+		return nil, nil, false
+	}
+	lines := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)
+	if len(lines) != 2 || json.Unmarshal([]byte(lines[0]), &entrypoint) != nil || json.Unmarshal([]byte(lines[1]), &cmd) != nil {
+		return nil, nil, false
+	}
+	return entrypoint, cmd, true
 }
 
 func (r *Runtime) engine() string {
@@ -407,9 +446,16 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 		if rerr != nil {
 			return rerr
 		}
+		cmd := MainCommand(s.Image, s.Command)
 		args := append([]string{"run", "-d"}, r.runArgs(s, n.Main)...)
+		if ep, imageCmd, ok := r.imagePID1(ctx, ref); !ok || NeedsInit(ep, imageCmd, cmd) {
+			// The engine's init as PID 1: it reaps, and passes SIGTERM on to the main process (which,
+			// no longer PID 1, gets the default handlers: `docker stop` stops it at once instead of
+			// waiting out the grace). A kill (SIGKILL to the init) takes the whole container.
+			args = append(args, "--init")
+		}
 		args = append(args, ref)
-		args = append(args, MainCommand(s.Image, s.Command)...)
+		args = append(args, cmd...)
 		_, err = r.eng(ctx, nil, args...)
 	default:
 		_, err = r.eng(ctx, nil, "start", n.Main)
@@ -452,6 +498,22 @@ func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
 		return err
 	}
 	_, err = r.eng(ctx, nil, "stop", "-t", "20", NamesFor(id).Main)
+	return err
+}
+
+// Kill implements kri.Killer: SIGKILL to the main container's PID 1 (its init: the whole
+// container goes with it), no grace period. For fencing.
+func (r *Runtime) Kill(ctx context.Context, id kri.ID) error {
+	if _, ok := r.load(id); !ok {
+		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
+	}
+	st, _, err := r.inspect(ctx, NamesFor(id).Main)
+	if err != nil || st != "running" {
+		return err
+	}
+	if _, err = r.eng(ctx, nil, "kill", "--signal", "KILL", NamesFor(id).Main); err != nil && strings.Contains(err.Error(), "is not running") {
+		return nil // stopped meanwhile
+	}
 	return err
 }
 

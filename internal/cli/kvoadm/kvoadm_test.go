@@ -153,11 +153,13 @@ func TestParseHostAdd(t *testing.T) {
 	}
 }
 
-// A worker-only host gets a fence of its own: the same runtimes, and nothing tying it to
+// A host with a worker gets a fence of its own: the same runtimes, and nothing tying it to
 // kevasod.service (it must keep running when kevasod stops or dies).
 func TestFenceUnit(t *testing.T) {
-	o := HostAddOptions{InitOptions: InitOptions{Name: "w2"}, Runtimes: []string{"docker", "podman"}}
-	u := FenceUnit(o)
+	u := FenceUnit([]string{"docker", "podman"})
+	if def := FenceUnit(nil); !strings.Contains(def, "--runtime cloud-hypervisor\n") {
+		t.Fatalf("default runtimes:\n%s", def)
+	}
 	if !strings.Contains(u, "ExecStart=/usr/local/bin/kevasod fence-watch --fence-after 30s --runtime docker --runtime podman\n") ||
 		!strings.Contains(u, "Restart=always") {
 		t.Fatalf("fence unit:\n%s", u)
@@ -269,5 +271,34 @@ func TestLoadKeyWithPassphrase(t *testing.T) {
 	plain, _ := ssh.MarshalPrivateKey(sk, "")
 	if s, err := loadKey("k", pem.EncodeToMemory(plain), strings.NewReader(""), io.Discard); err != nil || s == nil {
 		t.Fatalf("plain key: %v", err)
+	}
+}
+
+// Every host that runs silos gets the fence, a control plane with a worker included (whether it
+// acts is the agent's fence.Applies); a host without a worker gets none.
+func TestUnitsFor(t *testing.T) {
+	names := func(us []UnitFile) string {
+		var out []string
+		for _, u := range us {
+			out = append(out, u.Name)
+		}
+		return strings.Join(out, ",")
+	}
+	init1, _ := parseInit([]string{"root@a", "--kevasod", "/k", "--ssh-key", "/key", "--worker", "--runtime", "docker"})
+	for _, c := range []struct {
+		name string
+		us   []UnitFile
+		want string
+	}{
+		{"control plane only", UnitsFor(Unit(InitOptions{Name: "cp"}), false, nil), "kevasod.service"},
+		{"init --worker", UnitsFor(Unit(init1), init1.Worker, init1.Runtimes), "kevasod.service," + FenceUnitName},
+		{"worker only", UnitsFor("x", true, []string{"docker"}), "kevasod.service," + FenceUnitName},
+	} {
+		if got := names(c.us); got != c.want {
+			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
+	}
+	if us := UnitsFor(Unit(init1), init1.Worker, init1.Runtimes); !strings.Contains(us[1].Text, "fence-watch --fence-after 30s --runtime docker\n") {
+		t.Fatalf("fence of init --worker:\n%s", us[1].Text)
 	}
 }

@@ -33,6 +33,7 @@ import (
 	silocontroller "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/controllers/siloset"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
 	"kevaso.com/core/internal/kms"
@@ -97,7 +98,9 @@ func (c *Config) defaults() {
 		c.ClusterName = "kevaso"
 	}
 	if c.Heartbeat <= 0 {
-		c.Heartbeat = 30 * time.Second
+		// The worker's period: with a worker here, the heartbeat is also the fence's contact,
+		// which must stay well under FenceAfter.
+		c.Heartbeat = worker.DefaultHeartbeat
 	}
 	if c.Clock == nil {
 		c.Clock = clock.Real{}
@@ -180,6 +183,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("kms: %w", err)
 	}
+	srv.SetLog(cfg.Log)
 	srv.SetApprovalLimits(cfg.Approvals)
 	srv.SetLeaseLimits(cfg.Leases)
 	if cfg.Plugins != nil {
@@ -226,7 +230,11 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 
 	admin, closeInProcess := srv.InProcess() // the components' own way in, not the admin socket
 	hbCtx, stopHB := context.WithCancel(ctx)
-	go heartbeat(hbCtx, admin, cfg, cfg.self(r.APIAddr, st))
+	var contact *worker.Contact // with a worker here: the fence's contact and whether it applies
+	if cfg.Worker != nil {
+		contact = &worker.Contact{}
+	}
+	go heartbeat(hbCtx, admin, cfg, cfg.self(r.APIAddr, st), contact)
 	// Every system node serves the API; one at a time runs the controllers (systemnodes.go).
 	go runLeader(hbCtx, st, cfg, func(ctx context.Context) {
 		go expireApprovals(ctx, srv, cfg)
@@ -245,7 +253,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	}
 	if cfg.Worker != nil {
 		wc := *cfg.Worker
-		wc.HostName, wc.Clock, wc.Log, wc.MeshSubnet = cfg.HostName, cfg.Clock, cfg.Log, cfg.Mesh
+		wc.HostName, wc.Clock, wc.Log, wc.MeshSubnet, wc.Contact = cfg.HostName, cfg.Clock, cfg.Log, cfg.Mesh, contact
 		if wc.DataDir == "" {
 			wc.DataDir = cfg.DataDir
 		}
@@ -453,7 +461,9 @@ func serveErr(err error) error {
 }
 
 // heartbeat makes sure this host's Host object exists and keeps its Ready condition fresh.
-func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport) {
+// With a worker here (contact set), a heartbeat that got through is also the fence's contact:
+// written through the store, so a system node cut off from the majority stops getting it.
+func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport, contact *worker.Contact) {
 	tick := func() {
 		var h v1.Host
 		err := c.Get(ctx, "Host", "", cfg.HostName, &h)
@@ -488,9 +498,27 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport
 		}, cfg.Clock.Now().UTC().Truncate(time.Second))
 		setHeartbeat(&h, cfg.Clock.Now())
 		reportSelf(&h, rep)
-		if err := c.UpdateStatus(ctx, &h); err != nil && ctx.Err() == nil {
-			cfg.Log("heartbeat status: %v", err)
+		if err := c.UpdateStatus(ctx, &h); err != nil {
+			if ctx.Err() == nil {
+				cfg.Log("heartbeat status: %v", err)
+			}
+			return
 		}
+		if contact == nil {
+			return
+		}
+		contact.Mark(cfg.Clock.Now())
+		hosts, err := c.List(ctx, "Host", "")
+		if err != nil {
+			return // undecided stays what it was
+		}
+		var hs []v1.Host
+		for _, raw := range hosts.Items {
+			if obj, _, err := v1.Decode(raw); err == nil {
+				hs = append(hs, *obj.(*v1.Host))
+			}
+		}
+		contact.SetFence(fence.Applies(hs, cfg.HostName))
 	}
 	tick()
 	t := time.NewTicker(cfg.Heartbeat)

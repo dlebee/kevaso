@@ -2,6 +2,7 @@ package fence
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +19,7 @@ func silo(name, policy string) Silo {
 }
 
 func TestDecide(t *testing.T) {
-	r := Record{LastContact: t0, Silos: []Silo{silo("wait", v1.OnHostLossWait), silo("recreate", v1.OnHostLossRecreate),
+	r := Record{LastContact: t0, Fence: true, Silos: []Silo{silo("wait", v1.OnHostLossWait), silo("recreate", v1.OnHostLossRecreate),
 		silo("move", v1.OnHostLossMove), silo("unrecorded", "")}}
 	names := func(ss []Silo) string {
 		var n []string
@@ -40,8 +41,56 @@ func TestDecide(t *testing.T) {
 		t.Fatalf("after one stop: %s", got)
 	}
 	// Never in contact (a host that just joined): nothing here may run elsewhere.
-	if got := Decide(Record{Silos: r.Silos}, t0.Add(time.Hour), 30*time.Second, nil); got != nil {
+	if got := Decide(Record{Fence: true, Silos: r.Silos}, t0.Add(time.Hour), 30*time.Second, nil); got != nil {
 		t.Fatalf("never in contact: %v", got)
+	}
+	// A host nobody could start the silos elsewhere for (a one-node cluster): never.
+	r.Fence = false
+	if got := Decide(r, t0.Add(time.Hour), 30*time.Second, nil); got != nil {
+		t.Fatalf("no fence applies: %v", got)
+	}
+}
+
+// Whether a host needs a fence: wherever a second copy of its silos could be started while it
+// may still run them.
+func TestApplies(t *testing.T) {
+	h := func(name string, cp, stateOnly, worker bool) v1.Host {
+		var x v1.Host
+		x.Name = name
+		if cp {
+			x.Spec.Components.ControlPlane = &v1.ControlPlaneSpec{StateOnly: stateOnly}
+		}
+		if worker {
+			x.Spec.Components.Worker = &v1.WorkerSpec{}
+		}
+		return x
+	}
+	cpw := func(n string) v1.Host { return h(n, true, false, true) }
+	cp := func(n string) v1.Host { return h(n, true, false, false) }
+	light := func(n string) v1.Host { return h(n, true, true, false) }
+	w := func(n string) v1.Host { return h(n, false, false, true) }
+	for _, c := range []struct {
+		name  string
+		hosts []v1.Host
+		self  string
+		want  bool
+	}{
+		{"one node with a worker", []v1.Host{cpw("a")}, "a", false},
+		{"one node with a worker, and worker hosts", []v1.Host{cpw("a"), w("b"), w("c")}, "a", false},
+		{"a worker host", []v1.Host{cp("a"), w("b")}, "b", true},
+		{"a worker host of a one-node cluster with a worker", []v1.Host{cpw("a"), w("b")}, "b", true},
+		{"two system nodes: neither is a majority alone", []v1.Host{cpw("a"), cpw("b")}, "a", false},
+		{"three system nodes with workers", []v1.Host{cpw("a"), cpw("b"), cpw("c")}, "a", true},
+		{"three, the others without workers", []v1.Host{cpw("a"), cp("b"), cp("c")}, "a", true},
+		{"two and a light node", []v1.Host{cpw("a"), cp("b"), light("c")}, "a", true},
+		{"only light nodes besides: nobody serves the API", []v1.Host{cpw("a"), light("b"), light("c")}, "a", false},
+		{"four, two down to two others", []v1.Host{cpw("a"), cpw("b"), cp("c"), cp("d")}, "a", true},
+		{"a control plane without a worker", []v1.Host{cp("a"), cp("b"), cp("c")}, "a", false},
+		{"not registered yet", []v1.Host{cp("a")}, "new", true},
+	} {
+		if got := Applies(c.hosts, c.self); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 
@@ -50,12 +99,12 @@ func TestRecordRoundTrip(t *testing.T) {
 	if r, err := Read(dir); err != nil || !r.LastContact.IsZero() {
 		t.Fatalf("no record: %+v %v", r, err)
 	}
-	want := Record{LastContact: t0, Written: t0.Add(time.Second), Silos: []Silo{silo("a", v1.OnHostLossRecreate)}}
+	want := Record{LastContact: t0, Written: t0.Add(time.Second), Fence: true, Silos: []Silo{silo("a", v1.OnHostLossRecreate)}}
 	if err := Write(dir, want); err != nil {
 		t.Fatal(err)
 	}
 	got, err := Read(dir)
-	if err != nil || !got.LastContact.Equal(t0) || len(got.Silos) != 1 || got.Silos[0] != want.Silos[0] {
+	if err != nil || !got.LastContact.Equal(t0) || !got.Fence || len(got.Silos) != 1 || got.Silos[0] != want.Silos[0] {
 		t.Fatalf("read back %+v %v", got, err)
 	}
 }
@@ -78,7 +127,7 @@ func TestWatcher(t *testing.T) {
 	var logs []string
 	w := &Watcher{Dir: dir, Runtimes: map[string]kri.Runtime{"docker": rt}, FenceAfter: 30 * time.Second,
 		Now: func() time.Time { return now }, Log: func(f string, a ...any) { logs = append(logs, f) }}
-	rec := Record{LastContact: t0, Silos: []Silo{silo("wait", v1.OnHostLossWait), silo("recreate", v1.OnHostLossRecreate)}}
+	rec := Record{LastContact: t0, Fence: true, Silos: []Silo{silo("wait", v1.OnHostLossWait), silo("recreate", v1.OnHostLossRecreate)}}
 	if err := Write(dir, rec); err != nil {
 		t.Fatal(err)
 	}
@@ -133,5 +182,48 @@ func TestUnit(t *testing.T) {
 		if strings.Contains(u, never) {
 			t.Errorf("unit has %q:\n%s", never, u)
 		}
+	}
+}
+
+// A running silo with no record is a fault: the fence leaves it running (it may be a Wait silo),
+// logs it loudly once, and leaves a report for the agent.
+func TestWatcherReportsUnrecordedSilos(t *testing.T) {
+	ctx := context.Background()
+	rt := fake.New()
+	stray := silo("stray", "")
+	for _, s := range []Silo{silo("recreate", v1.OnHostLossRecreate), stray} {
+		_ = rt.Create(ctx, kri.Spec{ID: s.ID})
+		_ = rt.Start(ctx, s.ID)
+	}
+	dir := t.TempDir()
+	now := t0
+	var logs []string
+	w := &Watcher{Dir: dir, Runtimes: map[string]kri.Runtime{"docker": rt}, FenceAfter: 30 * time.Second,
+		Now: func() time.Time { return now }, Log: func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }}
+	_ = Write(dir, Record{LastContact: t0, Fence: true, Silos: []Silo{silo("recreate", v1.OnHostLossRecreate)}})
+	now = t0.Add(10 * time.Second)
+	w.Check(ctx)
+	if _, ok, _ := ReadFaults(dir); ok {
+		t.Fatal("a report before any fence")
+	}
+	now = t0.Add(35 * time.Second)
+	w.Check(ctx)
+	now = t0.Add(36 * time.Second)
+	w.Check(ctx)
+	if st, _ := rt.Status(ctx, stray.ID); st.State != kri.Running {
+		t.Fatalf("the unrecorded silo was stopped: %s", st.State)
+	}
+	f, ok, err := ReadFaults(dir)
+	if err != nil || !ok || len(f.Silos) != 1 || f.Silos[0].ID.UID != stray.ID.UID || !f.At.Equal(t0.Add(35*time.Second)) {
+		t.Fatalf("report: %+v %v %v", f, ok, err)
+	}
+	n := 0
+	for _, l := range logs {
+		if strings.Contains(l, "FAULT") && strings.Contains(l, "dev/stray") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("logged %d times:\n%s", n, strings.Join(logs, "\n"))
 	}
 }
