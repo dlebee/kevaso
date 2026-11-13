@@ -129,6 +129,16 @@ func TestSiloSetAndService(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}()
+	// Both hosts Ready with docker first: spread is a preference, and a placed silo never moves.
+	eventually("both hosts Ready", func() (bool, string) {
+		ok := true
+		for name := range hostAddr {
+			var h v1.Host
+			_ = admin.Get(ctx, "Host", "", name, &h)
+			ok = ok && meta.IsTrue(h.Status.Conditions, "Ready") && h.Status.Runtimes["docker"].State == "Ready" && h.Status.Provider != nil
+		}
+		return ok, ""
+	})
 	if err := admin.Create(ctx, ns("web3")); err != nil {
 		t.Fatal(err)
 	}
