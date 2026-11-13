@@ -183,6 +183,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("kms: %w", err)
 	}
+	srv.SetLog(cfg.Log)
 	srv.SetApprovalLimits(cfg.Approvals)
 	srv.SetLeaseLimits(cfg.Leases)
 	if cfg.Plugins != nil {

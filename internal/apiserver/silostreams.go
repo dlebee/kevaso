@@ -1,14 +1,11 @@
 package apiserver
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"path"
 	"strings"
-	"sync"
 
 	"kevaso.com/core/api/client"
 )
@@ -94,59 +91,4 @@ func FileCommand(op, p string) ([]string, error) {
 		return []string{"ls", "-ldn", "--", p}, nil
 	}
 	return nil, fmt.Errorf("op %q: want read, write, list or stat", op)
-}
-
-// relayLimited relays frames between a client and a silo, counting stdin and output bytes; the
-// first way over limit gets an error frame and the stream ends.
-func relayLimited(conn net.Conn, cr *bufio.Reader, stream net.Conn, limit int64) {
-	var mu sync.Mutex // writes to conn
-	done := make(chan struct{}, 2)
-	over := func(way string) {
-		mu.Lock()
-		defer mu.Unlock()
-		_ = client.WriteFrame(conn, client.FrameError, fmt.Appendf(nil, "%s is over the %d byte limit of one transfer", way, limit))
-	}
-	go func() { // client → silo
-		defer func() { done <- struct{}{} }()
-		var n int64
-		for {
-			typ, p, err := client.ReadFrame(cr)
-			if err != nil {
-				return
-			}
-			if typ == client.FrameStdin {
-				if n += int64(len(p)); n > limit {
-					over("the upload")
-					return
-				}
-			}
-			if client.WriteFrame(stream, typ, p) != nil {
-				return
-			}
-		}
-	}()
-	go func() { // silo → client
-		defer func() { done <- struct{}{} }()
-		br := bufio.NewReader(stream)
-		var n int64
-		for {
-			typ, p, err := client.ReadFrame(br)
-			if err != nil {
-				return
-			}
-			if typ == client.FrameStdout || typ == client.FrameStderr {
-				if n += int64(len(p)); n > limit {
-					over("the download")
-					return
-				}
-			}
-			mu.Lock()
-			err = client.WriteFrame(conn, typ, p)
-			mu.Unlock()
-			if err != nil {
-				return
-			}
-		}
-	}()
-	<-done
 }

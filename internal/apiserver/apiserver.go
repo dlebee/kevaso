@@ -65,6 +65,16 @@ type Server struct {
 
 	kinds    kindCache   // the served KindDefinitions (kinds.go)
 	policies policyCache // the admission policies (policies.go)
+	logf     func(string, ...any)
+}
+
+// SetLog is where the server logs what no client hears of (a silo stream that broke).
+func (s *Server) SetLog(f func(string, ...any)) { s.logf = f }
+
+func (s *Server) log(format string, args ...any) {
+	if s.logf != nil {
+		s.logf(format, args...)
+	}
 }
 
 // New returns a server over a store, without authentication (kevasod dev, tests).
