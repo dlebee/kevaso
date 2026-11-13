@@ -672,7 +672,7 @@ func bootstrap(ctx context.Context, o InitOptions, home string, stdin io.Reader,
 	// Look before changing anything (--dry-run stops here), unless the caller already did.
 	if o.looked {
 		// host add looked before declaring the Host
-	} else if _, fit, err := inspectMachine(ctx, conn, out); err != nil {
+	} else if _, fit, err := inspectMachine(ctx, conn, o.Kevasod, out); err != nil {
 		_ = conn.Close()
 		return nil, err
 	} else if !fit {

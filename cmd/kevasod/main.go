@@ -58,6 +58,7 @@ import (
 	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/mesh"
+	"kevaso.com/core/internal/platform"
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/secrets"
 	"kevaso.com/core/internal/store"
@@ -131,6 +132,10 @@ func main() {
 		err = runDev(ctx, os.Args[2:])
 	case "version":
 		fmt.Println(version.Version)
+	case "platforms":
+		// The systems this kevasod supports (tested end to end); kvoadm reads the same list
+		// out of the binary before installing it.
+		fmt.Println(platform.Names(platform.Supported()))
 	default:
 		usage()
 	}
