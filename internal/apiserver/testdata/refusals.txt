@@ -1,0 +1,296 @@
+Silo spec.runtime="kvm"
+  Silo s: spec.runtime must be one of cloud-hypervisor, openshell, docker, podman, openshell-container
+Silo spec.resources={"cpu":-1}
+  Silo s: spec.resources.cpu can't be negative
+Silo spec.tolerations=[{"key":""}]
+  Silo s: every toleration needs a key
+Silo spec.tolerations=[{"key":"k","effect":"NoExecute"}]
+  Silo s: toleration effect must be NoSchedule or PreferNoSchedule
+Silo spec.init={"steps":[]}
+  Silo s: every init step needs a name and something to run
+Silo spec.init={"when":"daily","steps":[{"name":"a","run":"true"}]}
+  Silo s: init.when must be firstBoot or everyBoot
+Silo spec.init={"steps":[{"name":"a","run":"x"},{"name":"a","run":"y"}]}
+  Silo s: init step names must be unique
+Silo spec.availability={"onHostLoss":"Pray"}
+  Silo s: availability.onHostLoss must be Wait, Recreate or Move
+Silo spec.network={"egress":{"source":"gateway"}}
+  Silo s: network.egress.source must be host, sameAsService or pool (gateway comes later)
+Silo spec.network={"egress":{"ip":"x"}}
+  Silo s: egress.ip goes with egress.source: pool
+Silo spec.volumes=[{"name":"Data","mountPath":"/d"}]
+  Silo s: every volume needs a name (lower-case letters, digits, -), an absolute mountPath, and a class: local, or a plugin's (e.g. linode-block)
+Silo spec.volumes=[{"name":"d","class":"linode-block","mountPath":"/d"}]
+  Silo s: a volume on a plugin's storage class needs a size (e.g. 10Gi)
+Silo spec.volumes=[{"name":"d","mountPath":"/a"},{"name":"d","mountPath":"/b"}]
+  Silo s: volume names must be unique
+Silo spec.update={"strategy":"Yolo"}
+  Silo s: update.strategy must be StopFirst or StartFirst
+Silo spec.update={"strategy":"StartFirst"}
+  Silo s: update.strategy StartFirst on a single silo needs its disk cloned, which comes with moves (M14); use StopFirst, or a SiloSet, whose update.strategy StartFirst starts extra instances first
+Silo spec.exclusive=true spec.availability={"onHostLoss":"Move"}
+  Silo s: exclusive: true forbids automatic failover: onHostLoss must be Wait (a move is manual, once the old copy is provably stopped)
+Silo spec.daemons=[{"name":"d","run":"x","restart":"sometimes"}]
+  Silo s: every daemon needs a name (lower-case letters, digits, -), something to run, and restart: always, onFailure or never
+Silo spec.daemons=[{"name":"d","run":"x"},{"name":"d","run":"y"}]
+  Silo s: daemon names must be unique
+Silo spec.upkeep=[{"name":"u","every":"6h","check":"true","fix":""}]
+  Silo s: every upkeep task needs a name, every (e.g. 6h), a check and a fix
+Silo spec.upkeep=[{"name":"u","every":"6h","check":"c","fix":"f"},{"name":"u","every":"6h","check":"c","fix":"f"}]
+  Silo s: upkeep names must be unique
+Silo spec.upkeep=[{"name":"u","every":"10s","check":"c","fix":"f"}]
+  Silo s: upkeep u: every "10s": want a duration of at least 1m (e.g. 6h)
+Silo spec.panes={"allow":["js"],"http":{"port":8080}}
+  Silo s: panes.allow: status, html
+Silo spec.panes={"maxPanes":17,"http":{"port":8080}}
+  Silo s: panes.maxPanes: 0 to 16
+Silo spec.panes={"maxPanes":1}
+  Silo s: panes needs http.port (1 to 65535): where the silo answers its host's pane requests; without spec.panes there are none
+Silo spec.panes={"http":{"port":8080,"path":"/x?y"}}
+  Silo s: panes.http.path: an absolute path (starting with /), no query, at most 200 characters
+Silo spec.container.pull={"secretRef":""}
+  Silo s: container.pull needs secretRef: a registry secret in the namespace
+Silo spec.placement={"spread":{"by":"rack","selector":{"a":"b"}}}
+  Silo s: placement.spread needs by (host, zone or region) and a selector
+Silo spec.ports=[{"name":"Web","port":80}]
+  Silo s: spec.ports: "Web": a port needs a name (lower-case letters, digits, -)
+Silo spec.ports=[{"name":"web","port":80},{"name":"web","port":81}]
+  Silo s: spec.ports: web is declared twice
+Silo spec.ports=[{"name":"web","port":0}]
+  Silo s: spec.ports[web]: port 0 isn't from 1 to 65535
+Silo spec.ports=[{"name":"web","port":80,"protocol":"SCTP"}]
+  Silo s: spec.ports[web]: protocol "SCTP": TCP or UDP
+Silo spec.ports=[{"name":"a","port":80},{"name":"b","port":80}]
+  Silo s: spec.ports: a and b are both 80/TCP
+Silo spec.network={"egress":{"source":"sameAsService"}}
+  Silo s: network.egress.source sameAsService needs a service with a port on the host or a load balancer: there's no address in to send from otherwise
+Silo spec.service={"name":"Api"}
+  Silo s: service.name "Api": lower-case letters, digits and -, at most 63
+Silo spec.service={"ports":[{"port":"web"}]}
+  Silo s: service.ports[web]: "web" isn't a declared port (spec.ports): declare it first
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web"},{"port":"web"}]}
+  Silo s: service.ports[web]: opened twice: put everything about one port in one entry
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","allowFrom":["a/b/c"]}]}
+  Silo s: service.ports[web].allowFrom: "a/b/c": a silo, NAME or NAMESPACE/NAME
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","allowFrom":["10.0.0.0/8"]}]}
+  Silo s: service.ports[web].allowFrom: "10.0.0.0/8" is a network range: allowFrom names silos; ranges go in sources (with hostPort or loadBalancer)
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["public"]}]}
+  Silo s: service.ports[web].hostPort: "public": internal or external
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external","external"]}]}
+  Silo s: service.ports[web].hostPort: external twice; service.ports[web]: 80/TCP on the external IP is web's already
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","as":443}]}
+  Silo s: service.ports[web].as: only with hostPort or loadBalancer (it's the number there)
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","sources":["10.0.0.0/8"]}]}
+  Silo s: service.ports[web].sources: only with hostPort or loadBalancer (who may connect on its silo IP is allowFrom)
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"as":70000}]}
+  Silo s: service.ports[web].as: 70000 isn't from 1 to 65535
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":["10.0.0.0/33"]}]}
+  Silo s: service.ports[web].sources: "10.0.0.0/33" isn't an address or CIDR
+Silo spec.ports=[{"name":"a","port":80},{"name":"b","port":81}] spec.service={"ports":[{"port":"a","hostPort":["external"],"as":443},{"port":"b","hostPort":["external"],"as":443}]}
+  Silo s: service.ports[b]: 443/TCP on the external IP is a's already
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","loadBalancer":true}]}
+  Silo s: a port with loadBalancer: true needs service.loadBalancer.class: ip-pool, or a plugin's class (e.g. linode-nodebalancer)
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web"}],"loadBalancer":{"class":"ip-pool"}}
+  Silo s: service.loadBalancer is where ports with loadBalancer: true get their address, and no port says so
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","loadBalancer":true}],"loadBalancer":{"class":"ip-pool","ip":"x","dedicated":true}}
+  Silo s: service.loadBalancer.dedicated asks for an IP made for it alone: not with loadBalancer.ip (that one is named already)
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web"}]} spec.network={"egress":{"source":"sameAsService"}}
+  Silo s: network.egress.source sameAsService needs a port on the host or a load balancer: there's no address in to send from otherwise
+Silo spec.network={"egress":{"source":"pool"}}
+  Silo s: network.egress.source pool needs egress.ip: an IP of class ip-pool (or ports on a load balancer of class ip-pool, whose IP it then sends from)
+VMImage spec.versions=[]
+  VMImage u: a VMImage needs at least one version
+VMImage spec.versions.0.name="-v"
+  VMImage u: every version needs a name (letters, digits, '.', '_', '-')
+VMImage spec.versions=[{"name":"v1","disk":{"url":"https://a/b","sha256":"abababababababababababababababababababababababababababababababab"}},{"name":"v1","disk":{"url"…
+  VMImage u: version names must be unique
+VMImage spec.versions.0.disk!
+  VMImage u: every version is a bootable disk (url and sha256): VMImages are disks for cloud-hypervisor; a container silo names a registry reference in container.image instead
+VMImage spec.versions.0.disk.url="http://example.com/u.img"
+  VMImage u: a disk needs an https:// url and its sha256 (64 hex digits): hosts check what they fetch
+SiloSet spec.instances=-1
+  SiloSet set: instances and standby can't be negative
+SiloSet spec.spread="rack"
+  SiloSet set: spread must be host, zone or region; template: placement.spread needs by (host, zone or region) and a selector
+SiloSet spec.upgradePolicy="Auto"
+  SiloSet set: upgradePolicy must be Manual or Rolling
+SiloSet spec.scaleInPolicy="Random"
+  SiloSet set: scaleInPolicy must be NewestFirst or OldestFirst
+SiloSet spec.update={"strategy":"Yolo"}
+  SiloSet set: update.strategy must be StopFirst or StartFirst
+SiloSet spec.update={"maxSurge":-1}
+  SiloSet set: update.maxUnavailable and update.maxSurge can't be negative
+SiloSet spec.template.exclusive=true spec.update={"maxSurge":1}
+  SiloSet set: exclusive instances update one at a time, stop-first: never two copies, so no StartFirst or maxSurge
+SiloSet spec.template.labels={"kevaso.com/set":"x"}
+  SiloSet set: template.labels can't use kevaso.com/ labels: the set sets those
+SiloSet metadata.name="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  SiloSet aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: a SiloSet's name is at most 56 characters (its instances add -N)
+SiloSet spec.template.ports=[{"name":"web","port":80}] spec.template.service={"ports":[{"port":"web","loadBalancer":true}],"loadBalancer":{"class":"ip-pool","ip":"x"}}
+  SiloSet set: template.service.loadBalancer.ip would put every instance on one IP with the same ports, which clash: leave it out and each instance gets one of its own (or put the set behind a Service, which can name one)
+SiloSet spec.template.service={"name":"api"}
+  SiloSet set: template.service.name would give every instance the same name, and a name has one owner: each instance's service is named after it (api-0, api-1…); put a Service in front for one name
+SiloSet spec.template.network={"egress":{"source":"pool","ip":"x"}}
+  SiloSet set: template.network.egress.ip would give every instance the same IP, which serves one silo
+SiloSet spec.template.runtime="kvm"
+  SiloSet set: template: spec.runtime must be one of cloud-hypervisor, openshell, docker, podman, openshell-container
+Service spec.selector={}
+  Service svc: spec.selector is required: the labels of the silos it serves
+Service spec.ports=[{"name":"web","port":0}]
+  Service svc: every port needs a name, a port from 1 to 65535, and protocol TCP or UDP
+Service spec.ports=[{"name":"web","port":80},{"name":"web","port":81}]
+  Service svc: port names must be unique
+Service spec.type="NodePort"
+  Service svc: type must be ClusterIP or LoadBalancer
+Service spec.type="LoadBalancer" spec.loadBalancerClass="ip-pool"
+  Service svc: type LoadBalancer needs loadBalancerClass: a plugin's class (e.g. linode-nodebalancer); ip-pool's addresses are one host's, so they're for a single silo's own service
+Service spec.loadBalancerClass="linode-nodebalancer"
+  Service svc: loadBalancerClass goes with type: LoadBalancer
+Service spec.loadBalancerIP="x"
+  Service svc: loadBalancerIP (an IP's name) goes with type: LoadBalancer
+Service spec.loadBalancerDedicated=true
+  Service svc: loadBalancerDedicated asks for an IP of its own: with type LoadBalancer, and not with loadBalancerIP (that one is named already)
+Service spec.routeWhen="always"
+  Service svc: routeWhen must be ready or running
+Service spec.ports.0.targetPort="Http"
+  Service svc: port web: targetPort "Http": the name of a port the silos declare (spec.ports)
+Secret spec.type="rsa"
+  Secret k: spec.type must be opaque, ed25519, ecdsa-p256 or registry
+Secret spec.type="registry"
+  Secret k: a registry secret needs spec.server (the registry host, e.g. ghcr.io) and spec.username; its value is the password or token
+Secret spec.server="ghcr.io"
+  Secret k: spec.server and spec.username are for type: registry
+Secret spec.type="registry" spec.server="ghcr.io" spec.username="bot" spec.allowedDelivery=["env"]
+  Secret k: a registry secret is never delivered to a silo (only a host's agent gets it, for a pull) and isn't generated: drop allowedDelivery and generate
+Secret metadata.labels={"kevaso.com/default-pull":"true"}
+  Secret k: kevaso.com/default-pull: "true", on a registry secret only (it makes it the namespace's pull secret for its server)
+Secret spec.allowedDelivery=["email"]
+  Secret k: spec.allowedDelivery: broker, inject, file, env or sign
+Secret spec.type="ed25519" spec.valueReadable=true
+  Secret k: a signing key is never readable: drop valueReadable
+Secret spec.type="ed25519" spec.allowedDelivery=["env"]
+  Secret k: a signing key is only used through sign: allowedDelivery can only be [sign]
+Secret spec.generate=true spec.value="eA=="
+  Secret k: spec.generate and spec.value don't go together: the server makes the value
+Secret spec.value="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA…
+  Secret k: spec.value: at most 64 KiB
+Grant spec.egress!
+  Grant g: a grant needs egress, secrets or operations
+Grant spec.secrets=[{"name":"k","deliver":"email"}]
+  Grant g: every grant secret needs a name, and deliver: broker, inject, file or env (signing keys go in operations.sign)
+Grant spec.secrets=[{"name":"k","deliver":"inject"}]
+  Grant g: deliver: inject needs to.host: the destination the gate adds it to
+Grant spec.secrets=[{"name":"k","to":{"host":"a.example.com"}}]
+  Grant g: to goes with deliver: inject
+Grant spec.secrets=[{"name":"k","path":"/run/k"}]
+  Grant g: path goes with deliver: file
+Grant spec.secrets=[{"name":"k","env":"K"}]
+  Grant g: env goes with deliver: env (or inject, on OpenShell: the variable holding the placeholder)
+Grant spec.operations={"sign":{"keyRef":""}}
+  Grant g: operations.sign needs a keyRef
+Grant spec.requires={"assurance":"trust-me"}
+  Grant g: requires.assurance must be host, vtpm or confidential
+Grant spec.secrets=[{"name":"k","deliver":"file","path":"/run/k","approval":{"required":true}}]
+  Grant g: approval works with deliver: broker or inject (and operations.sign): once a value sits in a file or an env var, nothing can ask again
+Grant spec.egress=[{"to":"not a host"}]
+  Grant g: egress "not a host": not a CIDR, an address or a host name
+Grant spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"*.example.com"}}]
+  Grant g: secret k: to.host "*.example.com" must be one host name
+Grant spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"a.example.com","format":"Bearer"}}]
+  Grant g: secret k: to.format must contain {{value}} once
+Grant spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"a.example.com","header":"X: y"}}]
+  Grant g: secret k: to.header "X: y" isn't a header name
+Grant spec.secrets=[{"name":"k","deliver":"file","path":"/etc/k"}]
+  Grant g: secret k: path "/etc/k" must be under /run/ (tmpfs: a secret file never reaches the silo's disk), without ..
+IngressClass spec.controller.driver=""
+  IngressClass public: spec.controller.driver names the proxy's driver (nginx, caddy, kong…)
+IngressClass spec.controller.siloSet="ingress"
+  IngressClass public: spec.controller needs its namespace and one of silo or siloSet
+Ingress spec.ingressClass=""
+  Ingress i: spec.ingressClass is required
+Ingress spec.hosts=[]
+  Ingress i: spec.hosts needs at least one host name
+Ingress spec.rules=[{"service":{"name":"web","port":""}}]
+  Ingress i: every rule needs a service (its name) and one of its ports (by name)
+Ingress spec.rules.0.path="api"
+  Ingress i: paths start with /
+Ingress spec.tls={"issuer":"a","secretName":"b"}
+  Ingress i: tls: at most one of issuer, secretName or none (none of them: the cluster's default issuer for the class)
+Ingress spec.hosts=["10.0.0.1"]
+  Ingress i: spec.hosts: "10.0.0.1" isn't a host name
+Issuer spec.controller="acme"
+  Issuer ca: an Issuer names one cert-controller: controller (with config), or the shorthand acme or internalCA
+Issuer spec.internalCA! spec.acme={"server":"http://acme.example.com/dir"}
+  Issuer ca: acme.server is an https:// directory URL
+Issuer spec.internalCA! spec.acme={"server":"https://acme.example.com/dir","solvers":[{}]}
+  Issuer ca: each acme solver is exactly one of http01 or dns01
+Issuer spec.internalCA! spec.acme={"server":"https://acme.example.com/dir","solvers":[{"dns01":{"provider":""}}]}
+  Issuer ca: a dns01 solver names a DNS provider registered on the control plane
+Certificate spec.hosts=[]
+  Certificate c: spec.hosts needs at least one host name
+Certificate spec.issuer=""
+  Certificate c: spec.issuer and spec.secretName are required
+Certificate spec.hosts=["a b"]
+  Certificate c: spec.hosts: "a b" isn't a host name
+Role rules=[{"verbs":[],"resources":["silos"]}]
+  Role r: every rule needs verbs and resources
+ClusterRole rules=[{"verbs":["sudo"],"resources":["silos"]}]
+  ClusterRole r: verbs must be *, get, list, watch, create, update, patch, delete, or for secrets use, read-value, write and approve, for ips use, or for silos/exposure open and approve
+Role rules=[{"verbs":["get"],"resources":["silos"],"selector":{"a":"b"}}]
+  Role r: a rule's selector (by label) only works on secrets and silos/exposure
+ClusterRole rules=[{"verbs":["get"]}]
+  ClusterRole r: every rule needs verbs and resources (no such overload: size)
+Role rules=[{"verbs":["sudo"],"resources":["silos"]}]
+  Role r: verbs must be *, get, list, watch, create, update, patch, delete, or for secrets use, read-value, write and approve, for ips use, or for silos/exposure open and approve
+ClusterRole rules=[{"verbs":["get"],"resources":["silos/exec"],"selector":{"a":"b"}}]
+  ClusterRole r: a rule's selector (by label) only works on secrets and silos/exposure
+ClusterRoleBinding roleRef.name=""
+  ClusterRoleBinding b: roleRef.name is required
+RoleBinding subjects=[]
+  RoleBinding b: a binding needs at least one subject
+ClusterRoleBinding subjects=[{"kind":"User","name":""}]
+  ClusterRoleBinding b: every subject needs a name and a kind of User, Group or ServiceAccount
+RoleBinding roleRef.kind="Group"
+  RoleBinding b: roleRef.kind must be Role or ClusterRole
+ClusterRoleBinding roleRef.kind="Role"
+  ClusterRoleBinding b: a ClusterRoleBinding can only grant a ClusterRole
+RoleBinding roleRef.name=""
+  RoleBinding b: roleRef.name is required
+ClusterRoleBinding subjects=[]
+  ClusterRoleBinding b: a binding needs at least one subject
+RoleBinding subjects=[{"kind":"Robot","name":"r"}]
+  RoleBinding b: every subject needs a name and a kind of User, Group or ServiceAccount
+IP spec.class="Pool"
+  IP ip: spec.class is required: ip-pool (a host's extra addresses) or a plugin's load-balancer class
+IP spec.reclaim="Keep"
+  IP ip: spec.reclaim must be Retain or Delete
+IP spec.region="ca-central"
+  IP ip: spec.region is for a plugin's class; ip-pool's addresses are a host's (spec.host)
+IP spec.class="linode-nodebalancer" spec.host="h"
+  IP ip: spec.host is for class ip-pool; a plugin's address is in a region (spec.region)
+IP spec.address="10.0.0.300"
+  IP ip: spec.address: "10.0.0.300" isn't an address
+Host spec.internalIP!
+  Host h: a host needs spec.internalIP (its address on its own network), spec.externalIP (its address reachable from outside it), or both
+Host spec.components={}
+  Host h: a host needs at least one component: controlPlane or worker
+Host spec.components.worker={"taints":[{"key":"k","effect":"NoExecute"}]}
+  Host h: every taint needs a key and an effect of NoSchedule or PreferNoSchedule (there's no NoExecute: silos are stateful)
+Host spec.components.worker={"runtimes":[{"name":"kvm"}]}
+  Host h: unknown runtime in spec.components.worker.runtimes
+Host spec.internalIP="fd00::1"
+  Host h: spec.internalIP: "fd00::1" isn't an IPv4 address
+Host spec.externalIP="10.0.0.5"
+  Host h: spec.internalIP and spec.externalIP are the same address: a machine with one address has one of the two (external if it's reachable from outside its network)
+Host spec.network={"dns":["mesh"]}
+  Host h: spec.network.dns: "mesh": internal or external (silos and the mesh are always answered)
+Host spec.network={"dns":["external"]}
+  Host h: spec.network.dns: external: the host has no external IP
+Host spec.network={"addresses":["nope"]}
+  Host h: spec.network.addresses: "nope" isn't an address or CIDR
+Namespace metadata.name="mesh"
+  Namespace mesh: "mesh" is a network's name (mesh, internal, external), which names use as a label of their own: pick another
+Namespace metadata.name="internal"
+  Namespace internal: "internal" is a network's name (mesh, internal, external), which names use as a label of their own: pick another
+Namespace metadata.name="external"
+  Namespace external: "external" is a network's name (mesh, internal, external), which names use as a label of their own: pick another
