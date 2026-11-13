@@ -45,9 +45,6 @@ func (w *startWatcher) Start(ctx context.Context, id kri.ID) error {
 // its readiness probe has passed since. The start must take it out of routing first.
 func TestARestartedSiloIsNotRoutedBeforeItsReadinessPassesAgain(t *testing.T) {
 	t.Skip("phase/metal: the Stopped/Created branch of Reconcile clears probes and startedAt but leaves Ready and Phase (agent.go)")
-	old := agent.ResyncEvery
-	agent.ResyncEvery = 100 * time.Millisecond
-	defer func() { agent.ResyncEvery = old }()
 	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
@@ -85,6 +82,7 @@ func TestARestartedSiloIsNotRoutedBeforeItsReadinessPassesAgain(t *testing.T) {
 	if err := rt.Stop(ctx, kri.ID{Namespace: "dev", Name: "web", UID: cur.UID}); err != nil {
 		t.Fatal(err)
 	}
+	touch(t, ctx, c, "dev", "web") // the agent looks again (as its 30s resync would)
 	for {
 		rt.mu.Lock()
 		n := len(rt.routedAt)

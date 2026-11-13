@@ -51,9 +51,6 @@ func (mountTable) Glob(string) ([]string, error)               { return nil, nil
 // restarted or died): the agent trusted what it had mounted in this run and never mounted it
 // again, so the silo's next start wrote into the plain folder on the host's root disk.
 func TestALostNodeMountIsMountedAgain(t *testing.T) {
-	old := agent.ResyncEvery
-	agent.ResyncEvery = 100 * time.Millisecond
-	defer func() { agent.ResyncEvery = old }()
 	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
@@ -70,9 +67,9 @@ func TestALostNodeMountIsMountedAgain(t *testing.T) {
 	if err := a.Nodes.Add(ctx, node); err != nil {
 		t.Fatal(err)
 	}
-	go a.Run(ctx)
 	vs, _ := share.EnsureVolume(ctx, kplugin.Volume{Class: kplugintest.ClassShare, ID: "u/home"})
 	handle = vs.Handle
+	go a.Run(ctx)
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "pad", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "busybox"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Volumes: []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"}}}}
@@ -97,6 +94,7 @@ func TestALostNodeMountIsMountedAgain(t *testing.T) {
 	if err := node.UnmountVolume(ctx, kplugin.NodeMount{Handle: vs.Handle, Path: path}); err != nil {
 		t.Fatal(err)
 	}
+	touch(t, ctx, c, "dev", "pad") // the agent looks again (as its 30s resync would)
 	for !mounted() {
 		select {
 		case <-ctx.Done():
@@ -104,4 +102,27 @@ func TestALostNodeMountIsMountedAgain(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+}
+
+// touch changes a silo's labels, so the agent reconciles it now.
+func touch(t *testing.T, ctx context.Context, c *client.Client, ns, name string) {
+	t.Helper()
+	for range 5 {
+		var s v1.Silo
+		if err := c.Get(ctx, "Silo", ns, name, &s); err != nil {
+			t.Fatal(err)
+		}
+		if s.Labels == nil {
+			s.Labels = map[string]string{}
+		}
+		s.Labels["kevaso.test/touched"] = time.Now().Format("150405.000000")
+		err := c.Update(ctx, &s)
+		if !client.IsConflict(err) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+	t.Fatal("kept conflicting")
 }
