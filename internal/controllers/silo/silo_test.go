@@ -233,3 +233,72 @@ func TestDecideOnHostLossMove(t *testing.T) {
 		t.Fatalf("Move without a movable class: %+v", st)
 	}
 }
+
+// A cluster's only silo: once the controller placed it, it skipped every later change of that silo
+// as "assumed, the cache hasn't caught up", and only another silo's reconcile cleared that. With no
+// other silo, its host's loss was never acted on (seen on Lima: a lone onHostLoss: Move microVM
+// stayed "Running" on a host that had been lost for minutes).
+func TestALoneSiloIsRecreatedWhenItsHostIsLost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
+	ts := httptest.NewServer(srv)
+	defer func() { cancel(); ts.Close() }()
+	c := client.New(ts.URL)
+	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
+	silos, hosts := informer.New(c, "Silo"), informer.New(c, "Host")
+	ctrl := &silo.Controller{Client: c, Silos: silos, Hosts: hosts, Clock: clock.Real{}}
+	e := engine.New(clock.Real{})
+	e.Register(ctrl, engine.Options{Workers: 2})
+	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
+	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
+	go silos.Run(ctx)
+	go hosts.Run(ctx)
+	go e.Run(ctx)
+
+	h := readyHost("hv1")
+	st := h.Status
+	if err := c.Create(ctx, h); err != nil {
+		t.Fatal(err)
+	}
+	h.Status = st
+	if err := c.UpdateStatus(ctx, h); err != nil {
+		t.Fatal(err)
+	}
+	s := newSilo("solo")
+	s.Spec.Availability.OnHostLoss = v1.OnHostLossRecreate
+	if err := c.Create(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(ctx, t, c, "solo", func(s *v1.Silo) bool { return s.Status.Host == "hv1" })
+	// The agent reports it running (a change of the silo the controller sees, like on a real host).
+	var got v1.Silo
+	if err := c.Get(ctx, "Silo", "dev", "solo", &got); err != nil {
+		t.Fatal(err)
+	}
+	got.Status.Phase = "Running"
+	if err := c.UpdateStatus(ctx, &got); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// A second host arrives, then hv1 is lost (long enough ago to be past the fence's margin).
+	h2 := readyHost("hv2")
+	st2 := h2.Status
+	if err := c.Create(ctx, h2); err != nil {
+		t.Fatal(err)
+	}
+	h2.Status = st2
+	if err := c.UpdateStatus(ctx, h2); err != nil {
+		t.Fatal(err)
+	}
+	var lost v1.Host
+	if err := c.Get(ctx, "Host", "", "hv1", &lost); err != nil {
+		t.Fatal(err)
+	}
+	lost.Status.Conditions = []meta.Condition{{Type: "Ready", Status: meta.ConditionUnknown, Reason: "HostLost",
+		Message: "no heartbeat for 41s", LastTransitionTime: time.Now().Add(-time.Minute)}}
+	if err := c.UpdateStatus(ctx, &lost); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(ctx, t, c, "solo", func(s *v1.Silo) bool { return s.Status.Host == "hv2" })
+}

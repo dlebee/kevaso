@@ -252,7 +252,13 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	}
 	key := informer.Key{Namespace: s.Namespace, Name: s.Name}
 	if _, ok := c.assumed[key]; ok {
-		return engine.Result{}, nil // already placed by us; the cache just hasn't caught up
+		if s.Status.Host == "" {
+			return engine.Result{}, nil // already placed by us; the cache just hasn't caught up
+		}
+		// The cache shows a placement: ours, or what came after it. Forget the assumption here, not
+		// only in lists(): that runs for other silos, and a cluster's only silo has none, so its
+		// later changes (its host lost) were never looked at.
+		delete(c.assumed, key)
 	}
 	hosts, silos := c.lists()
 	var pools []*v1.IPPool
