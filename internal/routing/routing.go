@@ -1,7 +1,7 @@
 // Package routing decides whether traffic goes to a silo (design §0.6): explicit, never assumed.
 // A service says routeWhen: ready (only while the silo's readiness probe passes) or running (as
 // soon as it runs). Without a readiness probe it is running, and the decision says it wasn't
-// stated. Pure: every path traffic takes asks the same question here — the private name (DNS),
+// stated. Pure: every path traffic takes asks the same question here — the service's name (DNS),
 // a Service's virtual IP and endpoints, a silo's own exposed ports and node ports, load-balancer
 // backends, Ingress backends — and each turns "held" into its own absence: no DNS record, no
 // endpoint, no outside rule, no backend, no route.

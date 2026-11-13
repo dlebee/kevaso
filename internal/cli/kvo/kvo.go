@@ -716,7 +716,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 	case "SiloSet":
 		head = append(head, "IMAGE", "INSTANCES", "READY", "UPDATED")
 	case "Service":
-		head = append(head, "TYPE", "CLUSTER-IP", "PUBLIC-IP", "PORTS", "ENDPOINTS")
+		head = append(head, "TYPE", "CLUSTER IP", "LOAD-BALANCER IP", "PORTS", "ENDPOINTS")
 	case "IP":
 		head = append(head, ipHead...)
 	case "Image":
