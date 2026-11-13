@@ -74,6 +74,9 @@ type Config struct {
 	// Approvals: how long requests for a person's yes wait, and how long access may last (§8.7).
 	Approvals approvals.Limits
 	Log       func(format string, args ...any)
+	// Store is StoreSQLite (default) or StoreEtcd; Etcd configures the embedded member.
+	Store string
+	Etcd  EtcdConfig
 }
 
 func (c *Config) defaults() {
@@ -128,7 +131,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := store.OpenSQLite(filepath.Join(cfg.DataDir, "store.db"), 0)
+	st, err := openStore(ctx, cfg, ca)
 	if err != nil {
 		return nil, err
 	}
