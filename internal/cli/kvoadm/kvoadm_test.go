@@ -153,6 +153,24 @@ func TestParseHostAdd(t *testing.T) {
 	}
 }
 
+// init --store etcd starts the first system node on the embedded etcd member with a peer listener,
+// so more system nodes can join without kvoadm store migrate.
+func TestInitWithEtcdStore(t *testing.T) {
+	o, err := parseInit([]string{"root@203.0.113.10", "--kevasod", "/k", "--ssh-key", "/key", "--name", "cp-1", "--store", "etcd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := Unit(o); !strings.Contains(u, "--store etcd --etcd-peer-listen 203.0.113.10:2380") {
+		t.Fatalf("unit:\n%s", u)
+	}
+	if o, _ := parseInit([]string{"root@a", "--kevasod", "/k", "--ssh-key", "/key"}); strings.Contains(Unit(o), "--store") {
+		t.Fatal("SQLite is still the default")
+	}
+	if _, err := parseInit([]string{"root@a", "--kevasod", "/k", "--ssh-key", "/key", "--store", "mysql"}); err == nil {
+		t.Fatal("--store mysql accepted")
+	}
+}
+
 func TestUnitAdvertisesAnotherAddress(t *testing.T) {
 	u := Unit(InitOptions{Name: "cp-1", Address: "127.0.0.1", Advertise: "192.168.105.2", Cluster: "c"})
 	if !strings.Contains(u, "--address 192.168.105.2 --cluster c --extra-name 127.0.0.1") {
