@@ -659,3 +659,5 @@ func TestMetalCheck(t *testing.T) {
 	}
 	t.Log("the machine is clean: every checklist item passed, and it matches its baseline")
 }
+
+func jsonUnmarshal(s string, v any) error { return json.Unmarshal([]byte(s), v) }

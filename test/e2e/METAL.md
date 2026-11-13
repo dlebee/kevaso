@@ -130,9 +130,19 @@ One test (setup, the test, the final reset):
 go test -tags metal -run '^TestMetalModel$' -v -count=1 -timeout 90m ./test/e2e/ 2>&1 | tee /tmp/metal-model.log
 ```
 
-The tests are `TestMetalModel`, `TestMetalNames`, `TestMetalImages`, `TestMetalSecrets`,
-`TestMetalIngress`, `TestMetalProbes`, `TestMetalLeases`, `TestMetalPanes`, `TestMetalFence` and
-`TestMetalVolumes`. Each one can run alone.
+The tests are `TestMetalModel`, `TestMetalNames`, `TestMetalImages`, `TestMetalRegistry`,
+`TestMetalSecrets`, `TestMetalIngress`, `TestMetalProbes`, `TestMetalLeases`, `TestMetalPanes`,
+`TestMetalFence`, `TestMetalVolumes`, `TestMetalPodman` and `TestMetalReboot`. Each one can run
+alone. Files run in name order, so podman and the reboot (in `metal_zlast_test.go`) come last.
+The reboot takes the machine down and waits up to 15 minutes for it to come back with the same
+pinned host key.
+
+For the Let's Encrypt **staging** certificate without a DNS name of your own, use an sslip.io
+name, which resolves to the IP it spells:
+
+```bash
+export KEVASO_METAL_HOSTNAME=secure.135-148-103-69.sslip.io
+```
 
 All of them, one cluster for the whole run:
 
@@ -233,6 +243,7 @@ machine, 6443 (the API, mutual TLS) is open from the first test to the final res
 | TestMetalModel | 18080, 18081 (vm); 18090, 18091 (box); 18092 (box, this Mac only); 18095 (first); 18082, 18093 stay closed | a Python echo of the silo's name and port |
 | TestMetalNames | 18100 (api); 53/udp+tcp while the DNS switch is on (a few minutes) | echo; Kevaso's DNS, external names only, never forwarding |
 | TestMetalImages | nothing | |
+| TestMetalRegistry | nothing (the test's registry:2 is on 127.0.0.1:5000) | |
 | TestMetalSecrets | nothing (the stand-in API is on 127.0.0.77:443, loopback) | |
 | TestMetalIngress | 80, 443 | stock nginx 1.27: the test's site (`tls: none`), a 308 to HTTPS for the Ingress without `tls:` (HTTPS is the default), 404 for unknown hosts |
 | TestMetalProbes | 18110 (only while ready), 18111 | echo |
@@ -240,6 +251,8 @@ machine, 6443 (the API, mutual TLS) is open from the first test to the final res
 | TestMetalPanes | nothing (the host dials the silos privately) | |
 | TestMetalFence | nothing | |
 | TestMetalVolumes | nothing | |
+| TestMetalPodman | 18130 | echo, in a podman silo |
+| TestMetalReboot | nothing new; the machine itself goes down and up | |
 
 Silos reach the internet too: Docker Hub, cloud-images.ubuntu.com, GitHub (the Cloud Hypervisor
 release), the Ubuntu archive and, with `KEVASO_METAL_HOSTNAME` set, Let's Encrypt staging.
@@ -255,14 +268,14 @@ release), the Ubuntu archive and, with `KEVASO_METAL_HOSTNAME` set, Let's Encryp
   machine helpers.
 - **Load balancers and the `IP` kind**: no provider plugin on bare metal, and ip-pool needs extra
   routed addresses the machine may not have.
-- **Private registries.** Pulling with credentials needs a registry account; the suite pulls
-  public images only.
 - **The DNS-01 solver and Let's Encrypt production.** Certificates are HTTP-01 against staging
   only, and only with a hostname. Never production in a test.
 - **The 1:1 NAT case** (external IP not on any interface): refused at setup, because it is known
   not to work.
-- **OpenShell runtimes, podman, JuiceFS or other plugin storage, Kong and Caddy ingress.**
-- **Reboots of the machine itself, kernel upgrades, disk-backed volume groups.**
+- **OpenShell runtimes, JuiceFS or other plugin storage, Kong and Caddy ingress.**
+- **Kernel upgrades, disk-backed volume groups.**
+- **A private registry with TLS or on another host**: the test registry is on loopback, which
+  Docker allows without a certificate.
 - **IPv6.**
 
 ## Risks of running it on a machine with a real external IP

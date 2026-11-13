@@ -22,7 +22,7 @@ const metalShell = "docker.io/nicolaka/netshoot:v0.13"
 
 // TestMetalSecrets is secrets with no guest helper (ADR 0009), in a microVM and in a container:
 // a file and an env delivery written by the host (into a container: the box-deliveries subtest,
-// which fails until the container runtimes write them); the local endpoint read with plain curl (and
+// which also rotates the file in place); the local endpoint read with plain curl (and
 // refused without its header, and for a secret the grant doesn't name); a key injected by the
 // egress gate into an HTTPS request that never appears inside the silo (nor on the VM's disk,
 // read from the host); a secret with approval: required that holds the call until it's approved.
@@ -163,8 +163,9 @@ cat /tmp/answer; [ "$code" = 200 ]`
 		})
 	}
 
-	// File and env deliveries into a container: refused by admission until the container runtimes
-	// write them (phase/box-deliveries). This fails, saying so, until that lands.
+	// File and env deliveries into a container (ADR 0009 addendum): the host's tmpfs, a folder of
+	// it bind-mounted read-only; env through --env-file, which the engine keeps in the
+	// container's config (docker inspect shows it), so admission warns.
 	t.Run("box-deliveries", func(t *testing.T) {
 		c := &mt{metalSuite: c.metalSuite, t: t, ctx: c.ctx}
 		out, code := c.kvo(`apiVersion: kevaso/v1
@@ -185,13 +186,29 @@ spec:
   grants: [boxfiles]
 `, "apply", "-f", "-")
 		if code != 0 {
-			t.Fatalf("file and env deliveries into a docker silo aren't there yet (phase/box-deliveries): %s", strings.TrimSpace(out))
+			t.Fatalf("file and env deliveries into a docker silo: %s", strings.TrimSpace(out))
 		}
+		c.expect("admission warns about env in a container", out, "Warning:")
 		c.waitRunning(ns, 10*time.Minute, "boxdel")
 		in := func(script string) string { o, _ := c.in(ns, "boxdel", script); return o }
 		c.expect("a file the host wrote, in tmpfs", in("cat /run/secrets/tls.pem; echo; stat -c '%a %U' /run/secrets/tls.pem; grep -E ' /run(/secrets)? ' /proc/mounts | awk '{print $3}'"),
 			tlsValue+"\n400 root\ntmpfs")
-		c.expect("an env delivery the host wrote", in(`set -a; . /run/kevaso/secrets.env; printf '%s' "$APP_TOKEN"`), envToken)
+		c.expect("an env delivery, in the container's environment", in(`printf '%s' "$APP_TOKEN"`), envToken)
+		c.expect("the file's folder is read-only", in("touch /run/secrets/x 2>&1; echo rc=$?"), "rc=1")
+		// Rotation: a file is rewritten in place, no restart.
+		rotated := "-----TLS " + randomValue(t, "") + "-----"
+		c.must(rotated, "secret", "set", "tls-key", "-n", ns, "--from-file", "-")
+		c.eventually("a rotated file reaches the container in place", time.Minute, func() (bool, string) {
+			got := in("cat /run/secrets/tls.pem")
+			return got == rotated, got
+		})
+		// Nothing left in the host's tmpfs once the silo is gone.
+		uid := c.silo(ns, "boxdel").UID
+		c.must("", "delete", "silo", "boxdel", "-n", ns)
+		c.eventually("deleted: the host's tmpfs for it is gone", 3*time.Minute, func() (bool, string) {
+			out, _ := c.sh("grep -c ' /run/kevaso-secrets/' /proc/mounts; docker ps -aq --filter label=kevaso.com/uid=" + uid)
+			return strings.TrimSpace(out) == "0", out
+		})
 	})
 
 	// The key never reached the microVM's disk either (read from the host).
