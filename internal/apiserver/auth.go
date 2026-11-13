@@ -277,7 +277,7 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusOK, client.WhoAmI{Type: id.Type, Name: id.Name, Role: id.Role, Groups: groups})
 			return
 		}
-		t, err := parsePath(r.URL.Path)
+		t, err := s.parseAny(ctx, r.URL.Path)
 		if err == nil {
 			ok, filter, reason, err := s.authorizeRequest(ctx, id, groups, r, t)
 			if err != nil {

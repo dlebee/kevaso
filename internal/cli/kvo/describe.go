@@ -20,7 +20,7 @@ func describe(ctx context.Context, c *client.Client, o opts, stdout io.Writer) e
 	if len(o.args) != 2 {
 		return errors.New("describe needs KIND NAME")
 	}
-	k, err := kindOf(o.args[0])
+	k, err := resolveKind(ctx, c, o.args[0])
 	if err != nil {
 		return err
 	}
@@ -56,6 +56,15 @@ func describeObject(w io.Writer, obj meta.Object) error {
 	var conds []meta.Condition
 	var tables []func()
 	switch o := obj.(type) {
+	case *v1.Unstructured:
+		kv(0, "Kind", o.Kind+" ("+o.APIVersion+")")
+		conds = unstructuredConditions(o)
+		lines := describeFields(o)
+		tables = append(tables, func() {
+			for _, l := range lines {
+				_, _ = fmt.Fprintln(tw, l)
+			}
+		})
 	case *v1.Silo:
 		kv(0, "Runtime", o.Spec.Runtime)
 		img := dash(o.Spec.Image)

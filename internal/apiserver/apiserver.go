@@ -59,6 +59,9 @@ type Server struct {
 	approvalLimits approvals.Limits
 	classes        func() map[string]scheduler.Class // the plugins' classes; nil: none
 	paneRates      paneRates
+
+	kinds    kindCache   // the served KindDefinitions (kinds.go)
+	policies policyCache // the admission policies (policies.go)
 }
 
 // New returns a server over a store, without authentication (kevasod dev, tests).
@@ -79,6 +82,7 @@ func NewWithAuth(s store.Store, c clock.Clock, auth *Auth) (*Server, error) {
 		}
 	}
 	srv.mux.HandleFunc("/apis/kevaso/v1/", srv.route)
+	srv.registerDefined()
 	srv.mux.HandleFunc("/agent/connect", srv.agentConnect)
 	srv.mux.HandleFunc(client.PathAgentBroker, srv.agentBroker)
 	srv.mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
@@ -144,6 +148,8 @@ type target struct {
 	move      bool   // a silo's /move
 	answer    string // an approval's /approve or /deny
 	bundle    bool   // a pane's /bundle
+
+	def *definedKind // a kind defined by a KindDefinition (kinds.go); nil for built-ins
 }
 
 func parsePath(path string) (target, error) {
@@ -387,7 +393,7 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "metadata.name %q doesn't match the path's name %q", om.Name, t.name))
 		return
 	}
-	if err := meta.ValidateName(om.Name); err != nil {
+	if err := validateObjectName(t.kind, om.Name); err != nil {
 		writeErr(w, errf(http.StatusUnprocessableEntity, "Invalid", "%s", err))
 		return
 	}
@@ -524,7 +530,7 @@ func (s *Server) create(ctx context.Context, t target, obj meta.Object) (store.O
 	if t.kind.Kind == "Namespace" {
 		obj.(*v1.Namespace).Status.Phase = "Active"
 	}
-	data, err := s.admit(t.kind.Kind, obj)
+	data, err := s.admitBuiltin(ctx, t, nil, obj)
 	if err != nil {
 		return store.Object{}, err
 	}
@@ -592,7 +598,7 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 	if errs := transition(old, next); len(errs) > 0 && !t.status {
 		return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %s", t.kind.Kind, om.Name, joinMessages(errs))
 	}
-	data, err := s.admit(t.kind.Kind, next)
+	data, err := s.admitBuiltin(ctx, t, old, next)
 	if err != nil {
 		return store.Object{}, err
 	}
@@ -602,6 +608,10 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 // delete removes an object, or, while it has finalizers, marks it as being deleted and leaves the
 // rest to the controllers that own the finalizers.
 func (s *Server) delete(ctx context.Context, w http.ResponseWriter, t target) {
+	if err := s.checkDeleteDefinition(ctx, t); err != nil {
+		writeErr(w, err)
+		return
+	}
 	for attempt := 0; attempt < 5; attempt++ {
 		cur, err := s.store.Get(ctx, t.key())
 		if err != nil {
