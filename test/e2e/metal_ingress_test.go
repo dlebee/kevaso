@@ -134,6 +134,7 @@ spec:
 	if e := os.Getenv("KEVASO_METAL_ACME_EMAIL"); e != "" {
 		email = "\n    email: " + e
 	}
+	// The broken Ingress stays: a held class must still serve the ACME challenges.
 	c.apply(`apiVersion: kevaso/v1
 kind: Issuer
 metadata: { name: le-staging }
@@ -152,7 +153,7 @@ spec:
   rules: [{ path: /, service: { name: app, port: http } }]
 `)
 	c.eventually("a certificate from Let's Encrypt STAGING over HTTP-01", 10*time.Minute, func() (bool, string) {
-		out, _ := c.kvo("", "get", "certificates", "-n", ns)
+		out, _ := c.kvo("", "get", "certificate", "secure-tls", "-n", ns)
 		return strings.Contains(out, " yes"), out
 	})
 	c.eventually("443 serves it", 2*time.Minute, func() (bool, string) {
