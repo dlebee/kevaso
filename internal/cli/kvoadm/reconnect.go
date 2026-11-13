@@ -81,8 +81,8 @@ func controlPlaneServer(ctx context.Context, c *client.Client) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if h := obj.(*v1.Host); h.Spec.Components.ControlPlane != nil && h.Spec.Address != "" {
-			return "https://" + net.JoinHostPort(h.Spec.Address, "6443"), nil
+		if h := obj.(*v1.Host); h.Spec.Components.ControlPlane != nil && h.Reach() != "" {
+			return "https://" + net.JoinHostPort(h.Reach(), "6443"), nil
 		}
 	}
 	return "", errors.New("no control-plane host in the cluster: give --server")
@@ -247,7 +247,7 @@ func reconnectWorkers(ctx context.Context, o InitOptions, c *client.Client, serv
 		}
 		n++
 		user, addr, port, ok := sshTarget(h)
-		cmd := fmt.Sprintf("kvoadm host reconnect root@%s --ssh-key KEY --server %s", h.Spec.Address, server)
+		cmd := fmt.Sprintf("kvoadm host reconnect root@%s --ssh-key KEY --server %s", h.Reach(), server)
 		if !ok {
 			missed = append(missed, miss{h.Name, "added before kvoadm recorded how to reach it", cmd})
 			continue
@@ -282,4 +282,13 @@ func reconnectWorkers(ctx context.Context, o InitOptions, c *client.Client, serv
 func firstLine(s string) string {
 	l, _, _ := strings.Cut(s, "\n")
 	return l
+}
+
+// sshAddress is the address kvoadm reaches a host at over SSH: the one the operator typed when
+// adding it (its kevaso.com/ssh annotation), else where other hosts reach it.
+func sshAddress(h *v1.Host) string {
+	if _, addr, _, ok := sshTarget(h); ok {
+		return addr
+	}
+	return h.Reach()
 }

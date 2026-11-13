@@ -136,7 +136,7 @@ func TestContainerSilos(t *testing.T) {
 	hk, _ := d.Exec(ctx, machines["metal"], "ssh-keygen", "-lf", "/etc/ssh/ssh_host_ed25519_key.pub")
 	must(kvoadm.Run, "", "init", info.User+"@"+info.Host, "--ssh-port", strconv.Itoa(info.Port), "--ssh-key", info.KeyFile,
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
-		"--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker",
+		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker",
 		"--runtime", "docker", "--runtime", "podman", "--egress-extra-ca", "/etc/kevaso/test-internet-ca.pem")
 
 	apiKey, dbPassword := randomToken(t), randomToken(t)
@@ -150,7 +150,7 @@ kind: Silo
 metadata: { name: %[1]s, namespace: shop }
 spec:
   runtime: %[2]s
-  image: ubuntu-24.04
+  container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 512Mi }
   volumes: [{ name: data, mountPath: /data }]
   grants: [app]
@@ -175,11 +175,10 @@ kind: Silo
 metadata: { name: web, namespace: shop }
 spec:
   runtime: docker
-  image: docker.io/library/python:3.12-slim
-  command: [python3, -m, http.server, "8080"]
+  container: { image: docker.io/library/python:3.12-slim, command: [python3, -m, http.server, "8080"] }
+  ports: [{ name: http, port: 8080 }]
   service:
-    ports: [{ name: http, port: 8080 }]
-    expose: hostPort
+    ports: [{ port: http, hostPort: [internal] }]
 `
 	must(kvo.Run, manifest, "apply", "-f", "-")
 	deadline := time.Now().Add(25 * time.Minute)
@@ -205,7 +204,6 @@ spec:
 	}
 
 	hgetBin, _ := os.ReadFile(hget)
-	guestBin, _ := os.ReadFile(bin)
 	in := func(silo, script string) string {
 		var o bytes.Buffer
 		kvo.Run(ctx, []string{"exec", "silo", silo, "-n", "shop", "--", "sh", "-c", script}, nil, &o, &o)
@@ -226,24 +224,23 @@ spec:
 			if code := kvo.Run(ctx, []string{"exec", "silo", s, "-n", "shop", "--", "sh", "-c", "cat > /data/hget && chmod +x /data/hget"}, bytes.NewReader(hgetBin), &o, &e); code != 0 {
 				t.Fatalf("upload: %d %s", code, e.String())
 			}
-			// Nothing of Kevaso's is in a user's container: it brings its own broker client (here,
-			// kvo-guest itself, copied in like any program).
-			if got := in(s, "command -v kvo-guest || echo none"); got != "none" {
-				t.Errorf("kvo-guest is in a user's container: %q", got)
+			// Nothing of Kevaso's is in a user's container: no socket, no program; /run is a tmpfs
+			// (where the host writes file secrets), and the local endpoint is plain HTTP (ADR 0009).
+			if got := in(s, "ls /run/kevaso/broker.sock 2>/dev/null || echo none"); got != "none" {
+				t.Errorf("a broker socket in a user's container: %q", got)
 			}
-			o.Reset()
-			e.Reset()
-			if code := kvo.Run(ctx, []string{"exec", "silo", s, "-n", "shop", "--", "sh", "-c", "cat > /data/kvo-guest && chmod +x /data/kvo-guest"}, bytes.NewReader(guestBin), &o, &e); code != 0 {
-				t.Fatalf("upload kvo-guest: %d %s", code, e.String())
-			}
+			expect("/run is a tmpfs", in(s, "grep ' /run ' /proc/mounts"), "tmpfs")
 			expect("the egress gate injects the key", in(s, "/data/hget https://"+apiHost+"/v1"), `"auth": "`+authHash("Bearer "+apiKey)+`"`)
 			if got := in(s, "/data/hget https://"+otherHost+"/"); strings.Contains(got, `"host"`) {
 				t.Errorf("a host no grant names answered: %q", got)
 			}
 			expect("default deny (plain HTTP out)", in(s, "/data/hget http://"+clientIP+":80/ 2>&1 | head -c 200"), "error")
-			expect("broker over the container's own socket", in(s, "/data/kvo-guest secret get db-password"), dbPassword)
-			if got := in(s, "/data/kvo-guest secret get api-key"); !strings.Contains(got, "no secret") {
+			expect("broker over the local endpoint", in(s, "/data/hget http://169.254.42.1/v1/secrets/db-password Kevaso-Local=1"), "200 "+dbPassword)
+			if got := in(s, "/data/hget http://169.254.42.1/v1/secrets/api-key Kevaso-Local=1"); !strings.Contains(got, "404") || !strings.Contains(got, "no secret") {
 				t.Errorf("an inject-only key reached the container: %q", got)
+			}
+			if got := in(s, "/data/hget http://169.254.42.1/v1/secrets/db-password"); !strings.HasPrefix(got, "403") {
+				t.Errorf("the endpoint answered without its header: %q", got)
 			}
 			if n := in(s, fmt.Sprintf("grep -rl -F -e '%s' / --exclude-dir=proc --exclude-dir=sys 2>/dev/null | wc -l", apiKey)); n != "0" {
 				t.Errorf("the injected key is in the container's files: %s", n)

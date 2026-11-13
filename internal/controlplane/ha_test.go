@@ -76,7 +76,7 @@ func (c *cluster) config(name string, stateOnly bool) (Config, *node) {
 	c.t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
 	n := &node{name: name, sock: filepath.Join(sockDir, "admin.sock"), peer: freePort(c.t)}
 	return Config{
-		ClusterName: "ha", HostName: name, Address: "127.0.0.1", DataDir: c.t.TempDir(),
+		ClusterName: "ha", HostName: name, InternalIP: "127.0.0.1", DataDir: c.t.TempDir(),
 		Listen: "127.0.0.1:0", AdminSocket: n.sock, Heartbeat: 100 * time.Millisecond, HostLease: 2 * time.Second,
 		Store: StoreEtcd, Etcd: EtcdConfig{ClientListen: "127.0.0.1:0", PeerListen: n.peer, UnsafeNoFsync: true},
 		Leader:      leader.Options{Lease: 1500 * time.Millisecond, RenewDeadline: time.Second, RetryPeriod: 100 * time.Millisecond},
@@ -146,7 +146,7 @@ func (c *cluster) join(name string, stateOnly bool) *node {
 	cfg, n := c.config(name, stateOnly)
 	h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"},
 		ObjectMeta: meta.ObjectMeta{Name: name, Annotations: map[string]string{etcd.AnnotationPeerURL: "https://" + n.peer}},
-		Spec:       v1.HostSpec{Address: "127.0.0.1", Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{StateOnly: stateOnly}}}}
+		Spec:       v1.HostSpec{InternalIP: "127.0.0.1", Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{StateOnly: stateOnly}}}}
 	if err := c.admin.Create(ctx, h); err != nil {
 		c.t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func (c *cluster) worker(name string, servers ...string) (*client.Client, string
 	ctx, cancel := context.WithCancel(context.Background())
 	c.t.Cleanup(cancel)
 	h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: name},
-		Spec: v1.HostSpec{Address: "127.0.0.2", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}}}}}}
+		Spec: v1.HostSpec{InternalIP: "127.0.0.2", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}}}}}}
 	if err := c.admin.Create(ctx, h); err != nil {
 		c.t.Fatal(err)
 	}
@@ -258,14 +258,21 @@ func (c *cluster) worker(name string, servers ...string) (*client.Client, string
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	var cur v1.Host
-	if err := wc.Get(ctx, "Host", "", name, &cur); err != nil {
-		c.t.Fatal(err)
-	}
-	cur.Status.Runtimes = map[string]v1.RuntimeStatus{"cloud-hypervisor": {State: "Ready"}}
-	cur.Status.Allocatable = v1.Resources{CPU: 8, Memory: "16Gi"}
-	if err := wc.UpdateStatus(ctx, &cur); err != nil {
-		c.t.Fatal(err)
+	for { // the control plane writes this Host's status too: read again on a conflict
+		var cur v1.Host
+		if err := wc.Get(ctx, "Host", "", name, &cur); err != nil {
+			c.t.Fatal(err)
+		}
+		cur.Status.Runtimes = map[string]v1.RuntimeStatus{"cloud-hypervisor": {State: "Ready"}}
+		cur.Status.Allocatable = v1.Resources{CPU: 8, Memory: "16Gi"}
+		err := wc.UpdateStatus(ctx, &cur)
+		if client.IsConflict(err) {
+			continue
+		}
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		break
 	}
 	go worker.Heartbeat(ctx, wc, name, 100*time.Millisecond, clock.Real{}, func(string, ...any) {}, nil)
 	a := &agent.Agent{Client: wc, HostName: name, Runtimes: map[string]kri.Runtime{"cloud-hypervisor": echo{fake.New()}}, Clock: clock.Real{}, TunnelRefresh: 100 * time.Millisecond,
@@ -517,7 +524,7 @@ func TestJoinRefusals(t *testing.T) {
 	waitReady(t, unix)
 	ctx := context.Background()
 	_ = unix.Create(ctx, &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: "cp-2"},
-		Spec: v1.HostSpec{Address: "127.0.0.1", Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{}}}})
+		Spec: v1.HostSpec{InternalIP: "127.0.0.1", Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{}}}})
 	var tok client.JoinTokenResponse
 	if err := unix.Call(ctx, http.MethodPost, "/admin/join-tokens", client.JoinTokenRequest{Host: "cp-2", Roles: []string{apiserver.RoleSystemNode}}, &tok); err != nil {
 		t.Fatal(err)

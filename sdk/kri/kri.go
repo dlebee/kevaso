@@ -10,7 +10,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net"
 	"strings"
 )
 
@@ -76,7 +75,7 @@ type VolumeSetter interface {
 
 // GuestVolumes is a runtime whose volumes the silo's own system mounts (a VM's guest: its disks and
 // virtiofs shares at their mount paths, and again at every boot). The agent calls it once the silo
-// runs, before its guest helper and init steps; it is idempotent.
+// runs, before its secrets are written and its init steps run; it is idempotent.
 type GuestVolumes interface {
 	MountGuestVolumes(ctx context.Context, id ID) error
 }
@@ -149,6 +148,21 @@ type Runtime interface {
 	Exec(ctx context.Context, id ID, req ExecRequest) (int, error)
 }
 
+// Killer is a runtime that can stop a silo at once, with no graceful shutdown (SIGKILL, not a stop
+// with a grace period): what a fence does, since the silo is about to be started elsewhere and a
+// clean shutdown isn't worth eating into that margin. Killing a stopped or absent one is a no-op.
+type Killer interface {
+	Kill(ctx context.Context, id ID) error
+}
+
+// Kill stops a silo at once where the runtime can (Killer), else as gracefully as Stop does.
+func Kill(ctx context.Context, rt Runtime, id ID) error {
+	if k, ok := rt.(Killer); ok {
+		return k.Kill(ctx, id)
+	}
+	return rt.Stop(ctx, id)
+}
+
 // Resetter is a runtime that can put a silo back onto an image (design §0.2, `kvo reset`): a
 // fresh disk or container from spec.Image, with the same ID and private address, and its volumes
 // kept. The silo is stopped first (the agent stops it; Reset makes sure) and left Created. Every
@@ -165,15 +179,6 @@ func ParseDiskImage(ref string) (url, sha256 string, ok bool) {
 		return "", "", false
 	}
 	return ref[:i], ref[i+len("#sha256="):], true
-}
-
-// Broker is a runtime that gives every silo its own channel to its host (vsock for VMs), so the
-// host knows which silo is calling from the channel itself, never from what the silo says
-// (design §8.2, research E014). The secret broker listens on it.
-type Broker interface {
-	// BrokerListen listens on port of id's channel. Every connection it accepts comes from that
-	// silo and no other; the caller closes the listener when the silo goes.
-	BrokerListen(id ID, port uint32) (net.Listener, error)
 }
 
 // Policied is a runtime that enforces a silo's grants itself (OpenShell: its policy engine and

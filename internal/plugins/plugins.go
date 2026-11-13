@@ -23,6 +23,7 @@ type Conn interface {
 	kplugin.Plugin
 	kplugin.HostDescriber
 	kplugin.LoadBalancers
+	kplugin.Addresses
 	kplugin.Volumes
 	kplugin.DNS
 	kplugin.Node

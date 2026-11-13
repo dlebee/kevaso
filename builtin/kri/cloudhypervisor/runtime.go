@@ -439,9 +439,9 @@ func (r *Runtime) List(context.Context) ([]kri.ID, error) {
 	return ids, nil
 }
 
-// Exec implements kri.Runtime: SSH to the guest over the bridge as the exec user (whose key only
-// this host holds), with the guest's host key pinned, then `sudo -n -- argv`. It waits for the
-// guest's SSH to come up (first boot).
+// Exec implements kri.Runtime: SSH to the guest over the bridge as root with the exec key (only
+// this host holds it), with the guest's host key pinned, then argv. It waits for the guest's SSH
+// to come up (first boot). No sudo: see UserData for who can still see a command line.
 func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int, error) {
 	st, ok := r.state(id)
 	if !ok {
@@ -455,7 +455,7 @@ func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int
 		return -1, err
 	}
 	cfg := &ssh.ClientConfig{
-		User:              GuestUser,
+		User:              ExecUser,
 		Auth:              []ssh.AuthMethod{ssh.PublicKeys(r.ExecKey)},
 		HostKeyCallback:   ssh.FixedHostKey(pinned),
 		HostKeyAlgorithms: []string{ssh.KeyAlgoED25519},
@@ -484,12 +484,11 @@ func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int
 	return runGuest(ctx, c, req)
 }
 
-// runGuest runs req on the guest over ssh, as root through sudo. The command carries a marker in
-// its environment, and sudo, which waits for it, on its command line; if ctx is cancelled (the
-// client went away) the session is signalled and closed, and a second session sweeps it
-// (hostexec.SweepScript), since sshd doesn't kill a command without a terminal when its channel
-// closes: everything below sudo and in the ssh session (sshd makes each one a session), so a
-// command that cleared its environment goes too.
+// runGuest runs req on the guest over ssh, as root. The command carries a marker in its
+// environment; if ctx is cancelled (the client went away) the session is signalled and closed,
+// and a second session sweeps it (hostexec.SweepScript), since sshd doesn't kill a command
+// without a terminal when its channel closes: everything with the marker and in the ssh session
+// (sshd makes each one a session), so a command that cleared its environment goes too.
 func runGuest(ctx context.Context, c *ssh.Client, req kri.ExecRequest) (int, error) {
 	sess, err := c.NewSession()
 	if err != nil {
@@ -512,7 +511,9 @@ func runGuest(ctx context.Context, c *ssh.Client, req kri.ExecRequest) (int, err
 		sess.Stderr = nil // the terminal carries both
 	}
 	marker := hostexec.NewMarker()
-	if err := sess.Start("sudo -n -- env " + kri.ExecMarkerEnv + "=" + marker + " " + shellQuote(req.Command)); err != nil {
+	// Root's shell runs this one simple command by exec'ing it: no shell stays behind with the
+	// command line, and nothing logs it.
+	if err := sess.Start("exec env " + kri.ExecMarkerEnv + "=" + marker + " " + shellQuote(req.Command)); err != nil {
 		return -1, err
 	}
 	done := make(chan error, 1)
@@ -543,7 +544,7 @@ func runGuest(ctx context.Context, c *ssh.Client, req kri.ExecRequest) (int, err
 			_ = sess.Signal(ssh.SIGKILL)
 			_ = sess.Close()
 			if sw, err := c.NewSession(); err == nil {
-				_ = sw.Run("sudo -n -- sh -c " + shellQuote([]string{hostexec.SweepScript}) + " sh " + marker)
+				_ = sw.Run("sh -c " + shellQuote([]string{hostexec.SweepScript}) + " sh " + marker)
 				_ = sw.Close()
 			}
 			return -1, ctx.Err()
@@ -681,30 +682,4 @@ func imagePath(image, arch string) (string, error) {
 	return filepath.Join(ImagesDir, f.File), nil
 }
 
-// BrokerListen implements kri.Broker: a unix socket at the VM's Vsock_PORT, which only that VM's
-// VMM can reach (it runs with only its own silo directory visible) and only that VM's guest uses.
-func (r *Runtime) BrokerListen(id kri.ID, port uint32) (net.Listener, error) {
-	if _, ok := r.state(id); !ok {
-		return nil, fmt.Errorf("%s: %w", id, kri.ErrNotFound)
-	}
-	path := fmt.Sprintf("%s_%d", NamesFor(id).Vsock, port)
-	_ = r.Host.RemoveAll(path) // a stale socket from before a restart
-	l, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		_ = l.Close()
-		return nil, err
-	}
-	if err := r.run(context.Background(), "chown", VMMUser+":"+VMMUser, path); err != nil {
-		_ = l.Close()
-		return nil, err
-	}
-	return l, nil
-}
-
-var (
-	_ kri.Runtime = (*Runtime)(nil)
-	_ kri.Broker  = (*Runtime)(nil)
-)
+var _ kri.Runtime = (*Runtime)(nil)

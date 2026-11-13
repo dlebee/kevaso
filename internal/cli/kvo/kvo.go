@@ -19,12 +19,15 @@
 //	kvo create token NAME [-n NS] [--duration 1h]   a service account token, for CI ($KVO_TOKEN)
 //	kvo create secret NAME (--from-file F|- | --generate) [--type opaque|ed25519|ecdsa-p256]
 //	        [--write-only] [--allow broker,inject,file,env] [-l KEY=VALUE]…   values never on argv
+//	kvo create secret NAME --type registry --server HOST --username U --from-file -
+//	        [--default-pull]                    a registry credential, write-only; the password on stdin
 //	kvo secret set NAME --from-file F|-        rotate: every silo using it follows
 //	kvo get secret NAME --reveal               the value (read-value; never a write-only secret)
 //	kvo get approvals | kvo watch approvals    silos waiting for a person's yes to use a secret
 //	kvo pane watch SILO                        follow a silo's panes (plain text; one way)
 //	kvo pane bundle PANE -o FILE               save an HTML pane's bundle (for the panes app)
 //	kvo approve NAME | kvo deny NAME [--reason R]   answer one (approve on that secret; people only)
+//	kvo plugin search|install|list|upgrade|remove|index …   client plugins; kvo NAME runs one (plugins.go)
 //
 // The cluster comes from --server or $KVO_SERVER (plain HTTP, for `kevasod dev`), otherwise from the
 // kvo config's current context (or --context): TLS with a pinned CA and a client certificate, as
@@ -60,6 +63,7 @@ const DefaultServer = "http://127.0.0.1:8080"
 
 type opts struct {
 	server, context, namespace, output, file string
+	serverFlag                               string // --server as given (not $KVO_SERVER)
 	ca                                       string // kvo login: the CA fingerprint to pin
 	duration                                 string // kvo create token
 	reason                                   string // kvo deny / approve
@@ -70,6 +74,7 @@ type opts struct {
 	sets                                     setOpts
 	term                                     termOpts  // exec -it, cp, ui (terminal.go, copy.go)
 	lease                                    leaseOpts // kvo open / close (leases.go)
+	ip                                       ipOpts    // kvo create ip (ips.go)
 	args                                     []string
 	command                                  []string // after --
 	ctxNamespace                             string   // the context's default namespace
@@ -98,6 +103,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 		switch name {
 		case "--server":
 			o.server, err = val()
+			o.serverFlag = o.server
 		case "--context":
 			o.context, err = val()
 		case "-n", "--namespace":
@@ -119,7 +125,9 @@ func parse(args []string, env func(string) string) (opts, error) {
 		case "--to":
 			o.moveTo, err = val()
 		case "--port":
-			o.lease.port, err = val()
+			var p string
+			p, err = val()
+			o.lease.ports = append(o.lease.ports, p)
 		case "--for":
 			o.lease.forDur, err = val()
 		case "--no-wait":
@@ -139,8 +147,14 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.secret.generate = true
 		case "--type":
 			o.secret.typ, err = val()
+		case "--default-pull":
+			o.secret.defaultPull = true
 		case "--write-only":
 			o.secret.writeOnly = true
+		case "--registry":
+			o.secret.server, err = val()
+		case "--username":
+			o.secret.username, err = val()
 		case "--allow":
 			var v string
 			v, err = val()
@@ -169,6 +183,16 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.term.tty = true
 		case "--max-size":
 			o.term.maxSize, err = val()
+		case "--class":
+			o.ip.class, err = val()
+		case "--host":
+			o.ip.host, err = val()
+		case "--region":
+			o.ip.region, err = val()
+		case "--address":
+			o.ip.address, err = val()
+		case "--reclaim":
+			o.ip.reclaim, err = val()
 		default:
 			if strings.HasPrefix(a, "-") && a != "-" {
 				return o, fmt.Errorf("unknown flag %s", a)
@@ -185,8 +209,11 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|pane|create|secret|approve|deny|open|close|login|logout|ctx|ns|auth …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|pane|create|secret|ip|approve|deny|open|close|login|logout|ctx|ns|auth …")
 		return 2
+	}
+	if code, ok := pluginDispatch(ctx, args, stdin, stdout, stderr); ok { // kvo plugin …, kvo NAME (plugins.go)
+		return code
 	}
 	o, err := parse(args[1:], os.Getenv)
 	if err != nil {
@@ -201,6 +228,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return 0
 	}
+	registryServer(args[0], &o)
 	c, err := clientFor(&o)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "kvo:", err)
@@ -220,13 +248,22 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "describe":
 		err = describe(ctx, c, o, stdout)
 	case "create":
-		if len(o.args) > 0 && o.args[0] == "secret" {
+		what := ""
+		if len(o.args) > 0 {
+			what = o.args[0]
+		}
+		switch what {
+		case "secret":
 			err = createSecret(ctx, c, o, stdin, stdout)
-		} else {
+		case "ip":
+			err = createIP(ctx, c, o, stdout)
+		default:
 			err = createToken(ctx, c, o, stdout)
 		}
 	case "secret":
 		err = secretCommand(ctx, c, o, stdin, stdout)
+	case "ip":
+		err = ipCommand(ctx, c, o, stdout)
 	case "move":
 		err = move(ctx, c, o, stdout)
 	case "pane":
@@ -469,7 +506,7 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 		return fmt.Errorf("get needs a kind (%s)", knownKinds())
 	}
 	if o.args[0] == "kinds" {
-		return getKinds(ctx, c, stdout)
+		return getKinds(ctx, c, o.output, stdout)
 	}
 	k, err := resolveKind(ctx, c, o.args[0])
 	if err != nil {
@@ -509,7 +546,7 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	case "json":
 		return printJSON(stdout, objs, len(o.args) < 2)
 	case "yaml":
-		return printYAML(stdout, objs)
+		return printYAML(stdout, objs, len(o.args) < 2)
 	case "", "wide":
 		if isDefined(k) {
 			return printDefinedTable(ctx, c, stdout, k, objs, o.all)
@@ -534,28 +571,36 @@ func printJSON(w io.Writer, objs []meta.Object, list bool) error {
 	return enc.Encode(objs)
 }
 
-func printYAML(w io.Writer, objs []meta.Object) error {
-	for i, obj := range objs {
-		b, err := json.Marshal(obj)
-		if err != nil {
-			return err
-		}
-		var m any
-		if err := yaml.Unmarshal(b, &m); err != nil {
-			return err
-		}
-		if i > 0 {
-			_, _ = fmt.Fprintln(w, "---")
-		}
-		var buf bytes.Buffer
-		enc := yaml.NewEncoder(&buf)
-		enc.SetIndent(2)
-		if err := enc.Encode(m); err != nil {
-			return err
-		}
-		_, _ = w.Write(buf.Bytes())
+// printYAML is printJSON's shape in YAML: one object as a mapping, a list as a sequence whatever
+// its length ([] for none), never a stream of documents.
+func printYAML(w io.Writer, objs []meta.Object, list bool) error {
+	if !list && len(objs) == 1 {
+		return writeYAML(w, objs[0])
 	}
-	return nil
+	if objs == nil {
+		objs = []meta.Object{}
+	}
+	return writeYAML(w, objs)
+}
+
+// writeYAML writes v as YAML through its JSON form (so field names and omissions match -o json).
+func writeYAML(w io.Writer, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	var m any
+	if err := yaml.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(m); err != nil {
+		return err
+	}
+	_, err = w.Write(buf.Bytes())
+	return err
 }
 
 func age(m *meta.ObjectMeta) string {
@@ -607,8 +652,8 @@ func summary(obj meta.Object) string {
 			}
 			parts = append(parts, fmt.Sprintf("init=%d/%d", done, n))
 		}
-		if o.Status.Address != "" {
-			parts = append(parts, "address="+o.Status.Address)
+		if o.Status.SiloIP != "" {
+			parts = append(parts, "address="+o.Status.SiloIP)
 		}
 		conds = o.Status.Conditions
 	case *v1.Unstructured:
@@ -652,12 +697,12 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 	head = append(head, "NAME")
 	switch k.Kind {
 	case "Silo":
-		head = append(head, "RUNTIME", "PHASE", "HOST")
+		head = append(head, "RUNTIME", "PHASE", "READY", "HOST")
 		if wide {
 			head = append(head, "MOVABLE")
 		}
 	case "Host":
-		head = append(head, "ADDRESS", "REGION", "COMPONENTS", "RUNTIMES")
+		head = append(head, "INTERNAL IP", "EXTERNAL IP", "REGION", "COMPONENTS", "RUNTIMES")
 	case "Namespace":
 		head = append(head, "STATUS")
 	case "Secret":
@@ -671,9 +716,11 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 	case "SiloSet":
 		head = append(head, "IMAGE", "INSTANCES", "READY", "UPDATED")
 	case "Service":
-		head = append(head, "TYPE", "CLUSTER-IP", "PUBLIC-IP", "PORTS", "ENDPOINTS")
-	case "Image":
-		head = append(head, "VERSIONS")
+		head = append(head, "TYPE", "CLUSTER IP", "LOAD-BALANCER IP", "PORTS", "ENDPOINTS")
+	case "IP":
+		head = append(head, ipHead...)
+	case "VMImage":
+		head = append(head, "VERSIONS", "DISK")
 	case "Approval":
 		head = append(head, "SILO", "SECRET", "USE", "FOR", "PHASE", "WHEN", "ANSWERED-BY")
 	case "Lease":
@@ -696,7 +743,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 		row = append(row, m.Name)
 		switch o := obj.(type) {
 		case *v1.Silo:
-			row = append(row, o.Spec.Runtime, dash(o.Status.Phase), dash(o.Status.Host))
+			row = append(row, o.Spec.Runtime, dash(o.Status.Phase), readiness(o.Status.Conditions), dash(o.Status.Host))
 			if wide {
 				row = append(row, dash(o.Status.Movable))
 			}
@@ -722,7 +769,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			if o.Spec.Unschedulable {
 				comps = append(comps, "cordoned")
 			}
-			row = append(row, o.Spec.Address, region, strings.Join(comps, ","), dash(strings.Join(rts, ",")))
+			row = append(row, dash(o.Internal()), dash(o.External()), region, strings.Join(comps, ","), dash(strings.Join(rts, ",")))
 		case *v1.Namespace:
 			row = append(row, dash(o.Status.Phase))
 		case *v1.Secret:
@@ -782,7 +829,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			if o.Spec.Standby > 0 {
 				inst += fmt.Sprintf("+%d standby", o.Spec.Standby)
 			}
-			row = append(row, dash(o.InstanceSpec().Image), inst, fmt.Sprintf("%d/%d", o.Status.Ready, o.Spec.Instances), fmt.Sprint(o.Status.Updated))
+			row = append(row, dash(o.InstanceSpec().From()), inst, fmt.Sprintf("%d/%d", o.Status.Ready, o.Spec.Instances), fmt.Sprint(o.Status.Updated))
 		case *v1.Service:
 			typ := o.Spec.Type
 			if typ == "" {
@@ -796,13 +843,19 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 				}
 				ps = append(ps, fmt.Sprintf("%d/%s", p.Port, proto))
 			}
-			row = append(row, typ, dash(o.Status.ClusterIP), dash(o.Status.PublicIP), strings.Join(ps, ","), fmt.Sprint(len(o.Status.Endpoints)))
-		case *v1.Image:
+			row = append(row, typ, dash(o.Status.ClusterIP), dash(o.Status.LoadBalancerIP), strings.Join(ps, ","), fmt.Sprint(len(o.Status.Endpoints)))
+		case *v1.IP:
+			row = append(row, ipRow(o)...)
+		case *v1.VMImage:
 			var vs []string
 			for _, v := range o.Spec.Versions {
 				vs = append(vs, v.Name)
 			}
-			row = append(row, strings.Join(vs, ","))
+			latest := "-"
+			if n := len(o.Spec.Versions); n > 0 {
+				latest = diskOf(o.Spec.Versions[n-1])
+			}
+			row = append(row, strings.Join(vs, ","), latest)
 		}
 		row = append(row, age(m))
 		_, _ = fmt.Fprintln(tw, strings.Join(row, "\t"))

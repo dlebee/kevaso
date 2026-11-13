@@ -115,6 +115,21 @@ func (r *Runtime) Stop(_ context.Context, id kri.ID) error {
 	return nil
 }
 
+// Kill implements kri.Killer.
+func (r *Runtime) Kill(_ context.Context, id kri.ID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.record("kill", id)
+	s, err := r.get(id)
+	if err != nil {
+		return err
+	}
+	if s.state == kri.Running {
+		s.state = kri.Stopped
+	}
+	return nil
+}
+
 // Delete implements kri.Runtime.
 func (r *Runtime) Delete(_ context.Context, id kri.ID) error {
 	r.mu.Lock()

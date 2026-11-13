@@ -3,6 +3,7 @@ package apiserver
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -181,13 +182,5 @@ func (s *Server) siloStream(w http.ResponseWriter, r *http.Request, ns, name str
 		return
 	}
 	defer func() { _ = conn.Close() }()
-	if limit > 0 {
-		relayLimited(conn, rw.Reader, stream, limit)
-		return
-	}
-	// Both legs speak the same frames: relay bytes until either side is done.
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(stream, rw.Reader); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(conn, stream); done <- struct{}{} }()
-	<-done
+	s.relay(conn, rw.Reader, stream, limit, fmt.Sprintf("%s/%s on %s (%s)", ns, name, silo.Status.Host, h.Command[0]))
 }

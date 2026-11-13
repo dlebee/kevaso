@@ -34,12 +34,13 @@ type Desired struct {
 // DesiredMembers is the member list the Hosts ask for, sorted by name.
 func DesiredMembers(hosts []v1.Host) []Desired {
 	var out []Desired
-	for _, h := range hosts {
+	for i := range hosts {
+		h := &hosts[i]
 		cp := h.Spec.Components.ControlPlane
-		if cp == nil || h.Spec.Address == "" || h.DeletionTimestamp != nil { // a Host being deleted leaves the store first
+		if cp == nil || h.Reach() == "" || h.DeletionTimestamp != nil { // a Host being deleted leaves the store first
 			continue
 		}
-		peer := "https://" + net.JoinHostPort(h.Spec.Address, DefaultPeerPort)
+		peer := "https://" + net.JoinHostPort(h.Reach(), DefaultPeerPort)
 		if u := h.Annotations[AnnotationPeerURL]; u != "" {
 			peer = u
 		}

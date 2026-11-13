@@ -11,56 +11,37 @@ import (
 	"github.com/miekg/dns"
 
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/names"
 )
 
-// Zone is the private names' domain (design §7.1): NAME.NAMESPACE.kevaso.
-const Zone = "kevaso."
-
-// Lookup answers a private name from the silos: NAME.NAMESPACE.kevaso → the silo's address. ok
-// is false for names outside the zone (forward them); found is false for an unknown silo (NXDOMAIN).
-// Resolving a name grants no connection: allowFrom does. Pure.
-func Lookup(name string, silos []*v1.Silo) (ip netip.Addr, inZone, found bool) {
-	return LookupIn(name, silos, nil)
-}
-
-// LookupIn is Lookup with standalone Services too: NAME.NAMESPACE.kevaso → its virtual IP. A
-// Service and a silo of the same name: the Service wins (it's what a set's clients want).
-func LookupIn(name string, silos []*v1.Silo, svcs []*v1.Service) (ip netip.Addr, inZone, found bool) {
-	name = strings.ToLower(dns.Fqdn(name))
-	if name != Zone && !strings.HasSuffix(name, "."+Zone) {
-		return netip.Addr{}, false, false
-	}
-	labels := dns.SplitDomainName(strings.TrimSuffix(name, Zone))
-	if len(labels) != 2 {
-		return netip.Addr{}, true, false
-	}
-	for _, sv := range svcs {
-		if sv.Name == labels[0] && sv.Namespace == labels[1] && sv.DeletionTimestamp == nil {
-			if a, err := netip.ParseAddr(sv.Status.ClusterIP); err == nil {
-				return a, true, true
-			}
-		}
-	}
-	for _, s := range silos {
-		if s.Name == labels[0] && s.Namespace == labels[1] && s.DeletionTimestamp == nil {
-			if a, err := netip.ParseAddr(s.Status.Address); err == nil {
-				return a, true, true
-			}
-		}
-	}
-	return netip.Addr{}, true, false
-}
-
-// DNS serves private names on the silos' gateway and forwards everything else to the host's
-// resolvers.
+// DNS answers Kevaso's names (design §7.0, internal/names) on one address, for one kind of
+// asker: the silos' gateway (silos: their services by plain or short name; everything else is
+// forwarded to the host's resolvers), the host's mesh IP (hosts: everything), and, only where the
+// operator turns them on (Host spec.network.dns), its internal IP (machines on its network) and
+// external IP (anyone). Only silos get names forwarded: a Kevaso host is never an open resolver.
 type DNS struct {
-	Listen   string               // e.g. 10.64.3.1:53
-	Silos    func() []*v1.Silo    // the current silos
-	Services func() []*v1.Service // the current Services (nil: none)
-	Upstream []string             // default: the host's resolvers
-	Log      func(string, ...any) //
+	Listen string      // e.g. 10.64.3.1:53
+	From   names.Asker // who asks on Listen
+	View   func() names.View
+	// SiloNamespace is the namespace of the silo with this silo IP (ok false: none): a silo's
+	// short names are in its namespace, and an address that isn't a silo's gets no answer.
+	SiloNamespace func(netip.Addr) (string, bool)
+	Upstream      []string             // default: the host's resolvers
+	Log           func(string, ...any) //
 
 	once sync.Once
+}
+
+// SiloNamespaces maps silo IPs to their namespaces, for DNS.SiloNamespace.
+func SiloNamespaces(silos []*v1.Silo) func(netip.Addr) (string, bool) {
+	return func(a netip.Addr) (string, bool) {
+		for _, s := range silos {
+			if s.Status.SiloIP == a.String() && s.DeletionTimestamp == nil {
+				return s.Namespace, true
+			}
+		}
+		return "", false
+	}
 }
 
 func upstreams() []string {
@@ -96,20 +77,36 @@ func (d *DNS) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 	q := req.Question[0]
-	var svcs []*v1.Service
-	if d.Services != nil {
-		svcs = d.Services()
+	question := names.Question{Name: q.Name, From: d.From}
+	if d.From == names.FromSilo {
+		ns, ok := "", false
+		if src := addrOf(w.RemoteAddr()); src.IsValid() && d.SiloNamespace != nil {
+			ns, ok = d.SiloNamespace(src)
+		}
+		if !ok { // not a silo: nothing for it here
+			m := new(dns.Msg)
+			m.SetRcode(req, dns.RcodeRefused)
+			_ = w.WriteMsg(m)
+			return
+		}
+		question.Namespace = ns
 	}
-	ip, inZone, found := LookupIn(q.Name, d.Silos(), svcs)
-	if inZone {
+	a := names.Resolve(question, d.View())
+	if a.InZone || d.From != names.FromSilo {
 		m := new(dns.Msg)
 		m.SetReply(req)
-		m.Authoritative = true
 		switch {
-		case !found:
-			m.Rcode = dns.RcodeNameError
-		case q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY:
-			m.Answer = append(m.Answer, &dns.A{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 5}, A: ip.AsSlice()})
+		case !a.InZone || a.Refused:
+			m.Rcode = dns.RcodeRefused
+		case !a.Found:
+			m.Authoritative, m.Rcode = true, dns.RcodeNameError
+		default: // no address (held, or nothing on that network): NODATA, short-lived
+			m.Authoritative = true
+			if q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY {
+				for _, ip := range a.IPs {
+					m.Answer = append(m.Answer, &dns.A{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 5}, A: ip.AsSlice()})
+				}
+			}
 		}
 		_ = w.WriteMsg(m)
 		return
@@ -150,4 +147,16 @@ func (d *DNS) Run(ctx context.Context) {
 	for _, s := range servers {
 		_ = s.Shutdown()
 	}
+}
+
+func addrOf(a net.Addr) netip.Addr {
+	switch x := a.(type) {
+	case *net.UDPAddr:
+		ip, _ := netip.AddrFromSlice(x.IP)
+		return ip.Unmap()
+	case *net.TCPAddr:
+		ip, _ := netip.AddrFromSlice(x.IP)
+		return ip.Unmap()
+	}
+	return netip.Addr{}
 }

@@ -47,7 +47,7 @@ func TestWireRoundTrip(t *testing.T) {
 	if err != nil || info.Name != "fake" || info.Protocol != kplugin.Protocol || len(info.LoadBalancers) != 3 || !info.LoadBalancers[1].FiltersSources {
 		t.Fatalf("info %+v %v", info, err)
 	}
-	hs, err := c.DescribeHosts(ctx, []kplugin.Host{{Name: "w1", Address: "203.0.113.5"}, {Name: "home", Address: "198.51.100.9"}})
+	hs, err := c.DescribeHosts(ctx, []kplugin.Host{{Name: "w1", ExternalIP: "203.0.113.5"}, {Name: "home", ExternalIP: "198.51.100.9"}})
 	if err != nil || len(hs) != 1 || hs[0].Name != "w1" || hs[0].ID != "42" {
 		t.Fatalf("describe %+v %v", hs, err)
 	}
@@ -82,12 +82,16 @@ func TestWireRoundTrip(t *testing.T) {
 	if err := c.EnsureRecord(ctx, r2); !errors.Is(err, kplugin.ErrConflict) {
 		t.Fatalf("someone else's record: %v", err)
 	}
-	st, err := c.EnsureLoadBalancer(ctx, kplugin.LoadBalancer{Class: kplugintest.ClassFilteredLB, ID: "u1", Ports: []kplugin.Port{{Name: "web", Protocol: "TCP", Port: 80, NodePort: 30000, AllowFrom: []string{"203.0.113.0/24"}}}, Backends: hs})
+	st, err := c.EnsureLoadBalancer(ctx, kplugin.LoadBalancer{Class: kplugintest.ClassFilteredLB, ID: "u1", Ports: []kplugin.Port{{Name: "web", Protocol: "TCP", Port: 80, NodePort: 30000, Sources: []string{"203.0.113.0/24"},
+		Service: "silo/web", Backends: hs, Annotations: map[string]string{"fake.kevaso.com/algorithm": "leastconn"}}}, Backends: hs,
+		Annotations: map[string]string{"fake.kevaso.com/algorithm": "roundrobin", "other.example/x": "y"}})
 	if err != nil || st.Address == "" || len(st.SourceRanges) != 1 {
 		t.Fatalf("lb %+v %v", st, err)
 	}
-	if lbs, _, _ := f.Snapshot(); len(lbs["u1"].Ports) != 1 || len(lbs["u1"].Ports[0].AllowFrom) != 1 || lbs["u1"].Ports[0].AllowFrom[0] != "203.0.113.0/24" {
-		t.Fatalf("the port's sources didn't reach the plugin: %+v", lbs["u1"].Ports)
+	if lbs, _, _ := f.Snapshot(); len(lbs["u1"].Ports) != 1 || len(lbs["u1"].Ports[0].Sources) != 1 || lbs["u1"].Ports[0].Sources[0] != "203.0.113.0/24" ||
+		lbs["u1"].Ports[0].Service != "silo/web" || len(lbs["u1"].Ports[0].Backends) != 1 || lbs["u1"].Ports[0].Annotations["fake.kevaso.com/algorithm"] != "leastconn" ||
+		lbs["u1"].Annotations["fake.kevaso.com/algorithm"] != "roundrobin" {
+		t.Fatalf("the port's sources, service, backends and annotations didn't reach the plugin: %+v", lbs["u1"])
 	}
 }
 

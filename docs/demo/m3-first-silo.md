@@ -63,7 +63,7 @@ bin/kvo describe silo hello -n demo
 
 What you see, in order: the scheduler places it on `hv1` (`phase: Scheduled`), the worker creates its
 disk and VM, then each init step goes `Running` → `Done`, then `phase: Running` with an
-`address: 10.64.0.x` and the `Ready` condition.
+`siloIP: 10.64.0.x` and the `Ready` condition.
 
 ## 4. Inside it
 

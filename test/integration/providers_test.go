@@ -34,7 +34,7 @@ func TestProviderPlugin(t *testing.T) {
 	if err := reg.Add(ctx, fake); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", Address: "127.0.0.1",
+	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond,
 		Plugins: reg}); err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestProviderPlugin(t *testing.T) {
 	// Two workers: w1 is one of the plugin's machines, home isn't.
 	for name, addr := range map[string]string{"w1": "203.0.113.5", "home": "198.51.100.9"} {
 		h := &v1.Host{TypeMeta: tm("Host"), ObjectMeta: meta.ObjectMeta{Name: name},
-			Spec: v1.HostSpec{Address: addr, Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "docker"}},
+			Spec: v1.HostSpec{ExternalIP: addr, Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "docker"}},
 				Labels: map[string]string{"site": name}}}}}
 		if err := admin.Create(ctx, h); err != nil {
 			t.Fatal(err)
@@ -102,8 +102,9 @@ func TestProviderPlugin(t *testing.T) {
 		}
 	}
 	db := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "db", Namespace: "payments"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "postgres:17", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-			Service: &v1.SiloService{Expose: v1.ExposeLoadBalancer, Ports: []v1.ServicePort{{Name: "pg", Port: 5432}},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "postgres:17"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+			Ports: []v1.SiloPort{{Name: "pg", Port: 5432}},
+			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "pg", LoadBalancer: true}},
 				LoadBalancer: &v1.LoadBalancerSpec{Class: "fake-lb"}},
 			Volumes: []v1.Volume{{Name: "data", Class: "fake-block", Size: "10Gi", MountPath: "/var/lib/postgresql/data"}}}}
 	if err := admin.Create(ctx, db); err != nil {
@@ -113,11 +114,11 @@ func TestProviderPlugin(t *testing.T) {
 	eventually("db placed with its load balancer and volume", func() (bool, string) {
 		var s v1.Silo
 		_ = admin.Get(ctx, "Silo", "payments", "db", &s)
-		ok := s.Status.Host == "w1" && s.Status.Service.PublicIP == "198.51.100.10" && len(s.Status.Service.NodePorts) == 1 &&
+		ok := s.Status.Host == "w1" && s.Status.Service.LoadBalancerIP == "198.51.100.10" && len(s.Status.Service.NodePorts) == 1 &&
 			s.Status.Service.NodePorts[0].NodePort == v1.NodePortMin && len(s.Status.Service.SourceRanges) == 1 &&
 			len(s.Status.Volumes) == 1 && s.Status.Volumes[0].AttachedTo == "w1" && s.Status.Volumes[0].Device != "" &&
 			s.Status.Volumes[0].Region == "ca-central"
-		return ok, s.Status.Host + " " + s.Status.Service.PublicIP + " " + strings.Join(s.Finalizers, ",") + " " + condMsgs(s.Status.Conditions) + volMsgs(s.Status.Volumes)
+		return ok, s.Status.Host + " " + s.Status.Service.LoadBalancerIP + " " + strings.Join(s.Finalizers, ",") + " " + condMsgs(s.Status.Conditions) + volMsgs(s.Status.Volumes)
 	})
 	var s v1.Silo
 	_ = admin.Get(ctx, "Silo", "payments", "db", &s)
@@ -131,8 +132,8 @@ func TestProviderPlugin(t *testing.T) {
 	if extra := fake.CallLog()[before:]; len(extra) > 0 {
 		t.Fatalf("plugin called with nothing changed: %v", extra)
 	}
-	lbs, vols, _ := fake.Snapshot()
-	if lb := lbs[s.UID]; len(lb.Backends) != 1 || lb.Backends[0].ID != "42" || lb.Ports[0].NodePort != v1.NodePortMin {
+	_, vols, _ := fake.Snapshot()
+	if lb, _ := fake.LBOf("payments", "silo/db"); len(lb.Backends) != 1 || lb.Backends[0].ID != "42" || lb.Ports[0].NodePort != v1.NodePortMin {
 		t.Fatalf("load balancer the plugin got: %+v", lb)
 	}
 	if len(vols) != 1 {
@@ -141,7 +142,7 @@ func TestProviderPlugin(t *testing.T) {
 
 	// A silo on a class only the plugin's machines serve, held to home by a label: no host fits.
 	stray := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "stray", Namespace: "payments"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "busybox", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "busybox"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Placement: v1.Placement{HostSelector: map[string]string{"site": "home"}},
 			Volumes:   []v1.Volume{{Name: "x", Class: "fake-block", Size: "1Gi", MountPath: "/x"}}}}
 	if err := admin.Create(ctx, stray); err != nil {
@@ -156,26 +157,27 @@ func TestProviderPlugin(t *testing.T) {
 
 	// Ingress host names published through the class's DNS provider, at the controller's address.
 	ingress := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "ingress", Namespace: "kevaso-system"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "caddy", Resources: v1.Resources{CPU: 1, Memory: "512Mi"},
-			Service: &v1.SiloService{Expose: v1.ExposeLoadBalancer, Ports: []v1.ServicePort{{Name: "https", Port: 443}},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "caddy"}, Resources: v1.Resources{CPU: 1, Memory: "512Mi"},
+			Ports: []v1.SiloPort{{Name: "https", Port: 443}},
+			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "https", LoadBalancer: true}},
 				LoadBalancer: &v1.LoadBalancerSpec{Class: "fake-lb"}}}}
 	if err := admin.Create(ctx, ingress); err != nil {
 		t.Fatal(err)
 	}
 	if err := admin.Create(ctx, &v1.IngressClass{TypeMeta: tm("IngressClass"), ObjectMeta: meta.ObjectMeta{Name: "web"},
-		Spec: v1.IngressClassSpec{Controller: v1.SiloRef{Silo: "ingress", Namespace: "kevaso-system"}, DNS: &v1.IngressDNS{Provider: "fake-dns", TTL: 120}}}); err != nil {
+		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "ingress", Namespace: "kevaso-system"}, DNS: &v1.IngressDNS{Provider: "fake-dns", TTL: 120}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := admin.Create(ctx, &v1.Ingress{TypeMeta: tm("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "shop", Namespace: "payments"},
 		Spec: v1.IngressSpec{IngressClass: "web", Hosts: []string{"shop.example.com"}, TLS: v1.IngressTLS{Issuer: "internal-ca"},
-			Rules: []v1.IngressRule{{Path: "/", Silo: v1.IngressTarget{Name: "db", Port: "pg"}}}}}); err != nil {
+			Rules: []v1.IngressRule{{Path: "/", Service: v1.IngressTarget{Name: "db", Port: "pg"}}}}}); err != nil {
 		t.Fatal(err)
 	}
 	var ctrlIP string
 	eventually("shop.example.com published", func() (bool, string) {
 		var x v1.Silo
 		_ = admin.Get(ctx, "Silo", "kevaso-system", "ingress", &x)
-		ctrlIP = x.Status.Service.PublicIP
+		ctrlIP = x.Status.Service.LoadBalancerIP
 		_, _, recs := fake.Snapshot()
 		r, ok := recs["shop.example.com/A"]
 		var ing v1.Ingress
@@ -221,12 +223,15 @@ func TestProviderPlugin(t *testing.T) {
 		t.Fatalf("while mounted: %s", volMsgs(held.Status.Volumes))
 	}
 	setMounted(false) // the agent removed the container and unmounted
-	eventually("volume detached (slowly) and deleted, load balancer deleted, silo gone", func() (bool, string) {
-		lbs, vols, _ := fake.Snapshot()
+	eventually("volume detached (slowly) and deleted, silo gone, and the namespace's default IP (its last service gone) with its balancer", func() (bool, string) {
+		_, vols, _ := fake.Snapshot()
 		var x v1.Silo
 		err := admin.Get(ctx, "Silo", "payments", "db", &x)
-		_, gone := lbs[s.UID]
-		return len(vols) == 0 && !gone && client.IsNotFound(err), volMsgs(x.Status.Volumes) + strings.Join(x.Finalizers, ",")
+		_, there := fake.LBOf("payments", "silo/db")
+		var ip v1.IP
+		ipErr := admin.Get(ctx, "IP", "payments", v1.DefaultIPName("fake-lb"), &ip)
+		return len(vols) == 0 && !there && client.IsNotFound(err) && client.IsNotFound(ipErr),
+			volMsgs(x.Status.Volumes) + strings.Join(x.Finalizers, ",") + " ip " + ip.Status.Holders()
 	})
 	detaches := 0
 	for _, c := range fake.CallLog() {

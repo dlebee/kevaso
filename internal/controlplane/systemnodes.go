@@ -52,6 +52,7 @@ type JoinConfig struct {
 
 // selfReport is what this node says about its control plane in its Host's status.
 type selfReport struct {
+	suffix  string
 	apiURL  string
 	store   string
 	peerURL func() string
@@ -446,7 +447,7 @@ func reportSelf(h *v1.Host, r selfReport) {
 	if h.Status.ControlPlane != nil {
 		cp = *h.Status.ControlPlane
 	}
-	cp.APIURL, cp.Store = r.apiURL, r.store
+	cp.APIURL, cp.Store, cp.DNSSuffix = r.apiURL, r.store, r.suffix
 	cp.PeerURL = ""
 	if r.peerURL != nil {
 		cp.PeerURL = r.peerURL()
@@ -455,10 +456,10 @@ func reportSelf(h *v1.Host, r selfReport) {
 }
 
 func (cfg Config) self(apiAddr string, st *cpStore) selfReport {
-	r := selfReport{store: StoreSQLite}
+	r := selfReport{store: StoreSQLite, suffix: cfg.DNSSuffix}
 	if apiAddr != "" {
 		_, port, _ := net.SplitHostPort(apiAddr)
-		r.apiURL = "https://" + net.JoinHostPort(cfg.Address, port)
+		r.apiURL = "https://" + net.JoinHostPort(cfg.Reach(), port)
 	}
 	if st.etcd != nil {
 		srv := st.etcd

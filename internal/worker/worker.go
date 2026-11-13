@@ -12,10 +12,12 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,9 +48,8 @@ type Config struct {
 	Storage  cloudhypervisor.StorageOptions
 	Clock    clock.Clock
 	Log      func(string, ...any)
-	// Contact, on a worker-only host, is when the heartbeat last got through; the agent fences
-	// (stops silos that may be recreated elsewhere) when it's too old. Nil: never fence (the
-	// control plane's own host).
+	// Contact is when the heartbeat last got through, and whether a fence applies here; the agent
+	// fences (stops silos that may be recreated elsewhere) when it's too old. Nil: never fence.
 	Contact *Contact
 	// MeshSubnet: wait for the control plane to give this host its silo subnet (on the mesh) and
 	// use it; without, silos use 10.64.0.0/24.
@@ -269,7 +270,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	}
 	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes}
 	if cfg.Contact != nil {
-		a.LastContact = cfg.Contact.Last
+		a.LastContact, a.FenceApplies = cfg.Contact.Last, cfg.Contact.Fence
 		if runtime.GOOS == "linux" {
 			a.FenceDir = fence.Dir // for kevasod fence-watch, which fences even when this agent is gone
 		}
@@ -284,11 +285,13 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	if runtime.GOOS == "linux" {
 		a.Host = hostexec.Local{} // provider volumes: format once, mount
 	}
-	if exe, err := os.Executable(); err == nil && runtime.GOOS == "linux" {
-		a.GuestHelper = exe // kevasod itself: in a silo, as kvo-guest
-	}
 	if egressCA != nil {
-		a.GuestCA = egressCA.PEM
+		a.EgressCA = egressCA.PEM
+	}
+	for _, rt := range rts {
+		if usesBridge(rt) && runtime.GOOS == "linux" { // the local endpoint, on the silo bridge (ADR 0009)
+			a.EndpointListen = net.JoinHostPort(v1.EndpointAddress, strconv.Itoa(v1.EndpointPort))
+		}
 	}
 	a.Run(ctx)
 }

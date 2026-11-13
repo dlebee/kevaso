@@ -2,10 +2,12 @@ package kvo
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	yaml "go.yaml.in/yaml/v3"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 )
@@ -26,7 +28,7 @@ func silo() *v1.Silo {
 	zero := 0
 	return &v1.Silo{
 		ObjectMeta: meta.ObjectMeta{Name: "hello", Namespace: "demo", CreationTimestamp: &created, Labels: map[string]string{"b": "2", "a": "1"}},
-		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 1, Memory: "1Gi"}, Disk: v1.Disk{Size: "10Gi"},
+		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}, Disk: v1.Disk{Size: "10Gi"},
 			Init: &v1.Init{Steps: []v1.InitStep{{Name: "one", Run: "x"}, {Name: "two", Run: "y"}, {Name: "three", Run: "z"}}}},
 		Status: v1.SiloStatus{Phase: "Starting", Host: "hv1",
 			Init:       []v1.StepStatus{{Name: "one", State: "Done", ExitCode: &zero, Duration: "27s"}, {Name: "two", State: "Running"}},
@@ -67,7 +69,7 @@ func TestDescribeSilo(t *testing.T) {
 
 func TestDescribeHost(t *testing.T) {
 	h := &v1.Host{ObjectMeta: meta.ObjectMeta{Name: "hv1"},
-		Spec: v1.HostSpec{Address: "203.0.113.10", Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{},
+		Spec: v1.HostSpec{ExternalIP: "203.0.113.10", Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{},
 			Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}}, Taints: []v1.Taint{{Key: "gpu", Value: "yes", Effect: v1.NoSchedule}}}}},
 		Status: v1.HostStatus{Allocatable: v1.Resources{CPU: 3, Memory: "4886Mi"},
 			Runtimes: map[string]v1.RuntimeStatus{"cloud-hypervisor": {State: "Failed", Version: "v54.1", Message: "install image: checksum mismatch"}}}}
@@ -123,22 +125,53 @@ func TestPaneLine(t *testing.T) {
 	}
 }
 
-// kvo get KIND -o json is an array however many there are (E2E: a script reading leases broke
-// when there was just one, printed as a bare object); kvo get KIND NAME -o json is the object.
-func TestPrintJSONShape(t *testing.T) {
+// kvo get KIND -o json|yaml is an array (a sequence) however many there are (E2E: a script
+// reading leases broke when there was just one, printed as a bare object; -o yaml printed nothing
+// for none and a stream of documents for several); kvo get KIND NAME is the object.
+func TestStructuredOutputShape(t *testing.T) {
 	for _, tc := range []struct {
-		objs  []meta.Object
-		list  bool
-		first byte
+		objs []meta.Object
+		list bool
+		n    int // items, or -1: one object
 	}{
-		{nil, true, '['}, {[]meta.Object{silo()}, true, '['}, {[]meta.Object{silo(), silo()}, true, '['}, {[]meta.Object{silo()}, false, '{'},
+		{nil, true, 0}, {[]meta.Object{silo()}, true, 1}, {[]meta.Object{silo(), silo()}, true, 2}, {[]meta.Object{silo()}, false, -1},
 	} {
-		var b bytes.Buffer
-		if err := printJSON(&b, tc.objs, tc.list); err != nil {
+		var j, y bytes.Buffer
+		if err := printJSON(&j, tc.objs, tc.list); err != nil {
 			t.Fatal(err)
 		}
-		if got := strings.TrimSpace(b.String()); got == "" || got[0] != tc.first {
-			t.Errorf("%d objects, list %v: %.40q", len(tc.objs), tc.list, got)
+		if err := printYAML(&y, tc.objs, tc.list); err != nil {
+			t.Fatal(err)
+		}
+		var fromJSON, fromYAML any
+		if err := json.Unmarshal(j.Bytes(), &fromJSON); err != nil {
+			t.Fatalf("json: %v\n%s", err, j.String())
+		}
+		if strings.Contains(y.String(), "\n---") {
+			t.Errorf("%d objects, list %v: yaml is several documents:\n%s", len(tc.objs), tc.list, y.String())
+		}
+		if err := yaml.Unmarshal(y.Bytes(), &fromYAML); err != nil {
+			t.Fatalf("yaml: %v\n%s", err, y.String())
+		}
+		for name, v := range map[string]any{"json": fromJSON, "yaml": fromYAML} {
+			switch x := v.(type) {
+			case []any:
+				if tc.n != len(x) {
+					t.Errorf("%s, %d objects, list %v: an array of %d", name, len(tc.objs), tc.list, len(x))
+				}
+			case map[string]any:
+				if tc.n != -1 {
+					t.Errorf("%s, %d objects, list %v: an object", name, len(tc.objs), tc.list)
+				}
+			default:
+				t.Errorf("%s, %d objects, list %v: %T", name, len(tc.objs), tc.list, v)
+			}
+		}
+	}
+	for _, out := range []string{"json", "yaml"} {
+		var b bytes.Buffer
+		if err := printList[string](&b, out, nil); err != nil || strings.TrimSpace(b.String()) != "[]" {
+			t.Errorf("printList %s of none: %q %v", out, b.String(), err)
 		}
 	}
 }

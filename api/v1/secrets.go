@@ -20,10 +20,10 @@ const (
 
 // Delivery modes: how a secret reaches a silo (design §8.5).
 const (
-	DeliverBroker = "broker" // the silo asks for it over vsock when it needs it
+	DeliverBroker = "broker" // the silo asks its local endpoint for it when it needs it
 	DeliverInject = "inject" // the egress gate adds it to outgoing requests: never in the silo
-	DeliverFile   = "file"   // a tmpfs file in the silo, rewritten on rotation
-	DeliverEnv    = "env"    // an environment variable: legacy apps only, flagged
+	DeliverFile   = "file"   // a tmpfs file the host writes in the silo, rewritten on rotation
+	DeliverEnv    = "env"    // an environment variable (written by the host): legacy apps only, flagged
 	DeliverSign   = "sign"   // the silo asks for signatures: the key never leaves Kevaso
 )
 
@@ -48,12 +48,17 @@ type Secret struct {
 // SecretSpec is the secret's rules. Value is write-only: it's sealed and removed before the
 // object is stored, so reads never carry it.
 type SecretSpec struct {
-	Type string `json:"type,omitempty"` // opaque (default) | ed25519 | ecdsa-p256
+	Type string `json:"type,omitempty"` // opaque (default) | ed25519 | ecdsa-p256 | registry
+	// Server and Username: a registry secret's registry host (e.g. ghcr.io) and user; the value is
+	// the password or token.
+	Server   string `json:"server,omitempty"`
+	Username string `json:"username,omitempty"`
 	// AllowedDelivery restricts how Grants may deliver it, whatever they ask (default: every
 	// mode the type supports; signing keys only allow sign).
 	AllowedDelivery []string `json:"allowedDelivery,omitempty"`
 	// ValueReadable false makes the secret write-only: nobody can read the value back, not even
-	// admins (default true for opaque secrets, always false for signing keys).
+	// admins (default true for opaque secrets, false for registry secrets, always false for
+	// signing keys).
 	ValueReadable *bool `json:"valueReadable,omitempty"`
 	// Generate asks the server to make the value: a random 32-byte token (opaque) or a new
 	// private key. Nobody ever sees a generated signing key.
@@ -80,11 +85,17 @@ func (s *Secret) Readable() bool {
 	if s.KeyType() {
 		return false
 	}
+	if s.Spec.Type == SecretRegistry {
+		return s.Spec.ValueReadable != nil && *s.Spec.ValueReadable
+	}
 	return s.Spec.ValueReadable == nil || *s.Spec.ValueReadable
 }
 
 // Allows reports whether the secret may be delivered in mode.
 func (s *Secret) Allows(mode string) bool {
+	if s.Spec.Type == SecretRegistry {
+		return false // only hosts' agents get it, for a pull: never a silo
+	}
 	if s.KeyType() && mode != DeliverSign {
 		return false
 	}

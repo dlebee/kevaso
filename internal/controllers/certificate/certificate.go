@@ -4,8 +4,8 @@
 // one before it expires.
 //
 // HTTP-01 challenges are answered by the ingress controller silos: the controller keeps the
-// pending tokens in the store, and the ingress controllers get them through the broker with their
-// routes.
+// pending tokens in the store, and they go into each class's desired state with its routes, which
+// the class's driver renders into the stock proxy's config (internal/ingress, design §7.3).
 package certificate
 
 import (
@@ -79,6 +79,11 @@ type Controller struct {
 	CertControllers kcc.Registry
 	// Defaults are the issuers of Ingresses that name none.
 	Defaults Defaults
+	// Silos, if set, find a SiloSet controller's silos (their public address shows on Ingresses).
+	Silos *informer.Informer
+	// Refused, if set, says why an Ingress isn't served as it is ("" if it is): its class's driver
+	// refuses it, or the proxy refused a configuration and blames it (design §7.3).
+	Refused func(class *v1.IngressClass, ing *v1.Ingress) (reason, msg string)
 }
 
 func (c *Controller) log(f string, a ...any) {
@@ -224,6 +229,10 @@ func (c *Controller) reconcileIngress(ctx context.Context, k engine.Key) error {
 		ready, reason, msg := true, "Ready", "routes served by the class's controller"
 		if class == nil {
 			ready, reason, msg = false, "NoClass", "ingress class "+ing.Spec.IngressClass+" doesn't exist"
+		} else if c.Refused != nil {
+			if why, m := c.Refused(class, ing); why != "" {
+				ready, reason, msg = false, why, m
+			}
 		}
 		if want != nil {
 			cur.Status.Certificate = want.Name
@@ -258,11 +267,28 @@ func (c *Controller) controllerAddress(ctx context.Context, class *v1.IngressCla
 	if class == nil {
 		return ""
 	}
-	var s v1.Silo
-	if err := c.Client.Get(ctx, "Silo", class.Spec.Controller.Namespace, class.Spec.Controller.Silo, &s); err != nil {
+	ctl := class.Spec.Controller
+	if c.Silos != nil {
+		var addrs []string
+		for _, o := range c.Silos.List() {
+			if s := o.(*v1.Silo); ctl.Runs(s) && s.Status.Service.Front() != "" {
+				addrs = append(addrs, s.Status.Service.Front())
+			}
+		}
+		slices.Sort(addrs)
+		if len(addrs) > 0 {
+			return addrs[0]
+		}
 		return ""
 	}
-	return s.Status.Service.PublicIP
+	if ctl.Silo == "" {
+		return ""
+	}
+	var s v1.Silo
+	if err := c.Client.Get(ctx, "Silo", ctl.Namespace, ctl.Silo, &s); err != nil {
+		return ""
+	}
+	return s.Status.Service.Front()
 }
 
 func (c *Controller) now() time.Time { return c.Clock.Now().UTC().Truncate(time.Second) }
@@ -455,8 +481,8 @@ func (c *Controller) writeSecret(ctx context.Context, cert *v1.Certificate, bund
 
 // ── what the built-in acme cert-controller gets from the control plane ───────
 
-// HTTP01Solver keeps HTTP-01 answers in the store, where the ingress controllers' broker calls
-// find them: the cluster's ingress controllers serve them on port 80.
+// HTTP01Solver keeps HTTP-01 answers in the store, where every ingress class's desired state
+// finds them (Pending): the cluster's ingress controllers serve them on port 80.
 type HTTP01Solver struct {
 	Store store.Store
 	Now   func() time.Time

@@ -32,6 +32,9 @@ func describe(ctx context.Context, c *client.Client, o opts, stdout io.Writer) e
 	if err := c.Get(ctx, k.Kind, ns, o.args[1], obj); err != nil {
 		return err
 	}
+	if x, ok := obj.(*v1.IP); ok {
+		return describeIP(ctx, c, x, stdout)
+	}
 	if err := describeObject(stdout, obj); err != nil {
 		return err
 	}
@@ -73,21 +76,22 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		})
 	case *v1.Silo:
 		kv(0, "Runtime", o.Spec.Runtime)
-		img := dash(o.Spec.Image)
+		img := dash(o.Spec.From())
 		if im := o.Status.Image; im != nil {
-			if im.Ref != "" && im.Ref != o.Spec.Image {
+			if im.Ref != "" && im.Ref != o.Spec.From() {
 				img += " → " + im.Ref
 			}
 			if im.Running != "" && im.Running != im.Ref {
 				img += " (running " + im.Running + ": the update is on its way)"
 			}
 		}
-		kv(0, "Image", img)
+		kv(0, sourceLabel(o.Spec), img)
+		if c := o.Spec.Command(); len(c) > 0 {
+			kv(0, "Command", strings.Join(c, " "))
+		}
+		describePull(kv, o)
 		if o.Spec.Exclusive {
 			kv(0, "Exclusive", "at most one copy ever runs: updates stop-first, no automatic failover")
-		}
-		if r := o.Spec.Readiness; r != nil {
-			kv(0, "Readiness", strings.Join(r.Command, " ")+" every "+dash(r.Period)+" (default 10s)")
 		}
 		if set := ownerSet(o); set != "" {
 			kv(0, "SiloSet", set+" (revision "+dash(o.Labels[v1.LabelRevision])+")")
@@ -117,34 +121,36 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			kv(0, "Moving from", o.Status.MovingFrom+" (it stops the silo and lets go first)")
 		}
 		kv(0, "Movable", dash(o.Status.Movable)+" (onHostLoss: "+o.Policy()+")")
-		kv(0, "Address", dash(o.Status.Address))
-		if sv := o.Spec.Service; sv != nil || o.Status.Service.Name != "" {
-			st := o.Status.Service
-			kv(0, "Name", dash(st.Name))
-			expose := "private"
-			if sv != nil && sv.Expose != "" {
-				expose = sv.Expose
-				if sv.LoadBalancer != nil {
-					expose += " (" + sv.LoadBalancer.Class + ")"
-				}
+		kv(0, "Silo IP", dash(o.Status.SiloIP))
+		st := o.Status.Service
+		if sv := o.Spec.Service; sv == nil {
+			kv(0, "Service", "none: no name, nothing reachable (a silo IP for its own traffic only)")
+		} else {
+			name := v1.ServiceName(o)
+			if st.Name != "" {
+				name += " (" + st.Name + ")"
 			}
-			kv(0, "Exposure", expose)
-			kv(0, "Public IP", dash(st.PublicIP))
+			kv(0, "Service", name)
+			if sv.LoadBalancer != nil {
+				lb := sv.LoadBalancer.Class
+				if st.LoadBalancerIP != "" {
+					lb += " at " + st.LoadBalancerIP
+				}
+				kv(0, "Load balancer", lb)
+			}
+		}
+		if len(o.Spec.Ports) > 0 {
+			tables = append(tables, func() { writeSiloPorts(tw, o) })
+		}
+		if o.Spec.Service != nil {
 			egress := dash(st.EgressIP)
 			if src := o.Spec.Network.Egress.Source; src != "" {
 				egress += " (" + src + ")"
 			}
 			kv(0, "Egress IP", egress)
-			if sv != nil && len(sv.Ports) > 0 {
-				var ps []string
-				for _, p := range sv.Ports {
-					proto := p.Protocol
-					if proto == "" {
-						proto = "TCP"
-					}
-					ps = append(ps, fmt.Sprintf("%s %d/%s", p.Name, p.Port, proto))
-				}
-				kv(0, "Ports", strings.Join(ps, ", "))
+			kv(0, "In and out", st.AddressesLine())
+			if st.IP != "" {
+				kv(0, "IP", st.IP+" (kvo describe ip "+st.IP+")")
 			}
 			if len(st.NodePorts) > 0 {
 				var ps []string
@@ -154,9 +160,11 @@ func describeObject(w io.Writer, obj meta.Object) error {
 				kv(0, "Node ports", strings.Join(ps, ", ")+" (from "+strings.Join(st.SourceRanges, ", ")+")")
 			}
 			if st.Announce {
-				kv(0, "Announced", "the public IP is routed to the silo's host (BGP)")
+				kv(0, "Announced", "the load-balancer IP is routed to the silo's host (BGP)")
 			}
+			tables = append(tables, func() { writeServiceTraffic(tw, o) })
 		}
+		tables = append(tables, func() { writeProbes(tw, o) })
 		if len(o.Spec.Volumes) > 0 {
 			got := map[string]v1.VolumeStatus{}
 			for _, vs := range o.Status.Volumes {
@@ -192,17 +200,6 @@ func describeObject(w io.Writer, obj meta.Object) error {
 					_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n", v.Name, class, size, v.MountPath, where, state)
 				}
 			})
-		}
-		if len(o.Spec.AllowFrom) > 0 {
-			var af []string
-			for _, a := range o.Spec.AllowFrom {
-				p := "all ports"
-				if len(a.Ports) > 0 {
-					p = strings.Join(a.Ports, ",")
-				}
-				af = append(af, a.Silo+" → "+p)
-			}
-			kv(0, "Allow from", strings.Join(af, "; "))
 		}
 		kv(0, "Grants", dash(strings.Join(o.Spec.Grants, ", ")))
 		// What proves the silo's identity to the broker (design §8.3): today the host vouches.
@@ -272,7 +269,18 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			})
 		}
 	case *v1.Host:
-		kv(0, "Address", o.Spec.Address)
+		internal := dash(o.Internal())
+		if o.Spec.InternalIP == "" && o.Internal() != "" {
+			internal += " (the provider's private address)"
+		}
+		kv(0, "Internal IP", internal)
+		kv(0, "External IP", dash(o.External()))
+		kv(0, "Mesh IP", dash(o.Status.Network.MeshIP))
+		dnsOn := "its silos and the mesh"
+		for _, n := range o.Spec.Network.DNS {
+			dnsOn += ", its " + n + " IP"
+		}
+		kv(0, "Names answered on", dnsOn)
 		kv(0, "Region", dash(o.Spec.Region))
 		kv(0, "Zone", dash(o.Spec.Zone))
 		if p := o.Status.Provider; p != nil {
@@ -342,7 +350,7 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			if path == "" {
 				path = "/"
 			}
-			_, _ = fmt.Fprintf(tw, "%s:\t%s → silo %s, port %s\n", label, path, r.Silo.Name, r.Silo.Port)
+			_, _ = fmt.Fprintf(tw, "%s:\t%s → service %s, port %s\n", label, path, r.Service.Name, r.Service.Port)
 		}
 		kv(0, "Address", dash(o.Status.Address)+"  (point the hosts' DNS here)")
 		kv(0, "Certificate", dash(o.Status.Certificate))
@@ -365,6 +373,12 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			typ = v1.SecretOpaque
 		}
 		kv(0, "Type", typ)
+		if typ == v1.SecretRegistry {
+			kv(0, "Registry", o.Spec.Server+" as "+o.Spec.Username)
+			if o.DefaultPull() {
+				kv(0, "Default pull", "yes: silos in "+o.Namespace+" pulling from "+o.Spec.Server+" use it unless they name another")
+			}
+		}
 		if o.Status.Version == 0 {
 			kv(0, "Value", "none yet")
 		} else {
@@ -374,6 +388,9 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			kv(0, "Readable", "yes, with read-value (kvo get secret "+o.Name+" --reveal)")
 		} else {
 			kv(0, "Readable", "no: write-only, only silos can use it")
+		}
+		if typ == v1.SecretRegistry {
+			kv(0, "Used by", "hosts' agents, to pull the images of silos placed on them: never a silo itself")
 		}
 		var modes []string
 		for _, m := range v1.Deliveries {
@@ -433,13 +450,13 @@ func describeObject(w io.Writer, obj meta.Object) error {
 				}
 				how = fmt.Sprintf("tier 2, injection: the egress gate adds %s: %s for %s; never in the silo", h, f, t.Host)
 			case v1.DeliverBroker:
-				how = "tier 4, broker: fetched over vsock when needed (kvo-guest secret get " + sec.Name + ")"
+				how = "tier 4, broker: the silo fetches it when needed (curl -fsS -H '" + v1.EndpointHeader + ": 1' http://" + v1.EndpointAddress + "/v1/secrets/" + sec.Name + ")"
 			case v1.DeliverFile:
 				path := sec.Path
 				if path == "" {
 					path = "/run/secrets/" + sec.Name
 				}
-				how = "tier 4, file: " + path + " (tmpfs, rewritten on rotation)"
+				how = "tier 4, file: " + path + " (tmpfs, written by the host, rewritten on rotation)"
 			case v1.DeliverEnv:
 				how = "tier 4, env " + envName(sec) + " — FLAGGED: leaks into child processes, dumps, logs and an agent's context"
 			}
@@ -457,7 +474,7 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		}
 	case *v1.SiloSet:
 		conds = o.Status.Conditions
-		kv(0, "Image", dash(o.InstanceSpec().Image))
+		kv(0, sourceLabel(o.InstanceSpec()), dash(o.InstanceSpec().From()))
 		kv(0, "Runtime", o.Spec.Template.Runtime)
 		kv(0, "Instances", fmt.Sprintf("%d wanted, %d ready, %d on revision %s", o.Spec.Instances, o.Status.Ready, o.Status.Updated, dash(o.Status.Revision)))
 		if o.Spec.Standby > 0 || o.Status.Standby > 0 {
@@ -498,7 +515,7 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		kv(0, "Name", dash(o.Status.Name))
 		kv(0, "Cluster IP", dash(o.Status.ClusterIP))
 		if o.Spec.Type == v1.ServiceLoadBalancer {
-			kv(0, "Public IP", dash(o.Status.PublicIP))
+			kv(0, "Load-balancer IP", dash(o.Status.LoadBalancerIP))
 		}
 		nps := map[string]int{}
 		for _, np := range o.Status.NodePorts {
@@ -511,40 +528,47 @@ func describeObject(w io.Writer, obj meta.Object) error {
 				proto = "TCP"
 			}
 			if target == "" {
-				target = fmt.Sprint(p.Port)
+				target = p.Name
 			}
-			x := fmt.Sprintf("%s %d/%s → %s", p.Name, p.Port, proto, target)
+			x := fmt.Sprintf("%s %d/%s → each silo's port %s", p.Name, p.Port, proto, target)
 			if np := nps[p.Name]; np > 0 {
 				x += fmt.Sprintf(" (node port %d)", np)
 			}
 			ps = append(ps, x)
 		}
 		kv(0, "Ports", strings.Join(ps, ", "))
-		eps := o.Status.Endpoints
+		rw := o.Spec.RouteWhen
+		if rw == "" {
+			rw = "not stated (running, for silos without a readiness probe)"
+		}
+		kv(0, "Route when", rw)
+		eps, held := o.Status.Endpoints, o.Status.Held
 		tables = append(tables, func() {
-			_, _ = fmt.Fprintf(tw, "Endpoints:\t%d\n", len(eps))
-			if len(eps) > 0 {
-				_, _ = fmt.Fprintln(tw, "  SILO\tHOST\tADDRESS\tPORTS")
-				for _, ep := range eps {
+			_, _ = fmt.Fprintf(tw, "Endpoints:\t%d routed, %d held\n", len(eps), len(held))
+			if len(eps)+len(held) > 0 {
+				_, _ = fmt.Fprintln(tw, "  SILO\tHOST\tSILO IP\tPORTS\tTRAFFIC")
+				row := func(ep v1.ServiceEndpoint, state string) {
 					var tp []string
 					for _, p := range ep.Ports {
 						tp = append(tp, fmt.Sprintf("%s→%d", p.Name, p.NodePort))
 					}
-					_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", ep.Silo, ep.Host, ep.Address, strings.Join(tp, ","))
+					_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", ep.Silo, ep.Host, ep.SiloIP, strings.Join(tp, ","), state)
+				}
+				for _, ep := range eps {
+					row(ep, "routed")
+				}
+				for _, ep := range held {
+					row(ep, heldText(ep))
 				}
 			}
 		})
-	case *v1.Image:
+	case *v1.VMImage:
 		vs := o.Spec.Versions
 		tables = append(tables, func() {
 			_, _ = fmt.Fprintln(tw, "Versions:")
-			_, _ = fmt.Fprintln(tw, "  NAME\tCONTAINER\tDISK")
+			_, _ = fmt.Fprintln(tw, "  NAME\tDISK")
 			for _, v := range vs {
-				disk := "-"
-				if v.Disk != nil {
-					disk = v.Disk.URL + " (sha256 " + v.Disk.SHA256[:12] + "…)"
-				}
-				_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\n", v.Name, dash(v.Container), disk)
+				_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, diskOf(v))
 			}
 		})
 	}

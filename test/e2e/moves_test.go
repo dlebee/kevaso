@@ -34,10 +34,10 @@ func TestMoves(t *testing.T) {
 	w1IP, w2IP := r.ip("w1"), r.ip("w2")
 	t.Logf("w1 %s, w2 %s", w1IP, w2IP)
 	r.must(kvoadm.Run, "", append(append([]string{"init"}, r.sshArgs("w1")...),
-		"--name", "w1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--address", w1IP, "--worker",
+		"--name", "w1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", w1IP, "--worker",
 		"--runtime", "cloud-hypervisor", "--runtime", "docker", "--loop-storage", "20G")...)
 	r.must(kvoadm.Run, "", append(append([]string{"host", "add"}, r.sshArgs("w2")...),
-		"--name", "w2", "--install", "worker", "--address", w2IP, "--server", "https://"+w1IP+":6443", "--runtime", "docker")...)
+		"--name", "w2", "--install", "worker", "--internal-ip", w2IP, "--server", "https://"+w1IP+":6443", "--runtime", "docker")...)
 	t.Logf("kvoadm host list:\n%s", r.must(kvoadm.Run, "", "host", "list"))
 
 	r.must(kvo.Run, `apiVersion: kevaso/v1
@@ -49,7 +49,7 @@ kind: Silo
 metadata: { name: mover, namespace: mv }
 spec:
   runtime: docker
-  image: ubuntu-24.04
+  container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 256Mi }
 ---
 apiVersion: kevaso/v1
@@ -57,7 +57,7 @@ kind: Silo
 metadata: { name: stateless, namespace: mv }
 spec:
   runtime: docker
-  image: ubuntu-24.04
+  container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 256Mi }
   availability: { onHostLoss: Recreate }
 ---
@@ -66,7 +66,7 @@ kind: Silo
 metadata: { name: pinned, namespace: mv }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 768Mi }
   disk: { size: 5Gi }
 `, "apply", "-f", "-")

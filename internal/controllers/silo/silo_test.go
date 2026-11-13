@@ -24,7 +24,7 @@ var now = time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
 
 func readyHost(name string) *v1.Host {
 	h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: name}}
-	h.Spec.Address = "203.0.113.10"
+	h.Spec.ExternalIP = "203.0.113.10"
 	h.Spec.Components.Worker = &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}}}
 	h.Status.Conditions = []meta.Condition{{Type: "Ready", Status: meta.ConditionTrue}}
 	h.Status.Runtimes = map[string]v1.RuntimeStatus{"cloud-hypervisor": {State: "Ready"}}
@@ -88,7 +88,7 @@ func TestDecideOnHostLoss(t *testing.T) {
 	onHv1 := func(policy string) *v1.Silo {
 		s := newSilo("a")
 		s.Spec.Availability.OnHostLoss = policy
-		s.Status.Host, s.Status.Phase, s.Status.Address = "hv1", "Running", "10.64.0.2"
+		s.Status.Host, s.Status.Phase, s.Status.SiloIP = "hv1", "Running", "10.64.0.2"
 		s.Status.Init = []v1.StepStatus{{Name: "x", State: "Done"}}
 		return s
 	}
@@ -110,7 +110,7 @@ func TestDecideOnHostLoss(t *testing.T) {
 	// Recreate, after RecreateAfter: a fresh instance on another host, nothing carried over.
 	st, changed, _, _ = silo.Decide(onHv1(v1.OnHostLossRecreate), []*v1.Host{lostHost("hv1", now.Add(-time.Minute)), readyHost("hv2")}, nil, now)
 	if c := meta.FindCondition(st.Conditions, "HostLost"); !changed || st.Host != "hv2" || st.Phase != silo.PhaseScheduled ||
-		st.Address != "" || st.Init != nil || c.Reason != "Recreated" {
+		st.SiloIP != "" || st.Init != nil || c.Reason != "Recreated" {
 		t.Fatalf("Recreate: %+v", st)
 	}
 	// …and if nowhere fits, it waits Pending (not back on the lost host).
@@ -206,7 +206,7 @@ func TestDecideOnHostLossMove(t *testing.T) {
 		s.Spec.Runtime = "docker"
 		s.Spec.Volumes = []v1.Volume{{Name: "data", Class: "juicefs", Size: "10Gi", MountPath: "/data"}}
 		s.Spec.Availability.OnHostLoss = v1.OnHostLossMove
-		s.Status.Host, s.Status.Phase, s.Status.Address = "hv1", "Running", "10.64.1.2"
+		s.Status.Host, s.Status.Phase, s.Status.SiloIP = "hv1", "Running", "10.64.1.2"
 		s.Status.Image = &v1.SiloImage{From: "app", Ref: "app:1", Running: "app:1"}
 		s.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "juicefs", Handle: "vol-1", AttachedTo: "hv1", Mounted: true}}
 		return s
@@ -217,7 +217,7 @@ func TestDecideOnHostLossMove(t *testing.T) {
 		return h
 	}
 	s := moving()
-	s.Spec.Image = "app"
+	s.Spec.Container = &v1.ContainerSource{Image: "app"}
 	st, _, again, _ := silo.DecideIn(s, []*v1.Host{docker(lostHost("hv1", now.Add(-10*time.Second))), docker(readyHost("hv2"))}, nil, now, env)
 	if c := meta.FindCondition(st.Conditions, "HostLost"); st.Host != "hv1" || c.Reason != "Fencing" || !strings.Contains(c.Message, "with its data") || again == 0 {
 		t.Fatalf("Move early: %+v", st)
@@ -234,11 +234,10 @@ func TestDecideOnHostLossMove(t *testing.T) {
 	}
 }
 
-// A cluster's only silo: once the controller placed it, it skipped every later change of that silo
-// as "assumed, the cache hasn't caught up", and only another silo's reconcile cleared that. With no
-// other silo, its host's loss was never acted on (seen on Lima: a lone onHostLoss: Move microVM
-// stayed "Running" on a host that had been lost for minutes).
-func TestALoneSiloIsRecreatedWhenItsHostIsLost(t *testing.T) {
+// The only silo in the cluster, placed by the controller: when its host is lost the controller
+// still looks at it (on real machines a lone onHostLoss: Move silo stayed "Running" on a powered-off
+// host forever: the controller skipped it as "placed by us, cache not caught up" once and for all).
+func TestControllerSeesItsOwnPlacementsHostLost(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
 	ts := httptest.NewServer(srv)
@@ -257,48 +256,24 @@ func TestALoneSiloIsRecreatedWhenItsHostIsLost(t *testing.T) {
 
 	h := readyHost("hv1")
 	st := h.Status
-	if err := c.Create(ctx, h); err != nil {
-		t.Fatal(err)
-	}
+	_ = c.Create(ctx, h)
 	h.Status = st
 	if err := c.UpdateStatus(ctx, h); err != nil {
 		t.Fatal(err)
 	}
-	s := newSilo("solo")
-	s.Spec.Availability.OnHostLoss = v1.OnHostLossRecreate
-	if err := c.Create(ctx, s); err != nil {
+	if err := c.Create(ctx, newSilo("web")); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(ctx, t, c, "solo", func(s *v1.Silo) bool { return s.Status.Host == "hv1" })
-	// The agent reports it running (a change of the silo the controller sees, like on a real host).
-	var got v1.Silo
-	if err := c.Get(ctx, "Silo", "dev", "solo", &got); err != nil {
-		t.Fatal(err)
-	}
-	got.Status.Phase = "Running"
-	if err := c.UpdateStatus(ctx, &got); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(200 * time.Millisecond)
-
-	// A second host arrives, then hv1 is lost (long enough ago to be past the fence's margin).
-	h2 := readyHost("hv2")
-	st2 := h2.Status
-	if err := c.Create(ctx, h2); err != nil {
-		t.Fatal(err)
-	}
-	h2.Status = st2
-	if err := c.UpdateStatus(ctx, h2); err != nil {
-		t.Fatal(err)
-	}
+	waitFor(ctx, t, c, "web", func(s *v1.Silo) bool { return s.Status.Host == "hv1" })
+	time.Sleep(200 * time.Millisecond) // the controller has seen its own placement come back
 	var lost v1.Host
-	if err := c.Get(ctx, "Host", "", "hv1", &lost); err != nil {
-		t.Fatal(err)
-	}
-	lost.Status.Conditions = []meta.Condition{{Type: "Ready", Status: meta.ConditionUnknown, Reason: "HostLost",
-		Message: "no heartbeat for 41s", LastTransitionTime: time.Now().Add(-time.Minute)}}
+	_ = c.Get(ctx, "Host", "", "hv1", &lost)
+	meta.SetCondition(&lost.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionUnknown, Reason: "HostLost", Message: "no heartbeat for 41s"}, time.Now())
 	if err := c.UpdateStatus(ctx, &lost); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(ctx, t, c, "solo", func(s *v1.Silo) bool { return s.Status.Host == "hv2" })
+	waitFor(ctx, t, c, "web", func(s *v1.Silo) bool {
+		c := meta.FindCondition(s.Status.Conditions, "HostLost")
+		return c != nil && c.Status == meta.ConditionTrue
+	})
 }

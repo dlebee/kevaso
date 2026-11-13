@@ -1,7 +1,9 @@
 // Package moves decides where a silo can go and how a move happens (design §0.3). Pure.
 //
 // Storage decides what's possible: a silo moves with its data only if every disk and volume it
-// keeps is on a class that can attach elsewhere (zone, region, global). The silo decides what's
+// keeps is on a class that can attach elsewhere (zone, region, global). A volume is always kept
+// data: a Recreate, which leaves the old host's local disks behind, is refused while the silo has
+// a host-local volume. The silo decides what's
 // wanted: onHostLoss (Wait, Recreate, Move) for when its host is lost, and `kvo move` for a person.
 // Either way two copies never run: a move from a live host waits for that host to stop the silo
 // and let go of its volumes (status.movingFrom); a move from a lost host waits for fencing, and a
@@ -11,8 +13,10 @@ package moves
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"sort"
+	"strings"
 
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/scheduler"
@@ -24,6 +28,9 @@ type Movability struct {
 	WithData bool   // every disk and volume it keeps can attach elsewhere
 	Scope    string // the narrowest topology among them: host | zone | region | global
 	Pinned   string // why it can't move with its data ("" when it can)
+	// Local are the host-local volumes (class local, or a plugin class bound to its host): a
+	// fresh copy elsewhere (Recreate) would leave them behind.
+	Local []string
 }
 
 // containerRuntime: the container's own files aren't kept (volumes are), so its root isn't data.
@@ -80,6 +87,9 @@ func Of(s *v1.Silo, classes map[string]scheduler.Class) Movability {
 	vols := append([]v1.Volume(nil), s.Spec.Volumes...)
 	sort.Slice(vols, func(i, j int) bool { return vols[i].Name < vols[j].Name })
 	for _, v := range vols {
+		if t, err := topologyOf(v.Class, classes); err == nil && t == kplugin.TopologyHost {
+			m.Local = append(m.Local, v.Name)
+		}
 		narrow("volume "+v.Name, v.Class)
 	}
 	return m
@@ -108,8 +118,8 @@ func Summary(s *v1.Silo, m Movability) string {
 	return "Pinned"
 }
 
-// CheckPolicy is admission's rule: Move needs every disk movable, and Recreate never leaves an
-// important volume behind.
+// CheckPolicy is admission's rule: Move needs every disk movable, and Recreate never leaves a
+// volume behind.
 func CheckPolicy(s *v1.Silo, m Movability) error {
 	switch s.Policy() {
 	case v1.OnHostLossMove:
@@ -117,11 +127,12 @@ func CheckPolicy(s *v1.Silo, m Movability) error {
 			return fmt.Errorf("onHostLoss: Move needs every disk and volume on a movable storage class: %s (use Wait, or Recreate if its image is enough)", m.Pinned)
 		}
 	case v1.OnHostLossRecreate:
-		for _, v := range s.Spec.Volumes {
-			t := v.Class
-			if v.Important && (t == "" || t == v1.VolumeLocal) {
-				return fmt.Errorf("onHostLoss: Recreate would leave important volume %s behind (it's local): use Wait, or put it on a movable class", v.Name)
+		if len(m.Local) > 0 {
+			what := "volume " + m.Local[0]
+			if len(m.Local) > 1 {
+				what = "volumes " + strings.Join(m.Local, ", ")
 			}
+			return fmt.Errorf("onHostLoss: Recreate would leave %s behind on its host (volumes are kept data): keep disposable data (a cache, scratch space) on the silo's own disk instead, put the volume on a class that travels (e.g. juicefs, linode-block), or use Wait", what)
 		}
 	}
 	return nil
@@ -190,7 +201,7 @@ func PlanMove(s *v1.Silo, m Movability, r Request, fromLost bool, fits string) (
 // Apply is the status after a planned move: placed on the target, the old host (if up) told to
 // let go first. A recreate starts from the image.
 func Apply(st v1.SiloStatus, p Plan) v1.SiloStatus {
-	st.Host, st.Address, st.Phase = p.To, "", "Scheduled"
+	st.Host, st.SiloIP, st.Phase = p.To, "", "Scheduled"
 	st.MovingFrom = ""
 	if p.Handoff {
 		st.MovingFrom = p.From
@@ -234,6 +245,16 @@ func Released(st v1.SiloStatus, host string) (v1.SiloStatus, bool) {
 		return st, false
 	}
 	st.MovingFrom = ""
+	if len(st.Volumes) > 0 {
+		vols := make([]v1.VolumeStatus, len(st.Volumes))
+		copy(vols, st.Volumes)
+		for i := range vols {
+			if vols[i].AttachedTo == host {
+				vols[i].Mounted = false
+			}
+		}
+		st.Volumes = vols
+	}
 	return st, true
 }
 
@@ -241,4 +262,54 @@ func Released(st v1.SiloStatus, host string) (v1.SiloStatus, bool) {
 // anyway: the host is lost and the silo isn't waiting on that host's handoff (it was fenced).
 func ForceRelease(s *v1.Silo, vs v1.VolumeStatus, attachedLost bool) bool {
 	return vs.Mounted && attachedLost && vs.AttachedTo != s.Status.Host && s.Status.MovingFrom != vs.AttachedTo
+}
+
+// ErrHostWrite is why a host's write of a silo's status is refused (a 403).
+var ErrHostWrite = errors.New("forbidden")
+
+// HostWrite judges a host's write of a silo's status: old as stored, next as written (a stale
+// write, from an older revision, is refused before this as a conflict). nil: allowed.
+//
+// A host writes only the status of a silo placed on it, and never where it is placed (host,
+// movingFrom). Per volume, the mounted flag is the host's whose the volume is (attachedTo: the
+// host it's attached to, or for a mount-reach class the one it's to be mounted on): only that
+// host may change it, so the control plane never detaches a volume a host still has mounted
+// because another host said it wasn't. Which volumes there are and where they're attached is
+// the control plane's. During a handoff the old host may only unmount its volumes (LetGo) and
+// then let go (Released); the new host may only set mounted on volumes attached to itself.
+func HostWrite(old, next v1.SiloStatus, host string) error {
+	if old.MovingFrom == host && old.Host != host {
+		for _, step := range []func(v1.SiloStatus, string) (v1.SiloStatus, bool){LetGo, Released} {
+			if want, ok := step(old, host); ok && reflect.DeepEqual(want, next) {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: %s is handing this silo off: it may only unmount its volumes and let go", ErrHostWrite, host)
+	}
+	if old.Host != host {
+		return fmt.Errorf("%w: %s may only write the status of silos placed on it", ErrHostWrite, host)
+	}
+	if next.Host != old.Host {
+		return fmt.Errorf("%w: %s may not place a silo (status.host)", ErrHostWrite, host)
+	}
+	if next.MovingFrom != old.MovingFrom {
+		return fmt.Errorf("%w: only %s can say it has let go of this silo", ErrHostWrite, old.MovingFrom)
+	}
+	if len(next.Volumes) != len(old.Volumes) {
+		return fmt.Errorf("%w: which volumes a silo has is the control plane's to write", ErrHostWrite)
+	}
+	for i, o := range old.Volumes {
+		n := next.Volumes[i]
+		switch {
+		case n.Name != o.Name || n.AttachedTo != o.AttachedTo:
+			return fmt.Errorf("%w: volume %s: where it is attached is the control plane's to write", ErrHostWrite, o.Name)
+		case n.Mounted != o.Mounted && o.AttachedTo != host:
+			to := o.AttachedTo
+			if to == "" {
+				to = "no host"
+			}
+			return fmt.Errorf("%w: volume %s is attached to %s: only that host says whether it is mounted", ErrHostWrite, o.Name, to)
+		}
+	}
+	return nil
 }

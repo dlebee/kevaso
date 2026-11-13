@@ -38,7 +38,7 @@ func TestVMVolumesFollowTheSilo(t *testing.T) {
 	if err := reg.Add(ctx, share); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", Address: "127.0.0.1",
+	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond,
 		Plugins: reg}); err != nil {
 		t.Fatal(err)
@@ -69,7 +69,7 @@ func TestVMVolumesFollowTheSilo(t *testing.T) {
 	}
 	for _, name := range hosts {
 		h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: name},
-			Spec: v1.HostSpec{Address: "198.51.100.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}}}}}}
+			Spec: v1.HostSpec{ExternalIP: "198.51.100.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}}}}}}
 		if err := admin.Create(ctx, h); err != nil {
 			t.Fatal(err)
 		}
@@ -103,7 +103,7 @@ func TestVMVolumesFollowTheSilo(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "vm", Namespace: "notes"},
-		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Image: "ubuntu-24.04", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Disk:         v1.Disk{Class: kplugintest.ClassShare, Size: "20Gi"},
 			Availability: v1.Availability{OnHostLoss: v1.OnHostLossMove}, // admitted: disk and volume go anywhere
 			Volumes:      []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"}}}}

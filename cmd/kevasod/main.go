@@ -1,6 +1,6 @@
 // Command kevasod is the agent on every host.
 //
-//	kevasod control-plane --name HOST --address ADDR [--listen 0.0.0.0:6443] [--data /var/lib/kevaso]
+//	kevasod control-plane --name HOST [--internal-ip IP] [--external-ip IP] [--listen 0.0.0.0:6443] [--data /var/lib/kevaso]
 //	        [--admin-socket /run/kevaso/admin.sock] [--cluster NAME] [--extra-name NAME]…
 //	        [--store sqlite|etcd] [--etcd-peer-listen HOST:PORT]
 //	    the control-plane component (installed by `kvoadm init` as a systemd service)
@@ -56,7 +56,6 @@ import (
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controlplane"
 	"kevaso.com/core/internal/fence"
-	"kevaso.com/core/internal/guest"
 	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/mesh"
 	"kevaso.com/core/internal/plugins"
@@ -93,13 +92,6 @@ func main() {
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 		<-sig
 		return
-	}
-	// Copied into a silo as kvo-guest, the same binary is the guest helper.
-	if filepath.Base(os.Args[0]) == "kvo-guest" {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		code := guest.Main(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
-		stop()
-		os.Exit(code)
 	}
 	if len(os.Args) < 2 {
 		usage()
@@ -159,7 +151,9 @@ func runControlPlane(ctx context.Context, args []string) error {
 	var cfg controlplane.Config
 	var extra multi
 	fs.StringVar(&cfg.HostName, "name", "", "this host's name")
-	fs.StringVar(&cfg.Address, "address", "", "this host's address")
+	fs.StringVar(&cfg.InternalIP, "internal-ip", "", "this host's address on its own network")
+	fs.StringVar(&cfg.DNSSuffix, "dns-suffix", "", "the cluster's names' last label (default kevaso): SERVICE.NAMESPACE.SUFFIX")
+	fs.StringVar(&cfg.ExternalIP, "external-ip", "", "this host's address reachable from outside its network (at least one of the two)")
 	fs.StringVar(&cfg.Listen, "listen", "0.0.0.0:6443", "TLS API address")
 	fs.StringVar(&cfg.DataDir, "data", "/var/lib/kevaso", "data directory (store, CA)")
 	fs.StringVar(&cfg.AdminSocket, "admin-socket", defaultAdminSocket, "admin unix socket")
@@ -312,6 +306,7 @@ func runWorker(ctx context.Context, args []string) error {
 	}
 	logger.Printf("joined %s as host %s", jc.Server, jc.HostName)
 	contact := &worker.Contact{}
+	contact.SetFence(true) // a worker only: the control plane is elsewhere and carries on without it
 	wc := worker.Config{HostName: jc.HostName, Runtimes: runtimes, DataDir: jc.DataDir, Clock: clock.Real{}, Log: logger.Printf,
 		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize}, Contact: contact, MeshSubnet: *withMesh, EgressExtraCA: *egressCA, GatewayScope: *gwScope}
 	rts, err := worker.NewRuntimes(wc)

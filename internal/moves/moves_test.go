@@ -2,6 +2,7 @@ package moves
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -75,13 +76,36 @@ func TestCheckPolicy(t *testing.T) {
 	if err := CheckPolicy(ok, Of(ok, classes)); err != nil {
 		t.Fatal(err)
 	}
-	imp := silo("docker", v1.OnHostLossRecreate, v1.Volume{Name: "keys", Important: true})
-	if err := CheckPolicy(imp, Of(imp, classes)); err == nil || !strings.Contains(err.Error(), "important volume keys") {
-		t.Fatalf("Recreate with a local important volume: %v", err)
+	// A volume is kept data, no flag: Recreate is refused with any host-local volume, naming them.
+	local := silo("docker", v1.OnHostLossRecreate, v1.Volume{Name: "keys"}, v1.Volume{Name: "db", Class: v1.VolumeLocal}, v1.Volume{Name: "data", Class: "juicefs"})
+	err := CheckPolicy(local, Of(local, classes))
+	if err == nil || !strings.Contains(err.Error(), "leave volumes db, keys behind") || !strings.Contains(err.Error(), "on the silo's own disk instead") {
+		t.Fatalf("Recreate with local volumes: %v", err)
 	}
-	impGlobal := silo("docker", v1.OnHostLossRecreate, v1.Volume{Name: "keys", Important: true, Class: "juicefs"})
-	if err := CheckPolicy(impGlobal, Of(impGlobal, classes)); err != nil {
-		t.Fatalf("an important volume that follows: %v", err)
+	one := silo("docker", v1.OnHostLossRecreate, v1.Volume{Name: "keys"})
+	if err := CheckPolicy(one, Of(one, classes)); err == nil || !strings.Contains(err.Error(), "leave volume keys behind") {
+		t.Fatalf("Recreate with one local volume: %v", err)
+	}
+	hostClass := silo("docker", v1.OnHostLossRecreate, v1.Volume{Name: "scratch", Class: "vague"})
+	if err := CheckPolicy(hostClass, Of(hostClass, classes)); err == nil || !strings.Contains(err.Error(), "volume scratch") {
+		t.Fatalf("Recreate with a host-bound plugin volume: %v", err)
+	}
+	// Volumes on a class that travels follow the silo: they never block Recreate.
+	travels := silo("docker", v1.OnHostLossRecreate, v1.Volume{Name: "data", Class: "juicefs"}, v1.Volume{Name: "blk", Class: "linode-block"})
+	if err := CheckPolicy(travels, Of(travels, classes)); err != nil {
+		t.Fatalf("Recreate with volumes that follow: %v", err)
+	}
+	// kvo move --recreate follows the same rule.
+	if _, err := PlanMove(one, Of(one, classes), Request{To: "hv3", Recreate: true}, false, ""); err == nil || !strings.Contains(err.Error(), "volume keys") {
+		t.Fatalf("--recreate with a local volume: %v", err)
+	}
+	if p, err := PlanMove(travels, Of(travels, classes), Request{To: "hv3", Recreate: true}, false, ""); err != nil || p.WithData {
+		t.Fatalf("--recreate with volumes that follow: %+v %v", p, err)
+	}
+	// MOVABLE stays truthful: a VM on its local disk with no volumes can only be recreated.
+	vm := silo("cloud-hypervisor", v1.OnHostLossRecreate)
+	if m := Of(vm, classes); CheckPolicy(vm, m) != nil || Summary(vm, m) != "Recreate" {
+		t.Errorf("MOVABLE of a recreatable VM: %q %v", Summary(vm, m), CheckPolicy(vm, m))
 	}
 }
 
@@ -129,10 +153,10 @@ func TestPlanMove(t *testing.T) {
 
 func TestApplyAndHandoff(t *testing.T) {
 	s := silo("docker", "", v1.Volume{Name: "data", Class: "juicefs"})
-	s.Status.Address, s.Status.Phase = "10.64.1.5", "Running"
+	s.Status.SiloIP, s.Status.Phase = "10.64.1.5", "Running"
 	s.Status.Image = &v1.SiloImage{From: "app", Ref: "r1", Running: "r1"}
 	st := Apply(s.Status, Plan{From: "hv1", To: "hv3", WithData: true, Handoff: true})
-	if st.Host != "hv3" || st.MovingFrom != "hv1" || st.Address != "" || st.Phase != "Scheduled" || st.Image.Running != "r1" {
+	if st.Host != "hv3" || st.MovingFrom != "hv1" || st.SiloIP != "" || st.Phase != "Scheduled" || st.Image.Running != "r1" {
 		t.Fatalf("with data: %+v", st)
 	}
 	moved := *s
@@ -146,9 +170,12 @@ func TestApplyAndHandoff(t *testing.T) {
 	if _, ok := Released(st, "hv3"); ok {
 		t.Fatal("the new host released the handoff")
 	}
+	// The old host's volumes are said unmounted in the same write: it may write nothing else of
+	// a silo placed elsewhere (on real machines a move waited forever for "w1 to unmount it").
+	st.Volumes = []v1.VolumeStatus{{Name: "data", Class: "juicefs", AttachedTo: "hv1", Mounted: true}}
 	rel, ok := Released(st, "hv1")
-	if !ok || rel.MovingFrom != "" {
-		t.Fatalf("released = %+v", rel)
+	if !ok || rel.MovingFrom != "" || rel.Volumes[0].Mounted || !st.Volumes[0].Mounted {
+		t.Fatalf("released = %+v (input changed: %v)", rel, !st.Volumes[0].Mounted)
 	}
 	moved.Status = rel
 	if !MayStart(&moved, "hv3") {
@@ -198,6 +225,58 @@ func TestLetGoAndReleased(t *testing.T) {
 		}
 		if _, ok := Released(st, host); ok {
 			t.Errorf("Released by %s", host)
+		}
+	}
+}
+
+// Who may write what of a silo's status, per volume: only the host a volume is attached to (or
+// to be mounted on) changes its mounted flag; the old host of a move may clear its own and let
+// go; the new host may only set its own; nobody else writes it.
+func TestHostWrite(t *testing.T) {
+	moving := v1.SiloStatus{Host: "hv2", MovingFrom: "hv1", Phase: "Scheduled", Volumes: []v1.VolumeStatus{
+		{Name: "data", AttachedTo: "hv1", Mounted: true}, {Name: "new", AttachedTo: "hv2"}}}
+	placed := v1.SiloStatus{Host: "hv2", Phase: "Running", Volumes: []v1.VolumeStatus{
+		{Name: "data", AttachedTo: "hv2", Mounted: true}, {Name: "left", AttachedTo: "hv1", Mounted: true}, {Name: "none"}}}
+	with := func(st v1.SiloStatus, f func(*v1.SiloStatus)) v1.SiloStatus {
+		st.Volumes = slices.Clone(st.Volumes)
+		f(&st)
+		return st
+	}
+	mount := func(i int, m bool) func(*v1.SiloStatus) { return func(st *v1.SiloStatus) { st.Volumes[i].Mounted = m } }
+	letGo, _ := LetGo(moving, "hv1")
+	released, _ := Released(moving, "hv1")
+	for _, c := range []struct {
+		name      string
+		old, next v1.SiloStatus
+		host      string
+		ok        bool
+	}{
+		{"new host sets its own volume mounted", moving, with(moving, mount(1, true)), "hv2", true},
+		{"new host writes its phase", moving, with(moving, func(st *v1.SiloStatus) { st.Phase = "Starting" }), "hv2", true},
+		{"new host clears the old host's mounted", moving, with(moving, mount(0, false)), "hv2", false},
+		{"new host clears movingFrom", moving, with(moving, func(st *v1.SiloStatus) { st.MovingFrom = "" }), "hv2", false},
+		{"new host re-attaches a volume to itself", moving, with(moving, func(st *v1.SiloStatus) { st.Volumes[0].AttachedTo = "hv2" }), "hv2", false},
+		{"new host drops a volume", moving, with(moving, func(st *v1.SiloStatus) { st.Volumes = st.Volumes[1:] }), "hv2", false},
+		{"old host unmounts (LetGo)", moving, letGo, "hv1", true},
+		{"old host lets go (Released)", moving, released, "hv1", true},
+		{"old host lets go after LetGo", letGo, released, "hv1", true},
+		{"old host sets mounted", letGo, moving, "hv1", false},
+		{"old host writes its phase", moving, with(moving, func(st *v1.SiloStatus) { st.Phase = "Stopped" }), "hv1", false},
+		{"old host clears the new host's volume", with(moving, mount(1, true)), with(moving, func(st *v1.SiloStatus) { st.Volumes[0].Mounted, st.Volumes[1].Mounted = false, false }), "hv1", false},
+		{"a third host clears mounted", moving, with(moving, mount(0, false)), "hv3", false},
+		{"a third host writes its phase", placed, with(placed, func(st *v1.SiloStatus) { st.Phase = "Failed" }), "hv3", false},
+		{"host clears its own volume", placed, with(placed, mount(0, false)), "hv2", true},
+		{"host clears a volume still on a lost host", placed, with(placed, mount(1, false)), "hv2", false},
+		{"host marks an unattached volume mounted", placed, with(placed, mount(2, true)), "hv2", false},
+		{"host moves its silo", placed, with(placed, func(st *v1.SiloStatus) { st.Host = "hv9" }), "hv2", false},
+		{"host starts a move", placed, with(placed, func(st *v1.SiloStatus) { st.MovingFrom = "hv2" }), "hv2", false},
+	} {
+		err := HostWrite(c.old, c.next, c.host)
+		if (err == nil) != c.ok {
+			t.Errorf("%s: allowed=%v, want %v (%v)", c.name, err == nil, c.ok, err)
+		}
+		if err != nil && !errors.Is(err, ErrHostWrite) {
+			t.Errorf("%s: %v is not ErrHostWrite", c.name, err)
 		}
 	}
 }

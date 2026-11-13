@@ -25,10 +25,13 @@ type fake struct {
 	pid        int
 	wired      map[int]bool
 	execHook   func(context.Context, hostexec.Cmd) (int, error) // docker exec, if set
+	pid1       map[string]string                                // image → its inspected entrypoint and command
+	digests    map[string]string                                // image → its RepoDigests (JSON)
+	onPull     func(engine string, args []string) (int, error)  // a pull, if set (pull_test.go)
 }
 
 func newFake() *fake {
-	return &fake{files: map[string][]byte{}, containers: map[string]string{}, images: map[string]bool{}, pid: 100, wired: map[int]bool{}}
+	return &fake{files: map[string][]byte{}, containers: map[string]string{}, images: map[string]bool{}, pid: 100, wired: map[int]bool{}, pid1: map[string]string{}, digests: map[string]string{}}
 }
 
 func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
@@ -53,7 +56,15 @@ func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
 		out("2: eth0 inet 10.64.0.2/24 scope global eth0")
 	case c.Name == "nsenter" && strings.Contains(strings.Join(a, " "), "route add default"):
 		f.wired[f.pid] = true
-	case c.Name == "docker":
+	case (c.Name == "docker" || c.Name == "podman") && indexOf(a, "pull") >= 0 && f.onPull != nil:
+		code, err := f.onPull(c.Name, a)
+		if code == 0 && err == nil {
+			f.images[a[len(a)-1]] = true
+		} else if c.Stderr != nil {
+			_, _ = io.WriteString(c.Stderr, "Error response from daemon: denied: requested access to the resource is denied")
+		}
+		return code, err
+	case c.Name == "docker" || c.Name == "podman":
 		switch a[0] {
 		case "container":
 			if a[1] != "inspect" {
@@ -65,8 +76,13 @@ func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
 			}
 			out(fmt.Sprintf("%s %d", st, f.pid))
 		case "image":
-			if !f.images[a[len(a)-1]] {
+			if !f.images[a[len(a)-1]] && f.pid1[a[len(a)-1]] == "" {
 				return fail("No such image")
+			}
+			if i := indexOf(a, "--format"); i > 0 && strings.Contains(a[i+1], "RepoDigests") {
+				out(f.digests[a[len(a)-1]])
+			} else if i > 0 {
+				out(f.pid1[a[len(a)-1]])
 			}
 		case "import":
 			if c.Stdin != nil {
@@ -81,7 +97,7 @@ func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
 			f.containers[name] = "running"
 		case "start":
 			f.containers[a[1]] = "running"
-		case "stop":
+		case "stop", "kill":
 			f.containers[a[len(a)-1]] = "exited"
 		case "rm":
 			delete(f.containers, a[len(a)-1])
@@ -111,7 +127,7 @@ func indexOf(l []string, v string) int {
 func (f *fake) WriteFile(p string, d []byte, _ os.FileMode) error {
 	f.fmu.Lock()
 	defer f.fmu.Unlock()
-	f.files[p] = d
+	f.files[p] = append([]byte(nil), d...) // a copy, as a real file is
 	return nil
 }
 func (f *fake) ReadFile(p string) ([]byte, error) {
@@ -215,14 +231,14 @@ func TestLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	main := f.last("docker run -d --name " + n.Main)
-	for _, want := range []string{"--network container:" + n.Pause, "--security-opt no-new-privileges", "-v " + n.Dir + "/broker:/run/kevaso",
+	for _, want := range []string{"--network container:" + n.Pause, "--security-opt no-new-privileges", "--tmpfs /run:rw,nosuid,nodev,mode=0755",
 		"SSL_CERT_FILE=/etc/ssl/certs/kevaso-ca-bundle.crt", "--cpus 2", "--memory 536870912",
-		"-v " + n.Dir + "/resolv.conf:/etc/resolv.conf:ro", "docker.io/library/ubuntu:24.04 sleep infinity"} {
+		"-v " + n.Dir + "/resolv.conf:/etc/resolv.conf:ro", "--init docker.io/library/ubuntu:24.04 sleep infinity"} {
 		if !strings.Contains(main, want) {
 			t.Errorf("main container %q missing %q", main, want)
 		}
 	}
-	if strings.Contains(main, "kvo-guest") || strings.Contains(main, r.Self) {
+	if strings.Contains(main, "broker") || strings.Contains(main, r.Self) {
 		t.Errorf("something of Kevaso's in a user's container: %s", main)
 	}
 	if strings.Contains(main, "--hostname") || strings.Contains(main, "--uts") {
@@ -276,33 +292,6 @@ func TestMainCommandAndImages(t *testing.T) {
 	}
 }
 
-// Kevaso's own silos run from images of their own, built from kevasod on the host: never pulled,
-// nothing mounted into them beyond what any silo gets.
-func TestKevasoImages(t *testing.T) {
-	ctx := context.Background()
-	f := newFake()
-	r := runtime(t, f)
-	id := kri.ID{Namespace: "kevaso-system", Name: "ingress", UID: "u9"}
-	if err := r.Create(ctx, kri.Spec{ID: id, Image: "kevaso-ingress"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Start(ctx, id); err != nil {
-		t.Fatal(err)
-	}
-	all := strings.Join(f.cmds, "\n")
-	if strings.Contains(all, "pull") && strings.Contains(all, "kevaso-ingress") {
-		t.Fatalf("pulled Kevaso's own image:\n%s", all)
-	}
-	imp := f.last("docker import --change ENTRYPOINT [\"/usr/local/bin/kvo-guest\",\"ingress\"]")
-	if !strings.Contains(imp, "localhost/kevaso-ingress:") {
-		t.Fatalf("ingress image not built: %s", imp)
-	}
-	main := f.last("docker run -d --name " + NamesFor(id).Main)
-	if !strings.HasSuffix(main, strings.Fields(imp)[len(strings.Fields(imp))-1]) || strings.Contains(main, "kvo-guest:ro") {
-		t.Fatalf("main container: %s", main)
-	}
-}
-
 // Install runs at every kevasod start: dockerd is restarted (which, without live-restore, stops
 // every container) only when its configuration changes, not on an agent restart or upgrade. (On
 // Linodes, before this, kvoadm upgrade stopped the worker's container silos.)
@@ -337,5 +326,73 @@ func TestInstallRestartsDockerOnlyWhenItsConfigChanges(t *testing.T) {
 	_ = r.Install(context.Background(), nil)
 	if restarts() != 2 {
 		t.Fatal("a changed daemon.json didn't restart dockerd")
+	}
+}
+
+// A fence kills: SIGKILL, no grace period (docker stop would wait out its 20s first).
+func TestKillHasNoGrace(t *testing.T) {
+	ctx := context.Background()
+	f := newFake()
+	r := runtime(t, f)
+	if err := r.Create(ctx, kri.Spec{ID: silo, Image: "ubuntu-24.04"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(ctx, silo); err != nil {
+		t.Fatal(err)
+	}
+	n := NamesFor(silo)
+	before := len(f.cmds)
+	if err := kri.Kill(ctx, r, silo); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.last("docker kill"); got != "docker kill --signal KILL "+n.Main {
+		t.Fatalf("kill: %q", got)
+	}
+	for _, c := range f.cmds[before:] {
+		if strings.HasPrefix(c, "docker stop") {
+			t.Fatalf("a graceful stop in a kill: %s", c)
+		}
+	}
+	if st, _ := r.Status(ctx, silo); st.State != kri.Stopped {
+		t.Fatalf("after kill: %v", st.State)
+	}
+	if err := r.Kill(ctx, silo); err != nil { // stopped already: a no-op
+		t.Fatal(err)
+	}
+}
+
+// Container silos get the engine's init as PID 1 (it reaps orphans: under a bare `sleep infinity`
+// every daemon restart left a zombie) unless the image's own PID 1 is an init.
+func TestNeedsInit(t *testing.T) {
+	for _, c := range []struct {
+		name              string
+		ep, imageCmd, cmd []string
+		want              bool
+	}{
+		{"ubuntu, sleep infinity", nil, []string{"/bin/bash"}, []string{"sleep", "infinity"}, true},
+		{"an app's own entrypoint", []string{"/app/server"}, nil, nil, true},
+		{"tini entrypoint", []string{"/usr/bin/tini", "--"}, []string{"app"}, nil, false},
+		{"dumb-init entrypoint, silo command", []string{"dumb-init"}, nil, []string{"app"}, false},
+		{"s6-overlay", []string{"/init"}, nil, nil, false},
+		{"systemd image command", nil, []string{"/lib/systemd/systemd"}, nil, false},
+		{"the silo's command over the image's init cmd", nil, []string{"/sbin/init"}, []string{"sleep", "infinity"}, true},
+		{"nothing known", nil, nil, nil, true},
+	} {
+		if got := NeedsInit(c.ep, c.imageCmd, c.cmd); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+	ctx := context.Background()
+	f := newFake()
+	f.pid1 = map[string]string{"ghcr.io/x/tini-app:1": "[\"/sbin/tini\",\"--\"]\n[\"app\"]"}
+	r := runtime(t, f)
+	if err := r.Create(ctx, kri.Spec{ID: silo, Image: "ghcr.io/x/tini-app:1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(ctx, silo); err != nil {
+		t.Fatal(err)
+	}
+	if main := f.last("docker run -d --name " + NamesFor(silo).Main); strings.Contains(main, "--init") {
+		t.Fatalf("an image with its own init got another: %s", main)
 	}
 }

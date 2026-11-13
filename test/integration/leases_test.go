@@ -2,9 +2,9 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -17,14 +17,14 @@ import (
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/clock"
-	"kevaso.com/core/internal/guest"
 	"kevaso.com/core/internal/leases"
 	"kevaso.com/core/internal/worker"
-	"kevaso.com/core/sdk/kri"
 )
 
-// Design §7.2d through the real API and the host's broker: a leased port is closed by default; the
-// silo asks and waits; a too-long ask is cut to the silo's max; a person with approve on the silo's
+// Design §7.2d through the real API and the host's broker, with two ports leased on different
+// terms (debug: a yes first, max 1h, its own sources; preview: no yes, max 2h) and one always open
+// (web): a leased port is closed by default; the silo asks and waits; a too-long ask is cut to that
+// port's max; opening one leaves the other closed, and each closes on its own; a person with approve on the silo's
 // exposure says yes and the host's rules for the port appear; it closes early or at its end, and
 // the rules go; a no fails the silo's call; an editor may open but not approve; a service account
 // and a host never answer; admission refuses a lease the cluster doesn't allow; leases survive a
@@ -35,28 +35,35 @@ func TestPortLeases(t *testing.T) {
 	_ = c.admin.Create(c.ctx, ns("web3"))
 
 	api := silo("api", "web3")
+	ext, office := []string{v1.NetworkExternal}, []string{"203.0.113.0/24"}
+	api.Spec.Ports = []v1.SiloPort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}, {Name: "preview", Port: 3000}}
 	api.Spec.Service = &v1.SiloService{
-		Ports:    []v1.ServicePort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}},
-		Expose:   v1.ExposeHostPort,
-		HostPort: &v1.HostPortSpec{AllowFrom: []string{"203.0.113.0/24"}},
-		Lease:    &v1.ServiceLease{Ports: []string{"debug"}, Max: "1h", Approval: &v1.ApprovalRule{Required: true}, AllowFrom: []string{"203.0.113.7"}},
+		Ports: []v1.ServicePort{{Port: "web", HostPort: ext, Sources: office},
+			{Port: "debug", HostPort: ext, Sources: []string{"203.0.113.7"}, AllowFrom: []string{"worker"},
+				Lease: &v1.PortLease{Max: "1h", Approval: &v1.ApprovalRule{Required: true}}},
+			{Port: "preview", HostPort: ext, Sources: office, Lease: &v1.PortLease{Max: "2h"}}},
 	}
-	api.Spec.AllowFrom = []v1.AllowFrom{{Silo: "worker", Ports: []string{"debug"}}}
 
 	// Admission.
 	for _, bad := range []struct {
 		mod  func(*v1.SiloService)
 		want string
 	}{
-		{func(sv *v1.SiloService) { sv.Expose, sv.HostPort = "", nil }, "only with expose: hostPort or loadBalancer"},
-		{func(sv *v1.SiloService) { sv.Lease.Max = "3h" }, "more than this cluster allows (2h0m0s)"},
-		{func(sv *v1.SiloService) { sv.Lease.Ports = []string{"ssh"} }, `"ssh" isn't a port of the service`},
-		{func(sv *v1.SiloService) { sv.Lease.Default = "2h" }, "is more than its max (1h0m0s)"},
+		{func(sv *v1.SiloService) { sv.Ports[1].HostPort, sv.Ports[1].Sources = nil, nil },
+			"service.ports[debug].lease: only on a port with hostPort or loadBalancer"},
+		{func(sv *v1.SiloService) { sv.Ports[2].Lease.Max = "3h" }, "service.ports[preview].lease.max 3h0m0s is more than this cluster allows (2h0m0s)"},
+		{func(sv *v1.SiloService) { sv.Ports[1].Lease.Default = "2h" }, "service.ports[debug].lease.default 2h0m0s is more than its max (1h0m0s)"},
 	} {
 		s := silo("bad", "web3")
+		s.Spec.Ports = api.Spec.Ports
 		cp := *api.Spec.Service
-		lease := *cp.Lease
-		cp.Lease = &lease
+		cp.Ports = append([]v1.ServicePort(nil), cp.Ports...)
+		for i := range cp.Ports {
+			if cp.Ports[i].Lease != nil {
+				l := *cp.Ports[i].Lease
+				cp.Ports[i].Lease = &l
+			}
+		}
 		bad.mod(&cp)
 		s.Spec.Service = &cp
 		if err := c.admin.Create(c.ctx, s); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), bad.want) {
@@ -66,14 +73,13 @@ func TestPortLeases(t *testing.T) {
 	if err := c.admin.Create(c.ctx, api); err != nil {
 		t.Fatal(err)
 	}
-	api.Status.Host, api.Status.Address = "hv1", "10.64.2.2"
-	api.Status.Service.PublicIP = "198.51.100.10"
+	api.Status.Host, api.Status.SiloIP = "hv1", "10.64.2.2"
 	if err := c.admin.UpdateStatus(c.ctx, api); err != nil {
 		t.Fatal(err)
 	}
 	wk := silo("worker", "web3")
 	_ = c.admin.Create(c.ctx, wk)
-	wk.Status.Host, wk.Status.Address = "hv1", "10.64.2.9"
+	wk.Status.Host, wk.Status.SiloIP = "hv1", "10.64.2.9"
 	_ = c.admin.UpdateStatus(c.ctx, wk)
 
 	// The host's rules, as its network loop would make them now.
@@ -97,15 +103,24 @@ func TestPortLeases(t *testing.T) {
 			o, _, _ := v1.Decode(raw)
 			ls = append(ls, o.(*v1.Lease))
 		}
-		return kni.Rules(worker.WithLeases(worker.NetworkView("hv1", nil, silos, nil), silos, ls, time.Now()))
+		return kni.Rules(worker.WithLeases(worker.NetworkView("hv1", &v1.Host{Spec: v1.HostSpec{ExternalIP: "198.51.100.10"}}, silos, nil, nil), silos, ls, time.Now()))
 	}
 	const (
 		debugDNAT = "ip daddr 198.51.100.10 tcp dport 9229 dnat ip to 10.64.2.2:9229"
-		debugFwd  = `ip daddr 10.64.2.2 ip saddr 203.0.113.7 tcp dport 9229 ct status dnat accept`
+		debugFwd  = `ip daddr 10.64.2.2 ip saddr 203.0.113.7 tcp dport 9229 ct original ip daddr 198.51.100.10 ct status dnat accept`
 		debugCut  = `tcp dport 9229 ct status dnat ct original ip daddr 198.51.100.10 reject with tcp reset`
 		webDNAT   = "ip daddr 198.51.100.10 tcp dport 8080 dnat ip to 10.64.2.2:8080"
 		private   = "ip saddr 10.64.2.9 ip daddr 10.64.2.2 tcp dport 9229 accept"
+		prevDNAT  = "ip daddr 198.51.100.10 tcp dport 3000 dnat ip to 10.64.2.2:3000"
+		prevFwd   = `ip daddr 10.64.2.2 ip saddr 203.0.113.0/24 tcp dport 3000 ct original ip daddr 198.51.100.10 ct status dnat accept`
 	)
+	preview := func(when string, open bool) {
+		t.Helper()
+		r := rules()
+		if strings.Contains(r, prevDNAT) != open || strings.Contains(r, prevFwd) != open {
+			t.Fatalf("%s: preview open %v (from its own sources):\n%s", when, open, r)
+		}
+	}
 	closed := func(when string) {
 		t.Helper()
 		r := rules()
@@ -121,19 +136,14 @@ func TestPortLeases(t *testing.T) {
 		}
 	}
 	closed("closed by default")
+	preview("closed by default", false)
 
-	// The silo's broker channel.
-	dir, _ := os.MkdirTemp("/tmp", "kvl")
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	ch := channels{dir}
+	// The silo's local endpoint.
 	hv1Client := c.host(t, "hv1")
-	hv1 := &agent.Broker{Client: hv1Client}
+	eps := newEndpoints(t, hv1Client, "hv1")
+	eps.add(t, api)
 	ctx, cancel := context.WithCancel(c.ctx)
 	defer cancel()
-	if err := hv1.Ensure(ctx, ch, kri.ID{Namespace: "web3", Name: "api", UID: api.UID}); err != nil {
-		t.Fatal(err)
-	}
-	dial := ch.dialer(api.UID)
 
 	// People: ada (admin: open and approve), ed (editor: open only); bot, a service account with
 	// the admin role.
@@ -177,21 +187,16 @@ func TestPortLeases(t *testing.T) {
 		t.Fatal("no pending expose approval")
 		return nil
 	}
-	type result struct {
-		resp client.BrokerResponse
-		err  error
-	}
-	got := make(chan result, 1)
+	got := make(chan epAnswer, 1)
 	silosAsk := func(d string) {
 		go func() {
-			r, err := guest.Ask(ctx, dial, client.BrokerRequest{Op: client.OpPortOpen, Name: "debug", For: d}, 20*time.Millisecond, nil)
-			got <- result{r, err}
+			got <- eps.ask(t, ctx, api, http.MethodPost, "/v1/ports/debug/open?for="+d, nil, 20*time.Millisecond, nil)
 		}()
 	}
 
 	// A port that isn't leased can't be asked for.
-	if _, err := guest.Call(ctx, dial, client.BrokerRequest{Op: client.OpPortOpen, Name: "web"}); err == nil || !strings.Contains(err.Error(), "not a leased port") {
-		t.Fatalf("web: %v", err)
+	if r := eps.call(t, api, http.MethodPost, "/v1/ports/web/open", nil); r.code != 403 || !strings.Contains(r.msg(), "not a leased port") {
+		t.Fatalf("web: %d %s", r.code, r.body)
 	}
 
 	// 1. The silo asks for 5h: cut to its max (1h), and it waits for a yes.
@@ -238,10 +243,27 @@ func TestPortLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := <-got
-	if r.err != nil || r.resp.Until == nil || !r.resp.Clamped || time.Until(*r.resp.Until) > time.Hour || time.Until(*r.resp.Until) < 59*time.Minute {
-		t.Fatalf("after yes: %+v %v", r.resp, r.err)
+	var open agent.PortOpened
+	if r.code != 200 || json.Unmarshal([]byte(r.body), &open) != nil || open.Port != "debug" || !open.Clamped ||
+		time.Until(open.Until) > time.Hour || time.Until(open.Until) < 59*time.Minute {
+		t.Fatalf("after yes: %d %s", r.code, r.body)
 	}
 	opened("approved")
+	preview("debug opened", false)
+
+	// 3b. preview is leased on its own terms: no yes, its own max (5h is cut to 2h), its own lease
+	// and clock; debug's lease doesn't change.
+	prA := eps.call(t, api, http.MethodPost, "/v1/ports/preview/open?for=5h", nil)
+	var pr agent.PortOpened
+	if prA.code != 200 || json.Unmarshal([]byte(prA.body), &pr) != nil || !pr.Clamped || time.Until(pr.Until) < 119*time.Minute || time.Until(pr.Until) > 2*time.Hour {
+		t.Fatalf("preview: %d %s", prA.code, prA.body)
+	}
+	preview("preview opened", true)
+	opened("preview opened")
+	var pl v1.Lease
+	if err := ada.Get(c.ctx, "Lease", "web3", leases.Name("api", "preview"), &pl); err != nil || pl.Status.ApprovedBy != "" || !pl.IsOpen(api.UID, time.Now()) {
+		t.Fatalf("preview's lease: %+v %v", pl.Status, err)
+	}
 
 	// 4. The editor may ask (to extend) but not approve: the port stays open while it waits;
 	// ada says no, and it stays open until its own end.
@@ -260,6 +282,7 @@ func TestPortLeases(t *testing.T) {
 		t.Fatalf("editor closes: %v", err)
 	}
 	closed("closed early")
+	preview("debug closed early", true)
 	if _, err := openAs(ed, "close", "debug", ""); status(err) != http.StatusConflict {
 		t.Fatalf("close twice: %v", err)
 	}
@@ -270,7 +293,7 @@ func TestPortLeases(t *testing.T) {
 	if err := answer(ada, a.Name, "deny", "use the staging silo"); err != nil {
 		t.Fatal(err)
 	}
-	if r := <-got; r.err == nil || !strings.Contains(r.err.Error(), "denied by ada: use the staging silo") {
+	if r := <-got; r.code != 403 || !strings.Contains(r.msg(), "denied by ada: use the staging silo") {
 		t.Fatalf("denied: %+v", r)
 	}
 	closed("denied")
@@ -297,6 +320,11 @@ func TestPortLeases(t *testing.T) {
 	opened("opened by an approver")
 	time.Sleep(time.Until(*ans.Lease.Status.Until) + 50*time.Millisecond)
 	closed("at its end")
+	preview("debug's end", true)
+	if a := eps.call(t, api, http.MethodPost, "/v1/ports/preview/close", nil); a.code != 200 {
+		t.Fatalf("the silo closing preview: %d %s", a.code, a.body)
+	}
+	preview("preview closed by the silo", false)
 	if err := c.srv.SweepLeases(c.ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +346,8 @@ func TestPortLeases(t *testing.T) {
 
 	// 10. The audit log: every ask, answer, opening and closing.
 	want := map[string]bool{"lease-asked/system:silo:web3:api": false, "lease-opened/ada": false, "lease-denied/ada": false,
-		"lease-closed/ed": false, "lease-ended/kevasod": false, "lease-asked/ed": false, "approval-Approved/ada": false}
+		"lease-closed/ed": false, "lease-ended/kevasod": false, "lease-asked/ed": false, "approval-Approved/ada": false,
+		"lease-opened/system:silo:web3:api": false, "lease-closed/system:silo:web3:api": false}
 	for _, e := range c.audit.Entries() {
 		if _, ok := want[e.Event+"/"+e.User]; ok {
 			want[e.Event+"/"+e.User] = true

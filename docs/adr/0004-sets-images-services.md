@@ -1,18 +1,52 @@
 # ADR 0004: Images, SiloSets, standalone Services, updates
 
-**Status:** accepted · **Date:** 2026-11-12
+**Status:** accepted · **Date:** 2026-11-12 (images for disks only, private registries: 2026-11-13)
+
+> **Note (2026-11-13):** ADR 0011 makes the kind `Image` `VMImage` and moves a silo's image into `container:` / `vm:` (no SiloSet `image` override). ADR 0010 changes the shapes this one states: ports are declared in `spec.ports` and opened per service port; `allowFrom` lives on the service port; a Service's `targetPort` names a declared port; `publicIP` is `loadBalancerIP`.
 
 ## Decision
 
-1. **`Image` names bits, with immutable versions.** An Image (namespaced) lists versions, oldest
-   first; each says where it is per runtime family: `container` (an OCI reference, for docker, podman
-   and OpenShell) and/or `disk` (an https URL with its SHA-256, for cloud-hypervisor, which fetches it
-   once and checks it). A version can't change once added (admission refuses it); a release is a new
-   version. A silo's `image: NAME:VERSION` resolves through the Image of that name in its namespace
-   (no version: the newest); a name with no Image is used as it is (`ubuntu-24.04`, `nginx:1.27`).
-   The control plane resolves it once, into `status.image.ref`, and again only when `spec.image`
-   changes, so creating an Image later never changes what a running silo is. Baking an Image from a
-   `Template` is separate work, not in this milestone.
+1. **`Image` is a machine disk, with immutable versions** (design §0.2, "Image is for machine
+   disks only"). An Image (namespaced) lists versions, oldest first; each is a bootable disk: an
+   https URL with its SHA-256, which a cloud-hypervisor host fetches once and checks. A version can't
+   change once added (admission refuses it); a release is a new version. A cloud-hypervisor silo's
+   `image: NAME:VERSION` resolves through the Image of that name in its namespace (no version: the
+   newest), or is one of Kevaso's built-in OS images (`ubuntu-24.04`); a registry reference is
+   refused there. The control plane resolves it once, into `status.image.ref`, and again only when
+   `spec.image` changes, so creating an Image later never changes what a running silo is. Baking an
+   Image from a `Template` is separate work, not in this milestone.
+
+   **Container silos don't use Images.** On docker, podman and both OpenShell drivers `spec.image`
+   is a registry reference, used as it is (`status.image.ref` is the same), and admission refuses an
+   Image's name there, saying it's a disk image. OpenShell's VM driver is a microVM, but it boots
+   from an OCI image (`sandbox create --from`), not a disk, so its images are references too.
+   Containers already have images and registries; Kevaso adds no catalogue on top. Pin by digest
+   (`IMAGE@sha256:…`): `kvo describe silo` flags a tag as mutable, and the host's agent records the
+   digest it actually pulled in `status.image.digest`, so an update shows even when a tag moved.
+
+1a. **Private registries** (design §0.2, "Private registries"). A Secret of `type: registry` holds
+   `server` and `username`, with the password or token as its sealed value; it's write-only by
+   default and never delivered to a silo (every grant delivery is refused). A silo (or a SiloSet's
+   template) names it in `spec.imagePull.secretRef`; naming it needs `use` on it, checked like a
+   grant's secrets and run with the other guards, after mutation policies. It must be a registry
+   secret for the image's own registry. A namespace's default for a registry host is a registry
+   secret labelled `kevaso.com/default-pull: "true"`: a label, not a field on the Namespace,
+   because the Namespace has no spec and is cluster-scoped (writing it is an operator's job), while
+   the default belongs with the credential, written by whoever manages the namespace's secrets, and
+   goes when the secret goes. Labelling one needs `use` on it too (it hands it to every silo there),
+   and a host has one default per namespace. The host's agent pulls before Create and Reset
+   (`kri.Puller`), asking the control plane for the credential through the broker path
+   (`pull-credential`, an op the agent's silo-facing broker never forwards): the control plane gives
+   it only for a silo placed on the asking host, and only for that silo's image. docker gets a
+   throwaway config directory (`--config`), podman an auth file (`--authfile`), on tmpfs under
+   `/run/kevaso-pull`, removed after the pull; never on a command line, never in the engine's own
+   config, never in the container. Init containers and the main container run what was pulled
+   (`--pull never`), so a `kvo reset` and its init containers pull the same way. A refused pull is
+   `ImagePullFailed` with the registry's reason (on an update, the old copy keeps running). The
+   credential is asked for each pull, so after a rotation the next pull uses the new value.
+   OpenShell pulls through its own gateway, whose CLI takes no credential (research E037), so
+   `imagePull` is refused there.
+
 2. **Updating a silo is a reset, stop-first.** When `spec.image` resolves to something new, or
    `spec.reset` changes (`kvo reset silo`), the host's agent stops the silo completely, then the
    runtime's `Reset` (`kri.Resetter`, which every built-in runtime has) makes the disk or container
@@ -28,7 +62,8 @@
    - **Scaling in** removes not-Ready instances first, then follows `scaleInPolicy`
      (`NewestFirst`/`OldestFirst`), and never removes a protected one (`kevaso.com/protected`,
      `kvo protect`). `kvo scale` lists what it would delete and wants `--yes`.
-   - **Rollouts.** A new template or image is a new *revision* (a hash, labelled on instances).
+   - **Rollouts.** A new template or image is a new *revision* (a hash, labelled on instances):
+     for containers, a new reference; for cloud-hypervisor, a new Image version.
      With `upgradePolicy: Rolling` (or after `kvo reset siloset --rolling`, whatever the policy),
      outdated instances get the current spec; their agents reset them.
    - **Limits.** At most `maxUnavailable` (default 1) below `instances` are Ready during a
@@ -70,13 +105,22 @@ keeps client addresses and works for TCP and UDP alike.
 - Applying other spec changes (CPU, memory, command) to a running silo: today they take effect at
   its next reset.
 - Cluster-wide Images.
+- A registry credential on OpenShell (its CLI takes none; an experiment on its gateway's own
+  registry settings could change that).
+- A tag that moves under a running silo doesn't update it: only a reset pulls again.
 - Baking Images from Templates.
 - Single-silo StartFirst (M14).
 - Handing out standby instances to runs (M13).
 
 ## Tested by
 
-- `api/v1` (image resolution).
+- `api/v1` (image resolution per runtime family, registry references, the registry secret's shape,
+  default pull secrets).
+- `builtin/kri/container` (the pull command, its auth file's life on the fake host, digests, no
+  pulls behind the agent's back).
+- `test/integration/pull_test.go`: `use` on the pull secret, the credential reaching the silo's own
+  host's pull and nothing left after, another host never getting it, the silo's broker unable to
+  read it, OpenShell refused, ImagePullFailed.
 - `internal/controllers/siloset` (scale out/in, protected, standby, rollouts with maxUnavailable,
   surge and exclusive, Manual + reset).
 - `internal/controllers/service` (endpoints, addresses, node ports).

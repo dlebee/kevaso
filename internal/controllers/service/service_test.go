@@ -11,9 +11,11 @@ import (
 
 func silo(name, host, addr string, labels map[string]string, ready bool) *v1.Silo {
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "web3", Labels: labels},
-		Spec:   v1.SiloSpec{Service: &v1.SiloService{Ports: []v1.ServicePort{{Name: "rpc", Port: 8546}}}},
-		Status: v1.SiloStatus{Host: host, Address: addr}}
+		Spec:   v1.SiloSpec{Ports: []v1.SiloPort{{Name: "rpc", Port: 8546}, {Name: "metrics", Port: 9101}}},
+		Status: v1.SiloStatus{Host: host, SiloIP: addr}}
+	s.Status.Phase = "Starting"
 	if ready {
+		s.Status.Phase = "Running"
 		meta.SetCondition(&s.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue}, time.Now())
 	}
 	return s
@@ -22,7 +24,8 @@ func silo(name, host, addr string, labels map[string]string, ready bool) *v1.Sil
 func TestEndpoints(t *testing.T) {
 	svc := &v1.Service{ObjectMeta: meta.ObjectMeta{Name: "rpc", Namespace: "web3"},
 		Spec: v1.ServiceSpec{Selector: map[string]string{"app": "rpc"},
-			Ports: []v1.ServicePortSpec{{Name: "rpc", Port: 8545, TargetPort: "rpc"}, {Name: "metrics", Port: 9100}}}}
+			Ports: []v1.ServicePortSpec{{Name: "json", Port: 8545, TargetPort: "rpc"}, {Name: "metrics", Port: 9100},
+				{Name: "rpc-udp", Port: 8546, TargetPort: "rpc", Protocol: "UDP"}, {Name: "ghost", Port: 1}}}}
 	app := map[string]string{"app": "rpc"}
 	standby := map[string]string{"app": "rpc", v1.LabelStandby: "true"}
 	other := silo("b", "w1", "10.64.1.3", app, true)
@@ -30,7 +33,7 @@ func TestEndpoints(t *testing.T) {
 	eps := service.Endpoints(svc, []*v1.Silo{
 		silo("c", "w2", "10.64.2.2", app, true),
 		silo("a", "w1", "10.64.1.2", app, true),
-		silo("d", "w1", "10.64.1.4", app, false),                           // not Ready
+		silo("d", "w1", "10.64.1.4", app, false),                           // not running yet
 		silo("e", "w1", "10.64.1.5", standby, true),                        // standby
 		silo("f", "w1", "10.64.1.6", map[string]string{"app": "db"}, true), // not selected
 		other, // other namespace
@@ -38,8 +41,9 @@ func TestEndpoints(t *testing.T) {
 	if len(eps) != 2 || eps[0].Silo != "a" || eps[1].Silo != "c" || eps[0].Host != "w1" {
 		t.Fatalf("endpoints: %+v", eps)
 	}
-	// rpc → the silo's named port (8546); metrics → the same number.
-	if p := eps[0].Ports; len(p) != 2 || p[0].NodePort != 8546 || p[1].NodePort != 9100 {
+	// json → the declared port rpc (8546); metrics → the declared port of its own name (9101); a
+	// UDP port whose target is TCP, and one naming no declared port, aren't sent.
+	if p := eps[0].Ports; len(p) != 2 || p[0].Name != "json" || p[0].NodePort != 8546 || p[1].Name != "metrics" || p[1].NodePort != 9101 {
 		t.Fatalf("ports: %+v", p)
 	}
 }

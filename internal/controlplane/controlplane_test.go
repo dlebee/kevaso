@@ -17,7 +17,7 @@ func start(t *testing.T, dataDir, sock string) (*Running, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	r, err := Start(ctx, Config{
-		ClusterName: "test", HostName: "cp-1", Address: "127.0.0.1",
+		ClusterName: "test", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: dataDir, Listen: "127.0.0.1:0", AdminSocket: sock, Heartbeat: 50 * time.Millisecond,
 	})
 	if err != nil {
@@ -53,7 +53,7 @@ func TestControlPlaneComesUpReadyAndIssuesAdminCredentials(t *testing.T) {
 	r, stop := start(t, data, sock)
 	admin := client.NewUnix(sock)
 	h := waitReady(t, admin)
-	if h.Spec.Components.ControlPlane == nil || h.Spec.Address != "127.0.0.1" {
+	if h.Spec.Components.ControlPlane == nil || h.Spec.InternalIP != "127.0.0.1" {
 		t.Fatalf("registered host %+v", h.Spec)
 	}
 
@@ -139,7 +139,7 @@ func TestHostFollowsANewAddress(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	r2, err := Start(ctx, Config{ClusterName: "test", HostName: "cp-1", Address: "127.0.0.2",
+	r2, err := Start(ctx, Config{ClusterName: "test", HostName: "cp-1", InternalIP: "127.0.0.2",
 		DataDir: data, Listen: "127.0.0.1:0", AdminSocket: sock, Heartbeat: 50 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestHostFollowsANewAddress(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		var h v1.Host
-		if err := admin.Get(ctx, "Host", "", "cp-1", &h); err == nil && h.Spec.Address == "127.0.0.2" {
+		if err := admin.Get(ctx, "Host", "", "cp-1", &h); err == nil && h.Spec.InternalIP == "127.0.0.2" {
 			return
 		}
 		if time.Now().After(deadline) {

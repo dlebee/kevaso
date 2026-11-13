@@ -27,7 +27,7 @@ func TestControlPlaneMovesToEtcd(t *testing.T) {
 	run := func(storeKind string) (*client.Client, func()) {
 		ctx, cancel := context.WithCancel(context.Background())
 		r, err := Start(ctx, Config{
-			ClusterName: "test", HostName: "cp-1", Address: "127.0.0.1",
+			ClusterName: "test", HostName: "cp-1", InternalIP: "127.0.0.1",
 			DataDir: data, Listen: "127.0.0.1:0", AdminSocket: sock, Heartbeat: 50 * time.Millisecond,
 			Store: storeKind, Etcd: EtcdConfig{ClientListen: "127.0.0.1:0"},
 			Log: func(f string, a ...any) { mu.Lock(); logs = append(logs, f); mu.Unlock() },

@@ -9,7 +9,7 @@ import (
 )
 
 // WithLeases marks this host's silos' leased ports (design §7.2d): which are closed at now (no
-// outside rule) and, for open ones, their sources (the service's allowFrom narrowed by the lease's).
+// outside rule); an open one takes its port's own sources.
 // Pure: the same view, silos, leases and moment give the same rules.
 func WithLeases(view kni.Host, silos []*v1.Silo, all []*v1.Lease, now time.Time) kni.Host {
 	byKey := map[string]*v1.Silo{}
@@ -20,22 +20,11 @@ func WithLeases(view kni.Host, silos []*v1.Silo, all []*v1.Lease, now time.Time)
 	copy(local, view.Local)
 	for i, ks := range local {
 		s, ok := byKey[ks.Key]
-		if !ok || s.Spec.Service == nil || s.Spec.Service.Lease == nil {
+		if !ok || !leases.Any(s.Spec) {
 			continue
 		}
-		sv := s.Spec.Service
-		ks.Leased = leases.Leased(sv)
+		ks.Leased = leases.Leased(s.Spec)
 		ks.Closed = leases.Closed(s, all, now)
-		if len(sv.Lease.AllowFrom) > 0 {
-			var base []string
-			switch {
-			case sv.Expose == v1.ExposeHostPort && sv.HostPort != nil:
-				base = sv.HostPort.AllowFrom
-			case sv.Expose == v1.ExposeLoadBalancer && sv.LoadBalancer != nil:
-				base = sv.LoadBalancer.AllowFrom
-			}
-			ks.LeaseFrom = leases.Sources(base, sv.Lease.AllowFrom)
-		}
 		local[i] = ks
 	}
 	view.Local = local

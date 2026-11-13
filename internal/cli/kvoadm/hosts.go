@@ -19,6 +19,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/kvoconfig"
+	"kevaso.com/core/internal/sshboot"
 )
 
 // HostAddOptions are kvoadm host add's flags, on top of init's SSH ones.
@@ -28,7 +29,6 @@ type HostAddOptions struct {
 	Region      string
 	Zone        string
 	Runtimes    []string
-	Advertise   string // the Host's address, if not the SSH one
 	KvoContext  string // the kvo context to act as (a cluster-admin)
 	ServerForIt string // the API URL as the new host reaches it (default: the context's)
 	BehindNAT   bool   // nothing unsolicited reaches it (a box at home)
@@ -77,8 +77,6 @@ func parseHostAdd(args []string) (HostAddOptions, error) {
 			if v, err = val(); err == nil {
 				o.Runtimes = append(o.Runtimes, v)
 			}
-		case "--address":
-			o.Advertise, err = val()
 		case "--context":
 			o.KvoContext, err = val()
 		case "--server":
@@ -102,9 +100,6 @@ func parseHostAdd(args []string) (HostAddOptions, error) {
 		o.Runtimes = []string{"cloud-hypervisor"}
 	case len(o.Runtimes) == 1 && o.Runtimes[0] == "none":
 		o.Runtimes = nil // a worker with no runtime yet (e.g. a box without KVM, for now)
-	}
-	if o.Advertise == "" {
-		o.Advertise = o.Address
 	}
 	if o.StateOnly && o.Install != "control-plane" {
 		return o, errors.New("--state-only goes with --install control-plane")
@@ -141,8 +136,40 @@ WantedBy=multi-user.target
 `
 }
 
-// FenceUnit is a worker-only host's fence (kevasod fence-watch), separate from kevasod.service.
-func FenceUnit(o HostAddOptions) string { return fence.Unit(o.Runtimes, fence.DefaultAfter) }
+// FenceUnitName is the fence's unit, separate from kevasod.service.
+const FenceUnitName = "kevaso-fence.service"
+
+// FenceUnit is the fence (kevasod fence-watch) of a host that runs silos with these runtimes.
+func FenceUnit(runtimes []string) string {
+	if len(runtimes) == 0 {
+		runtimes = []string{"cloud-hypervisor"} // the worker's default (workerArgs)
+	}
+	return fence.Unit(runtimes, fence.DefaultAfter)
+}
+
+// UnitFile is a systemd unit kvoadm installs.
+type UnitFile struct{ Name, Text string }
+
+// UnitsFor is what a host gets: kevasod's unit and, wherever a worker runs, the fence, a worker
+// on a control plane included. Whether the fence ever stops anything is the agent's call
+// (fence.Applies, in the record), kept current as system nodes come and go, so a one-node
+// cluster that grows to three system nodes is covered without reinstalling anything. Pure.
+func UnitsFor(kevasod string, worker bool, runtimes []string) []UnitFile {
+	us := []UnitFile{{"kevasod.service", kevasod}}
+	if worker {
+		us = append(us, UnitFile{FenceUnitName, FenceUnit(runtimes)})
+	}
+	return us
+}
+
+func installUnits(ctx context.Context, conn *sshboot.Conn, us []UnitFile) error {
+	for _, u := range us {
+		if err := conn.InstallUnit(ctx, u.Name, []byte(u.Text)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func adminClient(kctx string) (*client.Client, kvoconfig.Context, error) {
 	path, err := kvoconfig.Path()
@@ -196,7 +223,7 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 		runtimes = append(runtimes, v1.RuntimeSpec{Name: r})
 	}
 	h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: o.Name},
-		Spec: v1.HostSpec{Address: o.Advertise, Region: o.Region, Zone: o.Zone, Network: v1.HostNetwork{BehindNAT: o.BehindNAT},
+		Spec: v1.HostSpec{InternalIP: o.InternalIP, ExternalIP: o.ExternalIP, Region: o.Region, Zone: o.Zone, Network: v1.HostNetwork{BehindNAT: o.BehindNAT},
 			Components: v1.HostComponents{Worker: &v1.WorkerSpec{Labels: o.Labels, Runtimes: runtimes}}}}
 	if err := c.Create(ctx, h); err != nil && !client.IsAlreadyExists(err) {
 		return fmt.Errorf("register host %s: %w", o.Name, err)
@@ -224,16 +251,12 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 	if err := conn.Upload(ctx, "/etc/kevaso/join-token", []byte(tok.Token), 0o600); err != nil {
 		return err
 	}
-	if err := conn.InstallUnit(ctx, "kevasod.service", []byte(WorkerUnit(o, server))); err != nil {
-		return err
-	}
-	say("worker started (kevasod.service), joining %s", server)
 	// Its fence, a unit of its own: when this host's agent can no longer vouch for its silos (cut
 	// off, or not running), it stops those the control plane may start elsewhere.
-	if err := conn.InstallUnit(ctx, "kevaso-fence.service", []byte(FenceUnit(o))); err != nil {
+	if err := installUnits(ctx, conn, UnitsFor(WorkerUnit(o, server), true, o.Runtimes)); err != nil {
 		return err
 	}
-	say("fence started (kevaso-fence.service)")
+	say("worker started (kevasod.service), joining %s; fence started (%s)", server, FenceUnitName)
 	// How kvoadm reaches it, kept on its Host (and so in backups): kvoadm init --restore uses it to
 	// reconnect the worker to a restored control plane.
 	if err := annotateSSH(ctx, c, o.Name, fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))), conn.Fingerprint); err != nil {
@@ -284,7 +307,7 @@ func hostList(ctx context.Context, kctx string, out io.Writer) error {
 		return err
 	}
 	tw := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "NAME\tADDRESS\tREGION\tZONE\tCOMPONENTS\tSTATUS")
+	_, _ = fmt.Fprintln(tw, "NAME\tINTERNAL IP\tEXTERNAL IP\tREGION\tZONE\tCOMPONENTS\tSTATUS")
 	for _, raw := range l.Items {
 		obj, _, err := v1.Decode(raw)
 		if err != nil {
@@ -308,7 +331,7 @@ func hostList(ctx context.Context, kctx string, out io.Writer) error {
 		if h.Spec.Unschedulable {
 			st += " · cordoned"
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", h.Name, h.Spec.Address, dashOr(h.Spec.Region), dashOr(h.Spec.Zone), strings.Join(comps, ", "), st)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", h.Name, dashOr(h.Internal()), dashOr(h.External()), dashOr(h.Spec.Region), dashOr(h.Spec.Zone), strings.Join(comps, ", "), st)
 	}
 	return tw.Flush()
 }
@@ -316,7 +339,7 @@ func hostList(ctx context.Context, kctx string, out io.Writer) error {
 // hostCmd dispatches kvoadm host add|list|… .
 func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("host needs add, install, uninstall, remove, enable-worker, reconnect, list, drain or uncordon")
+		return errors.New("host needs add, install, uninstall, remove, enable-worker, reconnect, list, drain, uncordon or addresses")
 	}
 	switch args[0] {
 	case "add":
@@ -370,6 +393,8 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 		return hostRemoveSystemNode(ctx, args[1], kctx, true, out)
 	case "reconnect":
 		return hostReconnect(ctx, args[1:], stdin, out)
+	case "addresses":
+		return hostAddresses(ctx, args[1:], out)
 	case "list":
 		kctx := ""
 		if len(args) == 3 && args[1] == "--context" {
@@ -446,7 +471,7 @@ func hostDrain(ctx context.Context, name, kctx string, uncordon bool, out io.Wri
 	move, stay := DrainPlan(name, silos)
 	now := time.Now().UTC().Truncate(time.Second)
 	for _, s := range move {
-		s.Status.Host, s.Status.Phase, s.Status.Address, s.Status.Init = "", "Pending", "", nil
+		s.Status.Host, s.Status.Phase, s.Status.SiloIP, s.Status.Init = "", "Pending", "", nil
 		meta.SetCondition(&s.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Drained",
 			Message: "moved off " + name + " by kvoadm host drain: a fresh instance from its image (onHostLoss: Recreate)", ObservedGeneration: s.Generation}, now)
 		if err := c.UpdateStatus(ctx, s); err != nil {

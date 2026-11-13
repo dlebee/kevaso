@@ -45,7 +45,8 @@ func buildPebble(t *testing.T, ctx context.Context, arch string) string {
 }
 
 // TestIngressHTTPS is M10's "done when" (example 04): HTTPS for several private silos through an
-// ingress controller silo, with certificates from an ACME server over real HTTP-01, renewed by
+// ingress controller silo running stock nginx (design §7.3: its config is rendered by the nginx
+// driver and written, checked and reloaded by metal-1's agent from outside), with certificates from an ACME server over real HTTP-01, renewed by
 // Kevaso. Pebble stands in for Let's Encrypt on the client machine; names come from sslip.io (public
 // DNS: NAME.<ip>.sslip.io resolves to the IP), so the ACME server really fetches the challenge from
 // the ingress controller on metal-1's port 80. Some hosts are proven with DNS-01 instead: Pebble
@@ -187,7 +188,7 @@ chmod 0755 /etc/kevaso/dns-providers/challtest`); err != nil {
 	hk, _ := d.Exec(ctx, machines["metal"], "ssh-keygen", "-lf", "/etc/ssh/ssh_host_ed25519_key.pub")
 	must(kvoadm.Run, "", "init", info.User+"@"+info.Host, "--ssh-port", strconv.Itoa(info.Port), "--ssh-key", info.KeyFile,
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
-		"--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker", "--runtime", "docker")
+		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker", "--runtime", "docker")
 
 	app := func(name, ns, port, page string) string {
 		return fmt.Sprintf(`---
@@ -196,11 +197,11 @@ kind: Silo
 metadata: { name: %[1]s, namespace: %[2]s }
 spec:
   runtime: docker
-  image: docker.io/library/python:3.12-slim
-  command: [python3, -m, http.server, "%[3]s", --directory, /site]
+  container: { image: docker.io/library/python:3.12-slim, command: [python3, -m, http.server, "%[3]s", --directory, /site] }
   volumes: [{ name: site, mountPath: /site }]
+  ports: [{ name: http, port: %[3]s }]
   service:
-    ports: [{ name: http, port: %[3]s }]
+    ports: [{ port: http }]
   init:
     steps:
       - name: page
@@ -238,16 +239,16 @@ kind: Silo
 metadata: { name: ingress-public, namespace: kevaso-system }
 spec:
   runtime: docker
-  image: kevaso-ingress              # Kevaso's own image, built on the host: kvo-guest ingress
+  container: { image: docker.io/library/nginx:1.27 }   # the vendor's image as shipped: driven from outside
+  ports: [{ name: http, port: 80 }, { name: https, port: 443 }]
   service:
-    ports: [{ name: http, port: 80 }, { name: https, port: 443 }]
-    expose: hostPort
+    ports: [{ port: http, hostPort: [internal] }, { port: https, hostPort: [internal] }]
 ---
 apiVersion: kevaso/v1
 kind: IngressClass
 metadata: { name: public }
 spec:
-  controller: { silo: ingress-public, namespace: kevaso-system }
+  controller: { driver: nginx, silo: ingress-public, namespace: kevaso-system }
   public: true
 ` + app("api", "payments", "8080", "hello from the api") + app("web", "shop", "3000", "hello from the shop") + `---
 apiVersion: kevaso/v1
@@ -257,7 +258,7 @@ spec:
   ingressClass: public
   hosts: [` + apiHost + `]
   tls: { issuer: pebble }
-  rules: [{ path: /, silo: { name: api, port: http } }]
+  rules: [{ path: /, service: { name: api, port: http } }]
 ---
 apiVersion: kevaso/v1
 kind: Ingress
@@ -266,7 +267,7 @@ spec:
   ingressClass: public
   hosts: [` + shopHost + `]
   tls: { issuer: pebble }
-  rules: [{ path: /, silo: { name: web, port: http } }]
+  rules: [{ path: /, service: { name: web, port: http } }]
 ---
 apiVersion: kevaso/v1
 kind: Ingress
@@ -275,7 +276,7 @@ spec:
   ingressClass: public
   hosts: [` + docsHost + `]
   tls: { issuer: pebble }
-  rules: [{ path: /, silo: { name: web, port: http } }]
+  rules: [{ path: /, service: { name: web, port: http } }]
 ---
 apiVersion: kevaso/v1
 kind: Certificate
@@ -356,6 +357,39 @@ spec:
 		t.Errorf("Ingress address %q, want %s", ing.Status.Address, metalIP)
 	}
 	t.Logf("kvo get ingresses -A:\n%s", must(kvo.Run, "", "get", "ingresses", "-A"))
+
+	// The proxy is stock nginx, configured from outside: the class says it's applied, and the
+	// config in the container is the one the driver rendered (no Kevaso process in it).
+	var class v1.IngressClass
+	if err := json.Unmarshal([]byte(must(kvo.Run, "", "get", "ingressclass", "public", "-o", "json")), &class); err != nil {
+		t.Fatal(err)
+	}
+	if len(class.Status.Controllers) != 1 || class.Status.Controllers[0].Applied == "" || class.Status.Controllers[0].Rejected != "" {
+		t.Errorf("class status %+v", class.Status)
+	}
+	ps, _ := sh("metal", "docker ps --format '{{.Image}} {{.Names}}' | grep nginx")
+	expect("the controller runs the vendor's image", ps, "docker.io/library/nginx:1.27")
+	conf, _ := sh("metal", "docker exec $(docker ps -q --filter label=kevaso.com/name=ingress-public | head -1) cat /etc/nginx/nginx.conf")
+	expect("its nginx.conf is the driver's", conf, "Rendered by Kevaso's nginx ingress driver")
+	top, _ := sh("metal", "docker exec $(docker ps -q --filter label=kevaso.com/name=ingress-public | head -1) sh -c 'cat /proc/[0-9]*/comm' | sort -u")
+	if strings.Contains(top, "kvo") || strings.Contains(top, "kevaso") {
+		t.Errorf("a Kevaso process in the proxy's container:\n%s", top)
+	}
+
+	// A knob nginx doesn't know is refused, and the running config stays.
+	must(kvo.Run, `apiVersion: kevaso/v1
+kind: Ingress
+metadata: { name: api, namespace: payments, annotations: { nginx/no-such-knob: "1" } }
+spec:
+  ingressClass: public
+  hosts: [`+apiHost+`]
+  tls: { issuer: pebble }
+  rules: [{ path: /, service: { name: api, port: http } }]
+`, "apply", "-f", "-")
+	time.Sleep(10 * time.Second)
+	desc := must(kvo.Run, "", "describe", "ingress", "api", "-n", "payments")
+	expect("an unknown annotation shows on the Ingress", desc, "no-such-knob")
+	expect("the last good config is still served", curl("https://"+apiHost+"/"), "hello from the api")
 }
 
 func indent(s, pre string) string {

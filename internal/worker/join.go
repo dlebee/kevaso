@@ -100,8 +100,27 @@ func KeepServers(dataDir string, servers []string) error {
 	return os.Rename(tmp, p)
 }
 
-// Contact remembers when this host last reached the control plane (the agent fences by it).
-type Contact struct{ unixNano atomic.Int64 }
+// Contact remembers when this host last reached the control plane (the agent fences by it), and
+// whether a fence applies here at all (fence.Applies).
+type Contact struct {
+	unixNano atomic.Int64
+	fence    atomic.Int32 // 0: not decided yet, 1: no, 2: yes
+}
+
+// SetFence records whether this host needs fencing.
+func (c *Contact) SetFence(applies bool) {
+	v := int32(1)
+	if applies {
+		v = 2
+	}
+	c.fence.Store(v)
+}
+
+// Fence is what SetFence last said; known false until it was called.
+func (c *Contact) Fence() (applies, known bool) {
+	v := c.fence.Load()
+	return v == 2, v != 0
+}
 
 // Mark records a successful contact.
 func (c *Contact) Mark(t time.Time) { c.unixNano.Store(t.UnixNano()) }

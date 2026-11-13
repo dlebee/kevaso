@@ -3,8 +3,12 @@
 // and the time, and gets back what to store and what to answer. The worker and the load-balancer
 // controller ask it which ports are open at a moment, and when that next changes.
 //
+// Each service port says for itself whether it's leased and on what terms (its lease: default,
+// max, approval; its sources are the port's own); each leased port has its own Lease, so opening one doesn't open another and
+// they end on their own clocks.
+//
 // The flow: someone asks to open a leased port for a while (the silo over its broker, or a person
-// with the verb open on silos/exposure). The time is the one asked, never more than the silo's
+// with the verb open on silos/exposure). The time is the one asked, never more than that port's
 // lease.max, itself never more than the control plane's limit. Without approval.required the port
 // opens at once. With it, the ask becomes a pending Approval (use expose) that always expires;
 // asking again replaces it; a person with approve on silos/exposure answers it (a person who holds
@@ -17,8 +21,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/netip"
-	"slices"
+	"strings"
 	"time"
 
 	"kevaso.com/core/api/meta"
@@ -28,8 +31,8 @@ import (
 
 // Limits are the control plane's (kevasod control-plane --lease-max, --lease-default-max).
 type Limits struct {
-	Max        time.Duration // the longest lease any silo may get, and the most a silo's max may say (24h)
-	DefaultMax time.Duration // a silo's max when it sets none (1h)
+	Max        time.Duration // the longest lease any port may get, and the most a port's max may say (24h)
+	DefaultMax time.Duration // a port's max when it sets none (1h)
 }
 
 // WithDefaults fills what's unset.
@@ -46,8 +49,8 @@ func (l Limits) WithDefaults() Limits {
 	return l
 }
 
-// DefaultFor is a lease's length when neither the ask nor the silo's lease.default says (never
-// more than the silo's max).
+// DefaultFor is a lease's length when neither the ask nor the port's lease.default says (never
+// more than the port's max).
 const DefaultFor = 30 * time.Minute
 
 // Name is the Lease's name for a silo's port: the same two always give the same name.
@@ -62,39 +65,41 @@ func Name(silo, port string) string {
 	return silo + "-" + port + "-" + hex.EncodeToString(h[:3])
 }
 
-// Exposed are the names of the ports a service opens to the outside (hostPort: its listed ports,
-// or all; loadBalancer: all). Private services expose none.
-func Exposed(sv *v1.SiloService) []string {
-	if sv == nil || (sv.Expose != v1.ExposeHostPort && sv.Expose != v1.ExposeLoadBalancer) {
-		return nil
-	}
+// Exposed are the names of the declared ports a silo's service opens outside its silo IP (on the
+// host, or a load balancer), in the service's order.
+func Exposed(spec v1.SiloSpec) []string {
 	var out []string
-	for _, p := range sv.Ports {
-		if sv.Expose == v1.ExposeHostPort && sv.HostPort != nil && len(sv.HostPort.Ports) > 0 && !slices.Contains(sv.HostPort.Ports, p.Name) {
-			continue
+	for _, p := range spec.Open() {
+		if p.Outside() {
+			out = append(out, p.Name)
 		}
-		out = append(out, p.Name)
 	}
 	return out
 }
 
-// Leased are the names of the ports that open only on a lease (lease.ports, or every exposed port).
-func Leased(sv *v1.SiloService) []string {
-	if sv == nil || sv.Lease == nil {
+// Of is the lease terms of the port named port: nil unless the service opens it outside and
+// says lease (a port without lease is always open).
+func Of(spec v1.SiloSpec, port string) *v1.PortLease {
+	p, ok := spec.OpenPort(port)
+	if !ok || !p.Outside() {
 		return nil
 	}
-	exp := Exposed(sv)
-	if len(sv.Lease.Ports) == 0 {
-		return exp
-	}
+	return p.Lease
+}
+
+// Leased are the names of the outside ports that open only on a lease, in the service's order.
+func Leased(spec v1.SiloSpec) []string {
 	var out []string
-	for _, p := range sv.Lease.Ports {
-		if slices.Contains(exp, p) {
+	for _, p := range Exposed(spec) {
+		if Of(spec, p) != nil {
 			out = append(out, p)
 		}
 	}
 	return out
 }
+
+// Any says whether any port of the silo's service is leased.
+func Any(spec v1.SiloSpec) bool { return len(Leased(spec)) > 0 }
 
 func parse(field, s string) (time.Duration, error) {
 	d, err := time.ParseDuration(s)
@@ -107,143 +112,85 @@ func parse(field, s string) (time.Duration, error) {
 	return d, nil
 }
 
-// MaxOf is the longest lease the service may get: its lease.max, or the cluster's default limit,
-// never more than the cluster's limit.
-func MaxOf(sv *v1.SiloService, l Limits) time.Duration {
+// MaxOf is the longest lease a port may get: its lease.max, or the cluster's default limit, never
+// more than the cluster's limit.
+func MaxOf(pl *v1.PortLease, l Limits) time.Duration {
 	l = l.WithDefaults()
 	m := l.DefaultMax
-	if sv != nil && sv.Lease != nil && sv.Lease.Max != "" {
-		if d, err := parse("max", sv.Lease.Max); err == nil {
+	if pl != nil && pl.Max != "" {
+		if d, err := parse("max", pl.Max); err == nil {
 			m = d
 		}
 	}
 	return min(m, l.Max)
 }
 
-// DefaultOf is a lease's length when the ask names none.
-func DefaultOf(sv *v1.SiloService, l Limits) time.Duration {
-	m := MaxOf(sv, l)
-	if sv != nil && sv.Lease != nil && sv.Lease.Default != "" {
-		if d, err := parse("default", sv.Lease.Default); err == nil {
+// DefaultOf is a port's lease length when the ask names none.
+func DefaultOf(pl *v1.PortLease, l Limits) time.Duration {
+	m := MaxOf(pl, l)
+	if pl != nil && pl.Default != "" {
+		if d, err := parse("default", pl.Default); err == nil {
 			return min(d, m)
 		}
 	}
 	return min(DefaultFor, m)
 }
 
-// Duration is how long an ask gets: the time asked ("" → the default), cut to the service's max.
-// clamped says it was cut.
-func Duration(ask string, sv *v1.SiloService, l Limits) (d time.Duration, clamped bool, err error) {
+// Duration is how long an ask gets: the time asked ("" → the port's default), cut to the port's
+// max. clamped says it was cut.
+func Duration(ask string, pl *v1.PortLease, l Limits) (d time.Duration, clamped bool, err error) {
 	if ask == "" {
-		return DefaultOf(sv, l), false, nil
+		return DefaultOf(pl, l), false, nil
 	}
 	d, err = parse("for", ask)
 	if err != nil {
 		return 0, false, err
 	}
-	if m := MaxOf(sv, l); d > m {
+	if m := MaxOf(pl, l); d > m {
 		return m, true, nil
 	}
 	return d, false, nil
 }
 
-// Validate is admission for a silo's service lease: only with an outside exposure, ports that the
-// service exposes, valid durations, default ≤ max ≤ the cluster's limit, sources that are CIDRs.
-func Validate(sv *v1.SiloService, l Limits) []string {
-	if sv == nil || sv.Lease == nil {
+// Validate is admission for the leases on a silo's service ports, port by port: only on a port
+// that opens outside its silo IP, valid durations, default ≤ max ≤ the cluster's limit.
+func Validate(spec v1.SiloSpec, l Limits) []string {
+	if spec.Service == nil {
 		return nil
 	}
 	l = l.WithDefaults()
-	ls := sv.Lease
 	var errs []string
-	if sv.Expose != v1.ExposeHostPort && sv.Expose != v1.ExposeLoadBalancer {
-		return []string{"service.lease: only with expose: hostPort or loadBalancer (private access is never leased: it's allowFrom)"}
-	}
-	exp := Exposed(sv)
-	for _, p := range ls.Ports {
-		if !slices.ContainsFunc(sv.Ports, func(sp v1.ServicePort) bool { return sp.Name == p }) {
-			errs = append(errs, fmt.Sprintf("service.lease.ports: %q isn't a port of the service", p))
-		} else if !slices.Contains(exp, p) {
-			errs = append(errs, fmt.Sprintf("service.lease.ports: %q isn't exposed (service.hostPort.ports)", p))
+	for _, p := range spec.Service.Ports {
+		ls := p.Lease
+		if ls == nil {
+			continue
 		}
-	}
-	max := l.DefaultMax
-	if ls.Max != "" {
-		switch d, err := parse("service.lease.max", ls.Max); {
-		case err != nil:
-			errs = append(errs, err.Error())
-		case d > l.Max:
-			errs = append(errs, fmt.Sprintf("service.lease.max %s is more than this cluster allows (%s)", d, l.Max))
-		default:
-			max = d
+		field := fmt.Sprintf("service.ports[%s].lease", p.Port)
+		if !p.Outside() {
+			errs = append(errs, field+": only on a port with hostPort or loadBalancer (silo-to-silo access is never leased: it's allowFrom)")
+			continue
 		}
-	}
-	if ls.Default != "" {
-		d, err := parse("service.lease.default", ls.Default)
-		if err != nil {
-			errs = append(errs, err.Error())
-		} else if d > max {
-			errs = append(errs, fmt.Sprintf("service.lease.default %s is more than its max (%s)", d, max))
+		max := l.DefaultMax
+		if ls.Max != "" {
+			switch d, err := parse(field+".max", ls.Max); {
+			case err != nil:
+				errs = append(errs, err.Error())
+			case d > l.Max:
+				errs = append(errs, fmt.Sprintf("%s.max %s is more than this cluster allows (%s)", field, d, l.Max))
+			default:
+				max = d
+			}
 		}
-	}
-	for _, c := range ls.AllowFrom {
-		if _, err := prefix(c); err != nil {
-			errs = append(errs, fmt.Sprintf("service.lease.allowFrom: %q isn't an address or CIDR", c))
+		if ls.Default != "" {
+			d, err := parse(field+".default", ls.Default)
+			if err != nil {
+				errs = append(errs, err.Error())
+			} else if d > max {
+				errs = append(errs, fmt.Sprintf("%s.default %s is more than its max (%s)", field, d, max))
+			}
 		}
 	}
 	return errs
-}
-
-func prefix(s string) (netip.Prefix, error) {
-	if p, err := netip.ParsePrefix(s); err == nil {
-		return p.Masked(), nil
-	}
-	a, err := netip.ParseAddr(s)
-	if err != nil {
-		return netip.Prefix{}, err
-	}
-	return netip.PrefixFrom(a, a.BitLen()), nil
-}
-
-// Sources are where an open leased port may be reached from: the service's own sources (nil:
-// anywhere) narrowed by lease.allowFrom. A lease never opens wider than the service; when the two
-// don't overlap at all, nothing may reach it (an empty, non-nil list).
-func Sources(service, lease []string) []string {
-	if len(lease) == 0 {
-		return service
-	}
-	if len(service) == 0 {
-		return lease
-	}
-	out := []string{}
-	for _, a := range service {
-		pa, err := prefix(a)
-		if err != nil {
-			continue
-		}
-		for _, b := range lease {
-			pb, err := prefix(b)
-			if err != nil || !pa.Overlaps(pb) {
-				continue
-			}
-			narrow := pb
-			if pa.Bits() > pb.Bits() {
-				narrow = pa
-			}
-			if s := text(narrow); !slices.Contains(out, s) {
-				out = append(out, s)
-			}
-		}
-	}
-	return out
-}
-
-// text writes a prefix the way people wrote it: a single address without /32.
-func text(p netip.Prefix) string {
-	if p.IsSingleIP() {
-		return p.Addr().String()
-	}
-	return p.String()
 }
 
 // ── Asking ───────────────────────────────────────────────────────────────────
@@ -284,14 +231,14 @@ var (
 
 // Check says whether port is a leased port of the silo.
 func Check(silo *v1.Silo, port string) error {
-	sv := silo.Spec.Service
-	if sv == nil || sv.Lease == nil {
-		return fmt.Errorf("silo %s: %w: its service has no lease", silo.Name, ErrNotLeased)
+	if Of(silo.Spec, port) != nil {
+		return nil
 	}
-	if !slices.Contains(Leased(sv), port) {
-		return fmt.Errorf("silo %s port %q: %w (leased: %v)", silo.Name, port, ErrNotLeased, Leased(sv))
+	leased := Leased(silo.Spec)
+	if len(leased) == 0 {
+		return fmt.Errorf("silo %s port %q: %w: none of its ports is leased", silo.Name, port, ErrNotLeased)
 	}
-	return nil
+	return fmt.Errorf("silo %s port %q: %w (leased: %s)", silo.Name, port, ErrNotLeased, strings.Join(leased, ", "))
 }
 
 // newLease is the lease for a silo's port, keeping what an existing one of the same silo says.
@@ -328,8 +275,8 @@ func Decide(a Ask, silo *v1.Silo, existing *v1.Lease, appr *v1.Approval, l Limit
 	if err := Check(silo, a.Port); err != nil {
 		return Outcome{Err: err}
 	}
-	sv := silo.Spec.Service
-	d, clamped, err := Duration(a.For, sv, l)
+	pl := Of(silo.Spec, a.Port)
+	d, clamped, err := Duration(a.For, pl, l)
 	if err != nil {
 		return Outcome{Err: err}
 	}
@@ -342,10 +289,10 @@ func Decide(a Ask, silo *v1.Silo, existing *v1.Lease, appr *v1.Approval, l Limit
 	}
 	lease := newLease(a, existing)
 	pendingNow := appr != nil && appr.Spec.SiloUID == a.SiloUID && approvals.StateOf(appr, a.SiloUID, now) == approvals.Pending
-	needYes := sv.Lease.Approval != nil && sv.Lease.Approval.Required && !a.MayApprove
-	if !needYes {
+	required := pl.Approval != nil && pl.Approval.Required
+	if !required || a.MayApprove {
 		approvedBy := ""
-		if sv.Lease.Approval != nil && sv.Lease.Approval.Required {
+		if required {
 			approvedBy = a.By // they hold approve themselves
 		}
 		open(lease, a.By, approvedBy, now, now.Add(d))
@@ -369,23 +316,18 @@ func Decide(a Ask, silo *v1.Silo, existing *v1.Lease, appr *v1.Approval, l Limit
 		}
 		wait = w
 	}
-	proto := "TCP"
-	for _, p := range sv.Ports {
-		if p.Name == a.Port && p.Protocol != "" {
-			proto = p.Protocol
-		}
-	}
-	port := 0
-	for _, p := range sv.Ports {
-		if p.Name == a.Port {
-			port = p.Port
-		}
+	op, _ := silo.Spec.OpenPort(a.Port)
+	proto, port := op.Protocol, op.HostNumber()
+	from := "from anywhere"
+	if len(op.Sources) > 0 {
+		from = "from " + strings.Join(op.Sources, ", ")
 	}
 	req := &v1.Approval{
 		TypeMeta:   meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Approval"},
 		ObjectMeta: meta.ObjectMeta{Namespace: a.Namespace, Name: approvals.Name(a.Silo, a.SiloUID, v1.ApprovalForExpose, a.Port)},
 		Spec: v1.ApprovalSpec{Silo: a.Silo, SiloUID: a.SiloUID, Port: a.Port, Use: v1.ApprovalForExpose,
-			Summary:     fmt.Sprintf("open port %s (%d/%s) to the outside for %s, asked by %s", a.Port, port, proto, d, a.By),
+			Summary: fmt.Sprintf("open port %s (%d/%s) to the outside %s for %s (this port's max %s), asked by %s",
+				a.Port, port, proto, from, d, MaxOf(pl, l), a.By),
 			For:         d.String(),
 			RequestedAt: now, ExpiresAt: now.Add(wait)},
 		Status: v1.ApprovalStatus{Phase: v1.ApprovalPending},
@@ -538,7 +480,7 @@ func For(s *v1.Silo, all []*v1.Lease) map[string]*v1.Lease {
 func States(s *v1.Silo, all []*v1.Lease, now time.Time) []State {
 	mine := For(s, all)
 	var out []State
-	for _, p := range Leased(s.Spec.Service) {
+	for _, p := range Leased(s.Spec) {
 		st := State{Port: p, Phase: v1.LeaseClosed}
 		l := mine[p]
 		switch {

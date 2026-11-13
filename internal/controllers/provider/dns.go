@@ -24,7 +24,7 @@ import (
 const FinalizerDNS = "dns.kevaso.com/records"
 
 // IngressDNS publishes an Ingress's host names through its class's DNS provider, pointing at the
-// class controller's public address (status.address), and deletes them when they go. Records are
+// class controller's outside address (the Ingress's status.address: the controller's load-balancer IP, else its host's external IP), and deletes them when they go. Records are
 // marked as this cluster's; a name someone else owns is left alone (the condition says so).
 type IngressDNS struct {
 	Client    *client.Client

@@ -165,7 +165,7 @@ func TestOpenShellSilos(t *testing.T) {
 	hk, _ := d.Exec(ctx, machines["metal"], "ssh-keygen", "-lf", "/etc/ssh/ssh_host_ed25519_key.pub")
 	must(kvoadm.Run, "", "init", info.User+"@"+info.Host, "--ssh-port", strconv.Itoa(info.Port), "--ssh-key", info.KeyFile,
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
-		"--api-server", "https://127.0.0.1:6443", "--address", metalIP, "--worker",
+		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker",
 		"--runtime", "openshell", "--runtime", "openshell-container", "--openshell-gateway-scope", "namespace",
 		"--egress-extra-ca", "/etc/kevaso/test-internet-ca.pem")
 
@@ -179,7 +179,7 @@ kind: Silo
 metadata: { name: %s, namespace: agents }
 spec:
   runtime: %s
-  image: ubuntu-24.04
+  container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 1Gi }
   grants: [api]
 `, name, runtime)

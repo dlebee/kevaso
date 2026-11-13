@@ -120,9 +120,9 @@ func TestUnitWithWorker(t *testing.T) {
 }
 
 func TestUnit(t *testing.T) {
-	u := Unit(InitOptions{Name: "cp-1", Address: "203.0.113.10", Cluster: "home"})
+	u := Unit(InitOptions{Name: "cp-1", Address: "203.0.113.10", ExternalIP: "203.0.113.10", Cluster: "home"})
 	for _, want := range []string{
-		"ExecStart=/usr/local/bin/kevasod control-plane --name cp-1 --address 203.0.113.10 --cluster home",
+		"ExecStart=/usr/local/bin/kevasod control-plane --name cp-1 --external-ip 203.0.113.10 --cluster home",
 		"Restart=always", "RuntimeDirectory=kevaso", "StateDirectoryMode=0700", "WantedBy=multi-user.target",
 	} {
 		if !strings.Contains(u, want) {
@@ -133,11 +133,11 @@ func TestUnit(t *testing.T) {
 
 func TestParseHostAdd(t *testing.T) {
 	o, err := parseHostAdd([]string{"root@198.51.100.30", "--name", "worker-1", "--install", "worker", "--label", "gpu=no",
-		"--region", "ca-central", "--zone", "tor", "--kevasod", "/k", "--address", "10.0.0.5", "--server", "https://10.0.0.1:6443", "--ssh-key", "/key"})
+		"--region", "ca-central", "--zone", "tor", "--kevasod", "/k", "--internal-ip", "10.0.0.5", "--server", "https://10.0.0.1:6443", "--ssh-key", "/key"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.Name != "worker-1" || o.Address != "198.51.100.30" || o.Advertise != "10.0.0.5" || o.Region != "ca-central" || o.Zone != "tor" ||
+	if o.Name != "worker-1" || o.Address != "198.51.100.30" || o.InternalIP != "10.0.0.5" || o.ExternalIP != "" || o.Region != "ca-central" || o.Zone != "tor" ||
 		o.Labels["gpu"] != "no" || o.ServerForIt != "https://10.0.0.1:6443" || len(o.Runtimes) != 1 || o.Runtimes[0] != "cloud-hypervisor" {
 		t.Fatalf("parsed %+v", o)
 	}
@@ -153,11 +153,13 @@ func TestParseHostAdd(t *testing.T) {
 	}
 }
 
-// A worker-only host gets a fence of its own: the same runtimes, and nothing tying it to
+// A host with a worker gets a fence of its own: the same runtimes, and nothing tying it to
 // kevasod.service (it must keep running when kevasod stops or dies).
 func TestFenceUnit(t *testing.T) {
-	o := HostAddOptions{InitOptions: InitOptions{Name: "w2"}, Runtimes: []string{"docker", "podman"}}
-	u := FenceUnit(o)
+	u := FenceUnit([]string{"docker", "podman"})
+	if def := FenceUnit(nil); !strings.Contains(def, "--runtime cloud-hypervisor\n") {
+		t.Fatalf("default runtimes:\n%s", def)
+	}
 	if !strings.Contains(u, "ExecStart=/usr/local/bin/kevasod fence-watch --fence-after 30s --runtime docker --runtime podman\n") ||
 		!strings.Contains(u, "Restart=always") {
 		t.Fatalf("fence unit:\n%s", u)
@@ -188,8 +190,8 @@ func TestInitWithEtcdStore(t *testing.T) {
 }
 
 func TestUnitAdvertisesAnotherAddress(t *testing.T) {
-	u := Unit(InitOptions{Name: "cp-1", Address: "127.0.0.1", Advertise: "192.168.105.2", Cluster: "c"})
-	if !strings.Contains(u, "--address 192.168.105.2 --cluster c --extra-name 127.0.0.1") {
+	u := Unit(InitOptions{Name: "cp-1", Address: "127.0.0.1", InternalIP: "192.168.105.2", Cluster: "c"})
+	if !strings.Contains(u, "--internal-ip 192.168.105.2 --cluster c --extra-name 127.0.0.1") {
 		t.Fatalf("unit:\n%s", u)
 	}
 }
@@ -231,12 +233,12 @@ func TestAssess(t *testing.T) {
 }
 
 func TestWithWorker(t *testing.T) {
-	cp := Unit(InitOptions{Name: "hv1", Address: "203.0.113.10", Cluster: "home"})
+	cp := Unit(InitOptions{Name: "hv1", Address: "203.0.113.10", ExternalIP: "203.0.113.10", Cluster: "home"})
 	got, err := WithWorker(cp, InitOptions{Runtimes: []string{"docker", "cloud-hypervisor"}, LoopStorage: "40G"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, "ExecStart=/usr/local/bin/kevasod control-plane --name hv1 --address 203.0.113.10 --cluster home --worker --runtime docker --runtime cloud-hypervisor --loop-storage /var/lib/kevaso-storage.img --loop-size 40G\n") {
+	if !strings.Contains(got, "ExecStart=/usr/local/bin/kevasod control-plane --name hv1 --external-ip 203.0.113.10 --cluster home --worker --runtime docker --runtime cloud-hypervisor --loop-storage /var/lib/kevaso-storage.img --loop-size 40G\n") {
 		t.Fatalf("unit:\n%s", got)
 	}
 	// Again, with other runtimes: the worker flags are replaced, not added to.
@@ -269,5 +271,54 @@ func TestLoadKeyWithPassphrase(t *testing.T) {
 	plain, _ := ssh.MarshalPrivateKey(sk, "")
 	if s, err := loadKey("k", pem.EncodeToMemory(plain), strings.NewReader(""), io.Discard); err != nil || s == nil {
 		t.Fatalf("plain key: %v", err)
+	}
+}
+
+// Every host that runs silos gets the fence, a control plane with a worker included (whether it
+// acts is the agent's fence.Applies); a host without a worker gets none.
+func TestUnitsFor(t *testing.T) {
+	names := func(us []UnitFile) string {
+		var out []string
+		for _, u := range us {
+			out = append(out, u.Name)
+		}
+		return strings.Join(out, ",")
+	}
+	init1, _ := parseInit([]string{"root@a", "--kevasod", "/k", "--ssh-key", "/key", "--worker", "--runtime", "docker"})
+	for _, c := range []struct {
+		name string
+		us   []UnitFile
+		want string
+	}{
+		{"control plane only", UnitsFor(Unit(InitOptions{Name: "cp"}), false, nil), "kevasod.service"},
+		{"init --worker", UnitsFor(Unit(init1), init1.Worker, init1.Runtimes), "kevasod.service," + FenceUnitName},
+		{"worker only", UnitsFor("x", true, []string{"docker"}), "kevasod.service," + FenceUnitName},
+	} {
+		if got := names(c.us); got != c.want {
+			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
+	}
+	if us := UnitsFor(Unit(init1), init1.Worker, init1.Runtimes); !strings.Contains(us[1].Text, "fence-watch --fence-after 30s --runtime docker\n") {
+		t.Fatalf("fence of init --worker:\n%s", us[1].Text)
+	}
+}
+
+func TestEditAddresses(t *testing.T) {
+	got, err := EditAddresses(nil, "add", []string{"203.0.113.21/30", "203.0.113.9/32", "198.51.100.7"})
+	if err != nil || strings.Join(got, " ") != "203.0.113.20/30 203.0.113.9 198.51.100.7" {
+		t.Fatalf("add: %v %v", got, err)
+	}
+	if again, _ := EditAddresses(got, "add", []string{"203.0.113.20/30"}); len(again) != 3 {
+		t.Fatalf("adding twice: %v", again)
+	}
+	got, err = EditAddresses(got, "remove", []string{"203.0.113.9"})
+	if err != nil || strings.Join(got, " ") != "203.0.113.20/30 198.51.100.7" {
+		t.Fatalf("remove: %v %v", got, err)
+	}
+	if _, err := EditAddresses(got, "remove", []string{"192.0.2.1"}); err == nil {
+		t.Fatal("removing one it doesn't have")
+	}
+	if _, err := EditAddresses(got, "add", []string{"2001:db8::/64"}); err == nil {
+		t.Fatal("IPv6")
 	}
 }

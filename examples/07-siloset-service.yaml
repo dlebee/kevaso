@@ -4,14 +4,18 @@
 #   kvo get silosets,services -n web3
 #   kvo describe service rpc -n web3              # its virtual IP, endpoints, outside address
 #
-# An Image names the bits with immutable versions; a SiloSet makes N silos from it (like a VM scale
-# set: stateful instances with stable names, rpc-pool-0, rpc-pool-1, …); a standalone Service picks
-# them by label and is their public face. Each instance stays private: the Service's load balancer
-# reaches it through a node port on its host, from the load balancer's addresses only.
+# A SiloSet makes N silos from one image (like a VM scale set: stateful instances with stable
+# names, rpc-pool-0, rpc-pool-1, …); a standalone Service picks them by label and is their public
+# face. These are containers, so the template says container: { image }, a registry reference used
+# as it is: the set rolls when you change it (pin it by digest, IMAGE@sha256:…, so a moved tag never
+# changes what runs; kvo describe silo shows the digest each host pulled). VMImages are for machine
+# disks: a set of cloud-hypervisor silos says vm: { image: VMIMAGE:VERSION } instead (example 08).
+# Each instance stays private: the Service's load balancer reaches it through a node port on its
+# host, from the load balancer's addresses only.
 #
 # The Linode parts (provider: linode, linode-nodebalancer) need the plugin (kvoadm plugin install
 # linode); without one, drop the hostSelector and use the Service's default type, ClusterIP: a
-# virtual IP and the name rpc.web3.kevaso, for silos its instances allowFrom.
+# virtual IP and the name rpc.web3.kevaso, for the silos its instances' rpc port allows (allowFrom).
 #
 #   kvo scale siloset rpc-pool --instances 5      # more; fewer asks first (it deletes disks)
 #   kvo reset siloset rpc-pool --rolling          # every instance back onto its image, one at a time
@@ -22,42 +26,42 @@ kind: Namespace
 metadata: { name: web3 }
 ---
 apiVersion: kevaso/v1
-kind: Image
-metadata: { name: geth-node, namespace: web3 }
-spec:
-  versions:                       # oldest first; a version never changes once added
-    - name: v1
-      container: docker.io/ethereum/client-go:v1.14.13
----
-apiVersion: kevaso/v1
 kind: SiloSet
 metadata: { name: rpc-pool, namespace: web3 }
 spec:
-  image: geth-node:v1
   instances: 3
   spread: host                    # instances on different hosts where possible
-  upgradePolicy: Rolling          # a new image resets instances onto it, one at a time (Manual: you choose when)
+  upgradePolicy: Rolling          # a new reference resets instances onto it, one at a time (Manual: you choose when)
   update: { strategy: StartFirst } # start an extra instance first: never fewer than 3 ready
   template:
     labels: { app: rpc }
     runtime: docker               # Linode hosts have no KVM (research E030); cloud-hypervisor on KVM hosts
-    command: [geth, --http, --http.addr, 0.0.0.0, --http.vhosts, "*", --syncmode, snap]
+    container:
+      image: docker.io/ethereum/client-go:v1.14.13   # a new reference here is a rollout
+      command: [geth, --http, --http.addr, 0.0.0.0, --http.vhosts, "*", --syncmode, snap]
     placement:
       hostSelector: { provider: linode }   # a label on your Linode workers (kvoadm host add … --label provider=linode)
     volumes: [{ name: chain, mountPath: /root/.ethereum, size: 100Gi }]
-    readiness:                    # an endpoint only while it answers
-      command: [sh, -c, "geth attach --exec eth.blockNumber /root/.ethereum/geth.ipc"]
-      period: 15s
-    service:
-      ports: [{ name: rpc, port: 8545, protocol: TCP }]
-      expose: private
+    probes:
+      startup: { tcp: { port: rpc }, period: 5s, timeout: 10m }   # "it has come up"
+      readiness:                  # "it can take work now"
+        exec: { command: [sh, -c, "geth attach --exec eth.blockNumber /root/.ethereum/geth.ipc"] }
+        period: 15s
+    ports: [{ name: rpc, port: 8545, protocol: TCP }]
+    service:                      # each instance's own: rpc-pool-0.web3.kevaso…
+      ports: [{ port: rpc }]      # on its silo IP only; add allowFrom: [SILO] for silos that call it directly
+      routeWhen: ready            # stated, never assumed: its name answers only while ready
 ---
 apiVersion: kevaso/v1
 kind: Service
 metadata: { name: rpc, namespace: web3 }
 spec:
-  selector: { app: rpc }          # every Ready rpc-pool instance (standby ones aren't)
+  selector: { app: rpc }          # every rpc-pool instance (standby ones aren't)
+  routeWhen: ready                # an endpoint only while its readiness passes; the others show as held
   ports:
     - { name: rpc, port: 8545, targetPort: rpc, protocol: TCP }
   type: LoadBalancer
   loadBalancerClass: linode-nodebalancer
+  # No loadBalancerIP: it's on the namespace's shared IP for the class (default-linode-nodebalancer,
+  # one NodeBalancer for every such service here, each on its own ports), made on first use and gone
+  # with the last unless kept. loadBalancerDedicated: true gives it one of its own.

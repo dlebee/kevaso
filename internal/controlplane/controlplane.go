@@ -21,6 +21,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kcc/acme"
+	kicdrivers "kevaso.com/core/builtin/kic"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/audit"
@@ -28,11 +29,14 @@ import (
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controllers/certificate"
 	hostcontroller "kevaso.com/core/internal/controllers/host"
+	ipcontroller "kevaso.com/core/internal/controllers/ip"
 	"kevaso.com/core/internal/controllers/provider"
 	servicecontroller "kevaso.com/core/internal/controllers/service"
 	silocontroller "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/controllers/siloset"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/fence"
+	"kevaso.com/core/internal/ingress"
 	"kevaso.com/core/internal/issuer"
 	"kevaso.com/core/internal/jointoken"
 	"kevaso.com/core/internal/kms"
@@ -51,8 +55,14 @@ import (
 // Config is what the control plane needs.
 type Config struct {
 	ClusterName string
-	HostName    string   // this host's name
-	Address     string   // its address (in the server certificate and the Host object)
+	HostName    string // this host's name
+	// InternalIP and ExternalIP are this host's addresses (design §7.0: at least one), put on its
+	// Host object and in the server certificate; other hosts reach it at its external IP if it has
+	// one, else its internal IP (Reach; ADR 0010).
+	InternalIP string
+	ExternalIP string
+	// DNSSuffix is the cluster's names' last label ("": kevaso), published on this host's status.
+	DNSSuffix   string
 	ExtraNames  []string // more names/IPs for the server certificate (DNS name, 127.0.0.1)
 	DataDir     string
 	Listen      string // TLS API, e.g. 0.0.0.0:6443
@@ -97,7 +107,9 @@ func (c *Config) defaults() {
 		c.ClusterName = "kevaso"
 	}
 	if c.Heartbeat <= 0 {
-		c.Heartbeat = 30 * time.Second
+		// The worker's period: with a worker here, the heartbeat is also the fence's contact,
+		// which must stay well under FenceAfter.
+		c.Heartbeat = worker.DefaultHeartbeat
 	}
 	if c.Clock == nil {
 		c.Clock = clock.Real{}
@@ -122,14 +134,33 @@ type Running struct {
 	err     error
 }
 
+// Reach is where other hosts reach this one: its external IP if it has one, else its internal IP.
+func (cfg Config) Reach() string {
+	if cfg.ExternalIP != "" {
+		return cfg.ExternalIP
+	}
+	return cfg.InternalIP
+}
+
+// ips are the host's addresses, internal first.
+func (cfg Config) ips() []string {
+	var out []string
+	for _, a := range []string{cfg.InternalIP, cfg.ExternalIP} {
+		if a != "" {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // Wait blocks until the control plane stopped and returns why.
 func (r *Running) Wait() error { <-r.done; return r.err }
 
 // Start brings the control plane up and returns once it serves; it stops when ctx ends.
 func Start(ctx context.Context, cfg Config) (*Running, error) {
 	cfg.defaults()
-	if cfg.HostName == "" || cfg.Address == "" || cfg.DataDir == "" || cfg.Listen == "" || cfg.AdminSocket == "" {
-		return nil, errors.New("control plane needs a host name, an address, a data dir, a listen address and an admin socket")
+	if cfg.HostName == "" || cfg.Reach() == "" || cfg.DataDir == "" || cfg.Listen == "" || cfg.AdminSocket == "" {
+		return nil, errors.New("control plane needs a host name, an internal or external IP, a data dir, a listen address and an admin socket")
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, err
@@ -141,7 +172,8 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	if err != nil {
 		return nil, err
 	}
-	names := append([]string{cfg.HostName, cfg.Address, "127.0.0.1", "localhost"}, cfg.ExtraNames...)
+	names := append(append([]string{cfg.HostName}, cfg.ips()...), "127.0.0.1", "localhost")
+	names = append(names, cfg.ExtraNames...)
 	if cfg.ClusterDNS != "" {
 		names = append(names, cfg.ClusterDNS)
 	}
@@ -158,7 +190,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	}
 	tokens := &jointoken.Issuer{Store: st, Clock: cfg.Clock}
 	_, port, _ := net.SplitHostPort(cfg.Listen)
-	issuerHost := cfg.Address
+	issuerHost := cfg.Reach()
 	if cfg.ClusterDNS != "" { // one issuer for every system node: tokens work at any of them
 		issuerHost = cfg.ClusterDNS
 	}
@@ -180,6 +212,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("kms: %w", err)
 	}
+	srv.SetLog(cfg.Log)
 	srv.SetApprovalLimits(cfg.Approvals)
 	srv.SetLeaseLimits(cfg.Leases)
 	if cfg.Plugins != nil {
@@ -226,7 +259,11 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 
 	admin, closeInProcess := srv.InProcess() // the components' own way in, not the admin socket
 	hbCtx, stopHB := context.WithCancel(ctx)
-	go heartbeat(hbCtx, admin, cfg, cfg.self(r.APIAddr, st))
+	var contact *worker.Contact // with a worker here: the fence's contact and whether it applies
+	if cfg.Worker != nil {
+		contact = &worker.Contact{}
+	}
+	go heartbeat(hbCtx, admin, cfg, cfg.self(r.APIAddr, st), contact)
 	// Every system node serves the API; one at a time runs the controllers (systemnodes.go).
 	go runLeader(hbCtx, st, cfg, func(ctx context.Context) {
 		go expireApprovals(ctx, srv, cfg)
@@ -245,7 +282,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	}
 	if cfg.Worker != nil {
 		wc := *cfg.Worker
-		wc.HostName, wc.Clock, wc.Log, wc.MeshSubnet = cfg.HostName, cfg.Clock, cfg.Log, cfg.Mesh
+		wc.HostName, wc.Clock, wc.Log, wc.MeshSubnet, wc.Contact = cfg.HostName, cfg.Clock, cfg.Log, cfg.Mesh, contact
 		if wc.DataDir == "" {
 			wc.DataDir = cfg.DataDir
 		}
@@ -339,7 +376,7 @@ type certDeps struct {
 }
 
 func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDeps) {
-	silos, hosts, pools := informer.New(c, "Silo"), informer.New(c, "Host"), informer.New(c, "IPPool")
+	silos, hosts, ipInf := informer.New(c, "Silo"), informer.New(c, "Host"), informer.New(c, "IP")
 	certs, ingresses, classes, issuers := informer.New(c, "Certificate"), informer.New(c, "Ingress"), informer.New(c, "IngressClass"), informer.New(c, "Issuer")
 	if err := certificate.EnsureIssuers(ctx, c); err != nil {
 		cfg.Log("built-in issuers: %v", err)
@@ -348,8 +385,8 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	e.OnError = func(ctrl string, k engine.Key, err error, retry time.Duration) {
 		cfg.Log("%s: %s: %v (retry in %v)", ctrl, k, err, retry)
 	}
-	images, sets, services := informer.New(c, "Image"), informer.New(c, "SiloSet"), informer.New(c, "Service")
-	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, Pools: pools, Images: images, Clock: cfg.Clock}
+	images, sets, services := informer.New(c, "VMImage"), informer.New(c, "SiloSet"), informer.New(c, "Service")
+	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, IPs: ipInf, Images: images, Clock: cfg.Clock}
 	if cfg.Plugins != nil {
 		reg := cfg.Plugins
 		sc.Classes = func() map[string]scheduler.Class { return provider.Classes(reg) }
@@ -358,15 +395,21 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	e.Register(&hostcontroller.Controller{Client: c, Hosts: hosts, Clock: cfg.Clock, Lease: cfg.HostLease}, engine.Options{Workers: 1})
 	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
-	pools.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IPPool", Name: k.Name}) })
+	ipInf.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IP", Namespace: k.Namespace, Name: k.Name}) })
+	e.Register(&ipcontroller.Controller{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Plugins: cfg.Plugins, Clock: cfg.Clock}, engine.Options{Workers: 1})
+	e.Register(&ipcontroller.Made{Client: c, IPs: ipInf, For: silos, ForKind: "Silo", Plugins: cfg.Plugins}, engine.Options{Workers: 1})
+	e.Register(&ipcontroller.Made{Client: c, IPs: ipInf, For: services, ForKind: "Service", Plugins: cfg.Plugins}, engine.Options{Workers: 1})
 	e.Register(&siloset.Controller{Client: c, Sets: sets, Silos: silos, Clock: cfg.Clock}, engine.Options{Workers: 2})
 	e.Register(&servicecontroller.Controller{Client: c, Services: services, Silos: silos, Clock: cfg.Clock}, engine.Options{Workers: 2})
-	images.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Image", Namespace: k.Namespace, Name: k.Name}) })
+	images.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "VMImage", Namespace: k.Namespace, Name: k.Name}) })
 	sets.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "SiloSet", Namespace: k.Namespace, Name: k.Name}) })
 	services.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Service", Namespace: k.Namespace, Name: k.Name}) })
 	cc := &certificate.Controller{Client: c, Store: cd.store, KMS: cd.kms, Clock: cfg.Clock, Defaults: cfg.DefaultIssuers,
 		CertControllers: certControllers(cfg, cd),
-		Certificates:    certs, Ingresses: ingresses, Classes: classes, Issuers: issuers, Log: cfg.Log}
+		Certificates:    certs, Ingresses: ingresses, Classes: classes, Issuers: issuers, Log: cfg.Log, Silos: silos,
+		Refused: func(class *v1.IngressClass, ing *v1.Ingress) (string, string) {
+			return ingress.Refused(kicdrivers.Builtin(), class, ing)
+		}}
 	e.Register(cc, engine.Options{Workers: 2})
 	e.Register(cc.IngressController(), engine.Options{Workers: 1})
 	ingressesOf := func(match func(*v1.Ingress) bool) {
@@ -392,9 +435,11 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 		ingressesOf(func(ing *v1.Ingress) bool { return ing.Spec.IngressClass == k.Name })
 	})
 	silos.AddHandler(func(k informer.Key) { // a controller's address shows in its Ingresses' status
+		so, _ := silos.Get(k.Namespace, k.Name)
+		s, _ := so.(*v1.Silo)
 		for _, o := range classes.List() {
 			cl := o.(*v1.IngressClass)
-			if cl.Spec.Controller.Namespace == k.Namespace && cl.Spec.Controller.Silo == k.Name {
+			if ctl := cl.Spec.Controller; ctl.Runs(s) || (ctl.Namespace == k.Namespace && ctl.Silo == k.Name) {
 				ingressesOf(func(ing *v1.Ingress) bool { return ing.Spec.IngressClass == cl.Name })
 			}
 		}
@@ -408,8 +453,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 			}
 		})
 		go leaseInf.Run(ctx)
-		e.Register(&provider.LoadBalancers{Client: c, Silos: silos, Hosts: hosts, Leases: leaseInf, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 2})
-		e.Register(&provider.ServiceLoadBalancers{Client: c, Services: services, Hosts: hosts, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 1})
+		e.Register(&provider.Balancers{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Leases: leaseInf, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 2})
 		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 2})
 		e.Register(&provider.IngressDNS{Client: c, Ingresses: ingresses, Classes: classes, Plugins: reg, Cluster: cfg.ClusterName, Clock: cfg.Clock}, engine.Options{Workers: 1})
 		classes.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IngressClass", Name: k.Name}) })
@@ -438,7 +482,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	}
 	go silos.Run(ctx)
 	go hosts.Run(ctx)
-	go pools.Run(ctx)
+	go ipInf.Run(ctx)
 	go images.Run(ctx)
 	go sets.Run(ctx)
 	go services.Run(ctx)
@@ -453,7 +497,9 @@ func serveErr(err error) error {
 }
 
 // heartbeat makes sure this host's Host object exists and keeps its Ready condition fresh.
-func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport) {
+// With a worker here (contact set), a heartbeat that got through is also the fence's contact:
+// written through the store, so a system node cut off from the majority stops getting it.
+func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport, contact *worker.Contact) {
 	tick := func() {
 		var h v1.Host
 		err := c.Get(ctx, "Host", "", cfg.HostName, &h)
@@ -462,7 +508,7 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport
 			h = v1.Host{
 				TypeMeta:   meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"},
 				ObjectMeta: meta.ObjectMeta{Name: cfg.HostName},
-				Spec:       v1.HostSpec{Address: cfg.Address, Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{}}},
+				Spec:       v1.HostSpec{InternalIP: cfg.InternalIP, ExternalIP: cfg.ExternalIP, Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{}}},
 			}
 			if err = c.Create(ctx, &h); err != nil {
 				cfg.Log("register host: %v", err)
@@ -471,9 +517,9 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport
 		case err != nil:
 			cfg.Log("heartbeat: %v", err)
 			return
-		case h.Spec.Address != cfg.Address: // moved (restored onto a new machine)
-			cfg.Log("host %s: address %s → %s", cfg.HostName, h.Spec.Address, cfg.Address)
-			h.Spec.Address = cfg.Address
+		case h.Spec.InternalIP != cfg.InternalIP || h.Spec.ExternalIP != cfg.ExternalIP: // moved (restored onto a new machine)
+			cfg.Log("host %s: internal IP %q → %q, external IP %q → %q", cfg.HostName, h.Spec.InternalIP, cfg.InternalIP, h.Spec.ExternalIP, cfg.ExternalIP)
+			h.Spec.InternalIP, h.Spec.ExternalIP = cfg.InternalIP, cfg.ExternalIP
 			if err := c.Update(ctx, &h); err != nil {
 				cfg.Log("host address: %v", err)
 				return
@@ -488,9 +534,27 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport
 		}, cfg.Clock.Now().UTC().Truncate(time.Second))
 		setHeartbeat(&h, cfg.Clock.Now())
 		reportSelf(&h, rep)
-		if err := c.UpdateStatus(ctx, &h); err != nil && ctx.Err() == nil {
-			cfg.Log("heartbeat status: %v", err)
+		if err := c.UpdateStatus(ctx, &h); err != nil {
+			if ctx.Err() == nil {
+				cfg.Log("heartbeat status: %v", err)
+			}
+			return
 		}
+		if contact == nil {
+			return
+		}
+		contact.Mark(cfg.Clock.Now())
+		hosts, err := c.List(ctx, "Host", "")
+		if err != nil {
+			return // undecided stays what it was
+		}
+		var hs []v1.Host
+		for _, raw := range hosts.Items {
+			if obj, _, err := v1.Decode(raw); err == nil {
+				hs = append(hs, *obj.(*v1.Host))
+			}
+		}
+		contact.SetFence(fence.Applies(hs, cfg.HostName))
 	}
 	tick()
 	t := time.NewTicker(cfg.Heartbeat)

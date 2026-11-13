@@ -154,17 +154,18 @@ func TestAllocateIP(t *testing.T) {
 
 func TestRenderedFiles(t *testing.T) {
 	ud := UserData("ssh-ed25519 AAAA exec", "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----", "ssh-ed25519 BBBB host")
-	for _, want := range []string{"name: kevaso", "ssh-ed25519 AAAA exec", "ssh_pwauth: false", "lock_passwd: true", "disable_root: true", "      abc", "ed25519_public: ssh-ed25519 BBBB host"} {
+	for _, want := range []string{"users: []\n", "path: /root/.ssh/authorized_keys\n    content: \"ssh-ed25519 AAAA exec\\n\"", "ssh_pwauth: false",
+		"PermitRootLogin prohibit-password", "disable_root: false", "      abc", "ed25519_public: ssh-ed25519 BBBB host"} {
 		if !strings.Contains(ud, want) {
-			t.Errorf("user-data missing %q", want)
+			t.Errorf("user-data missing %q:\n%s", want, ud)
 		}
 	}
 	// A disk that moved here kept the old host's exec key until cloud-init's final stage (seen on
-	// Lima: two keys in authorized_keys once the silo was Running on the new host). bootcmd runs
-	// first at every boot, before users (which only adds keys) and before ssh.
-	if b, u := strings.Index(ud, "bootcmd:"), strings.Index(ud, "users:"); b < 0 {
+	// Lima: two keys in authorized_keys once the silo was Running on the new host). bootcmd
+	// replaces them first, at every boot, before ssh.
+	if b := strings.Index(ud, "bootcmd:"); b < 0 {
 		t.Errorf("no bootcmd replacing the exec key:\n%s", ud)
-	} else if !strings.Contains(ud[b:], `printf '%s\\n' 'ssh-ed25519 AAAA exec' > /home/kevaso/.ssh/authorized_keys.new`) || u < 0 {
+	} else if !strings.Contains(ud[b:], `printf '%s\\n' 'ssh-ed25519 AAAA exec' > /root/.ssh/authorized_keys.new`) {
 		t.Errorf("bootcmd:\n%s", ud[b:])
 	}
 	var parsed struct {
@@ -174,19 +175,26 @@ func TestRenderedFiles(t *testing.T) {
 		!slices.Equal(parsed.Bootcmd[0], []string{"sh", "-c", BootKeysScript("ssh-ed25519 AAAA exec")}) {
 		t.Errorf("user-data's bootcmd: %v %q", err, parsed.Bootcmd)
 	}
-	if !strings.Contains(BootKeysScript("k"), "mv -f /home/kevaso/.ssh/authorized_keys.new /home/kevaso/.ssh/authorized_keys") {
+	if !strings.Contains(BootKeysScript("k"), "mv -f /root/.ssh/authorized_keys.new /root/.ssh/authorized_keys") {
 		t.Error(BootKeysScript("k"))
+	}
+	// No user with sudo: exec command lines must not reach sudo's log or SUDO_COMMAND.
+	if strings.Contains(ud, "sudo") || strings.Contains(ud, "NOPASSWD") {
+		t.Errorf("user-data gives someone sudo:\n%s", ud)
 	}
 	n := NamesFor(id("web"))
 	u := Unit(n, 2, 4096, BinDir+"/CLOUDHV_EFI.fd", MAC(id("web")))
 	for _, want := range []string{
 		"User=kevaso-vmm", "NoNewPrivileges=yes", "CapabilityBoundingSet=\n", "DevicePolicy=closed",
 		"DeviceAllow=/dev/kvm rw", "DeviceAllow=/dev/kevaso/" + n.LV + " rw", "InaccessiblePaths=/var/lib/kevaso ",
-		"--memory size=4096M", "image_type=raw", "tap=" + n.Tap, "TemporaryFileSystem=" + SilosDir + "\n", "BindPaths=" + n.Dir + "\n", "--vsock cid=3,socket=" + n.Vsock + " ",
+		"--memory size=4096M", "image_type=raw", "tap=" + n.Tap, "TemporaryFileSystem=" + SilosDir + "\n", "BindPaths=" + n.Dir + "\n",
 	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("unit missing %q", want)
 		}
+	}
+	if strings.Contains(u, "--vsock") {
+		t.Error("a VM has no vsock device: nothing in it talks to the host that way (ADR 0009)")
 	}
 	nc := NetworkConfig("52:4b:00:00:00:01", AllocateIPMust(t), "web3")
 	if !strings.Contains(nc, "nameservers: { addresses: [10.64.0.1], search: [web3.kevaso, kevaso] }") {
@@ -383,7 +391,7 @@ func startGuest(t *testing.T, allowed ssh.PublicKey) *guest {
 	t.Cleanup(func() { _ = l.Close() })
 	g.addr = l.Addr().String()
 	cfg := &ssh.ServerConfig{PublicKeyCallback: func(m ssh.ConnMetadata, k ssh.PublicKey) (*ssh.Permissions, error) {
-		if m.User() == GuestUser && bytes.Equal(k.Marshal(), g.allowed.Marshal()) {
+		if m.User() == ExecUser && bytes.Equal(k.Marshal(), g.allowed.Marshal()) {
 			return nil, nil
 		}
 		return nil, errors.New("denied")
@@ -501,7 +509,7 @@ func TestExecPinsTheGuestKeyAndRunsWithSudo(t *testing.T) {
 	g.mu.Lock()
 	ran := g.ran[0]
 	g.mu.Unlock()
-	if !strings.HasPrefix(ran, "sudo -n -- env KEVASO_EXEC=") || !strings.HasSuffix(ran, ` 'echo' 'it'\''s'`) {
+	if !strings.HasPrefix(ran, "exec env KEVASO_EXEC=") || strings.Contains(ran, "sudo") || !strings.HasSuffix(ran, ` 'echo' 'it'\''s'`) {
 		t.Fatalf("guest ran %q", ran)
 	}
 	code, err = r2.Exec(ctx, id("web"), kri.ExecRequest{Command: []string{"sh", "-c", "exit 4"}})

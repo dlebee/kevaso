@@ -8,46 +8,96 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"kevaso.com/core/api/meta"
 )
 
-// Images, sets and standalone services (design §0.2, §0.4, §7.1).
+// VMImages, what silos start from, sets and standalone services (design §0.2, §0.4, §7.1).
 
-// ── Image ────────────────────────────────────────────────────────────────────
+// ── VMImage ──────────────────────────────────────────────────────────────────
 
-// Image is a named base ("seed") with immutable versions: what silos and sets start from
-// (`image: geth-node:v1`). Each version says where its bits are for each runtime family: an OCI
-// reference for container runtimes and OpenShell, a disk image (URL and SHA-256) for
-// cloud-hypervisor. A version never changes once added, so an instance on v1 always runs the same
-// thing; a new release is a new version. Namespaced.
-type Image struct {
+// VMImage is a named bootable disk for virtual-machine silos (cloud-hypervisor) with immutable
+// versions: `vm: { image: geth-node:v1 }`. Each version is a disk image, a URL and its SHA-256,
+// which hosts check when they fetch it. A version never changes once added, so an instance on v1
+// always boots the same disk; a new release is a new version. It's never required (vm.disk states
+// a disk inline); it's for named versions, so a set rolls by changing one word. Container silos
+// don't use it: their container.image is a registry reference (design §0.2). Namespaced.
+type VMImage struct {
 	meta.TypeMeta   `json:",inline"`
 	meta.ObjectMeta `json:"metadata"`
-	Spec            ImageSpec `json:"spec"`
+	Spec            VMImageSpec `json:"spec"`
 }
 
-// ImageSpec lists the versions, oldest first: a reference without a version gets the last.
-type ImageSpec struct {
-	Versions []ImageVersion `json:"versions"`
+// VMImageSpec lists the versions, oldest first: a reference without a version gets the last.
+type VMImageSpec struct {
+	Versions []VMImageVersion `json:"versions"`
 }
 
-// ImageVersion is one immutable version.
-type ImageVersion struct {
-	Name string `json:"name"` // e.g. v1
-	// Container is an OCI reference (pin it by digest to make it truly immutable).
-	Container string     `json:"container,omitempty"`
-	Disk      *ImageDisk `json:"disk,omitempty"`
+// VMImageVersion is one immutable version: a bootable disk.
+type VMImageVersion struct {
+	Name string  `json:"name"`           // e.g. v1
+	Disk *VMDisk `json:"disk,omitempty"` // required
 }
 
-// ImageDisk is a bootable disk image, checked against its hash when a host fetches it.
-type ImageDisk struct {
+// VMDisk is a bootable disk image, checked against its hash when a host fetches it.
+type VMDisk struct {
 	URL    string `json:"url"` // https://
 	SHA256 string `json:"sha256"`
 }
 
 // DiskRef is how a disk image reaches the runtime: its URL with the hash it must have.
-func DiskRef(d ImageDisk) string { return d.URL + "#sha256=" + strings.ToLower(d.SHA256) }
+func DiskRef(d VMDisk) string { return d.URL + "#sha256=" + strings.ToLower(d.SHA256) }
+
+// ContainerSource is a container silo's start: an OCI image from a registry, how it's pulled,
+// and its main process.
+type ContainerSource struct {
+	// Image is a registry reference, used as it is (pin it by digest: a tag can move), or a
+	// built-in OS image (ubuntu-24.04: a machine to exec into).
+	Image string `json:"image"`
+	// Pull says how it's pulled (a private registry's credential).
+	Pull *ImagePull `json:"pull,omitempty"`
+	// Command is the main process (default: the image's own; for ubuntu-24.04, which has none
+	// that stays up, a process that sleeps).
+	Command []string `json:"command,omitempty"`
+}
+
+// VMSource is a virtual-machine silo's start: a VMImage (NAME[:VERSION], or a built-in OS image),
+// or a disk stated inline. Exactly one.
+type VMSource struct {
+	Image string  `json:"image,omitempty"`
+	Disk  *VMDisk `json:"disk,omitempty"`
+}
+
+// From is what the silo starts from, as one string: its container image, its VM image name, or
+// its inline disk (URL#sha256=…). status.image.from records it; "" when it says nothing.
+func (s SiloSpec) From() string {
+	switch {
+	case s.Container != nil:
+		return s.Container.Image
+	case s.VM != nil && s.VM.Disk != nil:
+		return DiskRef(*s.VM.Disk)
+	case s.VM != nil:
+		return s.VM.Image
+	}
+	return ""
+}
+
+// Pull is the container's pull settings (nil for none, or for a VM).
+func (s SiloSpec) Pull() *ImagePull {
+	if s.Container == nil {
+		return nil
+	}
+	return s.Container.Pull
+}
+
+// Command is the container's main process (nil for a VM, or the image's own).
+func (s SiloSpec) Command() []string {
+	if s.Container == nil {
+		return nil
+	}
+	return s.Container.Command
+}
 
 // SplitImage splits NAME[:VERSION]. A registry reference with a port ("host:5000/x") has a slash
 // after the colon, so it's never split.
@@ -59,22 +109,26 @@ func SplitImage(ref string) (name, version string) {
 	return ref[:i], ref[i+1:]
 }
 
-// ResolveImage turns a silo's spec.image into what its runtime gets. An Image of that name in
-// the silo's namespace wins (its version, or its newest); anything else is used as it is (Kevaso's
-// built-in names like ubuntu-24.04, or an OCI reference). images are the namespace's Images.
-func ResolveImage(spec, runtime string, images []*Image) (string, error) {
-	name, version := SplitImage(spec)
-	var img *Image
+// ResolveImage turns what a silo starts from into what its runtime gets: a container image as it
+// is; an inline disk as its URL and hash (fetched and checked like a VMImage version's); a VM
+// image's version (or its newest) from the namespace's VMImages, or a built-in OS image.
+func ResolveImage(spec SiloSpec, images []*VMImage) (string, error) {
+	if spec.VM == nil || spec.VM.Disk != nil || spec.VM.Image == "" || BuiltinImage(spec.VM.Image) {
+		return spec.From(), nil
+	}
+	name, version := SplitImage(spec.VM.Image)
+	var img *VMImage
 	for _, i := range images {
 		if i.Name == name {
 			img = i
 		}
 	}
 	if img == nil {
-		return spec, nil
+		return "", fmt.Errorf("no VMImage %s in the namespace (vm.image is a VMImage name or a built-in OS image: %s; or say vm.disk inline)",
+			name, strings.Join(BuiltinImages, ", "))
 	}
 	if len(img.Spec.Versions) == 0 {
-		return "", fmt.Errorf("image %s has no versions", name)
+		return "", fmt.Errorf("VMImage %s has no versions", name)
 	}
 	v := img.Spec.Versions[len(img.Spec.Versions)-1]
 	if version != "" {
@@ -85,19 +139,13 @@ func ResolveImage(spec, runtime string, images []*Image) (string, error) {
 			}
 		}
 		if !found {
-			return "", fmt.Errorf("image %s has no version %s", name, version)
+			return "", fmt.Errorf("VMImage %s has no version %s", name, version)
 		}
 	}
-	if runtime == "cloud-hypervisor" {
-		if v.Disk == nil {
-			return "", fmt.Errorf("image %s:%s has no disk image, which %s needs", name, v.Name, runtime)
-		}
-		return DiskRef(*v.Disk), nil
+	if v.Disk == nil {
+		return "", fmt.Errorf("VMImage %s:%s has no disk", name, v.Name)
 	}
-	if v.Container == "" {
-		return "", fmt.Errorf("image %s:%s has no container image, which %s needs", name, v.Name, runtime)
-	}
-	return v.Container, nil
+	return DiskRef(*v.Disk), nil
 }
 
 // ── SiloSet ──────────────────────────────────────────────────────────────────
@@ -115,9 +163,9 @@ type SiloSet struct {
 
 // SiloSetSpec is the set's shape.
 type SiloSetSpec struct {
-	// Image every instance starts from (it overrides template.image).
-	Image     string `json:"image,omitempty"`
-	Instances int    `json:"instances"`
+	// What every instance starts from is the template's container: or vm: block: a rollout is
+	// a change there (container.image, vm.image, or vm.disk).
+	Instances int `json:"instances"`
 	// Standby: extra instances booted and kept idle, ready to hand out (warm pools for runs).
 	// They carry kevaso.com/standby=true, so no Service selects them.
 	Standby int `json:"standby,omitempty"`
@@ -246,10 +294,18 @@ type ServiceSpec struct {
 	Type     string            `json:"type,omitempty"` // ClusterIP (default) | LoadBalancer
 	// LoadBalancerClass: a plugin's class (e.g. linode-nodebalancer) for type LoadBalancer.
 	LoadBalancerClass string `json:"loadBalancerClass,omitempty"`
+	// LoadBalancerIP names the IP object (design §7.2c-1) whose address it's reached on. Empty:
+	// the namespace's shared one for the class, or with LoadBalancerDedicated one of its own.
+	LoadBalancerIP        string `json:"loadBalancerIP,omitempty"`
+	LoadBalancerDedicated bool   `json:"loadBalancerDedicated,omitempty"`
+	// RouteWhen: ready (an endpoint only while its readiness probe passes) or running (as soon as
+	// it runs). Required when it selects silos with a readiness probe (design §0.6).
+	RouteWhen string `json:"routeWhen,omitempty"`
 }
 
-// ServicePortSpec is one port: Port on the virtual IP goes to TargetPort on each endpoint (a
-// port name of the silo's own service, or a number; default: the same port).
+// ServicePortSpec is one port: Port on the cluster IP goes to the declared port TargetPort of
+// each endpoint (spec.ports; default: the port named Name). Its protocol is TCP unless said; an
+// endpoint whose declared port has the other one isn't sent this port.
 type ServicePortSpec struct {
 	Name       string `json:"name"`
 	Port       int    `json:"port"`
@@ -261,22 +317,28 @@ type ServicePortSpec struct {
 type ServiceStatus struct {
 	ClusterIP string `json:"clusterIP,omitempty"`
 	Name      string `json:"name,omitempty"` // NAME.NAMESPACE.kevaso
-	// Endpoints are the Ready silos it sends to now.
+	// Endpoints are the silos it sends to now (routed); Held the ones it selects but holds back,
+	// each with why and since when (routeWhen: ready and not ready, say).
 	Endpoints []ServiceEndpoint `json:"endpoints,omitempty"`
-	// For type LoadBalancer: the outside address, the node port each port arrives on at the
+	Held      []ServiceEndpoint `json:"held,omitempty"`
+	// For type LoadBalancer: its load-balancer address, the node port each port arrives on at the
 	// endpoints' hosts, and where the load balancer's traffic comes from.
-	PublicIP     string           `json:"publicIP,omitempty"`
-	NodePorts    []NodePort       `json:"nodePorts,omitempty"`
-	SourceRanges []string         `json:"sourceRanges,omitempty"`
-	Conditions   []meta.Condition `json:"conditions,omitempty"`
+	LoadBalancerIP string           `json:"loadBalancerIP,omitempty"`
+	IP             string           `json:"ip,omitempty"` // the IP object LoadBalancerIP is
+	NodePorts      []NodePort       `json:"nodePorts,omitempty"`
+	SourceRanges   []string         `json:"sourceRanges,omitempty"`
+	Conditions     []meta.Condition `json:"conditions,omitempty"`
 }
 
 // ServiceEndpoint is one silo behind a service, with each service port's target there.
 type ServiceEndpoint struct {
-	Silo    string     `json:"silo"`
-	Host    string     `json:"host"`
-	Address string     `json:"address"`
-	Ports   []NodePort `json:"ports"` // Name: the service port, Port: the service's, NodePort: the silo's target
+	Silo   string     `json:"silo"`
+	Host   string     `json:"host"`
+	SiloIP string     `json:"siloIP"`
+	Ports  []NodePort `json:"ports"` // Name: the service port, Port: the service's, NodePort: the silo's target
+	// Reason and Since: why a held endpoint is held, and since when.
+	Reason string     `json:"reason,omitempty"`
+	Since  *time.Time `json:"since,omitempty"`
 }
 
 // Selects reports whether a selector picks these labels (an empty selector picks nothing).
@@ -292,24 +354,18 @@ func Selects(selector, labels map[string]string) bool {
 	return true
 }
 
-// TargetPort resolves a service port on one silo: by name among its own service's ports, or as a
-// number (0 if it can't).
+// TargetPort resolves a service port on one silo: the number of its declared port TargetPort
+// (default: the port's own name), when its protocol matches (0 if it has none).
 func TargetPort(p ServicePortSpec, s *Silo) int {
 	t := p.TargetPort
 	if t == "" {
-		return p.Port
+		t = p.Name
 	}
-	if n, err := strconv.Atoi(t); err == nil {
-		return n
+	d, ok := s.Spec.Declared(t)
+	if !ok || d.Proto() != (SiloPort{Protocol: p.Protocol}).Proto() {
+		return 0
 	}
-	if s.Spec.Service != nil {
-		for _, sp := range s.Spec.Service.Ports {
-			if sp.Name == t {
-				return sp.Port
-			}
-		}
-	}
-	return 0
+	return d.Port
 }
 
 // SortEndpoints orders endpoints by silo name (deterministic rules).
@@ -324,12 +380,27 @@ const ServiceCIDR = "10.65.0.0/16"
 // services take theirs cluster-wide above it, so the two never collide.
 const NodePortSiloMax = 31999
 
-// InstanceSpec is the Silo spec of each of the set's instances: the template, the set's image,
-// its spread, and its reset.
+// InstanceSpec is the Silo spec of each of the set's instances: the template, its spread, and its
+// reset.
 func (s *SiloSet) InstanceSpec() SiloSpec {
 	spec := s.Spec.Template.SiloSpec
-	if s.Spec.Image != "" {
-		spec.Image = s.Spec.Image
+	// Its own copies of what it starts from: an instance never shares them with the template.
+	if c := spec.Container; c != nil {
+		cc := *c
+		cc.Command = append([]string(nil), c.Command...)
+		if c.Pull != nil {
+			p := *c.Pull
+			cc.Pull = &p
+		}
+		spec.Container = &cc
+	}
+	if v := spec.VM; v != nil {
+		vv := *v
+		if v.Disk != nil {
+			d := *v.Disk
+			vv.Disk = &d
+		}
+		spec.VM = &vv
 	}
 	if s.Spec.Spread != "" {
 		spec.Placement.Spread = &Spread{By: s.Spec.Spread, Selector: map[string]string{LabelSiloSet: s.Name}}

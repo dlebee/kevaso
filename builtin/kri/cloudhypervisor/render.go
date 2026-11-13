@@ -18,14 +18,17 @@ import (
 // Paths and names on the host. The VMM's user can reach only its own silo's directory; the control
 // plane's data (/var/lib/kevaso) is inaccessible to it.
 const (
-	SilosDir   = "/var/lib/kevaso-silos"
-	ImagesDir  = "/var/lib/kevaso-images"
-	BinDir     = "/opt/kevaso/cloud-hypervisor"
-	VMMUser    = "kevaso-vmm"
-	VG         = "kevaso"
-	ThinPool   = "silos"
-	Bridge     = "kvbr0"
-	GuestUser  = "kevaso"
+	SilosDir  = "/var/lib/kevaso-silos"
+	ImagesDir = "/var/lib/kevaso-images"
+	BinDir    = "/opt/kevaso/cloud-hypervisor"
+	VMMUser   = "kevaso-vmm"
+	VG        = "kevaso"
+	ThinPool  = "silos"
+	Bridge    = "kvbr0"
+	// ExecUser is who Exec logs in as: root, with the host's exec key only (no password, no
+	// other key). Not a user with sudo: sudo would log every command line to the guest's
+	// journal and hand it to the command as SUDO_COMMAND.
+	ExecUser   = "root"
 	unitPrefix = "kevaso-silo-"
 )
 
@@ -57,9 +60,6 @@ type Names struct {
 	LV     string // logical volume name in VG
 	Unit   string // systemd unit
 	Socket string // VMM API socket
-	// Vsock is the VM's vsock device on the host. A guest connecting to the host (CID 2) on port P
-	// makes Cloud Hypervisor connect to Vsock_P: that socket belongs to this silo only (E014).
-	Vsock string
 }
 
 // NamesFor returns a silo's names.
@@ -72,7 +72,6 @@ func NamesFor(id kri.ID) Names {
 		LV:     "kv-" + s,
 		Unit:   unitPrefix + s + ".service",
 		Socket: "/run/" + unitPrefix + s + "/ch.sock",
-		Vsock:  SilosDir + "/" + s + "/vsock.sock",
 	}
 }
 
@@ -112,20 +111,21 @@ func lastAddr(p netip.Prefix) netip.Addr {
 	return netip.AddrFrom4(b)
 }
 
-// UserData is the cloud-init config: one sudo user whose only key is the host's exec key, no
-// passwords, and SSH host keys we generated (so Exec can pin them).
+// UserData is the cloud-init config: no users of its own and no passwords; root's only key is the
+// host's exec key (what Exec logs in with), and SSH host keys we generated (so Exec can pin them).
+//
+// Root logs in directly (key only, sshd's prohibit-password) rather than through a sudo user, so a
+// kvo exec command line isn't logged by sudo (the guest's journal) nor put in SUDO_COMMAND. What
+// still sees it, inside the guest: the command's own argv in /proc (ps) while it runs; sshd at
+// LogLevel DEBUG; an audit daemon recording execve, if the image has one. On the host and in the
+// control plane it is in no log (it travels in the exec stream's header and the SSH channel).
 func UserData(execPub, hostPriv, hostPub string) string {
 	indent := func(s string) string {
 		return "      " + strings.ReplaceAll(strings.TrimSpace(s), "\n", "\n      ")
 	}
 	return `#cloud-config
-users:
-  - name: ` + GuestUser + `
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    shell: /bin/bash
-    lock_passwd: true
-    ssh_authorized_keys: ["` + strings.TrimSpace(execPub) + `"]
-disable_root: true
+users: []
+disable_root: false
 ssh_pwauth: false
 ssh_deletekeys: true
 ssh_genkeytypes: []
@@ -134,27 +134,29 @@ ssh_keys:
 ` + indent(hostPriv) + `
   ed25519_public: ` + strings.TrimSpace(hostPub) + `
 growpart: { mode: auto, devices: ["/"] }
-# A disk that moved here holds the last host's exec key: replace it at every boot, before the users
-# module adds this host's (it only adds) and before ssh lets anyone in. write_files below does it
-# again once the user exists on a first boot.
+# A disk that moved here holds the last host's exec key: replace it at every boot, before ssh lets
+# anyone in, instead of only in the final stage (write_files below, deferred).
 bootcmd:
   - [sh, -c, ` + yamlQuote(BootKeysScript(execPub)) + `]
 write_files:
-  # Only this host's exec key, also on a disk that moved here (cloud-init only adds keys).
-  - path: /home/` + GuestUser + `/.ssh/authorized_keys
+  # Root logs in with a key only, never a password.
+  - path: /etc/ssh/sshd_config.d/10-kevaso.conf
+    content: "PermitRootLogin prohibit-password\n"
+    permissions: "0644"
+  # Only this host's exec key, also on a disk that moved here (written last, so nothing adds to it).
+  - path: /root/.ssh/authorized_keys
     content: "` + strings.TrimSpace(execPub) + `\n"
-    owner: ` + GuestUser + `:` + GuestUser + `
+    owner: root:root
     permissions: "0600"
     defer: true
 `
 }
 
-// BootKeysScript leaves only execPub in the guest user's authorized_keys, if the user is there
-// (a disk that booted before).
+// BootKeysScript leaves only execPub in root's authorized_keys.
 func BootKeysScript(execPub string) string {
-	f := "/home/" + GuestUser + "/.ssh/authorized_keys"
-	return "if [ -d /home/" + GuestUser + "/.ssh ]; then printf '%s\\n' " + shellQuote([]string{strings.TrimSpace(execPub)}) +
-		" > " + f + ".new && chown " + GuestUser + ":" + GuestUser + " " + f + ".new && chmod 0600 " + f + ".new && mv -f " + f + ".new " + f + "; fi"
+	f := "/root/.ssh/authorized_keys"
+	return "install -d -m 0700 /root/.ssh && printf '%s\\n' " + shellQuote([]string{strings.TrimSpace(execPub)}) +
+		" > " + f + ".new && chmod 0600 " + f + ".new && mv -f " + f + ".new " + f
 }
 
 // yamlQuote is s as a double-quoted YAML string.
@@ -218,7 +220,7 @@ func UnitFor(n Names, cpus int, memMiB int64, firmware, mac string, l Layout) st
 	}
 	args := []string{"--api-socket", n.Socket, "--firmware", firmware, "--cpus", "boot=" + fmt.Sprint(cpus)}
 	args = append(args, VMMArgs(n, l, memMiB)...)
-	args = append(args, "--net", "tap="+n.Tap+",mac="+mac, "--vsock", "cid=3,socket="+n.Vsock, "--serial", "file="+n.Dir+"/serial.log", "--console", "off")
+	args = append(args, "--net", "tap="+n.Tap+",mac="+mac, "--serial", "file="+n.Dir+"/serial.log", "--console", "off")
 	w("ExecStart=" + BinDir + "/cloud-hypervisor " + strings.Join(args, " "))
 	w("Restart=no")
 	w("NoNewPrivileges=yes")
@@ -256,7 +258,7 @@ func UnitFor(n Names, cpus int, memMiB int64, firmware, mac string, l Layout) st
 	return b.String()
 }
 
-// shellQuote quotes argv for the guest's shell (Exec runs `sudo -n -- argv`).
+// shellQuote quotes argv for the guest's shell (Exec runs `env KEVASO_EXEC=… argv` as root).
 func shellQuote(argv []string) string {
 	q := make([]string, len(argv))
 	for i, a := range argv {

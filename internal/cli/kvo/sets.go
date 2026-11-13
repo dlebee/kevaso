@@ -107,7 +107,7 @@ func reset(ctx context.Context, c *client.Client, o opts, stdout io.Writer) erro
 		if err := c.Update(ctx, &s); err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintf(stdout, "silo/%s: resetting onto %s (stop-first: it's stopped, its disk made fresh from the image; volumes kept)\n", s.Name, dash(s.Spec.Image))
+		_, _ = fmt.Fprintf(stdout, "silo/%s: resetting onto %s (stop-first: it's stopped, its disk made fresh from the image; volumes kept)\n", s.Name, dash(s.Spec.From()))
 	case "SiloSet":
 		if !o.sets.rolling {
 			return errors.New("reset siloset resets every instance: say --rolling (or reset one: kvo reset silo NAME)")
@@ -121,7 +121,7 @@ func reset(ctx context.Context, c *client.Client, o opts, stdout io.Writer) erro
 			return err
 		}
 		unavail, surge := set.Limits()
-		_, _ = fmt.Fprintf(stdout, "siloset/%s: resetting every instance onto %s, %d at a time", set.Name, dash(set.InstanceSpec().Image), unavail)
+		_, _ = fmt.Fprintf(stdout, "siloset/%s: resetting every instance onto %s, %d at a time", set.Name, dash(set.InstanceSpec().From()), unavail)
 		if surge > 0 {
 			_, _ = fmt.Fprintf(stdout, ", %d extra started first", surge)
 		}

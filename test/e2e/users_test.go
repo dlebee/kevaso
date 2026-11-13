@@ -114,7 +114,7 @@ metadata: { name: secret-project }
 apiVersion: kevaso/v1
 kind: Silo
 metadata: { name: ledger, namespace: secret-project }
-spec: { runtime: cloud-hypervisor, image: ubuntu-24.04, resources: { cpu: 1, memory: 1Gi } }
+spec: { runtime: cloud-hypervisor, vm: { image: ubuntu-24.04 }, resources: { cpu: 1, memory: 1Gi } }
 `, "apply", "-f", "-")
 	inv := must(kvoadm.Run, "", "users", "invite", "bob", "--namespace", "payments")
 	t.Logf("kvoadm users invite:\n%s", regexp.MustCompile(`kvi_\S+`).ReplaceAllString(inv, "kvi_…"))
@@ -133,7 +133,7 @@ spec: { runtime: cloud-hypervisor, image: ubuntu-24.04, resources: { cpu: 1, mem
 		t.Fatalf("login: %s", o)
 	}
 	must(kvo.Run, "", "ns", "payments")
-	must(kvo.Run, `{"apiVersion":"kevaso/v1","kind":"Silo","metadata":{"name":"api"},"spec":{"runtime":"cloud-hypervisor","image":"ubuntu-24.04","resources":{"cpu":1,"memory":"1Gi"}}}`, "apply", "-f", "-")
+	must(kvo.Run, `{"apiVersion":"kevaso/v1","kind":"Silo","metadata":{"name":"api"},"spec":{"runtime":"cloud-hypervisor","vm":{"image":"ubuntu-24.04"},"resources":{"cpu":1,"memory":"1Gi"}}}`, "apply", "-f", "-")
 	if o := must(kvo.Run, "", "get", "silos"); !strings.Contains(o, "api") {
 		t.Fatalf("bob's silos: %s", o)
 	}

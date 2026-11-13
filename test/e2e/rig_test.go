@@ -33,7 +33,7 @@ type rig struct {
 	run      testbed.RunID
 	arch     string
 	machines map[string]testbed.Machine
-	bin      string // kevasod for linux/arch (it is kvo-guest too, by that name)
+	bin      string // kevasod for linux/arch
 }
 
 // newRig creates the machines (in parallel), sets up a kvo of the test's own, and builds kevasod.

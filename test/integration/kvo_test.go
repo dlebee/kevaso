@@ -28,7 +28,7 @@ apiVersion: kevaso/v1
 kind: Host
 metadata: { name: hv1 }
 spec:
-  address: 203.0.113.10
+  externalIP: 203.0.113.10
   components:
     controlPlane: {}
     worker:
@@ -40,7 +40,7 @@ kind: Silo
 metadata: { name: hello, namespace: demo }
 spec:
   runtime: cloud-hypervisor
-  image: ubuntu-24.04
+  vm: { image: ubuntu-24.04 }
   resources: { cpu: 2, memory: 4Gi }
 `
 
@@ -166,7 +166,7 @@ func TestKvoUsageErrors(t *testing.T) {
 
 // The examples are the contract: each one applies as it is, every object admitted.
 func TestExamplesApply(t *testing.T) {
-	for _, f := range []string{"01-one-host.yaml", "07-siloset-service.yaml"} {
+	for _, f := range []string{"01-one-host.yaml", "07-siloset-service.yaml", "08-images-and-registries.yaml"} {
 		t.Run(f, func(t *testing.T) {
 			b, err := os.ReadFile(filepath.Join("..", "..", "examples", f))
 			if err != nil {

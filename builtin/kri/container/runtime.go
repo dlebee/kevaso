@@ -8,11 +8,12 @@
 // containers and main container join it. The pause image is built on the host from kevasod itself:
 // nothing is pulled for it.
 //
-// The broker reaches a container through a unix socket of its own, mounted at /run/kevaso: the
-// socket a connection arrives on says which silo it is, as vsock does for VMs. The host's CA bundle
-// with the egress CA is mounted in read-only. Nothing else of Kevaso's goes into a user's container
-// (design §12: Kevaso's own pieces are built and isolated properly): Kevaso's own silos, like the
-// ingress controller, run from images of their own (Images below), with the same isolation.
+// A container reaches its host's local endpoint (ADR 0009) over the bridge like a VM, and gets a
+// tmpfs at /run, where its host writes its file and env secrets through exec (memory only: an exec
+// into the engine's overlay would put them on the host's disk). The host's CA bundle with the
+// egress CA is mounted in read-only. Nothing else of Kevaso's goes into a user's container
+// (design §12: Kevaso's own pieces are built and isolated properly); an ingress controller is a
+// vendor's proxy image, driven from outside (design §7.3).
 package container
 
 import (
@@ -24,13 +25,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/builtin/kri/hostexec"
 	"kevaso.com/core/sdk/kri"
@@ -38,9 +40,6 @@ import (
 
 // Dir is where silos are kept (shared with the VM runtime's address allocation).
 const Dir = cloudhypervisor.ContainersDir
-
-// Images maps Kevaso's image names to registry references; anything else is used as is.
-var Images = map[string]string{"ubuntu-24.04": "docker.io/library/ubuntu:24.04"}
 
 // Runtime is one container engine as a KRI runtime.
 type Runtime struct {
@@ -84,20 +83,9 @@ func NamesFor(id kri.ID) Names {
 // VolumeName is a silo volume's name in the engine.
 func VolumeName(id kri.ID, vol string) string { return "kv-" + NamesFor(id).Short + "-" + vol }
 
-// KevasoImages are Kevaso's own images, by name: built on the host from kevasod itself (its only
-// file, /usr/local/bin/kvo-guest, with this entrypoint), never pulled. Their tag is the binary's
-// hash, so a new kevasod makes a new image.
-var KevasoImages = map[string][]string{
-	"kevaso-ingress": {"/usr/local/bin/kvo-guest", "ingress"}, // the ingress controller (design §7.3)
-}
-
-// ImageRef is the reference an image name pulls.
-func ImageRef(image string) string {
-	if r, ok := Images[image]; ok {
-		return r
-	}
-	return image
-}
+// ImageRef is the reference an image pulls: a silo's image is a registry reference, used as it
+// is; only Kevaso's built-in OS image (ubuntu-24.04) has a name of its own (design §0.2).
+func ImageRef(image string) string { return v1.PullRef(image) }
 
 // MainCommand is the main process: the silo's command, or for the ubuntu-24.04 image (whose own
 // command exits at once) one that stays up, so the silo is a machine to exec into.
@@ -109,6 +97,44 @@ func MainCommand(image string, command []string) []string {
 		return []string{"sleep", "infinity"}
 	}
 	return nil
+}
+
+// Inits are the programs that, as a container's PID 1, reap orphaned processes (and forward
+// signals): an image whose PID 1 is one of them needs no init of the engine's.
+var Inits = map[string]bool{"tini": true, "tini-static": true, "dumb-init": true, "catatonit": true, "docker-init": true,
+	"init": true, "systemd": true, "s6-svscan": true, "runit": true}
+
+// NeedsInit reports whether the main container needs the engine's init (`run --init`: tini for
+// docker, catatonit for podman) as its PID 1. Without one, nothing reaps the processes orphaned in
+// it (every daemon restart left a zombie under `sleep infinity`), and a PID 1 that installs no
+// handlers ignores SIGTERM, so every stop waited out its grace period. The image's own PID 1 is
+// its entrypoint, else the command (the silo's, else the image's). Unknown (the image can't be
+// inspected): an init. Pure.
+func NeedsInit(entrypoint, imageCmd, command []string) bool {
+	pid1 := entrypoint
+	if len(pid1) == 0 {
+		pid1 = command
+	}
+	if len(pid1) == 0 {
+		pid1 = imageCmd
+	}
+	if len(pid1) == 0 {
+		return true
+	}
+	return !Inits[path.Base(pid1[0])]
+}
+
+// imagePID1 is the image's entrypoint and command (ok false if it can't be inspected).
+func (r *Runtime) imagePID1(ctx context.Context, ref string) (entrypoint, cmd []string, ok bool) {
+	out, err := r.eng(ctx, nil, "image", "inspect", "--format", "{{json .Config.Entrypoint}}\n{{json .Config.Cmd}}", ref)
+	if err != nil {
+		return nil, nil, false
+	}
+	lines := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)
+	if len(lines) != 2 || json.Unmarshal([]byte(lines[0]), &entrypoint) != nil || json.Unmarshal([]byte(lines[1]), &cmd) != nil {
+		return nil, nil, false
+	}
+	return entrypoint, cmd, true
 }
 
 func (r *Runtime) engine() string {
@@ -188,12 +214,9 @@ func (r *Runtime) pauseImage(ctx context.Context) (string, error) {
 	return r.selfImage(ctx, "kevaso-pause", "kevaso-pause", []string{"/kevaso-pause"})
 }
 
-// ref is what the engine runs for an image name: one of Kevaso's own (built here), or what it pulls.
-func (r *Runtime) ref(ctx context.Context, image string) (string, bool, error) {
-	if ep, ok := KevasoImages[image]; ok {
-		tag, err := r.selfImage(ctx, image, "usr/local/bin/kvo-guest", ep)
-		return tag, true, err
-	}
+// ref is what the engine runs for an image name: what it pulls. (own: an image built here; none
+// is any more, since ingress controllers run their vendors' images, design §7.3.)
+func (r *Runtime) ref(_ context.Context, image string) (string, bool, error) {
 	return ImageRef(image), false, nil
 }
 
@@ -323,14 +346,15 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 			return err
 		}
 	}
-	if _, err := r.cmd(ctx, nil, "install", "-d", "-m", "0700", n.Dir+"/broker"); err != nil {
-		return err
-	}
+	// The agent pulls first (Pull, with the silo's credential); an image not there yet is pulled
+	// anonymously.
 	if ref, own, err := r.ref(ctx, s.Image); err != nil {
 		return err
 	} else if !own {
-		if _, err := r.eng(ctx, nil, "pull", "--quiet", ref); err != nil {
-			return err
+		if _, ierr := r.eng(ctx, nil, "image", "inspect", ref); ierr != nil {
+			if _, err := r.eng(ctx, nil, PullArgs(r.engine(), "", ref)...); err != nil {
+				return &kri.PullError{Image: ref, Reason: pullReason(err)}
+			}
 		}
 	}
 	for _, v := range s.Volumes {
@@ -348,16 +372,17 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	return r.ensurePause(ctx, s)
 }
 
-// runArgs are a silo container's settings: the pause container's network, the volumes, the
-// broker socket and the CA bundle, limits, no new privileges.
+// runArgs are a silo container's settings: the pause container's network, the volumes, a tmpfs at
+// /run (for secrets the host writes) and the CA bundle, limits, no new privileges.
 func (r *Runtime) runArgs(s state, name string) []string {
 	n := NamesFor(s.ID)
-	args := []string{"--name", name, "--network", "container:" + n.Pause,
+	// --pull never: every pull is the agent's (Pull, with the silo's credential), never the
+	// engine's own on a run.
+	args := []string{"--name", name, "--pull", "never", "--network", "container:" + n.Pause,
 		"--security-opt", "no-new-privileges", "--pids-limit", "4096",
 		"--label", "kevaso.com/namespace=" + s.ID.Namespace, "--label", "kevaso.com/name=" + s.ID.Name, "--label", "kevaso.com/uid=" + s.ID.UID,
 		"-v", n.Dir + "/resolv.conf:/etc/resolv.conf:ro",
-		"-v", n.Dir + "/broker:/run/kevaso",
-		"-e", "KVO_GUEST_BROKER=unix:/run/kevaso/broker.sock"}
+		"--tmpfs", "/run:rw,nosuid,nodev,mode=0755"}
 	if r.engine() == "podman" { // docker shares the hostname with the network; podman needs asking
 		args = append(args, "--uts", "container:"+n.Pause)
 	}
@@ -407,9 +432,16 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 		if rerr != nil {
 			return rerr
 		}
+		cmd := MainCommand(s.Image, s.Command)
 		args := append([]string{"run", "-d"}, r.runArgs(s, n.Main)...)
+		if ep, imageCmd, ok := r.imagePID1(ctx, ref); !ok || NeedsInit(ep, imageCmd, cmd) {
+			// The engine's init as PID 1: it reaps, and passes SIGTERM on to the main process (which,
+			// no longer PID 1, gets the default handlers: `docker stop` stops it at once instead of
+			// waiting out the grace). A kill (SIGKILL to the init) takes the whole container.
+			args = append(args, "--init")
+		}
 		args = append(args, ref)
-		args = append(args, MainCommand(s.Image, s.Command)...)
+		args = append(args, cmd...)
 		_, err = r.eng(ctx, nil, args...)
 	default:
 		_, err = r.eng(ctx, nil, "start", n.Main)
@@ -452,6 +484,22 @@ func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
 		return err
 	}
 	_, err = r.eng(ctx, nil, "stop", "-t", "20", NamesFor(id).Main)
+	return err
+}
+
+// Kill implements kri.Killer: SIGKILL to the main container's PID 1 (its init: the whole
+// container goes with it), no grace period. For fencing.
+func (r *Runtime) Kill(ctx context.Context, id kri.ID) error {
+	if _, ok := r.load(id); !ok {
+		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
+	}
+	st, _, err := r.inspect(ctx, NamesFor(id).Main)
+	if err != nil || st != "running" {
+		return err
+	}
+	if _, err = r.eng(ctx, nil, "kill", "--signal", "KILL", NamesFor(id).Main); err != nil && strings.Contains(err.Error(), "is not running") {
+		return nil // stopped meanwhile
+	}
 	return err
 }
 
@@ -622,25 +670,6 @@ func orDiscard(w io.Writer) io.Writer {
 	return w
 }
 
-// BrokerListen implements kri.Broker: a unix socket in the silo's own directory, which only its
-// containers mount (at /run/kevaso/broker.sock).
-func (r *Runtime) BrokerListen(id kri.ID, _ uint32) (net.Listener, error) {
-	if _, ok := r.load(id); !ok {
-		return nil, fmt.Errorf("%s: %w", id, kri.ErrNotFound)
-	}
-	path := NamesFor(id).Dir + "/broker/broker.sock"
-	_ = r.Host.RemoveAll(path)
-	l, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(path, 0o666); err != nil { // any user in the silo; no one outside sees the dir
-		_ = l.Close()
-		return nil, err
-	}
-	return l, nil
-}
-
 // chHost adapts the runner to the VM runtime's host interface (for the shared address pool).
 type chHost struct{ h hostexec.Runner }
 
@@ -660,5 +689,4 @@ func (c chHost) Glob(p string) ([]string, error)                   { return c.h.
 var (
 	_ kri.Runtime        = (*Runtime)(nil)
 	_ kri.InitContainers = (*Runtime)(nil)
-	_ kri.Broker         = (*Runtime)(nil)
 )

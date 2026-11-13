@@ -227,7 +227,7 @@ func signer(typ string, value []byte) (any, error) {
 // PublicKey is the public half of a signing key, hex: the raw 32 bytes for ed25519, PKIX DER for
 // ECDSA. Opaque secrets have none ("").
 func PublicKey(typ string, value []byte) (string, error) {
-	if typ == "" || typ == v1.SecretOpaque {
+	if typ == "" || typ == v1.SecretOpaque || typ == v1.SecretRegistry {
 		return "", nil
 	}
 	k, err := signer(typ, value)

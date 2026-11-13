@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,18 +16,23 @@ import (
 	"kevaso.com/core/builtin/kni"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/gate"
+	"kevaso.com/core/internal/ingress"
+	"kevaso.com/core/internal/names"
+	"kevaso.com/core/internal/routing"
 	"kevaso.com/core/sdk/kri"
 )
 
-// NetworkView builds this host's KNI view from the API: its silos (with their taps, addresses and
-// what their grants open) and every running silo (allowFrom sources). Pure.
-func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Grant) kni.Host {
+// NetworkView builds this host's KNI view from the API: its silos (with their taps, addresses,
+// what their grants open and the Ingress paths to them) and every running silo (allowFrom
+// sources). Pure.
+func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Grant, paths map[string]map[string][]string) kni.Host {
 	view := kni.Host{Bridge: cloudhypervisor.Bridge, Subnet: cloudhypervisor.Network, Gateway: cloudhypervisor.Gateway}
 	if h != nil {
-		view.Address, _ = netip.ParseAddr(h.Spec.Address)
+		view.InternalIP, _ = netip.ParseAddr(h.Internal())
+		view.ExternalIP, _ = netip.ParseAddr(h.External())
 	}
 	for _, s := range silos {
-		ip, err := netip.ParseAddr(s.Status.Address)
+		ip, err := netip.ParseAddr(s.Status.SiloIP)
 		if err != nil {
 			continue
 		}
@@ -36,10 +42,10 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 			continue
 		}
 		ks.Tap = cloudhypervisor.NamesFor(kri.ID{Namespace: s.Namespace, Name: s.Name, UID: s.UID}).Tap
-		ks.PublicIP, _ = netip.ParseAddr(s.Status.Service.PublicIP)
+		ks.LoadBalancerIP, _ = netip.ParseAddr(s.Status.Service.LoadBalancerIP)
 		if len(s.Status.Service.NodePorts) > 0 {
 			// Reached through the load balancer's node ports, not on its address.
-			ks.PublicIP = netip.Addr{}
+			ks.LoadBalancerIP = netip.Addr{}
 			ks.NodePorts, ks.SourceRanges = s.Status.Service.NodePorts, s.Status.Service.SourceRanges
 		}
 		if src := s.Spec.Network.Egress.Source; src == v1.EgressSameAsService || src == v1.EgressPool {
@@ -53,6 +59,9 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 			}
 		}
 		ks.GatePorts = gate.PolicyFor(s, grants).Ports()
+		ks.Endpoint = v1.NeedsEndpoint(s, grants)
+		ks.Held = !routing.Routed(s) // routeWhen (design §0.6): no outside rule while held
+		ks.Paths = paths[ks.Key]
 		view.Local = append(view.Local, ks)
 	}
 	return view
@@ -78,7 +87,7 @@ func ServiceView(hostName string, svcs []*v1.Service) []kni.Service {
 				kp.Proto = "udp"
 			}
 			for _, ep := range sv.Status.Endpoints {
-				ip, err := netip.ParseAddr(ep.Address)
+				ip, err := netip.ParseAddr(ep.SiloIP)
 				if err != nil {
 					continue
 				}
@@ -95,12 +104,13 @@ func ServiceView(hostName string, svcs []*v1.Service) []kni.Service {
 	return out
 }
 
-// PoolAddresses are the IPPool addresses this host's silos hold: they go on its uplink.
+// PoolAddresses are the host's own extra addresses this host's silos hold (IPs of class ip-pool,
+// status.service.hostAddresses): they go on its uplink.
 func PoolAddresses(hostName string, silos []*v1.Silo) []string {
 	var out []string
 	for _, s := range silos {
-		if s.Status.Host == hostName && s.Status.Service.PoolIP != "" {
-			out = append(out, s.Status.Service.PoolIP)
+		if s.Status.Host == hostName {
+			out = append(out, s.Status.Service.HostAddresses...)
 		}
 	}
 	return out
@@ -111,8 +121,8 @@ func PoolAddresses(hostName string, silos []*v1.Silo) []string {
 func AnnouncedAddresses(hostName string, silos []*v1.Silo) []string {
 	var out []string
 	for _, s := range silos {
-		if s.Status.Host == hostName && s.Status.Service.Announce && s.Status.Service.PublicIP != "" && s.DeletionTimestamp == nil {
-			out = append(out, s.Status.Service.PublicIP)
+		if s.Status.Host == hostName && s.Status.Service.Announce && s.Status.Service.LoadBalancerIP != "" && s.DeletionTimestamp == nil {
+			out = append(out, s.Status.Service.LoadBalancerIP)
 		}
 	}
 	return out
@@ -181,7 +191,19 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		}
 		return out
 	}
-	go (&DNS{Listen: net.JoinHostPort(cloudhypervisor.Gateway.String(), "53"), Silos: current, Services: currentServices, Log: log}).Run(ctx)
+	currentHosts := func() []*v1.Host {
+		var out []*v1.Host
+		for _, o := range hosts.List() {
+			out = append(out, o.(*v1.Host))
+		}
+		return out
+	}
+	nameView := func() names.View {
+		hs := currentHosts()
+		return names.View{Silos: current(), Services: currentServices(), Hosts: hs, Suffix: v1.ClusterSuffix(hs)}
+	}
+	dnsOn := &dnsListeners{run: map[string]context.CancelFunc{}}
+	defer dnsOn.stop()
 	gatePort := 0
 	if ca != nil {
 		eg := &egress{c: c, hostName: hostName, ca: ca, upstream: upstream, log: log, silos: current, grants: currentGrants}
@@ -190,6 +212,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		go eg.run(ctx)
 		gatePort = GatePort
 	}
+	endpointAddr := netip.MustParseAddr(v1.EndpointAddress) // the silos' local endpoint, on the bridge (ADR 0009)
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	last := ""
@@ -210,9 +233,11 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		for _, o := range classInf.List() {
 			classes = append(classes, o.(*v1.IngressClass))
 		}
-		view := NetworkView(hostName, me, WithIngressPaths(all, ings, classes), currentGrants())
+		svcs := currentServices()
+		view := NetworkView(hostName, me, all, currentGrants(), WithIngressPaths(all, svcs, ings, classes))
 		view.GatePort = gatePort
-		view.Services = ServiceView(hostName, currentServices())
+		view.Endpoint = endpointAddr
+		view.Services = ServiceView(hostName, svcs)
 		now, ls := time.Now(), currentLeases()
 		view = WithLeases(view, all, ls, now)
 		leaseEnd, stopLeaseEnd := leaseTimer(ls, now)
@@ -224,13 +249,20 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 				last = rules
 			}
 		}
+		dnsOn.keep(ctx, DNSListeners(me), func(addr string, from names.Asker) *DNS {
+			return &DNS{Listen: addr, From: from, View: nameView, Log: log,
+				SiloNamespace: func(a netip.Addr) (string, bool) { return SiloNamespaces(current())(a) }}
+		})
 		if me != nil {
-			if err := syncPoolAddresses(ctx, me.Spec.Address, PoolAddresses(hostName, all)); err != nil {
+			if err := syncPoolAddresses(ctx, me.Reach(), PoolAddresses(hostName, all)); err != nil {
 				log("pool addresses: %v", err)
 			}
 		}
 		if err := syncAddresses(ctx, "lo", "lo:kv", AnnouncedAddresses(hostName, all)); err != nil {
 			log("announced addresses: %v", err)
+		}
+		if err := syncAddresses(ctx, cloudhypervisor.Bridge, cloudhypervisor.Bridge+":kv", []string{v1.EndpointAddress}); err != nil {
+			log("the local endpoint's address: %v", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -340,37 +372,92 @@ func uplink(addr string) string {
 	return ""
 }
 
-// WithIngressPaths returns the silos with the paths Ingresses open (design §7.2b: "an Ingress opens
-// its own path, visibly"): each Ingress's target port, reachable from its class's controller silo,
-// as if the target's allowFrom said so. The silos given aren't changed. Pure.
-func WithIngressPaths(silos []*v1.Silo, ingresses []*v1.Ingress, classes []*v1.IngressClass) []*v1.Silo {
+// WithIngressPaths returns the silos with the paths Ingresses open (design §7.3: "an Ingress opens
+// its own path, visibly"): each rule's service port, reachable from its class's controller silos,
+// as if that port's allowFrom named them (kni.Silo.Paths). For a standalone Service, every silo it
+// selects, on the port it targets. Pure.
+func WithIngressPaths(silos []*v1.Silo, svcs []*v1.Service, ingresses []*v1.Ingress, classes []*v1.IngressClass) map[string]map[string][]string {
 	byClass := map[string]*v1.IngressClass{}
 	for _, c := range classes {
 		byClass[c.Name] = c
 	}
-	extra := map[string][]v1.AllowFrom{}
+	out := map[string]map[string][]string{} // silo NAMESPACE/NAME → port → callers
 	for _, ing := range ingresses {
 		c, ok := byClass[ing.Spec.IngressClass]
 		if !ok || ing.DeletionTimestamp != nil {
 			continue
 		}
-		from := c.Spec.Controller.Namespace + "/" + c.Spec.Controller.Silo
-		for _, r := range ing.Spec.Rules {
-			key := ing.Namespace + "/" + r.Silo.Name
-			extra[key] = append(extra[key], v1.AllowFrom{Silo: from, Ports: []string{r.Silo.Port}})
-		}
-	}
-	if len(extra) == 0 {
-		return silos
-	}
-	out := make([]*v1.Silo, len(silos))
-	for i, s := range silos {
-		out[i] = s
-		if add := extra[s.Namespace+"/"+s.Name]; len(add) > 0 {
-			cp := *s
-			cp.Spec.AllowFrom = append(append([]v1.AllowFrom(nil), s.Spec.AllowFrom...), add...)
-			out[i] = &cp
+		for _, ctl := range silos {
+			if !c.Spec.Controller.Runs(ctl) {
+				continue
+			}
+			from := ctl.Namespace + "/" + ctl.Name
+			for _, r := range ing.Spec.Rules {
+				for t, port := range ingress.Targets(silos, svcs, ing.Namespace, r.Service) {
+					key := t.Namespace + "/" + t.Name
+					if out[key] == nil {
+						out[key] = map[string][]string{}
+					}
+					if !slices.Contains(out[key][port], from) {
+						out[key][port] = append(out[key][port], from)
+					}
+				}
+			}
 		}
 	}
 	return out
+}
+
+// DNSListeners are where a host answers names, and who asks on each (ADR 0010 §5): its silos'
+// gateway (silos) and its mesh IP (hosts) always; its internal IP (machines on its network) and
+// external IP (anyone) only when its spec.network.dns lists them. Pure.
+func DNSListeners(h *v1.Host) map[string]names.Asker {
+	out := map[string]names.Asker{net.JoinHostPort(cloudhypervisor.Gateway.String(), "53"): names.FromSilo}
+	if h == nil {
+		return out
+	}
+	if ip := h.Status.Network.MeshIP; ip != "" {
+		out[net.JoinHostPort(ip, "53")] = names.FromHost
+	}
+	for _, n := range h.Spec.Network.DNS {
+		switch ip := h.IPOn(n); {
+		case ip == "":
+		case n == v1.NetworkInternal:
+			out[net.JoinHostPort(ip, "53")] = names.FromNetwork
+		case n == v1.NetworkExternal:
+			out[net.JoinHostPort(ip, "53")] = names.FromOutside
+		}
+	}
+	return out
+}
+
+// dnsListeners runs one DNS server per wanted address, restarting none that stays the same.
+type dnsListeners struct {
+	run map[string]context.CancelFunc // ADDR/asker → its server's stop
+}
+
+func (l *dnsListeners) keep(ctx context.Context, want map[string]names.Asker, mk func(string, names.Asker) *DNS) {
+	keys := map[string]bool{}
+	for addr, from := range want {
+		k := addr + "/" + from.String()
+		keys[k] = true
+		if _, ok := l.run[k]; ok {
+			continue
+		}
+		c, cancel := context.WithCancel(ctx)
+		l.run[k] = cancel
+		go mk(addr, from).Run(c)
+	}
+	for k, stop := range l.run {
+		if !keys[k] {
+			stop()
+			delete(l.run, k)
+		}
+	}
+}
+
+func (l *dnsListeners) stop() {
+	for _, stop := range l.run {
+		stop()
+	}
 }

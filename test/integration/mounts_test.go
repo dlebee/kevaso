@@ -38,7 +38,7 @@ func TestMountClassFollowsTheSilo(t *testing.T) {
 	if err := reg.Add(ctx, share); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", Address: "127.0.0.1",
+	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond,
 		Plugins: reg}); err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestMountClassFollowsTheSilo(t *testing.T) {
 	}
 	for _, name := range []string{"hv1", "hv2", "hv3"} {
 		h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: name},
-			Spec: v1.HostSpec{Address: "198.51.100.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "docker"}}}}}}
+			Spec: v1.HostSpec{ExternalIP: "198.51.100.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "docker"}}}}}}
 		if err := admin.Create(ctx, h); err != nil {
 			t.Fatal(err)
 		}
@@ -109,7 +109,7 @@ func TestMountClassFollowsTheSilo(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "pad", Namespace: "notes"},
-		Spec: v1.SiloSpec{Runtime: "docker", Image: "busybox", Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "busybox"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Placement:    v1.Placement{HostSelector: map[string]string{}},
 			Availability: v1.Availability{OnHostLoss: v1.OnHostLossMove}, // admitted: the class can go anywhere
 			Volumes:      []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"}}}}
