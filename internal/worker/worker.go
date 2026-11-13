@@ -270,6 +270,13 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	if cfg.Contact != nil {
 		a.LastContact = cfg.Contact.Last
 	}
+	if cfg.DataDir != "" {
+		a.OnEndpoints = func(servers []string) {
+			if err := KeepServers(cfg.DataDir, servers); err != nil {
+				cfg.Log("keep the control planes' URLs: %v", err)
+			}
+		}
+	}
 	if runtime.GOOS == "linux" {
 		a.Host = hostexec.Local{} // provider volumes: format once, mount
 	}

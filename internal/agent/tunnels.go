@@ -107,6 +107,11 @@ func (a *Agent) tunnelTargets(ctx context.Context) []string {
 		}
 	}
 	t := TunnelTargets(hosts)
+	// The same URLs are where this agent's own client may go when the control plane it was set up
+	// with is lost (a worker joined before the other system nodes knows only the first one).
+	if len(t) > 0 && a.Client.AddEndpoints(t...) && a.OnEndpoints != nil {
+		a.OnEndpoints(a.Client.Endpoints())
+	}
 	if len(t) == 0 {
 		t = []string{""}
 	}
