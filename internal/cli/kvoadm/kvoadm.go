@@ -14,6 +14,8 @@
 //	kvoadm host list | drain NAME | uncordon NAME                     list: both IPs of every host
 //	kvoadm users invite NAME [--namespace NS [--role editor]] | list | disable NAME
 //	kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
+//	kvoadm reset [USER@]ADDRESS --ssh-key PATH [--yes] [--force] [--wipe-storage]
+//	                                                                    take Kevaso off a machine again
 //
 // kvoadm logs in with the SSH key you made for it (--ssh-key), checking the machine's host key
 // against the fingerprint you give (--host-key) or asking you to confirm it. --password instead
@@ -106,6 +108,16 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return 0
 	}
+	if len(args) > 0 && args[0] == "reset" {
+		if err := resetCmd(ctx, args[1:], stdin, stdout); errors.Is(err, ErrDryRun) {
+			_, _ = fmt.Fprintln(stdout, "Dry run: nothing was changed.")
+			return 0
+		} else if err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) > 0 && args[0] == "ingress" {
 		if err := ingressCmd(ctx, args[1:], stdout); err != nil {
 			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
@@ -134,6 +146,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm upgrade --kevasod PATH [--ssh-key PATH] [--batch N] [--version V] [--dry-run]
   kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME
   kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
+  kvoadm reset [USER@]ADDRESS --ssh-key PATH [--host-key SHA256:…] [--dry-run] [--yes] [--force] [--wipe-storage]
   kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--credential NAME=FILE]… [--side controller|node]
   kvoadm plugin remove [USER@]ADDRESS --name NAME
   kvoadm ingress install [--class public] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --lb-class CLASS] [--image REF] [--option K=V]…
@@ -298,10 +311,7 @@ func parseTarget(args []string) (InitOptions, error) {
 	if target == "" {
 		return o, errors.New("which machine? give [USER@]ADDRESS")
 	}
-	o.User, o.Address = "root", target
-	if u, a, ok := strings.Cut(target, "@"); ok {
-		o.User, o.Address = u, a
-	}
+	o.User, o.Address = splitTarget(target)
 	if o.Name == "" {
 		o.Name = strings.ReplaceAll(o.Address, ".", "-")
 	}
@@ -321,6 +331,15 @@ func parseTarget(args []string) (InitOptions, error) {
 		}
 	}
 	return o, nil
+}
+
+// splitTarget reads [USER@]ADDRESS: the login (root when none is given) and the address. A
+// login other than root runs every command through sudo (dialHost).
+func splitTarget(target string) (user, address string) {
+	if u, a, ok := strings.Cut(target, "@"); ok && u != "" {
+		return u, a
+	}
+	return "root", strings.TrimPrefix(target, "@")
 }
 
 // askHardening returns the extra hardening steps: from the flags, or, in a terminal with none of
@@ -699,7 +718,13 @@ func bootstrap(ctx context.Context, o InitOptions, home string, stdin io.Reader,
 		say("root's password changed to a random one nobody knows (log in with keys, or reset it from the provider's console)")
 	}
 
-	// 4. Install kevasod, signature checked on the host, and start the control plane.
+	// 4. Record the host as it is, before anything of Kevaso's lands, so kvoadm reset undoes
+	// exactly what this install adds.
+	if err := recordInstall(ctx, conn, say); err != nil {
+		return nil, err
+	}
+
+	// 5. Install kevasod, signature checked on the host, and start the control plane.
 	if err := conn.PinSigningKey(ctx, signPub); err != nil {
 		return nil, err
 	}

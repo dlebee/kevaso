@@ -153,8 +153,8 @@ go test -tags metal -run '^TestMetalReset$' -v -count=1 ./test/e2e/
 
 ## The reset
 
-`remote.Driver.Reset` runs a fixed plan (`testbed/remote/reset.go`, unit-tested in order) and
-then a checklist. Every step is tried even if one fails.
+`remote.Driver.Reset` runs `kvoadm reset`'s plan (`internal/hostreset`, unit-tested in order)
+against the suite's own baseline, then the checklist, plus the suite's own files (`/var/lib/kvt-inet`). Every step is tried even if one fails.
 
 1. It stops and disables kevasod, the fence and every `kevaso-*` and `kvt-*` unit, then kills
    whatever is left (kevasod, cloud-hypervisor, ch-remote, virtiofsd).
@@ -182,6 +182,35 @@ The checklist fails, naming each leftover, when any of these is still there:
 
 The reset never touches sshd, the machine's own firewall tables, its disks, or packages that
 aren't Kevaso's. A kernel that unattended-upgrades installed is left alone.
+
+### The same, as a Kevaso command: `kvoadm reset`
+
+The product way to return the box to clean is `kvoadm reset`. It is the same plan. It works
+from the install record that `kvoadm init` wrote on the machine (`/var/lib/kevaso-install/record`)
+rather than the suite's baseline. Use it after a run kept with `KEVASO_E2E_KEEP`, or whenever
+the box should be handed back without a reinstall. Look first (it changes nothing):
+
+```bash
+go run ./cmd/kvoadm reset "$KEVASO_METAL_HOST" --ssh-key "$KEVASO_METAL_KEY" --host-key "$KEVASO_METAL_HOSTKEY" --dry-run
+```
+
+It lists what it will remove and what it keeps. Then run it for real. It asks you to type
+`yes`:
+
+```bash
+go run ./cmd/kvoadm reset "$KEVASO_METAL_HOST" --ssh-key "$KEVASO_METAL_KEY" --host-key "$KEVASO_METAL_HOSTKEY"
+```
+
+It refuses while silos are still on the box. Delete their namespaces first, or add `--force`,
+which destroys them. On this box the volume group is on the loop file, so `--wipe-storage` is
+never needed. Afterwards `TestMetalReset` passes as well: it removes the suite's own files and
+checks a superset of kvoadm's checklist.
+
+A cluster installed by a kvoadm built before the install record existed has no record. That
+includes the runs on 2026-11-13, which used a test binary built earlier. `kvoadm reset` then
+says `NO INSTALL RECORD`, uses its fixed lists and purges no package. Docker and the runtimes'
+packages stay, so on this box `TestMetalReset` still has to purge them against the suite's
+baseline.
 
 ## What each test leaves listening on the external IP
 

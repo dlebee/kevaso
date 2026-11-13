@@ -20,9 +20,16 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"kevaso.com/core/internal/hostreset"
 	"kevaso.com/core/internal/sshboot"
 	"kevaso.com/core/testbed"
 )
+
+var fresh = State{
+	Packages:  []string{"bash", "iproute2", "lvm2", "nftables", "openssh-server", "systemd"},
+	Tables:    []string{"inet provider"},
+	IPForward: "0",
+}
 
 // fakeMachine is an in-process SSH server: key auth for one client key, exec requests answered by
 // a handler that sees each command and its stdin. It records everything it was sent, auth
@@ -343,18 +350,18 @@ func (s *machineState) handle(cmd string, stdin []byte) (string, int) {
 	case strings.HasPrefix(cmd, "umask 077 && mkdir -p "+BaselineDir):
 		s.baseline = string(stdin)
 		return "", 0
-	case cmd == StateScript:
+	case cmd == hostreset.StateScript:
 		if s.planDone {
 			return s.after.Render(), 0
 		}
 		return s.now.Render(), 0
 	}
-	for _, st := range Plan(PlanInput{}) {
-		if strings.HasPrefix(st.Name, "remove kevaso-* users") && cmd == st.Script {
+	for _, st := range Plan(s.now, s.now) {
+		if strings.HasPrefix(st.Name, "remove the tests' files") && cmd == st.Script {
 			s.planDone = true
 		}
 	}
-	for _, c := range Checklist(Ports) {
+	for _, c := range Checklist() {
 		if cmd == c.Script {
 			s.order = append(s.order, "check:"+c.Name)
 			return s.leftovers[c.Name], 0
@@ -392,8 +399,8 @@ func TestResetRunsThePlanThenTheChecklist(t *testing.T) {
 	if firstCheck < 0 || slices.Contains(st.order[firstCheck:], "step") {
 		t.Errorf("steps and checks interleaved: %v", st.order)
 	}
-	if n := len(st.order) - firstCheck; n != len(Checklist(Ports)) {
-		t.Errorf("%d checks ran, want %d", n, len(Checklist(Ports)))
+	if n := len(st.order) - firstCheck; n != len(Checklist()) {
+		t.Errorf("%d checks ran, want %d", n, len(Checklist()))
 	}
 }
 
@@ -402,7 +409,7 @@ func TestResetFailsLoudlyOnLeftovers(t *testing.T) {
 	still := fresh
 	still.Packages = append(slices.Clone(fresh.Packages), "docker.io")
 	st := &machineState{baseline: fresh.Render(), now: still, after: still,
-		leftovers: map[string]string{"no Kevaso link is left": "kvbr0\n", "nothing listens on the suite's ports": "0.0.0.0:6443\n"}}
+		leftovers: map[string]string{"no Kevaso link is left": "kvbr0\n", "nothing listens on Kevaso's ports": "0.0.0.0:6443\n"}}
 	m.setHandler(st.handle)
 	err := d.Reset(ctxT(t))
 	if !errors.Is(err, ErrNotClean) {
