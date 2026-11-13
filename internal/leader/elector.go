@@ -11,9 +11,10 @@ import (
 	"kevaso.com/core/internal/store"
 )
 
-// Kind is the store kind leases are kept under (design §4.1: "Lease objects for leader election").
-// They live in the store directly, like join tokens: the API doesn't serve them.
-const Kind = "Lease"
+// Kind is the store kind leader leases are kept under (design §4.1: "Lease objects for leader
+// election"). They live in the store directly, like join tokens: the API doesn't serve them. Not
+// "Lease": that's the API kind of a port lease (§7.2d), and a store kind is one or the other.
+const Kind = "LeaderLease"
 
 // ControllersKey is the lease of the controllers and the scheduler.
 var ControllersKey = store.Key{Kind: Kind, Name: "kevaso-controllers"}
