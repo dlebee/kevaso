@@ -12,7 +12,7 @@ import (
 // The test machine's reset is kvoadm reset's plan and checklist (internal/hostreset), against a
 // baseline of the test's own: the machine's fresh state, recorded once in BaselineDir (not one of
 // Kevaso's paths, so no reset removes it) before Kevaso ever ran there. The machine has no Docker
-// when the baseline is recorded (RecordBaseline refuses it otherwise), so Docker is always the
+// when the baseline is recorded (RecordBaseline refuses it otherwise), so Docker (and podman) is always the
 // reset's to remove, and the volume group only ever sits on Kevaso's loop file.
 
 // Where the test's own state lives on the machine.
@@ -38,12 +38,12 @@ var ErrNotClean = hostreset.ErrNotClean
 // State is the machine's state as the reset compares it.
 type State = hostreset.State
 
-// TestPaths are what the suite itself writes on the machine (the stand-in internet).
-var TestPaths = []string{"/var/lib/kvt-inet"}
+// TestPaths are what the suite itself writes on the machine (the stand-in internet, the test registry).
+var TestPaths = []string{"/var/lib/kvt-inet", "/var/lib/kvt-registry", "/root/.kvt-push"}
 
 // Checklist is the test machine's checklist: everything gone, Docker and the tests' files included.
 func Checklist() []hostreset.Check {
-	return append(hostreset.Checklist(hostreset.CheckOptions{Ports: Ports, DockerGone: true}),
+	return append(hostreset.Checklist(hostreset.CheckOptions{Ports: Ports, DockerGone: true, PodmanGone: true}),
 		hostreset.Check{Name: "no file of the tests is left", Script: `for f in ` + strings.Join(TestPaths, " ") + `; do [ -e "$f" ] && echo "$f"; done; true`})
 }
 
@@ -51,7 +51,7 @@ func Checklist() []hostreset.Check {
 // then the tests' own files.
 func Plan(base, now State) []hostreset.Step {
 	return append(hostreset.Plan(hostreset.PlanInput{Purge: hostreset.Purgeable(base, now), Tables: hostreset.ExtraTables(base, now),
-		IPForward: base.IPForward, DockerOurs: true, Storage: hostreset.StorageLoop}),
+		IPForward: base.IPForward, DockerOurs: true, PodmanOurs: true, Storage: hostreset.StorageLoop}),
 		hostreset.Step{Name: "remove the tests' files", Script: "rm -rf " + strings.Join(TestPaths, " ")})
 }
 

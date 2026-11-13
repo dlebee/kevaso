@@ -63,18 +63,25 @@ var Paths = []string{
 // DockerPaths are Docker's own directories, removed only when Kevaso installed Docker.
 var DockerPaths = []string{"/var/lib/docker", "/var/lib/containerd", "/etc/docker"}
 
+// PodmanPaths are podman's storage, removed only when Kevaso installed podman (its configuration
+// in /etc/containers goes with the package).
+var PodmanPaths = []string{"/var/lib/containers"}
+
 // AllowedRoots are the only places the plan removes files under.
 var AllowedRoots = []string{"/usr/local/bin/kevaso", "/etc/kevaso", "/etc/docker", "/etc/profile.d/kevaso-", "/etc/systemd/system/kevaso",
-	"/opt/kevaso", "/var/lib/kevaso", "/var/cache/kevaso", "/run/kevaso", "/var/lib/docker", "/var/lib/containerd"}
+	"/opt/kevaso", "/var/lib/kevaso", "/var/cache/kevaso", "/run/kevaso", "/var/lib/docker", "/var/lib/containerd", "/var/lib/containers"}
 
 // mountPattern matches mount points under Kevaso's paths (an extended regular expression).
-const mountPattern = `^/(var/lib/kevaso|run/kevaso|var/lib/docker|var/lib/containerd|opt/kevaso)`
+const mountPattern = `^/(var/lib/kevaso|run/kevaso|var/lib/docker|var/lib/containerd|var/lib/containers|opt/kevaso)`
 
 // Processes that must not outlive a reset (pgrep -x names; the kernel keeps 15 characters).
 var Processes = []string{"kevasod", "cloud-hypervisor", "ch-remote", "virtiofsd"}
 
 // DockerProcesses must not outlive a reset that removed Docker.
 var DockerProcesses = []string{"dockerd", "containerd", "containerd-shim-runc-v2"}
+
+// PodmanProcesses must not outlive a reset that removed podman (conmon watches each container).
+var PodmanProcesses = []string{"conmon"}
 
 // dockerDeps are what docker.io pulls in on Ubuntu, purged with it when the record shows they
 // weren't there before.
@@ -342,6 +349,7 @@ type PlanInput struct {
 	Tables     []string // nftables tables to delete, "FAMILY NAME"
 	IPForward  string   // the record's value; "" leaves it as it is
 	DockerOurs bool     // Kevaso installed Docker: every container and image goes, then Docker itself
+	PodmanOurs bool     // Kevaso installed podman: every container, image and its storage go
 	// RestoreDockerJSON puts back the daemon.json Docker had before (when Docker stays).
 	RestoreDockerJSON bool
 	Storage           Storage
@@ -375,6 +383,21 @@ true`)
 		add("remove Kevaso's containers and volumes (by label)", `if command -v docker >/dev/null && systemctl is-active -q docker; then
   ids=$(docker ps -aq --filter label=kevaso.com/uid); [ -z "$ids" ] || docker rm -f $ids >/dev/null
   vs=$(docker volume ls -q --filter label=kevaso.com/uid); [ -z "$vs" ] || docker volume rm -f $vs >/dev/null
+fi
+true`)
+	}
+
+	// Podman has no daemon: its containers are conmon processes, stopped here.
+	if in.PodmanOurs {
+		add("remove podman's containers, volumes and images", `if command -v podman >/dev/null; then
+  podman rm -af -t 0 >/dev/null 2>&1; podman pod rm -af >/dev/null 2>&1; podman volume rm -af >/dev/null 2>&1
+  podman system reset -f >/dev/null 2>&1
+fi
+true`)
+	} else {
+		add("remove Kevaso's podman containers and volumes (by label)", `if command -v podman >/dev/null; then
+  ids=$(podman ps -aq --filter label=kevaso.com/uid); [ -z "$ids" ] || podman rm -f -t 0 $ids >/dev/null
+  vs=$(podman volume ls -q --filter label=kevaso.com/uid); [ -z "$vs" ] || podman volume rm -f $vs >/dev/null
 fi
 true`)
 	}
@@ -450,9 +473,12 @@ rm -f `+StorageImage)
 		}
 	}
 	add("unmount what is mounted under Kevaso's paths", `awk '{print $2}' /proc/mounts | grep -E '`+mountPattern+`' | sort -r | while read m; do umount -l "$m"; done; true`)
-	files := Paths
+	files := slices.Clone(Paths)
 	if in.DockerOurs {
-		files = append(slices.Clone(Paths), DockerPaths...)
+		files = append(files, DockerPaths...)
+	}
+	if in.PodmanOurs {
+		files = append(files, PodmanPaths...)
 	}
 	add("remove Kevaso's files", "rm -rf "+strings.Join(files, " ")+"\nsystemctl daemon-reload; systemctl reset-failed; true")
 	add("remove the tests' /etc/hosts lines", `sed -i '/`+HostsMarker+`$/d' /etc/hosts`)
@@ -488,6 +514,7 @@ type Check struct {
 type CheckOptions struct {
 	Ports      []int // TCP ports nothing may listen on (except on loopback)
 	DockerGone bool  // Docker was Kevaso's: it must be gone too
+	PodmanGone bool  // podman was Kevaso's: it must be gone too
 	KeepVG     bool  // the volume group was kept on purpose: don't report it
 }
 
@@ -500,13 +527,17 @@ func Checklist(o CheckOptions) []Check {
 	for _, p := range o.Ports {
 		portList = append(portList, fmt.Sprint(p))
 	}
-	procs := Processes
-	files := Paths
+	procs := slices.Clone(Processes)
+	files := slices.Clone(Paths)
 	links := "kvbr|kvt|kevaso"
 	if o.DockerGone {
-		procs = append(slices.Clone(Processes), DockerProcesses...)
-		files = append(slices.Clone(Paths), DockerPaths...)
+		procs = append(procs, DockerProcesses...)
+		files = append(files, DockerPaths...)
 		links += "|docker0"
+	}
+	if o.PodmanGone {
+		procs = append(procs, PodmanProcesses...)
+		files = append(files, PodmanPaths...)
 	}
 	checks := []Check{
 		{"no Kevaso unit is loaded", `systemctl list-units --all --plain --no-legend 'kevaso*' '` + TestUnitPrefix + `*' | awk '{print $1}'`},
@@ -516,7 +547,8 @@ func Checklist(o CheckOptions) []Check {
 		{"no Kevaso link is left", `ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -E '^(` + links + `)'; true`},
 		{"no :kv address is left", `ip -4 -o addr show | awk '$NF ~ /:kv$/ {print $2, $4}'`},
 		{"no nftables table named kevaso*", `nft list tables 2>/dev/null | awk '$3 ~ /^kevaso/ {print $2, $3}'`},
-		{"no Kevaso container", `command -v docker >/dev/null && systemctl is-active -q docker && docker ps -aq --filter label=kevaso.com/uid; true`},
+		{"no Kevaso container", `command -v docker >/dev/null && systemctl is-active -q docker && docker ps -aq --filter label=kevaso.com/uid
+command -v podman >/dev/null && podman ps -aq --filter label=kevaso.com/uid; true`},
 		{"no loop device on " + StorageImage, `losetup -n -O NAME -j ` + StorageImage + ` 2>/dev/null`},
 		{"no kevaso-* user or group", `awk -F: '$1 ~ /^kevaso-/ {print "user " $1}' /etc/passwd; awk -F: '$1 ~ /^kevaso-/ {print "group " $1}' /etc/group`},
 		{"no test line in /etc/hosts", `grep -F -e '` + HostsMarker + `' /etc/hosts; true`},
@@ -532,6 +564,9 @@ done; true`},
 	}
 	if o.DockerGone {
 		checks = append(checks, Check{"no docker", `command -v docker containerd dockerd 2>/dev/null; true`})
+	}
+	if o.PodmanGone {
+		checks = append(checks, Check{"no podman", `command -v podman conmon 2>/dev/null; true`})
 	}
 	return checks
 }

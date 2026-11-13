@@ -18,6 +18,9 @@ systemctl list-units --all --plain --no-legend 'kevaso-silo-*.service' 2>/dev/nu
 if command -v docker >/dev/null && systemctl is-active -q docker; then
   docker ps -a --filter label=kevaso.com/name --format 'container {{.Label "kevaso.com/namespace"}}/{{.Label "kevaso.com/name"}}' | sort -u
 fi
+if command -v podman >/dev/null; then
+  podman ps -a --filter label=kevaso.com/name --format 'container {{index .Labels "kevaso.com/namespace"}}/{{index .Labels "kevaso.com/name"}} (podman)' | sort -u
+fi
 echo '== pvs'
 pvs --noheadings -o pv_name -S vg_name=` + VG + ` 2>/dev/null | tr -d ' ' | while read p; do
   case "$p" in /dev/loop*) echo "$p $(losetup -n -O BACK-FILE "$p" | tr -d ' ')";; *) echo "$p disk";; esac
@@ -167,6 +170,10 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 		if present := intersect(Watched(), in.Now.Packages); len(present) > 0 {
 			say("left installed (Kevaso's runtimes may have installed them, but nothing says so): %s", strings.Join(present, " "))
 		}
+	}
+	if d.Plan.PodmanOurs = slices.Contains(d.Plan.Purge, "podman"); d.Plan.PodmanOurs {
+		say("podman was installed by Kevaso: every container, image and its storage (/var/lib/containers) go, then podman itself")
+		d.Checks.PodmanGone = true
 	}
 	switch {
 	case d.Plan.DockerOurs:

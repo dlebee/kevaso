@@ -128,7 +128,7 @@ func TestPlanOrder(t *testing.T) {
 	steps := Plan(full)
 	order := []string{
 		"stop kevasod", "stop every kevaso-*", "kill what is left",
-		"remove containers", "stop docker",
+		"remove containers", "stop docker", "remove Kevaso's podman containers",
 		"delete links", "delete docker0", "delete addresses", "delete nftables tables", "restore net.ipv4.ip_forward",
 		"remove volume group", "purge docker.io",
 		"unmount what is mounted", "remove Kevaso's files", "remove the tests' /etc/hosts", "remove kevaso-* users",
@@ -174,6 +174,34 @@ func TestPlanLeavesDockerThatWasThereBefore(t *testing.T) {
 	}
 	if hasStep(steps, "restore net.ipv4") {
 		t.Error("no record: IP forwarding must be left as it is")
+	}
+}
+
+func TestPlanPodman(t *testing.T) {
+	ours := Plan(PlanInput{PodmanOurs: true})
+	s := ours[stepIndex(t, ours, "remove podman's containers")].Script
+	if !strings.Contains(s, "podman system reset -f") {
+		t.Errorf("podman's step: %q", s)
+	}
+	if files := ours[stepIndex(t, ours, "remove Kevaso's files")].Script; !strings.Contains(files, "/var/lib/containers") {
+		t.Error("podman's storage isn't removed when podman was Kevaso's")
+	}
+	theirs := Plan(PlanInput{})
+	s = theirs[stepIndex(t, theirs, "remove Kevaso's podman containers")].Script
+	if !strings.Contains(s, "--filter label=kevaso.com/uid") || strings.Contains(s, "system reset") {
+		t.Errorf("a podman that isn't Kevaso's: %q", s)
+	}
+	if files := theirs[stepIndex(t, theirs, "remove Kevaso's files")].Script; strings.Contains(files, "/var/lib/containers") {
+		t.Error("podman's storage is removed although podman isn't Kevaso's")
+	}
+	all := ""
+	for _, c := range Checklist(CheckOptions{PodmanGone: true}) {
+		all += c.Script
+	}
+	for _, want := range []string{"conmon", "/var/lib/containers", "command -v podman conmon", "podman ps -aq --filter label=kevaso.com/uid"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("the podman checklist lacks %q", want)
+		}
 	}
 }
 

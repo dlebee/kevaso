@@ -104,6 +104,19 @@ func TestDecideFromARecord(t *testing.T) {
 	}
 }
 
+func TestDecidePodmanOurs(t *testing.T) {
+	rec := Record{State: fresh}
+	now := afterInstall
+	now.Packages = append(slices.Clone(now.Packages), "podman", "catatonit")
+	d, err := Decide(Inspection{Record: &rec, Now: now}, Flags{})
+	if err != nil || !d.Plan.PodmanOurs || !d.Checks.PodmanGone || !slices.Contains(d.Plan.Purge, "podman") || !slices.Contains(d.Plan.Purge, "catatonit") {
+		t.Fatalf("podman installed by Kevaso: %+v %+v %v", d.Plan, d.Checks, err)
+	}
+	if d, _ := Decide(Inspection{Record: &Record{State: now}, Now: now}, Flags{}); d.Plan.PodmanOurs {
+		t.Error("a podman that was there before is treated as Kevaso's")
+	}
+}
+
 func TestDecideWithoutARecordUsesTheFixedLists(t *testing.T) {
 	d, err := Decide(Inspection{Installed: true, Now: afterInstall}, Flags{})
 	if err != nil {
