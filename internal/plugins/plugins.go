@@ -8,6 +8,7 @@ package plugins
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -72,11 +73,16 @@ func (r *Registry) put(p *Plugin, socket string) {
 func (r *Registry) drop(socket string) {
 	r.mu.Lock()
 	name, ok := r.sockets[socket]
+	var p *Plugin
 	if ok {
+		p = r.plugins[name]
 		delete(r.sockets, socket)
 		delete(r.plugins, name)
 	}
 	r.mu.Unlock()
+	if p != nil {
+		closeConn(p.Conn)
+	}
 	if ok {
 		r.logf("plugin %s gone (%s)", name, socket)
 		if r.OnChange != nil {
@@ -142,22 +148,33 @@ func (r *Registry) scan(ctx context.Context, dir string) {
 	for _, sock := range found {
 		seen[sock] = true
 		r.mu.RLock()
-		_, known := r.sockets[sock]
+		var cur *Plugin
+		if name, ok := r.sockets[sock]; ok {
+			cur = r.plugins[name]
+		}
 		r.mu.RUnlock()
-		c := kplugin.Dial(sock)
+		// A known plugin keeps its connection (gRPC reconnects by itself after a restart); a new
+		// socket gets one, closed again unless it registers.
+		var c Conn
+		if cur != nil {
+			c = cur.Conn
+		} else {
+			c = kplugin.Dial(sock)
+		}
 		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		info, err := c.Info(cctx)
 		cancel()
 		switch {
-		case err != nil && known:
+		case err != nil && cur != nil:
 			r.drop(sock)
 		case err != nil:
-			// not up yet
+			closeConn(c) // not up yet
 		case info.Protocol != kplugin.Protocol:
-			if !known {
+			if cur == nil {
 				r.logf("plugin at %s speaks %q, not %s: ignored", sock, info.Protocol, kplugin.Protocol)
+				closeConn(c)
 			}
-		case !known:
+		case cur == nil || !reflect.DeepEqual(cur.Info, info): // new, or restarted as something else
 			r.put(&Plugin{Info: info, Conn: c}, sock)
 		}
 	}
@@ -171,6 +188,12 @@ func (r *Registry) scan(ctx context.Context, dir string) {
 	r.mu.RUnlock()
 	for _, sock := range gone {
 		r.drop(sock)
+	}
+}
+
+func closeConn(c Conn) {
+	if cl, ok := c.(interface{ Close() error }); ok {
+		_ = cl.Close()
 	}
 }
 

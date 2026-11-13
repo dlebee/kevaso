@@ -1,5 +1,5 @@
 // Package kplugin is how a provider plugin (design §12: KLB, KSI controller side, KDNS) talks to the
-// control plane: a small JSON protocol over a unix socket. A plugin is its own process (its own
+// control plane: gRPC over a unix socket (kpluginpb/kplugin.proto), like CSI. A plugin is its own process (its own
 // systemd unit, holding its cloud token alone); the control plane finds it by its socket in
 // /run/kevaso-plugins/NAME/plugin.sock, asks Info, and from then on calls it for the classes it
 // provides.

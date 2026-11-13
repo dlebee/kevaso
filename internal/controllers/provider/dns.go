@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"kevaso.com/core/api/client"
@@ -32,6 +33,9 @@ type IngressDNS struct {
 	Plugins   *plugins.Registry
 	Cluster   string
 	Clock     clock.Clock
+
+	mu        sync.Mutex
+	published map[string]asked // ingress UID → what was last published
 }
 
 // Name implements engine.Controller.
@@ -95,6 +99,15 @@ func (c *IngressDNS) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		ttl = dns.TTL
 	}
 	owner := c.Owner(ing)
+	names := make([]string, 0, len(want))
+	for n := range want {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	reqKey := fmt.Sprintf("%s|%v|%v|%s|%d", provider, names, ing.Status.DNSNames, ing.Status.Address, ttl)
+	if ing.DeletionTimestamp == nil && remember(&c.mu, &c.published, ing.UID, reqKey, 30*time.Minute) {
+		return engine.Result{}, nil // its own status write, or a change that doesn't touch DNS
+	}
 	var published []string
 	var errs []string
 	for name := range want {
@@ -134,7 +147,12 @@ func (c *IngressDNS) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	if len(published) > 0 {
 		msg = strings.Join(published, ", ") + " → " + ing.Status.Address + " (" + provider + ")"
 	}
-	return c.condition(ctx, ing, published, meta.ConditionTrue, "Published", msg, 30*time.Minute)
+	res, err := c.condition(ctx, ing, published, meta.ConditionTrue, "Published", msg, 30*time.Minute)
+	if err == nil {
+		after := fmt.Sprintf("%s|%v|%v|%s|%d", provider, names, published, ing.Status.Address, ttl)
+		record(&c.mu, &c.published, ing.UID, after)
+	}
+	return res, err
 }
 
 func dashed(s string) string {

@@ -124,6 +124,13 @@ func TestProviderPlugin(t *testing.T) {
 	if m := meta.FindCondition(s.Status.Conditions, "Scheduled"); m == nil || !strings.Contains(m.Message, "w1") {
 		t.Fatalf("scheduled: %+v", m)
 	}
+	// Heartbeats and status writes don't reach the cloud: with nothing changed, three seconds of
+	// heartbeats from both workers make no plugin calls.
+	before := len(fake.CallLog())
+	time.Sleep(3 * time.Second)
+	if extra := fake.CallLog()[before:]; len(extra) > 0 {
+		t.Fatalf("plugin called with nothing changed: %v", extra)
+	}
 	lbs, vols, _ := fake.Snapshot()
 	if lb := lbs[s.UID]; len(lb.Backends) != 1 || lb.Backends[0].ID != "42" || lb.Ports[0].NodePort != v1.NodePortMin {
 		t.Fatalf("load balancer the plugin got: %+v", lb)
@@ -222,13 +229,13 @@ func TestProviderPlugin(t *testing.T) {
 		return len(vols) == 0 && !gone && client.IsNotFound(err), volMsgs(x.Status.Volumes) + strings.Join(x.Finalizers, ",")
 	})
 	detaches := 0
-	for _, c := range fake.Calls {
+	for _, c := range fake.CallLog() {
 		if strings.HasPrefix(c, "detach ") {
 			detaches++
 		}
 	}
 	if detaches < 3 {
-		t.Errorf("a slow detach is asked again until it's done: %d calls (%v)", detaches, fake.Calls)
+		t.Errorf("a slow detach is asked again until it's done: %d calls (%v)", detaches, fake.CallLog())
 	}
 }
 

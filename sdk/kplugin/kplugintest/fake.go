@@ -233,6 +233,13 @@ func (f *Fake) DeleteRecord(_ context.Context, r kplugin.Record) error {
 	return nil
 }
 
+// CallLog returns the calls so far.
+func (f *Fake) CallLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.Calls...)
+}
+
 // Snapshot returns copies, for assertions.
 func (f *Fake) Snapshot() (lbs map[string]kplugin.LoadBalancer, vols map[string]FakeVolume, recs map[string]kplugin.Record) {
 	f.mu.Lock()

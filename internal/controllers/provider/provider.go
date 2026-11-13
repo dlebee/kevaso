@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"kevaso.com/core/api/client"
@@ -54,6 +55,52 @@ type Hosts struct {
 	Hosts   *informer.Informer
 	Plugins *plugins.Registry
 	Every   time.Duration // look again this often (default 5m)
+
+	mu   sync.Mutex
+	seen map[string]asked // host → what it was last described with, and when
+}
+
+// asked remembers a call to a plugin: what it was asked, and when.
+type asked struct {
+	key string
+	at  time.Time
+}
+
+// fresh reports whether key was asked less than every ago (and remembers it was, if not).
+func remember(mu *sync.Mutex, m *map[string]asked, id, key string, every time.Duration) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	if *m == nil {
+		*m = map[string]asked{}
+	}
+	if a, ok := (*m)[id]; ok && a.key == key && time.Since(a.at) < every {
+		return true
+	}
+	return false
+}
+
+func record(mu *sync.Mutex, m *map[string]asked, id, key string) {
+	mu.Lock()
+	defer mu.Unlock()
+	if *m == nil {
+		*m = map[string]asked{}
+	}
+	(*m)[id] = asked{key: key, at: time.Now()}
+}
+
+func forget(mu *sync.Mutex, m *map[string]asked, id string) {
+	mu.Lock()
+	defer mu.Unlock()
+	delete(*m, id)
+}
+
+// pluginsKey changes when a plugin comes, goes or changes.
+func pluginsKey(r *plugins.Registry) string {
+	var b strings.Builder
+	for _, p := range r.All() {
+		b.WriteString(p.Info.Name + "@" + p.Info.Version + ";")
+	}
+	return b.String()
 }
 
 // Name implements engine.Controller.
@@ -73,6 +120,12 @@ func (c *Hosts) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		return engine.Result{}, nil
 	}
 	h := o.(*v1.Host)
+	// Heartbeats change the Host every 30 s; the plugins only need asking when its address or the
+	// plugins changed, and now and then.
+	key := h.Spec.Address + "|" + pluginsKey(c.Plugins)
+	if remember(&c.mu, &c.seen, h.Name, key, every) {
+		return engine.Result{}, nil
+	}
 	var want *v1.HostProvider
 	for _, p := range c.Plugins.All() {
 		if !p.Info.Hosts {
@@ -91,11 +144,14 @@ func (c *Hosts) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			break
 		}
 	}
-	if same(h.Status.Provider, want) {
-		return engine.Result{RequeueAfter: every}, nil
+	if !same(h.Status.Provider, want) {
+		h.Status.Provider = want
+		if err := c.Client.UpdateStatus(ctx, h); err != nil {
+			return engine.Result{}, err
+		}
 	}
-	h.Status.Provider = want
-	return engine.Result{RequeueAfter: every}, c.Client.UpdateStatus(ctx, h)
+	record(&c.mu, &c.seen, h.Name, key)
+	return engine.Result{RequeueAfter: every}, nil
 }
 
 func same(a, b *v1.HostProvider) bool {
@@ -114,6 +170,13 @@ type LoadBalancers struct {
 	Hosts   *informer.Informer
 	Plugins *plugins.Registry
 	Clock   clock.Clock
+	// Resync is how often an unchanged load balancer is ensured anyway, to repair changes made
+	// outside Kevaso (default 10m).
+	Resync time.Duration
+
+	mu        sync.Mutex
+	ensured   map[string]asked  // silo UID → the request last ensured
+	hostsSeen map[string]string // host → what load balancers depend on, last seen
 }
 
 // Name implements engine.Controller.
@@ -150,6 +213,7 @@ func (c *LoadBalancers) Reconcile(ctx context.Context, k engine.Key) (engine.Res
 		if !ok {
 			return c.condition(ctx, s, meta.ConditionFalse, "PluginMissing", "deleting its "+old+" load balancer needs the plugin serving "+old, 30*time.Second)
 		}
+		forget(&c.mu, &c.ensured, s.UID)
 		err := p.Conn.DeleteLoadBalancer(ctx, kplugin.LoadBalancerRef{Class: old, ID: s.UID, Address: s.Status.Service.PublicIP})
 		if err != nil && !errors.Is(err, kplugin.ErrNotFound) {
 			return engine.Result{}, fmt.Errorf("delete %s load balancer: %w", old, err)
@@ -206,6 +270,15 @@ func (c *LoadBalancers) Reconcile(ctx context.Context, k engine.Key) (engine.Res
 		}
 		lb.Ports = append(lb.Ports, kplugin.Port{Name: sp.Name, Protocol: proto, Port: sp.Port, NodePort: nps[sp.Name]})
 	}
+	// Silos and hosts change all the time (status, heartbeats); the cloud only when this does.
+	reqKey := fmt.Sprintf("%+v", lb)
+	resync := c.Resync
+	if resync <= 0 {
+		resync = 10 * time.Minute
+	}
+	if s.Status.Service.PublicIP != "" && remember(&c.mu, &c.ensured, s.UID, reqKey, resync) {
+		return engine.Result{}, nil
+	}
 	st, err := p.Conn.EnsureLoadBalancer(ctx, lb)
 	if errors.Is(err, kplugin.ErrInProgress) {
 		_, _ = c.condition(ctx, s, meta.ConditionFalse, "Provisioning", err.Error(), 0)
@@ -225,7 +298,8 @@ func (c *LoadBalancers) Reconcile(ctx context.Context, k engine.Key) (engine.Res
 	}); err != nil {
 		return engine.Result{}, err
 	}
-	return engine.Result{RequeueAfter: 10 * time.Minute}, nil // and again now and then: someone may change it outside
+	record(&c.mu, &c.ensured, s.UID, reqKey)
+	return engine.Result{RequeueAfter: resync}, nil // and again now and then: someone may change it outside
 }
 
 func info(h *v1.Host) kplugin.HostInfo {
@@ -255,9 +329,25 @@ func (c *LoadBalancers) finalizers(ctx context.Context, s *v1.Silo, remove, add 
 	return setFinalizers(ctx, c.Client, s, remove, add)
 }
 
-// Map implements engine.Mapper: a host's provider details reach the silos on it.
+// Map implements engine.Mapper: a host's provider details reach the silos with load balancers
+// (only when they changed: not on every heartbeat).
 func (c *LoadBalancers) Map(changed engine.Key) []engine.Key {
 	if changed.Kind != "Host" {
+		return nil
+	}
+	key := ""
+	if o, ok := c.Hosts.Get("", changed.Name); ok {
+		h := o.(*v1.Host)
+		key = fmt.Sprintf("%v|%+v", meta.IsTrue(h.Status.Conditions, "Ready"), h.Status.Provider)
+	}
+	c.mu.Lock()
+	if c.hostsSeen == nil {
+		c.hostsSeen = map[string]string{}
+	}
+	prev, had := c.hostsSeen[changed.Name]
+	c.hostsSeen[changed.Name] = key
+	c.mu.Unlock()
+	if had && prev == key {
 		return nil
 	}
 	var keys []engine.Key

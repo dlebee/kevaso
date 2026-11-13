@@ -1,0 +1,158 @@
+// The provider plugin protocol (ADR 0003), shaped like CSI: gRPC over a unix socket in
+// /run/kevaso-plugins/NAME/plugin.sock. A plugin serves Identity, plus the services for what it
+// provides; the others answer UNIMPLEMENTED. Every call is idempotent and keyed by an ID the
+// control plane picks.
+//
+// Errors are gRPC status codes, as CSI uses them: NOT_FOUND (it isn't there: deleting it is done),
+// UNIMPLEMENTED (not served), FAILED_PRECONDITION (someone else's: a DNS record set with another
+// owner, a volume attached elsewhere), ABORTED (still in progress: call again later).
+//
+// Generate with `make proto` in kevaso.com/core.
+syntax = "proto3";
+
+package kevaso.plugin.v1;
+
+option go_package = "kevaso.com/core/sdk/kplugin/kpluginpb";
+
+// ── Identity ─────────────────────────────────────────────────────────────────
+
+service Identity {
+  rpc GetPluginInfo(GetPluginInfoRequest) returns (PluginInfo);
+}
+
+message GetPluginInfoRequest {}
+
+message PluginInfo {
+  string name = 1;     // e.g. linode
+  string version = 2;
+  string protocol = 3; // kevaso.plugin/v1
+  bool hosts = 4;      // it recognises its own machines (Hosts service)
+  repeated Class load_balancers = 5;
+  repeated Class storage = 6;
+  repeated string dns = 7; // DNS provider names
+}
+
+message Class {
+  string name = 1;
+  string description = 2;
+  bool own_hosts_only = 3; // only the plugin's machines can use it
+  bool announce = 4;       // load balancers: the silo's host announces the address
+  bool node_ports = 5;     // load balancers: the host gets a node port per service port
+}
+
+// ── Hosts ────────────────────────────────────────────────────────────────────
+
+service Hosts {
+  rpc DescribeHosts(DescribeHostsRequest) returns (DescribeHostsResponse);
+}
+
+message Host {
+  string name = 1;
+  string address = 2;
+}
+
+message HostInfo {
+  string name = 1;
+  string id = 2;     // the provider's ID for the machine
+  string region = 3;
+  string private_address = 4;
+}
+
+message DescribeHostsRequest { repeated Host hosts = 1; }
+message DescribeHostsResponse { repeated HostInfo hosts = 1; }
+
+// ── Load balancers ───────────────────────────────────────────────────────────
+
+service LoadBalancers {
+  rpc EnsureLoadBalancer(LoadBalancer) returns (LoadBalancerStatus);
+  rpc DeleteLoadBalancer(LoadBalancerRef) returns (DeleteLoadBalancerResponse);
+}
+
+message Port {
+  string name = 1;
+  string protocol = 2; // TCP | UDP
+  int32 port = 3;
+  int32 node_port = 4;
+}
+
+message LoadBalancer {
+  string class = 1;
+  string id = 2; // the silo's UID
+  string namespace = 3;
+  string name = 4;
+  string address = 5; // a requested address, for classes that let you pick
+  repeated Port ports = 6;
+  repeated HostInfo backends = 7; // the silo's host
+  repeated HostInfo hosts = 8;    // every host of the plugin's
+}
+
+message LoadBalancerStatus {
+  string address = 1;
+  repeated string source_ranges = 2; // where it connects to node ports from
+}
+
+message LoadBalancerRef {
+  string class = 1;
+  string id = 2;
+  string address = 3;
+}
+
+message DeleteLoadBalancerResponse {}
+
+// ── Volumes ──────────────────────────────────────────────────────────────────
+
+service Volumes {
+  rpc EnsureVolume(Volume) returns (VolumeStatus);
+  rpc AttachVolume(Attachment) returns (AttachmentStatus);
+  rpc DetachVolume(Attachment) returns (DetachVolumeResponse);
+  rpc DeleteVolume(VolumeRef) returns (DeleteVolumeResponse);
+}
+
+message Volume {
+  string class = 1;
+  string id = 2;   // the silo's UID and the volume's name
+  string name = 3; // a label on the provider's side
+  int64 size_bytes = 4;
+  string region = 5;
+}
+
+message VolumeStatus {
+  string handle = 1;
+  string region = 2;
+  int64 size_bytes = 3;
+}
+
+message Attachment {
+  string class = 1;
+  string handle = 2;
+  HostInfo host = 3;
+}
+
+message AttachmentStatus { string device = 1; }
+message DetachVolumeResponse {}
+
+message VolumeRef {
+  string class = 1;
+  string handle = 2;
+}
+
+message DeleteVolumeResponse {}
+
+// ── DNS ──────────────────────────────────────────────────────────────────────
+
+service DNS {
+  rpc EnsureRecord(Record) returns (EnsureRecordResponse);
+  rpc DeleteRecord(Record) returns (DeleteRecordResponse);
+}
+
+message Record {
+  string provider = 1;
+  string name = 2; // fully qualified, no trailing dot
+  string type = 3; // A | AAAA | TXT
+  repeated string values = 4;
+  int32 ttl = 5;
+  string owner = 6; // a plugin never changes a record set someone else owns
+}
+
+message EnsureRecordResponse {}
+message DeleteRecordResponse {}

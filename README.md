@@ -63,7 +63,7 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
 - backups: `kvoadm backup` writes the control plane's state sealed to the recovery key, and
   `kvoadm init --restore FILE` brings it back on a fresh machine, the master key rebuilt from the
   recovery key;
-- providers: a plugin protocol (`sdk/kplugin`, JSON over a unix socket) for load-balancer classes,
+- providers: a plugin protocol (`sdk/kplugin`, gRPC over a unix socket, like CSI) for load-balancer classes,
   storage classes and DNS, installed with `kvoadm plugin install` as a hardened unit holding its
   cloud token alone. The first is [Linode](https://github.com/dlebee/kevaso-provider-linode):
   NodeBalancers, Block Storage volumes (formatted once, deleted with the silo), shared IPs announced

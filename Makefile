@@ -1,7 +1,7 @@
 MODULES := . api sdk
 export GOTOOLCHAIN := auto
 
-.PHONY: test race vet lint e2e workspace
+.PHONY: test race vet lint e2e workspace proto
 
 test:                       ## unit tests, every module
 	@for m in $(MODULES); do (cd $$m && go test ./...) || exit 1; done
@@ -25,3 +25,9 @@ e2e:                        ## the test loop on real machines (Lima on macOS, th
 
 workspace:                  ## write ../go.work for core and any sibling provider repos
 	hack/workspace.sh
+
+proto:                      ## regenerate sdk/kplugin/kpluginpb from its .proto (protoc + the pinned generators in ./bin)
+	GOBIN=$(CURDIR)/bin go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
+	GOBIN=$(CURDIR)/bin go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+	cd sdk/kplugin/kpluginpb && PATH=$(CURDIR)/bin:$$PATH protoc --go_out=. --go_opt=paths=source_relative \
+		--go-grpc_out=. --go-grpc_opt=paths=source_relative kplugin.proto

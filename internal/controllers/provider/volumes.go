@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"kevaso.com/core/api/client"
@@ -26,6 +27,9 @@ type Volumes struct {
 	Plugins *plugins.Registry
 	// Poll is how soon to look again while something is in progress (default 5s).
 	Poll time.Duration
+
+	mu        sync.Mutex
+	hostsSeen map[string]string
 }
 
 // Name implements engine.Controller.
@@ -272,6 +276,20 @@ func (c *Volumes) remove(ctx context.Context, s *v1.Silo, vs v1.VolumeStatus) (v
 func (c *Volumes) Map(changed engine.Key) []engine.Key {
 	if changed.Kind != "Host" {
 		return nil
+	}
+	key := ""
+	if o, ok := c.Hosts.Get("", changed.Name); ok {
+		key = fmt.Sprintf("%+v", o.(*v1.Host).Status.Provider)
+	}
+	c.mu.Lock()
+	if c.hostsSeen == nil {
+		c.hostsSeen = map[string]string{}
+	}
+	prev, had := c.hostsSeen[changed.Name]
+	c.hostsSeen[changed.Name] = key
+	c.mu.Unlock()
+	if had && prev == key {
+		return nil // a heartbeat
 	}
 	var keys []engine.Key
 	for _, o := range c.Silos.List() {
