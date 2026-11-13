@@ -95,9 +95,35 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Name: "http", Port: 8080}}}
 		want(t, "a service on openshell", ed.Create(c.ctx, s), http.StatusUnprocessableEntity, "no network interface")
 	})
+	t.Run("vm volumes", func(t *testing.T) {
+		policy(t, "Silo", "spec.volumes", `[{'name': 'root', 'mountPath': '/'}]`)
+		want(t, "a volume over a VM's own disk", ed.Create(c.ctx, silo("v1", "web3")), http.StatusUnprocessableEntity, "mountPath / is the VM's own disk")
+	})
 	t.Run("movability", func(t *testing.T) {
 		policy(t, "Silo", "spec.availability", `{'onHostLoss': 'Move'}`)
 		want(t, "Move on local disks", ed.Create(c.ctx, silo("m1", "web3")), http.StatusUnprocessableEntity, "onHostLoss: Move")
+	})
+	t.Run("lease", func(t *testing.T) {
+		policy(t, "Silo", "spec.service.lease", `{'max': '9999h'}`)
+		s := silo("l1", "web3")
+		s.Spec.Service = &v1.SiloService{Expose: v1.ExposeHostPort, Ports: []v1.ServicePort{{Name: "http", Port: 8080}}}
+		want(t, "a lease past the cluster's limit", ada.Create(c.ctx, s), http.StatusUnprocessableEntity, "more than this cluster allows")
+	})
+	t.Run("kind definition", func(t *testing.T) {
+		policy(t, "KindDefinition", "spec.names.shortNames", `['silo']`)
+		want(t, "a defined kind shadowing a built-in", c.admin.Create(c.ctx, fromYAML(t, databasesManifest)), http.StatusUnprocessableEntity, "can't shadow a built-in")
+	})
+	t.Run("image versions", func(t *testing.T) {
+		img := &v1.Image{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Image"}, ObjectMeta: meta.ObjectMeta{Name: "app", Namespace: "web3"},
+			Spec: v1.ImageSpec{Versions: []v1.ImageVersion{{Name: "v1", Container: "docker.io/library/nginx:1.27"}}}}
+		if err := ada.Create(c.ctx, img); err != nil {
+			t.Fatal(err)
+		}
+		policy(t, "Image", "spec.versions", `[{'name': 'v1', 'container': 'docker.io/evil/nginx:1.27'}]`)
+		if err := ada.Get(c.ctx, "Image", "web3", "app", img); err != nil {
+			t.Fatal(err)
+		}
+		want(t, "a policy rewriting a version", ada.Update(c.ctx, img), http.StatusUnprocessableEntity, "can't change once added")
 	})
 	t.Run("secret generate", func(t *testing.T) {
 		policy(t, "Secret", "spec.generate", `true`)

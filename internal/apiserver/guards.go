@@ -17,10 +17,25 @@ import (
 // mutation policy can't get a write past them: whatever it changes is checked as if the writer
 // had sent it.
 
+// The same holds for the checks on what can't change and on a KindDefinition's names: a policy
+// could otherwise rewrite an Image's version or shadow a built-in kind after they were checked.
+
 // guard runs every built-in guard on a main-resource write (status writes don't change the spec).
-func (s *Server) guard(ctx context.Context, t target, obj meta.Object) error {
+// old is nil on create.
+func (s *Server) guard(ctx context.Context, t target, old, obj meta.Object) error {
 	if t.status {
 		return nil
+	}
+	if !isNil(old) {
+		if errs := transition(old, obj); len(errs) > 0 {
+			return errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %s", t.kind.Kind, obj.GetObjectMeta().Name, joinMessages(errs))
+		}
+	}
+	if d, ok := obj.(*v1.KindDefinition); ok {
+		prev, _ := old.(*v1.KindDefinition)
+		if err := s.checkDefinition(ctx, d, prev); err != nil {
+			return err
+		}
 	}
 	for _, check := range []func(context.Context, target, meta.Object) error{
 		s.checkExposure,
