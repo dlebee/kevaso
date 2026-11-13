@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
@@ -25,6 +26,9 @@ type Client struct {
 	// Token, if set, gives the bearer token for each request (kvo login's access token, refreshed
 	// as needed).
 	Token func(ctx context.Context) (string, error)
+
+	kindsMu sync.Mutex
+	kinds   []v1.APIResource // what the server serves, once asked (kinds.go)
 }
 
 // send adds credentials and sends a request.
@@ -171,18 +175,9 @@ func (c *Client) Fetch(ctx context.Context, method, path string) ([]byte, http.H
 	return data, resp.Header, nil
 }
 
-func objPath(obj meta.Object, status bool) (string, error) {
-	m := obj.GetObjectMeta()
-	p, err := Path(obj.GetTypeMeta().Kind, m.Namespace, m.Name)
-	if status {
-		p += "/status"
-	}
-	return p, err
-}
-
 // Get reads one object into out (a pointer to the kind's type).
 func (c *Client) Get(ctx context.Context, kind, namespace, name string, out meta.Object) error {
-	p, err := Path(kind, namespace, name)
+	p, err := c.pathFor(ctx, kind, namespace, name)
 	if err != nil {
 		return err
 	}
@@ -199,7 +194,7 @@ type List struct {
 
 // List lists a kind, in one namespace or (namespace "") in all of them.
 func (c *Client) List(ctx context.Context, kind, namespace string) (*List, error) {
-	p, err := Path(kind, namespace, "")
+	p, err := c.pathFor(ctx, kind, namespace, "")
 	if err != nil {
 		return nil, err
 	}
@@ -209,8 +204,7 @@ func (c *Client) List(ctx context.Context, kind, namespace string) (*List, error
 
 // Create creates obj and updates it in place with what the server stored.
 func (c *Client) Create(ctx context.Context, obj meta.Object) error {
-	m := obj.GetObjectMeta()
-	p, err := Path(obj.GetTypeMeta().Kind, m.Namespace, "")
+	p, err := c.objPathFor(ctx, obj, "", false)
 	if err != nil {
 		return err
 	}
@@ -219,7 +213,7 @@ func (c *Client) Create(ctx context.Context, obj meta.Object) error {
 
 // Update replaces obj's spec and metadata; obj must carry the resourceVersion it was read at.
 func (c *Client) Update(ctx context.Context, obj meta.Object) error {
-	p, err := objPath(obj, false)
+	p, err := c.objPathFor(ctx, obj, obj.GetObjectMeta().Name, false)
 	if err != nil {
 		return err
 	}
@@ -228,7 +222,7 @@ func (c *Client) Update(ctx context.Context, obj meta.Object) error {
 
 // UpdateStatus replaces only obj's status (what controllers write).
 func (c *Client) UpdateStatus(ctx context.Context, obj meta.Object) error {
-	p, err := objPath(obj, true)
+	p, err := c.objPathFor(ctx, obj, obj.GetObjectMeta().Name, true)
 	if err != nil {
 		return err
 	}
@@ -237,7 +231,7 @@ func (c *Client) UpdateStatus(ctx context.Context, obj meta.Object) error {
 
 // Delete deletes an object (or starts deleting it, while it has finalizers).
 func (c *Client) Delete(ctx context.Context, kind, namespace, name string) error {
-	p, err := Path(kind, namespace, name)
+	p, err := c.pathFor(ctx, kind, namespace, name)
 	if err != nil {
 		return err
 	}
@@ -253,7 +247,7 @@ type Event struct {
 // Watch streams events for a kind after resourceVersion (from a List). The channel closes when ctx
 // ends or the server ends the stream; a 410 error means re-list.
 func (c *Client) Watch(ctx context.Context, kind, namespace, resourceVersion string) (<-chan Event, error) {
-	p, err := Path(kind, namespace, "")
+	p, err := c.pathFor(ctx, kind, namespace, "")
 	if err != nil {
 		return nil, err
 	}

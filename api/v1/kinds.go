@@ -43,6 +43,9 @@ func init() {
 	register(KindInfo{Kind: "Service", Plural: "services", ShortNames: []string{"svc"}, Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Service{} }})
 	register(KindInfo{Kind: "Approval", Plural: "approvals", Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Approval{} }})
 	register(KindInfo{Kind: "Pane", Plural: "panes", Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Pane{} }})
+	register(KindInfo{Kind: "KindDefinition", Plural: "kinddefinitions", ShortNames: []string{"kd"}, Scope: Cluster, HasSpec: true, New: func() meta.Object { return &KindDefinition{} }})
+	register(KindInfo{Kind: "ValidationPolicy", Plural: "validationpolicies", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &ValidationPolicy{} }})
+	register(KindInfo{Kind: "MutationPolicy", Plural: "mutationpolicies", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &MutationPolicy{} }})
 	register(KindInfo{Kind: "ServiceAccount", Plural: "serviceaccounts", ShortNames: []string{"sa"}, Scope: Namespaced, New: func() meta.Object { return &ServiceAccount{} }})
 }
 
@@ -69,11 +72,20 @@ func Kinds() []KindInfo {
 	return out
 }
 
-// Decode parses a JSON object of any built-in kind, using its "kind" field.
+// Decode parses a JSON object of any built-in kind, using its "kind" field. An object of a defined
+// kind (apiVersion GROUP/VERSION, ADR 0005) decodes as *Unstructured, with a KindInfo that has only
+// its Kind and New: its scope and resource are the server's to say (client.Resolve).
 func Decode(data []byte) (meta.Object, KindInfo, error) {
 	var tm meta.TypeMeta
 	if err := json.Unmarshal(data, &tm); err != nil {
 		return nil, KindInfo{}, fmt.Errorf("decode: %w", err)
+	}
+	if IsDefinedAPIVersion(tm.APIVersion) {
+		u := &Unstructured{}
+		if err := json.Unmarshal(data, u); err != nil {
+			return nil, KindInfo{}, fmt.Errorf("decode %s %s: %w", tm.APIVersion, tm.Kind, err)
+		}
+		return u, KindInfo{Kind: tm.Kind, New: func() meta.Object { return &Unstructured{} }}, nil
 	}
 	if tm.APIVersion != APIVersion {
 		return nil, KindInfo{}, fmt.Errorf("decode: apiVersion %q, want %q", tm.APIVersion, APIVersion)

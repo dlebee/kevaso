@@ -416,6 +416,9 @@ func apply(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdou
 		if err != nil {
 			return err
 		}
+		if k, err = objectKind(ctx, c, obj, k); err != nil {
+			return err
+		}
 		m := obj.GetObjectMeta()
 		if k.Scope == v1.Namespaced && m.Namespace == "" {
 			m.Namespace = defaultNS(o)
@@ -490,7 +493,10 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	if len(o.args) < 1 {
 		return fmt.Errorf("get needs a kind (%s)", knownKinds())
 	}
-	k, err := kindOf(o.args[0])
+	if o.args[0] == "kinds" {
+		return getKinds(ctx, c, stdout)
+	}
+	k, err := resolveKind(ctx, c, o.args[0])
 	if err != nil {
 		return err
 	}
@@ -530,6 +536,9 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	case "yaml":
 		return printYAML(stdout, objs)
 	case "", "wide":
+		if isDefined(k) {
+			return printDefinedTable(ctx, c, stdout, k, objs, o.all)
+		}
 		return printTable(stdout, k, objs, o.all, o.output == "wide")
 	default:
 		return fmt.Errorf("unknown output %q: use yaml, json or wide", o.output)
@@ -622,6 +631,8 @@ func summary(obj meta.Object) string {
 			parts = append(parts, "address="+o.Status.Address)
 		}
 		conds = o.Status.Conditions
+	case *v1.Unstructured:
+		conds = unstructuredConditions(o)
 	case *v1.Approval:
 		c := approvalColumns(o, time.Now())
 		parts = append(parts, "silo="+c[0], "secret="+c[1], "use="+c[2], "phase="+c[4], o.Spec.Summary)
@@ -818,7 +829,7 @@ func del(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	if len(o.args) != 2 {
 		return errors.New("delete needs KIND NAME")
 	}
-	k, err := kindOf(o.args[0])
+	k, err := resolveKind(ctx, c, o.args[0])
 	if err != nil {
 		return err
 	}
@@ -848,7 +859,7 @@ func watch(ctx context.Context, c *client.Client, o opts, stdout io.Writer) erro
 	if len(o.args) != 1 {
 		return errors.New("watch needs KIND")
 	}
-	k, err := kindOf(o.args[0])
+	k, err := resolveKind(ctx, c, o.args[0])
 	if err != nil {
 		return err
 	}
