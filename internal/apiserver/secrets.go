@@ -51,6 +51,9 @@ func (s *Server) prepareSecret(ctx context.Context, t target, obj meta.Object) (
 	if old != nil && old.Spec.Type != sec.Spec.Type {
 		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.type can't change (delete and re-create it)", sec.Name)
 	}
+	if old != nil && value == nil && loosens(old, sec) {
+		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.valueReadable and spec.allowedDelivery can't be loosened without a new spec.value in the same write (a value made write-only, or kept to some deliveries, stays so)", sec.Name)
+	}
 	if value == nil && sec.Spec.Generate && (old == nil || s.vault == nil || !s.vault.Has(ctx, old)) {
 		v, err := secrets.Generate(sec.Spec.Type)
 		if err != nil {
@@ -68,6 +71,20 @@ func (s *Server) prepareSecret(ctx context.Context, t target, obj meta.Object) (
 		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: %v", sec.Name, err)
 	}
 	return value, nil
+}
+
+// loosens reports whether next lets more of the stored value out than old does: a person can read
+// it, or a delivery mode is allowed that wasn't.
+func loosens(old, next *v1.Secret) bool {
+	if !old.Readable() && next.Readable() {
+		return true
+	}
+	for _, m := range []string{v1.DeliverBroker, v1.DeliverInject, v1.DeliverFile, v1.DeliverEnv, v1.DeliverSign} {
+		if !old.Allows(m) && next.Allows(m) {
+			return true
+		}
+	}
+	return false
 }
 
 // storeSecretValue seals value for the stored secret and records the new version in its status.
