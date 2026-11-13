@@ -56,6 +56,7 @@ import (
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/secrets"
 	"kevaso.com/core/internal/store"
+	"kevaso.com/core/internal/version"
 	"kevaso.com/core/internal/worker"
 	"kevaso.com/core/sdk/kcc"
 	"kevaso.com/core/sdk/kplugin"
@@ -66,7 +67,9 @@ const defaultAdminSocket = "/run/kevaso/admin.sock"
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   kevasod control-plane --name HOST --address ADDR [--listen 0.0.0.0:6443] [--data /var/lib/kevaso]
-                        [--store sqlite|etcd] [--etcd-peer-listen HOST:PORT]
+                        [--store sqlite|etcd] [--etcd-peer-listen HOST:PORT] [--cluster-dns NAME]
+                        [--join https://CP:6443]… [--join-token-file F] [--ca-file F] [--state-only]
+  kevasod version
   kevasod worker --name HOST --server https://CP:6443 [--ca-file F] [--token-file F] [--data D]
   kevasod admin sign-user --name NAME < csr.pem
   kevasod admin recovery-key | kms-rotate [--new-recovery-key] | backup
@@ -124,6 +127,8 @@ func main() {
 		}
 	case "dev":
 		err = runDev(ctx, os.Args[2:])
+	case "version":
+		fmt.Println(version.Version)
 	default:
 		usage()
 	}
@@ -177,7 +182,24 @@ func runControlPlane(ctx context.Context, args []string) error {
 	fs.DurationVar(&cfg.Leases.Max, "lease-max", 24*time.Hour, "the longest a port may be open on a lease; a silo's lease.max above it is refused")
 	fs.DurationVar(&cfg.Leases.DefaultMax, "lease-default-max", time.Hour, "the longest lease of a silo whose lease sets no max")
 	pluginsDir := fs.String("plugins-dir", kplugin.Dir, "provider plugins' sockets: DIR/NAME/plugin.sock (\"\": none)")
+	var join multi
+	fs.Var(&join, "join", "first start of a new system node: a control plane of the cluster to join (repeatable, or comma-separated)")
+	joinToken := fs.String("join-token-file", "/etc/kevaso/join-token", "with --join: the one-time join token (role system-node)")
+	joinCA := fs.String("ca-file", "/etc/kevaso/ca.crt", "with --join: the cluster CA to pin")
+	fs.BoolVar(&cfg.StateOnly, "state-only", false, "a light system node: run the etcd member only (no API, no controllers); needs --store etcd")
+	fs.StringVar(&cfg.ClusterDNS, "cluster-dns", "", "the control plane's DNS name (one record per system node): in the API certificate and the OIDC issuer")
 	_ = fs.Parse(args)
+	if len(join) > 0 {
+		ca, err := os.ReadFile(*joinCA)
+		if err != nil {
+			return fmt.Errorf("--join: %w", err)
+		}
+		var servers []string
+		for _, j := range join {
+			servers = append(servers, client.SplitServers(j)...)
+		}
+		cfg.Join = &controlplane.JoinConfig{Servers: servers, CA: ca, TokenFile: *joinToken}
+	}
 	cfg.ExtraNames = extra
 	for _, d := range []struct {
 		dir  string

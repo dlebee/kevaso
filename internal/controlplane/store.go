@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"kevaso.com/core/internal/etcd"
 	"kevaso.com/core/internal/pki"
@@ -21,6 +22,11 @@ type EtcdConfig struct {
 	ClientListen  string // default 127.0.0.1:2379 (this host's control plane only)
 	PeerListen    string // "" opens no peer listener: one member
 	AdvertisePeer string // what other members dial; "" means PeerListen
+	// Join and InitialCluster: a member joining an existing cluster (set from Config.Join's answer).
+	Join           bool
+	InitialCluster map[string]string
+	// UnsafeNoFsync skips fsync: tests only.
+	UnsafeNoFsync bool
 }
 
 // cpStore is the control plane's store and what has to close with it.
@@ -28,6 +34,7 @@ type cpStore struct {
 	store.Store
 	snapshot func(ctx context.Context, path string) error
 	closers  []func()
+	etcd     *etcd.Server // the member, with Store "etcd"
 }
 
 func (s *cpStore) Snapshot(ctx context.Context, path string) error { return s.snapshot(ctx, path) }
@@ -58,16 +65,30 @@ func openStore(ctx context.Context, cfg Config, ca *pki.CA) (*cpStore, error) {
 	srv, err := etcd.Start(ctx, etcd.Config{
 		Name: cfg.HostName, Dir: filepath.Join(cfg.DataDir, "etcd"), CA: ca, Names: []string{cfg.Address},
 		ClientListen: cfg.Etcd.ClientListen, PeerListen: cfg.Etcd.PeerListen, AdvertisePeer: cfg.Etcd.AdvertisePeer,
+		Join: cfg.Etcd.Join, InitialCluster: cfg.Etcd.InitialCluster, UnsafeNoFsync: cfg.Etcd.UnsafeNoFsync,
 	})
 	if err != nil {
 		return nil, err
 	}
+	// A joining member is a learner first: it serves no reads until the leader's member controller
+	// promotes it, once it has caught up (systemnodes.go).
+	if srv.IsLearner() {
+		cfg.Log("etcd: joined as a learner; waiting to be promoted")
+		if err := srv.WaitVoter(ctx, 200*time.Millisecond); err != nil {
+			srv.Close()
+			return nil, err
+		}
+		cfg.Log("etcd: promoted to a voter")
+	}
+	rctx, stopRotation := context.WithCancel(context.Background())
+	go srv.RunRotation(rctx, cfg.Clock.Now, 12*time.Hour, cfg.Log)
 	cli, err := srv.Client()
 	if err != nil {
+		stopRotation()
 		srv.Close()
 		return nil, err
 	}
-	stop := func() { _ = cli.Close(); srv.Close() }
+	stop := func() { stopRotation(); _ = cli.Close(); srv.Close() }
 	st, res, err := store.MigrateSQLite(ctx, cli, sqlitePath, 0)
 	if err != nil {
 		stop()
@@ -76,5 +97,5 @@ func openStore(ctx context.Context, cfg Config, ca *pki.CA) (*cpStore, error) {
 	if res.Ran {
 		cfg.Log("migrated %d objects from %s into etcd (revisions continue from %d; watchers re-list)", res.Objects, sqlitePath, res.From)
 	}
-	return &cpStore{Store: st, snapshot: st.Snapshot, closers: []func(){stop}}, nil
+	return &cpStore{Store: st, snapshot: st.Snapshot, closers: []func(){stop}, etcd: srv}, nil
 }

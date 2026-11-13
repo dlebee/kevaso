@@ -156,11 +156,17 @@ func (c Config) Client(path, name string) (*client.Client, string, error) {
 		return nil, "", err
 	}
 	if ctx.Login {
-		cl, err := client.NewTLS(ctx.Server, ca, nil, nil)
+		// A server may list several control planes, comma-separated: the client fails over between
+		// them. Logins refresh at the first (an HA cluster gives its control plane one DNS name).
+		servers := client.SplitServers(ctx.Server)
+		if len(servers) == 0 {
+			return nil, name, fmt.Errorf("context %s has no server", name)
+		}
+		cl, err := client.NewTLSEndpoints(servers, ca, nil, nil)
 		if err != nil {
 			return nil, name, err
 		}
-		cl.Token = login.Tokens(ctx.Server, ca, Tokens(path), name, filepath.Join(filepath.Dir(path), "locks"))
+		cl.Token = login.Tokens(servers[0], ca, Tokens(path), name, filepath.Join(filepath.Dir(path), "locks"))
 		return cl, name, nil
 	}
 	cert, err := read(ctx.Certificate)
@@ -171,6 +177,6 @@ func (c Config) Client(path, name string) (*client.Client, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	cl, err := client.NewTLS(ctx.Server, ca, cert, key)
+	cl, err := client.NewTLSEndpoints(client.SplitServers(ctx.Server), ca, cert, key)
 	return cl, name, err
 }

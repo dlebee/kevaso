@@ -14,6 +14,10 @@ import (
 // DefaultPeerPort is where members listen for each other.
 const DefaultPeerPort = "2380"
 
+// AnnotationPeerURL on a Host overrides its member's peer URL (default https://ADDRESS:2380): a
+// host whose etcd listens elsewhere, or several members on one machine (tests).
+const AnnotationPeerURL = "kevaso.com/etcd-peer-url"
+
 // Desired is a host that should be an etcd member: every Host with the control-plane component,
 // a light system node (stateOnly: store member only, no API server or controllers) included.
 type Desired struct {
@@ -30,7 +34,11 @@ func DesiredMembers(hosts []v1.Host) []Desired {
 		if cp == nil || h.Spec.Address == "" {
 			continue
 		}
-		out = append(out, Desired{Name: h.Name, PeerURL: "https://" + net.JoinHostPort(h.Spec.Address, DefaultPeerPort), StateOnly: cp.StateOnly})
+		peer := "https://" + net.JoinHostPort(h.Spec.Address, DefaultPeerPort)
+		if u := h.Annotations[AnnotationPeerURL]; u != "" {
+			peer = u
+		}
+		out = append(out, Desired{Name: h.Name, PeerURL: peer, StateOnly: cp.StateOnly})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

@@ -84,6 +84,22 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return 0
 	}
+	if len(args) > 0 && (args[0] == "store" || args[0] == "upgrade") {
+		var err error
+		switch {
+		case args[0] == "upgrade":
+			err = upgradeCmd(ctx, args[1:], stdin, stdout)
+		case len(args) > 1 && args[1] == "migrate":
+			err = storeMigrate(ctx, args[2:], stdin, stdout)
+		default:
+			err = errors.New("store migrate [USER@]ADDRESS --ssh-key PATH")
+		}
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) > 0 && args[0] == "users" {
 		if err := usersCmd(ctx, args[1:], stdout); err != nil {
 			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
@@ -98,7 +114,11 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime NAME]… [--loop-storage SIZE]
   kvoadm host reconnect [USER@]ADDRESS --ssh-key PATH [--server URL]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker [--runtime NAME]…
+  kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install control-plane [--state-only]
+  kvoadm host install HOST control-plane [--state-only] | uninstall HOST control-plane | remove HOST
   kvoadm host list | drain NAME | uncordon NAME
+  kvoadm store migrate [USER@]ADDRESS --ssh-key PATH
+  kvoadm upgrade --kevasod PATH [--ssh-key PATH] [--batch N] [--version V] [--dry-run]
   kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME
   kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
   kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--credential NAME=FILE]… [--side controller|node]
@@ -488,6 +508,8 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 		return err
 	}
 	say("host %s is Ready. Try: kvo get hosts", o.Name)
+	// How kvoadm reaches it (kvoadm upgrade, store migrate), as for every host it sets up.
+	_ = annotateSSH(ctx, c, o.Name, fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))), conn.Fingerprint)
 
 	// 7. The recovery key for secrets: made on the host, shown once, here, and never again.
 	if rk, err := conn.Run(ctx, "kevasod admin recovery-key", nil); err == nil {

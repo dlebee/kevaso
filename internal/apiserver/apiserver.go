@@ -56,6 +56,7 @@ type Server struct {
 	vault    *secrets.Vault // nil: no KMS, secrets can't hold values
 	kmsAdmin KMSAdmin
 	backup   func(context.Context, []byte) ([]byte, error)
+	joinNode SystemNodeJoiner // POST /join/system-node (systemnodes.go)
 
 	approvalLimits approvals.Limits
 	leaseLimits    leases.Limits                     // port leases (leases.go)

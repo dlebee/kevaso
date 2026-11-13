@@ -130,3 +130,30 @@ func (i *Issuer) Redeem(ctx context.Context, token, host, role string) error {
 	}
 	return ErrInvalid
 }
+
+// Check is Redeem without spending the token: whether it would be accepted for host and role now.
+func (i *Issuer) Check(ctx context.Context, token, host, role string) error {
+	id, secret, ok := split(token)
+	if !ok {
+		return ErrInvalid
+	}
+	o, err := i.Store.Get(ctx, store.Key{Kind: Kind, Name: id})
+	if errors.Is(err, store.ErrNotFound) {
+		return ErrInvalid
+	}
+	if err != nil {
+		return err
+	}
+	var r record
+	if err := json.Unmarshal(o.Data, &r); err != nil {
+		return err
+	}
+	if subtle.ConstantTimeCompare([]byte(hash(secret)), []byte(r.SecretHash)) != 1 ||
+		!r.UsedAt.IsZero() || !i.Clock.Now().Before(r.Expires) {
+		return ErrInvalid
+	}
+	if r.Host != host || !slices.Contains(r.Roles, role) {
+		return fmt.Errorf("%w (token is for host %q)", ErrNotAllowed, r.Host)
+	}
+	return nil
+}
