@@ -106,8 +106,8 @@ final class PaneAPITests: XCTestCase {
         let running = await eventually(5) { view.state == .running }
         XCTAssertTrue(running)
         await sleep(0.3)
-        let got = await view.probe("return JSON.stringify(window.__got)")
-        XCTAssertEqual(got, #"[{"lit":3,"progress":0.5}]"#)
+        let got = await view.probe("return JSON.stringify(window.__got.map(d => [d.lit, d.progress]))")
+        XCTAssertEqual(got, "[[3,0.5]]")
         view.close(); panel.orderOut(nil); panel.close()
         try? FileManager.default.removeItem(at: parent)
     }
