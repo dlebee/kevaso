@@ -9,10 +9,11 @@ package e2e
 import (
 	"bytes"
 	"fmt"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"kevaso.com/core/internal/cli/kvoadm"
 )
 
 func (p *pair) spare() string {
@@ -85,12 +86,10 @@ func TestMetal2DiskReset(t *testing.T) {
 	lvs := strings.TrimSpace(p.c2.mustSh("lvs --noheadings -o lv_name kevaso | tr -d ' ' | grep '^kv-' | sort"))
 	reset := func(extra ...string) string {
 		cfg := p.m2.cfg
-		args := append([]string{"run", "./cmd/kvoadm", "reset", cfg.SSHTarget(), "--ssh-key", cfg.KeyFile, "--host-key", cfg.HostKey, "--force", "--yes"}, extra...)
-		cmd := exec.CommandContext(c.ctx, "go", args...)
+		args := append([]string{"reset", cfg.SSHTarget(), "--ssh-key", cfg.KeyFile, "--host-key", cfg.HostKey, "--force", "--yes"}, extra...)
 		var o bytes.Buffer
-		cmd.Stdout, cmd.Stderr = &o, &o
-		err := cmd.Run()
-		t.Logf("kvoadm reset %v: %v\n%s", extra, err, o.String())
+		code := kvoadm.Run(c.ctx, args, strings.NewReader(""), &o, &o)
+		t.Logf("kvoadm reset %v: exit %d\n%s", extra, code, o.String())
 		return o.String()
 	}
 	_ = p.m2.d.Close()
