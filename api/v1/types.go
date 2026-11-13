@@ -166,6 +166,9 @@ type SiloSpec struct {
 	Placement   Placement    `json:"placement,omitempty"`
 	Tolerations []Toleration `json:"tolerations,omitempty"`
 	Init        *Init        `json:"init,omitempty"`
+	// Daemons and Upkeep keep the inside in its desired state after init (design §0.5).
+	Daemons []Daemon `json:"daemons,omitempty"`
+	Upkeep  []Upkeep `json:"upkeep,omitempty"`
 	// Availability says what happens when the silo's host is lost (design §0.3).
 	Availability Availability `json:"availability,omitempty"`
 	// Service is the silo's own service (design §7.1); AllowFrom opens it to other silos.
@@ -316,6 +319,8 @@ type SiloStatus struct {
 	Host       string            `json:"host,omitempty"`  // where the scheduler placed it
 	Conditions []meta.Condition  `json:"conditions,omitempty"`
 	Init       []StepStatus      `json:"init,omitempty"`
+	Daemons    []DaemonStatus    `json:"daemons,omitempty"`
+	Upkeep     []UpkeepStatus    `json:"upkeep,omitempty"`
 	Address    string            `json:"address,omitempty"` // the silo's private address
 	Service    SiloServiceStatus `json:"service,omitempty"`
 	// Volumes are its volumes from a provider's storage class: where each is and whether it's

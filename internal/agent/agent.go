@@ -65,6 +65,7 @@ type Agent struct {
 	fenced   atomic.Bool
 	broker   *Broker
 	prepared sync.Map // silo uid → struct{}: the guest helper is in place for this agent's run
+	kept     sync.Map // silo uid → keptState: its daemons and upkeep as this agent last decided
 	engine   *engine.Engine
 }
 
@@ -366,13 +367,24 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			msg += ", readiness passing"
 		}
 	}
-	return engine.Result{RequeueAfter: again}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+	if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		st.Phase, st.Address = PhaseRunning, rs.Address
 		if st.Image == nil || st.Image.Running == "" {
 			st.Image = running(st.Image, s, image) // created before images were recorded
 		}
 		setCond(st, "Ready", status, reason, msg, s.Generation, a.now())
-	})
+	}); err != nil {
+		return engine.Result{}, err
+	}
+	// Ready or not, its daemons and upkeep are kept (a daemon may be what makes it ready).
+	keepAgain, err := a.keepInside(ctx, rt, s)
+	if err != nil {
+		return engine.Result{}, err
+	}
+	if keepAgain > 0 && (again == 0 || keepAgain < again) {
+		again = keepAgain
+	}
+	return engine.Result{RequeueAfter: again}, nil
 }
 
 // imageOf is what the silo's runtime gets: what the control plane resolved spec.image to (an
@@ -664,6 +676,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				a.broker.Close(id.UID)
 			}
 			a.prepared.Delete(id.UID)
+			a.kept.Delete(id.UID)
 			if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
 				return err
 			}

@@ -35,6 +35,11 @@ func semantic(obj meta.Object) []string {
 				cidrs("service.loadBalancer.allowFrom", sv.LoadBalancer.AllowFrom)
 			}
 		}
+		for _, u := range o.Spec.Upkeep {
+			if d, err := time.ParseDuration(u.Every); err != nil || d < time.Minute {
+				errs = append(errs, fmt.Sprintf("upkeep %s: every %q: want a duration of at least 1m (e.g. 6h)", u.Name, u.Every))
+			}
+		}
 		for _, a := range o.Spec.AllowFrom {
 			if strings.Count(a.Silo, "/") > 1 {
 				errs = append(errs, fmt.Sprintf("allowFrom: %q: want NAME or NAMESPACE/NAME", a.Silo))

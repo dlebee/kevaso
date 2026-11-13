@@ -1,0 +1,165 @@
+package keep
+
+import (
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
+
+	v1 "kevaso.com/core/api/v1"
+)
+
+var t0 = time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+
+func sh(t *testing.T, argv []string) string {
+	t.Helper()
+	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v: %v: %s", argv, err, out)
+	}
+	return string(out)
+}
+
+// The real scripts, in a real shell: start detached, probe, see it end with its code, stop. The
+// daemon's script has quotes and $ in it, which must reach it untouched.
+func TestScriptsInAShell(t *testing.T) {
+	Dir = t.TempDir()
+	d := v1.Daemon{Name: "worker", Run: `echo "it's $((1+1))"; sleep 0.3; exit 3`}
+	start := time.Now()
+	sh(t, StartCommand(d))
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("start waited for the daemon")
+	}
+	if p := ParseProbe(sh(t, ProbeCommand(d))); !p.Running {
+		t.Fatalf("just started: %+v", p)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var p Probe
+	for time.Now().Before(deadline) {
+		if p = ParseProbe(sh(t, ProbeCommand(d))); !p.Running {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if p.Running || p.Absent || p.Exit != 3 {
+		t.Fatalf("after it ended: %+v", p)
+	}
+	if log := sh(t, []string{"cat", Dir + "/worker.log"}); !strings.Contains(log, "it's 2") {
+		t.Fatalf("log %q", log)
+	}
+	if p := ParseProbe(sh(t, ProbeCommand(v1.Daemon{Name: "never"}))); !p.Absent {
+		t.Fatalf("unknown daemon: %+v", p)
+	}
+	// Stop: a long one is killed with its children.
+	long := v1.Daemon{Name: "long", Run: "sleep 30"}
+	sh(t, StartCommand(long))
+	sh(t, StopCommand("long"))
+	if p := ParseProbe(sh(t, ProbeCommand(long))); !p.Absent {
+		t.Fatalf("after stop: %+v", p)
+	}
+	// Upkeep: check fails, fix fixes, check passes.
+	flag := Dir + "/ok"
+	u := v1.Upkeep{Name: "x", Every: "1h", Check: "test -f " + flag, Fix: "touch " + flag}
+	if err := exec.Command("sh", "-c", CheckCommand(u)[2]).Run(); err == nil {
+		t.Fatal("check passed before the fix")
+	}
+	sh(t, FixCommand(u))
+	sh(t, CheckCommand(u))
+}
+
+func TestAsUserWraps(t *testing.T) {
+	got := StartCommand(v1.Daemon{Name: "c", Run: "claude remote-control", User: "dev"})[2]
+	if !strings.Contains(got, "su -s /bin/sh ") || !strings.Contains(got, "'dev'") {
+		t.Fatalf("as dev: %s", got)
+	}
+}
+
+func TestParseProbe(t *testing.T) {
+	for out, want := range map[string]Probe{
+		"running\n": {Running: true}, "exited 0\n": {Exit: 0}, "exited 137": {Exit: 137},
+		"exited x": {Exit: -1}, "absent\n": {Absent: true}, "": {Absent: true},
+	} {
+		if got := ParseProbe(out); got != want {
+			t.Errorf("ParseProbe(%q) = %+v, want %+v", out, got, want)
+		}
+	}
+}
+
+func TestBackoff(t *testing.T) {
+	for n, want := range map[int]time.Duration{0: 10 * time.Second, 1: 20 * time.Second, 3: 80 * time.Second, 10: 5 * time.Minute} {
+		if got := Backoff(n); got != want {
+			t.Errorf("Backoff(%d) = %v, want %v", n, got, want)
+		}
+	}
+}
+
+func TestDecideDaemon(t *testing.T) {
+	d := v1.Daemon{Name: "claude"}
+	// New: start it.
+	st, start, _ := DecideDaemon(d, v1.DaemonStatus{}, Probe{Absent: true}, t0)
+	if !start || st.State != v1.DaemonRunning || st.Restarts != 0 {
+		t.Fatalf("new: %+v %v", st, start)
+	}
+	// Running: nothing to do.
+	if _, start, again := DecideDaemon(d, st, Probe{Running: true}, t0.Add(time.Minute)); start || again != ProbeEvery {
+		t.Fatal("running daemon restarted")
+	}
+	// Dies after 30s: recorded, restarted after the first backoff.
+	st, start, again := DecideDaemon(d, st, Probe{Exit: 1}, t0.Add(30*time.Second))
+	if start || st.State != v1.DaemonWaiting || *st.ExitCode != 1 || again != 10*time.Second {
+		t.Fatalf("died: %+v %v %v", st, start, again)
+	}
+	st, start, _ = DecideDaemon(d, st, Probe{Exit: 1}, t0.Add(40*time.Second))
+	if !start || st.Restarts != 1 || st.State != v1.DaemonRunning {
+		t.Fatalf("restart: %+v %v", st, start)
+	}
+	// Dies again quickly: longer backoff.
+	st, _, again = DecideDaemon(d, st, Probe{Exit: 1}, t0.Add(45*time.Second))
+	if again != 20*time.Second {
+		t.Fatalf("second backoff %v", again)
+	}
+	// One that ran for a long time before dying gets no penalty.
+	long := v1.DaemonStatus{Name: "claude", State: v1.DaemonRunning, Restarts: 6, StartedAt: &t0}
+	st, _, again = DecideDaemon(d, long, Probe{Exit: 0}, t0.Add(time.Hour))
+	if st.Restarts != 0 || again != 10*time.Second {
+		t.Fatalf("stable then died: %+v %v", st, again)
+	}
+	// Policies.
+	if st, start, _ := DecideDaemon(v1.Daemon{Name: "x", Restart: v1.RestartNever}, v1.DaemonStatus{State: v1.DaemonRunning}, Probe{Exit: 1}, t0); start || st.State != v1.DaemonExited {
+		t.Fatalf("never: %+v", st)
+	}
+	if st, _, _ := DecideDaemon(v1.Daemon{Name: "x", Restart: v1.RestartOnFailure}, v1.DaemonStatus{State: v1.DaemonRunning}, Probe{Exit: 0}, t0); st.State != v1.DaemonExited {
+		t.Fatalf("onFailure, clean exit: %+v", st)
+	}
+	if st, _, _ := DecideDaemon(v1.Daemon{Name: "x", Restart: v1.RestartOnFailure}, v1.DaemonStatus{State: v1.DaemonRunning}, Probe{Exit: 2}, t0); st.State != v1.DaemonWaiting {
+		t.Fatalf("onFailure, failed: %+v", st)
+	}
+}
+
+func TestUpkeep(t *testing.T) {
+	u := v1.Upkeep{Name: "claude up to date", Every: "6h"}
+	if due, _ := Due(u, v1.UpkeepStatus{}, t0); !due {
+		t.Fatal("never checked: due")
+	}
+	last := t0
+	if due, again := Due(u, v1.UpkeepStatus{LastCheck: &last}, t0.Add(time.Hour)); due || again != 5*time.Hour {
+		t.Fatalf("an hour later: %v %v", due, again)
+	}
+	if due, _ := Due(u, v1.UpkeepStatus{LastCheck: &last}, t0.Add(6*time.Hour)); !due {
+		t.Fatal("6h later: due")
+	}
+	for o, want := range map[Outcome]string{
+		{Check: 0}:                                            v1.UpkeepOK,
+		{Check: 1, FixRan: true}:                              v1.UpkeepFixed,
+		{Check: 1, FixRan: true, Fix: 1}:                      v1.UpkeepFailed,
+		{Check: 1, FixRan: true, After: 1}:                    v1.UpkeepFailed,
+		{Check: 1, FixRan: true, Fix: 2, Output: "npm: E404"}: v1.UpkeepFailed,
+	} {
+		if st := Result(u, o, t0); st.State != want || st.Message != o.Output {
+			t.Errorf("%+v → %+v, want %s", o, st, want)
+		}
+	}
+	if got := Degraded([]v1.UpkeepStatus{{Name: "a", State: v1.UpkeepOK}, {Name: "b", State: v1.UpkeepFailed}}); len(got) != 1 || got[0] != "b" {
+		t.Fatalf("Degraded = %v", got)
+	}
+}

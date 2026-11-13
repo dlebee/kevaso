@@ -211,6 +211,48 @@ func describeObject(w io.Writer, obj meta.Object) error {
 				}
 			})
 		}
+		if len(o.Spec.Daemons) > 0 {
+			tables = append(tables, func() {
+				_, _ = fmt.Fprintln(tw, "Daemons:")
+				_, _ = fmt.Fprintln(tw, "  NAME\tSTATE\tRESTARTS\tLAST EXIT")
+				got := map[string]v1.DaemonStatus{}
+				for _, st := range o.Status.Daemons {
+					got[st.Name] = st
+				}
+				for _, d := range o.Spec.Daemons {
+					st, ok := got[d.Name]
+					if !ok {
+						st.State = "Pending"
+					}
+					exit := "-"
+					if st.ExitCode != nil {
+						exit = fmt.Sprint(*st.ExitCode)
+					}
+					_, _ = fmt.Fprintf(tw, "  %s\t%s\t%d\t%s\n", d.Name, st.State, st.Restarts, exit)
+				}
+			})
+		}
+		if len(o.Spec.Upkeep) > 0 {
+			tables = append(tables, func() {
+				_, _ = fmt.Fprintln(tw, "Upkeep:")
+				_, _ = fmt.Fprintln(tw, "  NAME\tEVERY\tSTATE\tLAST CHECK\tMESSAGE")
+				got := map[string]v1.UpkeepStatus{}
+				for _, st := range o.Status.Upkeep {
+					got[st.Name] = st
+				}
+				for _, u := range o.Spec.Upkeep {
+					st, ok := got[u.Name]
+					if !ok {
+						st.State = "Pending"
+					}
+					last := "-"
+					if st.LastCheck != nil {
+						last = since(*st.LastCheck) + " ago"
+					}
+					_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", u.Name, u.Every, st.State, last, dash(st.Message))
+				}
+			})
+		}
 	case *v1.Host:
 		kv(0, "Address", o.Spec.Address)
 		kv(0, "Region", dash(o.Spec.Region))
