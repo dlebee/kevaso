@@ -124,3 +124,59 @@ func TestUserCertificateNamedRootIsNotTheAdminSocket(t *testing.T) {
 		t.Errorf("%v could be written into a certificate", apiserver.LocalAdmin)
 	}
 }
+
+// ciUser makes the service account NS/ci, who may create and update silos and silosets in NS but
+// holds no use on any secret.
+func (e *accessEnv) ciUser(t *testing.T, nsName string) *client.Client {
+	t.Helper()
+	c := e.serviceAccount(t, nsName, "ci")
+	if err := e.admin.Create(e.ctx, &v1.Role{TypeMeta: accessTM("Role"), ObjectMeta: meta.ObjectMeta{Name: "ci", Namespace: nsName}, Rules: []v1.PolicyRule{
+		{Verbs: []string{"get", "list", "create", "update"}, Resources: []string{"silos", "silosets"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.admin.Create(e.ctx, &v1.RoleBinding{TypeMeta: accessTM("RoleBinding"), ObjectMeta: meta.ObjectMeta{Name: "ci", Namespace: nsName},
+		RoleRef: v1.RoleRef{Kind: "Role", Name: "ci"}, Subjects: []v1.Subject{{Kind: "ServiceAccount", Name: "ci"}}}); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// K-012: a SiloSet's template takes a Grant only if its author may use the secrets the Grant
+// names, as a Silo does; on create and on an update that adds one.
+func TestSiloSetTemplateGrantsNeedUse(t *testing.T) {
+	e := setupAccess(t)
+	u := e.ciUser(t, "dev")
+	if err := e.admin.Create(e.ctx, &v1.Secret{TypeMeta: accessTM("Secret"), ObjectMeta: meta.ObjectMeta{Name: "prod-db", Namespace: "dev"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.admin.Create(e.ctx, &v1.Grant{TypeMeta: accessTM("Grant"), ObjectMeta: meta.ObjectMeta{Name: "db", Namespace: "dev"},
+		Spec: v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "prod-db"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	s := newSilo("direct")
+	s.Spec.Grants = []string{"db"}
+	if err := u.Create(e.ctx, s); code(err) != http.StatusForbidden {
+		t.Fatalf("control, a silo with the grant: %v, want 403", err)
+	}
+	set := func(name string, grants ...string) *v1.SiloSet {
+		tmpl := newSilo("x").Spec
+		tmpl.Grants = grants
+		return &v1.SiloSet{TypeMeta: accessTM("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev"},
+			Spec: v1.SiloSetSpec{Instances: 1, Template: v1.SiloTemplate{SiloSpec: tmpl}}}
+	}
+	if err := u.Create(e.ctx, set("viaset", "db")); code(err) != http.StatusForbidden {
+		t.Errorf("a siloset whose template has the grant: %v, want 403", err)
+	}
+	// An update that adds the grant is refused too; a set without grants is fine.
+	if err := u.Create(e.ctx, set("plain")); err != nil {
+		t.Fatalf("a siloset without grants: %v", err)
+	}
+	next := &v1.SiloSet{}
+	if err := u.Get(e.ctx, "SiloSet", "dev", "plain", next); err != nil {
+		t.Fatal(err)
+	}
+	next.Spec.Template.Grants = []string{"db"}
+	if err := u.Update(e.ctx, next); code(err) != http.StatusForbidden {
+		t.Errorf("an update adding the grant to a siloset: %v, want 403", err)
+	}
+}

@@ -226,33 +226,46 @@ func (s *Server) checkSecretUse(ctx context.Context, t target, obj meta.Object) 
 	case *v1.Grant:
 		return s.canUseSecrets(ctx, t.namespace, grantUses(o))
 	case *v1.Silo:
-		if _, ok := person(ctx); !ok || s.auth == nil {
-			return nil
-		}
 		var had []string
-		if cur, err := s.store.Get(ctx, t.key()); err == nil {
-			if prev, _, err := v1.Decode(cur.Data); err == nil {
-				had = prev.(*v1.Silo).Spec.Grants
-			}
+		if prev, ok := s.stored(ctx, t).(*v1.Silo); ok {
+			had = prev.Spec.Grants
 		}
-		for _, g := range o.Spec.Grants {
-			if slices.Contains(had, g) {
-				continue
-			}
-			cur, err := s.store.Get(ctx, store.Key{Kind: "Grant", Namespace: t.namespace, Name: g})
-			if errors.Is(err, store.ErrNotFound) {
-				return errf(http.StatusUnprocessableEntity, "Invalid", "silo %s: grant %q doesn't exist in namespace %s", o.Name, g, t.namespace)
-			}
-			if err != nil {
-				return err
-			}
-			gobj, _, err := v1.Decode(cur.Data)
-			if err != nil {
-				return err
-			}
-			if err := s.canUseSecrets(ctx, t.namespace, grantUses(gobj.(*v1.Grant))); err != nil {
-				return fmt.Errorf("giving silo %s grant %s: %w", o.Name, g, err)
-			}
+		return s.checkNewGrants(ctx, t, "silo "+o.Name, had, o.Spec.Grants)
+	case *v1.SiloSet:
+		// The set's controller creates its instances as the component: the author's use is
+		// checked here, on the template, as it is on a silo.
+		var had []string
+		if prev, ok := s.stored(ctx, t).(*v1.SiloSet); ok {
+			had = prev.Spec.Template.Grants
+		}
+		return s.checkNewGrants(ctx, t, "siloset "+o.Name, had, o.Spec.Template.Grants)
+	}
+	return nil
+}
+
+// checkNewGrants: a person giving what (a silo, or a set's template) a Grant it didn't have needs
+// use on every secret that Grant names.
+func (s *Server) checkNewGrants(ctx context.Context, t target, what string, had, grants []string) error {
+	if _, ok := person(ctx); !ok || s.auth == nil {
+		return nil
+	}
+	for _, g := range grants {
+		if slices.Contains(had, g) {
+			continue
+		}
+		cur, err := s.store.Get(ctx, store.Key{Kind: "Grant", Namespace: t.namespace, Name: g})
+		if errors.Is(err, store.ErrNotFound) {
+			return errf(http.StatusUnprocessableEntity, "Invalid", "%s: grant %q doesn't exist in namespace %s", what, g, t.namespace)
+		}
+		if err != nil {
+			return err
+		}
+		gobj, _, err := v1.Decode(cur.Data)
+		if err != nil {
+			return err
+		}
+		if err := s.canUseSecrets(ctx, t.namespace, grantUses(gobj.(*v1.Grant))); err != nil {
+			return fmt.Errorf("giving %s grant %s: %w", what, g, err)
 		}
 	}
 	return nil
