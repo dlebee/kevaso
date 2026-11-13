@@ -2,6 +2,7 @@
 //
 //	kevasod control-plane --name HOST --address ADDR [--listen 0.0.0.0:6443] [--data /var/lib/kevaso]
 //	        [--admin-socket /run/kevaso/admin.sock] [--cluster NAME] [--extra-name NAME]…
+//	        [--store sqlite|etcd] [--etcd-peer-listen HOST:PORT]
 //	    the control-plane component (installed by `kvoadm init` as a systemd service)
 //
 //	kevasod worker --name HOST --server https://CP:6443 [--ca-file /etc/kevaso/ca.crt]
@@ -65,6 +66,7 @@ const defaultAdminSocket = "/run/kevaso/admin.sock"
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   kevasod control-plane --name HOST --address ADDR [--listen 0.0.0.0:6443] [--data /var/lib/kevaso]
+                        [--store sqlite|etcd] [--etcd-peer-listen HOST:PORT]
   kevasod worker --name HOST --server https://CP:6443 [--ca-file F] [--token-file F] [--data D]
   kevasod admin sign-user --name NAME < csr.pem
   kevasod admin recovery-key | kms-rotate [--new-recovery-key] | backup
@@ -147,6 +149,10 @@ func runControlPlane(ctx context.Context, args []string) error {
 	fs.StringVar(&cfg.DataDir, "data", "/var/lib/kevaso", "data directory (store, CA)")
 	fs.StringVar(&cfg.AdminSocket, "admin-socket", defaultAdminSocket, "admin unix socket")
 	fs.StringVar(&cfg.ClusterName, "cluster", "kevaso", "cluster name")
+	fs.StringVar(&cfg.Store, "store", controlplane.StoreSQLite, "where objects live: sqlite (one control plane) or etcd (embedded member; migrates <data>/store.db once)")
+	fs.StringVar(&cfg.Etcd.ClientListen, "etcd-client-listen", "127.0.0.1:2379", "with --store etcd: the member's client address (keep it on loopback)")
+	fs.StringVar(&cfg.Etcd.PeerListen, "etcd-peer-listen", "", "with --store etcd: where the member listens for other members (\"\": nowhere, one member)")
+	fs.StringVar(&cfg.Etcd.AdvertisePeer, "etcd-advertise-peer", "", "with --store etcd: the host:port other members dial (default --etcd-peer-listen)")
 	fs.StringVar(&cfg.DefaultIssuers.Public, "default-issuer-public", "letsencrypt", "the Issuer of Ingresses on public classes that name none")
 	fs.StringVar(&cfg.DefaultIssuers.Private, "default-issuer-private", "internal-ca", "the Issuer of Ingresses on private classes that name none")
 	fs.Var(&extra, "extra-name", "more names or IPs for the API certificate (repeatable)")
