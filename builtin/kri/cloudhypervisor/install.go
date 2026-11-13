@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"kevaso.com/core/builtin/kri/hostpkg"
 	"net/http"
 	"os"
 	"os/exec"
@@ -136,10 +137,11 @@ func (r *Runtime) installPackages(ctx context.Context) error {
 	if len(missing) == 0 {
 		return nil
 	}
-	if err := r.run(ctx, "apt-get", "update", "-qq"); err != nil {
+	defer hostpkg.Lock()()
+	if err := r.run(ctx, "sh", "-c", hostpkg.Update); err != nil {
 		return err
 	}
-	return r.run(ctx, "env", append([]string{"DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "-qq"}, missing...)...)
+	return r.run(ctx, "env", append([]string{"DEBIAN_FRONTEND=noninteractive", "apt-get", "-o", hostpkg.LockTimeout, "install", "-y", "-qq"}, missing...)...)
 }
 
 // NFT is the host's silo firewall with no silos yet (the worker rewrites it as silos come and

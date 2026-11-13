@@ -70,6 +70,7 @@ var metalState struct {
 	err     error
 	skip    string
 	touched bool // the machine was reached: the final reset runs
+	d       *remote.Driver // set with touched, so the reset runs even when setup failed
 }
 
 func TestMain(m *testing.M) {
@@ -79,7 +80,7 @@ func TestMain(m *testing.M) {
 			fmt.Println("metal: KEEPING the cluster (KEVASO_E2E_KEEP): reset it later with go test -tags metal -run TestMetalReset")
 		} else {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-			err := metalState.s.d.Reset(ctx)
+			err := metalState.d.Reset(ctx)
 			cancel()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "metal: the final reset failed:\n%v\n", err)
@@ -88,7 +89,7 @@ func TestMain(m *testing.M) {
 				fmt.Println("metal: the final reset passed its checklist: the machine is clean")
 			}
 		}
-		_ = metalState.s.d.Close()
+		_ = metalState.d.Close()
 	}
 	os.Exit(code)
 }
@@ -144,7 +145,7 @@ func setUpMetal() (s *metalSuite, skip string, err error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("reaching %s: %w", cfg.SSHTarget(), err)
 	}
-	metalState.touched = true
+	metalState.touched, metalState.d = true, s.d
 	facts := map[string][]string{}
 	for _, l := range strings.Split(out, "\n") {
 		if k, v, ok := strings.Cut(strings.TrimSpace(l), "="); ok && v != "" {

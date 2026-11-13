@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"kevaso.com/core/builtin/kri/hostpkg"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,7 +30,10 @@ func (r *Runtime) Install(ctx context.Context, progress func(string)) error {
 	if r.Driver == DriverDocker {
 		if err := r.run(ctx, "sh", "-c", "command -v docker"); err != nil {
 			progress("installing Docker (docker.io)")
-			if err := r.run(ctx, "sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get install -y -q docker.io"); err != nil {
+			unlock := hostpkg.Lock()
+			err := r.run(ctx, "sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get -o "+hostpkg.LockTimeout+" install -y -q docker.io")
+			unlock()
+			if err != nil {
 				return err
 			}
 		}
@@ -53,7 +57,10 @@ func (r *Runtime) Install(ctx context.Context, progress func(string)) error {
 			return err
 		}
 		progress("installing OpenShell " + Version)
-		if err := r.run(ctx, "sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get install -y -q "+path); err != nil {
+		unlock := hostpkg.Lock()
+		err := r.run(ctx, "sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get -o "+hostpkg.LockTimeout+" install -y -q "+path)
+		unlock()
+		if err != nil {
 			return err
 		}
 	}

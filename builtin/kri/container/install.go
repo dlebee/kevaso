@@ -2,6 +2,7 @@ package container
 
 import (
 	"context"
+	"kevaso.com/core/builtin/kri/hostpkg"
 
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 )
@@ -30,14 +31,8 @@ func (r *Runtime) Install(ctx context.Context, progress func(string)) error {
 		progress = func(string) {}
 	}
 	progress("packages")
-	args := append([]string{"-c", "DEBIAN_FRONTEND=noninteractive apt-get install -y -q \"$@\"", "sh"}, Packages[r.engine()]...)
-	if _, err := r.cmd(ctx, nil, "sh", args...); err != nil {
-		if _, uerr := r.cmd(ctx, nil, "sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get update -q"); uerr != nil {
-			return err
-		}
-		if _, err := r.cmd(ctx, nil, "sh", args...); err != nil {
-			return err
-		}
+	if err := r.installPackages(ctx); err != nil {
+		return err
 	}
 	if r.engine() == "docker" {
 		// Kevaso owns the host's firewall and networks its containers itself (the silo bridge), so
@@ -81,4 +76,19 @@ func trim(b []byte) []byte {
 		b = b[:len(b)-1]
 	}
 	return b
+}
+
+// installPackages installs the engine's packages, one runtime at a time on the host (hostpkg).
+func (r *Runtime) installPackages(ctx context.Context) error {
+	defer hostpkg.Lock()()
+	args := append([]string{"-c", "DEBIAN_FRONTEND=noninteractive apt-get -o " + hostpkg.LockTimeout + " install -y -q \"$@\"", "sh"}, Packages[r.engine()]...)
+	if _, err := r.cmd(ctx, nil, "sh", args...); err != nil {
+		if _, uerr := r.cmd(ctx, nil, "sh", "-c", hostpkg.Update); uerr != nil {
+			return err
+		}
+		if _, err := r.cmd(ctx, nil, "sh", args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
