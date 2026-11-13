@@ -405,26 +405,7 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		return
 	}
 	t.name = om.Name
-	if err := s.checkExposure(ctx, t, obj); err != nil {
-		writeErr(w, err)
-		return
-	}
-	if err := s.checkSecretUse(ctx, t, obj); err != nil {
-		writeErr(w, err)
-		return
-	}
-	if err := s.checkRuntimeFit(ctx, t, obj); err != nil {
-		writeErr(w, err)
-		return
-	}
-	if err := s.checkMovability(t, obj); err != nil {
-		writeErr(w, err)
-		return
-	}
-	if err := s.checkPublishPublic(ctx, t, obj); err != nil {
-		writeErr(w, err)
-		return
-	}
+	// The guards (exposure, secrets, runtime fit, …) run in admitBuiltin, on the object as stored.
 	value, err := s.prepareSecret(ctx, t, obj)
 	if err != nil {
 		writeErr(w, err)

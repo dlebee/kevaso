@@ -95,8 +95,9 @@ func isNil(o meta.Object) bool {
 }
 
 // admitBuiltin is admit for a built-in kind's create or update, with what's new in M17 around it:
-// checks of KindDefinitions and policies themselves, mutation policies first, validation policies
-// last. old is nil on create.
+// checks of KindDefinitions and policies themselves, mutation policies first, then the built-in
+// guards (guards.go) on the object as mutated, the kind's rules, and validation policies last.
+// old is nil on create.
 func (s *Server) admitBuiltin(ctx context.Context, t target, old, obj meta.Object) ([]byte, error) {
 	switch o := obj.(type) {
 	case *v1.KindDefinition:
@@ -122,9 +123,22 @@ func (s *Server) admitBuiltin(ctx context.Context, t target, old, obj meta.Objec
 	}
 	req := s.admissionRequest(ctx, t, isNil(old), t.kind.Kind)
 	if !set.Applies(req) {
+		if err := s.guard(ctx, t, obj); err != nil {
+			return nil, err
+		}
 		return s.admit(t.kind.Kind, obj)
 	}
+	before := privileges(obj)
 	if obj, err = s.mutateBuiltin(ctx, t, req, old, obj); err != nil {
+		return nil, err
+	}
+	if err := checkMutatedSecretValue(obj); err != nil {
+		return nil, err
+	}
+	if err := s.checkMutatedPrivileges(ctx, t, before, obj); err != nil {
+		return nil, err
+	}
+	if err := s.guard(ctx, t, obj); err != nil { // on the object as mutated: policies can't get past them
 		return nil, err
 	}
 	data, err := s.admit(t.kind.Kind, obj)

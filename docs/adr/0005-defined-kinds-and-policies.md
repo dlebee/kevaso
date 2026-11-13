@@ -50,6 +50,20 @@ defined. The product built on Kevaso (its `Session` and `Task` kinds, §10) is t
 9. **Writes, in order:** decode (metadata strictly) → system metadata (uid, timestamps, generation)
    → schema defaults → mutation policies → schema and CEL rules → validation policies → store.
    `generation` moves when anything outside `metadata` and `status` changes.
+   A built-in kind's write: decode strictly → system metadata → the secret's value taken out (to
+   seal) → mutation policies → **the built-in guards** → the kind's CEL rules and semantic checks
+   → validation policies → store.
+9a. **The built-in guards run on the object as it will be stored**, after mutation policies: the
+    checks that stand for a privilege (exposing silos with `hostPort` or `loadBalancer`, a
+    `LoadBalancer` Service, publishing an Ingress on a public class, giving a silo a grant or
+    naming secrets in a grant, each needing its own permission) and the ones that refuse what a
+    runtime or its storage can't do (runtime fit, `onHostLoss` against storage). Whatever a policy
+    changed is checked as if the writer had sent it. Two more rules close what that leaves: on a
+    write by a caller the guards don't ask RBAC about (the admin socket, kevasod's own controllers
+    such as the SiloSet controller, hosts), a mutation that changes what the object exposes, its
+    ingress class, its grants or a grant's secrets is refused (403: "policies can't grant
+    privileges"); and a policy can never set a Secret's `spec.value` (it would be stored in the
+    clear). Status writes skip the guards, as policies skip them.
 10. **The status subresource.** With `subresources.status`, people write the main resource, whose
     `status` is ignored (kept as stored), and controllers write `/status`, which changes only
     `status`; the main write is checked against the schema without `status`, a `/status` write
