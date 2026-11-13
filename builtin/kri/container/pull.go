@@ -54,6 +54,9 @@ func PullArgs(engine, dir, ref string) []string {
 // Pull implements kri.Puller.
 func (r *Runtime) Pull(ctx context.Context, id kri.ID, image string, auth *kri.RegistryAuth) (string, error) {
 	ref := ImageRef(image)
+	if _, err := v1.ParseImageRef(ref); err != nil {
+		return "", err
+	}
 	dir := ""
 	if auth != nil {
 		b := make([]byte, 8)

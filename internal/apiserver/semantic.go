@@ -55,8 +55,8 @@ func semantic(obj meta.Object) []string {
 					errs = append(errs, fmt.Sprintf("secret %s: to.header %q isn't a header name", sec.Name, h))
 				}
 			}
-			if sec.Path != "" && (!strings.HasPrefix(sec.Path, "/run/") || strings.Contains(sec.Path, "..")) {
-				errs = append(errs, fmt.Sprintf("secret %s: path %q must be under /run/ (tmpfs: a secret file never reaches the silo's disk), without ..", sec.Name, sec.Path))
+			if sec.Path != "" && (!strings.HasPrefix(sec.Path, "/run/") || !v1.CleanMountPath(sec.Path)) {
+				errs = append(errs, fmt.Sprintf("secret %s: path %q must be under /run/ (tmpfs: a secret file never reaches the silo's disk), a clean path of letters, digits, . _ - and /", sec.Name, sec.Path))
 			}
 		}
 	case *v1.Ingress:

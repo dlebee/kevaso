@@ -332,3 +332,58 @@ func TestOpenShellAdmission(t *testing.T) {
 		t.Fatalf("cloud-hypervisor with p2p-anywhere: %v", err)
 	}
 }
+
+// K-018: a write-only secret stays write-only, and a restricted one stays restricted, until a
+// write brings a new value: the original value can't be read by loosening the settings.
+func TestWriteOnlySecretStaysWriteOnly(t *testing.T) {
+	c := newCluster(t)
+	_ = c.admin.Create(c.ctx, ns("web3"))
+	c.bind(t, "ada", "ClusterRole", "admin")
+	ada := c.as(t, "ada")
+	no := false
+	sec := secretObj("wo", nil, "write-only-value")
+	sec.Spec.ValueReadable = &no
+	sec.Spec.AllowedDelivery = []string{v1.DeliverInject}
+	if err := ada.Create(c.ctx, sec); err != nil {
+		t.Fatal(err)
+	}
+	cur := func() *v1.Secret {
+		s := &v1.Secret{}
+		if err := ada.Get(c.ctx, "Secret", "web3", "wo", s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	yes := true
+	readable := cur()
+	readable.Spec.ValueReadable = &yes
+	if err := ada.Update(c.ctx, readable); status(err) != http.StatusUnprocessableEntity {
+		t.Errorf("making it readable without a new value: %v, want 422", err)
+	}
+	wider := cur()
+	wider.Spec.AllowedDelivery = nil
+	if err := ada.Update(c.ctx, wider); status(err) != http.StatusUnprocessableEntity {
+		t.Errorf("widening allowedDelivery without a new value: %v, want 422", err)
+	}
+	wider = cur()
+	wider.Spec.AllowedDelivery = []string{v1.DeliverInject, v1.DeliverFile}
+	if err := ada.Update(c.ctx, wider); status(err) != http.StatusUnprocessableEntity {
+		t.Errorf("adding a delivery mode without a new value: %v, want 422", err)
+	}
+	var v client.SecretValue
+	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/wo/value", nil, &v); status(err) != http.StatusForbidden || len(v.Value) != 0 {
+		t.Errorf("reading the value of a write-only secret: %v, want 403", err)
+	}
+	// Narrowing is fine, and a write that brings a new value may loosen both.
+	narrow := cur()
+	if err := ada.Update(c.ctx, narrow); err != nil {
+		t.Errorf("an update that changes nothing: %v", err)
+	}
+	fresh := cur()
+	fresh.Spec.ValueReadable = &yes
+	fresh.Spec.AllowedDelivery = nil
+	fresh.Spec.Value = []byte("new-value")
+	if err := ada.Update(c.ctx, fresh); err != nil {
+		t.Errorf("loosening with a new value: %v", err)
+	}
+}

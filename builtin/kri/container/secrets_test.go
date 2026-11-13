@@ -223,3 +223,49 @@ func TestNoSecretsNoMounts(t *testing.T) {
 		}
 	}
 }
+
+// K-001: whatever the stored state holds (an object admitted before the checks, or an edited
+// file), the engine's arguments are built only from clean paths: a folder, a volume's mount path
+// or an image reference that could add an option or change a source is refused before any run.
+func TestEngineArgsRefuseInjection(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		edit func(s *state)
+	}{
+		{"dir with an option", func(s *state) {
+			s.Secrets = &secretState{Files: []string{"/run/s,src=/,dst=/run/q/f"}, Dirs: []string{"/run/s,src=/,dst=/run/q"}}
+		}},
+		{"dir with a colon", func(s *state) { s.Secrets = &secretState{Dirs: []string{"/run/s:rw"}} }},
+		{"mount path with an option", func(s *state) { s.Volumes = []kri.Volume{{Name: "d", MountPath: "/data:rw,z"}} }},
+		{"host path volume with a colon", func(s *state) { s.Volumes = []kri.Volume{{Name: "d", MountPath: "/data", HostPath: "/x:/y"}} }},
+		{"image as an option", func(s *state) { s.Image = "--privileged" }},
+		{"image with a space", func(s *state) { s.Image = "nginx --privileged" }},
+	} {
+		f := newFake()
+		r := runtime(t, f)
+		if err := r.Create(ctx, kri.Spec{ID: silo, Image: "ubuntu-24.04"}); err != nil {
+			t.Fatal(err)
+		}
+		s, _ := r.load(silo)
+		tc.edit(&s)
+		if err := r.save(s); err != nil {
+			t.Fatal(err)
+		}
+		if s.Secrets != nil { // the values are on the host, as after a SetSecrets
+			_, files, _ := SecretsPaths(silo)
+			for _, p := range s.Secrets.Files {
+				f.files[files+p] = []byte("v")
+			}
+		}
+		n := NamesFor(silo)
+		before := len(f.cmds)
+		_ = r.Start(ctx, silo)
+		_, _ = r.RunInit(ctx, silo, kri.InitStep{Name: "a", Run: "true"}, nil)
+		for _, c := range f.cmds[before:] {
+			if strings.HasPrefix(c, "docker run -d --name "+n.Main) || strings.HasPrefix(c, "docker run --rm --name "+n.Init) {
+				t.Errorf("%s: the engine was run: %s", tc.name, c)
+			}
+		}
+	}
+}
