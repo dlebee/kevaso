@@ -259,6 +259,7 @@ func (a *Agent) stopOrphanInit(ctx context.Context, rt kri.Runtime, s *v1.Silo, 
 		return false, err
 	}
 	a.log("%s/%s: an init step runs that no start here waits for (left by an earlier run): stopping it; its steps run again", s.Namespace, s.Name)
+	a.stoppedByUs(s.UID)
 	return true, rt.Stop(ctx, idOf(s))
 }
 

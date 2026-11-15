@@ -146,6 +146,7 @@ func (f *fencing) stop(ctx context.Context, t fenceTarget) {
 	}
 	kctx, cancel := context.WithTimeout(ctx, fence.KillWithin)
 	// Killed, not stopped gracefully: it asked not to run on without the control plane.
+	f.a.stoppedByUs(t.id.UID)
 	err := kri.Kill(kctx, t.rt, t.id)
 	cancel()
 	if errors.Is(err, kri.ErrNotFound) {
