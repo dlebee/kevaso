@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 
+	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/sdk/kplugin"
@@ -359,11 +360,42 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 			return fmt.Errorf("%w: volume %s is attached to %s: only that host says whether it is mounted", ErrHostWrite, o.Name, to)
 		}
 	}
-	return nil
+	return claimWrite(old, next, host)
 }
 
 // sameButMounted reports whether two volume statuses differ at most in mounted.
 func sameButMounted(a, b v1.VolumeStatus) bool {
 	a.Mounted = b.Mounted
 	return a == b
+}
+
+// CondStartClaim is the silo condition a host writes right before it starts the silo, against
+// the version it read, and starts only if that write applied (K-015; internal/agent's
+// ConditionStartClaim). Its message names the host: "starting on HOST at TIME".
+const CondStartClaim = "StartClaim"
+
+// StartClaimHost is the host a start claim's message names (false: it names none).
+func StartClaimHost(message string) (string, bool) {
+	rest, found := strings.CutPrefix(message, "starting on ")
+	if !found {
+		return "", false
+	}
+	h, _, found := strings.Cut(rest, " at ")
+	return h, found && h != ""
+}
+
+// claimWrite judges a host's write of a silo's start claim: a new or changed claim must be in
+// that host's own name (the control plane counts a claim as a contact of the host it names).
+func claimWrite(old, next v1.SiloStatus, host string) error {
+	n := meta.FindCondition(next.Conditions, CondStartClaim)
+	if n == nil || n.Status != meta.ConditionTrue {
+		return nil
+	}
+	if o := meta.FindCondition(old.Conditions, CondStartClaim); o != nil && *o == *n {
+		return nil // as it stood: not this write's
+	}
+	if h, ok := StartClaimHost(n.Message); !ok || h != host {
+		return fmt.Errorf("%w: %s may claim a start only in its own name (condition %s: %q)", ErrHostWrite, host, CondStartClaim, n.Message)
+	}
+	return nil
 }

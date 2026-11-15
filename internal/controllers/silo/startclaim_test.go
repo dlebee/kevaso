@@ -57,8 +57,9 @@ func TestAFreshStartClaimKeepsTheSiloOnItsHost(t *testing.T) {
 		{"seen an hour ago", hv1, now, time.Hour, false, false},
 		{"when it was seen is unknown", hv1, now.Add(-time.Hour), 0, true, true},
 		{"a claim of another host (one it was on before)", "starting on hv3 at ", now, 0, false, false},
-		{"a claim that doesn't say who wrote it, seen 5s ago", "someone ", now, 5 * time.Second, false, true},
-		{"a claim that doesn't say who wrote it, seen 30s ago", "someone ", now, 30 * time.Second, false, false},
+		// A claim counts only as its silo's host's own (review of the start claim, item 2).
+		{"a claim that doesn't say who wrote it, seen 5s ago", "someone ", now, 5 * time.Second, false, false},
+		{"a claim naming another host, seen 5s ago", "starting on hv2 at ", now, 5 * time.Second, false, false},
 		{"no claim", "", now, 0, false, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
