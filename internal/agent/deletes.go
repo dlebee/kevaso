@@ -74,6 +74,7 @@ func (a *Agent) loadSeenDeletes() {
 	for _, e := range list {
 		d.entries[e.UID] = e
 		a.seenDeleted.Store(e.UID, e.History)
+		a.seenIDs.Store(e.UID, kri.ID{Namespace: e.Namespace, Name: e.Name, UID: e.UID})
 	}
 	if len(list) > 0 {
 		a.log("seen deletes %s: %d silo(s) deleted before this run whose copies here are removed now", d.path, len(list))
@@ -90,6 +91,9 @@ func (a *Agent) loadSeenDeletes() {
 // nobody deleted (review-batch4 claim 1).
 func (a *Agent) sawDelete(id kri.ID, keep bool, hist string) {
 	a.seenDeleted.Store(id.UID, hist)
+	if keep {
+		a.seenIDs.Store(id.UID, id)
+	}
 	d := &a.deletes
 	d.mu.Lock()
 	if keep && d.path != "" {
@@ -194,6 +198,11 @@ func (d *deletesLog) writeLocked() error {
 	if err != nil {
 		return err
 	}
+	return d.writeBytes(b)
+}
+
+// writeBytes writes b to the file atomically.
+func (d *deletesLog) writeBytes(b []byte) error {
 	dir := filepath.Dir(d.path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -278,24 +279,36 @@ const ContainersDir = "/var/lib/kevaso-containers"
 // the new silo's state, with its address, is saved).
 var IPMu sync.Mutex
 
-// UsedIPs reads the addresses every silo on this host holds, VMs and containers.
-func UsedIPs(h Host) []string {
+// UsedIPs reads the addresses every silo on this host holds, VMs and containers. A state file
+// that can't be read or parsed holds an address nobody can tell, of a silo that may still run
+// (K-105): no address is given out on this host until it is readable, and the error names it
+// (the Host's KeptSilos names it too).
+func UsedIPs(h Host) ([]string, error) {
 	var out []string
 	for _, pattern := range []string{SilosDir + "/*/silo.json", ContainersDir + "/*/state.json"} {
-		paths, _ := h.Glob(pattern)
+		paths, err := h.Glob(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("the silos' addresses: %w", err)
+		}
 		for _, p := range paths {
 			b, err := h.ReadFile(p)
-			if err != nil {
-				continue
+			if errors.Is(err, os.ErrNotExist) {
+				continue // gone meanwhile
 			}
 			var s struct {
 				IP string `json:"ip"`
 			}
-			if json.Unmarshal(b, &s) == nil && s.IP != "" {
+			if err == nil {
+				err = json.Unmarshal(b, &s)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("%s can't be read (%v): the address it holds is unknown, so none is given out on this host until it is restored or removed", p, err)
+			}
+			if s.IP != "" {
 				out = append(out, s.IP)
 			}
 		}
 	}
 	sort.Strings(out)
-	return out
+	return out, nil
 }

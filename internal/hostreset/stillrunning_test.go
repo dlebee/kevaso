@@ -17,15 +17,18 @@ func TestStillRunningScriptSaysWhatRuns(t *testing.T) {
 	}
 	cases := []struct {
 		name, active, pid, procs string
+		otherNS                  bool     // the kevasod process is in another mount namespace (a silo's)
 		want                     []string // substrings; none: prints nothing
 	}{
-		{"stopped", "inactive", "0", "", nil},
-		{"failed, nothing left", "failed", "0", "", nil},
-		{"deactivating", "deactivating", "4242", "", []string{"unit kevasod.service is deactivating", "main process 4242"}},
-		{"activating", "activating", "0", "", []string{"is activating"}},
-		{"failed with its main process", "failed", "4242", "", []string{"main process 4242"}},
-		{"a kevasod process systemd lost", "inactive", "0", "4243 /usr/local/bin/kevasod", []string{"process 4243 /usr/local/bin/kevasod"}},
-		{"systemctl doesn't answer", "", "", "", []string{"systemd doesn't say"}},
+		{"stopped", "inactive", "0", "", false, nil},
+		{"failed, nothing left", "failed", "0", "", false, nil},
+		{"deactivating", "deactivating", "4242", "", false, []string{"unit kevasod.service is deactivating", "main process 4242"}},
+		{"activating", "activating", "0", "", false, []string{"is activating"}},
+		{"failed with its main process", "failed", "4242", "", false, []string{"main process 4242"}},
+		{"a kevasod process systemd lost", "inactive", "0", "4243 /usr/local/bin/kevasod", false, []string{"process 4243 /usr/local/bin/kevasod"}},
+		{"systemctl doesn't answer", "", "", "", false, []string{"systemd doesn't say"}},
+		// K-114: Kevaso run inside a container silo is no kevasod of this host's.
+		{"a silo's kevasod", "inactive", "0", "4244 /usr/local/bin/kevasod", true, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -42,6 +45,11 @@ func TestStillRunningScriptSaysWhatRuns(t *testing.T) {
 			stub("systemctl", `case "$1" in is-active) `+active+`;; show) [ -n "`+tc.pid+`" ] && echo `+tc.pid+`;; esac`)
 			stub("pgrep", `[ -n "`+tc.procs+`" ] && echo "`+tc.procs+`"; exit 0`)
 			stub("sed", `exec /usr/bin/sed "$@"`)
+			other := "mnt:[4026531841]"
+			if !tc.otherNS {
+				other = "mnt:[4026531840]"
+			}
+			stub("readlink", `case "$1" in /proc/1/ns/mnt) echo "mnt:[4026531840]";; *) echo "`+other+`";; esac`)
 			cmd := exec.Command(sh, "-c", StillRunningScript)
 			cmd.Env = []string{"PATH=" + bin}
 			out, err := cmd.CombinedOutput()

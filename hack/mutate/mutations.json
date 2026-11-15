@@ -1409,8 +1409,8 @@
   "id": "G-150",
   "guard": "hostreset: never into another file system",
   "file": "internal/hostreset/hostreset.go",
-  "find": "rm -rf --one-file-system ",
-  "replace": "rm -rf ",
+  "find": "rm -rf --one-file-system \"$@\"",
+  "replace": "rm -rf \"$@\"",
   "mutation": "flag removed",
   "packages": [
    "./internal/hostreset",
@@ -1718,5 +1718,18 @@
    "./test/integration"
   ],
   "protects": "a recreated silo of the same name is not killed for its predecessor"
+ },
+ {
+  "id": "G-184",
+  "guard": "removeEverywhere keeps, running, a copy the cache and the store don't know whose delete wasn't seen (K-004)",
+  "file": "internal/agent/agent.go",
+  "find": "\t\t\t\tif !a.seenHere(id.UID) {\n\t\t\t\t\tif _, again := a.abandoned.Load(id.UID); again {",
+  "replace": "\t\t\t\tif false {\n\t\t\t\t\tif _, again := a.abandoned.Load(id.UID); again {",
+  "mutation": "unknown copy not kept",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
  }
 ]

@@ -143,6 +143,7 @@ func TestPlanOrder(t *testing.T) {
 		"delete links", "delete docker0", "delete addresses", "delete nftables tables", "restore net.ipv4.ip_forward",
 		"remove volume group", "purge docker.io",
 		"unmount what is mounted", "remove Kevaso's files", "remove the tests' /etc/hosts", "remove kevaso-* users",
+		RecordStep,
 	}
 	last := -1
 	for _, p := range order {
@@ -255,14 +256,17 @@ func TestPlanDeletesOnlyTheTablesItIsGiven(t *testing.T) {
 
 var rmArgs = regexp.MustCompile(`(?m)^\s*rm -(?:rf|f) ([^\n;&|]+)`)
 
+// rmList is the files step's list: the paths it hands to rm (all but the install record).
+var rmList = regexp.MustCompile(`(?m)^for f in ([^;\n]+); do \[ "\$f" = [^ ]+ \] \|\| set -- "\$@" "\$f"; done$`)
+
 func TestPlanRemovesFilesOnlyUnderKevasosPaths(t *testing.T) {
 	n := 0
 	for _, in := range []PlanInput{full, {Storage: StorageWipe}, {}} {
 		for _, s := range Plan(in) {
-			for _, m := range rmArgs.FindAllStringSubmatch(s.Script, -1) {
+			for _, m := range append(rmArgs.FindAllStringSubmatch(s.Script, -1), rmList.FindAllStringSubmatch(s.Script, -1)...) {
 				for _, p := range strings.Fields(m[1]) {
-					if strings.HasPrefix(p, "-") {
-						continue // a flag
+					if strings.HasPrefix(p, "-") || p == `"$@"` {
+						continue // a flag, or the list above
 					}
 					n++
 					if !underAllowed(p) {
@@ -280,8 +284,12 @@ func TestPlanRemovesFilesOnlyUnderKevasosPaths(t *testing.T) {
 			t.Errorf("%q is outside the allowed roots", p)
 		}
 	}
-	if !strings.HasPrefix(RecordFile, "/var/lib/kevaso-") {
-		t.Error("the record isn't removed with Kevaso's files")
+	if steps := Plan(PlanInput{}); steps[len(steps)-1].Name != RecordStep || !strings.HasPrefix(RecordFile, RecordDir+"/") ||
+		!strings.Contains(steps[len(steps)-1].Script, "rm -rf --one-file-system "+RecordDir) {
+		t.Error("the install record isn't removed by the last step")
+	}
+	if steps := Plan(PlanInput{}); !strings.Contains(steps[stepIndex(t, steps, "remove Kevaso's files")].Script, `[ "$f" = `+RecordDir+` ] ||`) {
+		t.Error("K-114: the files step removes the install record, before the steps after it are known to have run")
 	}
 }
 
