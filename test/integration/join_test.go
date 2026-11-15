@@ -33,7 +33,7 @@ func TestAWorkerOnlyHostJoinsAndRunsSilos(t *testing.T) {
 	defer cancel()
 	dir, _ := os.MkdirTemp("/tmp", "kvj")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
+	cp, err := controlplane.Start(ctx, controlplane.Config{Create: true, ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +168,7 @@ func TestLosingAHost(t *testing.T) {
 	defer func() { silocontroller.RecreateAfter = saved }()
 	dir, _ := os.MkdirTemp("/tmp", "kvl")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
+	cp, err := controlplane.Start(ctx, controlplane.Config{Create: true, ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"),
 		Heartbeat: 100 * time.Millisecond, HostLease: time.Second})
 	if err != nil {
@@ -230,7 +230,7 @@ func TestDrainingAHost(t *testing.T) {
 	defer cancel()
 	dir, _ := os.MkdirTemp("/tmp", "kvd")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
+	cp, err := controlplane.Start(ctx, controlplane.Config{Create: true, ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)

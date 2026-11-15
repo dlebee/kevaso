@@ -102,6 +102,10 @@ type Config struct {
 	ClusterDNS  string
 	Leader      leader.Options
 	MemberEvery time.Duration
+	// Create is the explicit create mode (brainstorm §0.7): on a node with no cluster record, make a
+	// new cluster. Without it, a node with no record never creates one. kevasod itself never sets
+	// it: kvoadm init writes the record first (kevasod admin create-cluster, CreateCluster).
+	Create bool
 }
 
 func (c *Config) defaults() {
@@ -132,6 +136,7 @@ type Running struct {
 	APIAddr string // where the TLS API listens
 	CA      *pki.CA
 	Tokens  *jointoken.Issuer
+	Cluster ClusterIdentity // the cluster this node serves, and its history (cluster.go)
 	done    chan struct{}
 	err     error
 }
@@ -170,8 +175,15 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	if err := prepareJoin(ctx, &cfg); err != nil {
 		return nil, err
 	}
-	ca, err := loadOrCreateCA(cfg)
+	rec, err := prepareRecord(cfg)
 	if err != nil {
+		return nil, err
+	}
+	ca, err := loadOrCreateCA(cfg, rec)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkBeforeOpen(cfg, rec); err != nil {
 		return nil, err
 	}
 	names := append(append([]string{cfg.HostName}, cfg.ips()...), "127.0.0.1", "localhost")
@@ -187,8 +199,17 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	if err != nil {
 		return nil, err
 	}
+	ident, err := settleIdentity(ctx, st, cfg, rec)
+	if err != nil {
+		_ = st.Close()
+		return nil, err
+	}
 	if cfg.StateOnly {
-		return startStateOnly(ctx, cfg, st)
+		r, err := startStateOnly(ctx, cfg, st)
+		if r != nil {
+			r.Cluster = ident
+		}
+		return r, err
 	}
 	tokens := &jointoken.Issuer{Store: st, Clock: cfg.Clock}
 	_, port, _ := net.SplitHostPort(cfg.Listen)
@@ -262,7 +283,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	apiSrv.TLSConfig = srv.TLSConfig(serverCert)
 	adminSrv := srv.HTTPServer(true)
 
-	r := &Running{APIAddr: apiL.Addr().String(), CA: ca, Tokens: tokens, done: make(chan struct{})}
+	r := &Running{APIAddr: apiL.Addr().String(), CA: ca, Tokens: tokens, Cluster: ident, done: make(chan struct{})}
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 	wg.Add(2)

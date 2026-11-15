@@ -112,6 +112,7 @@ func (c *cluster) dump() {
 func newCluster(t *testing.T) *cluster {
 	c := &cluster{t: t, nodes: map[string]*node{}}
 	cfg, n := c.config("cp-1", false)
+	cfg.Create = true
 	ctx, cancel := context.WithCancel(context.Background())
 	r, err := Start(ctx, cfg)
 	if err != nil {

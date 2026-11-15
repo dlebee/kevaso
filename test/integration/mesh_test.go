@@ -25,7 +25,7 @@ func TestMeshPlansAgree(t *testing.T) {
 	defer cancel()
 	dir, _ := os.MkdirTemp("/tmp", "kvm")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", ExternalIP: "203.0.113.10",
+	if _, err := controlplane.Start(ctx, controlplane.Config{Create: true, ClusterName: "it", HostName: "cp-1", ExternalIP: "203.0.113.10",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond}); err != nil {
 		t.Fatal(err)
 	}
