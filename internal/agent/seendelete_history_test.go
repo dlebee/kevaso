@@ -246,16 +246,17 @@ func TestARestoreWhileASiloRunsKeepsItRunning(t *testing.T) {
 	r.listed(cB, r.id)
 }
 
-// A system node behind answers the renewal NotFound (judged Hold). Nothing is recorded; later the
-// caught-up node answers, then a restore whose store lacks the silo: the copy is still kept.
-// Before the fix the held NotFound stayed in seen-deletes.json and the restore removed the disk.
+// A store rolled back within its history (judged Hold) answers the renewal NotFound. Nothing is
+// recorded, and the hold stays when the store's revision catches up (K-107); then a restore
+// whose store lacks the silo ends the hold: the copy is still kept, listed. Before the fix the held
+// NotFound stayed in seen-deletes.json and the restore removed the disk.
 func TestALaggingNodesNotFoundIsNoDelete(t *testing.T) {
 	r := newHistoryRig(t)
 	r.start(r.rt)
 	r.trusted(seenA)
 	r.id = r.place(r.cA, "hv1", slowInit(r.rt))
 	r.waitFor("the init step runs", func() bool { return r.rt.RunningInit(r.id) == "slow" })
-	lag, _ := r.newStore() // behind: it doesn't have the silo yet
+	lag, _ := r.newStore() // behind: it doesn't have the silo
 	r.cp.switchTo(lag, seenLag)
 	r.waitFor("held", func() bool {
 		b, _ := os.ReadFile(r.file)
@@ -263,19 +264,11 @@ func TestALaggingNodesNotFoundIsNoDelete(t *testing.T) {
 	})
 	r.renew()
 	r.keptFor(r.id, time.Second)
-	r.cp.switchTo(r.srvA, seenA) // the caught-up node
-	r.trusted(seenA)
+	r.cp.switchTo(r.srvA, seenA) // the same history, at the revision kept: still held (K-107)
 	r.keptFor(r.id, time.Second)
-	// Known again there: it starts again (its init step), and isn't listed as kept on A. The
-	// order is driven: the restore comes only after that.
-	r.waitFor("the init step runs again", func() bool { return r.rt.RunningInit(r.id) == "slow" })
-	r.waitFor("not listed as kept on A", func() bool {
-		r.clk.Step(time.Second)
-		var h v1.Host
-		_ = r.cA.Get(r.ctx, "Host", "", "hv1", &h)
-		k := meta.FindCondition(h.Status.Conditions, agent.ConditionKeptSilos)
-		return k == nil || !strings.Contains(k.Message, "dev/single")
-	})
+	if !r.a.ControlPlaneHeld() {
+		t.Fatal("a same-history hold ended by itself")
+	}
 	srvB, cB := r.newStore()
 	r.cp.switchTo(srvB, seenRestor)
 	r.trusted(seenRestor)

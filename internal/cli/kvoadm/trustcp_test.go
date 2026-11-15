@@ -55,9 +55,18 @@ func TestTrustControlPlaneSetsAsideOnlyAnUnreadableRecord(t *testing.T) {
 	if err != nil || !h.setAside() || !strings.Contains(out, "it names no cluster") {
 		t.Fatalf("an unreadable record, confirmed: %v, set aside %v\n%s", err, h.setAside(), out)
 	}
+	// K-107: a hold within one history ends by this command (or a new history), confirmed.
 	h = &trustHost{file: `{"clusterID":"c1","history":"h1","epoch":1,"revision":10,"held":true}`}
-	if _, err := run(h, true, ""); err == nil || h.setAside() || !strings.Contains(err.Error(), "kvoadm init --restore") {
-		t.Fatalf("a readable (held) record was set aside: %v", err)
+	if _, err := run(h, false, "no\n"); err == nil || h.setAside() {
+		t.Fatalf("a held record, not confirmed: %v, set aside %v", err, h.setAside())
+	}
+	h = &trustHost{file: `{"clusterID":"c1","history":"h1","epoch":1,"revision":10,"held":true}`}
+	if out, err := run(h, false, "yes\n"); err != nil || !h.setAside() || !strings.Contains(out, "held") {
+		t.Fatalf("a held record, confirmed: %v, set aside %v\n%s", err, h.setAside(), out)
+	}
+	h = &trustHost{file: `{"clusterID":"c1","history":"h1","epoch":1,"revision":10}`}
+	if _, err := run(h, true, ""); err == nil || h.setAside() || !strings.Contains(err.Error(), "not held") {
+		t.Fatalf("a readable record, not held, was set aside: %v", err)
 	}
 	h = &trustHost{file: "-"}
 	if _, err := run(h, true, ""); err != nil || h.setAside() {

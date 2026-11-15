@@ -169,6 +169,10 @@ func (f *fencing) stop(ctx context.Context, t fenceTarget) {
 	f.confirmed[t.id.UID] = true
 	delete(f.unconfirmed, t.id.UID)
 	f.mu.Unlock()
+	if _, was := f.a.fenceFaulted.LoadAndDelete(t.id.UID); was {
+		f.a.log("fence: %s confirmed stopped by a kill here: armed again", t.id)
+		f.a.resyncAll()
+	}
 }
 
 func (f *fencing) unconfirm(t fenceTarget, why string) {
@@ -178,6 +182,7 @@ func (f *fencing) unconfirm(t fenceTarget, why string) {
 	f.unconfirmed[t.id.UID] = t.id.String() + " (" + t.runtime + "): " + why
 	delete(f.confirmed, t.id.UID)
 	f.mu.Unlock()
+	f.a.fenceFaulted.Store(t.id.UID, why) // disarmed once contact is back (armFence)
 }
 
 // endOutage forgets this outage and returns what it couldn't confirm stopped, by silo.
@@ -201,7 +206,8 @@ func (a *Agent) reportUnconfirmed(ctx context.Context, unconfirmed []string) {
 	if len(unconfirmed) > 0 {
 		cond.Status, cond.Reason = meta.ConditionTrue, "NotConfirmed"
 		cond.Message = "during the last outage this host's fence couldn't confirm these silos stopped: " + strings.Join(unconfirmed, "; ") +
-			". If the control plane restarted them elsewhere, two copies may have run: check each one's other host and its data."
+			". If the control plane restarted them elsewhere, two copies may have run: check each one's other host and its data. " +
+			"Each is disarmed (FenceArmed False, KillFailed) until a kill of it here is confirmed; the host is not rebooted for it."
 		a.log("FENCE FAULT reported: %s", cond.Message)
 	}
 	for range 5 {

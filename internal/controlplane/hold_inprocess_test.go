@@ -51,15 +51,16 @@ func TestTheWorkerOnASystemNodeIsJudged(t *testing.T) {
 	if !wm.Held() {
 		t.Fatal("the worker on a system node applied answers from a store older than what it saw: not held")
 	}
-	// A store caught up: the hold ends by itself.
+	// A store that catches up is still the same history: the hold does not end by itself (K-107:
+	// only a new history, or a person, ends it).
 	for i := 0; i < 1100; i++ {
 		if _, err := st.Create(ctx, store.Key{Kind: "Filler", Name: "f" + string(rune('a'+i%26)) + string(rune('a'+i/26))}, []byte("{}")); err != nil {
 			t.Fatal(err)
 		}
 	}
 	_ = c.Get(ctx, "Namespace", "", "default", &v1.Namespace{})
-	if wm.Held() {
-		t.Fatal("still held once the store is past what was kept")
+	if !wm.Held() {
+		t.Fatal("the hold ended by itself once the store passed what was kept (K-107)")
 	}
 }
 

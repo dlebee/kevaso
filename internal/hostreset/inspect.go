@@ -191,6 +191,10 @@ type Decision struct {
 	NotOurs []string
 }
 
+// ErrStrayVolumes: volumes are on Kevaso's storage with no silo on the host, and --wipe-storage
+// wasn't given.
+var ErrStrayVolumes = errors.New("the host holds volumes no silo here uses")
+
 // ErrSilos: silos are on the host and --force wasn't given.
 var ErrSilos = errors.New("the host still runs silos")
 
@@ -257,6 +261,19 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 	}
 
 	vgBefore := in.Record != nil && in.Record.VGBefore
+	// K-114: volumes on Kevaso's own storage with no silo here are no silo's that --force was
+	// given for: kept copies, a disk left by a silo deleted elsewhere, or a volume group that
+	// couldn't be read. They go only when the person says so.
+	strayLoop := len(in.Silos) == 0 && !f.WipeStorage && !vgBefore &&
+		(len(in.PVs) == 0 && in.StorageFile != "" || in.OnLoopFile() && len(in.Volumes) > 0)
+	if strayLoop {
+		what := strings.Join(in.Volumes, ", ")
+		if len(in.PVs) == 0 {
+			what = "whatever is in " + in.StorageFile + " (its volume group couldn't be read)"
+		}
+		return Decision{}, fmt.Errorf("%w: %s, on Kevaso's storage file, with no silo on this host using them (a kept copy's, or a deleted silo's disk). Look at them first (lvs %s); reset with --wipe-storage to remove them with the rest",
+			ErrStrayVolumes, what, VG)
+	}
 	switch {
 	case len(in.PVs) == 0 && in.StorageFile != "":
 		// A storage file whose volume group can't be seen (it didn't attach): never "stray".
@@ -265,10 +282,6 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 		say("remove Kevaso's storage file %s: its volume group couldn't be read, so whatever disks and volumes are in it go with it", in.StorageFile)
 	case len(in.PVs) == 0:
 		d.Plan.Storage = StorageLoop // no volume group, no storage file
-	case f.WipeStorage:
-		d.Plan.Storage = StorageWipe
-		d.Lost = append([]string(nil), in.Volumes...)
-		say("WIPE the volume group %s on %s (--wipe-storage), with every volume on it: %s", VG, pvNames(in.PVs), orNone(in.Volumes))
 	case in.OnLoopFile() && !vgBefore:
 		d.Plan.Storage = StorageLoop
 		d.Lost = append([]string(nil), in.Volumes...)
@@ -276,6 +289,10 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 			d.Lost = append(d.Lost, "the storage file "+in.StorageFile)
 		}
 		say("remove the volume group %s on Kevaso's loop file %s, with its volumes: %s", VG, StorageImage, orNone(in.Volumes))
+	case f.WipeStorage:
+		d.Plan.Storage = StorageWipe
+		d.Lost = append([]string(nil), in.Volumes...)
+		say("WIPE the volume group %s on %s (--wipe-storage), with every volume on it: %s", VG, pvNames(in.PVs), orNone(in.Volumes))
 	default:
 		d.Plan.Storage = StorageKeep
 		d.Checks.KeepVG = true

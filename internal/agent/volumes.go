@@ -200,6 +200,11 @@ func (a *Agent) mount(ctx context.Context, dev, dir string) error {
 	if err := kplugin.DevicePathProblem(dev); err != nil {
 		return fmt.Errorf("not mounting it: %w", err)
 	}
+	// K-038: only a device under /dev/disk/by-id/ (where every plugin's declared prefix is, and
+	// a name that stays with its disk): never the host's own disk by its kernel name.
+	if !strings.HasPrefix(dev, kplugin.ByID) || len(dev) == len(kplugin.ByID) {
+		return fmt.Errorf("not mounting %s: a volume's device is under %s", dev, kplugin.ByID)
+	}
 	if _, code, _ := a.run(ctx, "mountpoint", "-q", dir); code == 0 {
 		return nil
 	}

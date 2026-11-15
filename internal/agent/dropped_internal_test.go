@@ -136,8 +136,8 @@ func TestAVolumeDroppedFromARunningSilosSpecIsLetGo(t *testing.T) {
 				t.Fatal(err)
 			}
 			s.Status = v1.SiloStatus{Host: "hv1", Phase: "Scheduled", Volumes: []v1.VolumeStatus{
-				{Name: "data", Class: "linode-block", Handle: "v-1", AttachedTo: "hv1", Device: "/dev/sdc"},
-				{Name: "wal", Class: "linode-block", Handle: "v-2", AttachedTo: "hv1", Device: "/dev/sdd"}}}
+				{Name: "data", Class: "linode-block", Handle: "v-1", AttachedTo: "hv1", Device: "/dev/disk/by-id/scsi-0Linode_Volume_v-1"},
+				{Name: "wal", Class: "linode-block", Handle: "v-2", AttachedTo: "hv1", Device: "/dev/disk/by-id/scsi-0Linode_Volume_v-2"}}}
 			if err := c.UpdateStatus(ctx, s); err != nil {
 				t.Fatal(err)
 			}

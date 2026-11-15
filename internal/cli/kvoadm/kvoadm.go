@@ -139,6 +139,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime NAME]… [--loop-storage SIZE | --storage-device /dev/DISK]
   kvoadm host reconnect [USER@]ADDRESS --ssh-key PATH [--server URL]
   kvoadm host trust-control-plane [USER@]ADDRESS --ssh-key PATH [--data DIR] [--yes]
+  kvoadm host kept [USER@]ADDRESS --ssh-key PATH [--data DIR] [--remove NAMESPACE/NAME/UID [--yes]]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker [--runtime NAME]… [--internal-ip IP] [--external-ip IP]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install control-plane [--state-only] [--internal-ip IP] [--external-ip IP]
   kvoadm host install HOST control-plane [--state-only] | uninstall HOST control-plane | remove HOST

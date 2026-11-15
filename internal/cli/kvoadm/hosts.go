@@ -344,7 +344,7 @@ func hostList(ctx context.Context, kctx string, out io.Writer) error {
 // hostCmd dispatches kvoadm host add|list|… .
 func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("host needs add, install, uninstall, remove, enable-worker, reconnect, list, drain, uncordon, addresses or trust-control-plane")
+		return errors.New("host needs add, install, uninstall, remove, enable-worker, reconnect, list, drain, uncordon, addresses, trust-control-plane or kept")
 	}
 	switch args[0] {
 	case "add":
@@ -400,6 +400,8 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 		return hostReconnect(ctx, args[1:], stdin, out)
 	case "trust-control-plane":
 		return trustControlPlane(ctx, args[1:], stdin, out)
+	case "kept":
+		return hostKept(ctx, args[1:], stdin, out)
 	case "addresses":
 		return hostAddresses(ctx, args[1:], out)
 	case "list":

@@ -68,6 +68,12 @@ type Agent struct {
 	// LastContactBoot, if set, is the same contact on the boot clock (internal/boottime): the
 	// silence is counted on it, never on the wall clock (K-072).
 	LastContactBoot func() (time.Duration, bool)
+	// HostIsVM, if set, says whether this host is itself a virtual machine (K-093); nil: asked of
+	// the host once (DetectVM). A VM paused by its hypervisor may not advance its boot clock, so on
+	// one the silence is counted on either clock, whichever says more.
+	HostIsVM func() bool
+	isVMOnce sync.Once
+	isVM     bool
 	// StopsOnLoss, if set, replaces (*v1.Silo).StopsOnControlPlaneLoss (tests shorten the times).
 	StopsOnLoss func(*v1.Silo) (stops bool, after time.Duration)
 	// WatermarkFile, if set, is where the agent keeps what it saw of its control plane (cluster,
@@ -162,6 +168,11 @@ type Agent struct {
 	// seenIDs: silo uid → kri.ID, the seen deletes of silos this host may hold (mayHaveHere): a
 	// copy its runtime doesn't list is looked for by name (stopUnlisted).
 	seenIDs sync.Map
+	// placedUnder: silo uid → the history (Watermark.history) under which this host last read it
+	// placed here in the store (writeStatus); historyAtStart: the one trusted when this run began. A handoff read
+	// under another history is a restored store's replay, not an order (K-112).
+	placedUnder    sync.Map
+	historyAtStart string
 	// abandoned: silo uid → struct{}: a start ended because the store didn't know the silo, whose
 	// stop failed: tried again until it stops (stopAbandoned).
 	abandoned     sync.Map
@@ -180,7 +191,15 @@ type Agent struct {
 	// startedHere: silo UID → struct{}: this run started it, and hasn't stopped it since
 	// (stoppedByUs). Found stopped while it is there, it stopped by itself: a failed start (K-115).
 	startedHere sync.Map
-	applied     appliedLog // the resets and images applied here (applied.go, K-110)
+	// fenceFaulted: silo UID → why: its fence kill here failed, or wasn't confirmed (K-094). Not
+	// armed (the control plane doesn't restart it elsewhere on the strength of this host's
+	// fence) until a later kill of it here is confirmed. The host is never rebooted for it.
+	fenceFaulted sync.Map
+	// removeConfirmed: silo UID → kri.ID: a kept copy a person confirmed the removal of (K-068,
+	// keptcmd.go).
+	removeConfirmed sync.Map
+	keptWritten     atomic.Value // string: KeptFile as last written
+	applied         appliedLog   // the resets and images applied here (applied.go, K-110)
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
@@ -197,10 +216,29 @@ func (a *Agent) silence() time.Duration {
 	if a.LastContact == nil || a.started.IsZero() {
 		return 0
 	}
+	wall := a.Clock.Now().Sub(a.lastContact())
 	if b, ok := a.contactBoot(); ok {
-		return boottime.Since(b) // K-072: never the wall clock, which a time server steps
+		d := boottime.Since(b) // K-072: not the wall clock alone, which a time server steps
+		if a.hostIsVM() && wall > d {
+			// K-093: a VM paused by its hypervisor (a snapshot, a live migration) may not count
+			// the pause on its boot clock: either clock stops its silos. A wall clock stepped
+			// forward stops them early too: on a VM, the safe side.
+			d = wall
+		}
+		return d
 	}
-	return a.Clock.Now().Sub(a.lastContact())
+	return wall
+}
+
+func (a *Agent) hostIsVM() bool {
+	a.isVMOnce.Do(func() {
+		if a.HostIsVM != nil {
+			a.isVM = a.HostIsVM()
+		} else {
+			a.isVM = detectVM()
+		}
+	})
+	return a.isVM
 }
 
 // contactBoot is the last contact on the boot clock, where the worker gives it (LastContactBoot):
@@ -295,13 +333,13 @@ func idOf(s *v1.Silo) kri.ID { return kri.ID{Namespace: s.Namespace, Name: s.Nam
 
 // Run runs the agent until ctx ends.
 func (a *Agent) Run(ctx context.Context) {
-	a.watermark() // read at start, before any answer is judged
+	a.historyAtStart = a.watermark().history() // read at start, before any answer is judged
 	a.loadSeenDeletes()
 	a.silos = informer.New(a.Client, "Silo")
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
 	a.runCtx = ctx
 	a.started, a.startedBoot = a.Clock.Now(), boottime.Now()
-	a.endpoint = &Endpoint{Client: a.Client, HostName: a.HostName, Log: a.Log, Bound: a.Bound}
+	a.endpoint = &Endpoint{Client: a.Client, HostName: a.HostName, Log: a.Log, Bound: a.Bound, Held: a.ControlPlaneHeld}
 	if a.EndpointListen != "" {
 		go a.endpoint.ServeEndpoint(ctx, a.EndpointListen)
 	}
@@ -774,8 +812,13 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 		}
 		r := probes.Restarted(s.Status.Restarts, now)
 		a.log("silo %s/%s failed (%s): starting it again (restart %d)", s.Namespace, s.Name, firstLineOf(rs.Message), r.Count)
+		// K-117: steps that run at every boot run after a crash restart too (they started over).
+		everyBoot := s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" && len(s.Spec.Init.Steps) > 0
 		if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 			st.Restarts, st.Phase, st.StartedAt, st.Probes = r, PhaseStarting, nil, nil
+			if everyBoot {
+				st.Init = nil
+			}
 			setCond(st, "Ready", meta.ConditionFalse, "RuntimeFailed", rs.Message+" (starting it again: restart "+strconv.Itoa(r.Count)+")", s.Generation, now)
 		}); err != nil {
 			return engine.Result{}, err
@@ -784,7 +827,21 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 		if err := a.claimStart(ctx, s); err != nil {
 			return a.lostClaim(s, err)
 		}
-		stctx, startKept := a.keepClaim(s).within(ctx) // kept fresh until it is reported Running
+		kp := a.keepClaim(s) // kept fresh until it is reported Running
+		if ic, ok := rt.(kri.InitContainers); ok && everyBoot {
+			// Init containers run before the main process, as at any start.
+			fresh := *s
+			fresh.Status.Init = nil
+			ictx, initKept := kp.within(ctx)
+			done, err := a.runSteps(ictx, &fresh, func(ctx context.Context, step v1.InitStep, out io.Writer) (int, error) {
+				return ic.RunInit(ctx, id, kri.InitStep{Name: step.Name, Shell: step.Shell, Run: step.Run}, out)
+			})
+			if why := initKept(); why != nil || err != nil || !done {
+				a.settleClaim(ctx, rt, s)
+				return a.startEnded(s, why, err)
+			}
+		}
+		stctx, startKept := kp.within(ctx)
 		err := rt.Start(stctx, id)
 		if why := startKept(); why != nil {
 			a.settleClaim(ctx, rt, s)
@@ -1134,6 +1191,16 @@ func (a *Agent) runSteps(ctx context.Context, s *v1.Silo, run func(context.Conte
 	for _, st := range s.Status.Init {
 		results[st.Name] = st
 	}
+	// spec.init.timeout (K-117): the steps a start runs, together, within it (on the agent's
+	// clock). A step still running then is stopped and recorded failed.
+	var timedOut atomic.Bool
+	if d, err := time.ParseDuration(s.Spec.Init.Timeout); err == nil && d > 0 {
+		tctx, cancel := context.WithCancelCause(ctx)
+		defer cancel(nil)
+		t := a.Clock.AfterFunc(d, func() { timedOut.Store(true); cancel(errInitTimeout) })
+		defer t.Stop()
+		ctx = tctx
+	}
 	for _, step := range s.Spec.Init.Steps {
 		switch results[step.Name].State {
 		case "Done":
@@ -1151,6 +1218,19 @@ func (a *Agent) runSteps(ctx context.Context, s *v1.Silo, run func(context.Conte
 		start := a.now()
 		var out bytes.Buffer
 		code, err := run(ctx, step, &out)
+		if timedOut.Load() {
+			// Its own deadline, not a start that ended: recorded failed (a reset or a spec change
+			// runs it again), with what it printed.
+			res := v1.StepStatus{Name: step.Name, State: "Failed", Duration: a.now().Sub(start).Round(time.Second).String()}
+			if werr := a.setStatus(context.WithoutCancel(ctx), s, func(st *v1.SiloStatus) {
+				st.Init = upsertStep(st.Init, res)
+				setCond(st, "InitFailed", meta.ConditionTrue, "StepTimedOut",
+					fmt.Sprintf("step %s was still running when spec.init.timeout (%s) ran out: %s", step.Name, s.Spec.Init.Timeout, tail(out.String(), 300)), s.Generation, a.now())
+			}); werr != nil {
+				return false, werr
+			}
+			return false, nil
+		}
 		if ctx.Err() != nil || a.mustStop(s) {
 			// Stopped, not failed (K-088): its start ended (placed elsewhere, the fence killed
 			// it). Nothing is recorded; it runs again with the next start.
@@ -1178,6 +1258,9 @@ func (a *Agent) runSteps(ctx context.Context, s *v1.Silo, run func(context.Conte
 	}
 	return true, nil
 }
+
+// errInitTimeout ends the steps of a start that ran past spec.init.timeout.
+var errInitTimeout = errors.New("spec.init.timeout ran out")
 
 // command turns a step into argv: `shell -c run` (sh by default; python3, bash, … work the same).
 func command(step v1.InitStep) []string {
@@ -1237,6 +1320,9 @@ func (a *Agent) writeStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.Sil
 		}
 		if !away && cur.Status.Host != a.HostName {
 			return errPlacedElsewhere // placed elsewhere since this host's cache was filled: not ours to write
+		}
+		if cur.Status.Host == a.HostName {
+			a.placedUnder.Store(cur.UID, a.watermark().history()) // the store read now places it here (K-112)
 		}
 		before := statusKey(cur.Status)
 		mutate(&cur.Status)
@@ -1366,7 +1452,7 @@ const ClaimRefreshEvery = StartClaimFresh / 3
 // free to start here, and not being deleted. Any other outcome, a conflict included, is
 // errPlacedElsewhere: the start is abandoned.
 func (a *Agent) claimStart(ctx context.Context, s *v1.Silo) error {
-	err := a.writeClaim(ctx, s)
+	err := a.writeClaim(ctx, s, false)
 	if errors.Is(err, errClaimConflict) {
 		return errPlacedElsewhere
 	}
@@ -1374,7 +1460,11 @@ func (a *Agent) claimStart(ctx context.Context, s *v1.Silo) error {
 }
 
 // writeClaim is one claim: a read, the checks, a compare-and-swap (errClaimConflict if it lost).
-func (a *Agent) writeClaim(ctx context.Context, s *v1.Silo) error {
+//
+// renewal: a renewal of a start under way (its init step running) goes on through a spec edit (a
+// newer generation), placed here all the same (K-117: an edit killed the step, which then ran
+// again); the start's next claim, right before the main process, is at the generation it read.
+func (a *Agent) writeClaim(ctx context.Context, s *v1.Silo, renewal bool) error {
 	var cur v1.Silo
 	if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
 		return err
@@ -1382,7 +1472,8 @@ func (a *Agent) writeClaim(ctx context.Context, s *v1.Silo) error {
 	if cur.UID != s.UID {
 		return errReplaced
 	}
-	if cur.DeletionTimestamp != nil || cur.Generation != s.Generation || !moves.MayStart(&cur, a.HostName) {
+	sameSpec := cur.Generation == s.Generation || renewal && cur.Generation > s.Generation
+	if cur.DeletionTimestamp != nil || !sameSpec || !moves.MayStart(&cur, a.HostName) {
 		return errPlacedElsewhere
 	}
 	claim := startClaim(a.HostName, s.Generation, a.Clock.Now().UTC())
@@ -1509,14 +1600,14 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			// Not in the API (or replaced by another of the same name) and no delete of it seen
 			// here: keep it, running, its disk and volumes untouched (design §0.7, K-004).
 			if s == nil || id.UID != s.UID {
-				if !a.seenHere(id.UID) {
+				if !a.seenHere(id.UID) && !a.removalConfirmed(id.UID) {
 					if _, again := a.abandoned.Load(id.UID); again {
 						if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
 							return err
 						}
 						a.abandoned.Delete(id.UID)
 					}
-					if _, logged := a.keptNoted.LoadOrStore(id.UID, keptCopy{runtime: rtName, name: keptName(id, rt.Info().Name)}); !logged {
+					if _, logged := a.keptNoted.LoadOrStore(id.UID, keptCopy{runtime: rtName, id: id, name: keptName(id, rt.Info().Name)}); !logged {
 						a.log("keeping %s on %s: the control plane doesn't know it and no delete of it was seen here; it keeps running with its disk and volumes (nothing is removed without a delete)",
 							id, rt.Info().Name)
 					}
@@ -1541,7 +1632,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
 					return err
 				}
-				if _, logged := a.keptNoted.LoadOrStore(id.UID, keptCopy{runtime: rtName, name: keptName(id, rt.Info().Name+", stopped: "+why)}); !logged {
+				if _, logged := a.keptNoted.LoadOrStore(id.UID, keptCopy{runtime: rtName, id: id, name: keptName(id, rt.Info().Name+", stopped: "+why)}); !logged {
 					a.log("keeping %s on %s, stopped, with its disk and volumes: %s (nothing is removed without a delete or a handoff from here)", id, rt.Info().Name, why)
 				}
 				continue
@@ -1582,6 +1673,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			}
 			a.forgetDelete(id.UID) // nothing of it left here
 			a.forgetApplied(id.UID)
+			a.removalDone(id.UID)
 		}
 	}
 	return a.stopUnlisted(ctx, k, s, listed)
@@ -1623,6 +1715,17 @@ func (a *Agent) mayRemove(ctx context.Context, id kri.ID) (remove bool, why stri
 			return false, "", errors.New("the control plane's answer about " + id.String() + " can't be acted on (held, or another history): nothing removed")
 		}
 	}
+	if a.removalConfirmed(id.UID) {
+		// K-068: a person confirmed its removal (kvoadm host kept --remove): that is the proof,
+		// unless the store places this very silo here (it isn't a kept copy then).
+		if err == nil && cur.UID == id.UID && cur.Status.Host == a.HostName && cur.DeletionTimestamp == nil {
+			return false, "", nil
+		}
+		if err != nil && !client.IsNotFound(err) {
+			return false, "", err
+		}
+		return true, "its removal was confirmed by a person (kvoadm host kept --remove)", nil
+	}
 	seen := a.seenHere(id.UID)
 	switch {
 	case client.IsNotFound(err) || err == nil && cur.UID != id.UID:
@@ -1637,9 +1740,23 @@ func (a *Agent) mayRemove(ctx context.Context, id kri.ID) (remove bool, why stri
 	case cur.Status.Host == a.HostName:
 		return false, "", nil
 	case cur.Status.MovingFrom == a.HostName:
+		if under := a.historyPlaced(id.UID); under != a.watermark().history() {
+			// K-112: this host ran it under another history than the one that hands it off now (a
+			// restore since): a handoff replayed from a backup, not an order. Stopped and kept.
+			return false, "handed off by a control plane of another history (" + a.watermark().history() + ") than the one it ran here under (" + under + "): a restore's replay, not an order", nil
+		}
 		return true, whyHandoff, nil
 	}
 	return false, fmt.Sprintf("placed on %q with no handoff from this host", cur.Status.Host), nil
+}
+
+// historyPlaced is the history under which this host last found the silo uid placed here (in this
+// run), else the one trusted when this run began.
+func (a *Agent) historyPlaced(uid string) string {
+	if v, ok := a.placedUnder.Load(uid); ok {
+		return v.(string)
+	}
+	return a.historyAtStart
 }
 
 // hostLocalVolumes are the names of s's volumes on this host's own disks (class local).
