@@ -911,6 +911,9 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		st.Phase = PhaseStarting
 		setCond(st, "Ready", meta.ConditionFalse, "Updating", "stopping for "+what+" (StopFirst; volumes kept)", s.Generation, a.now())
 	}); err != nil || !ok {
+		if err == nil {
+			a.log("silo %s/%s: its reset or image changed while the image was pulled: nothing stopped, looking again", s.Namespace, s.Name)
+		}
 		return true, err
 	}
 	id := idOf(s)
@@ -988,8 +991,7 @@ func (a *Agent) gateReset(ctx context.Context, s *v1.Silo, image string, due fun
 	}
 	if im, resolved := imageOf(&cur); cur.UID != s.UID || cur.Generation != s.Generation || cur.DeletionTimestamp != nil ||
 		cur.Status.Host != a.HostName || !resolved || im != image || !due(&cur) {
-		a.log("silo %s/%s: its reset or image changed while the image was pulled: nothing stopped, looking again", s.Namespace, s.Name)
-		return false, nil
+		return false, nil // the caller says which gate refused
 	}
 	mutate(&cur.Status)
 	cur.Status.Routing = routing.Silo(cur.Spec, cur.Status)
