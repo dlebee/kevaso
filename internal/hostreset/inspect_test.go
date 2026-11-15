@@ -83,7 +83,7 @@ func TestDecideRefusesAHostWithSilos(t *testing.T) {
 
 func TestDecideFromARecord(t *testing.T) {
 	rec := Record{State: fresh}
-	d, err := Decide(Inspection{Record: &rec, KevasoInstalled: kevasoInstalled, Installed: true, PVs: []PV{{"/dev/loop3", StorageImage}}, Volumes: []string{"kv-01-ab 1.00g"}, Now: afterInstall}, Flags{})
+	d, err := Decide(Inspection{Record: &rec, KevasoInstalled: kevasoInstalled, Installed: true, PVs: []PV{{"/dev/loop3", StorageImage}}, Volumes: []string{"kv-01-ab 1.00g"}, Now: afterInstall}, Flags{WipeStorage: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestInspectScriptPrintsEverySection(t *testing.T) {
 func TestAStorageFileIsNeverStray(t *testing.T) {
 	rec := Record{State: fresh}
 	in := Inspection{Record: &rec, StorageFile: StorageImage + " 60G", Now: afterInstall}
-	d, err := Decide(in, Flags{})
+	d, err := Decide(in, Flags{WipeStorage: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestAStorageFileIsNeverStray(t *testing.T) {
 	}
 	// With its volume group seen, the file is still named among what is lost.
 	in.PVs, in.Volumes = []PV{{"/dev/loop0", StorageImage}}, []string{"kv-01 5.00g"}
-	d, _ = Decide(in, Flags{})
+	d, _ = Decide(in, Flags{WipeStorage: true})
 	if !slices.Contains(d.Lost, "kv-01 5.00g") || !strings.Contains(strings.Join(d.Lost, " "), StorageImage) {
 		t.Errorf("lost: %v", d.Lost)
 	}
@@ -277,5 +277,32 @@ func TestDecideLeavesADockerSomeoneInstalledAfterKevaso(t *testing.T) {
 	in, err := ParseInspection(out)
 	if err != nil || !slices.Equal(in.KevasoInstalled, []string{"docker.io", "qemu-utils"}) {
 		t.Fatalf("parsed %v %v", in.KevasoInstalled, err)
+	}
+}
+
+// K-114: volumes on Kevaso's own storage with no silo on the host (a kept copy's, a deleted
+// silo's disk, or a volume group that couldn't be read) go only with --wipe-storage.
+func TestDecideRefusesStrayVolumesWithoutWipeStorage(t *testing.T) {
+	rec := Record{State: fresh}
+	for name, in := range map[string]Inspection{
+		"volumes on the loop file": {Record: &rec, PVs: []PV{{"/dev/loop3", StorageImage}}, Volumes: []string{"kv-01-ab 1.00g"}, StorageFile: StorageImage + " 60G", Now: afterInstall},
+		"a storage file not seen":  {Record: &rec, StorageFile: StorageImage + " 60G", Now: afterInstall},
+	} {
+		if _, err := Decide(in, Flags{}); !errors.Is(err, ErrStrayVolumes) || !strings.Contains(err.Error(), "--wipe-storage") {
+			t.Errorf("%s: %v, want ErrStrayVolumes naming --wipe-storage", name, err)
+		}
+		if d, err := Decide(in, Flags{WipeStorage: true}); err != nil || d.Plan.Storage != StorageLoop {
+			t.Errorf("%s with --wipe-storage: %+v %v", name, d.Plan, err)
+		}
+	}
+	// An empty volume group on the loop file, and volumes with the silos they belong to (--force
+	// says those go), are as before.
+	empty := Inspection{Record: &rec, PVs: []PV{{"/dev/loop3", StorageImage}}, Now: afterInstall}
+	if d, err := Decide(empty, Flags{}); err != nil || d.Plan.Storage != StorageLoop {
+		t.Errorf("an empty volume group: %+v %v", d.Plan, err)
+	}
+	withSilo := Inspection{Record: &rec, Silos: []string{"vm kevaso-silo-01.service"}, PVs: []PV{{"/dev/loop3", StorageImage}}, Volumes: []string{"kv-01 20.00g"}, Now: afterInstall}
+	if d, err := Decide(withSilo, Flags{Force: true}); err != nil || d.Plan.Storage != StorageLoop {
+		t.Errorf("volumes with their silo, --force: %+v %v", d.Plan, err)
 	}
 }

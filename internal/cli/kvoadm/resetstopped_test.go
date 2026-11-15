@@ -54,9 +54,9 @@ func TestResetRefusesWhileKevasodStillRuns(t *testing.T) {
 	pvs := []string{"/dev/loop3 " + hostreset.StorageImage}
 	for _, still := range []string{"unit kevasod.service is deactivating", "unit kevaso-fence.service is active", "process 4242 /usr/local/bin/kevasod fence-watch"} {
 		t.Run(still, func(t *testing.T) {
-			h := newResetHost(t, rec, nil, pvs, []string{"kv-01-ab 1.00g"}, hostreset.Flags{})
+			h := newResetHost(t, rec, nil, pvs, []string{"kv-01-ab 1.00g"}, hostreset.Flags{WipeStorage: true})
 			r := &runningHost{fakeResetHost: h, runs: func([]string) string { return still + "\n" }}
-			out, err := reset(r, ResetOptions{Yes: true}, "")
+			out, err := reset(r, ResetOptions{Yes: true, WipeStorage: true}, "")
 			if err == nil || !strings.Contains(err.Error(), still) {
 				t.Fatalf("the reset went on while %s: %v\n%s", still, err, out)
 			}
@@ -76,14 +76,14 @@ func TestResetLooksAgainRightBeforeRemovingStorage(t *testing.T) {
 	storage := "step:remove volume group " + hostreset.VG + " (on the loop file only)"
 
 	t.Run("kevasod runs again", func(t *testing.T) {
-		h := newResetHost(t, rec, nil, pvs, []string{"kv-01-ab 1.00g"}, hostreset.Flags{})
+		h := newResetHost(t, rec, nil, pvs, []string{"kv-01-ab 1.00g"}, hostreset.Flags{WipeStorage: true})
 		r := &runningHost{fakeResetHost: h, runs: func(ran []string) string {
 			if slices.ContainsFunc(ran, func(s string) bool { return strings.HasPrefix(s, "step:delete links") }) {
 				return "process 4243 /usr/local/bin/kevasod\n" // started again behind the reset's back
 			}
 			return ""
 		}}
-		out, err := reset(r, ResetOptions{Yes: true}, "")
+		out, err := reset(r, ResetOptions{Yes: true, WipeStorage: true}, "")
 		if err == nil || !strings.Contains(err.Error(), "4243") {
 			t.Fatalf("the reset went on while kevasod ran again: %v\n%s", err, out)
 		}
@@ -93,10 +93,10 @@ func TestResetLooksAgainRightBeforeRemovingStorage(t *testing.T) {
 	})
 
 	t.Run("a silo is placed", func(t *testing.T) {
-		h := newResetHost(t, rec, nil, pvs, []string{"kv-01-ab 1.00g"}, hostreset.Flags{})
+		h := newResetHost(t, rec, nil, pvs, []string{"kv-01-ab 1.00g"}, hostreset.Flags{WipeStorage: true})
 		r := &runningHost{fakeResetHost: h, runs: func([]string) string { return "" },
 			later: inspection(rec, []string{"vm kevaso-silo-cd34.service"}, pvs, []string{"kv-01-ab 1.00g", "kv-cd34 20.00g"}, baseState)}
-		out, err := reset(r, ResetOptions{Yes: true}, "")
+		out, err := reset(r, ResetOptions{Yes: true, WipeStorage: true}, "")
 		if err == nil || !strings.Contains(err.Error(), "kevaso-silo-cd34") {
 			t.Fatalf("the reset went on with a silo it never showed: %v\n%s", err, out)
 		}
@@ -106,9 +106,9 @@ func TestResetLooksAgainRightBeforeRemovingStorage(t *testing.T) {
 	})
 
 	t.Run("nothing changed", func(t *testing.T) {
-		h := newResetHost(t, rec, nil, pvs, []string{"kv-01-ab 1.00g"}, hostreset.Flags{})
+		h := newResetHost(t, rec, nil, pvs, []string{"kv-01-ab 1.00g"}, hostreset.Flags{WipeStorage: true})
 		r := &runningHost{fakeResetHost: h, runs: func([]string) string { return "" }}
-		if out, err := reset(r, ResetOptions{Yes: true}, ""); err != nil || !slices.Contains(h.ran, storage) {
+		if out, err := reset(r, ResetOptions{Yes: true, WipeStorage: true}, ""); err != nil || !slices.Contains(h.ran, storage) {
 			t.Fatalf("%v, ran %v\n%s", err, h.ran, out)
 		}
 	})
