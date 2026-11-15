@@ -12,6 +12,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"kevaso.com/core/api/meta"
+	v1 "kevaso.com/core/api/v1"
 )
 
 // silentProxy forwards TCP to a server until frozen; then it goes silent both ways without
@@ -157,8 +160,9 @@ func TestK008AServerThatNeverAnswers(t *testing.T) {
 	if err := mk().Call(ctx, http.MethodGet, "/auth/whoami", nil, &who); err != nil || who.Name != "b" {
 		t.Fatalf("a read: %v %+v", err, who)
 	}
-	if err := mk().Call(ctx, http.MethodPut, "/apis/x", map[string]string{"metadata": "rv"}, &who); err != nil || who.Name != "b" {
-		t.Fatalf("a conditional write: %v %+v", err, who)
+	sl := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "s", Namespace: "d", ResourceVersion: "7"}}
+	if err := mk().UpdateStatus(ctx, sl); err != nil {
+		t.Fatalf("a conditional write: %v", err)
 	}
 	c := mk()
 	a0, b0 := hitsA.Load(), hitsB.Load()

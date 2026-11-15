@@ -22,6 +22,17 @@ var Component = pki.Identity{Type: "component", Name: "kevasod", Role: "control-
 // port, authenticated as Component. Close the returned function when done. wrap, if given, wraps
 // the handler (the control plane stamps the answers its worker judges, §0.7).
 func (s *Server) InProcess(wrap ...func(http.Handler) http.Handler) (*client.Client, func()) {
+	return s.inProcess(func(ctx context.Context) context.Context { return context.WithValue(ctx, componentConnKey, true) }, wrap...)
+}
+
+// InProcessAs is InProcess authenticated as id instead of Component: the worker on a system
+// node, as its host (a worker), so what it writes is judged as a worker-only host's writes are
+// (moves.HostWrite, the Host status checks), never with the control plane's own trust.
+func (s *Server) InProcessAs(id pki.Identity, wrap ...func(http.Handler) http.Handler) (*client.Client, func()) {
+	return s.inProcess(func(ctx context.Context) context.Context { return context.WithValue(ctx, inProcessIDKey, id) }, wrap...)
+}
+
+func (s *Server) inProcess(conn func(context.Context) context.Context, wrap ...func(http.Handler) http.Handler) (*client.Client, func()) {
 	l := &pipeListener{conns: make(chan net.Conn), done: make(chan struct{})}
 	var h http.Handler = s
 	for _, w := range wrap {
@@ -30,9 +41,7 @@ func (s *Server) InProcess(wrap ...func(http.Handler) http.Handler) (*client.Cli
 	hs := &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
-		ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
-			return context.WithValue(ctx, componentConnKey, true)
-		},
+		ConnContext:       func(ctx context.Context, _ net.Conn) context.Context { return conn(ctx) },
 	}
 	go func() { _ = hs.Serve(l) }()
 	c := client.New("http://kevasod")

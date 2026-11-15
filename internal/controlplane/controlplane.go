@@ -23,6 +23,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kcc/acme"
 	kicdrivers "kevaso.com/core/builtin/kic"
+	"kevaso.com/core/builtin/kri/openshell"
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/approvals"
@@ -334,7 +335,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		if wc.Watermark == nil {
 			wc.Watermark = agent.OpenWatermark(filepath.Join(wc.DataDir, "control-plane-watermark.json"), cfg.Log)
 		}
-		wcl, closeWorker := workerClient(srv, st, wc.Watermark)
+		wcl, closeWorker := workerClient(srv, st, wc.Watermark, cfg.HostName)
 		go func() {
 			<-hbCtx.Done()
 			closeWorker()
@@ -574,7 +575,8 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport
 			h = v1.Host{
 				TypeMeta:   meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"},
 				ObjectMeta: meta.ObjectMeta{Name: cfg.HostName},
-				Spec:       v1.HostSpec{InternalIP: cfg.InternalIP, ExternalIP: cfg.ExternalIP, Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{}}},
+				Spec: v1.HostSpec{InternalIP: cfg.InternalIP, ExternalIP: cfg.ExternalIP,
+					Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{}, Worker: systemWorkerSpec(cfg.Worker)}},
 			}
 			if err = c.Create(ctx, &h); err != nil {
 				cfg.Log("register host: %v", err)
@@ -583,6 +585,15 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport
 		case err != nil:
 			cfg.Log("heartbeat: %v", err)
 			return
+		case cfg.Worker != nil && h.Spec.Components.Worker == nil: // a worker here, not declared yet
+			h.Spec.Components.Worker = systemWorkerSpec(cfg.Worker)
+			if err := c.Update(ctx, &h); err != nil {
+				cfg.Log("declare the worker component: %v", err)
+				return
+			}
+			if err := c.Get(ctx, "Host", "", cfg.HostName, &h); err != nil {
+				return
+			}
 		case h.Spec.InternalIP != cfg.InternalIP || h.Spec.ExternalIP != cfg.ExternalIP: // moved (restored onto a new machine)
 			cfg.Log("host %s: internal IP %q → %q, external IP %q → %q", cfg.HostName, h.Spec.InternalIP, cfg.InternalIP, h.Spec.ExternalIP, cfg.ExternalIP)
 			h.Spec.InternalIP, h.Spec.ExternalIP = cfg.InternalIP, cfg.ExternalIP
@@ -652,4 +663,27 @@ func sealedData(ctx context.Context, st store.Store) string {
 		return fmt.Sprintf("%d secret value(s)", len(l))
 	}
 	return ""
+}
+
+// systemWorkerSpec is the worker component a system node with a worker declares on its own Host
+// (nil: no worker). Its worker writes as its host, which may write only status (as a worker-only
+// host's does: there kvoadm host add declares the component), so this node's control plane
+// declares it, as worker.updateHost would: the same labels, runtimes, and gateway scope.
+func systemWorkerSpec(w *worker.Config) *v1.WorkerSpec {
+	if w == nil {
+		return nil
+	}
+	spec := &v1.WorkerSpec{Labels: w.Labels}
+	for _, name := range w.Runtimes {
+		rs := v1.RuntimeSpec{Name: name}
+		if strings.HasPrefix(name, "openshell") {
+			scope := w.GatewayScope
+			if scope == "" {
+				scope = openshell.ScopeNamespace
+			}
+			rs.Options = map[string]string{"gatewayScope": scope}
+		}
+		spec.Runtimes = append(spec.Runtimes, rs)
+	}
+	return spec
 }

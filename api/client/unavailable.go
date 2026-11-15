@@ -63,11 +63,23 @@ func (e errAttempt) Error() string {
 func (errAttempt) Timeout() bool   { return true }
 func (errAttempt) Temporary() bool { return true }
 
-// replayable: a request another node may be sent after one that didn't answer: it can't apply
-// twice (a read; a PUT, which carries the resourceVersion it was read at: a second send
-// conflicts).
+// replayable: a request another node may be sent after one that didn't answer, because it can't
+// apply twice by construction: a read, or an object update that carries the resourceVersion it was
+// read at (Update, UpdateStatus mark it: a second send conflicts). Any other write (a scale with
+// no resourceVersion, a raw Call) may have landed on the node that didn't answer: not resent.
 func replayable(r *http.Request) bool {
-	return r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodPut
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return true
+	}
+	c, _ := r.Context().Value(conditionalKey{}).(bool)
+	return r.Method == http.MethodPut && c
+}
+
+type conditionalKey struct{}
+
+// conditional marks a write that applies only at the version it carries (safe to send again).
+func conditional(ctx context.Context) context.Context {
+	return context.WithValue(ctx, conditionalKey{}, true)
 }
 
 // attempt sends r with AttemptTimeout for its answer to begin (unless the call is Patient). The
