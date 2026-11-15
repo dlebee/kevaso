@@ -50,6 +50,17 @@ func (r *alwaysFails) RunInit(ctx context.Context, id kri.ID, step kri.InitStep,
 // claims, with one container silo placed on it (steps as given).
 func newK115(t *testing.T, rt kri.Runtime, steps ...v1.InitStep) (*claimHook, *clock.Fake, func() *v1.Silo) {
 	t.Helper()
+	var init *v1.Init
+	if len(steps) > 0 {
+		init = &v1.Init{Steps: steps}
+	}
+	hook, clk, get, _ := newK115WithInit(t, rt, init)
+	return hook, clk, get
+}
+
+// newK115WithInit is newK115 with the silo's spec.init as given (nil: none).
+func newK115WithInit(t *testing.T, rt kri.Runtime, init *v1.Init) (*claimHook, *clock.Fake, func() *v1.Silo, *client.Client) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
 	hook := &claimHook{h: srv}
@@ -62,9 +73,7 @@ func newK115(t *testing.T, rt kri.Runtime, steps ...v1.InitStep) (*claimHook, *c
 	agent.RunForTest(t, ctx, a)
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "broken", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"}}}
-	if len(steps) > 0 {
-		s.Spec.Init = &v1.Init{Steps: steps}
-	}
+	s.Spec.Init = init
 	if err := c.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +88,7 @@ func newK115(t *testing.T, rt kri.Runtime, steps ...v1.InitStep) (*claimHook, *c
 		}
 		return &cur
 	}
-	return hook, clk, get
+	return hook, clk, get, c
 }
 
 func waitReal(t *testing.T, what string, ok func() bool) {

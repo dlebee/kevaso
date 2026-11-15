@@ -52,8 +52,8 @@ func TestResetLooksAgainBeforeRemovingAnything(t *testing.T) {
 		t.Fatal("kevasod wasn't started again after the reset stopped")
 	}
 	// Nothing new: the reset goes on as before.
-	h = newResetHost(t, rec, nil, pvs, []string{"kv-01-ab 1.00g"}, hostreset.Flags{})
-	if out, err := reset(h, ResetOptions{Yes: true}, ""); err != nil || !slices.Contains(h.ran, "step:remove volume group kevaso (on the loop file only)") {
+	h = newResetHost(t, rec, nil, pvs, []string{"kv-01-ab 1.00g"}, hostreset.Flags{WipeStorage: true})
+	if out, err := reset(h, ResetOptions{Yes: true, WipeStorage: true}, ""); err != nil || !slices.Contains(h.ran, "step:remove volume group kevaso (on the loop file only)") {
 		t.Fatalf("%v, ran %v\n%s", err, h.ran, out)
 	}
 }

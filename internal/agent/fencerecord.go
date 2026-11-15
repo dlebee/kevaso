@@ -57,6 +57,18 @@ func (a *Agent) armFence(ctx context.Context, s *v1.Silo) error {
 				Message: a.HostName + " doesn't stop this silo without the control plane", ObservedGeneration: s.Generation}, a.now())
 		})
 	}
+	if why, faulted := a.fenceFaulted.Load(s.UID); faulted {
+		// K-094: its kill here failed: nothing says this host's fence would stop it next time.
+		if armed != nil && armed.Status == meta.ConditionFalse && armed.Reason == "KillFailed" {
+			return nil
+		}
+		a.log("%s/%s: its fence kill here failed (%v): disarmed", s.Namespace, s.Name, why)
+		return a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			meta.SetCondition(&st.Conditions, meta.Condition{Type: fence.ConditionArmed, Status: meta.ConditionFalse, Reason: "KillFailed",
+				Message:            fmt.Sprintf("the fence on %s couldn't confirm this silo stopped in the last outage (%v): not armed until a kill of it there is confirmed", a.HostName, why),
+				ObservedGeneration: s.Generation}, a.now())
+		})
+	}
 	if !a.watcherLive() {
 		// No watcher of this version is seen running (K-067): stopped, failed, or one from before
 		// an upgrade. Nothing here would stop the silo with the agent gone: not armed.

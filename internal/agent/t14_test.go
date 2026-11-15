@@ -95,7 +95,7 @@ func TestACopyTheControlPlaneDoesntKnowKeepsRunning(t *testing.T) {
 // copy is kept and listed, never removed.
 func TestADeleteThatComesWhileHeldIsNotSeen(t *testing.T) {
 	r := newHistoryRig(t)
-	r.start(r.rt)
+	stop := r.start(r.rt)
 	r.trusted(seenA)
 	r.id = r.place(r.cA, "hv1")
 	r.waitFor("it runs", func() bool { st, _ := r.rt.Status(r.ctx, r.id); return st.State == kri.Running })
@@ -111,7 +111,15 @@ func TestADeleteThatComesWhileHeldIsNotSeen(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.keptFor(r.id, time.Second) // the event came, on the stream opened before the hold
-	r.cp.switchTo(r.srvA, seenA) // the caught-up node: the hold ends
+	// The hold ends by a person's command (K-107: kvoadm host trust-control-plane sets the
+	// watermark aside and restarts kevasod), and the worker trusts A again, the same history:
+	// a delete recorded as seen during the hold would be honoured now.
+	stop()
+	if err := os.Remove(r.file); err != nil {
+		t.Fatal(err)
+	}
+	r.cp.switchTo(r.srvA, seenA)
+	r.start(r.rt)
 	r.trusted(seenA)
 	r.keptFor(r.id, 2*time.Second)
 	if b, _ := os.ReadFile(filepath.Join(filepath.Dir(r.file), agent.SeenDeletesFile)); strings.Contains(string(b), r.id.UID) {

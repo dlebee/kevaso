@@ -19,7 +19,7 @@ type ResetOptions struct {
 	InitOptions      // the target and the SSH options every command shares
 	Yes         bool // don't ask
 	Force       bool // go ahead although silos are on the host (their data is lost)
-	WipeStorage bool // remove the volume group and its volumes even on a real disk
+	WipeStorage bool // remove the volume group and its volumes even on a real disk, or with no silo using them
 }
 
 const resetUsage = "usage: kvoadm reset [USER@]ADDRESS --ssh-key PATH [--host-key SHA256:…] [--ssh-port N] [--dry-run] [--yes] [--force] [--wipe-storage]"

@@ -150,8 +150,8 @@ func TestResetAsksFirst(t *testing.T) {
 
 func TestResetRunsThePlanThenTheChecklist(t *testing.T) {
 	rec := &hostreset.Record{State: baseState}
-	h := newResetHost(t, rec, nil, []string{"/dev/loop3 " + hostreset.StorageImage}, []string{"kv-01-ab 1.00g"}, hostreset.Flags{})
-	out, err := reset(h, ResetOptions{Yes: true}, "")
+	h := newResetHost(t, rec, nil, []string{"/dev/loop3 " + hostreset.StorageImage}, []string{"kv-01-ab 1.00g"}, hostreset.Flags{WipeStorage: true})
+	out, err := reset(h, ResetOptions{Yes: true, WipeStorage: true}, "")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}

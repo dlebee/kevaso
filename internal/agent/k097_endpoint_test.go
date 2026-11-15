@@ -30,7 +30,6 @@ func (holdEverything) Judged(int64, client.ControlPlaneSeen, bool) client.Verdic
 // plane. Alternatively, after the relay, refuse an answer the client's judge called Hold (that
 // needs api/client to say so: control lane). Then remove the skip.
 func TestAHeldEndpointRelaysNoOlderAnswer(t *testing.T) {
-	t.Skip("K-097, host lane: the local endpoint relays a held control plane's answers (internal/agent/endpoint.go ServeHTTP)")
 	cp := &fakeBroker{answer: func(client.AgentBrokerRequest) client.BrokerResponse {
 		return client.BrokerResponse{Value: []byte("revoked-since"), Version: 1}
 	}}
@@ -38,7 +37,8 @@ func TestAHeldEndpointRelaysNoOlderAnswer(t *testing.T) {
 	defer cps.Close()
 	c := client.New(cps.URL)
 	c.ControlPlane = holdEverything{}
-	ep := &agent.Endpoint{Client: c, HostName: "hv1", Hosts: []string{"169.254.42.1", "169.254.42.1:80"}}
+	held := true // the worker's watermark says held (the agent wires ControlPlaneHeld)
+	ep := &agent.Endpoint{Client: c, HostName: "hv1", Hosts: []string{"169.254.42.1", "169.254.42.1:80"}, Held: func() bool { return held }}
 	ep.Register(netip.MustParseAddr("127.0.0.1"), nodeID)
 	srv := httptest.NewUnstartedServer(ep)
 	srv.Config = ep.Server()
@@ -46,7 +46,12 @@ func TestAHeldEndpointRelaysNoOlderAnswer(t *testing.T) {
 	defer srv.Close()
 	r := &endpointRig{cp: cp, ep: ep, url: srv.URL}
 	resp, body := r.do(t, http.MethodGet, "/v1/secrets/db-password", nil, nil)
-	if resp.StatusCode == http.StatusOK || body == "revoked-since" {
-		t.Fatalf("held: the endpoint gave the silo the older control plane's answer: %d %q", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusServiceUnavailable || body == "revoked-since" || len(cp.calls()) != 0 {
+		t.Fatalf("held: %d %q, control plane asked %d times: want 503, nothing asked", resp.StatusCode, body, len(cp.calls()))
+	}
+	held = false
+	c.ControlPlane = nil
+	if resp, body := r.do(t, http.MethodGet, "/v1/secrets/db-password", nil, nil); resp.StatusCode != http.StatusOK || body != "revoked-since" {
+		t.Fatalf("not held: %d %q", resp.StatusCode, body)
 	}
 }

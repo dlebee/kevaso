@@ -42,8 +42,8 @@
   "id": "G-004",
   "guard": "claimStart: placement must allow this host",
   "file": "internal/agent/agent.go",
-  "find": "cur.Generation != s.Generation || !moves.MayStart(&cur, a.HostName) {",
-  "replace": "cur.Generation != s.Generation {",
+  "find": "!sameSpec || !moves.MayStart(&cur, a.HostName) {",
+  "replace": "!sameSpec {",
   "mutation": "MayStart dropped from the claim",
   "packages": [
    "./internal/agent",
@@ -55,8 +55,8 @@
   "id": "G-005",
   "guard": "writeClaim (claimStart): same silo generation",
   "file": "internal/agent/agent.go",
-  "find": "if cur.DeletionTimestamp != nil || cur.Generation != s.Generation || !moves.MayStart(&cur, a.HostName) {\n\t\treturn errPlacedElsewhere",
-  "replace": "if cur.DeletionTimestamp != nil || !moves.MayStart(&cur, a.HostName) {\n\t\treturn errPlacedElsewhere",
+  "find": "sameSpec := cur.Generation == s.Generation || renewal && cur.Generation > s.Generation",
+  "replace": "sameSpec := true",
   "mutation": "generation check dropped",
   "packages": [
    "./internal/agent",
@@ -147,8 +147,8 @@
   "id": "G-012",
   "guard": "start: claimStart before rt.Start",
   "file": "internal/agent/agent.go",
-  "find": "if err := a.claimStart(ctx, s); err != nil {\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tkp := a.keepClaim(s)",
-  "replace": "if false {\n\t\t\treturn a.lostClaim(s, nil)\n\t\t}\n\t\tkp := a.keepClaim(s)",
+  "find": "if err := a.claimStart(ctx, s); err != nil {\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tkp := a.keepClaim(s)\n\t\tended",
+  "replace": "if false {\n\t\t\treturn a.lostClaim(s, nil)\n\t\t}\n\t\tkp := a.keepClaim(s)\n\t\tended",
   "mutation": "claim removed",
   "packages": [
    "./internal/agent",
@@ -160,8 +160,8 @@
   "id": "G-013",
   "guard": "restart (Failed): claimStart before rt.Start",
   "file": "internal/agent/agent.go",
-  "find": "if err := a.claimStart(ctx, s); err != nil {\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tstctx, startKept",
-  "replace": "if false {\n\t\t\treturn a.lostClaim(s, nil)\n\t\t}\n\t\tstctx, startKept",
+  "find": "if err := a.claimStart(ctx, s); err != nil {\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tkp := a.keepClaim(s) // kept fresh until it is reported Running",
+  "replace": "if false {\n\t\t\treturn a.lostClaim(s, nil)\n\t\t}\n\t\tkp := a.keepClaim(s) // kept fresh until it is reported Running",
   "mutation": "claim removed",
   "packages": [
    "./internal/agent",
@@ -1723,7 +1723,7 @@
   "id": "G-184",
   "guard": "removeEverywhere keeps, running, a copy the cache and the store don't know whose delete wasn't seen (K-004)",
   "file": "internal/agent/agent.go",
-  "find": "\t\t\t\tif !a.seenHere(id.UID) {\n\t\t\t\t\tif _, again := a.abandoned.Load(id.UID); again {",
+  "find": "\t\t\t\tif !a.seenHere(id.UID) && !a.removalConfirmed(id.UID) {\n\t\t\t\t\tif _, again := a.abandoned.Load(id.UID); again {",
   "replace": "\t\t\t\tif false {\n\t\t\t\t\tif _, again := a.abandoned.Load(id.UID); again {",
   "mutation": "unknown copy not kept",
   "packages": [
