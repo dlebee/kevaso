@@ -433,13 +433,15 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	if cd.store != nil {
 		uniq = &claims.Claims{Store: cd.store}
 	}
-	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, IPs: ipInf, Images: images, Clock: cfg.Clock, Claims: uniq}
+	// How long each host has been silent, on this leader's clock, from its own start (K-014).
+	contacts := hostcontroller.NewContacts(cfg.Clock.Now())
+	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, IPs: ipInf, Images: images, Clock: cfg.Clock, Claims: uniq, Contacts: contacts}
 	if cfg.Plugins != nil {
 		reg := cfg.Plugins
 		sc.Classes = func() map[string]scheduler.Class { return provider.Classes(reg) }
 	}
 	e.Register(sc, engine.Options{Workers: 1})
-	e.Register(&hostcontroller.Controller{Client: c, Hosts: hosts, Clock: cfg.Clock, Lease: cfg.HostLease, Claims: uniq}, engine.Options{Workers: 1})
+	e.Register(&hostcontroller.Controller{Client: c, Hosts: hosts, Clock: cfg.Clock, Lease: cfg.HostLease, Claims: uniq, Contacts: contacts}, engine.Options{Workers: 1})
 	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
 	ipInf.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IP", Namespace: k.Namespace, Name: k.Name}) })

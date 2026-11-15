@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -63,13 +62,28 @@ func hasFinalizer(s *v1.Silo, f string) bool {
 // VolumeID is the plugin's stable ID for a silo's volume.
 func VolumeID(s *v1.Silo, name string) string { return s.UID + "/" + name }
 
-// VolumeLabel is a human label for it on the provider's side (≤ 32 characters, letters, digits, -).
-func VolumeLabel(s *v1.Silo, name string) string {
+// LabelLimit is how long kvo-NAMESPACE-SILO-VOLUME may be in a provider's label: 32 characters
+// (letters, digits, -) less -UID[:5].
+const LabelLimit = 26
+
+// ErrLabelTooLong: a volume's names don't fit a provider's label.
+var ErrLabelTooLong = errors.New("too long for a provider's label")
+
+// VolumeLabel is a human label for a volume on the provider's side: kvo-NAMESPACE-SILO-VOLUME,
+// then -UID[:5] (at most 32 characters). Names that don't fit are refused, never cut (brainstorm
+// §0.8, audit K-035): a cut gave two volumes one label, and a provider that finds volumes by
+// label would hand one the other's disk. Admission asks this function too, and refuses first.
+func VolumeLabel(s *v1.Silo, name string) (string, error) {
 	l := "kvo-" + s.Namespace + "-" + s.Name + "-" + name
-	if len(l) > 26 {
-		l = l[:26]
+	if len(l) > LabelLimit {
+		return "", fmt.Errorf("volume %s: %s is %d characters, and a provider's label keeps %d before -UID (not cut: two volumes would share one): shorten the namespace, the silo's or the volume's name by %d: %w",
+			name, l, len(l), LabelLimit, len(l)-LabelLimit, ErrLabelTooLong)
 	}
-	return strings.TrimRight(l, "-") + "-" + s.UID[:5]
+	uid := s.UID
+	if len(uid) > 5 {
+		uid = uid[:5]
+	}
+	return l + "-" + uid, nil
 }
 
 // Reconcile implements engine.Controller.
@@ -221,8 +235,13 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 		if err != nil || size <= 0 {
 			return vs, 0, fmt.Errorf("size %q: a provider volume needs a size", spec.Size)
 		}
+		label, err := VolumeLabel(s, spec.Name)
+		if err != nil { // admission refuses these; a silo from before it waits, saying why
+			vs.Message = err.Error()
+			return vs, 0, nil
+		}
 		st, err := p.Conn.EnsureVolume(ctx, kplugin.Volume{Class: spec.Class, ID: VolumeID(s, spec.Name),
-			Name: VolumeLabel(s, spec.Name), SizeBytes: size, Region: hi.Region})
+			Name: label, SizeBytes: size, Region: hi.Region})
 		if errors.Is(err, kplugin.ErrInProgress) {
 			vs.Message = err.Error()
 			return vs, c.poll(), nil
@@ -292,8 +311,13 @@ func (c *Volumes) ensureMounted(ctx context.Context, s *v1.Silo, h *v1.Host, p *
 		if cls.Topology != kplugin.TopologyGlobal && h.Status.Provider != nil {
 			region = h.Status.Provider.Region
 		}
+		label, err := VolumeLabel(s, spec.Name)
+		if err != nil { // admission refuses these; a silo from before it waits, saying why
+			vs.Message = err.Error()
+			return vs, 0, nil
+		}
 		st, err := p.Conn.EnsureVolume(ctx, kplugin.Volume{Class: spec.Class, ID: VolumeID(s, spec.Name),
-			Name: VolumeLabel(s, spec.Name), SizeBytes: size, Region: region})
+			Name: label, SizeBytes: size, Region: region})
 		if errors.Is(err, kplugin.ErrInProgress) {
 			vs.Message = err.Error()
 			return vs, c.poll(), nil

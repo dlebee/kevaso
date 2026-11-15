@@ -24,6 +24,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
@@ -89,6 +90,9 @@ type Env struct {
 	// not show yet (K-029): such a node port isn't handed out, and a host where a host port the
 	// silo asks for is held isn't a fit.
 	Claimed map[string]Claimed
+	// Silence is how long the control plane itself has heard nothing from a host, on its own
+	// clock (controllers/host.Contacts; K-014). Nil: unknown, never long enough to act on.
+	Silence func(host string) time.Duration
 }
 
 // Claimed are values held on one host.

@@ -48,6 +48,9 @@ const (
 const (
 	LabelIngress     = "kevaso.com/ingress"     // on a Certificate made for an Ingress
 	LabelCertificate = "kevaso.com/certificate" // on the Secret a Certificate fills
+	// AnnotationCertificateUID is the marker on a Secret this controller made for a Certificate:
+	// that Certificate's UID. Only such a Secret is ever written or deleted for it (K-019).
+	AnnotationCertificateUID = "kevaso.com/certificate-uid"
 )
 
 // Built-in issuers, made at start if missing.
@@ -62,6 +65,22 @@ type Challenge struct {
 	KeyAuth string    `json:"keyAuth"`
 	Host    string    `json:"host"`
 	Expires time.Time `json:"expires"`
+}
+
+// ReasonSecretNotOwned is a Certificate's Ready reason when its secretName names a Secret this
+// controller didn't make for it.
+const ReasonSecretNotOwned = "SecretNotOwned"
+
+// ownsSecret reports whether sec was made by this controller for cert (K-019): it carries cert's
+// UID in AnnotationCertificateUID. The label is not proof: anyone who may write a Secret may set it.
+func ownsSecret(cert *v1.Certificate, sec *v1.Secret) bool {
+	return cert.UID != "" && sec.Annotations[AnnotationCertificateUID] == string(cert.UID)
+}
+
+// notOwned is why a Certificate's secretName can't be used.
+func notOwned(cert *v1.Certificate) string {
+	return fmt.Sprintf("Secret %s/%s exists and wasn't made for this Certificate (no %s: %s): not writing it. Name another secretName, or delete that Secret",
+		cert.Namespace, cert.Spec.SecretName, AnnotationCertificateUID, cert.UID)
 }
 
 // Controller reconciles Ingresses into Certificates and Certificates into Secrets.
@@ -191,8 +210,19 @@ func (c *Controller) reconcileIngress(ctx context.Context, k engine.Key) error {
 				if err := c.Client.Delete(ctx, "Certificate", cert.Namespace, cert.Name, client.SameObject(cert)); err != nil && !client.IsNotFound(err) {
 					return err
 				}
-				if err := c.Client.Delete(ctx, "Secret", cert.Namespace, cert.Spec.SecretName); err != nil && !client.IsNotFound(err) {
+				// Only the Secret made for this Certificate, as seen (K-019, K-031).
+				var sec v1.Secret
+				err := c.Client.Get(ctx, "Secret", cert.Namespace, cert.Spec.SecretName, &sec)
+				switch {
+				case client.IsNotFound(err):
+				case err != nil:
 					return err
+				case !ownsSecret(cert, &sec):
+					c.log("certificate %s/%s: removed; its Secret %s wasn't made for it, so it stays", cert.Namespace, cert.Name, sec.Name)
+				default:
+					if err := c.Client.Delete(ctx, "Secret", cert.Namespace, sec.Name, client.Seen(&sec)); err != nil && !client.IsNotFound(err) {
+						return err
+					}
 				}
 			}
 		}
@@ -331,6 +361,14 @@ func (c *Controller) reconcileCertificate(ctx context.Context, cert *v1.Certific
 	if !issue {
 		return engine.Result{RequeueAfter: min(wait, 12*time.Hour)}, nil
 	}
+	// Before anything is ordered: a secretName naming a Secret this controller didn't make for
+	// this Certificate is refused (K-019).
+	var sec v1.Secret
+	if err := c.Client.Get(ctx, "Secret", cert.Namespace, cert.Spec.SecretName, &sec); err == nil && !ownsSecret(cert, &sec) {
+		return engine.Result{}, c.fail(ctx, cert, ReasonSecretNotOwned, notOwned(cert))
+	} else if err != nil && !client.IsNotFound(err) {
+		return engine.Result{}, err
+	}
 	var is v1.Issuer
 	if err := c.Client.Get(ctx, "Issuer", "", cert.Spec.Issuer, &is); err != nil {
 		return engine.Result{}, c.fail(ctx, cert, "NoIssuer", fmt.Sprintf("issuer %s: %v", cert.Spec.Issuer, err))
@@ -465,14 +503,17 @@ func (c *Controller) writeSecret(ctx context.Context, cert *v1.Certificate, bund
 		switch {
 		case client.IsNotFound(err):
 			sec = v1.Secret{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Secret"},
-				ObjectMeta: meta.ObjectMeta{Name: cert.Spec.SecretName, Namespace: cert.Namespace, Labels: map[string]string{LabelCertificate: cert.Name}},
-				Spec:       v1.SecretSpec{Value: bundle, AllowedDelivery: []string{v1.DeliverBroker, v1.DeliverFile}}}
+				ObjectMeta: meta.ObjectMeta{Name: cert.Spec.SecretName, Namespace: cert.Namespace, Labels: map[string]string{LabelCertificate: cert.Name},
+					Annotations: map[string]string{AnnotationCertificateUID: string(cert.UID)}},
+				Spec: v1.SecretSpec{Value: bundle, AllowedDelivery: []string{v1.DeliverBroker, v1.DeliverFile}}}
 			err = c.Client.Create(ctx, &sec)
 		case err != nil:
 			return err
+		case !ownsSecret(cert, &sec): // made by someone else since the check before ordering
+			return c.fail(ctx, cert, ReasonSecretNotOwned, notOwned(cert))
 		default:
 			sec.Spec.Value = bundle
-			err = c.Client.Update(ctx, &sec)
+			err = c.Client.Update(ctx, &sec) // conditional on the version read, so on what was checked
 		}
 		if client.IsConflict(err) || client.IsAlreadyExists(err) {
 			continue

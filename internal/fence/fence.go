@@ -1,6 +1,8 @@
-// Package fence stops a host's movable silos when its agent can no longer vouch for them (design
-// §0.3: a recreate or move needs the old copy's lease to expire *and* fencing to succeed), whether
-// the agent is cut off from the control plane or not running at all.
+// Package fence stops, on a host whose agent has lost the control plane (cut off, or not running
+// at all), the silos that asked for it: onControlPlaneLoss: Stop, each after its own `after`
+// (brainstorm §0.7, record version 2). Nothing else is stopped: a worker that loses the control
+// plane keeps running what it was given. Records from agents before version 2 keep the old rule
+// described below until those agents are upgraded.
 //
 // The agent writes a record every second: when it last reached the control plane, and the
 // onHostLoss policy of each silo it runs here. A small watcher, its own process and unit
@@ -61,8 +63,23 @@ func WorstStopped(after time.Duration) time.Duration { return after + CheckEvery
 // RecordFile is the record's name in Dir.
 const RecordFile = "record.json"
 
+// RecordVersion is the record's current version. Version 2 (brainstorm §0.7): the fence stops
+// only the silos that asked for it, each after its own StopAfter (spec.availability.after, for
+// onControlPlaneLoss: Stop); onHostLoss and Fence mean nothing to it. A record without a version
+// is an agent from before: the old rule (Recreate and Move silos after FenceAfter, where Fence)
+// until that agent is upgraded.
+//
+// Timing (version 2), what the control plane counts on: LastContact is the time the agent SENT
+// the last heartbeat (its own Host status write) that succeeded, never a later answer, and never
+// a time it got from elsewhere. The control plane sees that write after it was sent, so its own
+// "last heard of this host" is never earlier than the agent's LastContact; each side then counts
+// a duration on its own clock. The control plane starts another copy only StopMargin after
+// StopAfter (internal/controllers/silo).
+const RecordVersion = 2
+
 // Record is what the agent writes.
 type Record struct {
+	Version int `json:"version,omitempty"` // RecordVersion; 0: an agent from before it
 	// LastContact is when the agent last reached the control plane (what the agent's own fence
 	// judges by). Zero: never yet, so nothing here may run elsewhere.
 	LastContact time.Time `json:"lastContact"`
@@ -77,7 +94,10 @@ type Record struct {
 type Silo struct {
 	ID         kri.ID `json:"id"`
 	Runtime    string `json:"runtime"`
-	OnHostLoss string `json:"onHostLoss"` // Wait | Recreate | Move
+	OnHostLoss string `json:"onHostLoss"` // Wait | Recreate | Move (version 1 only)
+	// StopAfter (version 2): the silo's onControlPlaneLoss is Stop, and this is its after
+	// ((*v1.Silo).StopsOnControlPlaneLoss): stopped once the last contact is older. 0: never.
+	StopAfter time.Duration `json:"stopAfter,omitempty"`
 }
 
 // Stops reports whether a silo with this policy is stopped by a fence: only those the control
@@ -131,15 +151,27 @@ func Applies(hosts []v1.Host, self string) bool {
 	return apiOthers > 0 && 2*others > members
 }
 
-// Decide is what to stop now: the silos the control plane may start elsewhere, once the last
-// contact is older than after, minus those already stopped in this fence. Pure.
+// Decide is what to stop now, minus those already stopped in this fence. Pure.
+//
+// Version 2: each silo with a StopAfter, once the last contact is older than it; nothing else,
+// whatever Fence says (a silo that asked to stop on control-plane loss stops on a one-node cluster
+// too). Version 1: the silos the control plane used to start elsewhere (Stops), once the last
+// contact is older than after, where Fence.
 func Decide(r Record, now time.Time, after time.Duration, done map[string]bool) []Silo {
-	if !r.Fence || r.LastContact.IsZero() || now.Sub(r.LastContact) <= after {
+	if r.LastContact.IsZero() {
 		return nil
 	}
+	silent := now.Sub(r.LastContact)
 	var out []Silo
 	for _, s := range r.Silos {
-		if Stops(s.OnHostLoss) && !done[s.ID.UID] {
+		if done[s.ID.UID] {
+			continue
+		}
+		if r.Version >= RecordVersion {
+			if s.StopAfter > 0 && silent > s.StopAfter {
+				out = append(out, s)
+			}
+		} else if r.Fence && silent > after && Stops(s.OnHostLoss) {
 			out = append(out, s)
 		}
 	}
@@ -266,7 +298,16 @@ func (w *Watcher) Check(ctx context.Context) {
 	now := w.now()
 	stop := Decide(r, now, w.FenceAfter, w.done)
 	cut := !r.LastContact.IsZero() && now.Sub(r.LastContact) > w.FenceAfter
+	if r.Version >= RecordVersion {
+		cut = len(stop) > 0 || (w.fencing && !r.LastContact.IsZero() && now.Sub(r.LastContact) > w.FenceAfter)
+	}
 	switch {
+	case cut && r.Version >= RecordVersion && !w.fencing:
+		w.fencing = true
+		w.faults = Faults{At: now}
+		w.log("fence: no contact with the control plane recorded for %s: stopping the silos that asked to stop (onControlPlaneLoss: Stop)",
+			now.Sub(r.LastContact).Round(time.Second))
+		w.writeFaults()
 	case cut && r.Fence && !w.fencing:
 		w.fencing = true
 		w.faults = Faults{At: now}
@@ -299,7 +340,11 @@ func (w *Watcher) Check(ctx context.Context) {
 			w.done[s.ID.UID] = true
 		case err == nil || errors.Is(err, kri.ErrNotFound):
 			w.done[s.ID.UID] = true
-			w.log("fence: stopped %s/%s (onHostLoss %s)", s.ID.Namespace, s.ID.Name, s.OnHostLoss)
+			if s.StopAfter > 0 {
+				w.log("fence: stopped %s/%s (onControlPlaneLoss: Stop, after %s)", s.ID.Namespace, s.ID.Name, s.StopAfter)
+			} else {
+				w.log("fence: stopped %s/%s (onHostLoss %s)", s.ID.Namespace, s.ID.Name, s.OnHostLoss)
+			}
 		default:
 			w.log("fence: killing %s/%s: %v (trying again)", s.ID.Namespace, s.ID.Name, err)
 		}
@@ -393,7 +438,7 @@ func Unit(runtimes []string, after time.Duration) string {
 		args += " --runtime " + r
 	}
 	return fmt.Sprintf(`[Unit]
-Description=Kevaso fence: stops this host's movable silos when its agent loses the control plane
+Description=Kevaso fence: stops the silos that ask to stop when this host's agent loses the control plane
 After=network-online.target docker.service
 
 [Service]
