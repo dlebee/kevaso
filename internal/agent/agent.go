@@ -68,6 +68,12 @@ type Agent struct {
 	// LastContactBoot, if set, is the same contact on the boot clock (internal/boottime): the
 	// silence is counted on it, never on the wall clock (K-072).
 	LastContactBoot func() (time.Duration, bool)
+	// HostIsVM, if set, says whether this host is itself a virtual machine (K-093); nil: asked of
+	// the host once (DetectVM). A VM paused by its hypervisor may not advance its boot clock, so on
+	// one the silence is counted on either clock, whichever says more.
+	HostIsVM func() bool
+	isVMOnce sync.Once
+	isVM     bool
 	// StopsOnLoss, if set, replaces (*v1.Silo).StopsOnControlPlaneLoss (tests shorten the times).
 	StopsOnLoss func(*v1.Silo) (stops bool, after time.Duration)
 	// WatermarkFile, if set, is where the agent keeps what it saw of its control plane (cluster,
@@ -206,10 +212,29 @@ func (a *Agent) silence() time.Duration {
 	if a.LastContact == nil || a.started.IsZero() {
 		return 0
 	}
+	wall := a.Clock.Now().Sub(a.lastContact())
 	if b, ok := a.contactBoot(); ok {
-		return boottime.Since(b) // K-072: never the wall clock, which a time server steps
+		d := boottime.Since(b) // K-072: not the wall clock alone, which a time server steps
+		if a.hostIsVM() && wall > d {
+			// K-093: a VM paused by its hypervisor (a snapshot, a live migration) may not count
+			// the pause on its boot clock: either clock stops its silos. A wall clock stepped
+			// forward stops them early too: on a VM, the safe side.
+			d = wall
+		}
+		return d
 	}
-	return a.Clock.Now().Sub(a.lastContact())
+	return wall
+}
+
+func (a *Agent) hostIsVM() bool {
+	a.isVMOnce.Do(func() {
+		if a.HostIsVM != nil {
+			a.isVM = a.HostIsVM()
+		} else {
+			a.isVM = detectVM()
+		}
+	})
+	return a.isVM
 }
 
 // contactBoot is the last contact on the boot clock, where the worker gives it (LastContactBoot):
