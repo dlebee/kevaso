@@ -545,6 +545,9 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	if restart, err := a.setVolumes(ctx, rt, s, rs.State, vols); err != nil || restart {
 		return engine.Result{RequeueAfter: time.Millisecond}, err
 	}
+	if err := a.releaseDropped(ctx, rt, s, rs.State); err != nil {
+		return engine.Result{}, err
+	}
 	image, resolved := imageOf(s)
 	if rs.State != kri.Absent && resolved {
 		// A new image, or a reset asked for: put it back onto the image, stop-first (design §0.4).

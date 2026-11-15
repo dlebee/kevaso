@@ -460,3 +460,10 @@ var (
 	_ kri.VolumeSetter = (*Runtime)(nil)
 	_ kri.GuestVolumes = (*Runtime)(nil)
 )
+
+// VolumesOf is what the VM's layout has (its volumes), and whether its state could be read:
+// SetVolumes changes it once the VM is stopped.
+func (r *Runtime) VolumesOf(id kri.ID) ([]kri.Volume, bool) {
+	st, ok, err := r.readState(id)
+	return st.Volumes, ok && err == nil
+}
