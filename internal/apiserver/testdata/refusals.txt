@@ -14,6 +14,16 @@ Silo spec.init={"steps":[{"name":"a","run":"x"},{"name":"a","run":"y"}]}
   Silo s: init step names must be unique
 Silo spec.availability={"onHostLoss":"Pray"}
   Silo s: availability.onHostLoss must be Wait, Recreate or Move
+Silo spec.availability={"onControlPlaneLoss":"Panic"}
+  Silo s: availability.onControlPlaneLoss must be Continue or Stop
+Silo spec.availability={"onControlPlaneLoss":"Continue","after":"2m"}
+  Silo s: availability.after goes with onControlPlaneLoss: Stop (Continue changes nothing, so there's nothing to wait for)
+Silo spec.availability={"after":"2m"}
+  Silo s: availability.after goes with onControlPlaneLoss: Stop (Continue changes nothing, so there's nothing to wait for)
+Silo spec.availability={"onControlPlaneLoss":"Stop","after":"10s"}
+  Silo s: availability.after "10s": want a duration from 30s to 24h0m0s (e.g. 2m)
+Silo spec.availability={"onControlPlaneLoss":"Stop","after":"soon"}
+  Silo s: availability.after "soon": want a duration from 30s to 24h0m0s (e.g. 2m)
 Silo spec.network={"egress":{"source":"gateway"}}
   Silo s: network.egress.source must be host, sameAsService or pool (gateway comes later)
 Silo spec.network={"egress":{"ip":"x"}}
@@ -128,6 +138,8 @@ SiloSet spec.template.exclusive=true spec.update={"maxSurge":1}
   SiloSet set: exclusive instances update one at a time, stop-first: never two copies, so no StartFirst or maxSurge
 SiloSet spec.template.labels={"kevaso.com/set":"x"}
   SiloSet set: template.labels can't use kevaso.com/ labels: the set sets those
+SiloSet spec.template.availability={"onControlPlaneLoss":"Stop","after":"5s"}
+  SiloSet set: template: availability.after "5s": want a duration from 30s to 24h0m0s (e.g. 2m)
 SiloSet metadata.name="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   SiloSet aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: a SiloSet's name is at most 56 characters (its instances add -N)
 SiloSet spec.template.ports=[{"name":"web","port":80}] spec.template.service={"ports":[{"port":"web","loadBalancer":true}],"loadBalancer":{"class":"ip-pool","ip":"x"}}

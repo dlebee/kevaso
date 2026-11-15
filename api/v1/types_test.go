@@ -233,3 +233,40 @@ func TestSiloSetRevisionFollowsTheDisk(t *testing.T) {
 		t.Fatalf("instance: %+v", got)
 	}
 }
+
+func TestOnControlPlaneLossHelpers(t *testing.T) {
+	for _, c := range []struct {
+		av      Availability
+		stops   bool
+		after   time.Duration
+		problem string
+	}{
+		{Availability{}, false, 0, ""},
+		{Availability{OnControlPlaneLoss: "Continue"}, false, 0, ""},
+		{Availability{OnControlPlaneLoss: "Stop"}, true, 2 * time.Minute, ""},
+		{Availability{OnControlPlaneLoss: "Stop", After: "30s"}, true, 30 * time.Second, ""},
+		{Availability{OnControlPlaneLoss: "Stop", After: "24h"}, true, 24 * time.Hour, ""},
+		{Availability{OnControlPlaneLoss: "Stop", After: "29s"}, true, 29 * time.Second, "want a duration from 30s"},
+		{Availability{OnControlPlaneLoss: "Stop", After: "25h"}, true, 25 * time.Hour, "want a duration from 30s"},
+		{Availability{OnControlPlaneLoss: "Stop", After: "x"}, true, 2 * time.Minute, "want a duration"},
+		{Availability{After: "1m"}, false, 0, "goes with onControlPlaneLoss: Stop"},
+		{Availability{OnControlPlaneLoss: "Continue", After: "1m"}, false, 0, "goes with onControlPlaneLoss: Stop"},
+		{Availability{OnControlPlaneLoss: "stop"}, false, 0, "must be Continue or Stop"},
+		// onHostLoss never turns it on.
+		{Availability{OnHostLoss: "Move"}, false, 0, ""},
+		{Availability{OnHostLoss: "Recreate"}, false, 0, ""},
+	} {
+		stops, after := c.av.StopsOnControlPlaneLoss()
+		if stops != c.stops || after != c.after {
+			t.Errorf("%+v: stops=%v after=%v, want %v %v", c.av, stops, after, c.stops, c.after)
+		}
+		p := strings.Join(c.av.ControlPlaneLossProblems(), ";")
+		if (c.problem == "") != (p == "") || !strings.Contains(p, c.problem) {
+			t.Errorf("%+v: problems %q, want %q", c.av, p, c.problem)
+		}
+	}
+	s := &Silo{Spec: SiloSpec{Availability: Availability{OnControlPlaneLoss: "Stop"}}}
+	if ok, d := s.StopsOnControlPlaneLoss(); !ok || d != DefaultStopAfter {
+		t.Errorf("silo: %v %v", ok, d)
+	}
+}
