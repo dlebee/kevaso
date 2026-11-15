@@ -45,6 +45,9 @@ func (h *fakeHost) Run(_ context.Context, name string, args ...string) ([]byte, 
 	defer h.mu.Unlock()
 	cmd := strings.TrimSpace(name + " " + strings.Join(args, " "))
 	h.cmds = append(h.cmds, cmd)
+	// A pool command is recorded as systemd-run runs it, and answered as the LVM command it runs.
+	name, args = unwrapHost(name, args)
+	cmd = strings.TrimSpace(name + " " + strings.Join(args, " "))
 	pool := strings.HasPrefix(cmd, "lvs --noheadings --units b")
 	if h.answer != nil {
 		out, err := h.answer(cmd)
@@ -145,9 +148,32 @@ func spec(name string) kri.Spec {
 	return kri.Spec{ID: id(name), Image: "ubuntu-24.04", CPU: 2, Memory: 4 << 30, DiskBytes: 20 << 30}
 }
 
+// unwrapHost is the LVM command a restart-surviving wrapper runs, or the command itself.
+func unwrapHost(name string, args []string) (string, []string) {
+	if name != "systemd-run" {
+		return name, args
+	}
+	for i, a := range args {
+		if a == "--" && i+1 < len(args) {
+			return args[i+1], args[i+2:]
+		}
+	}
+	return name, args
+}
+
+// hostCmd is the program a recorded line runs. A pool command is "systemd-run ... -- lvcreate ...".
+func hostCmd(line string) string {
+	if strings.HasPrefix(line, "systemd-run ") {
+		if _, after, ok := strings.Cut(line, " -- "); ok {
+			return after
+		}
+	}
+	return line
+}
+
 func indexOf(cmds []string, prefix string) int {
 	for i, c := range cmds {
-		if strings.HasPrefix(c, prefix) {
+		if strings.HasPrefix(c, prefix) || strings.HasPrefix(hostCmd(c), prefix) {
 			return i
 		}
 	}

@@ -154,6 +154,39 @@ func TestParseHostAdd(t *testing.T) {
 	}
 }
 
+// host add parses --egress-extra-ca and --openshell-gateway-scope, and the worker's unit must
+// carry them the same way init writes them for a system node. Without that, the worker's egress
+// gate rejects the CA (x509: certificate signed by unknown authority).
+func TestWorkerUnitWritesTheEgressCAAndGatewayScope(t *testing.T) {
+	o, err := parseHostAdd([]string{"root@198.51.100.30", "--name", "worker-1", "--kevasod", "/k", "--ssh-key", "/key",
+		"--runtime", "docker", "--egress-extra-ca", "/etc/kevaso/extra-ca.pem", "--openshell-gateway-scope", "namespace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.EgressExtraCA != "/etc/kevaso/extra-ca.pem" || o.GatewayScope != "namespace" {
+		t.Fatalf("parseHostAdd dropped the flags: %+v", o)
+	}
+	unit := WorkerUnit(o, "https://10.0.0.1:6443")
+	sys := Unit(InitOptions{Name: "cp", Address: "10.0.0.1", ExternalIP: "10.0.0.1", Cluster: "c", Worker: true,
+		Runtimes: o.Runtimes, EgressExtraCA: o.EgressExtraCA, GatewayScope: o.GatewayScope})
+	shared := strings.Join(workerHostArgs(o.InitOptions), " ")
+	for _, flag := range []string{"--egress-extra-ca /etc/kevaso/extra-ca.pem", "--openshell-gateway-scope namespace"} {
+		if !strings.Contains(unit, flag) {
+			t.Errorf("worker unit lacks %q:\n%s", flag, unit)
+		}
+		if !strings.Contains(sys, flag) {
+			t.Errorf("system node unit lacks %q:\n%s", flag, sys)
+		}
+	}
+	if !strings.Contains(unit, shared) || !strings.Contains(sys, shared) {
+		t.Fatalf("units don't share the worker settings %q\nworker:\n%s\nsystem:\n%s", shared, unit, sys)
+	}
+	plain := WorkerUnit(HostAddOptions{InitOptions: InitOptions{Name: "w"}, Runtimes: []string{"docker"}}, "https://10.0.0.1:6443")
+	if strings.Contains(plain, "egress-extra-ca") || strings.Contains(plain, "openshell-gateway-scope") {
+		t.Fatalf("flags written without being asked:\n%s", plain)
+	}
+}
+
 // A host with a worker gets a fence of its own: the same runtimes, and nothing tying it to
 // kevasod.service (it must keep running when kevasod stops or dies).
 func TestFenceUnit(t *testing.T) {

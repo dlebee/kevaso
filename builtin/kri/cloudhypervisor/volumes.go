@@ -374,7 +374,7 @@ func (r *Runtime) applyLayout(ctx context.Context, st State, old, l Layout) erro
 		if err := r.fits(ctx, "volume "+d.Name, size); err != nil {
 			return err
 		}
-		if err := r.run(ctx, "lvcreate", "-q", "-T", VG+"/"+ThinPool, "-V", strconv.FormatInt((size+(1<<20)-1)>>20, 10)+"m", "-n", d.LV); err != nil {
+		if err := r.runPool(ctx, "lvcreate", "-q", "-T", VG+"/"+ThinPool, "-V", strconv.FormatInt((size+(1<<20)-1)>>20, 10)+"m", "-n", d.LV); err != nil {
 			return err
 		}
 	}

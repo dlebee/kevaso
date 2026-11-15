@@ -193,6 +193,46 @@ func TestPlanLeavesDockerThatWasThereBefore(t *testing.T) {
 	}
 }
 
+// Restarting Docker to drop daemon.json stops foreign containers. Each daemon.json step records
+// the running ones that aren't Kevaso's and starts them again afterwards. Docker that Kevaso
+// installed is removed, not restarted. Podman is restarted the same way when a step restarts it.
+func TestRestartingDockerStartsForeignContainersAgain(t *testing.T) {
+	for _, in := range []PlanInput{{DockerJSON: DockerJSONRemove}, {DockerJSON: DockerJSONRestore}, {}} {
+		var s string
+		for _, st := range Plan(in) {
+			if strings.Contains(st.Name, "daemon.json") {
+				s = st.Script
+			}
+		}
+		if s == "" {
+			t.Fatal("no daemon.json step")
+		}
+		ps, restart, start := strings.Index(s, "docker ps -q"), strings.Index(s, "try-restart docker"), strings.Index(s, "docker start")
+		if ps < 0 || restart < 0 || start < 0 || ps >= restart || restart >= start {
+			t.Errorf("foreign containers aren't recorded before the restart and started after it:\n%s", s)
+		}
+		for _, want := range []string{"kevaso.com/uid", kevasoContainerPrefix(), "started foreign container"} {
+			if !strings.Contains(s, want) {
+				t.Errorf("daemon.json step lacks %q", want)
+			}
+		}
+	}
+	for _, s := range Plan(PlanInput{DockerOurs: true}) {
+		if strings.Contains(s.Script, "try-restart docker") || strings.Contains(s.Script, "docker start") {
+			t.Errorf("Docker is Kevaso's and %q restarts it or starts a container", s.Name)
+		}
+	}
+	for _, in := range []PlanInput{{}, {DockerOurs: true}, {PodmanOurs: true}, {DockerJSON: DockerJSONRemove}} {
+		for _, s := range Plan(in) {
+			for _, eng := range []string{"docker", "podman"} {
+				if strings.Contains(s.Script, "try-restart "+eng) && !strings.Contains(s.Script, eng+" start") {
+					t.Errorf("step %q restarts %s and does not start its foreign containers", s.Name, eng)
+				}
+			}
+		}
+	}
+}
+
 func TestPlanPodman(t *testing.T) {
 	ours := Plan(PlanInput{PodmanOurs: true})
 	s := ours[stepIndex(t, ours, "remove podman's containers")].Script

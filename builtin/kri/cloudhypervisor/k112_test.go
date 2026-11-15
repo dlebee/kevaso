@@ -50,7 +50,7 @@ func TestAResetCutBeforeItRemovedAnythingIsNotFinishedAtTheNextStart(t *testing.
 		t.Fatal(err)
 	}
 	for _, c := range h.commands()[before:] {
-		if strings.HasPrefix(c, "lvremove") || strings.HasPrefix(c, "lvcreate") || strings.HasPrefix(c, "qemu-img convert") {
+		if inner := hostCmd(c); strings.HasPrefix(inner, "lvremove") || strings.HasPrefix(inner, "lvcreate") || strings.HasPrefix(inner, "qemu-img convert") {
 			t.Fatalf("the next Start made the disk afresh with no gate asked: %s", c)
 		}
 	}

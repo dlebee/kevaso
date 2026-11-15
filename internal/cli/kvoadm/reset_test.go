@@ -25,6 +25,7 @@ type fakeResetHost struct {
 	steps      map[string]string // script → step name
 	checks     map[string]string // script → check name
 	fail       string            // the step that fails
+	notes      map[string]string // step name → what a successful step prints
 }
 
 func (f *fakeResetHost) Run(_ context.Context, cmd string, _ []byte) ([]byte, error) {
@@ -43,7 +44,7 @@ func (f *fakeResetHost) Run(_ context.Context, cmd string, _ []byte) ([]byte, er
 		if f.steps[cmd] == f.fail {
 			return []byte("it failed"), errors.New("exit 1")
 		}
-		return nil, nil
+		return []byte(f.notes[f.steps[cmd]]), nil
 	}
 	f.ran = append(f.ran, "unknown")
 	return nil, nil
@@ -316,6 +317,21 @@ func TestStorageDeviceFlag(t *testing.T) {
 	}
 }
 
+// A step's own lines are part of the reset's output: restarting Docker says which foreign
+// containers were started again.
+func TestResetShowsWhatAStepPrints(t *testing.T) {
+	rec := &hostreset.Record{State: baseState}
+	h := newResetHost(t, rec, nil, nil, nil, hostreset.Flags{})
+	h.notes = map[string]string{"delete nftables tables": "started foreign container kvt-foreign again\n"}
+	out, err := reset(h, ResetOptions{Yes: true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "✓ delete nftables tables\n  started foreign container kvt-foreign again\n") {
+		t.Fatalf("the reset hid what the step printed:\n%s", out)
+	}
+}
+
 // K-114: the install record goes last, and only when every step before it succeeded: a reset cut
 // short can be run again, with what the record says.
 func TestAResetCutShortKeepsItsInstallRecord(t *testing.T) {
@@ -333,8 +349,29 @@ func TestAResetCutShortKeepsItsInstallRecord(t *testing.T) {
 	}
 	h = newResetHost(t, rec, nil, nil, nil, hostreset.Flags{})
 	h.fail = "delete nftables tables"
-	out, _ := reset(h, ResetOptions{Yes: true}, "")
-	if slices.Contains(h.ran, "step:"+hostreset.RecordStep) || !strings.Contains(out, "kept, since a step failed") {
-		t.Fatalf("a reset cut short removed its install record: %v\n%s", h.ran, out)
+	out, err := reset(h, ResetOptions{Yes: true}, "")
+	if err == nil || slices.Contains(h.ran, "step:"+hostreset.RecordStep) || !strings.Contains(out, "kept, since a step failed, so the next reset knows what to clean") {
+		t.Fatalf("a reset cut short removed its install record: %v\n%v\n%s", h.ran, err, out)
+	}
+	if !strings.Contains(out, "Steps that failed:\n  - delete nftables tables:") {
+		t.Fatalf("the failed step wasn't named:\n%s", out)
+	}
+}
+
+// The files step used to exit 0 when rm failed, so this ran and deleted the record (K-114) and
+// the list of packages Kevaso installed (K-113, /var/lib/kevaso-install/installed).
+func TestAFailedFileRemovalKeepsTheInstallRecord(t *testing.T) {
+	rec := &hostreset.Record{State: baseState}
+	h := newResetHost(t, rec, nil, nil, nil, hostreset.Flags{})
+	h.fail = "remove Kevaso's files"
+	out, err := reset(h, ResetOptions{Yes: true}, "")
+	if err == nil {
+		t.Fatal("a failed reset exited 0")
+	}
+	if slices.Contains(h.ran, "step:"+hostreset.RecordStep) {
+		t.Fatalf("the install record was deleted after a failed removal: %v", h.ran)
+	}
+	if !strings.Contains(out, "Steps that failed:\n  - remove Kevaso's files:") || !strings.Contains(out, "kept, since a step failed, so the next reset knows what to clean") {
+		t.Fatalf("output:\n%s\nerr: %v", out, err)
 	}
 }

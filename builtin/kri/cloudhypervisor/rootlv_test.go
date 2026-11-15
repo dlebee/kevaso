@@ -19,7 +19,7 @@ func TestCreateNeverRemovesARootVolumeItDidNotMake(t *testing.T) {
 	before := len(h.commands())
 	err := r.Create(ctx, sp)
 	for _, c := range h.commands()[before:] {
-		if strings.HasPrefix(c, "lvremove") && strings.Contains(c, n.LV) {
+		if inner := hostCmd(c); strings.HasPrefix(inner, "lvremove") && strings.Contains(inner, n.LV) {
 			t.Fatalf("Create removed a root volume it didn't make: %v", h.commands()[before:])
 		}
 	}

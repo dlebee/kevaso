@@ -29,6 +29,7 @@ import (
 	"kevaso.com/core/builtin/kri/container"
 	"kevaso.com/core/builtin/kri/hostpkg"
 	"kevaso.com/core/builtin/kri/openshell"
+	"kevaso.com/core/sdk/kri"
 )
 
 // Paths on the host.
@@ -519,8 +520,13 @@ rm -f `+StorageImage)
 	}
 
 	// 6. Docker's configuration, files, the tests' /etc/hosts lines, users.
+	// Docker stays when it isn't Kevaso's, and so do containers that aren't Kevaso's. Restarting
+	// dockerd is what drops the daemon.json Kevaso wrote; without the live-restore that file set,
+	// the restart stops containers that were running and Docker does not start them again. Those
+	// that aren't Kevaso's are started again (foreignRestart). Podman has no such restart here;
+	// the same script covers it if one is added.
 	if !in.DockerOurs {
-		restart := ` && (systemctl try-restart docker || true)`
+		restart := " && {\n" + foreignRestart("docker") + "\n}"
 		switch in.DockerJSON {
 		case DockerJSONRestore:
 			add("restore Docker's daemon.json", `[ -f `+SavedDockerJSON+` ] && cp `+SavedDockerJSON+` `+DockerDaemonJSONPath+restart)
@@ -547,13 +553,18 @@ left=$(awk '{print $2}' /proc/mounts | grep -E '`+mountPattern+`')
 	}
 	// Never into another file system (a volume still mounted there), and not at all while
 	// anything under these paths is mounted (K-022).
-	// The install record (RecordDir) is not among them: it goes last (RecordStep), so a reset cut
-	// short can be run again with it (K-114).
+	// The install record (RecordDir, including hostpkg's installed list) is not among them: it
+	// goes last (RecordStep), and only when every earlier step succeeded. rm's own status is the
+	// step's: daemon-reload and reset-failed still run, and neither may hide a failed removal
+	// (K-114: with the record gone, the next reset finds nothing to undo).
 	destroys("remove Kevaso's files", `if awk '{print $2}' /proc/mounts | grep -qE '`+mountPattern+`'; then echo "something is still mounted under Kevaso's paths: not removing them" >&2; exit 1; fi
 set --
 for f in `+strings.Join(files, " ")+`; do [ "$f" = `+RecordDir+` ] || set -- "$@" "$f"; done
 rm -rf --one-file-system "$@"
-systemctl daemon-reload; systemctl reset-failed; true`)
+rc=$?
+systemctl daemon-reload || true
+systemctl reset-failed || true
+exit $rc`)
 	add("remove the tests' /etc/hosts lines", `sed -i '/`+HostsMarker+`$/d' /etc/hosts`)
 	// OpenShell's gateway users (kvos-*) leave docker or kvm with userdel; their own groups go too.
 	add("remove kevaso-* users, and OpenShell's "+openshell.UserPrefix+"* users", `for u in $(awk -F: '$1 ~ /^(kevaso-|`+openshell.UserPrefix+`)/ {print $1}' /etc/passwd); do userdel "$u"; done
@@ -569,6 +580,60 @@ true`)
 const RecordStep = "remove the install record"
 
 func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// kevasoContainerPrefix is the prefix of every container the container runtime names (Main, Pause,
+// Init: container.NamesFor). OpenShell's sandboxes use it too (kv- and ten hex digits).
+func kevasoContainerPrefix() string {
+	n := container.NamesFor(kri.ID{Namespace: "x", Name: "y", UID: "z"})
+	p := strings.TrimSuffix(n.Main, n.Short)
+	if p == "" || p == n.Main || !strings.HasPrefix(n.Pause, p) || !strings.HasPrefix(n.Init, p) {
+		return "kv-"
+	}
+	return p
+}
+
+// foreignRestart restarts eng (docker or podman) and starts again every container that was
+// running, is not running afterwards, and is not Kevaso's. Kevaso's carry the label
+// kevaso.com/uid or a name with kevasoContainerPrefix (builtin/kri/container). It prints one
+// line per container it started, "started foreign container NAME again". A start that fails
+// fails the script; the restart itself is best-effort (the daemon.json still has to go).
+func foreignRestart(eng string) string {
+	if !safeWord(eng) {
+		return "echo 'refusing to restart an unsafe engine name' >&2; exit 1"
+	}
+	prefix := kevasoContainerPrefix()
+	// A name containing kv- and ten hex digits is an OpenShell sandbox container even when it
+	// doesn't start with the prefix (the removal step matches the same shape).
+	openShell := `(^|[^a-z0-9])` + prefix + `[0-9a-f]{10}([^0-9a-f]|$)`
+	return `rc=0
+ids=
+if command -v ` + eng + ` >/dev/null 2>&1 && systemctl is-active -q ` + eng + `; then
+  for id in $(` + eng + ` ps -q 2>/dev/null); do
+    case "$id" in *[!0-9a-fA-F]*) continue;; esac
+    name=$(` + eng + ` inspect -f '{{.Name}}' "$id" 2>/dev/null) || continue
+    name=${name#/}
+    label=$(` + eng + ` inspect -f '{{if .Config.Labels}}{{index .Config.Labels "kevaso.com/uid"}}{{end}}' "$id" 2>/dev/null) || continue
+    case "$label" in ""|"<no value>") ;; *) continue;; esac
+    case "$name" in ` + prefix + `*) continue;; esac
+    if printf '%s\n' "$name" | grep -qE '` + openShell + `'; then continue; fi
+    ids="$ids $id"
+  done
+fi
+systemctl try-restart ` + eng + ` || true
+for id in $ids; do
+  running=$(` + eng + ` inspect -f '{{.State.Running}}' "$id" 2>/dev/null || echo false)
+  [ "$running" = true ] && continue
+  name=$(` + eng + ` inspect -f '{{.Name}}' "$id" 2>/dev/null)
+  name=${name#/}
+  if ` + eng + ` start "$id" >/dev/null; then
+    echo "started foreign container ${name:-$id} again"
+  else
+    echo "could not start foreign container ${name:-$id} again" >&2
+    rc=1
+  fi
+done
+exit $rc`
+}
 
 // safeWord is a name the plan may put in a command unquoted.
 func safeWord(s string) bool {
