@@ -63,17 +63,27 @@ func yamuxConfig() *yamux.Config {
 	return c
 }
 
-// hijack answers 101 Switching Protocols and returns the raw connection.
+// hijack answers 101 Switching Protocols and returns the raw connection. The 101 carries every
+// header already set on w (the control plane's stamp among them, controlplane.withControlPlane):
+// a hijacked answer bypasses the server's own header writing, and a worker's client judges an
+// upgrade's answer like any other (K-071: an unstamped one made every tunnel NotYet).
 func hijack(w http.ResponseWriter, proto string) (net.Conn, *bufio.ReadWriter, error) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		return nil, nil, errf(http.StatusHTTPVersionNotSupported, "HTTPVersionNotSupported", "streams need HTTP/1.1")
 	}
+	h := w.Header().Clone()
+	h.Del("Content-Type")
+	h.Del("Content-Length")
+	h.Set("Upgrade", proto)
+	h.Set("Connection", "Upgrade")
 	conn, rw, err := hj.Hijack()
 	if err != nil {
 		return nil, nil, err
 	}
-	_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: " + proto + "\r\nConnection: Upgrade\r\n\r\n")
+	_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
+	_ = h.Write(rw)
+	_, _ = rw.WriteString("\r\n")
 	if err := rw.Flush(); err != nil {
 		_ = conn.Close()
 		return nil, nil, err

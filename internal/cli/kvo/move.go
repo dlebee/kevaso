@@ -14,11 +14,12 @@ import (
 
 // move moves a silo to another host (design §0.3):
 //
-//	kvo move silo NAME --to HOST [--recreate] [--confirm-fenced]
+//	kvo move silo NAME --to HOST [--recreate] [--confirm-fenced [--insist]]
 //
 // With its data when its storage allows; --recreate starts a fresh copy from its image (only for
 // onHostLoss: Recreate silos); --confirm-fenced is needed when its host is lost, once the old copy
-// is provably stopped.
+// is provably stopped; --insist, with it, overrides the refusal while the host's start claim is
+// fresh (it answered moments ago: only for a person who knows the old copy is off).
 func move(ctx context.Context, c clientCaller, o opts, stdout io.Writer) error {
 	if len(o.args) != 2 || o.moveTo == "" {
 		return errors.New("move needs silo NAME --to HOST")
@@ -29,7 +30,7 @@ func move(ctx context.Context, c clientCaller, o opts, stdout io.Writer) error {
 	ns := defaultNS(o)
 	path := "/apis/kevaso/v1/namespaces/" + url.PathEscape(ns) + "/silos/" + url.PathEscape(o.args[1]) + "/move"
 	var s v1.Silo
-	if err := c.Call(ctx, http.MethodPost, path, moves.Request{To: o.moveTo, Recreate: o.recreate, ConfirmFenced: o.confirmFenced}, &s); err != nil {
+	if err := c.Call(ctx, http.MethodPost, path, moves.Request{To: o.moveTo, Recreate: o.recreate, ConfirmFenced: o.confirmFenced, Insist: o.insist}, &s); err != nil {
 		return err
 	}
 	how := "with its data"

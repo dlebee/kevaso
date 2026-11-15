@@ -204,7 +204,19 @@ func TestLosingAHost(t *testing.T) {
 	if ids, _ := rt2.List(ctx); len(ids) != 0 {
 		t.Fatalf("w2 started %v by itself", ids)
 	}
-	// The person: w1 is off, recreate stateless on w2.
+	// The person: w1 is off, recreate stateless on w2, once w2 is Ready (joinWorker returns before
+	// w2's first heartbeat has made it so: on a slow runner the move found w2 not Ready).
+	for {
+		var h v1.Host
+		if err := admin.Get(ctx, "Host", "", "w2", &h); err == nil && meta.IsTrue(h.Status.Conditions, "Ready") {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("w2 never became Ready")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 	var stale v1.Silo
 	if err := admin.Get(ctx, "Silo", "demo", "stateless", &stale); err != nil {
 		t.Fatal(err)
