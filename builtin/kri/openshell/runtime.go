@@ -881,6 +881,9 @@ func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int
 	if !ok {
 		return -1, fmt.Errorf("%s: %w", id, kri.ErrNotFound)
 	}
+	if err := r.recover(ctx, s); err != nil {
+		return -1, err
+	}
 	deadline := time.Now().Add(r.wait())
 	for {
 		sb, exists, err := r.get(ctx, s)
@@ -918,6 +921,25 @@ func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int
 		return -1, ctx.Err()
 	}
 	return code, err
+}
+
+// recover brings back the gateway of a Docker-driver silo Kevaso started (claimed, and not
+// stopped since) whose container runs on with its gateway's unit down (a crash): the silo reads
+// Running, so the agent starts nothing, and nothing reaches it without its gateway. The VM
+// driver's silo reads Stopped instead, and the agent's Start brings the gateway back.
+func (r *Runtime) recover(ctx context.Context, s state) error {
+	if s.Gateway.Driver != DriverDocker || !s.Running || r.answers(ctx, s.Gateway) {
+		return nil
+	}
+	if active, err := r.unitActive(ctx, s.Gateway); err != nil || active {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.load(s.ID); !ok || !s.Running {
+		return nil
+	}
+	return r.up(ctx, s.Gateway, s.ID)
 }
 
 func orDiscard(w io.Writer) io.Writer {

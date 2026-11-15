@@ -160,3 +160,31 @@ func TestAStartedGatewayStopsTheNeighboursItRestored(t *testing.T) {
 		t.Fatalf("b: %v %v, want Stopped (so the agent claims it, then starts it)", st.State, err)
 	}
 }
+
+// Item 1: the Docker driver's container outlives a crashed gateway, so the silo reads Running
+// (it is) and the agent starts nothing; but nothing reaches it without its gateway. Exec of a silo
+// Kevaso started brings its gateway back (Kevaso knows: the silo was claimed and should run).
+func TestExecBringsBackTheGatewayOfARunningDockerSilo(t *testing.T) {
+	ctx := context.Background()
+	f := newFake()
+	r := newRuntimeOn(f, DriverDocker)
+	started(t, r, silo)
+	g := gatewayFor(DriverDocker, silo)
+	f.Crash(g.Name())
+	if st, err := r.Status(ctx, silo); err != nil || st.State != kri.Running {
+		t.Fatalf("its container runs on: %v %v", st.State, err)
+	}
+	if code, err := r.Exec(ctx, silo, kri.ExecRequest{Command: []string{"true"}}); err != nil || code != 0 {
+		t.Fatalf("exec with its gateway down: %d %v", code, err)
+	}
+	if f.units[g.Unit()] != "active" || !f.Runs(SandboxName(silo)) {
+		t.Fatal("the gateway wasn't brought back")
+	}
+	if err := r.Stop(ctx, silo); err != nil {
+		t.Fatal(err)
+	}
+	f.Crash(g.Name())
+	if _, err := r.Exec(ctx, silo, kri.ExecRequest{Command: []string{"true"}}); err == nil || f.units[g.Unit()] == "active" {
+		t.Fatal("exec of a stopped silo started its gateway")
+	}
+}
