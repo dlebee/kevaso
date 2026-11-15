@@ -11,7 +11,6 @@ import (
 
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/cli/kvoadm"
-	siloctl "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/worker"
 	"kevaso.com/core/sdk/kri"
