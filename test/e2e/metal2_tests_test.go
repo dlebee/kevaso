@@ -560,8 +560,16 @@ func TestMetal2NeverTwice(t *testing.T) {
 	ns := "twice2"
 	c.namespace(ns)
 	t.Cleanup(p.uncut)
-	c.apply(boxEcho(ns, "single", 8080) + on(metalHost2) + "  availability: { onControlPlaneLoss: Stop, after: 30s, onHostLoss: Recreate }\n")
+	// Not pinned (on() would leave it nowhere else to go): moved to machine 2.
+	c.apply(boxEcho(ns, "single", 8080) + "  availability: { onControlPlaneLoss: Stop, after: 30s, onHostLoss: Recreate }\n")
 	c.waitRunning(ns, 10*time.Minute, "single")
+	if c.silo(ns, "single").Status.Host != metalHost2 {
+		c.must("", "move", "silo", "single", "-n", ns, "--to", metalHost2)
+	}
+	c.eventually("single on "+metalHost2, 5*time.Minute, func() (bool, string) {
+		s := c.silo(ns, "single")
+		return s.Status.Host == metalHost2 && s.Status.Phase == "Running" && s.Status.MovingFrom == "", s.Status.Host + " " + s.Status.Phase
+	})
 	uid := c.silo(ns, "single").UID
 	c.eventually("its fence armed on "+metalHost2, 2*time.Minute, func() (bool, string) {
 		s := c.silo(ns, "single")
