@@ -95,7 +95,44 @@ type Runtime struct {
 	ExecPub string // authorized_keys line for ExecKey
 	DialSSH func(ctx context.Context, addr string, cfg *ssh.ClientConfig) (*ssh.Client, error)
 	Version string
-	mu      sync.Mutex // allocations (IP) and create/delete
+	// ExecCheck, if set, replaces ExecCheckEvery (tests).
+	ExecCheck time.Duration
+	mu        sync.Mutex // allocations (IP) and create/delete
+}
+
+// ExecCheckEvery is how often an Exec looks again at whether the silo's VMM still runs, while it
+// waits for the guest's SSH and while its command runs: a VMM that exited ends it. Without it, an
+// Exec into a VM whose VMM was killed waited for ever (the guest's SSH never came up, or a
+// session's TCP connection to a guest that is gone never ended), and so did the silo's reconcile
+// (found on the machines: a VM killed twice was never restarted, nor its delete processed).
+const ExecCheckEvery = 2 * time.Second
+
+// errVMMGone: the VMM of the silo an Exec ran in exited meanwhile.
+var errVMMGone = errors.New("its VMM no longer runs")
+
+// whileUp is ctx, ended (errVMMGone) once Status says the silo doesn't run. stop ends the watch.
+func (r *Runtime) whileUp(ctx context.Context, id kri.ID) (context.Context, func()) {
+	every := r.ExecCheck
+	if every <= 0 {
+		every = ExecCheckEvery
+	}
+	wctx, cancel := context.WithCancelCause(ctx)
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-wctx.Done():
+				return
+			case <-t.C:
+			}
+			if st, err := r.Status(wctx, id); err == nil && st.State != kri.Running && wctx.Err() == nil {
+				cancel(fmt.Errorf("%s: %w (%s)", id, errVMMGone, st.State))
+				return
+			}
+		}
+	}()
+	return wctx, func() { cancel(nil) }
 }
 
 // Firmware is the firmware path for the host's CPU.
@@ -683,6 +720,8 @@ func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int
 	if dial == nil {
 		dial = dialSSH
 	}
+	ctx, stop := r.whileUp(ctx, id) // a VMM that exits ends the wait for its guest, and the command
+	defer stop()
 	var c *ssh.Client
 	for {
 		c, err = dial(ctx, net.JoinHostPort(st.IP, "22"), cfg)
@@ -694,12 +733,16 @@ func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int
 		}
 		select { // still booting
 		case <-ctx.Done():
-			return -1, fmt.Errorf("ssh to %s: %w (last: %v)", id, ctx.Err(), err)
+			return -1, fmt.Errorf("ssh to %s: %w (last: %v)", id, context.Cause(ctx), err)
 		case <-time.After(2 * time.Second):
 		}
 	}
 	defer func() { _ = c.Close() }()
-	return runGuest(ctx, c, req)
+	code, err := runGuest(ctx, c, req)
+	if err != nil && errors.Is(context.Cause(ctx), errVMMGone) {
+		err = context.Cause(ctx)
+	}
+	return code, err
 }
 
 // runGuest runs req on the guest over ssh, as root. The command carries a marker in its
@@ -761,14 +804,27 @@ func runGuest(ctx context.Context, c *ssh.Client, req kri.ExecRequest) (int, err
 		case <-ctx.Done():
 			_ = sess.Signal(ssh.SIGKILL)
 			_ = sess.Close()
-			if sw, err := c.NewSession(); err == nil {
-				_ = sw.Run("sh -c " + shellQuote([]string{hostexec.SweepScript}) + " sh " + marker)
-				_ = sw.Close()
+			// The sweep, bounded: a guest that is gone never answers it (closing c, by the caller,
+			// ends it then).
+			swept := make(chan struct{})
+			go func() {
+				defer close(swept)
+				if sw, err := c.NewSession(); err == nil {
+					_ = sw.Run("sh -c " + shellQuote([]string{hostexec.SweepScript}) + " sh " + marker)
+					_ = sw.Close()
+				}
+			}()
+			select {
+			case <-swept:
+			case <-time.After(sweepWait):
 			}
 			return -1, ctx.Err()
 		}
 	}
 }
+
+// sweepWait bounds the sweep after an Exec ends early.
+const sweepWait = 10 * time.Second
 
 // lockedWriter writes under a lock shared with the session's other output, and is only a Writer.
 type lockedWriter struct {
