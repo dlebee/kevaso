@@ -307,7 +307,9 @@ func (a *Agent) fence(ctx context.Context, e *engine.Engine) {
 		if a.fenced.Load() && a.inContact() {
 			a.fenced.Store(false)
 			a.log("contact with the control plane is back: starting the silos stopped without it")
-			a.reportUnconfirmed(ctx, f.endOutage())
+			unconfirmed, stopped := f.endOutage()
+			a.reportUnconfirmed(ctx, unconfirmed)
+			a.reportStopped(ctx, stopped)
 			a.collectGarbage(ctx, e)
 			for _, o := range a.silos.List() {
 				s := o.(*v1.Silo)
@@ -1478,6 +1480,7 @@ func (a *Agent) writeClaim(ctx context.Context, s *v1.Silo, renewal bool) error 
 	}
 	claim := startClaim(a.HostName, s.Generation, a.Clock.Now().UTC())
 	removeCondition(&cur.Status, ConditionStartClaim)
+	removeCondition(&cur.Status, fence.ConditionStopped)         // a report of an earlier start: this one isn't stopped
 	cur.Status.Conditions = append(cur.Status.Conditions, claim) // always a change: the write is the claim
 	cur.Status.Routing = routing.Silo(cur.Spec, cur.Status)
 	err := a.Client.UpdateStatus(ctx, &cur) // against cur's resourceVersion: applies only if nothing changed it
