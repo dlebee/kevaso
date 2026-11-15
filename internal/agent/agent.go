@@ -162,6 +162,11 @@ type Agent struct {
 	// seenIDs: silo uid → kri.ID, the seen deletes of silos this host may hold (mayHaveHere): a
 	// copy its runtime doesn't list is looked for by name (stopUnlisted).
 	seenIDs sync.Map
+	// placedUnder: silo uid → the history (Watermark.history) under which this host last found it
+	// placed here (runHere); historyAtStart: the one trusted when this run began. A handoff read
+	// under another history is a restored store's replay, not an order (K-112).
+	placedUnder    sync.Map
+	historyAtStart string
 	// abandoned: silo uid → struct{}: a start ended because the store didn't know the silo, whose
 	// stop failed: tried again until it stops (stopAbandoned).
 	abandoned     sync.Map
@@ -295,7 +300,7 @@ func idOf(s *v1.Silo) kri.ID { return kri.ID{Namespace: s.Namespace, Name: s.Nam
 
 // Run runs the agent until ctx ends.
 func (a *Agent) Run(ctx context.Context) {
-	a.watermark() // read at start, before any answer is judged
+	a.historyAtStart = a.watermark().history() // read at start, before any answer is judged
 	a.loadSeenDeletes()
 	a.silos = informer.New(a.Client, "Silo")
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
@@ -502,6 +507,7 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 // runHere drives s, placed here, towards running (whileHere: a delete of it, or its placement
 // elsewhere, ends whatever of it is under way: a pull, a create, a start, a reset, its init steps).
 func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.Result, error) {
+	a.placedUnder.Store(s.UID, a.watermark().history())
 	if !moves.MayStart(s, a.HostName) {
 		// Moving here: the old host stops it and lets go of its volumes first.
 		return engine.Result{RequeueAfter: 2 * time.Second}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
@@ -1637,9 +1643,23 @@ func (a *Agent) mayRemove(ctx context.Context, id kri.ID) (remove bool, why stri
 	case cur.Status.Host == a.HostName:
 		return false, "", nil
 	case cur.Status.MovingFrom == a.HostName:
+		if under := a.historyPlaced(id.UID); under != a.watermark().history() {
+			// K-112: this host ran it under another history than the one that hands it off now (a
+			// restore since): a handoff replayed from a backup, not an order. Stopped and kept.
+			return false, "handed off by a control plane of another history (" + a.watermark().history() + ") than the one it ran here under (" + under + "): a restore's replay, not an order", nil
+		}
 		return true, whyHandoff, nil
 	}
 	return false, fmt.Sprintf("placed on %q with no handoff from this host", cur.Status.Host), nil
+}
+
+// historyPlaced is the history under which this host last found the silo uid placed here (in this
+// run), else the one trusted when this run began.
+func (a *Agent) historyPlaced(uid string) string {
+	if v, ok := a.placedUnder.Load(uid); ok {
+		return v.(string)
+	}
+	return a.historyAtStart
 }
 
 // hostLocalVolumes are the names of s's volumes on this host's own disks (class local).
