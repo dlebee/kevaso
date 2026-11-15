@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -77,6 +78,38 @@ type guarded struct {
 	awaySince time.Time
 	awayWhy   string
 	hold      time.Duration
+	// manifest is the plugin's manifest on this host, whose device prefixes its AttachVolume
+	// answers must be under ("": a plugin in core's process, not checked against one).
+	manifest string
+}
+
+func (g *guarded) setManifest(path string) {
+	g.mu.Lock()
+	g.manifest = path
+	g.mu.Unlock()
+}
+
+// devicePrefixes are the device prefixes the plugin's manifest on this host declares; checked:
+// whether there is a manifest to check against at all.
+func (g *guarded) devicePrefixes() (prefixes []string, checked bool, err error) {
+	g.mu.Lock()
+	path := g.manifest
+	g.mu.Unlock()
+	if path == "" {
+		return nil, false, nil
+	}
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, true, nil // none declared: no device is the plugin's
+	}
+	if err != nil {
+		return nil, true, err
+	}
+	m, err := kplugin.ParseManifest(b)
+	if err != nil {
+		return nil, true, fmt.Errorf("%s: %w", path, err)
+	}
+	return m.DevicePrefixes, true, nil
 }
 
 // setAway marks the plugin away (since now, unless it already is); first: it wasn't.
@@ -274,7 +307,20 @@ func (g *guarded) AttachVolume(ctx context.Context, a kplugin.Attachment) (kplug
 	if err != nil {
 		return st, err
 	}
-	if perr := kplugin.DevicePathProblem(st.Device); perr != nil {
+	perr := kplugin.DevicePathProblem(st.Device)
+	if perr == nil {
+		// K-038: and under the prefix its manifest on this host declares.
+		prefixes, checked, err := g.devicePrefixes()
+		switch {
+		case err != nil:
+			perr = fmt.Errorf("its manifest can't be read: %w", err)
+		case checked:
+			if perr = kplugin.DeviceUnder(st.Device, prefixes); perr != nil && len(prefixes) == 0 {
+				perr = fmt.Errorf("%w; reinstall it with kvoadm plugin install --manifest, its manifest declaring devicePrefixes", perr)
+			}
+		}
+	}
+	if perr != nil {
 		return kplugin.AttachmentStatus{}, fmt.Errorf("plugin %s: AttachVolume %s: refused its answer: %w: %w", g.name, a.Handle, perr, ErrBadAnswer)
 	}
 	return st, nil

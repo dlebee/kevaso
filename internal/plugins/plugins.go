@@ -47,6 +47,9 @@ func (p *Plugin) Away() (since time.Time, why string) {
 	return time.Time{}, ""
 }
 
+// DefaultManifests is where kvoadm keeps plugins' manifests on a host (root's, 0700).
+const DefaultManifests = "/etc/kevaso/plugins"
+
 // DefaultHold is how long a plugin that stops answering keeps what it serves (K-040).
 const DefaultHold = 10 * time.Minute
 
@@ -62,6 +65,10 @@ type Registry struct {
 	// Hold is how long a plugin that stops answering keeps its last answer before it is dropped
 	// (default DefaultHold): one missed Info is never an outage of what it serves.
 	Hold time.Duration
+	// Manifests is where kvoadm plugin install stores each plugin's manifest on this host
+	// (NAME/kevaso-plugin.json; default DefaultManifests): the device prefix a plugin registered from
+	// its socket declares there is the only place its AttachVolume answers may point (K-038).
+	Manifests string
 
 	mu      sync.RWMutex
 	plugins map[string]*Plugin // by name
@@ -154,7 +161,15 @@ func (r *Registry) socketOf(name string) string {
 }
 
 func (r *Registry) put(p *Plugin, socket string) {
-	p.Conn = guard(p.Info.Name, p.Conn, r.Limits)
+	g := guard(p.Info.Name, p.Conn, r.Limits)
+	if socket != "" { // in core's process: core's own code, no manifest
+		dir := r.Manifests
+		if dir == "" {
+			dir = DefaultManifests
+		}
+		g.setManifest(filepath.Join(dir, p.Info.Name, kplugin.ManifestFile))
+	}
+	p.Conn = g
 	r.mu.Lock()
 	if r.plugins == nil {
 		r.plugins, r.sockets = map[string]*Plugin{}, map[string]string{}

@@ -33,7 +33,11 @@ type PluginOptions struct {
 	// host. Without one, a side gets nothing beyond the default (PluginUnit). Needs is this side's.
 	Manifest string
 	Needs    kplugin.Needs
-	Yes      bool // the operator grants what the manifest asks (needed when it asks for privileges)
+	// DevicePrefixes are where the manifest says its attached volumes' devices are (K-038), and
+	// ManifestText the manifest itself, stored on the host for kevasod to check answers against.
+	DevicePrefixes []string
+	ManifestText   []byte
+	Yes            bool // the operator grants what the manifest asks (needed when it asks for privileges)
 }
 
 var pluginName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
@@ -223,6 +227,7 @@ func readManifest(o *PluginOptions) error {
 	if o.side() == "node" {
 		o.Needs = m.Node
 	}
+	o.DevicePrefixes, o.ManifestText = m.DevicePrefixes, b
 	return nil
 }
 
@@ -235,6 +240,9 @@ func grantNeeds(o PluginOptions, in *bufio.Reader, stdin io.Reader, out io.Write
 	_, _ = fmt.Fprintf(out, "→ plugin %s, %s side:\n", o.Name, o.side())
 	for _, l := range o.Needs.Summary() {
 		_, _ = fmt.Fprintf(out, "    %s\n", l)
+	}
+	if len(o.DevicePrefixes) > 0 {
+		_, _ = fmt.Fprintf(out, "    volume devices: only under %s (kevasod refuses any other device it answers)\n", strings.Join(o.DevicePrefixes, ", "))
 	}
 	if !o.Needs.Privileged() || o.Yes {
 		return nil
@@ -475,6 +483,11 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 	}
 	if cfg != nil {
 		if err := conn.Upload(ctx, pluginEtc(o.Name)+"/config.json", cfg, 0o644); err != nil {
+			return err
+		}
+	}
+	if o.ManifestText != nil { // kevasod checks the plugin's device answers against it (K-038)
+		if err := conn.Upload(ctx, pluginEtc(o.Name)+"/"+kplugin.ManifestFile, o.ManifestText, 0o600); err != nil {
 			return err
 		}
 	}
