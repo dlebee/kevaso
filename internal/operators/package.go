@@ -125,7 +125,7 @@ func Load(dir string) (*Package, error) {
 			return nil, fmt.Errorf("%s: %w", f, err)
 		}
 		for i, d := range docs {
-			obj, _, err := v1.Decode(d)
+			obj, _, err := v1.DecodeStrict(d) // a misspelled field is an error, never dropped (K-054)
 			if err != nil {
 				return nil, fmt.Errorf("%s, document %d: %w", f, i+1, err)
 			}
