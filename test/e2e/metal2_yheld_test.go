@@ -139,7 +139,7 @@ spec:
 		}
 	}
 	t.Logf("held for %ds: %d of the guest's tries, each refused, its name as before", heldTo-heldFrom, n)
-	if n < 10 {
+	if n < 5 { // a try every ~9s (a 4s curl, then 5s)
 		t.Errorf("only %d of the guest's tries fell in the hold", n)
 	}
 }
