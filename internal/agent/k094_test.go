@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -112,4 +113,28 @@ func TestAHungEngineStallsNoOtherFence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// T-13: the kill's confirmation is what counts. A kill that returns while Status can't answer
+// (an engine that can't say) is not "stopped": it is reported.
+func TestAKillStatusCantConfirmIsReported(t *testing.T) {
+	k, cut := fenced(t)
+	if err := k.c.Create(k.ctx, &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: "hv1"},
+		Spec: v1.HostSpec{InternalIP: "10.0.0.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}); err != nil {
+		t.Fatal(err)
+	}
+	go k.a.Run(k.ctx)
+	k.place()
+	k.waitFor("the silo runs", k.running)
+	k.rt.FailStatus(errors.New("the engine can't say"))
+	cut.Store(true)
+	time.Sleep(3 * time.Second)
+	k.rt.FailStatus(nil)
+	cut.Store(false)
+	k.waitFor("the Host says the fence couldn't confirm it", func() bool {
+		var h v1.Host
+		_ = k.c.Get(k.ctx, "Host", "", "hv1", &h)
+		c := meta.FindCondition(h.Status.Conditions, agent.ConditionFenceUnconfirmed)
+		return c != nil && c.Status == meta.ConditionTrue && strings.Contains(c.Message, "can't say")
+	})
 }
