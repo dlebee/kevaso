@@ -256,6 +256,13 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 		view = WithLeases(view, all, st.leases, now)
 		leaseEnd, stopLeaseEnd := leaseTimer(st.leases, now)
 		rules, problems := kni.Generate(view)
+		load := func() { // the rules, and once nft took them, their bindings
+			if ok, err := fw.load(ctx, rules); err != nil {
+				log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
+			} else if ok {
+				loaded.set(kni.Bindings(view.Local))
+			}
+		}
 		var retry <-chan time.Time
 		switch {
 		case st.none:
@@ -265,18 +272,10 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 		case isHeld:
 			// Held (K-097): the rules of the last state trusted, nothing written to the control
 			// plane, the last state kept as it is.
-			if ok, err := fw.load(ctx, rules); err != nil {
-				log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
-			} else if ok {
-				loaded.set(kni.Bindings(view.Local))
-			}
+			load()
 			retry = time.After(2 * time.Second)
 		default:
-			if ok, err := fw.load(ctx, rules); err != nil {
-				log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
-			} else if ok {
-				loaded.set(kni.Bindings(view.Local))
-			}
+			load()
 			if synced { // what this pass was built from, if it was all seen (never a seed) and not held
 				sv.trust(st.raw)
 				if o.StateFile != "" {
