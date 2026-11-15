@@ -36,9 +36,9 @@ status:
   A namespaced Role or RoleBinding never reaches a ClusterSecret: refuse a Role that names `clustersecrets` or
   `clustersecrets/value` at admission, with a message saying to use a ClusterRole.
 - **Hosts on behalf of a plugin** (the node side, see delivery):
-  `GET .../clustersecrets/NAME/value?for=PLUGIN` with a host certificate (worker or system node). Allowed only if the
-  service account of plugin PLUGIN (the Plugin object's `spec.controller.serviceAccount`, read how plugin installs
-  name it) would itself be allowed to read NAME by the rule above. The host has no ClusterSecret access of its own.
+  `GET .../clustersecrets/NAME/value?for=PLUGIN` with a host certificate (worker or system node). PLUGIN is a DNS
+  label. Allowed only if the service account `plugin-PLUGIN` in namespace `kevaso-system` would itself be allowed to
+  read NAME by the rule above. There is no Plugin object in this check. The host has no ClusterSecret access of its own.
 - No namespaced object may reference a ClusterSecret (grants' secrets, container pull secretRef).
 
 ## Delivery to plugins on a host
@@ -49,7 +49,10 @@ unit loads it with LoadCredential; the plugin reads it from `$CREDENTIALS_DIRECT
 v1:
 - `--credential` is removed from `kvoadm plugin install`, replaced by `--cluster-secret NAME` (repeatable): the names
   the plugin's unit will find in its credential directory. Install records them in the same place it recorded the
-  credential list, and creates nothing on the API. The plugin and the sdk do not change.
+  credential list. When any name is given, it makes sure namespace `kevaso-system` and service account `plugin-NAME`
+  exist (create if missing, leave them if present) and prints which account to bind. It does not create a role or a
+  binding: the admin pins the names in a ClusterRole and binds that account. Removing the last side on the host
+  deletes the service account. The plugin and the sdk do not change.
 - kevasod on each host, for each plugin installed there and each recorded cluster-secret name: fetch it with
   `?for=PLUGIN`, write it root-only (0600, owner root) to the same path `--credential` used, atomically (temp in
   the same dir, fsync, rename). That file is the host's cache: volumes keep mounting while the control plane is away.
@@ -67,7 +70,8 @@ v1:
 
 - `make race vet lint`, `go run ./hack/mutate -check` green; tests: manage is cluster-admin only (a ClusterRole
   granting create/delete still refused); a pinned ClusterRole bound to an SA reads exactly its names and not
-  another; an unpinned rule reads none; a Role naming clustersecrets is refused; `?for=` only for a plugin whose SA
-  is allowed; delivery writes 0600 and restarts on change only; held keeps the file; seen delete removes it.
+  another; an unpinned rule reads none; a Role naming clustersecrets is refused; `?for=PLUGIN` is service account
+  `plugin-PLUGIN` in `kevaso-system` (a DNS label, no Plugin object) and only when that account may read the name;
+  delivery writes 0600 and restarts on change only; held keeps the file; seen delete removes it.
 - provider-juicefs, provider-linode and kevaso docs use `kvo create clustersecret` + a ClusterRole/Binding +
   `--cluster-secret` instead of `--credential`.

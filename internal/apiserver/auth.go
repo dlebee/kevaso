@@ -224,9 +224,9 @@ func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups [
 //     ClusterRole grants on clustersecrets;
 //   - one value is a cluster-admin's, or get on clustersecrets/value pinned to that name
 //     (rbac.namesGrant: an empty resourceNames grants nothing);
-//   - a host certificate reads a value only with ?for=PLUGIN, and only when that plugin's
-//     service account would be allowed the same read. A host has no access of its own, so a
-//     binding that happens to name the host is not consulted.
+//   - a host certificate reads a value only with ?for=PLUGIN, and only when the service
+//     account plugin-PLUGIN in kevaso-system would be allowed the same read. A host has no
+//     access of its own, so a binding that happens to name the host is not consulted.
 func (s *Server) authorizeClusterSecret(ctx context.Context, id pki.Identity, groups []string, r *http.Request, t target) (bool, bool, string, error) {
 	admin, err := s.clusterAdmin(ctx, id, groups)
 	if err != nil {

@@ -304,8 +304,9 @@ func TestClusterSecretRoleNamingItIsRefused(t *testing.T) {
 	}
 }
 
-// ?for=PLUGIN is allowed only for a host certificate, and only when that plugin's service account
-// may read the name. A host has no access of its own.
+// ?for=PLUGIN is allowed only for a host certificate, and only when service account
+// plugin-PLUGIN in kevaso-system may read the name. A Plugin object is not consulted, and
+// the account object itself need not exist. A host has no access of its own.
 func TestClusterSecretHostForPlugin(t *testing.T) {
 	c := newCluster(t)
 	for _, name := range []string{"bucket", "metering", "other"} {
@@ -314,7 +315,6 @@ func TestClusterSecretHostForPlugin(t *testing.T) {
 		}
 	}
 	juiceSA := operators.ServiceAccountName("juicefs")
-	s3SA := operators.ServiceAccountName("s3")
 	if err := c.admin.Create(c.ctx, clusterRole("juicefs-secrets", v1.PolicyRule{
 		Verbs: []string{"get"}, Resources: []string{"clustersecrets/value"}, ResourceNames: []string{"bucket", "metering"},
 	})); err != nil {
@@ -326,15 +326,8 @@ func TestClusterSecretHostForPlugin(t *testing.T) {
 	)); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.admin.Create(c.ctx, installedPlugin("juicefs", juiceSA)); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.admin.Create(c.ctx, installedPlugin("s3", s3SA)); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.admin.Create(c.ctx, &v1.Plugin{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Plugin"},
-		ObjectMeta: meta.ObjectMeta{Name: "idle"},
-		Spec:       v1.PluginSpec{Version: "1", Controller: &v1.PluginController{Host: "10.0.0.8"}}}); err != nil {
+	// A Plugin that names some other account must not change whose read ?for= uses.
+	if err := c.admin.Create(c.ctx, installedPlugin("juicefs", "not-this-account")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -368,6 +361,11 @@ func TestClusterSecretHostForPlugin(t *testing.T) {
 		}
 		if _, err := c.readClusterValue(t, who.cl, "bucket", "for=idle"); status(err) != http.StatusForbidden {
 			t.Fatalf("%s ?for=idle: want 403, got %v", who.name, err)
+		}
+		for _, bad := range []string{"for=JuiceFS", "for=a_b", "for=a-", "for=../x", "for=plugin.juicefs"} {
+			if _, err := c.readClusterValue(t, who.cl, "bucket", bad); status(err) != http.StatusForbidden {
+				t.Fatalf("%s %s: want 403, got %v", who.name, bad, err)
+			}
 		}
 		if err := who.cl.Get(c.ctx, "ClusterSecret", "", "bucket", &v1.ClusterSecret{}); status(err) != http.StatusForbidden {
 			t.Fatalf("%s get of the object: want 403, got %v", who.name, err)

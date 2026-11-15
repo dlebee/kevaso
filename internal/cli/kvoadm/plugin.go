@@ -17,6 +17,11 @@ import (
 
 	"golang.org/x/term"
 
+	"kevaso.com/core/api/client"
+	"kevaso.com/core/api/meta"
+	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/names"
+	"kevaso.com/core/internal/operators"
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/sshboot"
 	"kevaso.com/core/sdk/kplugin"
@@ -450,6 +455,16 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 	if err != nil {
 		return err
 	}
+	if len(o.ClusterSecrets) > 0 {
+		c, _, err := adminClient("")
+		if err != nil {
+			return err
+		}
+		if err := ensurePluginServiceAccount(ctx, c, o.Name); err != nil {
+			return err
+		}
+		say("%s", pluginAccountBindLine(o.Name))
+	}
 	conn, _, err := dialHost(ctx, o.InitOptions, in, stdin, out)
 	if err != nil {
 		return err
@@ -557,10 +572,67 @@ func pluginRemove(ctx context.Context, o PluginOptions, stdin io.Reader, out io.
 		return err
 	}
 	defer func() { _ = conn.Close() }()
-	if _, err := conn.Run(ctx, PluginRemoveScript(o.Name, o.side()), nil); err != nil {
+	word, err := conn.Run(ctx, PluginRemoveScript(o.Name, o.side()), nil)
+	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(out, "→ plugin %s's %s side removed (its unit; the program and credentials once no side is left)\n", o.Name, o.side())
+	if lastPluginSide(string(word)) {
+		c, _, err := adminClient("")
+		if err != nil {
+			return err
+		}
+		if err := deletePluginServiceAccount(ctx, c, o.Name); err != nil {
+			return fmt.Errorf("service account %s: %w", operators.ServiceAccountName(o.Name), err)
+		}
+	}
+	_, _ = fmt.Fprintf(out, "→ plugin %s's %s side removed (its unit; the program, credentials and service account once no side is left)\n", o.Name, o.side())
+	return nil
+}
+
+// pluginLastSide is what PluginRemoveScript prints when this host has no side of the plugin left.
+const pluginLastSide = "kevaso-plugin-last-side"
+
+// lastPluginSide reports that output: the other side's unit was already gone, so the program
+// and the service account go with this removal.
+func lastPluginSide(output string) bool { return strings.Contains(output, pluginLastSide) }
+
+// pluginAccountBindLine is the one line install prints: which account the admin binds.
+func pluginAccountBindLine(plugin string) string {
+	return fmt.Sprintf("bind a ClusterRole to service account %s in namespace %s", operators.ServiceAccountName(plugin), v1.PluginNamespace)
+}
+
+// ensurePluginServiceAccount makes namespace kevaso-system and service account plugin-NAME,
+// creating either only when it is missing. It does not create a role or a binding, and it
+// does not change an account that is already there.
+//
+// The namespace needs nothing special. Its name is not a network name (mesh, internal,
+// external), and it is not a public suffix, so it does not take over names the way a
+// namespace called com would (K-075). Creating a namespace adds no binding: a tenant reaches
+// it only when someone binds them there.
+func ensurePluginServiceAccount(ctx context.Context, c *client.Client, plugin string) error {
+	if names.Reserved(v1.PluginNamespace) {
+		return fmt.Errorf("namespace %s is a network's name", v1.PluginNamespace)
+	}
+	ns := &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"},
+		ObjectMeta: meta.ObjectMeta{Name: v1.PluginNamespace}}
+	if err := c.Create(ctx, ns); err != nil && !client.IsAlreadyExists(err) {
+		return fmt.Errorf("namespace %s: %w", v1.PluginNamespace, err)
+	}
+	sa := &v1.ServiceAccount{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ServiceAccount"},
+		ObjectMeta: meta.ObjectMeta{Name: operators.ServiceAccountName(plugin), Namespace: v1.PluginNamespace}}
+	if err := c.Create(ctx, sa); err != nil && !client.IsAlreadyExists(err) {
+		return fmt.Errorf("service account %s: %w", sa.Name, err)
+	}
+	return nil
+}
+
+// deletePluginServiceAccount removes plugin-NAME. Missing is fine: this side may never have
+// asked for a cluster secret. The namespace stays; other plugins use it.
+func deletePluginServiceAccount(ctx context.Context, c *client.Client, plugin string) error {
+	err := c.Delete(ctx, "ServiceAccount", v1.PluginNamespace, operators.ServiceAccountName(plugin))
+	if err != nil && !client.IsNotFound(err) {
+		return err
+	}
 	return nil
 }
 
@@ -579,7 +651,8 @@ func PluginRemoveScript(name, side string) string {
 	return "systemctl disable --now " + unit + " 2>/dev/null; rm -f /etc/systemd/system/" + unit + " " +
 		sshboot.Quote(pluginEtc(name)+"/"+rec) + "; systemctl daemon-reload; " +
 		"if [ ! -e /etc/systemd/system/" + sshboot.Quote(PluginUnitName(name, other)) + " ]; then rm -f " +
-		sshboot.InstallDir + "/" + sshboot.Quote("kevaso-plugin-"+name) + "; rm -rf " + sshboot.Quote(pluginEtc(name)) + "; fi"
+		sshboot.InstallDir + "/" + sshboot.Quote("kevaso-plugin-"+name) + "; rm -rf " + sshboot.Quote(pluginEtc(name)) +
+		"; echo " + sshboot.Quote(pluginLastSide) + "; fi"
 }
 
 // clusterSecretUpload is the root-only record of this side's cluster-secret names, beside

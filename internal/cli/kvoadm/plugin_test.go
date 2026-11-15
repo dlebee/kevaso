@@ -218,4 +218,10 @@ func TestPluginSidesHaveTheirOwnUnits(t *testing.T) {
 	if !strings.Contains(rm, "if [ ! -e /etc/systemd/system/'kevaso-plugin-hostdir.service' ]; then rm -f /usr/local/bin/'kevaso-plugin-hostdir'") {
 		t.Errorf("the program goes while the controller side still runs: %s", rm)
 	}
+	if echo := strings.Index(rm, "echo '"+pluginLastSide+"'"); echo < 0 || echo < strings.Index(rm, "if [ ! -e") {
+		t.Errorf("the last-side marker is not in the last-side branch: %s", rm)
+	}
+	if !lastPluginSide(pluginLastSide) || lastPluginSide("removed the node side only") {
+		t.Fatal("last side is the marker the script prints")
+	}
 }

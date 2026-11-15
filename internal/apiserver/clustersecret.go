@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/operators"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/rbac"
 	"kevaso.com/core/internal/secrets"
@@ -143,32 +143,18 @@ func hostCertificate(id pki.Identity) bool {
 }
 
 // hostForPlugin is a host certificate's read of clustersecret name. Allowed only with
-// ?for=PLUGIN, and only when that plugin's controller service account would itself be allowed
-// the read. Install records the account's name; it lives in kevaso-system.
+// ?for=PLUGIN, where PLUGIN is a DNS label, and only when the service account plugin-PLUGIN
+// in kevaso-system would itself be allowed the read. A provider plugin has no Plugin object:
+// install creates that account, and the admin binds it. The host has no access of its own.
 func (s *Server) hostForPlugin(ctx context.Context, r *http.Request, name string) (bool, string, error) {
 	plugin := r.URL.Query().Get("for")
 	if plugin == "" {
 		return false, "a host reads a clustersecret's value only with ?for=PLUGIN", nil
 	}
-	o, err := s.store.Get(ctx, store.Key{Kind: "Plugin", Name: plugin})
-	if errors.Is(err, store.ErrNotFound) {
+	if meta.ValidateName(plugin) != nil {
 		return false, fmt.Sprintf("plugin %s may not read clustersecret %s", plugin, name), nil
 	}
-	if err != nil {
-		return false, "", err
-	}
-	obj, _, err := v1.Decode(o.Data)
-	if err != nil {
-		return false, "", err
-	}
-	pl, ok := obj.(*v1.Plugin)
-	if !ok || pl.Spec.Controller == nil {
-		return false, fmt.Sprintf("plugin %s may not read clustersecret %s", plugin, name), nil
-	}
-	user := pluginServiceAccountUser(pl.Spec.Controller.ServiceAccount)
-	if user == "" {
-		return false, fmt.Sprintf("plugin %s may not read clustersecret %s", plugin, name), nil
-	}
+	user := rbac.ServiceAccountUser(v1.PluginNamespace, operators.ServiceAccountName(plugin))
 	p, err := s.policy.Policy(ctx)
 	if err != nil {
 		return false, "", err
@@ -178,14 +164,4 @@ func (s *Server) hostForPlugin(ctx context.Context, r *http.Request, name string
 		return false, fmt.Sprintf("plugin %s may not read clustersecret %s", plugin, name), nil
 	}
 	return true, "host for plugin " + plugin, nil
-}
-
-// pluginServiceAccountUser is the RBAC user for a Plugin's spec.controller.serviceAccount.
-// kvoadm plugin install stores the account's name; the account is in v1.PluginNamespace.
-func pluginServiceAccountUser(sa string) string {
-	sa = strings.TrimSpace(sa)
-	if sa == "" {
-		return ""
-	}
-	return rbac.ServiceAccountUser(v1.PluginNamespace, sa)
 }
