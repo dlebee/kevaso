@@ -144,6 +144,7 @@ type Agent struct {
 	engine      *engine.Engine
 	cp          *watermark // the control plane this worker trusts (watermark.go); via watermark()
 	cpOnce      sync.Once
+	staleNoted  sync.Map // silo UID → logged once that its cache was stale at a start
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
@@ -450,6 +451,9 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	}
 	switch rs.State {
 	case kri.Absent:
+		if wait, err := a.mayStartHere(ctx, s); wait || err != nil {
+			return engine.Result{RequeueAfter: 2 * time.Second}, nil
+		}
 		mem, err := v1.ParseBytes(s.Spec.Resources.Memory)
 		if err != nil {
 			return engine.Result{}, err
@@ -484,6 +488,9 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			st.Image.Digest = digest
 		})
 	case kri.Created, kri.Stopped:
+		if wait, err := a.mayStartHere(ctx, s); wait || err != nil {
+			return engine.Result{RequeueAfter: 2 * time.Second}, nil
+		}
 		if s.Status.Phase == PhaseRunning { // it stopped (a reboot, a VMM stopped): say so first
 			if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 				st.Phase = PhaseStarting
@@ -544,6 +551,9 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 				st.Phase = PhaseFailed
 				setCond(st, "Ready", meta.ConditionFalse, "RuntimeFailed", rs.Message+" (starting it again in "+wait.Round(time.Second).String()+")", s.Generation, now)
 			})
+		}
+		if wait, err := a.mayStartHere(ctx, s); wait || err != nil {
+			return engine.Result{RequeueAfter: 2 * time.Second}, nil
 		}
 		r := probes.Restarted(s.Status.Restarts, now)
 		a.log("silo %s/%s failed (%s): starting it again (restart %d)", s.Namespace, s.Name, firstLineOf(rs.Message), r.Count)
@@ -851,6 +861,18 @@ func setCond(st *v1.SiloStatus, typ string, status meta.ConditionStatus, reason,
 // setStatus re-reads the silo from the API, applies mutate to its status and writes it, retrying
 // on conflicts (the scheduler or a user may have written in between).
 func (a *Agent) setStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.SiloStatus)) error {
+	return a.writeStatus(ctx, s, mutate, false)
+}
+
+// setStatusAway is setStatus for the one write a host makes on a silo placed elsewhere now: its
+// volumes unmounted here.
+func (a *Agent) setStatusAway(ctx context.Context, s *v1.Silo, mutate func(*v1.SiloStatus)) error {
+	return a.writeStatus(ctx, s, mutate, true)
+}
+
+// writeStatus writes s's status as mutate makes it, onto what is stored now. Never on a silo the
+// store places on another host (K-015: a cache from before says it's still here), unless away.
+func (a *Agent) writeStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.SiloStatus), away bool) error {
 	for attempt := 0; attempt < 5; attempt++ {
 		var cur v1.Silo
 		if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
@@ -858,6 +880,9 @@ func (a *Agent) setStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.SiloS
 		}
 		if cur.UID != s.UID {
 			return nil // deleted and re-created: not the silo we were working on
+		}
+		if !away && cur.Status.Host != a.HostName {
+			return nil // placed elsewhere since this host's cache was filled: not ours to write
 		}
 		before := statusKey(cur.Status)
 		mutate(&cur.Status)
@@ -872,6 +897,28 @@ func (a *Agent) setStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.SiloS
 		return err
 	}
 	return errors.New("status kept changing; will retry")
+}
+
+// mayStartHere reads the stored silo before anything of it is created or started here (K-015):
+// the cache can be from before a cut, when the silo was placed here and has since been started
+// elsewhere. Only the same silo, at the generation the cache has, placed here, free to start
+// here, and not being deleted, goes on; anything else waits for the cache (wait true), and so
+// does a read that fails (an error): nothing new starts on a guess.
+func (a *Agent) mayStartHere(ctx context.Context, s *v1.Silo) (wait bool, err error) {
+	var cur v1.Silo
+	if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
+		return true, err
+	}
+	ok := cur.UID == s.UID && cur.DeletionTimestamp == nil && cur.Generation == s.Generation && moves.MayStart(&cur, a.HostName)
+	if !ok {
+		if _, noted := a.staleNoted.LoadOrStore(s.UID, struct{}{}); !noted {
+			a.log("not starting %s/%s: the control plane places it on %q now (this host's copy of it is from before); waiting for it",
+				s.Namespace, s.Name, cur.Status.Host)
+		}
+		return true, nil
+	}
+	a.staleNoted.Delete(s.UID)
+	return false, nil
 }
 
 // releaseMove tells the control plane this host has let go of a silo that moved away.
