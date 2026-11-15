@@ -163,11 +163,19 @@ func TestEveryAnswerSaysWhichControlPlaneAndHowRecent(t *testing.T) {
 	}
 }
 
-func (s *seenBy) hook() func(client.ControlPlaneSeen) {
-	return func(cp client.ControlPlaneSeen) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.all = append(s.all, cp)
-		s.mark, s.last = client.Judge(s.mark, cp)
-	}
+func (s *seenBy) hook() client.ControlPlaneJudge { return s }
+
+// Sending implements client.ControlPlaneJudge.
+func (s *seenBy) Sending() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mark.Revision
+}
+
+// Answer implements client.ControlPlaneJudge.
+func (s *seenBy) Answer(sent int64, cp client.ControlPlaneSeen) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.all = append(s.all, cp)
+	s.mark, s.last = client.JudgeAnswer(s.mark, sent, cp)
 }

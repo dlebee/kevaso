@@ -393,6 +393,16 @@ func (a *Agent) collectGarbage(ctx context.Context, e *engine.Engine) {
 
 // Reconcile implements engine.Controller.
 func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
+	res, err := a.reconcile(ctx, k)
+	if errors.Is(err, errPlacedElsewhere) {
+		// The store places it on another host since this host's cache was filled: whatever was
+		// under way stops here (nothing is started), and the cache brings the rest.
+		return engine.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+	return res, err
+}
+
+func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
 	if a.ControlPlaneHeld() {
 		return engine.Result{RequeueAfter: 5 * time.Second}, nil // §0.7: everything stays as it is
 	}
@@ -578,6 +588,9 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Probes, st.StartedAt = nil, nil }); err != nil {
 			return engine.Result{}, err
 		}
+		if err := a.claimStart(ctx, s); err != nil {
+			return a.lostClaim(s, err)
+		}
 		if err := rt.Start(ctx, id); err != nil {
 			return engine.Result{}, err
 		}
@@ -609,6 +622,9 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			return engine.Result{}, err
 		}
 		a.probed.Delete(s.UID)
+		if err := a.claimStart(ctx, s); err != nil {
+			return a.lostClaim(s, err)
+		}
 		if err := rt.Start(ctx, id); err != nil {
 			return engine.Result{RequeueAfter: probes.Backoff(r.Backoff)}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 				st.Phase = PhaseFailed
@@ -927,7 +943,7 @@ func (a *Agent) writeStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.Sil
 			return nil // deleted and re-created: not the silo we were working on
 		}
 		if !away && cur.Status.Host != a.HostName {
-			return nil // placed elsewhere since this host's cache was filled: not ours to write
+			return errPlacedElsewhere // placed elsewhere since this host's cache was filled: not ours to write
 		}
 		before := statusKey(cur.Status)
 		mutate(&cur.Status)
@@ -978,6 +994,57 @@ func (a *Agent) createWait(s *v1.Silo) time.Duration {
 		return 0
 	}
 	return max(b.until.Sub(a.Clock.Now()), 0)
+}
+
+// errPlacedElsewhere: a status write or a start claim found the silo placed on another host (or
+// moved, deleted, re-made, or changed) since it was read here. Whoever gets it stops what it was
+// doing for that silo; above all, it doesn't start it.
+var errPlacedElsewhere = errors.New("the control plane places this silo elsewhere now")
+
+// ConditionStartClaim is the silo condition a host writes just before it starts the silo (its
+// start claim, K-015): written against the exact version it read, so it applies only if nothing
+// changed the silo since, placement above all. The host starts it only if the write applied. The
+// control plane doesn't place a silo elsewhere while a fresh claim by a host in contact stands
+// (StartClaimFresh; the control lane's half).
+const ConditionStartClaim = "StartClaim"
+
+// StartClaimFresh is how long a start claim stands.
+const StartClaimFresh = 30 * time.Second
+
+// claimStart wins the right to start s here, now: a compare-and-swap on the stored silo of the
+// version this host reads, requiring it to be the same silo, at the same generation, placed here,
+// free to start here, and not being deleted. Any other outcome, a conflict included, is
+// errPlacedElsewhere: the start is abandoned.
+func (a *Agent) claimStart(ctx context.Context, s *v1.Silo) error {
+	var cur v1.Silo
+	if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
+		return err
+	}
+	if cur.UID != s.UID || cur.DeletionTimestamp != nil || cur.Generation != s.Generation || !moves.MayStart(&cur, a.HostName) {
+		return errPlacedElsewhere
+	}
+	now := a.Clock.Now().UTC()
+	claim := meta.Condition{Type: ConditionStartClaim, Status: meta.ConditionTrue, Reason: "Starting",
+		Message: "starting on " + a.HostName + " at " + now.Format(time.RFC3339Nano), ObservedGeneration: s.Generation,
+		LastTransitionTime: now.Truncate(time.Second)}
+	removeCondition(&cur.Status, ConditionStartClaim)
+	cur.Status.Conditions = append(cur.Status.Conditions, claim) // always a change: the write is the claim
+	cur.Status.Routing = routing.Silo(cur.Spec, cur.Status)
+	err := a.Client.UpdateStatus(ctx, &cur) // against cur's resourceVersion: applies only if nothing changed it
+	if client.IsConflict(err) {
+		return errPlacedElsewhere
+	}
+	return err
+}
+
+// lostClaim is the end of a start this host didn't win: nothing is started; the init steps and
+// deliveries it made go with the copy when the cache shows the silo elsewhere.
+func (a *Agent) lostClaim(s *v1.Silo, err error) (engine.Result, error) {
+	if errors.Is(err, errPlacedElsewhere) {
+		a.log("not starting %s/%s: its start claim didn't apply (the control plane changed or placed it elsewhere since it was read here)", s.Namespace, s.Name)
+		return engine.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+	return engine.Result{RequeueAfter: 2 * time.Second}, err // the claim couldn't be written: nothing starts
 }
 
 // mayStartHere reads the stored silo before anything of it is created or started here (K-015):
