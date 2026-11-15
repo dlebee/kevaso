@@ -80,7 +80,7 @@ func TestContainerFileAndEnvSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	mu.Lock()
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "secret legacy-token goes in as an environment variable") || !strings.Contains(warnings[0], "docker inspect") {
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "secret legacy-token is delivered as an environment variable") || !strings.Contains(warnings[0], "docker inspect") {
 		t.Fatalf("warnings: %q", warnings)
 	}
 	mu.Unlock()

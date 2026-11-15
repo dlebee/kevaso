@@ -96,10 +96,8 @@ func checkPorts(spec v1.SiloSpec) []string {
 			add("%s.as: %d isn't from 1 to 65535", f, p.As)
 		}
 		for _, c := range p.Sources {
-			if _, err := netip.ParsePrefix(c); err != nil {
-				if _, err := netip.ParseAddr(c); err != nil {
-					add("%s.sources: %q isn't an address or CIDR", f, c)
-				}
+			if _, err := v1.ParseSource(c); err != nil {
+				add("%s.sources: %v", f, err)
 			}
 		}
 		at := p.As

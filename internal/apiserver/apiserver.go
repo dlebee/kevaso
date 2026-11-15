@@ -503,6 +503,7 @@ func toMap(obj meta.Object) (map[string]any, []byte, error) {
 
 func (s *Server) admit(kind string, obj meta.Object) ([]byte, error) {
 	obj.GetObjectMeta().ResourceVersion = "" // never stored: it's the store's revision
+	normalize(obj)
 	m, b, err := toMap(obj)
 	if err != nil {
 		return nil, err

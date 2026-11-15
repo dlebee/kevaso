@@ -596,9 +596,9 @@ func (s *Server) envKeptOut(ctx context.Context, silo *v1.Silo) bool {
 // keep the value from the engine (podman, rootless docker, a default runtime other than runc, no
 // Kevaso OCI runtime registered): with --env-file the engine keeps it in the container's config.
 func EnvOnContainerWarning(silo, grant, secret, rt string) string {
-	return fmt.Sprintf("silo %s: grant %s: secret %s goes in as an environment variable, which %s keeps in the container's config on a host without Kevaso's OCI runtime: "+
-		"anyone with access to the host's %s sees its value (%s inspect), and it's on the host's disk with that config; "+
-		"deliver it as a file or through the local endpoint to keep it out", silo, grant, secret, rt, rt, rt)
+	return fmt.Sprintf("silo %s: grant %s: secret %s is delivered as an environment variable, and %s records it on that worker (its config, without Kevaso's OCI runtime): "+
+		"the value is visible in the engine's records on that worker (%s inspect, its files on disk) to anyone who can read them. "+
+		"Files don't have this weakness: deliver it as a file (or through the local endpoint)", silo, grant, secret, rt, rt)
 }
 
 // vmVolumeProblems: what a cloud-hypervisor silo's volumes and disk can't be (ADR 0006). A volume
