@@ -647,10 +647,10 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport
 	}
 }
 
-// setHeartbeat records when the agent last reported (M5's host-loss detection reads it).
+// setHeartbeat records when this node last reported (M5's host-loss detection reads it): never
+// the stamp it read, so every heartbeat that lands is a contact to the control plane (K-106).
 func setHeartbeat(h *v1.Host, now time.Time) {
-	t := now.UTC().Truncate(time.Second)
-	h.Status.LastHeartbeat = &t
+	h.Status.LastHeartbeat = hostcontroller.HeartbeatStamp(h.Status.LastHeartbeat, now)
 }
 
 // sealedData says what the store holds that a master key sealed ("": nothing): the recovery
