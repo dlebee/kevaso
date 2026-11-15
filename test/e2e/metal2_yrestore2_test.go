@@ -60,7 +60,7 @@ func (r *restorer) restore() {
 	r.t.Helper()
 	cfg := r.p.m1.cfg
 	_ = r.p.m1.d.Close()
-	r.t.Log(r.kvoadm("", append(append([]string{"reset"}, r.ssh...), "--force", "--yes")...))
+	r.t.Log(r.kvoadm("", append(append([]string{"reset"}, r.ssh...), "--force", "--yes", "--wipe-storage")...))
 	out := r.kvoadm(r.p.recoveryKey+"\n", append(append([]string{"init"}, r.ssh...), "--kevasod", r.p.bin, "--no-extra-hardening", "--restore", r.file,
 		"--api-server", "https://"+net.JoinHostPort(cfg.ExternalIP, "6443"), "--external-ip", cfg.ExternalIP)...)
 	r.t.Logf("kvoadm init --restore:\n%s", out)
