@@ -284,8 +284,8 @@ func TestMetalFence(t *testing.T) {
 			stopping = append(stopping, s.ID.Name)
 		}
 	}
-	if !r.Fence || len(stopping) != 1 || stopping[0] != "stops" {
-		t.Errorf("the fence record: fence %v, stopping %v; want true and [stops]\n%s", r.Fence, stopping, rec)
+	if len(stopping) != 1 || stopping[0] != "stops" {
+		t.Errorf("the fence record stops %v, want [stops]\n%s", stopping, rec)
 	}
 
 	// Past the after with kevasod stopped: the fence watcher acts for the Stop silo only.

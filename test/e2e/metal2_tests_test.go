@@ -237,8 +237,8 @@ func TestMetal2Fence(t *testing.T) {
 		before[n] = startedAt(n)
 	}
 	rec := p.c2.mustSh("cat " + fence.Dir + "/" + fence.RecordFile)
-	if !strings.Contains(rec, `"fence":true`) {
-		t.Errorf("machine 2 runs a Stop silo and its fence record doesn't say fence: true: %s", rec)
+	if !strings.Contains(rec, `"stopAfter":`) {
+		t.Errorf("machine 2 runs a Stop silo and its fence record doesn't stop it: %s", rec)
 	}
 
 	p.cut()
