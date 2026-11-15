@@ -3,6 +3,7 @@ package client
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -72,9 +73,13 @@ func (c *Client) Pinned(server string) *Client {
 	return p
 }
 
-// failover sends each request to the current endpoint, and to the next ones while a request
-// couldn't reach any server at all (dial errors: nothing was sent). Requests that reached a server
-// are never sent twice.
+// failover sends each request to the current endpoint, and to the next ones while it couldn't
+// be served there (K-008):
+//   - it couldn't connect (dial errors: nothing was sent);
+//   - the node said it can't serve, before handling anything (WriteUnavailable: no quorum);
+//   - no answer began within AttemptTimeout, for a request that can't apply twice (replayable).
+//     Any other request that got no answer is not sent again (that node may have applied it): it
+//     fails as a timeout, and the next request starts at the next node.
 type failover struct {
 	base  *http.Transport
 	mu    sync.Mutex
@@ -153,7 +158,14 @@ func (f *failover) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 			r.Body = b
 		}
-		resp, err := f.base.RoundTrip(r)
+		resp, err := attempt(f.base, r)
+		if err == nil && unavailable(resp) && i < len(hosts)-1 {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+			_ = resp.Body.Close()
+			last = fmt.Errorf("%s: can't serve (%s)", u.Host, resp.Header.Get(HeaderUnavailable))
+			f.moveFrom(n)
+			continue
+		}
 		if err == nil {
 			f.mu.Lock()
 			f.cur = n
@@ -161,11 +173,31 @@ func (f *failover) RoundTrip(req *http.Request) (*http.Response, error) {
 			return resp, nil
 		}
 		last = err
-		if !unreached(err) || req.Context().Err() != nil {
+		if req.Context().Err() != nil {
+			return nil, err
+		}
+		var slow errAttempt
+		if errors.As(err, &slow) {
+			f.moveFrom(n)
+			if replayable(req) {
+				continue
+			}
+			return nil, err
+		}
+		if !unreached(err) {
 			return nil, err
 		}
 	}
 	return nil, last
+}
+
+// moveFrom makes the next request start after endpoint n, if it is the current one.
+func (f *failover) moveFrom(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cur == n && len(f.hosts) > 0 {
+		f.cur = (n + 1) % len(f.hosts)
+	}
 }
 
 // unreached: the request never got to a server (it couldn't connect), so another may take it.

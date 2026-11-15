@@ -18,16 +18,27 @@ import (
 // linearizable in both stores, so two answers in a row never go down within one history,
 // whichever system node gives them. If the store gives either not within the deadline, the answer
 // carries no stamp at all, and a worker judges it NotYet: never as if it were judged.
-func withControlPlane(h http.Handler, st store.Store) http.Handler {
+//
+// refuse (the API listener): a store that gives neither answers 503 with
+// client.HeaderUnavailable before anything is handled (K-008): this node can't serve (no quorum,
+// or its store doesn't answer), and a worker's client sends the request to another system node
+// as it is. The admin socket doesn't refuse: a person here may be repairing the store.
+func withControlPlane(h http.Handler, st store.Store, refuse bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		id, _, found, err := readIdentity(ctx, st)
+		var rev int64
 		if err == nil && found {
-			if rev, err := st.Revision(ctx); err == nil {
-				client.SetControlPlane(w.Header(), client.ControlPlaneSeen{ClusterID: id.ID, History: id.History, Epoch: id.Epoch, Revision: rev})
-			}
+			rev, err = st.Revision(ctx)
 		}
 		cancel()
+		switch {
+		case err != nil && refuse:
+			client.WriteUnavailable(w, "its store doesn't answer ("+err.Error()+")")
+			return
+		case err == nil && found:
+			client.SetControlPlane(w.Header(), client.ControlPlaneSeen{ClusterID: id.ID, History: id.History, Epoch: id.Epoch, Revision: rev})
+		}
 		h.ServeHTTP(w, r)
 	})
 }

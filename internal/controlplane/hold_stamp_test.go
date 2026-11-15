@@ -39,7 +39,7 @@ func TestTheStampIsTheStoresIdentityNow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := withControlPlane(http.NotFoundHandler(), st)
+	h := withControlPlane(http.NotFoundHandler(), st, false)
 	if s, ok := stampOf(t, h); !ok || s.History != "h1" || s.Epoch != 1 || s.ClusterID != "c" {
 		t.Fatalf("before the restore: %+v %v", s, ok)
 	}
@@ -69,14 +69,46 @@ func TestNoRevisionNoStamp(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
-	withControlPlane(http.NotFoundHandler(), noRevision{st}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	withControlPlane(http.NotFoundHandler(), noRevision{st}, false).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
 	for _, k := range []string{client.HeaderClusterID, client.HeaderHistory, client.HeaderEpoch, client.HeaderRevision} {
 		if v := rec.Header().Get(k); v != "" {
 			t.Errorf("%s: %q on an answer whose store gave no revision", k, v)
 		}
 	}
 	// A store with no identity yet: no stamp either.
-	if _, ok := stampOf(t, withControlPlane(http.NotFoundHandler(), store.NewMemory(0))); ok {
+	if _, ok := stampOf(t, withControlPlane(http.NotFoundHandler(), store.NewMemory(0), false)); ok {
 		t.Error("stamped with no identity in the store")
+	}
+}
+
+// K-008, the second way in: a system node that still answers but whose store has no quorum must
+// be told apart from a healthy one. On the API listener it answers 503 with
+// client.HeaderUnavailable before handling anything, so a worker's client sends the request to
+// another node as it is. The admin socket (a person on this machine, maybe repairing the store)
+// still gets the request, unstamped.
+func TestK008ANodeWithoutAStoreSaysSoBeforeHandling(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemory(0)
+	b, _ := json.Marshal(ClusterIdentity{ID: "c", History: "h1", Epoch: 1})
+	if _, err := st.Create(ctx, identityKey, b); err != nil {
+		t.Fatal(err)
+	}
+	handled := 0
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handled++ })
+	rec := httptest.NewRecorder()
+	withControlPlane(next, noRevision{st}, true).ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/apis/kevaso/v1/hosts/hv1/status", nil))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get(client.HeaderUnavailable) == "" || handled != 0 {
+		t.Fatalf("API listener, no store: %d %q, handled %d", rec.Code, rec.Header().Get(client.HeaderUnavailable), handled)
+	}
+	rec = httptest.NewRecorder()
+	withControlPlane(next, noRevision{st}, false).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if handled != 1 || rec.Header().Get(client.HeaderUnavailable) != "" {
+		t.Fatalf("admin socket, no store: handled %d", handled)
+	}
+	// A healthy store: handled, stamped.
+	rec = httptest.NewRecorder()
+	withControlPlane(next, st, true).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if _, ok := client.ParseControlPlane(rec.Header()); !ok || handled != 2 {
+		t.Fatalf("healthy: stamped %v, handled %d", ok, handled)
 	}
 }
