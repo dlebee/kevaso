@@ -14,9 +14,11 @@ import (
 	"testing"
 	"time"
 
+	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/cli/kvoadm"
 	"kevaso.com/core/internal/fence"
+	"kevaso.com/core/internal/worker"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -55,8 +57,10 @@ func sameStarts(t *testing.T, what string, before, after map[string]string) {
 	}
 }
 
-// TestMetal2ShortCut is the API unreachable from the worker for less than the fence time: a
-// 15-second cut changes nothing, no silo stopped or restarted, the host never lost.
+// TestMetal2ShortCut is the API unreachable from the worker for less than the shortest after a
+// silo may ask for (§0.7): a 15-second cut changes nothing. The silo that asked to stop without
+// the control plane (onControlPlaneLoss: Stop, after 30s, onHostLoss: Recreate) is neither
+// stopped nor started elsewhere, no silo restarts, and the host is Ready again.
 //
 // Listens on nothing outside.
 func TestMetal2ShortCut(t *testing.T) {
@@ -67,21 +71,24 @@ func TestMetal2ShortCut(t *testing.T) {
 	c.namespace(ns)
 	t.Cleanup(p.uncut)
 	c.apply(boxEcho(ns, "stay", 8080) + on(metalHost2) + "---\n" + boxEcho(ns, "moves", 8080) + on(metalHost2) + "  availability: { onHostLoss: Recreate }\n---\n" +
+		boxEcho(ns, "stops", 8080) + on(metalHost2) + "  availability: { onControlPlaneLoss: Stop, after: 30s, onHostLoss: Recreate }\n---\n" +
 		vmEcho(ns, "vm", 8080) + on(metalHost2))
-	c.waitRunning(ns, 20*time.Minute, "stay", "moves", "vm")
-	before := p.startTimes(ns, "stay", "moves", "vm")
-	p.cut()
-	time.Sleep(15 * time.Second)
-	p.uncut()
-	if fence.DefaultAfter <= 15*time.Second {
-		t.Fatalf("the fence time (%s) isn't longer than the cut", fence.DefaultAfter)
+	c.waitRunning(ns, 20*time.Minute, "stay", "moves", "stops", "vm")
+	names := []string{"stay", "moves", "stops", "vm"}
+	before := p.startTimes(ns, names...)
+	const cut = 15 * time.Second
+	if v1.MinStopAfter <= cut+worker.DefaultHeartbeat {
+		t.Fatalf("the shortest after (%s) isn't longer than the cut plus a heartbeat", v1.MinStopAfter)
 	}
-	time.Sleep(30 * time.Second)
-	sameStarts(t, "a 15s cut", before, p.startTimes(ns, "stay", "moves", "vm"))
-	for _, cd := range c.hostNamed(metalHost2).Status.Conditions {
-		if cd.Type == "Ready" && cd.Status != "True" {
-			t.Errorf("%s isn't Ready after a short cut: %+v", metalHost2, cd)
-		}
+	p.cut()
+	time.Sleep(cut)
+	p.uncut()
+	t.Logf("machine 2 cut off for %s, then back", cut)
+	c.eventually(metalHost2+" is Ready", 2*time.Minute, func() (bool, string) { return c.hostReady(metalHost2) })
+	time.Sleep(45 * time.Second) // past the Stop silo's after + margin, counted from the cut
+	sameStarts(t, "a 15s cut", before, p.startTimes(ns, names...))
+	if h := c.silo(ns, "stops").Status.Host; h != metalHost2 {
+		t.Errorf("the Stop silo was started elsewhere (%s) after a cut shorter than its after", h)
 	}
 }
 
