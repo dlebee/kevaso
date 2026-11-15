@@ -153,6 +153,15 @@ const DefaultHeartbeat = 10 * time.Second
 // Heartbeat keeps this host's Ready condition and lastHeartbeat fresh: the control plane's host
 // lease reads them (a host that stops reporting is lost). Each success is marked on contact.
 func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Duration, clk clock.Clock, log func(string, ...any), contact *Contact) {
+	// K-108: a beat sent while held (the judge says nothing from the control plane may be applied:
+	// it may be a system node behind what this worker saw) is no fence contact, and says so
+	// (ReasonWorkerHeld) so the control plane doesn't count it either; a beat whose answer left
+	// the worker held is no fence contact. Else a worker reaching only a stale system node never
+	// fences while the live control plane restarts its opted-in silos elsewhere.
+	held := func() bool {
+		h, ok := c.ControlPlane.(interface{ Held() bool })
+		return ok && h.Held()
+	}
 	tick := func() {
 		for attempt := 0; attempt < 5; attempt++ {
 			var h v1.Host
@@ -163,9 +172,14 @@ func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Du
 				return
 			}
 			now, sentBoot := clk.Now().UTC(), boottime.Now()
+			heldBefore := held()
+			reason, msg := "WorkerUp", "kevasod reporting"
+			if heldBefore {
+				reason, msg = hostctl.ReasonWorkerHeld, "kevasod reporting, held (ControlPlaneBehind): not a contact"
+			}
 			h.Status.Version = version.Version
-			meta.SetCondition(&h.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "WorkerUp",
-				Message: "kevasod reporting", ObservedGeneration: h.Generation}, now.Truncate(time.Second))
+			meta.SetCondition(&h.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: reason,
+				Message: msg, ObservedGeneration: h.Generation}, now.Truncate(time.Second))
 			// The server stamps it on receipt (K-106); what is sent never equals what was read, so
 			// even a server that took it as sent would see the beat.
 			h.Status.LastHeartbeat = hostctl.HeartbeatStamp(h.Status.LastHeartbeat, now)
@@ -173,7 +187,7 @@ func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Du
 			if client.IsConflict(err) {
 				continue
 			}
-			if err == nil && contact != nil {
+			if err == nil && contact != nil && !heldBefore && !held() {
 				// When it was SENT, not when the answer came: the control plane's count starts at
 				// its arrival, so the agent's always ends first (§0.7, silo.StopMargin).
 				contact.Mark(now, sentBoot)
