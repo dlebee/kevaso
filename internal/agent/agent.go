@@ -26,6 +26,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kri/hostexec"
+	"kevaso.com/core/internal/boottime"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/fence"
@@ -63,6 +64,9 @@ type Agent struct {
 	// onControlPlaneLoss: Stop is stopped once the contact is older than its after, and not
 	// started again until the contact is back.
 	LastContact func() time.Time
+	// LastContactBoot, if set, is the same contact on the boot clock (internal/boottime): the
+	// silence is counted on it, never on the wall clock (K-072).
+	LastContactBoot func() (time.Duration, bool)
 	// StopsOnLoss, if set, replaces (*v1.Silo).StopsOnControlPlaneLoss (tests shorten the times).
 	StopsOnLoss func(*v1.Silo) (stops bool, after time.Duration)
 	// WatermarkFile, if set, is where the agent keeps what it saw of its control plane (cluster,
@@ -112,9 +116,10 @@ type Agent struct {
 	grants      *informer.Informer
 	fenced      atomic.Bool
 	silosSynced atomic.Bool
-	fencePrev   fence.Record // the fence record as an earlier run left it (FenceDir)
-	started     time.Time    // when this run began (Run)
-	fenceMu     sync.Mutex   // the record: built and written by one at a time
+	fencePrev   fence.Record  // the fence record as an earlier run left it (FenceDir)
+	started     time.Time     // when this run began (Run)
+	startedBoot time.Duration // the same, on the boot clock
+	fenceMu     sync.Mutex    // the record: built and written by one at a time
 	recorded    map[string]fence.Silo
 	goneChecked time.Time
 	endpoint    *Endpoint
@@ -161,7 +166,25 @@ func (a *Agent) silence() time.Duration {
 	if a.LastContact == nil || a.started.IsZero() {
 		return 0
 	}
+	if b, ok := a.contactBoot(); ok {
+		return boottime.Since(b) // K-072: never the wall clock, which a time server steps
+	}
 	return a.Clock.Now().Sub(a.lastContact())
+}
+
+// contactBoot is the last contact on the boot clock, where the worker gives it (LastContactBoot):
+// this run's, else an earlier run's of the same boot (the record), else this run's start.
+func (a *Agent) contactBoot() (time.Duration, bool) {
+	if a.LastContactBoot == nil {
+		return 0, false
+	}
+	if b, ok := a.LastContactBoot(); ok {
+		return b, true
+	}
+	if a.fencePrev.ContactBoot > 0 && a.fencePrev.BootID != "" && a.fencePrev.BootID == boottime.ID() {
+		return a.fencePrev.ContactBoot, true
+	}
+	return a.startedBoot, true
 }
 
 // inContact: the last contact is recent (well under the shortest after a silo may ask for).
@@ -266,7 +289,7 @@ func (a *Agent) Run(ctx context.Context) {
 	a.silos = informer.New(a.Client, "Silo")
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
 	a.runCtx = ctx
-	a.started = a.Clock.Now()
+	a.started, a.startedBoot = a.Clock.Now(), boottime.Now()
 	a.endpoint = &Endpoint{Client: a.Client, HostName: a.HostName, Log: a.Log, Bound: a.Bound}
 	if a.EndpointListen != "" {
 		go a.endpoint.ServeEndpoint(ctx, a.EndpointListen)

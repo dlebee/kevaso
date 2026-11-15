@@ -276,7 +276,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 			return states[name].State == "Ready"
 		}}
 	if cfg.Contact != nil {
-		a.LastContact, a.FenceApplies = cfg.Contact.Last, cfg.Contact.Fence
+		a.LastContact, a.LastContactBoot, a.FenceApplies = cfg.Contact.Last, cfg.Contact.LastBoot, cfg.Contact.Fence
 		if runtime.GOOS == "linux" {
 			a.FenceDir = fence.Dir // for kevasod fence-watch, which fences even when this agent is gone
 		}

@@ -27,6 +27,7 @@ import (
 	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/audit"
 	"kevaso.com/core/internal/backup"
+	"kevaso.com/core/internal/boottime"
 	"kevaso.com/core/internal/claims"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/controllers/certificate"
@@ -585,6 +586,7 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport
 		}, cfg.Clock.Now().UTC().Truncate(time.Second))
 		setHeartbeat(&h, cfg.Clock.Now())
 		reportSelf(&h, rep)
+		sent, sentBoot := cfg.Clock.Now(), boottime.Now() // when it was sent (§0.7, K-072)
 		if err := c.UpdateStatus(ctx, &h); err != nil {
 			if ctx.Err() == nil {
 				cfg.Log("heartbeat status: %v", err)
@@ -594,7 +596,7 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport
 		if contact == nil {
 			return
 		}
-		contact.Mark(cfg.Clock.Now())
+		contact.Mark(sent, sentBoot)
 		hosts, err := c.List(ctx, "Host", "")
 		if err != nil {
 			return // undecided stays what it was

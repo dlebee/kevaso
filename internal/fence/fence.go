@@ -30,6 +30,7 @@ import (
 	"time"
 
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/boottime"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -84,6 +85,11 @@ type Record struct {
 	// judges by). Zero: never yet, so nothing here may run elsewhere.
 	LastContact time.Time `json:"lastContact"`
 	Written     time.Time `json:"written"` // when the agent wrote this (it's alive)
+	// BootID and ContactBoot (version 2, K-072): the last contact on the boot clock
+	// (internal/boottime), which no time server steps. A watcher of the same boot counts the
+	// silence on it; LastContact (wall) only across boots.
+	BootID      string        `json:"bootID,omitempty"`
+	ContactBoot time.Duration `json:"contactBoot,omitempty"`
 	// Fence: a second copy of this host's silos could be started elsewhere while this one may
 	// still run (see Applies). False: the watcher stops nothing, ever.
 	Fence bool   `json:"fence"`
@@ -278,11 +284,20 @@ type Watcher struct {
 	FenceAfter time.Duration
 	Every      time.Duration // how often the record is read (default CheckEvery)
 	Now        func() time.Time
-	Log        func(string, ...any)
+	// Boot, if set, is this boot's id and the boot clock now (default internal/boottime).
+	Boot func() (id string, now time.Duration)
+	Log  func(string, ...any)
 
 	done    map[string]bool // stopped in this fence, by silo UID
 	fencing bool
 	faults  Faults // this fence's
+}
+
+func (w *Watcher) boot() (string, time.Duration) {
+	if w.Boot != nil {
+		return w.Boot()
+	}
+	return boottime.ID(), boottime.Now()
 }
 
 // Check reads the record once and stops what must be stopped.
@@ -296,6 +311,10 @@ func (w *Watcher) Check(ctx context.Context) {
 		return
 	}
 	now := w.now()
+	if id, bnow := w.boot(); r.BootID != "" && r.BootID == id && r.ContactBoot > 0 && !r.LastContact.IsZero() {
+		// K-072: the silence on the boot clock, as Decide reads it (last contact + silence).
+		now = r.LastContact.Add(bnow - r.ContactBoot)
+	}
 	stop := Decide(r, now, w.FenceAfter, w.done)
 	cut := !r.LastContact.IsZero() && now.Sub(r.LastContact) > w.FenceAfter
 	if r.Version >= RecordVersion {

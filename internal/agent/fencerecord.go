@@ -9,6 +9,7 @@ import (
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/boottime"
 	"kevaso.com/core/internal/fence"
 )
 
@@ -96,7 +97,10 @@ func (a *Agent) loadRecorded() {
 // buildRecord is the record from what's recorded now. Called with fenceMu held.
 func (a *Agent) buildRecord() fence.Record {
 	// The fence is inert unless a silo here asked to stop without the control plane (§0.7).
-	r := fence.Record{Version: fence.RecordVersion, Written: a.now().UTC(), LastContact: a.fencePrev.LastContact}
+	r := fence.Record{Version: fence.RecordVersion, Written: a.now().UTC(), LastContact: a.fencePrev.LastContact, BootID: boottime.ID()}
+	if b, ok := a.contactBoot(); ok {
+		r.ContactBoot = b
+	}
 	if a.LastContact != nil {
 		last := a.LastContact()
 		if last.IsZero() && !a.started.IsZero() {
