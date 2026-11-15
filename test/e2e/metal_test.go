@@ -254,6 +254,14 @@ func setUpMetal() (s *metalSuite, skip string, err error) {
 	if out, err := s.d.Run(ctx, remote.SeedCacheScript, nil); err != nil {
 		say("seeding the download cache: %v %s", err, out)
 	}
+	// What a person installed before Kevaso (KEVASO_METAL_PREINSTALL, a root script): the reset
+	// tests check kvoadm reset leaves it alone.
+	if pre := os.Getenv("KEVASO_METAL_PREINSTALL"); pre != "" {
+		if out, err := s.d.Run(ctx, pre, nil); err != nil {
+			return nil, "", fmt.Errorf("KEVASO_METAL_PREINSTALL: %v\n%s", err, out)
+		}
+		say("installed before Kevaso (KEVASO_METAL_PREINSTALL)")
+	}
 
 	// 4. The stand-in API on the internet for the injection test, on the machine's loopback,
 	// trusted by the egress gate through --egress-extra-ca.
