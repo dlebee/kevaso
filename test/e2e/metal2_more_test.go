@@ -183,8 +183,10 @@ func TestMetal2Upgrade(t *testing.T) {
 }
 
 // TestMetal2MoveUnlikeStorage is a move between hosts whose storage differs (machine 1's
-// loop file, machine 2's real disk when one is named): a container silo's data, checksummed,
-// goes there and back. A microVM's disk can't move with its data (it's pinned): what it says.
+// loop file, machine 2's real disk when one is named): a container silo goes there and back and
+// runs on each, from a fresh root each time (a moved container's root is made afresh; only a
+// movable storage class carries data, and these hosts have none). A microVM's disk can't move
+// with its data (it's pinned): what it says.
 //
 // Listens on nothing outside.
 func TestMetal2MoveUnlikeStorage(t *testing.T) {
@@ -195,9 +197,8 @@ func TestMetal2MoveUnlikeStorage(t *testing.T) {
 	c.namespace(ns)
 	c.apply(boxEcho(ns, "web", 8080) + "---\n" + vmEcho(ns, "vm", 8080) + on(metalHost))
 	c.waitRunning(ns, 20*time.Minute, "web", "vm")
-	sum, _ := c.in(ns, "web", "head -c 16M /dev/urandom > /root/blob && sync && sha256sum /root/blob | cut -d' ' -f1")
-	if len(sum) != 64 {
-		t.Fatalf("write: %q", sum)
+	if out, code := c.in(ns, "web", "head -c 16M /dev/urandom > /root/blob && sync"); code != 0 {
+		t.Fatalf("write: %d %s", code, out)
 	}
 	for i := 0; i < 2; i++ {
 		from := c.silo(ns, "web").Status.Host
@@ -207,11 +208,10 @@ func TestMetal2MoveUnlikeStorage(t *testing.T) {
 			s := c.silo(ns, "web")
 			return s.Status.Host == to && s.Status.Phase == "Running" && s.Status.MovingFrom == "", s.Status.Host + " " + s.Status.Phase
 		})
-		got, _ := c.in(ns, "web", "sha256sum /root/blob 2>&1 | cut -d' ' -f1")
-		if got != sum {
-			t.Errorf("after the move %s → %s the data's sum is %q, want %s", from, to, got, sum)
-		} else {
-			t.Logf("%s → %s: the data is intact (sha256 %s…)", from, to, sum[:12])
+		got, _ := c.in(ns, "web", "test -e /root/blob && echo kept || echo fresh")
+		c.expect(fmt.Sprintf("%s → %s: it runs there, from a fresh root", from, to), got, "fresh")
+		if _, code := c.in(ns, "web", "head -c 1M /dev/urandom > /root/blob && sync"); code != 0 {
+			t.Errorf("it can't write on %s's storage", to)
 		}
 	}
 	if out, code := c.kvo("", "move", "silo", "vm", "-n", ns, "--to", metalHost2); code == 0 {
