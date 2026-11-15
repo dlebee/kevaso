@@ -143,4 +143,3 @@ The variable gates the test: without it, it skips.
 - KEVASO_DOCKER_TEST: TestEnvRuntimeOnRealDocker (builtin/kri/container)
 - KEVASO_DOCKER_TEST: TestSecretArgsOnARealEngine (builtin/kri/container)
 - KEVASO_K010: TestSubresourceWildcardsNeverReachPowerfulSubresources (internal/rbac)
-- KEVASO_K038: TestMountRefusesWhatIsNoDevicePath (internal/agent)

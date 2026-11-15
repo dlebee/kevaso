@@ -554,6 +554,7 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	}
 	switch rs.State {
 	case kri.Absent:
+		a.endClaim(s.UID) // nothing of it here: no start of it runs (review-batch3 C)
 		if wait := a.createWait(s); wait > 0 {
 			return engine.Result{RequeueAfter: wait}, nil // its last create failed: the backoff first
 		}
@@ -598,6 +599,7 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		})
 	case kri.Created, kri.Stopped:
 		if wait, err := a.mayStartHere(ctx, s); wait || err != nil {
+			a.endClaim(s.UID) // nothing of it runs, and nothing starts now: no claim stands for it
 			return engine.Result{RequeueAfter: 2 * time.Second}, nil
 		}
 		if s.Status.Phase == PhaseRunning { // it stopped (a reboot, a VMM stopped): say so first
@@ -685,6 +687,12 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	case kri.Failed:
 		// Its machine failed (a VMM that exited, a dead container): started again, like a
 		// liveness restart, with the same backoff and count (status.restarts).
+		//
+		// The start that got it here has ended (nothing of it runs: Failed is a process gone):
+		// its claim isn't kept while it waits out the backoff, where each renewal would be a new
+		// claim, resetting the host's silence and blocking a restart elsewhere and
+		// --confirm-fenced while nothing starts (review-batch3 C). A restart claims again.
+		a.endClaim(s.UID)
 		now := a.now()
 		if wait := probes.RestartWait(s.Status.Restarts, now); wait > 0 {
 			return engine.Result{RequeueAfter: wait}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
