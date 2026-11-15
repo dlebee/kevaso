@@ -33,7 +33,11 @@ type PluginOptions struct {
 	// host. Without one, a side gets nothing beyond the default (PluginUnit). Needs is this side's.
 	Manifest string
 	Needs    kplugin.Needs
-	Yes      bool // the operator grants what the manifest asks (needed when it asks for privileges)
+	// DevicePrefixes are where the manifest says its attached volumes' devices are (K-038), and
+	// ManifestText the manifest itself, stored on the host for kevasod to check answers against.
+	DevicePrefixes []string
+	ManifestText   []byte
+	Yes            bool // the operator grants what the manifest asks (needed when it asks for privileges)
 }
 
 var pluginName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
@@ -223,6 +227,7 @@ func readManifest(o *PluginOptions) error {
 	if o.side() == "node" {
 		o.Needs = m.Node
 	}
+	o.DevicePrefixes, o.ManifestText = m.DevicePrefixes, b
 	return nil
 }
 
@@ -235,6 +240,9 @@ func grantNeeds(o PluginOptions, in *bufio.Reader, stdin io.Reader, out io.Write
 	_, _ = fmt.Fprintf(out, "→ plugin %s, %s side:\n", o.Name, o.side())
 	for _, l := range o.Needs.Summary() {
 		_, _ = fmt.Fprintf(out, "    %s\n", l)
+	}
+	if len(o.DevicePrefixes) > 0 {
+		_, _ = fmt.Fprintf(out, "    volume devices: only under %s (kevasod refuses any other device it answers)\n", strings.Join(o.DevicePrefixes, ", "))
 	}
 	if !o.Needs.Privileged() || o.Yes {
 		return nil
@@ -478,7 +486,13 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 			return err
 		}
 	}
+	if o.ManifestText != nil { // kevasod checks the plugin's device answers against it (K-038)
+		if err := conn.Upload(ctx, pluginEtc(o.Name)+"/"+kplugin.ManifestFile, o.ManifestText, 0o600); err != nil {
+			return err
+		}
+	}
 	unit := PluginUnitName(o.Name, o.side())
+	since, _ := conn.Run(ctx, "date +%s", nil) // kevasod's word on it is looked for from here on
 	if err := conn.InstallUnit(ctx, unit, []byte(unitText)); err != nil {
 		return err
 	}
@@ -486,12 +500,48 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 		logs, _ := conn.Run(ctx, "journalctl -u "+sshboot.Quote(unit)+" -n 20 --no-pager", nil)
 		return fmt.Errorf("%s didn't stay up:\n%s", unit, logs)
 	}
+	// kevasod refuses a plugin that claims a class or DNS name another plugin serves, or answers
+	// under another name (K-042): that refusal is this install's.
+	word, _ := conn.Run(ctx, RegistrationScript(o.Name, strings.TrimSpace(string(since)), 20), nil)
+	switch registered, line := Registration(o.Name, string(word)); {
+	case line == "":
+		say("kevasod on the host hasn't said yet whether it registered plugin %s (journalctl -u kevasod there)", o.Name)
+	case !registered:
+		_, _ = conn.Run(ctx, "systemctl disable --now "+sshboot.Quote(unit), nil)
+		return fmt.Errorf("kevasod refused plugin %s, so its unit %s is stopped: %s", o.Name, unit, line)
+	default:
+		say("kevasod: %s", line)
+	}
 	if o.side() == "controller" {
 		say("plugin %s running (%s); kevasod registers it from %s/%s/plugin.sock", o.Name, unit, kplugin.Dir, o.Name)
 	} else {
 		say("plugin %s node side running (%s)", o.Name, unit)
 	}
 	return nil
+}
+
+// RegistrationScript waits up to wait seconds on the host for kevasod's word on plugin name since
+// the host's time since (seconds since 1970), and prints that line: registered, answering again,
+// or refused (and why).
+func RegistrationScript(name, since string, wait int) string {
+	if !regexp.MustCompile(`^[0-9]+$`).MatchString(since) {
+		since = "0"
+	}
+	pat := sshboot.Quote(`plugin ` + name + ` ([^ ]+ registered \(|[^ ]+ at [^ ]+ refused: |answering again)`)
+	return fmt.Sprintf("i=0; while [ $i -lt %d ]; do l=$(journalctl -u kevasod.service --since @%s -o cat --no-pager 2>/dev/null | grep -E %s | tail -n 1); "+
+		"if [ -n \"$l\" ]; then printf '%%s\\n' \"$l\"; exit 0; fi; i=$((i+1)); sleep 1; done; exit 0", wait, since, pat)
+}
+
+// Registration reads RegistrationScript's output: whether kevasod registered plugin name, and
+// what it said ("": nothing yet).
+func Registration(name, out string) (registered bool, line string) {
+	l := strings.TrimSpace(out)
+	i := strings.Index(l, "plugin "+name+" ")
+	if i < 0 {
+		return false, ""
+	}
+	l = l[i:]
+	return !strings.Contains(l, " refused: "), l
 }
 
 func pluginRemove(ctx context.Context, o PluginOptions, stdin io.Reader, out io.Writer) error {

@@ -68,6 +68,9 @@ func (in *Installer) say(f string, a ...any) {
 type InstallOptions struct {
 	Program []byte // the controller program, built for the host
 	Adopt   bool   // take over objects of the same names that no plugin owns
+	// StatusWrites are the built-in kinds' status resources (silos/status, …) the operator lets
+	// the package's roles write: exactly those its roles write, or the install is refused (K-045).
+	StatusWrites []string
 }
 
 // Ref names an object.
@@ -307,6 +310,76 @@ func Changes(adopted, deleted []v1.PluginObject) string {
 	return b.String()
 }
 
+// readVerbs only read: every other verb on a status writes it.
+var readVerbs = []string{"get", "list", "watch"}
+
+// BuiltinStatusWrites are the built-in kinds' status resources (silos/status, hosts/status, …) the
+// package's roles write, sorted. With one, the plugin's controller changes what core itself acts on
+// for every such object it reaches (silos/status: the silo's host, its volumes' devices, its
+// firewall ranges), so the operator must name each (K-045).
+func BuiltinStatusWrites(p *Package) []string {
+	seen := map[string]bool{}
+	var rules []v1.PolicyRule
+	for _, r := range p.CRoles {
+		rules = append(rules, r.Rules...)
+	}
+	for _, r := range p.Roles {
+		rules = append(rules, r.Rules...)
+	}
+	for _, r := range rules {
+		writes := false
+		for _, v := range r.Verbs {
+			if !slices.Contains(readVerbs, v) {
+				writes = true
+			}
+		}
+		if !writes {
+			continue
+		}
+		for _, res := range r.Resources {
+			base, sub, ok := strings.Cut(res, "/")
+			if _, builtin := v1.Lookup(base); ok && sub == "status" && builtin && !strings.Contains(base, ".") {
+				seen[res] = true
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
+
+// StatusWriteProblem says why the package can't be installed with the built-in status writes the
+// operator named (granted), or nil: they must be exactly those its roles write.
+func StatusWriteProblem(p *Package, granted []string) error {
+	writes := BuiltinStatusWrites(p)
+	var missing, extra []string
+	for _, w := range writes {
+		if !slices.Contains(granted, w) {
+			missing = append(missing, w)
+		}
+	}
+	for _, g := range granted {
+		if !slices.Contains(writes, g) {
+			extra = append(extra, text(g))
+		}
+	}
+	switch {
+	case len(missing) > 0:
+		return fmt.Errorf("its roles write the status of built-in objects (%s): its controller would change what Kevaso acts on for every such object it reaches (a silo's host, its volumes' devices, its firewall ranges). If you mean to give it that, install with --allow-status %s",
+			strings.Join(missing, ", "), strings.Join(writes, ","))
+	case len(extra) > 0:
+		return fmt.Errorf("--allow-status names %s, which its roles don't write: name exactly what they write (%s)", strings.Join(extra, ", "), orNone(writes))
+	}
+	return nil
+}
+
+// StatusGrants is the line the operator sees before the yes when the package writes built-in
+// status ("" when it writes none).
+func StatusGrants(writes []string) string {
+	if len(writes) == 0 {
+		return ""
+	}
+	return "It writes the status of built-in objects (granted with --allow-status): " + strings.Join(writes, ", ") + "\n"
+}
+
 // text is s as one line of plain text: what could drive a terminal (control characters, C1
 // controls, bidi embeddings and overrides) is dropped, and a newline or tab is a space.
 func text(s string) string {
@@ -363,6 +436,9 @@ func setOwner(m *meta.ObjectMeta, ref meta.OwnerReference) {
 // Install installs or upgrades a plugin: it checks who owns what the package names, asks the
 // operator, applies everything owned by the Plugin, gives the controller a token and starts it.
 func (in *Installer) Install(ctx context.Context, p *Package, host Host, o InstallOptions) error {
+	if err := StatusWriteProblem(p, o.StatusWrites); err != nil {
+		return fmt.Errorf("can't install plugin %s: %w", p.Name(), err)
+	}
 	want := wanted(p)
 	stored := make([]meta.Object, len(want))
 	for i, w := range want {
@@ -400,7 +476,7 @@ func (in *Installer) Install(ctx context.Context, p *Package, host Host, o Insta
 	for i, w := range want {
 		nowOwns[i] = Ref(w)
 	}
-	if in.Confirm == nil || !in.Confirm(Summary(p, host.Address())+Changes(adopted, Leftovers(prev.Spec.Owns, nowOwns))) {
+	if in.Confirm == nil || !in.Confirm(Summary(p, host.Address())+StatusGrants(BuiltinStatusWrites(p))+Changes(adopted, Leftovers(prev.Spec.Owns, nowOwns))) {
 		return errors.New("not installed")
 	}
 
