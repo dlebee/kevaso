@@ -279,8 +279,12 @@ func TestIngress(t *testing.T) {
 	})
 	files, w2, _ := proxy.Snapshot()
 	newCert := certFiles(files)[0]
-	if got := w2[len(writes):]; len(got) != 2 || got[0] != newCert || got[1] != nginx.ConfigPath+".next" {
+	// Before it, the record of what is being applied (K-063: what a restarted agent reads back).
+	if got := w2[len(writes):]; len(got) != 3 || got[0] != nginx.ConfigPath+".kevaso.next" || got[1] != newCert || got[2] != nginx.ConfigPath+".next" {
 		t.Fatalf("a renewal wrote %v", got)
+	}
+	if _, ok := files[nginx.ConfigPath+".kevaso"]; !ok {
+		t.Fatal("no record of what was applied")
 	}
 	if want := strings.ReplaceAll(cfgBefore, firstCert, newCert); string(files[nginx.ConfigPath]) != want {
 		t.Fatalf("a renewal changed more than the certificate's lines:\n%s", files[nginx.ConfigPath])

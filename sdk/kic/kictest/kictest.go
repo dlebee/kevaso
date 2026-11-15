@@ -9,10 +9,12 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"flag"
 	"math/big"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -125,6 +127,7 @@ func Conformance(t *testing.T, d kic.Driver, goodAnnotations map[string]string) 
 		}
 	}
 	perIngress(t, d, s)
+	restart(t, d, s)
 	if _, err := d.Render(kic.State{Class: "c\nevil;"}); err == nil {
 		t.Error("rendered a class name with a newline in it")
 	}
@@ -202,6 +205,36 @@ func perIngress(t *testing.T, d kic.Driver, s kic.State) {
 		if seen == 0 {
 			t.Error("no route's backend found in the config to trace its blame")
 		}
+	}
+}
+
+// restart checks what an agent that restarts relies on to know what the proxy serves (K-063):
+// the state it applied, kept as JSON in the silo and read back, renders to the very config the
+// proxy has (so the record can be checked against it); and the config file is outside Dir, which
+// is swept after each apply (the record is kept next to the config).
+func restart(t *testing.T, d kic.Driver, s kic.State) {
+	t.Helper()
+	for _, st := range []kic.State{s, {Class: s.Class}, {}} {
+		b, err := json.Marshal(st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var back kic.State
+		if err := json.Unmarshal(b, &back); err != nil {
+			t.Fatal(err)
+		}
+		p1, err1 := d.Render(st)
+		p2, err2 := d.Render(back)
+		if (err1 == nil) != (err2 == nil) || (err1 == nil && (p1.Hash() != p2.Hash() || !bytes.Equal(p1.Config.Data, p2.Config.Data))) {
+			t.Errorf("a State read back from JSON renders differently (%v, %v): a restarted agent couldn't tell its record from what the proxy runs", err1, err2)
+		}
+	}
+	p, err := d.Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Config.Path != "" && p.Dir != "" && strings.HasPrefix(path.Clean(p.Config.Path), path.Clean(p.Dir)+"/") {
+		t.Errorf("the config %s is inside Dir %s, which is swept after each apply", p.Config.Path, p.Dir)
 	}
 }
 
