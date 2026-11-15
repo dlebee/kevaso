@@ -22,7 +22,7 @@ func TestACopyKnownAgainIsNoLongerListedAsKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := &Agent{HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": rt}}
-	a.keptNoted.Store(id.UID, keptName(id, "fake"))
+	a.keptNoted.Store(id.UID, keptCopy{runtime: "docker", name: keptName(id, "fake")})
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "single", UID: "u1"}, Status: v1.SiloStatus{Host: "hv1"}}
 	if err := a.removeEverywhere(ctx, engine.Key{Kind: "Silo", Namespace: "dev", Name: "single"}, s); err != nil {
 		t.Fatal(err)

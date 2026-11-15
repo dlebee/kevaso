@@ -163,8 +163,9 @@ type Agent struct {
 	// stop failed: tried again until it stops (stopAbandoned).
 	abandoned     sync.Map
 	inFlight      sync.Map   // engine.Key → time.Time: a reconcile under way since then (awaitReconciles)
+	interrupts    sync.Map   // engine.Key → *interruptible: the work under way inside that silo (whileItRuns)
 	deletes       deletesLog // the deletes seen whose copies may remain here, on disk (deletes.go)
-	keptNoted     sync.Map   // silo UID → what it is: kept, listed on the Host (ConditionKeptSilos)
+	keptNoted     sync.Map   // silo UID → keptCopy: kept, listed on the Host (ConditionKeptSilos)
 	engine        *engine.Engine
 	cp            *Watermark // the control plane this worker trusts (watermark.go); via watermark()
 	cpOnce        sync.Once
@@ -303,12 +304,18 @@ func (a *Agent) Run(ctx context.Context) {
 	}
 	e.Register(a, engine.Options{Workers: 4})
 	a.silos.AddHandler(func(k informer.Key) {
+		key := engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}
 		if o, ok := a.silos.Get(k.Namespace, k.Name); ok {
 			if s := o.(*v1.Silo); s.DeletionTimestamp != nil {
 				a.endStart(s.UID) // being deleted: a start of it under way here ends now
+				a.interrupt(key, s.UID)
+			} else if s.Status.Host != a.HostName {
+				a.interrupt(key, s.UID) // placed elsewhere: what runs inside it here ends
 			}
+		} else {
+			a.interrupt(key, "") // gone
 		}
-		e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name})
+		e.Changed(key)
 	})
 	go a.silos.Run(ctx)
 	go a.watchDeletes(ctx, e)
@@ -481,6 +488,12 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		}
 		return engine.Result{}, nil
 	}
+	return a.whileHere(ctx, k, s, func(ctx context.Context) (engine.Result, error) { return a.runHere(ctx, k, s) })
+}
+
+// runHere drives s, placed here, towards running (whileHere: a delete of it, or its placement
+// elsewhere, ends whatever of it is under way: a pull, a create, a start, a reset, its init steps).
+func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.Result, error) {
 	if !moves.MayStart(s, a.HostName) {
 		// Moving here: the old host stops it and lets go of its volumes first.
 		return engine.Result{RequeueAfter: 2 * time.Second}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
@@ -737,6 +750,17 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		return engine.Result{RequeueAfter: time.Millisecond}, nil
 	}
 
+	return a.whileItRuns(ctx, k, rt, s, func(inside context.Context) (engine.Result, error) {
+		return a.reconcileRunning(ctx, inside, rt, s, rs, vols, image)
+	})
+}
+
+// reconcileRunning looks after a silo its runtime says runs. Everything it runs inside the silo
+// (through Exec: its guest's mounts, its deliveries, init steps, probes, daemons, upkeep) runs
+// under inside, which ends once the silo no longer runs, or is deleted or placed elsewhere
+// (whileItRuns); ctx is the reconcile's own, for status writes and the restart of a liveness
+// failure.
+func (a *Agent) reconcileRunning(ctx, inside context.Context, rt kri.Runtime, s *v1.Silo, rs kri.Status, vols []kri.Volume, image string) (engine.Result, error) {
 	// Running: its guest mounts its volumes (VMs), the silo's policy (runtimes that enforce grants
 	// themselves), its local endpoint, its file and env secrets (written by the host), then init
 	// steps, then Ready. Its panes are fetched while it runs.
@@ -744,7 +768,7 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	// Until it is reported Running here, its start claim is kept fresh (a VM's and an OpenShell
 	// sandbox's init steps run now, through Exec). A start this run of the agent didn't make (kevasod
 	// restarted while it booted) is claimed again first.
-	sctx, claimKept := ctx, func() error { return nil }
+	sctx, claimKept := inside, func() error { return nil }
 	if s.Status.Phase != PhaseRunning && !a.reportedRunning(s) { // (a cache behind our own Running write: not a new start)
 		kp := a.claimKept(s)
 		if kp == nil {
@@ -753,7 +777,7 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			}
 			kp = a.keepClaim(s)
 		}
-		sctx, claimKept = kp.within(ctx)
+		sctx, claimKept = kp.within(inside)
 		defer func() { _ = claimKept() }()
 	} else {
 		a.endClaim(s.UID)
@@ -792,7 +816,10 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	if s.Status.StartedAt != nil {
 		startedAt = *s.Status.StartedAt
 	}
-	po := a.probe(ctx, rt, s, rs.Address, startedAt)
+	po := a.probe(inside, rt, s, rs.Address, startedAt)
+	if inside.Err() != nil {
+		return engine.Result{}, context.Cause(inside) // not a probe's failure: it stopped running, or left here
+	}
 	if po.restart {
 		return engine.Result{RequeueAfter: time.Millisecond}, a.restartForLiveness(ctx, rt, s, po)
 	}
@@ -828,7 +855,7 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	a.endClaim(s.UID) // reported Running: the heartbeat speaks for the host now
 	a.reported.Store(s.UID, s.Generation)
 	// Ready or not, its daemons and upkeep are kept (a daemon may be what makes it ready).
-	keepAgain, err := a.keepInside(ctx, rt, s)
+	keepAgain, err := a.keepInside(inside, rt, s)
 	if err != nil {
 		return engine.Result{}, err
 	}
@@ -1365,7 +1392,7 @@ func (a *Agent) releaseMove(ctx context.Context, s *v1.Silo) error {
 // removeEverywhere deletes the silo from every runtime that has it. For a silo still in the API
 // but no longer ours (or being deleted), only the runtime copy is removed.
 func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) error {
-	for _, rt := range a.Runtimes {
+	for rtName, rt := range a.Runtimes {
 		ids, err := rt.List(ctx)
 		if err != nil {
 			return err
@@ -1388,7 +1415,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 						}
 						a.abandoned.Delete(id.UID)
 					}
-					if _, logged := a.keptNoted.LoadOrStore(id.UID, keptName(id, rt.Info().Name)); !logged {
+					if _, logged := a.keptNoted.LoadOrStore(id.UID, keptCopy{runtime: rtName, name: keptName(id, rt.Info().Name)}); !logged {
 						a.log("keeping %s on %s: the control plane doesn't know it and no delete of it was seen here; it keeps running with its disk and volumes (nothing is removed without a delete)",
 							id, rt.Info().Name)
 					}
@@ -1413,7 +1440,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
 					return err
 				}
-				if _, logged := a.keptNoted.LoadOrStore(id.UID, keptName(id, rt.Info().Name+", stopped: "+why)); !logged {
+				if _, logged := a.keptNoted.LoadOrStore(id.UID, keptCopy{runtime: rtName, name: keptName(id, rt.Info().Name+", stopped: "+why)}); !logged {
 					a.log("keeping %s on %s, stopped, with its disk and volumes: %s (nothing is removed without a delete or a handoff from here)", id, rt.Info().Name, why)
 				}
 				continue
@@ -1459,6 +1486,10 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 }
 
 const whyHandoff = "handed off from here"
+
+// keptCopy is a copy kept here that the control plane doesn't know (keptNoted): the runtime that
+// holds it (its key in Runtimes), and how it is listed.
+type keptCopy struct{ runtime, name string }
 
 // keptName is how a kept copy is listed on the Host (KeptSilos): its name, the start of its UID
 // (two kept copies of one name, a silo deleted and made again, are told apart), and what.
@@ -1678,6 +1709,7 @@ func (a *Agent) watchDeletes(ctx context.Context, e *engine.Engine) {
 				m := o.GetObjectMeta()
 				s, _ := o.(*v1.Silo)
 				a.sawDelete(kri.ID{Namespace: m.Namespace, Name: m.Name, UID: m.UID}, s != nil && a.mayHaveHere(ctx, s), hist)
+				a.interrupt(engine.Key{Kind: "Silo", Namespace: m.Namespace, Name: m.Name}, m.UID)
 				e.Changed(engine.Key{Kind: "Silo", Namespace: m.Namespace, Name: m.Name})
 			}
 		}

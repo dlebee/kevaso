@@ -22,6 +22,9 @@ type keptState struct {
 // upkeepTimeout bounds one upkeep run (a check, a fix, the check again).
 const upkeepTimeout = 15 * time.Minute
 
+// daemonTimeout bounds each of a daemon's commands (its probe, its start, its stop).
+const daemonTimeout = 2 * time.Minute
+
 // keepInside runs a running silo's daemons and upkeep (design §0.5) through the runtime's exec,
 // and returns when to look again (0: nothing to keep).
 func (a *Agent) keepInside(ctx context.Context, rt kri.Runtime, s *v1.Silo) (time.Duration, error) {
@@ -33,6 +36,13 @@ func (a *Agent) keepInside(ctx context.Context, rt kri.Runtime, s *v1.Silo) (tim
 		var out bytes.Buffer
 		code, err := rt.Exec(ctx, id, kri.ExecRequest{Command: argv, Stdout: &out, Stderr: &out})
 		return code, out.String(), err
+	}
+	// A daemon's probe, start and stop are short scripts: each is bounded, so a guest that
+	// doesn't answer can't hold the silo's reconcile (it is tried again).
+	daemon := func(ctx context.Context, argv []string) (int, string, error) {
+		ctx, cancel := context.WithTimeout(ctx, daemonTimeout)
+		defer cancel()
+		return run(ctx, argv)
 	}
 	now := a.now()
 	var again time.Duration
@@ -57,7 +67,7 @@ func (a *Agent) keepInside(ctx context.Context, rt kri.Runtime, s *v1.Silo) (tim
 	inSpec := map[string]bool{}
 	for _, d := range s.Spec.Daemons {
 		inSpec[d.Name] = true
-		code, out, err := run(ctx, keep.ProbeCommand(d))
+		code, out, err := daemon(ctx, keep.ProbeCommand(d))
 		if err != nil {
 			return 0, err
 		}
@@ -70,7 +80,7 @@ func (a *Agent) keepInside(ctx context.Context, rt kri.Runtime, s *v1.Silo) (tim
 		}
 		st, start, next := keep.DecideDaemon(d, prevD[d.Name], p, now)
 		if start {
-			if code, out, err := run(ctx, keep.StartCommand(d)); err != nil {
+			if code, out, err := daemon(ctx, keep.StartCommand(d)); err != nil {
 				return 0, err
 			} else if code != 0 {
 				a.log("%s/%s: daemon %s didn't start: %s", s.Namespace, s.Name, d.Name, tail(out, 200))
@@ -81,7 +91,7 @@ func (a *Agent) keepInside(ctx context.Context, rt kri.Runtime, s *v1.Silo) (tim
 	}
 	for name := range prevD {
 		if !inSpec[name] { // taken out of the spec: stop it
-			if _, _, err := run(ctx, keep.StopCommand(name)); err != nil {
+			if _, _, err := daemon(ctx, keep.StopCommand(name)); err != nil {
 				return 0, err
 			}
 		}
