@@ -375,6 +375,9 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 	if err := armedWrite(old, next, host); err != nil {
 		return err
 	}
+	if err := stoppedWrite(old, next, host); err != nil {
+		return err
+	}
 	return claimWrite(old, next, host)
 }
 
@@ -397,9 +400,28 @@ func armedWrite(old, next v1.SiloStatus, host string) error {
 	return nil
 }
 
-// HostConditions are the silo conditions only the silo's own host writes (K-082): its start claim
-// and its armed fence. HostWrite judges that host's writes of them.
-var HostConditions = []string{CondStartClaim, fence.ConditionArmed}
+// stoppedWrite judges a host's write of a silo's FenceStopped condition: a new or changed one must
+// be in that host's own name (fence.StoppedCondition's message starts with the host). The control
+// plane restarts an opted-in silo elsewhere only once its host reported this, so no other host may
+// report it for it.
+func stoppedWrite(old, next v1.SiloStatus, host string) error {
+	n := meta.FindCondition(next.Conditions, fence.ConditionStopped)
+	if n == nil || n.Status != meta.ConditionTrue {
+		return nil
+	}
+	if o := meta.FindCondition(old.Conditions, fence.ConditionStopped); o != nil && *o == *n {
+		return nil // as it stood: not this write's
+	}
+	if !strings.HasPrefix(n.Message, fence.StoppedPrefix(host)+" ") {
+		return fmt.Errorf("%w: %s may report its fence stopped a silo only in its own name (condition %s: %q)", ErrHostWrite, host, fence.ConditionStopped, n.Message)
+	}
+	return nil
+}
+
+// HostConditions are the silo conditions only the silo's own host writes (K-082): its start claim,
+// its armed fence, and its report that its fence stopped the silo. HostWrite judges that host's
+// writes of them.
+var HostConditions = []string{CondStartClaim, fence.ConditionArmed, fence.ConditionStopped}
 
 // KeepHostConditions puts back, in a status write by anyone but a host (a person, a tool, a
 // controller), the HostConditions as stored: they are never added, changed or removed that way. A
