@@ -21,11 +21,6 @@ import (
 	"kevaso.com/core/sdk/kri/fake"
 )
 
-// skipUntilAgentAppliesPerIngress: the per-Ingress apply is internal/ingress.ApplyEach; the
-// agent's ingress loop (internal/agent/ingress.go, host lane) calls it once its glue is merged.
-// Remove this skip with that change.
-var skipUntilAgentAppliesPerIngress = true
-
 // Design §0.8 (2026-11-14): a held ingress class holds back only the broken Ingress. With one
 // Ingress the proxy refuses (its config test fails on it) and another the driver refuses (an
 // annotation), a new Ingress in the same class still goes out at once, the broken ones keep their
@@ -33,9 +28,6 @@ var skipUntilAgentAppliesPerIngress = true
 // each one's own reason (ingress.Refused, what the control plane puts on it) is its own, not the
 // other's.
 func TestIngressClassHoldsBackOnlyTheBrokenIngress(t *testing.T) {
-	if skipUntilAgentAppliesPerIngress {
-		t.Skip("§0.8: needs internal/agent/ingress.go to call ingress.ApplyEach (host lane; patch in the network hand-over note)")
-	}
 	c := newCluster(t)
 	for _, n := range []string{"kevaso-system", "shop"} {
 		_ = c.admin.Create(c.ctx, ns(n))
