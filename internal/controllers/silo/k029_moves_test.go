@@ -2,6 +2,7 @@ package silo_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -236,13 +237,15 @@ func TestK029SilosPutOnAHostWithoutClaimingAreSortedOut(t *testing.T) {
 	ctl := x.ctl()
 	x.reconcile(ctl, "a")
 	np := x.get("a").Status.Service
+	// Written in the store itself, as a restore or a store from before claims leaves them: the
+	// API refuses such a status write now (it takes the claims, and a's are held).
 	for _, name := range []string{"b", "c", "d"} {
-		s := x.get(name)
-		s.Status.Host, s.Status.Phase = "hv1", "Running"
-		if name == "b" {
-			s.Status.Service = np // a's node port, unclaimed
-		}
-		x.must(x.c.UpdateStatus(x.ctx, s))
+		x.rawStatus(name, func(st *v1.SiloStatus) {
+			st.Host, st.Phase = "hv1", "Running"
+			if name == "b" {
+				st.Service = np // a's node port, unclaimed
+			}
+		})
 	}
 	// a's claims came from ctl; a fresh controller (a new leader) sees all four placed.
 	x.must(claimsReset(x))
@@ -287,4 +290,19 @@ func claimsReset(x *k029) error {
 		}
 	}
 	return nil
+}
+
+// rawStatus changes a silo's status in the store itself, past the API and its checks.
+func (x *k029) rawStatus(name string, f func(*v1.SiloStatus)) {
+	x.t.Helper()
+	k := store.Key{Kind: "Silo", Namespace: "dev", Name: name}
+	o, err := x.st.Get(x.ctx, k)
+	x.must(err)
+	var s v1.Silo
+	x.must(json.Unmarshal(o.Data, &s))
+	f(&s.Status)
+	b, err := json.Marshal(&s)
+	x.must(err)
+	_, err = x.st.Update(x.ctx, k, b, o.Revision)
+	x.must(err)
 }
