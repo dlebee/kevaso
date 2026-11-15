@@ -173,6 +173,24 @@ func ApplyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 	if m.Now != nil {
 		now = m.Now
 	}
+	// K-090: the proxy is asked every pass whether it still runs what this Memory had it take. A
+	// controller silo recreated with the same UID (its files the image's again), a proxy
+	// restarted on another config or a hand edit all mean the Memory is no longer the proxy's
+	// state: it is forgotten, what is served is established again, and nothing is skipped.
+	if lastGood == nil && m.served != nil && exec != nil {
+		base, _ := split(want.State)
+		if p0, err := d.Render(base); err == nil {
+			digest, _, why, err := look(ctx, exec, call, d, p0)
+			if err != nil {
+				m.want, m.served, m.seen = "", nil, ""
+				return EachResult{Result: Result{Hash: last}}, fmt.Errorf("what the proxy runs: %w", err)
+			}
+			if (why != "" && p0.Config.Path != "") || (why == "" && digest != m.seen) {
+				m.want, m.served, m.seen, m.recorded = "", nil, "", ""
+				last = ""
+			}
+		}
+	}
 	wantKey := hashOf(want) + "@" + d.Info().Name
 	due := !m.retryAt.IsZero() && !now().Before(m.retryAt)
 	if m.want == wantKey && last != "?" && last == m.outcome.Hash && !m.outcome.unchecked && !due {
@@ -439,7 +457,7 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 		if p.Config.Path != "" {
 			rec.Config = digestOf(p.Config.Data)
 		}
-		if m.recorded != h {
+		if m.recorded != h || last != p.Hash() { // K-090: whenever the config is (re)written, its record is too
 			b, _ := json.Marshal(rec)
 			if code, o, err := exec(ctx, WriteCmd(recPath+".next", "0600"), b); err != nil || code != 0 {
 				out.RecordProblem = fmt.Sprintf("write %s.next: exit %d: %s %v", recPath, code, tail(o), err)

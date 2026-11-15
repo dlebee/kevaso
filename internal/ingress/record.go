@@ -139,9 +139,18 @@ func readRecord(ctx context.Context, exec Exec, call Caller, d kic.Driver, p0 ki
 	}
 	if why != "" {
 		// The proxy can't be looked at. A driver with no way to ask keeps to its record, if no
-		// apply was under way; anything else is unknown.
+		// apply was under way. With no config file there, nothing can be loaded but what is
+		// written next: the record says at most what may still be served (it may overstate it,
+		// which only keeps more). Anything else is unknown.
 		if p0.Config.Path == "" && cur != nil && !hasNext {
 			return seen{served: &cur.State, inRecord: true}, nil
+		}
+		if p0.Config.Path != "" {
+			for _, r := range []*record{next, cur} {
+				if r != nil {
+					return seen{served: &r.State}, nil
+				}
+			}
 		}
 		if !hasCur && !hasNext {
 			why += ", and there is no record of what was applied"
