@@ -26,7 +26,7 @@ sleep 3; [ "$(docker inspect -f '{{.State.Running}}' kvt-foreign)" = true ]`
 // installed with this build, Docker installed before Kevaso (KEVASO_METAL_PREINSTALL=
 // MetalForeignDocker) and podman after it:
 //   - a silo whose main process is a binary named kevasod doesn't make kvoadm reset refuse;
-//   - a step made to fail (a kvt-* unit that will not stop) keeps the install record, and
+//   - a step made to fail (an immutable file under /var/lib/kevaso) keeps the install record, and
 //     a second look shows the same plan;
 //   - the reset done: Docker, its foreign container (running) and volume stay, Kevaso's
 //     containers are gone, podman works, and the install record is gone.
@@ -82,15 +82,11 @@ spec:
 		}
 	}
 
-	// A step made to fail: a kvt-* unit whose stop times out. (A busy mount doesn't: the reset
-	// stops every kvt-* unit and unmounts what is under its paths. An immutable file doesn't
-	// either: "remove Kevaso's files" ends in true, the record goes, and only the checklist
-	// then sees the directory.) KillMode=none and a process that ignores SIGTERM make
-	// systemctl stop fail, which fails the stop step and keeps the record (K-114).
-	c.mustSh(`systemd-run --unit=kvt-stuck --property=KillMode=none --property=TimeoutStopSec=5 --collect sh -c 'trap "" TERM; sleep 3600'`)
-	t.Cleanup(func() {
-		_, _ = c.sh("systemctl kill -s KILL kvt-stuck 2>/dev/null; systemctl reset-failed kvt-stuck 2>/dev/null; true")
-	})
+	// A step made to fail: a file under /var/lib/kevaso no one can remove (immutable): "remove
+	// Kevaso's files" fails (286d1e4). (A kvt-* unit with KillMode=none doesn't: once its stop
+	// times out systemd counts it stopped.)
+	c.mustSh("touch /var/lib/kevaso/kvt-stuck && chattr +i /var/lib/kevaso/kvt-stuck")
+	t.Cleanup(func() { _, _ = c.sh("chattr -i /var/lib/kevaso/kvt-stuck 2>/dev/null; rm -f /var/lib/kevaso/kvt-stuck; true") })
 	t.Logf("the foreign container before the resets: %s", foreign())
 	cut, code := reset("--force", "--yes")
 	t.Logf("the foreign container after the cut reset: %s", foreign())
@@ -117,7 +113,7 @@ spec:
 		t.Errorf("the packages in the plan changed after the cut reset:\nbefore:\n%s\nafter:\n%s", a, b)
 	}
 
-	c.mustSh("systemctl kill -s KILL kvt-stuck 2>/dev/null; systemctl reset-failed kvt-stuck 2>/dev/null; true")
+	c.mustSh("chattr -i /var/lib/kevaso/kvt-stuck && rm -f /var/lib/kevaso/kvt-stuck")
 	done, code := reset("--force", "--yes")
 	t.Logf("kvoadm reset (exit %d):\n%s", code, done)
 	if code != 0 {
