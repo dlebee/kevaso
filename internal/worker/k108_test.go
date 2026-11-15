@@ -35,7 +35,6 @@ import (
 // Both sides then count the same beats, the control plane never fewer, in whatever order the two
 // halves land (a worker that never says WorkerHeld is counted on every beat, as before).
 func TestK108AHeldWorkersHeartbeatIsNoContact(t *testing.T) {
-	t.Skip("K-108, network lane: Heartbeat marks contact while held and never says so in the beat (fix described above)")
 	for _, tc := range []struct {
 		name          string
 		before, after bool
