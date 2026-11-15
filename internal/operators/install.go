@@ -294,8 +294,13 @@ func (in *Installer) Install(ctx context.Context, p *Package, host Host, o Insta
 		stored[i] = s
 	}
 	decisions, errs := Decide(p.Name(), want, stored, o.Adopt)
+	outside, err := in.outsideGrants(ctx, p)
+	if err != nil {
+		return err
+	}
+	errs = append(errs, outside...)
 	var prev v1.Plugin
-	err := in.API.Get(ctx, "Plugin", "", p.Name(), &prev)
+	err = in.API.Get(ctx, "Plugin", "", p.Name(), &prev)
 	switch {
 	case client.IsNotFound(err):
 	case err != nil:
@@ -562,4 +567,74 @@ func (in *Installer) List(ctx context.Context, now time.Time) ([]Listed, error) 
 	}
 	slices.SortFunc(out, func(a, b Listed) int { return strings.Compare(a.Name, b.Name) })
 	return out, nil
+}
+
+// outsideGrants checks what bindings the package did not write give the plugin's service account
+// (an admin's kvo apply, an older install): the same rules as the package's own roles, so a role
+// written outside the installer can't hand the plugin `*/token` or a forbidden resource (K-010).
+func (in *Installer) outsideGrants(ctx context.Context, p *Package) ([]string, error) {
+	var errs []string
+	sa := p.ServiceAccount()
+	binds := func(subjects []v1.Subject, bindingNS string) bool {
+		for _, s := range subjects {
+			ns := s.Namespace
+			if ns == "" {
+				ns = bindingNS
+			}
+			if s.Kind == "ServiceAccount" && s.Name == sa && ns == v1.PluginNamespace {
+				return true
+			}
+		}
+		return false
+	}
+	check := func(what string, ref v1.PluginObject) error {
+		obj, err := in.stored(ctx, ref)
+		if err != nil || obj == nil {
+			return err // a binding to nothing grants nothing
+		}
+		var rules []v1.PolicyRule
+		switch r := obj.(type) {
+		case *v1.ClusterRole:
+			rules = r.Rules
+		case *v1.Role:
+			rules = r.Rules
+		}
+		for i, rule := range rules {
+			for _, e := range RuleProblems(rule) {
+				errs = append(errs, fmt.Sprintf("%s (not from the package) gives %s/%s %s: rules[%d]: %s", what, v1.PluginNamespace, sa, refString(ref), i, e))
+			}
+		}
+		return nil
+	}
+	for _, kind := range []string{"ClusterRoleBinding", "RoleBinding"} {
+		l, err := in.API.List(ctx, kind, "")
+		if err != nil {
+			return nil, err
+		}
+		for _, raw := range l.Items {
+			var b struct {
+				meta.ObjectMeta `json:"metadata"`
+				RoleRef         v1.RoleRef   `json:"roleRef"`
+				Subjects        []v1.Subject `json:"subjects"`
+			}
+			if err := json.Unmarshal(raw, &b); err != nil {
+				return nil, fmt.Errorf("%s: %w", kind, err)
+			}
+			if v1.OwnerPlugin(&b.ObjectMeta) == p.Name() || !binds(b.Subjects, b.Namespace) {
+				continue
+			}
+			ref := v1.PluginObject{Kind: b.RoleRef.Kind, Name: b.RoleRef.Name}
+			if ref.Kind == "Role" {
+				ref.Namespace = b.Namespace
+			}
+			what := refString(v1.PluginObject{Kind: kind, Name: b.Name, Namespace: b.Namespace})
+			if ref.Kind != "Role" && ref.Kind != "ClusterRole" {
+				continue
+			}
+			if err := check(what, ref); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return errs, nil
 }

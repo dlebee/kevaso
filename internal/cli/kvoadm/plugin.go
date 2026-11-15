@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/term"
+
 	"kevaso.com/core/internal/sshboot"
 	"kevaso.com/core/sdk/kplugin"
 )
@@ -40,8 +42,12 @@ var pluginName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
 // capabilities, read-only system, only the network and its own socket folder; its credentials (a
 // cloud token) through systemd's LoadCredential, readable by it alone. A side whose manifest asks
 // for more (o.Needs: root, capabilities, devices, the host's mount namespace, folders to write)
-// gets exactly that and keeps every other restriction that still applies.
-func PluginUnit(o PluginOptions) string {
+// gets exactly that and keeps every other restriction that still applies. The needs are checked
+// again here, where they are granted, whatever produced them (K-039).
+func PluginUnit(o PluginOptions) (string, error) {
+	if err := checkGrant(o); err != nil {
+		return "", err
+	}
 	n := o.Needs
 	bin := "/usr/local/bin/kevaso-plugin-" + o.Name
 	exec := bin + " serve --socket " + o.socket()
@@ -141,7 +147,37 @@ func PluginUnit(o PluginOptions) string {
 	w("")
 	w("[Install]")
 	w("WantedBy=multi-user.target")
-	return b.String()
+	return b.String(), nil
+}
+
+// checkGrant refuses needs the manifest rules don't allow (a write path that isn't the plugin's
+// own folder, …): the same check as reading a manifest, at the place they are granted.
+func checkGrant(o PluginOptions) error {
+	if !pluginName.MatchString(o.Name) {
+		return fmt.Errorf("plugin name %q", o.Name)
+	}
+	if err := o.Needs.Check(o.Name, o.side()); err != nil {
+		return fmt.Errorf("plugin %s: %w", o.Name, err)
+	}
+	return nil
+}
+
+// WritePathScript makes sure write path p is a real folder on the host before the unit grants it:
+// no part of it a symlink (systemd would grant where it points), not something else that isn't a
+// folder; it is made (0700) only if missing, so an existing folder's mode is never changed. A
+// state, cache or log folder of a dynamic-user side is systemd's own symlink into private/: that
+// one link is the only one allowed.
+func WritePathScript(p string) string {
+	q := sshboot.Quote(p)
+	private := "''"
+	if _, rel, ok := systemdDir(p); ok {
+		private = sshboot.Quote("private/" + rel)
+	}
+	return "p=" + q + "; q=''; IFS=/; set -f; for c in ${p#/}; do q=\"$q/$c\"; " +
+		"if [ -L \"$q\" ] && ! { [ \"$q\" = \"$p\" ] && [ \"$(readlink \"$q\")\" = " + private + " ]; }; then " +
+		"echo \"$q is a symlink: refusing to grant it\" >&2; exit 1; fi; done; unset IFS; " +
+		"if [ -e \"$p\" ] && [ ! -d \"$p\" ]; then echo \"$p is not a folder: refusing to grant it\" >&2; exit 1; fi; " +
+		"[ -d \"$p\" ] || install -d -m 0700 -- \"$p\""
 }
 
 // systemdDir says which of systemd's own folders (StateDirectory= and the like) p is in, if any,
@@ -190,16 +226,35 @@ func readManifest(o *PluginOptions) error {
 	return nil
 }
 
-// grantNeeds shows the operator what the side gets, and refuses privileges not granted (--yes).
-func grantNeeds(o PluginOptions, out io.Writer) error {
+// grantNeeds shows the operator what the side gets (every folder it may write included), and
+// refuses privileges not granted: --yes, or "y" to the question in a terminal.
+func grantNeeds(o PluginOptions, in *bufio.Reader, stdin io.Reader, out io.Writer) error {
+	if err := checkGrant(o); err != nil {
+		return err
+	}
 	_, _ = fmt.Fprintf(out, "→ plugin %s, %s side:\n", o.Name, o.side())
 	for _, l := range o.Needs.Summary() {
 		_, _ = fmt.Fprintf(out, "    %s\n", l)
 	}
-	if o.Needs.Privileged() && !o.Yes {
-		return fmt.Errorf("plugin %s's %s side asks for the privileges above (manifest %s): add --yes to grant them", o.Name, o.side(), o.Manifest)
+	if !o.Needs.Privileged() || o.Yes {
+		return nil
+	}
+	refused := fmt.Errorf("plugin %s's %s side asks for the privileges above (manifest %s): add --yes to grant them", o.Name, o.side(), o.Manifest)
+	if !isTerminal(stdin) {
+		return refused
+	}
+	_, _ = fmt.Fprintf(out, "Grant these to plugin %s's %s side? [y/N] ", o.Name, o.side())
+	a, err := readLine(in)
+	if err != nil || !slices.Contains([]string{"y", "yes"}, strings.ToLower(strings.TrimSpace(a))) {
+		return refused
 	}
 	return nil
+}
+
+// isTerminal: whether the operator can be asked on stdin.
+var isTerminal = func(stdin io.Reader) bool {
+	f, ok := stdin.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
 }
 
 // pluginHardening is every plugin unit's sandbox (operators' too, operator.go).
@@ -351,7 +406,12 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 	if err := readManifest(&o); err != nil {
 		return err
 	}
-	if err := grantNeeds(o, out); err != nil {
+	in := bufio.NewReader(stdin)
+	if err := grantNeeds(o, in, stdin, out); err != nil {
+		return err
+	}
+	unitText, err := PluginUnit(o)
+	if err != nil {
 		return err
 	}
 	bin, err := os.ReadFile(o.Binary)
@@ -380,7 +440,7 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 	if err != nil {
 		return err
 	}
-	conn, _, err := dialHost(ctx, o.InitOptions, bufio.NewReader(stdin), stdin, out)
+	conn, _, err := dialHost(ctx, o.InitOptions, in, stdin, out)
 	if err != nil {
 		return err
 	}
@@ -394,9 +454,9 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 		return err
 	}
 	if !o.Needs.HostMounts {
-		for _, d := range o.Needs.WritePaths { // the unit's namespace needs them there
-			if _, err := conn.Run(ctx, "install -d -m 0700 "+sshboot.Quote(d), nil); err != nil {
-				return err
+		for _, d := range o.Needs.WritePaths { // the unit's namespace needs them there, as real folders
+			if _, err := conn.Run(ctx, WritePathScript(d), nil); err != nil {
+				return fmt.Errorf("plugin %s: write path %s: %w", o.Name, d, err)
 			}
 		}
 	}
@@ -417,7 +477,7 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 		}
 	}
 	unit := PluginUnitName(o.Name, o.side())
-	if err := conn.InstallUnit(ctx, unit, []byte(PluginUnit(o))); err != nil {
+	if err := conn.InstallUnit(ctx, unit, []byte(unitText)); err != nil {
 		return err
 	}
 	if _, err := conn.Run(ctx, "sleep 2; systemctl is-active --quiet "+sshboot.Quote(unit), nil); err != nil {

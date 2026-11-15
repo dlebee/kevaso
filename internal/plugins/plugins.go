@@ -42,6 +42,8 @@ type Registry struct {
 	Every    time.Duration // how often to look (default 2s)
 	Log      func(string, ...any)
 	OnChange func() // after a plugin is added or removed
+	// Limits bound every call to a registered plugin (deadlines, calls in flight); zero: defaults.
+	Limits Limits
 
 	mu      sync.RWMutex
 	plugins map[string]*Plugin // by name
@@ -50,7 +52,7 @@ type Registry struct {
 
 // Add registers a plugin directly (built-in plugins, tests).
 func (r *Registry) Add(ctx context.Context, c Conn) error {
-	info, err := c.Info(ctx)
+	info, err := guard("(new)", c, r.Limits).Info(ctx)
 	if err != nil {
 		return err
 	}
@@ -59,6 +61,7 @@ func (r *Registry) Add(ctx context.Context, c Conn) error {
 }
 
 func (r *Registry) put(p *Plugin, socket string) {
+	p.Conn = guard(p.Info.Name, p.Conn, r.Limits)
 	r.mu.Lock()
 	if r.plugins == nil {
 		r.plugins, r.sockets = map[string]*Plugin{}, map[string]string{}
