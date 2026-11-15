@@ -158,6 +158,8 @@ type Agent struct {
 	cp            *Watermark // the control plane this worker trusts (watermark.go); via watermark()
 	cpOnce        sync.Once
 	staleNoted    sync.Map // silo UID → logged once that its cache was stale at a start
+	claims        sync.Map // silo UID → *claimKeeper: its start claim, kept fresh while it starts here
+	reported      sync.Map // silo UID → generation: reported Running in this run since its last start here
 	createBackoff sync.Map // silo UID → createBackoff
 }
 
@@ -387,6 +389,9 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		s = o.(*v1.Silo)
 	}
 	if s == nil || s.Status.Host != a.HostName || s.DeletionTimestamp != nil {
+		if s != nil {
+			a.endClaim(s.UID) // not starting here any more (a keeper's renewal refuses it anyway)
+		}
 		if err := a.removeEverywhere(ctx, k, s); err != nil {
 			return engine.Result{}, err
 		}
@@ -545,18 +550,24 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			return engine.Result{}, err
 		}
 		// K-088: the start claim before anything of the silo runs here or gets its secrets: an
-		// init container is the silo's code, with its image, volumes and secrets. Kept fresh while
-		// the steps run; a renewal that finds it placed elsewhere, or the fence, ends them.
+		// init container is the silo's code, with its image, volumes and secrets. Kept fresh, across
+		// reconciles, until it is reported Running here (claimKeeper); a renewal that finds it placed
+		// elsewhere, or the fence, ends whatever of its start runs.
 		if err := a.claimStart(ctx, s); err != nil {
 			return a.lostClaim(s, err)
 		}
-		sctx, claimKept := a.keepClaim(ctx, s)
-		defer func() { _ = claimKept() }() // renewals end with this reconcile, whatever its outcome
+		kp := a.keepClaim(s)
+		ended := func(why, err error) (engine.Result, error) {
+			a.settleClaim(ctx, rt, s)
+			return a.startEnded(s, why, err)
+		}
+		sctx, claimKept := kp.within(ctx)
+		defer func() { _ = claimKept() }()
 		hs, hostSecrets := rt.(kri.HostSecrets)
 		if hostSecrets {
 			// Its file and env secrets are there before anything of it starts (init containers too).
 			if err := a.deliverFromHost(sctx, hs, s, true); err != nil {
-				return a.startEnded(s, claimKept(), err)
+				return ended(claimKept(), err)
 			}
 		}
 		if initContainers {
@@ -565,7 +576,7 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 				return ic.RunInit(ctx, id, kri.InitStep{Name: step.Name, Shell: step.Shell, Run: step.Run}, out)
 			})
 			if err != nil || !done {
-				return a.startEnded(s, claimKept(), err)
+				return ended(claimKept(), err)
 			}
 		}
 		if !hostSecrets {
@@ -574,17 +585,24 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		// Every start begins its probes afresh: startup's deadline counts from this boot.
 		a.probed.Delete(s.UID)
 		if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Probes, st.StartedAt = nil, nil }); err != nil {
-			return a.startEnded(s, claimKept(), err)
+			return ended(claimKept(), err)
 		}
-		if ended := claimKept(); ended != nil {
-			return a.startEnded(s, ended, nil)
+		if why := claimKept(); why != nil {
+			return ended(why, nil)
 		}
-		// Claimed once more right before the start: no renewal runs now, and the start follows
-		// a claim that applied on what is stored at this moment.
-		if err := a.claimStart(ctx, s); err != nil {
+		// Claimed once more right before the start, with no renewal in flight: the start follows a
+		// claim that applied on what is stored at this moment. Renewals go on during the Start.
+		if err := kp.claimNow(ctx); err != nil {
+			a.settleClaim(ctx, rt, s)
 			return a.lostClaim(s, err)
 		}
-		if err := rt.Start(ctx, id); err != nil {
+		stctx, startKept := kp.within(ctx)
+		err := rt.Start(stctx, id)
+		if why := startKept(); why != nil {
+			return ended(why, err) // placed elsewhere or fenced meanwhile: the removal or the fence ends what came up
+		}
+		if err != nil {
+			a.settleClaim(ctx, rt, s)
 			return engine.Result{}, err
 		}
 		if _, ok := rt.(kri.InitContainers); !ok && s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" {
@@ -618,7 +636,14 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		if err := a.claimStart(ctx, s); err != nil {
 			return a.lostClaim(s, err)
 		}
-		if err := rt.Start(ctx, id); err != nil {
+		stctx, startKept := a.keepClaim(s).within(ctx) // kept fresh until it is reported Running
+		err := rt.Start(stctx, id)
+		if why := startKept(); why != nil {
+			a.settleClaim(ctx, rt, s)
+			return a.startEnded(s, why, err)
+		}
+		if err != nil {
+			a.settleClaim(ctx, rt, s)
 			return engine.Result{RequeueAfter: probes.Backoff(r.Backoff)}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 				st.Phase = PhaseFailed
 				setCond(st, "Ready", meta.ConditionFalse, "RuntimeFailed", "starting it again failed: "+err.Error(), s.Generation, a.now())
@@ -630,23 +655,51 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	// Running: its guest mounts its volumes (VMs), the silo's policy (runtimes that enforce grants
 	// themselves), its local endpoint, its file and env secrets (written by the host), then init
 	// steps, then Ready. Its panes are fetched while it runs.
-	if err := a.mountGuestVolumes(ctx, rt, s, vols); err != nil {
+	//
+	// Until it is reported Running here, its start claim is kept fresh (a VM's and an OpenShell
+	// sandbox's init steps run now, through Exec). A start this run of the agent didn't make (kevasod
+	// restarted while it booted) is claimed again first.
+	sctx, claimKept := ctx, func() error { return nil }
+	if s.Status.Phase != PhaseRunning && !a.reportedRunning(s) { // (a cache behind our own Running write: not a new start)
+		kp := a.claimKept(s)
+		if kp == nil {
+			if err := a.claimStart(ctx, s); err != nil {
+				return a.lostClaim(s, err)
+			}
+			kp = a.keepClaim(s)
+		}
+		sctx, claimKept = kp.within(ctx)
+		defer func() { _ = claimKept() }()
+	} else {
+		a.endClaim(s.UID)
+	}
+	starting := func(err error) (engine.Result, error) {
+		if why := claimKept(); why != nil {
+			a.settleClaim(ctx, rt, s)
+			return a.startEnded(s, why, err)
+		}
 		return engine.Result{}, err
 	}
+	if err := a.mountGuestVolumes(sctx, rt, s, vols); err != nil {
+		return starting(err)
+	}
 	if pr, ok := rt.(kri.Policied); ok {
-		if err := a.applyPolicy(ctx, pr, s); err != nil {
-			return engine.Result{}, err
+		if err := a.applyPolicy(sctx, pr, s); err != nil {
+			return starting(err)
 		}
 	}
 	if err := a.keepEndpoint(ctx, rt, s, rs.Address); err != nil {
-		return engine.Result{}, err
+		return starting(err)
 	}
-	if err := a.deliver(ctx, rt, s); err != nil {
-		return engine.Result{}, err
+	if err := a.deliver(sctx, rt, s); err != nil {
+		return starting(err)
 	}
 	a.keepPanes(ctx, s, rs.Address)
-	if done, err := a.runInit(ctx, rt, s); err != nil || !done {
-		return engine.Result{}, err
+	if done, err := a.runInit(sctx, rt, s); err != nil || !done {
+		return starting(err)
+	}
+	if why := claimKept(); why != nil {
+		return starting(nil)
 	}
 	// Probes (design §0.6), if it has any: Started, Ready and Degraded follow them. Without any,
 	// it's Started and Ready now, and nothing else is ensured.
@@ -687,6 +740,8 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	}); err != nil {
 		return engine.Result{}, err
 	}
+	a.endClaim(s.UID) // reported Running: the heartbeat speaks for the host now
+	a.reported.Store(s.UID, s.Generation)
 	// Ready or not, its daemons and upkeep are kept (a daemon may be what makes it ready).
 	keepAgain, err := a.keepInside(ctx, rt, s)
 	if err != nil {
@@ -791,8 +846,34 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 	if err != nil {
 		return true, err
 	}
-	if err := rr.Reset(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
-		Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath}); err != nil {
+	// The gate again, the last thing before the disk or container is made afresh (review claim
+	// 3): the stop took a while too (cloud-hypervisor waits up to 30s for the guest). A runtime
+	// that can (gatedResetter) asks it inside its Reset, right before it removes anything; for
+	// the others it is taken right before Reset. A request that changed meanwhile leaves the
+	// silo stopped with its disk, and it starts again as it is.
+	gate := func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second) // a runtime may hold its lock meanwhile
+		defer cancel()
+		ok, err := a.gateReset(ctx, s, image, due, func(st *v1.SiloStatus) {
+			setCond(st, "Ready", meta.ConditionFalse, "Updating", "stopped for "+what+": its disk is made afresh now (volumes kept)", s.Generation, a.now())
+		})
+		if err == nil && !ok {
+			err = errResetTakenBack
+		}
+		return err
+	}
+	spec := kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
+		Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath}
+	if g, ok := rr.(gatedResetter); ok {
+		err = g.ResetGated(ctx, spec, gate)
+	} else if err = gate(ctx); err == nil {
+		err = rr.Reset(ctx, spec)
+	}
+	if errors.Is(err, errResetTakenBack) {
+		a.log("silo %s/%s: its reset or image changed while it stopped: its disk is kept, looking again", s.Namespace, s.Name)
+		return true, nil
+	}
+	if err != nil {
 		_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 			setCond(st, "Updated", meta.ConditionFalse, failReason(err, "ResetFailed"), err.Error(), s.Generation, a.now())
 		})
@@ -807,6 +888,17 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		setCond(st, "Updated", meta.ConditionTrue, "Reset", "reset onto "+image+" (stop-first, volumes kept)", s.Generation, a.now())
 	})
 }
+
+// gatedResetter is a runtime whose Reset asks gate right before it removes or overwrites
+// anything of the silo (its root disk, its containers), after its own stop: an error from gate
+// ends the reset with nothing removed, and is returned as is.
+type gatedResetter interface {
+	ResetGated(ctx context.Context, spec kri.Spec, gate func(context.Context) error) error
+}
+
+// errResetTakenBack: the reset gate found the request changed (taken back, another image, the
+// silo changed or placed elsewhere): nothing is removed.
+var errResetTakenBack = errors.New("the reset or the image changed since it was asked for")
 
 // gateReset writes mutate onto the stored silo only if it is still s, at s's generation, placed
 // here, resolving to image, with the reset due (due), in one compare-and-swap: ok says it applied.
