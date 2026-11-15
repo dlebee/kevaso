@@ -63,8 +63,8 @@ func Conformance(t *testing.T, s Suite) {
 		t.Fatalf("info: %v", err)
 	}
 	t.Run("info", func(t *testing.T) {
-		if info.Name == "" || info.Protocol != kplugin.Protocol {
-			t.Errorf("name %q, protocol %q", info.Name, info.Protocol)
+		if info.Name == "" || info.Protocol != kplugin.Protocol || info.Revision != kplugin.Revision {
+			t.Errorf("name %q, protocol %q, sdk wire revision %d (want %d)", info.Name, info.Protocol, info.Revision, kplugin.Revision)
 		}
 		seen := map[string]bool{}
 		for _, cl := range append(append([]kplugin.Class(nil), info.Storage...), info.LoadBalancers...) {

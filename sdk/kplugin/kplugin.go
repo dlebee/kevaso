@@ -20,6 +20,15 @@ import (
 // Protocol is the protocol version this package speaks.
 const Protocol = "kevaso.plugin/v1"
 
+// Revision is the wire revision of this package: which messages and fields it sends and what
+// they mean. A plugin's server reports it in Info, filled in by Serve (like Protocol), so it is
+// the sdk's the plugin was built with. Bump it when a message or a field's meaning changes; core
+// serves plugins of revisions MinRevision to Revision and refuses others.
+const Revision = 1
+
+// MinRevision is the oldest plugin revision core still serves.
+const MinRevision = 1
+
 // Dir is where plugins put their sockets: Dir/NAME/plugin.sock for the controller side (on control
 // planes), Dir/NAME/node.sock for the node side (on workers).
 const Dir = "/run/kevaso-plugins"
@@ -35,6 +44,9 @@ type Info struct {
 	Name     string `json:"name"` // e.g. linode
 	Version  string `json:"version,omitempty"`
 	Protocol string `json:"protocol"`
+	// Revision is the sdk wire revision the plugin was built with (filled in by Serve; 0 from an
+	// sdk before revisions).
+	Revision int `json:"revision,omitempty"`
 	// Hosts: the plugin recognises its own machines among the cluster's hosts (DescribeHosts).
 	Hosts bool `json:"hosts,omitempty"`
 	// LoadBalancers and Storage are the classes it serves; DNS the DNS provider names.
