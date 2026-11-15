@@ -155,37 +155,39 @@ func try(root, tmp string, m mutation, runPat, only string) result {
 	return r
 }
 
-// verdict reads go test -json output: the first test that failed, or a build failure.
+// verdict reads go test -json output: the first test that failed, or a build failure (the
+// mutation does not compile: "invalid", not a kill).
 func verdict(b []byte) (string, string) {
 	type ev struct {
 		Action, Package, Test, Output string
 	}
-	var buildErr string
+	var built, pkgFailed string
 	for _, line := range strings.Split(string(b), "\n") {
 		var e ev
 		if json.Unmarshal([]byte(line), &e) != nil {
-			if strings.Contains(line, "[build failed]") || strings.Contains(line, "cannot use") {
-				buildErr = strings.TrimSpace(line)
+			if strings.Contains(line, "[build failed]") || strings.Contains(line, "[setup failed]") {
+				built = strings.TrimSpace(line)
+			} else if built == "" && strings.Contains(line, ".go:") {
+				pkgFailed = strings.TrimSpace(line) // a compiler message
 			}
 			continue
+		}
+		if strings.Contains(e.Output, "[build failed]") || strings.Contains(e.Output, "[setup failed]") {
+			built = strings.TrimSpace(e.Output)
 		}
 		if e.Action == "fail" && e.Test != "" {
 			return "killed", e.Package[strings.LastIndex(e.Package, "/")+1:] + "." + e.Test
 		}
 		if e.Action == "fail" && e.Test == "" {
-			buildErr = "package " + e.Package + " failed"
-		}
-		if strings.Contains(e.Output, "[build failed]") || strings.Contains(e.Output, "setup failed") {
-			buildErr = "build failed: " + strings.TrimSpace(e.Output)
+			pkgFailed = "package " + e.Package + " failed"
 		}
 	}
-	if buildErr != "" {
-		// A package failing with no failing test and no build error text is a panic or timeout:
-		// still a failure the mutation caused.
-		if strings.HasPrefix(buildErr, "build failed") {
-			return "invalid", buildErr
-		}
-		return "killed", buildErr + " (package-level: panic, timeout or exit)"
+	switch {
+	case built != "":
+		return "invalid", built + " " + pkgFailed
+	case pkgFailed != "":
+		// No test failed but the package did: a panic, a crash or a timeout the mutation caused.
+		return "killed", pkgFailed + " (package-level: panic, timeout or exit)"
 	}
 	return "SURVIVED", ""
 }

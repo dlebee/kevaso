@@ -264,7 +264,7 @@
   "guard": "mustStop requires the silo's own opt-in",
   "file": "internal/agent/agent.go",
   "find": "return stop && a.silence() > after",
-  "replace": "return a.silence() > after",
+  "replace": "return (stop || true) && a.silence() > after",
   "mutation": "opt-in ignored",
   "packages": [
    "./internal/agent",
@@ -277,7 +277,7 @@
   "guard": "mustStop waits for the silo's own after",
   "file": "internal/agent/agent.go",
   "find": "return stop && a.silence() > after",
-  "replace": "return stop",
+  "replace": "return stop && a.silence() > 0*after",
   "mutation": "after ignored",
   "packages": [
    "./internal/agent",
@@ -668,7 +668,7 @@
   "guard": "silo controller: only an opted-in silo restarts itself",
   "file": "internal/controllers/silo/silo.go",
   "find": "if !stops {\n\t\treturn false, \"\"\n\t}\n\thost := s.Status.Host",
-  "replace": "if false {\n\t\treturn false, \"\"\n\t}\n\thost := s.Status.Host",
+  "replace": "if !stops && false {\n\t\treturn false, \"\"\n\t}\n\thost := s.Status.Host",
   "mutation": "check removed",
   "packages": [
    "./internal/controllers/silo",
@@ -696,7 +696,7 @@
   "guard": "freshClaim: a claim left by another host is not this placement's",
   "file": "internal/controllers/silo/silo.go",
   "find": "if !ok || (host != \"\" && host != s.Status.Host) {",
-  "replace": "if !ok {",
+  "replace": "if !ok || (host != \"\" && host != host) {",
   "mutation": "host check dropped",
   "packages": [
    "./internal/controllers/silo",
@@ -752,7 +752,7 @@
   "guard": "Contacts.Observe: only a changed stamp is a contact",
   "file": "internal/controllers/host/contacts.go",
   "find": "prev.stamp.Equal(*h.Status.LastHeartbeat) {",
-  "replace": "false {",
+  "replace": "false && prev.stamp.Equal(*h.Status.LastHeartbeat) {",
   "mutation": "every observation is a contact",
   "packages": [
    "./internal/controllers/host",
@@ -1108,7 +1108,7 @@
   "guard": "kni: a hostPort whose every source is left out is closed",
   "file": "builtin/kni/rules.go",
   "find": "if shut {\n\t\t\t\tcontinue // every source left out: closed, not open to all\n\t\t\t}",
-  "replace": "if false {\n\t\t\t\tcontinue\n\t\t\t}",
+  "replace": "if false && shut {\n\t\t\t\tcontinue\n\t\t\t}",
   "mutation": "open to all",
   "packages": [
    "./builtin/kni",

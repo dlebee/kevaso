@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/apiserver"
+	"kevaso.com/core/internal/boottime"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/fence"
@@ -670,5 +673,91 @@ func TestInContactMeansTheSilenceIsWithinTheShortestAfter(t *testing.T) {
 		if got := silentFor(silence).inContact(); got != want {
 			t.Errorf("silent for %s: inContact = %v, want %v", silence, got, want)
 		}
+	}
+}
+
+// stubbornRuntime has a silo that a Kill does not stop: it reports Running whatever is done.
+type stubbornRuntime struct {
+	*fake.Runtime
+	kills atomic.Int32
+}
+
+func (r *stubbornRuntime) Kill(ctx context.Context, id kri.ID) error {
+	r.kills.Add(1)
+	return r.Runtime.Kill(ctx, id)
+}
+
+func (r *stubbornRuntime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
+	st, err := r.Runtime.Status(ctx, id)
+	if err == nil && st.State != kri.Absent {
+		st.State = kri.Running
+	}
+	return st, err
+}
+
+// K-067: the agent's fence counts a silo as stopped only once the runtime says it is not running.
+// A kill that returned but left the silo running is tried again on the next check; if it were
+// counted done, a silo that asked to stop would run on, cut off, until the control plane returned.
+func TestTheFenceKillsAgainASiloThatStillRunsAfterTheKill(t *testing.T) {
+	inner := fake.New()
+	rt := &stubbornRuntime{Runtime: inner}
+	g := newGuardRig(t, rt, func(a *Agent) {
+		base := time.Now().Add(-time.Hour)
+		a.LastContact = func() time.Time { return base } // an hour without the control plane
+	})
+	s := g.create(stopAfter("1m"), "hv1", "")
+	g.cacheIs(s)
+	g.rt = inner
+	if err := inner.Create(g.ctx, kri.Spec{ID: idOf(s), Image: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := inner.Start(g.ctx, idOf(s)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(g.ctx, 8*time.Second)
+	defer cancel()
+	go g.a.fence(ctx, engine.New(g.a.Clock)) // checks once a second
+	for rt.kills.Load() < 2 {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("killed %d time(s): a silo that still runs after the kill was counted as stopped", rt.kills.Load())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+// §0.7 and K-067: the Armed condition (which lets the control plane start the silo elsewhere) is
+// written only after the fence record on disk holds the silo with its StopAfter: it is read at
+// the moment of the write, not afterwards.
+func TestTheArmedConditionIsWrittenOnlyOnceTheFenceRecordHoldsTheSilo(t *testing.T) {
+	dir := t.TempDir()
+	g := newGuardRig(t, nil, func(a *Agent) { a.FenceDir = dir })
+	s := g.create(stopAfter("2m"), "hv1", "")
+	if err := fence.WriteStamp(dir, fence.Stamp{Version: fence.RecordVersion, BootID: boottime.ID(), Boot: boottime.Now(), At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	var armedWrites, knownThen int
+	g.a.Client = client.New(g.ts.URL)
+	g.a.Client.HTTP = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/status") {
+			body, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			if bytes.Contains(body, []byte(fence.ConditionArmed)) {
+				armedWrites++
+				if rec, err := fence.Read(dir); err == nil && slices.ContainsFunc(rec.Silos, func(x fence.Silo) bool { return x.ID.UID == s.UID && x.StopAfter == 2*time.Minute }) {
+					knownThen++
+				}
+			}
+		}
+		return http.DefaultTransport.RoundTrip(r)
+	})}
+	if err := g.a.armFence(g.ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if armedWrites != 1 {
+		t.Fatalf("%d writes of the Armed condition, want 1", armedWrites)
+	}
+	if knownThen != 1 {
+		t.Fatal("the Armed condition was written before the fence record held the silo: the control plane may start it elsewhere while nothing here would stop it")
 	}
 }
