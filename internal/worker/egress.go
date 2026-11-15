@@ -35,6 +35,7 @@ type egress struct {
 	silos    func() []*v1.Silo
 	grants   func() []*v1.Grant
 	now      func() time.Time            // nil: time.Now
+	held     func() bool                 // nil: never held
 	hosts    func() []*v1.Host           // nil: none known
 	services func() []*v1.Service        // nil: none known
 	injected map[string]cachedInjections // by silo namespace/name
@@ -165,6 +166,9 @@ func (e *egress) local(ip netip.Addr) (*v1.Silo, bool) {
 // invalidate drops cached injections (a secret rotated or a grant changed): the next request
 // gets the new value, and no silo ever held the old one.
 func (e *egress) invalidate() {
+	if e.held != nil && e.held() {
+		return // an older control plane's change: what was given before the hold stays (K-097)
+	}
 	e.mu.Lock()
 	e.injected = nil
 	e.mu.Unlock()
@@ -192,6 +196,17 @@ func (e *egress) injections(ctx context.Context, key string) (map[string]gate.In
 		return c.byHost, nil
 	}
 	e.mu.Unlock()
+	if e.held != nil && e.held() {
+		// Held (K-097): an older control plane's answer is never used; what this host was given
+		// before the hold is, as for a host cut off (K-076), for at most InjectWithoutContact.
+		if !cached {
+			return nil, fmt.Errorf("this host is held (its control plane is older than what it saw): no secret it wasn't given before the hold is injected until that ends")
+		}
+		if age := now().Sub(c.at); age >= InjectWithoutContact {
+			return nil, fmt.Errorf("this host is held (its control plane is older than what it saw) and was given this secret %s ago: a secret is injected for at most %s without a control plane it trusts", age.Round(time.Second), InjectWithoutContact)
+		}
+		return c.byHost, nil
+	}
 	var resp client.BrokerResponse
 	err := e.c.Call(ctx, http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{
 		Namespace: silo.Namespace, Name: silo.Name, UID: silo.UID, Host: e.hostName,
@@ -247,6 +262,9 @@ func (e *egress) ask(ctx context.Context, key, secret, host, method, path string
 	}
 	if silo == nil {
 		return fmt.Errorf("%s isn't on this host", key)
+	}
+	if e.held != nil && e.held() { // K-097: no yes is taken from a control plane this host doesn't trust
+		return fmt.Errorf("this host is held (its control plane is older than what it saw): no approval can be asked until that ends")
 	}
 	req := client.BrokerRequest{Op: client.OpAskInject, Name: secret, Host: host, Method: method, Path: path}
 	told := ""

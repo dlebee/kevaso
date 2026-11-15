@@ -21,25 +21,22 @@ import (
 // LastStateFile is the file's name in the worker's data directory.
 const LastStateFile = "last-state.json"
 
-// saveLastState writes every given cache that has listed (never a seed: only what was seen) to
-// path atomically and durably; nothing when one of them hasn't listed yet.
-func saveLastState(path string, infs ...*informer.Informer) error {
-	if !informer.AllSynced(infs...) {
-		return nil
-	}
-	st := map[string][]json.RawMessage{}
-	for _, inf := range infs {
+// saveLastState writes st (every kept cache's list, taken once each has listed: never a seed,
+// only what was seen) to path atomically and durably.
+func saveLastState(path string, st map[string][]meta.Object) error {
+	raw := map[string][]json.RawMessage{}
+	for kind, objs := range st {
 		items := []json.RawMessage{}
-		for _, o := range inf.List() {
+		for _, o := range objs {
 			b, err := json.Marshal(o)
 			if err != nil {
 				return err
 			}
 			items = append(items, b)
 		}
-		st[inf.Kind()] = items
+		raw[kind] = items
 	}
-	b, err := json.Marshal(st)
+	b, err := json.Marshal(raw)
 	if err != nil {
 		return err
 	}
@@ -112,21 +109,21 @@ func readLastState(path string, kinds []string) (map[string][]meta.Object, bool)
 	return out, true
 }
 
-// seedLastState seeds the caches from path, kind by kind; false, and nothing seeded, when there's
-// no whole last state (a first start: wait for the control plane).
-func seedLastState(path string, infs ...*informer.Informer) bool {
+// seedLastState seeds the caches from path, kind by kind, and returns what it seeded; false, and
+// nothing seeded, when there's no whole last state (a first start: wait for the control plane).
+func seedLastState(path string, infs ...*informer.Informer) (map[string][]meta.Object, bool) {
 	var kinds []string
 	for _, inf := range infs {
 		kinds = append(kinds, inf.Kind())
 	}
 	st, ok := readLastState(path, kinds)
 	if !ok {
-		return false
+		return nil, false
 	}
 	for _, inf := range infs {
 		inf.Seed(st[inf.Kind()])
 	}
-	return true
+	return st, true
 }
 
 // SubnetFile keeps, in the worker's data directory, the silo subnet the control plane gave it

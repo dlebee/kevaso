@@ -26,7 +26,7 @@ func TestALastStateMissingAKindSeedsNothing(t *testing.T) {
 				t.Fatal(err)
 			}
 			silos, services := informer.New(nil, "Silo"), informer.New(nil, "Service")
-			if seedLastState(p, silos, services) {
+			if _, ok := seedLastState(p, silos, services); ok {
 				t.Fatal("seeded from a last state that doesn't hold every kind: its view would be installed as the truth")
 			}
 		})
@@ -35,7 +35,7 @@ func TestALastStateMissingAKindSeedsNothing(t *testing.T) {
 	if err := os.WriteFile(p, []byte(`{"Silo":[],"Service":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !seedLastState(p, informer.New(nil, "Silo"), informer.New(nil, "Service")) {
+	if _, ok := seedLastState(p, informer.New(nil, "Silo"), informer.New(nil, "Service")); !ok {
 		t.Fatal("a whole last state (every kind listed, some empty) is a last state")
 	}
 }

@@ -178,10 +178,13 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 	svcInf := informer.New(c, "Service")
 	leaseInf := informer.New(c, "Lease")
 	kept := []*informer.Informer{silos, hosts, grantsInf, ingInf, classInf, svcInf, leaseInf} // all but secrets
-	seeded := o.StateFile != "" && seedLastState(o.StateFile, kept...)
-	if seeded {
-		secretsInf.Seed(nil) // never on disk: the gate asks for a secret when it injects it
-		log("network: starting from the last state this host kept (%s), not waiting for the control plane", o.StateFile)
+	sv := newServed(held, kept...)
+	if o.StateFile != "" {
+		if st, ok := seedLastState(o.StateFile, kept...); ok {
+			sv.trust(st)         // also what a worker held from the start serves (K-097)
+			secretsInf.Seed(nil) // never on disk: the gate asks for a secret when it injects it
+			log("network: starting from the last state this host kept (%s), not waiting for the control plane", o.StateFile)
+		}
 	}
 	changed := make(chan struct{}, 1)
 	poke := func(informer.Key) {
@@ -205,20 +208,6 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 	go svcInf.Run(ctx)
 	leaseInf.AddHandler(poke)
 	go leaseInf.Run(ctx)
-	currentLeases := func() []*v1.Lease {
-		var out []*v1.Lease
-		for _, o := range leaseInf.List() {
-			out = append(out, o.(*v1.Lease))
-		}
-		return out
-	}
-	currentServices := func() []*v1.Service {
-		var out []*v1.Service
-		for _, o := range svcInf.List() {
-			out = append(out, o.(*v1.Service))
-		}
-		return out
-	}
 	// Every input before the first ruleset: one built without the leases (or services, ingress
 	// classes) closes their ports and resets what an open lease let in, on every restart.
 	for _, inf := range []*informer.Informer{silos, hosts, grantsInf, secretsInf, ingInf, classInf, svcInf, leaseInf} {
@@ -226,31 +215,13 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 			return
 		}
 	}
-	currentGrants := func() []*v1.Grant {
-		var out []*v1.Grant
-		for _, o := range grantsInf.List() {
-			out = append(out, o.(*v1.Grant))
-		}
-		return out
-	}
-	current := func() []*v1.Silo {
-		var out []*v1.Silo
-		for _, o := range silos.List() {
-			out = append(out, o.(*v1.Silo))
-		}
-		return out
-	}
-	currentHosts := func() []*v1.Host {
-		var out []*v1.Host
-		for _, o := range hosts.List() {
-			out = append(out, o.(*v1.Host))
-		}
-		return out
-	}
-	nameView := func() names.View {
-		hs := currentHosts()
-		return names.View{Silos: current(), Services: currentServices(), Hosts: hs, Suffix: v1.ClusterSuffix(hs)}
-	}
+	// What the DNS listeners and the gate answer from, at each question: while held, the last
+	// trusted state, never the caches (K-097).
+	current := func() []*v1.Silo { return sv.state().silos }
+	currentGrants := func() []*v1.Grant { return sv.state().grants }
+	currentHosts := func() []*v1.Host { return sv.state().hosts }
+	currentServices := func() []*v1.Service { return sv.state().svcs }
+	nameView := func() names.View { return sv.state().names() }
 	loaded := o.Bindings
 	if loaded == nil {
 		loaded = NewBindings()
@@ -262,10 +233,10 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 	gatePort := 0
 	if ca != nil {
 		eg := &egress{c: c, hostName: hostName, ca: ca, upstream: upstream, log: log, silos: current, grants: currentGrants, bound: loaded,
-			hosts: currentHosts, services: currentServices}
+			hosts: currentHosts, services: currentServices, held: held}
 		secretsInf.AddHandler(func(informer.Key) { eg.invalidate() })
 		grantsInf.AddHandler(func(informer.Key) { eg.invalidate() })
-		go eg.run(ctx)
+		go runGate(ctx, eg)
 		gatePort = GatePort
 	}
 	endpointAddr := netip.MustParseAddr(v1.EndpointAddress) // the silos' local endpoint, on the bridge (ADR 0009)
@@ -273,45 +244,45 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 	defer tick.Stop()
 	fw := &firewall{apply: func(ctx context.Context, text string) error { return applyRules(ctx, text) }}
 	for {
-		var all []*v1.Silo
-		for _, o := range silos.List() {
-			all = append(all, o.(*v1.Silo))
-		}
-		var me *v1.Host
-		if o, ok := hosts.Get("", hostName); ok {
-			me = o.(*v1.Host)
-		}
-		var ings []*v1.Ingress
-		for _, o := range ingInf.List() {
-			ings = append(ings, o.(*v1.Ingress))
-		}
-		var classes []*v1.IngressClass
-		for _, o := range classInf.List() {
-			classes = append(classes, o.(*v1.IngressClass))
-		}
-		svcs := currentServices()
-		view := WithBindings(NetworkView(hostName, me, all, currentGrants(), WithIngressPaths(all, svcs, ings, classes)), readBindings())
+		synced := informer.AllSynced(kept...) // before the lists: once listed, never a seed again
+		st := sv.state()
+		isHeld := st.held
+		all, me, svcs := st.silos, st.me(hostName), st.svcs
+		view := WithBindings(NetworkView(hostName, me, all, st.grants, WithIngressPaths(all, svcs, st.ings, st.classes)), readBindings())
 		view.GatePort = gatePort
 		view.Endpoint = endpointAddr
 		view.Services = ServiceView(hostName, svcs)
-		now, ls := time.Now(), currentLeases()
-		view = WithLeases(view, all, ls, now)
-		leaseEnd, stopLeaseEnd := leaseTimer(ls, now)
+		now := time.Now()
+		view = WithLeases(view, all, st.leases, now)
+		leaseEnd, stopLeaseEnd := leaseTimer(st.leases, now)
 		rules, problems := kni.Generate(view)
-		// Held: nothing from a control plane this worker doesn't trust (looked at again shortly).
-		isHeld := held != nil && held()
 		var retry <-chan time.Time
-		if isHeld {
+		switch {
+		case st.none:
+			// Held with no state trusted: nothing from a control plane this worker doesn't trust
+			// (looked at again shortly).
 			retry = time.After(2 * time.Second)
-		} else {
+		case isHeld:
+			// Held (K-097): the rules of the last state trusted, nothing written to the control
+			// plane, the last state kept as it is.
 			if ok, err := fw.load(ctx, rules); err != nil {
 				log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
 			} else if ok {
 				loaded.set(kni.Bindings(view.Local))
 			}
-			if o.StateFile != "" {
-				if err := saveLastState(o.StateFile, kept...); err != nil {
-					log("network: keeping the last state: %v", err)
+			retry = time.After(2 * time.Second)
+		default:
+			if ok, err := fw.load(ctx, rules); err != nil {
+				log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
+			} else if ok {
+				loaded.set(kni.Bindings(view.Local))
+			}
+			if synced { // what this pass was built from, if it was all seen (never a seed) and not held
+				sv.trust(st.raw)
+				if o.StateFile != "" {
+					if err := saveLastState(o.StateFile, st.raw); err != nil {
+						log("network: keeping the last state: %v", err)
+					}
 				}
 			}
 			reportHost(ctx, c, hostName, me, hostFirewallCondition(fw.err, problems), now)
@@ -356,6 +327,13 @@ func syncHostAddresses(ctx context.Context, hostName string, me *v1.Host, all []
 		log("the local endpoint's address: %v", err)
 	}
 }
+
+// runDNS and runGate start a DNS listener and the egress gate (tests replace them: they can't
+// listen on the bridge's gateway).
+var (
+	runDNS  = func(ctx context.Context, d *DNS) { d.Run(ctx) }
+	runGate = func(ctx context.Context, e *egress) { e.run(ctx) }
+)
 
 // applyRules loads a ruleset (tests replace it).
 var applyRules = applyNFT
@@ -540,7 +518,7 @@ func (l *dnsListeners) keep(ctx context.Context, want map[string]names.Asker, mk
 		}
 		c, cancel := context.WithCancel(ctx)
 		l.run[k] = cancel
-		go mk(addr, from).Run(c)
+		go runDNS(c, mk(addr, from))
 	}
 	for k, stop := range l.run {
 		if !keys[k] {
