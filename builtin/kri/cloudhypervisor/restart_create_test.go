@@ -23,6 +23,11 @@ func TestACreateKilledHalfwayIsFinishedNextTime(t *testing.T) {
 	// What the killed Create left: its state, nothing else.
 	b, _ := json.Marshal(State{ID: sp.ID, IP: "10.64.0.2", MAC: MAC(sp.ID), CPUs: 2, MemMiB: 4096})
 	h.files[NamesFor(sp.ID).Dir+"/silo.json"] = b
+	// Found on the machine (TestMetalKilledMidStart): the agent calls Create only for an absent
+	// silo, and Status said Created, so it called Start on the missing unit forever.
+	if st, err := r.Status(ctx, sp.ID); err != nil || st.State != kri.Absent {
+		t.Fatalf("a half-made silo's status: %v %v, want Absent (so the agent creates it again)", st.State, err)
+	}
 	if err := r.Create(ctx, sp); err != nil {
 		t.Fatal(err)
 	}

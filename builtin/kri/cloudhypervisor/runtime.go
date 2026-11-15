@@ -474,6 +474,11 @@ func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 	if !ok {
 		return kri.Status{State: kri.Absent}, nil
 	}
+	if !st.Started && !r.made(id) {
+		// Half-made (kevasod killed in Create, before the unit): absent, so it's created again
+		// (Create redoes it); never started, so there's no disk of a running silo to keep.
+		return kri.Status{State: kri.Absent}, nil
+	}
 	switch r.active(ctx, NamesFor(id).Unit) {
 	case "active", "activating":
 		return kri.Status{State: kri.Running, Address: st.IP}, nil
