@@ -65,7 +65,7 @@ func (c *Client) AddEndpoints(servers ...string) bool {
 
 // Pinned is a copy of c that talks to one control plane only (an agent's tunnel to each).
 func (c *Client) Pinned(server string) *Client {
-	p := &Client{BaseURL: strings.TrimRight(server, "/"), Token: c.Token, HTTP: c.HTTP}
+	p := &Client{BaseURL: strings.TrimRight(server, "/"), Token: c.Token, HTTP: c.HTTP, Warnings: c.Warnings, ControlPlane: c.ControlPlane}
 	if f, ok := c.http().Transport.(*failover); ok {
 		p.HTTP = &http.Client{Transport: f.base}
 	}

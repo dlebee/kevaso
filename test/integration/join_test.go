@@ -13,9 +13,9 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/clock"
-	silocontroller "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/controlplane"
 	"kevaso.com/core/internal/kvoconfig"
+	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/worker"
 	"kevaso.com/core/sdk/kri"
 	"kevaso.com/core/sdk/kri/fake"
@@ -33,7 +33,7 @@ func TestAWorkerOnlyHostJoinsAndRunsSilos(t *testing.T) {
 	defer cancel()
 	dir, _ := os.MkdirTemp("/tmp", "kvj")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
+	cp, err := controlplane.Start(ctx, controlplane.Config{Create: true, ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
@@ -158,17 +158,16 @@ func waitSilo(t *testing.T, ctx context.Context, c *client.Client, name string, 
 	}
 }
 
-// Losing a host: the Wait silo waits for it, the Recreate silo starts fresh elsewhere, and when the
-// host comes back the Wait silo runs there again while the old copy of the other is removed.
+// Losing a host (brainstorm §0.7): both silos wait for it, the Recreate one too: nothing starts
+// elsewhere by itself. A person confirms the old copy is off and moves the Recreate silo
+// (--confirm-fenced --recreate); when the host comes back the Wait silo runs there again and the
+// old copy of the other is removed.
 func TestLosingAHost(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	saved := silocontroller.RecreateAfter
-	silocontroller.RecreateAfter = time.Second
-	defer func() { silocontroller.RecreateAfter = saved }()
 	dir, _ := os.MkdirTemp("/tmp", "kvl")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
+	cp, err := controlplane.Start(ctx, controlplane.Config{Create: true, ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"),
 		Heartbeat: 100 * time.Millisecond, HostLease: time.Second})
 	if err != nil {
@@ -194,21 +193,29 @@ func TestLosingAHost(t *testing.T) {
 	rt2.Handler = handler
 	joinWorker(t, ctx, admin, server, cp.CA.PEM, dir, "w2", rt2)
 
-	// w1 goes dark.
+	// w1 goes dark: both wait, saying so.
 	w1.cancel()
-	waitSilo(t, ctx, admin, "precious", func(s *v1.Silo) bool {
-		c := meta.FindCondition(s.Status.Conditions, "HostLost")
-		return s.Status.Phase == "Unknown" && s.Status.Host == "w1" && c != nil && c.Reason == "Waiting"
-	})
-	got := waitSilo(t, ctx, admin, "stateless", func(s *v1.Silo) bool { return s.Status.Phase == "Running" && s.Status.Host == "w2" })
-	if c := meta.FindCondition(got.Status.Conditions, "HostLost"); c == nil || c.Reason != "Recreated" {
-		t.Fatalf("recreated without saying so: %+v", got.Status.Conditions)
+	for _, name := range []string{"precious", "stateless"} {
+		waitSilo(t, ctx, admin, name, func(s *v1.Silo) bool {
+			c := meta.FindCondition(s.Status.Conditions, "HostUnreachable")
+			return s.Status.Phase == "Unknown" && s.Status.Host == "w1" && c != nil && c.Reason == "Waiting"
+		})
 	}
+	if ids, _ := rt2.List(ctx); len(ids) != 0 {
+		t.Fatalf("w2 started %v by itself", ids)
+	}
+	// The person: w1 is off, recreate stateless on w2.
+	var moved v1.Silo
+	if err := admin.Call(ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/demo/silos/stateless/move",
+		moves.Request{To: "w2", Recreate: true, ConfirmFenced: true}, &moved); err != nil {
+		t.Fatal(err)
+	}
+	waitSilo(t, ctx, admin, "stateless", func(s *v1.Silo) bool { return s.Status.Phase == "Running" && s.Status.Host == "w2" })
 
 	// w1 comes back (same certificate, same runtime with its old VMs).
 	joinWorker(t, ctx, admin, server, cp.CA.PEM, dir, "w1", rt1)
 	waitSilo(t, ctx, admin, "precious", func(s *v1.Silo) bool {
-		c := meta.FindCondition(s.Status.Conditions, "HostLost")
+		c := meta.FindCondition(s.Status.Conditions, "HostUnreachable")
 		return s.Status.Phase == "Running" && s.Status.Host == "w1" && c != nil && c.Status == meta.ConditionFalse
 	})
 	deadline := time.Now().Add(10 * time.Second)
@@ -230,7 +237,7 @@ func TestDrainingAHost(t *testing.T) {
 	defer cancel()
 	dir, _ := os.MkdirTemp("/tmp", "kvd")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	cp, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
+	cp, err := controlplane.Start(ctx, controlplane.Config{Create: true, ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)

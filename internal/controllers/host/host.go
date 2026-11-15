@@ -1,7 +1,8 @@
 // Package host is the control plane's host controller. It gives every host its place on the mesh
 // (an index, its mesh IP and silo subnet), and runs the host lease: a host whose kevasod stops
-// reporting is marked lost (Ready Unknown, reason HostLost) once its lease runs out, which is what
-// the silo controller's onHostLoss policies act on.
+// reporting is marked lost (Ready Unknown, reason HostLost) once its lease runs out. That only
+// informs: the silo controller marks the host's silos HostUnreachable and starts no other copy
+// (brainstorm §0.7); a person's kvo move … --confirm-fenced moves them.
 package host
 
 import (
