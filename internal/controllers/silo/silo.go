@@ -216,6 +216,98 @@ func UnreachableMessage(s *v1.Silo, since time.Time, m moves.Movability) string 
 	}
 }
 
+// CondSourceUnreachable says a handoff waits for a source host that is gone (lost, or its Host
+// removed), what ends it, and, for a silo whose source armed its fence for it, when it ends by
+// itself (K-119).
+const CondSourceUnreachable = "SourceUnreachable"
+
+// armedBy reports whether host armed its fence for s as it is now: the condition
+// fence.ArmedCondition makes for host, the after s's spec says, and s's generation. (fence.Armed
+// is the same for status.host; during a handoff the source's own condition stands, which only the
+// source may have written: moves.HostWrite.)
+func armedBy(s *v1.Silo, host string) bool {
+	stops, after := s.StopsOnControlPlaneLoss()
+	c := meta.FindCondition(s.Status.Conditions, CondFenceArmed)
+	return stops && c != nil && c.Status == meta.ConditionTrue && c.Reason == fence.ReasonArmed &&
+		c.ObservedGeneration == s.Generation && c.Message == fence.ArmedCondition(host, after, s.Generation).Message
+}
+
+// EndsLostHandoff reports whether next is the silo controller ending a handoff whose source is
+// gone (K-119), as far as the API server can check it from what is stored: old hands off from a
+// source that is lost or gone (sourceGone), whose fence stands armed for this silo as it is, and
+// next only drops movingFrom, the silo staying on its destination. The silence the controller
+// counted (after plus StopMargin, on the leader's clock) the API server can't see.
+func EndsLostHandoff(old *v1.Silo, next v1.SiloStatus, sourceGone bool) bool {
+	return sourceGone && moves.HandingOff(old.Status) && next.MovingFrom == "" && next.Host == old.Status.Host &&
+		armedBy(old, old.Status.MovingFrom)
+}
+
+// handoffSource looks at the source of a handoff to the silo's (live) host: gone (lost, or its
+// Host removed), the handoff ends here only for a silo its source armed its fence for, once this
+// control plane has heard nothing from the source for after plus StopMargin (its fence has
+// stopped it by then); otherwise CondSourceUnreachable says what ends it. It returns whether st
+// changed, and when to look again.
+func handoffSource(s *v1.Silo, st *v1.SiloStatus, hosts []*v1.Host, env scheduler.Env, now time.Time) (bool, time.Duration) {
+	if !moves.HandingOff(*st) {
+		return false, 0
+	}
+	src := st.MovingFrom
+	var h *v1.Host
+	for _, x := range hosts {
+		if x.Name == src {
+			h = x
+		}
+	}
+	gone, since := h == nil, time.Time{}
+	if h != nil {
+		gone, since = hostctl.Lost(h)
+	}
+	cond := meta.Condition{Type: CondSourceUnreachable, ObservedGeneration: s.Generation}
+	if !gone {
+		if c := meta.FindCondition(st.Conditions, CondSourceUnreachable); c != nil && c.Status == meta.ConditionTrue {
+			cond.Status, cond.Reason = meta.ConditionFalse, "SourceBack"
+			cond.Message = fmt.Sprintf("%s is back: it stops the silo and lets go of it, then %s starts it", src, st.Host)
+			return meta.SetCondition(&st.Conditions, cond, now), 0
+		}
+		return false, 0
+	}
+	what := "no longer a host (its Host is gone)"
+	if h != nil {
+		what = "unreachable since " + since.UTC().Format(time.RFC3339)
+	}
+	flags := " --confirm-fenced"
+	if !moves.Of(s, env.Classes).WithData {
+		flags = " --recreate --confirm-fenced"
+	}
+	command := fmt.Sprintf("kvo move silo %s -n %s --to %s%s", s.Name, s.Namespace, st.Host, flags)
+	msg := fmt.Sprintf("%s, which this silo is moving from, is %s and hasn't let go of it, so %s doesn't start it: it may still run on %s. "+
+		"Once the copy there is known to be off (the host powered off, or force-stopped through its provider), %s ends the handoff",
+		src, what, st.Host, src, command)
+	stops, after := s.StopsOnControlPlaneLoss()
+	var again time.Duration
+	switch {
+	case !stops:
+	case !armedBy(s, src):
+		msg += fmt.Sprintf(". It doesn't end by itself: %s never confirmed its fence stops this silo (condition %s for generation %d)", src, CondFenceArmed, s.Generation)
+	case env.Silence != nil:
+		wait := after + StopMargin(after)
+		silent := env.Silence(src)
+		if silent >= wait {
+			st.MovingFrom = ""
+			cond.Status, cond.Reason = meta.ConditionFalse, "HandoffEnded"
+			cond.Message = fmt.Sprintf("%s silent for %s by the control plane's count; its fence stops this silo after %s without the control plane (onControlPlaneLoss: Stop), %s margin: the handoff ended, %s starts it",
+				src, silent.Round(time.Second), after, StopMargin(after), st.Host)
+			meta.SetCondition(&st.Conditions, cond, now)
+			return true, 0
+		}
+		msg += fmt.Sprintf(". It ends by itself once the control plane has heard nothing from %s for %s (its fence stops this silo after %s without the control plane, onControlPlaneLoss: Stop; %s margin); %s so far",
+			src, wait, after, StopMargin(after), silent.Round(time.Second))
+		again = wait - silent
+	}
+	cond.Status, cond.Reason, cond.Message = meta.ConditionTrue, "WaitingForSource", msg
+	return meta.SetCondition(&st.Conditions, cond, now), again
+}
+
 // Decide returns the status the silo should have, whether it differs from the current one, and
 // when to look again (0: only on changes). Pure.
 func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, ips ...*v1.IP) (v1.SiloStatus, bool, time.Duration, error) {
@@ -293,7 +385,9 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 				cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "HostBack", st.Host+" is back"
 				changed = meta.SetCondition(&st.Conditions, cond, now) || changed
 			}
-			return st, changed || imageChanged || movableChanged, 0, nil
+			// A handoff to it whose source is gone (K-119).
+			srcChanged, srcAgain := handoffSource(s, &st, hosts, env, now)
+			return st, changed || srcChanged || imageChanged || movableChanged, srcAgain, nil
 		}
 		if fresh, _, _ := freshClaim(s, env); st.MovingFrom != "" && st.MovingFrom != st.Host && !fresh {
 			// The silent host is the destination of a handoff its source hasn't finished: it never
@@ -706,7 +800,7 @@ func (c *Controller) Map(changed engine.Key) []engine.Key {
 	for _, o := range c.Silos.List() {
 		s := o.(*v1.Silo)
 		self := changed.Kind == "Silo" && changed.Namespace == s.Namespace && changed.Name == s.Name
-		onIt := (changed.Kind == "Host" && s.Status.Host == changed.Name) ||
+		onIt := (changed.Kind == "Host" && (s.Status.Host == changed.Name || s.Status.MovingFrom == changed.Name)) ||
 			(changed.Kind == "IP" && s.Namespace == changed.Namespace && slices.Contains(v1.SiloIPs(s, scheduler.ExclusiveIn(c.classes())), changed.Name))
 		if changed.Kind == "VMImage" {
 			name, _ := v1.SplitImage(s.Spec.From())

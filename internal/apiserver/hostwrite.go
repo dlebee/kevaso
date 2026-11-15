@@ -123,3 +123,21 @@ func (s *Server) siloIPInSubnet(ctx context.Context, old, next v1.SiloStatus, ho
 	}
 	return nil
 }
+
+// hostGone reports whether host is lost (its Ready HostLost) or no longer a Host. An error reading
+// it is not gone.
+func (s *Server) hostGone(ctx context.Context, host string) bool {
+	o, err := s.store.Get(ctx, store.Key{Kind: "Host", Name: host})
+	if errors.Is(err, store.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	obj, _, err := v1.Decode(o.Data)
+	if err != nil {
+		return false
+	}
+	lost, _ := hostctl.Lost(obj.(*v1.Host))
+	return lost
+}
