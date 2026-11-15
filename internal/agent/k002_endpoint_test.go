@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/sdk/kri"
 )
@@ -19,13 +20,28 @@ import (
 // the registered silo's own tap (cloudhypervisor.NamesFor(id).Tap). Then change this test to
 // give the Endpoint a Bound that knows nothing, and keep the assertion.
 func TestTheEndpointKnowsNoSiloByAnAddressNoPortIsBoundTo(t *testing.T) {
-	t.Skip("K-002 host-lane half: Endpoint.BySource trusts the source address alone (see the comment)")
-	e := &agent.Endpoint{}
+	e := &agent.Endpoint{Bound: func(netip.Addr) (string, bool) { return "", false }} // no ruleset loaded yet
+
 	addr := netip.MustParseAddr("10.64.0.7")
 	e.Register(addr, kri.ID{Namespace: "dev", Name: "a", UID: "u-a"})
 	r := httptest.NewRequest("GET", "/v1/secrets/x", nil)
 	r.RemoteAddr = "10.64.0.7:40000"
 	if id, ok := e.BySource(r); ok {
 		t.Fatalf("taken for %s by its address alone, with no ruleset binding it to a port", id.Name)
+	}
+}
+
+// Bound to the registered silo's own port: taken for it; bound to another port: not.
+func TestTheEndpointTakesAnAddressBoundToItsSilosPort(t *testing.T) {
+	id := kri.ID{Namespace: "dev", Name: "a", UID: "u-a"}
+	addr := netip.MustParseAddr("10.64.0.7")
+	for port, want := range map[string]bool{cloudhypervisor.NamesFor(id).Tap: true, "kvt0000000000": false} {
+		e := &agent.Endpoint{Bound: func(netip.Addr) (string, bool) { return port, true }}
+		e.Register(addr, id)
+		r := httptest.NewRequest("GET", "/v1/secrets/x", nil)
+		r.RemoteAddr = "10.64.0.7:40000"
+		if _, ok := e.BySource(r); ok != want {
+			t.Errorf("bound to %s: taken %v, want %v", port, ok, want)
+		}
 	}
 }

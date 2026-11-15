@@ -53,8 +53,11 @@ type Agent struct {
 	// silos are neither made nor started: a microVM started before its runtime's storage is up
 	// fails, and a failed one stays failed.
 	RuntimeReady func(name string) bool
-	Clock        clock.Clock
-	Log          func(format string, args ...any)
+	// Bound is the worker's loaded bridge bindings (address → port), for the local endpoint
+	// (K-002): nil until the worker gives it.
+	Bound func(netip.Addr) (port string, ok bool)
+	Clock clock.Clock
+	Log   func(format string, args ...any)
 	// LastContact, if set, says when this host last reached the control plane. Past FenceAfter
 	// without contact, the agent fences: it stops the silos the control plane may recreate
 	// elsewhere (onHostLoss: Recreate) and starts nothing, so two copies never run.
@@ -248,7 +251,7 @@ func (a *Agent) Run(ctx context.Context) {
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
 	a.runCtx = ctx
 	a.started = a.Clock.Now()
-	a.endpoint = &Endpoint{Client: a.Client, HostName: a.HostName, Log: a.Log}
+	a.endpoint = &Endpoint{Client: a.Client, HostName: a.HostName, Log: a.Log, Bound: a.Bound}
 	if a.EndpointListen != "" {
 		go a.endpoint.ServeEndpoint(ctx, a.EndpointListen)
 	}

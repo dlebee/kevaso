@@ -19,6 +19,7 @@ import (
 
 	"kevaso.com/core/api/client"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -54,6 +55,11 @@ type Endpoint struct {
 	Identify func(*http.Request) (kri.ID, bool)
 	// Hosts are the Host headers accepted (nil: 169.254.42.1 and 169.254.42.1:80).
 	Hosts []string
+	// Bound says which port (tap or veth) the loaded bridge ruleset binds an address to (K-002):
+	// only then is the source address the port. A request is taken for a silo only when its
+	// address is bound to that silo's own port. Nil: the address alone, as before the worker
+	// gives it (its loaded bindings).
+	Bound func(netip.Addr) (port string, ok bool)
 
 	mu       sync.Mutex
 	byAddr   map[netip.Addr]kri.ID
@@ -105,10 +111,19 @@ func (e *Endpoint) BySource(r *http.Request) (kri.ID, bool) {
 	if err != nil {
 		return kri.ID{}, false
 	}
+	addr := ap.Addr().Unmap()
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	id, ok := e.byAddr[ap.Addr().Unmap()]
-	return id, ok
+	id, ok := e.byAddr[addr]
+	e.mu.Unlock()
+	if !ok {
+		return kri.ID{}, false
+	}
+	if e.Bound != nil {
+		if port, bound := e.Bound(addr); !bound || port != cloudhypervisor.NamesFor(id).Tap {
+			return kri.ID{}, false // no ruleset binds it to this silo's port: anyone could send it
+		}
+	}
+	return id, true
 }
 
 func (e *Endpoint) log(f string, a ...any) {
