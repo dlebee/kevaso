@@ -226,15 +226,14 @@ func (a *Agent) lastContact() time.Time {
 // When the contact is back it looks at every silo again: the stopped ones start again, unless
 // a person moved them meanwhile (those are removed here).
 func (a *Agent) fence(ctx context.Context, e *engine.Engine) {
-	t := time.NewTicker(fence.CheckEvery)
-	defer t.Stop()
+	ticks := a.tick(ctx, fence.CheckEvery)
 	f := &fencing{a: a, inflight: map[string]time.Time{}, unconfirmed: map[string]string{}}
 	watcherWas := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-ticks:
 		}
 		a.writeFenceRecord(ctx)
 		if a.inContact() {
@@ -332,13 +331,12 @@ func (a *Agent) resync(ctx context.Context, e *engine.Engine) {
 	if a.Resync > 0 {
 		every = a.Resync
 	}
-	t := time.NewTicker(every)
-	defer t.Stop()
+	ticks := a.tick(ctx, every)
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-ticks:
 		}
 		a.resyncAll()
 	}

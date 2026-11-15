@@ -238,8 +238,7 @@ func (a *Agent) ControlPlaneHeld() bool { return a.watermark().blocked() }
 // that ends it (a new history; the kept cluster again) is seen. When it ends, every silo is
 // looked at again.
 func (a *Agent) watchControlPlane(ctx context.Context) {
-	t := time.NewTicker(fence.CheckEvery)
-	defer t.Stop()
+	ticks := a.tick(ctx, fence.CheckEvery)
 	reported := "" // the condition last written: status and reason
 	keptSaid := "" // the kept silos last listed
 	wasBlocked := false
@@ -247,7 +246,7 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-ticks:
 		}
 		blocked := a.watermark().blocked()
 		kept, seen, verdict := a.watermark().state()
