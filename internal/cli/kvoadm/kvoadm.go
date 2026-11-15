@@ -536,6 +536,7 @@ Wants=network-online.target
 [Service]
 ExecStart=/usr/local/bin/kevasod ` + strings.Join(args, " ") + `
 Restart=always
+RestartPreventExitStatus=` + strconv.Itoa(exitRefused) + `
 RestartSec=2
 RuntimeDirectory=kevaso
 RuntimeDirectoryMode=0700
