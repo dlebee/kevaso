@@ -392,19 +392,50 @@ type sandboxJSON struct {
 	Labels map[string]string `json:"labels"`
 }
 
+// get asks s's gateway for its sandbox. "Not there" is decided by an exact answer only: the
+// gateway's own list, parsed, without it (K-101: an error saying "not found" may be about the
+// gateway, not the sandbox). Anything else that fails is an error.
 func (r *Runtime) get(ctx context.Context, s state) (sandboxJSON, bool, error) {
 	out, err := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "get", SandboxName(s.ID), "-o", "json")
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "not found") {
-			return sandboxJSON{}, false, nil
+	if err == nil {
+		var sb sandboxJSON
+		if err := json.Unmarshal(out, &sb); err != nil {
+			return sandboxJSON{}, false, fmt.Errorf("sandbox get: %w", err)
 		}
+		return sb, true, nil
+	}
+	list, lerr := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "list", "-o", "json")
+	if lerr != nil {
 		return sandboxJSON{}, false, err
 	}
-	var sb sandboxJSON
-	if err := json.Unmarshal(out, &sb); err != nil {
-		return sandboxJSON{}, false, fmt.Errorf("sandbox get: %w", err)
+	names, perr := sandboxNames(list)
+	if perr != nil {
+		return sandboxJSON{}, false, fmt.Errorf("%w (and its list: %v)", err, perr)
 	}
-	return sb, true, nil
+	if names[SandboxName(s.ID)] {
+		return sandboxJSON{}, false, err // listed, and get failed: not "gone"
+	}
+	return sandboxJSON{}, false, nil
+}
+
+// sandboxNames reads `sandbox list -o json`: an array of sandboxes, or an object holding one
+// under "sandboxes" (which of the two v0.1.8 prints is to be checked on a machine).
+func sandboxNames(out []byte) (map[string]bool, error) {
+	var list []sandboxJSON
+	if err := json.Unmarshal(out, &list); err != nil {
+		var obj struct {
+			Sandboxes *[]sandboxJSON `json:"sandboxes"`
+		}
+		if json.Unmarshal(out, &obj) != nil || obj.Sandboxes == nil {
+			return nil, fmt.Errorf("sandbox list: not a list: %.80q", out)
+		}
+		list = *obj.Sandboxes
+	}
+	names := map[string]bool{}
+	for _, sb := range list {
+		names[sb.Name] = true
+	}
+	return names, nil
 }
 
 // Start implements kri.Runtime: the first time it creates the sandbox (with its policy and
@@ -671,7 +702,11 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 	return r.save(s)
 }
 
-// Status implements kri.Runtime.
+// Status implements kri.Runtime. Running, Stopped and unknown are told apart (K-101): with its
+// gateway answering, the sandbox's phase (a sandbox its gateway lists no more is Failed); with
+// its gateway's unit down, the look (the VM driver's sandbox can't run, Stopped; the Docker
+// driver's container may run on under dockerd, Running if it does); with its gateway running and
+// not answering, unknown: an error wrapping ErrGatewaySilent.
 func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 	s, ok := r.load(id)
 	if !ok {
@@ -681,29 +716,33 @@ func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 		return kri.Status{State: kri.Created}, nil
 	}
 	sb, exists, err := r.get(ctx, s)
-	if err != nil && gatewayDown(err) {
-		// Its gateway doesn't answer (stopped behind Kevaso's back, or failed): the silo isn't
-		// running, and Start sets the gateway up again before it starts the sandbox.
-		return kri.Status{State: kri.Stopped, Message: "its gateway " + s.Gateway.Name() + " doesn't answer (" + firstLine(err.Error()) + ")"}, nil
+	if err == nil {
+		if !exists {
+			return kri.Status{State: kri.Failed, Message: "the sandbox is gone from OpenShell"}, nil
+		}
+		st := Phase(sb.Phase)
+		msg := ""
+		if st == kri.Failed {
+			msg = "OpenShell sandbox phase " + sb.Phase
+		}
+		return kri.Status{State: st, Message: msg}, nil
 	}
-	if err != nil {
-		return kri.Status{}, err
+	active, aerr := r.unitActive(ctx, s.Gateway)
+	if aerr != nil {
+		return kri.Status{}, fmt.Errorf("%s: %w (%v; %v)", id, ErrGatewaySilent, firstLine(err.Error()), aerr)
 	}
-	if !exists {
-		return kri.Status{State: kri.Failed, Message: "the sandbox is gone from OpenShell"}, nil
+	if active {
+		return kri.Status{}, fmt.Errorf("%s: %w: %s", id, ErrGatewaySilent, firstLine(err.Error()))
 	}
-	st := Phase(sb.Phase)
-	msg := ""
-	if st == kri.Failed {
-		msg = "OpenShell sandbox phase " + sb.Phase
+	down := "its gateway " + s.Gateway.Name() + " is down"
+	runs, rerr := r.runs(ctx, s)
+	if rerr != nil {
+		return kri.Status{}, fmt.Errorf("%s: %s, and its containers can't be seen: %w", id, down, rerr)
 	}
-	return kri.Status{State: st, Message: msg}, nil
-}
-
-// gatewayDown: the CLI couldn't reach the gateway at all (its words for a refused connection).
-func gatewayDown(err error) bool {
-	m := strings.ToLower(err.Error())
-	return strings.Contains(m, "connect error") || strings.Contains(m, "transport error") || strings.Contains(m, "connection refused")
+	if runs {
+		return kri.Status{State: kri.Running, Message: down + "; its container runs on"}, nil
+	}
+	return kri.Status{State: kri.Stopped, Message: down + ": nothing of it runs"}, nil
 }
 
 func firstLine(s string) string {
