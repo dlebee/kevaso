@@ -151,6 +151,10 @@ func runReset(ctx context.Context, h hostRunner, o ResetOptions, in *bufio.Reade
 		}
 	}
 	for _, s := range plan {
+		if s.Name == hostreset.RecordStep && len(failed) > 0 {
+			_, _ = fmt.Fprintf(out, "- %s: kept, since a step failed: run kvoadm reset again once it is fixed\n", s.Name)
+			continue
+		}
 		// Right before each step that removes a silo's data: kevasod and its fence still don't
 		// run (the kill steps end in true too); right before the storage goes, the host is looked
 		// at again as well. Otherwise the reset stops here: what is left stays.
@@ -195,7 +199,7 @@ func runReset(ctx context.Context, h hostRunner, o ResetOptions, in *bufio.Reade
 	if insp.Record != nil {
 		if b, err := h.Run(ctx, hostreset.StateScript, nil); err == nil {
 			if now, err := hostreset.ParseState(string(b)); err == nil {
-				left = hostreset.Leftovers(insp.Record.State, now)
+				left = hostreset.LeftoversExcept(insp.Record.State, now, d.NotOurs) // left on purpose: not Kevaso's (K-113)
 			}
 		}
 	}

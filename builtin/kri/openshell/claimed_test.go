@@ -2,7 +2,6 @@ package openshell
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
@@ -35,10 +34,10 @@ func TestOnlyAClaimedStartStartsAGateway(t *testing.T) {
 	}
 	_, _ = r.List(ctx)
 	_ = r.Info()
-	// Delete with its gateway down and neighbours on it: a's sandbox stays in the gateway's home
-	// until the gateway is up, so Delete doesn't say done (review-batch4 claim 4).
-	if err := r.Delete(ctx, siloA); !errors.Is(err, ErrDeletePending) {
-		t.Fatalf("Delete with its gateway down: %v, want ErrDeletePending", err)
+	// Delete with its gateway down and neighbours on it: done for Kevaso, with nothing started
+	// (K-116); a's sandbox stays in the gateway's home until the gateway's next claimed start.
+	if err := r.Delete(ctx, siloA); err != nil {
+		t.Fatalf("Delete with its gateway down: %v", err)
 	}
 	if err := r.Reset(ctx, kri.Spec{ID: siloB, Image: "ubuntu-24.04"}); err != nil {
 		t.Fatalf("Reset with its gateway down: %v", err)
@@ -53,8 +52,8 @@ func TestOnlyAClaimedStartStartsAGateway(t *testing.T) {
 	if st, err := r.Status(ctx, siloB); err != nil || st.State != kri.Created {
 		t.Fatalf("b after its Reset: %v %v, want Created", st.State, err)
 	}
-	if ids, _ := r.List(ctx); len(ids) != 4 {
-		t.Fatalf("listed %v: a's delete isn't finished, it stays listed", ids)
+	if ids, _ := r.List(ctx); len(ids) != 3 {
+		t.Fatalf("listed %v: a is deleted", ids)
 	}
 	// d's claimed Start: the gateway comes up, finishes a's delete, and runs only d.
 	if err := r.Start(ctx, siloD); err != nil {

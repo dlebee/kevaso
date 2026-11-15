@@ -103,7 +103,7 @@ func trim(b []byte) []byte {
 // installPackages installs the engine's packages, one runtime at a time on the host (hostpkg).
 func (r *Runtime) installPackages(ctx context.Context) error {
 	defer hostpkg.Lock()()
-	args := append([]string{"-c", "DEBIAN_FRONTEND=noninteractive apt-get -o " + hostpkg.LockTimeout + " install -y -q \"$@\"", "sh"}, Packages[r.engine()]...)
+	args := append([]string{"-c", hostpkg.Recording("DEBIAN_FRONTEND=noninteractive apt-get -o " + hostpkg.LockTimeout + " install -y -q \"$@\""), "sh"}, Packages[r.engine()]...)
 	if _, err := r.cmd(ctx, nil, "sh", args...); err != nil {
 		if _, uerr := r.cmd(ctx, nil, "sh", "-c", hostpkg.Update); uerr != nil {
 			return err

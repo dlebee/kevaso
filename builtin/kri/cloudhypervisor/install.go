@@ -171,7 +171,8 @@ func (r *Runtime) installPackages(ctx context.Context) error {
 	if err := r.run(ctx, "sh", "-c", hostpkg.Update); err != nil {
 		return err
 	}
-	return r.run(ctx, "env", append([]string{"DEBIAN_FRONTEND=noninteractive", "apt-get", "-o", hostpkg.LockTimeout, "install", "-y", "-qq"}, missing...)...)
+	// What it installs is recorded as Kevaso's (K-113): only that is purged by a reset.
+	return r.run(ctx, "sh", append([]string{"-c", hostpkg.Recording("DEBIAN_FRONTEND=noninteractive apt-get -o " + hostpkg.LockTimeout + " install -y -qq \"$@\""), "sh"}, missing...)...)
 }
 
 // NFT is the host's silo firewall with no silos yet (the worker rewrites it as silos come and

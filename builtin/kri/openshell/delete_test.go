@@ -3,7 +3,6 @@ package openshell
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -63,11 +62,12 @@ func TestDeleteRemovesTheSandboxAndWithTheLastOneTheGateway(t *testing.T) {
 			}
 		}
 		g := gatewayFor(d, siloA)
-		if err := r.Delete(ctx, siloA); !errors.Is(err, ErrDeletePending) {
-			t.Fatalf("%s: Delete with its gateway down and a neighbour: %v, want ErrDeletePending (its sandbox stays in the gateway)", d, err)
+		if err := r.Delete(ctx, siloA); err != nil {
+			t.Fatalf("%s: Delete with its gateway down and a neighbour: %v", d, err)
 		}
-		// Its gateway is down and isn't started for a delete: its sandbox waits for the next
-		// claimed start on that gateway, or goes with the gateway; until then it isn't done.
+		// Its gateway is down and isn't started for a delete (K-116: nor are its neighbours): its
+		// sandbox waits in the gateway's home for the next claimed start on it, or goes with the
+		// gateway.
 		if st, err := r.Status(ctx, siloA); err != nil || st.State != kri.Absent {
 			t.Fatalf("%s: after Delete: %v %v", d, st.State, err)
 		}

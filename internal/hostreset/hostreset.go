@@ -27,15 +27,19 @@ import (
 
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/builtin/kri/container"
+	"kevaso.com/core/builtin/kri/hostpkg"
 	"kevaso.com/core/builtin/kri/openshell"
 )
 
 // Paths on the host.
 const (
-	// RecordDir holds the install record. It is under /var/lib/kevaso-*, so the reset removes it
+	// RecordDir holds the install record. It is under /var/lib/kevaso-*; the reset removes it
+	// last of all (RecordStep).
 	// with the rest, after reading it.
 	RecordDir  = "/var/lib/kevaso-install"
 	RecordFile = RecordDir + "/record"
+	// KevasoInstalledFile lists the packages Kevaso's runtimes installed (hostpkg.Recording).
+	KevasoInstalledFile = hostpkg.InstalledFile
 	// SavedDockerJSON is Docker's daemon.json as it was before Kevaso wrote its own.
 	SavedDockerJSON = RecordDir + "/docker-daemon.json"
 	// StorageImage is the loop file --loop-storage backs the volume group with.
@@ -307,10 +311,16 @@ func KevasoTables(now State) []string {
 
 // Leftovers compares the host with base: watched packages added, tables added, packages base had
 // that are gone (a purge took too much), IP forwarding changed.
-func Leftovers(base, now State) []string {
+func Leftovers(base, now State) []string { return LeftoversExcept(base, now, nil) }
+
+// LeftoversExcept is Leftovers but for the packages the plan left on purpose (Decision.NotOurs:
+// installed since the record, not by Kevaso).
+func LeftoversExcept(base, now State, notOurs []string) []string {
 	var out []string
 	for _, p := range Purgeable(base, now) {
-		out = append(out, "package still installed: "+p)
+		if !slices.Contains(notOurs, p) {
+			out = append(out, "package still installed: "+p)
+		}
 	}
 	for _, t := range ExtraTables(base, now) {
 		out = append(out, "nftables table still there: "+t)
@@ -537,15 +547,26 @@ left=$(awk '{print $2}' /proc/mounts | grep -E '`+mountPattern+`')
 	}
 	// Never into another file system (a volume still mounted there), and not at all while
 	// anything under these paths is mounted (K-022).
+	// The install record (RecordDir) is not among them: it goes last (RecordStep), so a reset cut
+	// short can be run again with it (K-114).
 	destroys("remove Kevaso's files", `if awk '{print $2}' /proc/mounts | grep -qE '`+mountPattern+`'; then echo "something is still mounted under Kevaso's paths: not removing them" >&2; exit 1; fi
-rm -rf --one-file-system `+strings.Join(files, " ")+"\nsystemctl daemon-reload; systemctl reset-failed; true")
+set --
+for f in `+strings.Join(files, " ")+`; do [ "$f" = `+RecordDir+` ] || set -- "$@" "$f"; done
+rm -rf --one-file-system "$@"
+systemctl daemon-reload; systemctl reset-failed; true`)
 	add("remove the tests' /etc/hosts lines", `sed -i '/`+HostsMarker+`$/d' /etc/hosts`)
 	// OpenShell's gateway users (kvos-*) leave docker or kvm with userdel; their own groups go too.
 	add("remove kevaso-* users, and OpenShell's "+openshell.UserPrefix+"* users", `for u in $(awk -F: '$1 ~ /^(kevaso-|`+openshell.UserPrefix+`)/ {print $1}' /etc/passwd); do userdel "$u"; done
 for g in $(awk -F: '$1 ~ /^(kevaso-|`+openshell.UserPrefix+`)/ {print $1}' /etc/group); do groupdel "$g"; done
 true`)
+	add(RecordStep, `rm -rf --one-file-system `+RecordDir)
 	return steps
 }
+
+// RecordStep is the plan's last step: the install record goes. kvoadm reset runs it only when
+// every step before it succeeded: a reset cut short keeps it, and run again it does the rest
+// with what the record says (K-114: with the record gone, a second run found nothing to undo).
+const RecordStep = "remove the install record"
 
 func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
@@ -657,15 +678,23 @@ const StopStep = "stop kevasod and the fence"
 
 // StillRunningScript prints what still runs of kevasod and its fence (nothing: neither runs): each
 // unit in any state but inactive or failed (activating, deactivating, reloading, active), each with
-// a main process, and every kevasod process (the fence watcher is one too), wherever it came
-// from. A stop step that succeeded may still leave a process (a unit left deactivating).
+// a main process, and every kevasod process of the host (the fence watcher is one too), wherever
+// it came from. A stop step that succeeded may still leave a process (a unit left deactivating).
+// A kevasod in another mount namespace than the host's is a silo's (Kevaso run in a container
+// silo), not this host's: it never held the reset back for good (K-114). One whose namespace
+// can't be told counts.
 const StillRunningScript = `for u in kevasod.service kevaso-fence.service; do
   s=$(systemctl is-active "$u" 2>/dev/null)
   case "$s" in inactive|failed) ;; "") echo "unit $u: systemd doesn't say" ;; *) echo "unit $u is $s" ;; esac
   pid=$(systemctl show -p MainPID --value "$u" 2>/dev/null)
   case "$pid" in ""|0) ;; *) echo "unit $u has its main process $pid" ;; esac
 done
-pgrep -a -x kevasod | sed 's/^/process /'
+host=$(readlink /proc/1/ns/mnt 2>/dev/null)
+pgrep -a -x kevasod | while read -r p rest; do
+  ns=$(readlink /proc/$p/ns/mnt 2>/dev/null)
+  [ -n "$host" ] && [ -n "$ns" ] && [ "$ns" != "$host" ] && continue
+  echo "process $p $rest"
+done
 true`
 
 // StartAgainScript starts kevasod and its fence again: a reset that stopped them and then found
