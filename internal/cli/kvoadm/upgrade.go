@@ -205,9 +205,13 @@ func (d *sshDriver) Install(ctx context.Context, name string) error {
 	d.mu.Lock()
 	d.started[name] = time.Now()
 	d.mu.Unlock()
-	_, err = conn.Run(ctx, "systemctl restart kevasod", nil)
+	_, err = conn.Run(ctx, upgradeRestart, nil)
 	return err
 }
+
+// upgradeRestart starts the new binary: the fence watcher first, where the host has one (K-067:
+// an old watcher reads the new record its own way), then kevasod.
+const upgradeRestart = "if systemctl cat " + FenceUnitName + " >/dev/null 2>&1; then systemctl restart " + FenceUnitName + "; fi && systemctl restart kevasod"
 
 func (d *sshDriver) Healthy(ctx context.Context, name string, to upgrade.Version) error {
 	d.mu.Lock()

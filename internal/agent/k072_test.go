@@ -13,7 +13,7 @@ import (
 func TestSilenceIsCountedOnTheBootClock(t *testing.T) {
 	contactBoot := boottime.Now() - 3*time.Minute // the last heartbeat, 3 minutes ago
 	a := &Agent{Clock: clock.Real{},
-		LastContact:     func() time.Time { return time.Now() }, // wall: "just now", stepped
+		LastContact:     time.Now, // wall: "just now", stepped
 		LastContactBoot: func() (time.Duration, bool) { return contactBoot, true }}
 	a.started, a.startedBoot = time.Now(), boottime.Now()
 	if got := a.silence(); got < 3*time.Minute || got > 3*time.Minute+time.Second {

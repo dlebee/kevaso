@@ -10,6 +10,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/apiserver"
+	"kevaso.com/core/internal/boottime"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/store"
@@ -79,6 +80,7 @@ func TestTheFenceIsArmedOnlyOnceTheRecordHoldsTheSilo(t *testing.T) {
 	a := &Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": fake.New()}, Clock: clock.Real{},
 		LastContact: time.Now, FenceDir: dir}
 	go a.Run(ctx)
+	go stampLikeAWatcher(ctx, dir) // armed means a watcher runs (K-067)
 	get := func() *v1.Silo {
 		var cur v1.Silo
 		if err := c.Get(ctx, "Silo", "dev", "validator", &cur); err != nil {
@@ -125,6 +127,18 @@ func TestTheFenceIsArmedOnlyOnceTheRecordHoldsTheSilo(t *testing.T) {
 		if time.Now().After(deadline) {
 			r, _ := fence.Read(dir)
 			t.Fatalf("the record still stops it: %+v", r)
+		}
+	}
+}
+
+// stampLikeAWatcher writes the fence watcher's stamp until ctx ends.
+func stampLikeAWatcher(ctx context.Context, dir string) {
+	for {
+		_ = fence.WriteStamp(dir, fence.Stamp{Version: fence.RecordVersion, BootID: boottime.ID(), Boot: boottime.Now(), At: time.Now()})
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
 }
