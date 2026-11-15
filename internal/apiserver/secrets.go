@@ -564,6 +564,10 @@ func (s *Server) checkRuntimeFit(ctx context.Context, t target, obj meta.Object)
 	if silo.Spec.Service != nil {
 		problems = append(problems, rt+" has no network interface, so no service: reach it with kvo exec")
 	}
+	if stops, _ := silo.StopsOnControlPlaneLoss(); stops {
+		// K-080, until the owner decides: its gateway restarts a sandbox outside Kevaso.
+		problems = append(problems, "onControlPlaneLoss: Stop isn't available on "+rt+": its gateway brings its sandboxes back by itself (a restart of the gateway, a reboot), so nothing keeps it stopped without the control plane")
+	}
 	if src := silo.Spec.Network.Egress.Source; src != "" && src != v1.EgressHost {
 		problems = append(problems, rt+"'s traffic leaves from the host's address only (egress.source: host)")
 	}
