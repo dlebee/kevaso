@@ -266,6 +266,16 @@ func TestALaggingNodesNotFoundIsNoDelete(t *testing.T) {
 	r.cp.switchTo(r.srvA, seenA) // the caught-up node
 	r.trusted(seenA)
 	r.keptFor(r.id, time.Second)
+	// Known again there: it starts again (its init step), and isn't listed as kept on A. The
+	// order is driven: the restore comes only after that.
+	r.waitFor("the init step runs again", func() bool { return r.rt.RunningInit(r.id) == "slow" })
+	r.waitFor("not listed as kept on A", func() bool {
+		r.clk.Step(time.Second)
+		var h v1.Host
+		_ = r.cA.Get(r.ctx, "Host", "", "hv1", &h)
+		k := meta.FindCondition(h.Status.Conditions, agent.ConditionKeptSilos)
+		return k == nil || !strings.Contains(k.Message, "dev/single")
+	})
 	srvB, cB := r.newStore()
 	r.cp.switchTo(srvB, seenRestor)
 	r.trusted(seenRestor)
@@ -363,4 +373,27 @@ func TestADeleteSeenUnderAnotherHistoryIsNotHonoured(t *testing.T) {
 		r.clk.Step(time.Second)
 	}
 	r.listed(cB, r.id)
+}
+
+// The coordinator's finding on TestALaggingNodesNotFoundIsNoDelete: a copy kept and listed on one
+// control plane's Host, then a restore to another that doesn't know it either. The worker kept
+// in memory what it last listed, not where: the new control plane's Host never got it, and the
+// kept copy was invisible to its operator. Driven in order here: listed under h2, then a second
+// restore (h3).
+func TestAKeptCopyIsListedOnEachRestoredControlPlane(t *testing.T) {
+	r := newHistoryRig(t)
+	r.start(r.rt)
+	r.trusted(seenA)
+	r.id = r.place(r.cA, "hv1")
+	r.waitFor("it runs", func() bool { st, _ := r.rt.Status(r.ctx, r.id); return st.State == kri.Running })
+	srvB, cB := r.newStore()
+	r.cp.switchTo(srvB, seenRestor)
+	r.trusted(seenRestor)
+	r.listed(cB, r.id)
+	srvC, cC := r.newStore()
+	again := client.ControlPlaneSeen{ClusterID: "c1", History: "h3", Epoch: 3, Revision: 5}
+	r.cp.switchTo(srvC, again)
+	r.trusted(again)
+	r.keptFor(r.id, time.Second)
+	r.listed(cC, r.id)
 }

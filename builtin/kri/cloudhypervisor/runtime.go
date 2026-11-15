@@ -55,6 +55,20 @@ type State struct {
 	// class's folder holding its root disk image (spec.disk.class).
 	Volumes []kri.Volume `json:"volumes,omitempty"`
 	RootDir string       `json:"rootDir,omitempty"`
+	// Remake, if set, says its root disk is being made afresh (a reset) and isn't to be trusted:
+	// saved before the first destructive step (lvremove), cleared after the last. A reset cut
+	// there (kevasod stopped, a kill) is finished by the next Start before the VM boots, and the
+	// half-made disk never boots (review-batch4 claim 2).
+	Remake *Remake `json:"remake,omitempty"`
+}
+
+// Remake is a reset under way: the image its root disk is made from and the disk's size, and
+// the layout it had before (its shares are taken down as the reset does).
+type Remake struct {
+	Image      string       `json:"image"`
+	DiskBytes  int64        `json:"diskBytes"`
+	OldVolumes []kri.Volume `json:"oldVolumes,omitempty"`
+	OldRootDir string       `json:"oldRootDir,omitempty"`
 }
 
 func (s State) layout() Layout { return LayoutFor(NamesFor(s.ID), s.Volumes, s.RootDir) }
@@ -309,6 +323,16 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 	if !ok {
 		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
 	}
+	if st.Remake != nil {
+		// Its reset was cut before its disk was made (kevasod stopped mid-convert, say): the disk
+		// is partial. Made again, from the same image, before anything boots it.
+		if err := r.finishRemake(ctx, id); err != nil {
+			return fmt.Errorf("%s: its reset was cut short and its disk is not finished: %w (it doesn't start on a half-made disk)", id, err)
+		}
+		if st, ok = r.state(id); !ok || st.Remake != nil {
+			return fmt.Errorf("%s: its reset could not be finished", id)
+		}
+	}
 	n := NamesFor(id)
 	// A TAP doesn't outlive a reboot of the host: make it again, as Create did.
 	if _, err := r.Host.Run(ctx, "ip", "link", "show", n.Tap); err != nil {
@@ -390,7 +414,8 @@ func (r *Runtime) active(ctx context.Context, unit string) string {
 // or cgroups mounted elsewhere on this host). Any of them there, or any of them that can't be
 // told (systemctl show failing or not naming the main process of a unit that isn't stopped, a
 // cgroup that can't be read, pgrep failing), and it may run: the fences take "not up" for
-// stopped. A unit wedged in another state (deactivating, activating, reloading, maintenance)
+// stopped. The VMM's lock on its silo (LockFile) held is proof it runs, whatever the rest says;
+// a MainPID counts only for a process that may be the VMM (mayBeVMM). A unit wedged in another state (deactivating, activating, reloading, maintenance)
 // with none of them is cleaned up (SIGKILL to the unit's nothing, reset-failed), so the silo can
 // move on: stopped, reset, started again or deleted.
 func (r *Runtime) vmm(ctx context.Context, n Names) (state string, up bool) {
@@ -409,7 +434,7 @@ func (r *Runtime) vmm(ctx context.Context, n Names) (state string, up bool) {
 		switch {
 		case k == "MainPID":
 			named = true
-			if v != "" && v != "0" {
+			if v != "" && v != "0" && r.mayBeVMM(v, n) {
 				return state, true
 			}
 		case k == "ControlGroup" && v != "":
@@ -422,7 +447,7 @@ func (r *Runtime) vmm(ctx context.Context, n Names) (state string, up bool) {
 	if !named && !stopped {
 		return state, true // a unit on its way somewhere, its main process not said: can't tell
 	}
-	if r.vmmProcess(ctx, n.Socket) {
+	if r.diskLocked(ctx, n) || r.vmmProcess(ctx, n.Socket) {
 		return state, true
 	}
 	if !stopped {
@@ -431,6 +456,41 @@ func (r *Runtime) vmm(ctx context.Context, n Names) (state string, up bool) {
 		_, _ = r.Host.Run(ctx, "systemctl", "reset-failed", n.Unit)
 	}
 	return state, false
+}
+
+// mayBeVMM says whether the process pid, the unit's MainPID as systemd still shows it, may be
+// this silo's VMM (review-batch4 claim 3a): a failed or inactive unit can show an old MainPID
+// whose number was since reused by an unrelated process, which then counted as the VMM for as
+// long as it ran. Its command line must name this silo's API socket (the VMM's, under its lock
+// as the unit starts it); a process that is gone isn't it; one that can't be read may be.
+func (r *Runtime) mayBeVMM(pid string, n Names) bool {
+	b, err := r.Host.ReadFile("/proc/" + pid + "/cmdline")
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	if err != nil {
+		return true // can't say
+	}
+	return bytes.Contains(b, []byte("--api-socket\x00"+n.Socket+"\x00"))
+}
+
+// LockFile is the lock a VMM holds on its silo for its whole life (review-batch4 claim 3b): the
+// unit starts it under flock --no-fork, so the lock is the VMM's own open file, whatever its
+// command line or cgroup look like, and a second VMM of the silo can never start while one runs.
+func LockFile(n Names) string { return n.Dir + "/vmm.lock" }
+
+// lockConflict is flock's exit code when the lock is held (-E).
+const lockConflict = 75
+
+// diskLocked says whether something holds the silo's VMM lock (a VMM runs, whatever else
+// says), or that can't be told. Taking it for an instant is the probe: a VMM's unit waits a few
+// seconds for it (UnitFor), so a probe never makes a start fail.
+func (r *Runtime) diskLocked(ctx context.Context, n Names) bool {
+	_, err := r.Host.Run(ctx, "flock", "-n", "-E", strconv.Itoa(lockConflict), LockFile(n), "true")
+	if err == nil {
+		return false
+	}
+	return true // held (exit 75), or flock couldn't say
 }
 
 // vmmProcess says whether a process runs with the VMM's API socket on its command line (the VMM,
@@ -779,8 +839,7 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 	if !ok {
 		return fmt.Errorf("%s: %w", spec.ID, kri.ErrNotFound)
 	}
-	ip, err := netip.ParseAddr(st.IP)
-	if err != nil {
+	if _, err := netip.ParseAddr(st.IP); err != nil {
 		return err
 	}
 	n := NamesFor(spec.ID)
@@ -796,47 +855,91 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 	if cpus <= 0 {
 		cpus = 1
 	}
+	old := st
+	st.CPUs, st.MemMiB, st.Volumes, st.RootDir = cpus, mem>>20, spec.Volumes, spec.DiskHostPath
+	for _, c := range StopPlan(n, old.layout()) {
+		_, _ = r.Host.Run(ctx, c[0], c[1:]...)
+	}
+	if err := r.gone(ctx, spec.ID, "a stop"); err != nil { // its disk is made afresh next: never under a VMM
+		return fmt.Errorf("reset %s: %w", spec.ID, err)
+	}
+	if gate != nil {
+		if err := gate(ctx); err != nil {
+			return fmt.Errorf("reset %s: %w", spec.ID, err)
+		}
+	}
+	// From here on its disk is destroyed: the intent is on disk first, so a cut reset is
+	// finished (finishRemake), never booted half-made.
+	st.Remake = &Remake{Image: spec.Image, DiskBytes: disk, OldVolumes: old.Volumes, OldRootDir: old.RootDir}
+	if err := r.saveState(st); err != nil {
+		return fmt.Errorf("reset %s: %w", spec.ID, err)
+	}
+	if err := r.remakeLocked(ctx, st, img); err != nil {
+		return fmt.Errorf("reset %s: %w", spec.ID, err)
+	}
+	return nil
+}
+
+// finishRemake makes afresh the root disk of a silo whose reset was cut (State.Remake), from the
+// same image, and clears the mark.
+func (r *Runtime) finishRemake(ctx context.Context, id kri.ID) error {
+	st, ok := r.state(id)
+	if !ok || st.Remake == nil {
+		return nil
+	}
+	img, err := r.image(ctx, st.Remake.Image)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st, ok = r.state(id); !ok || st.Remake == nil {
+		return nil
+	}
+	if _, up := r.vmm(ctx, NamesFor(id)); up {
+		return errors.New("its VMM runs") // never under a VMM (not reached: Remake means it was gone)
+	}
+	return r.remakeLocked(ctx, st, img)
+}
+
+// remakeLocked does a reset's destructive steps, each one safe to do again: the root disk made
+// afresh from img, the seed rebuilt with a new guest host key, the layout applied. Only after
+// the last is the mark cleared (with r.mu held).
+func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error {
+	n := NamesFor(st.ID)
+	ip, err := netip.ParseAddr(st.IP)
+	if err != nil {
+		return err
+	}
 	hostPub, hostPriv, err := newHostKey()
 	if err != nil {
 		return err
 	}
-	old := st.layout()
-	st.CPUs, st.MemMiB, st.Volumes, st.RootDir = cpus, mem>>20, spec.Volumes, spec.DiskHostPath
+	rm := st.Remake
+	oldLayout := LayoutFor(n, rm.OldVolumes, rm.OldRootDir)
 	layout := st.layout()
 	steps := []func() error{
-		func() error {
-			for _, c := range StopPlan(n, old) {
-				_, _ = r.Host.Run(ctx, c[0], c[1:]...)
-			}
-			return r.gone(ctx, spec.ID, "a stop") // its disk is made afresh next: never under a VMM
-		},
-		func() error {
-			if gate != nil {
-				return gate(ctx)
-			}
-			return nil
-		},
-		func() error { return r.rootDisk(ctx, n, layout, img, disk, true) },
+		func() error { return r.rootDisk(ctx, n, layout, img, rm.DiskBytes, true) },
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
 		},
-		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID, hostPub)), 0o600) },
+		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(st.ID, hostPub)), 0o600) },
 		func() error {
-			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, spec.ID.Namespace)), 0o600)
+			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, st.ID.Namespace)), 0o600)
 		},
 		func() error {
 			return r.run(ctx, "cloud-localds", "--network-config="+n.Dir+"/network-config", n.Dir+"/seed.img", n.Dir+"/user-data", n.Dir+"/meta-data")
 		},
 		func() error { return r.run(ctx, "rm", "-f", n.Dir+"/user-data") },
 		func() error { return r.run(ctx, "chown", VMMUser+":"+VMMUser, n.Dir+"/seed.img") },
-		func() error { return r.applyLayout(ctx, st, old, layout) },
+		func() error { return r.applyLayout(ctx, st, oldLayout, layout) },
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {
-			return fmt.Errorf("reset %s: %w", spec.ID, err)
+			return err
 		}
 	}
-	st.HostKey, st.Started = hostPub, false
+	st.HostKey, st.Started, st.Remake = hostPub, false, nil
 	return r.saveState(st)
 }
 

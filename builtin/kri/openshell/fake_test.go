@@ -48,6 +48,9 @@ type fake struct {
 	stopLies        bool            // sandbox stop says Stopped, and the Docker driver's container runs on
 	failOn          string          // an openshell command containing this fails
 	providers       map[string]bool // provider name → in the gateway's credential store
+	// comesUp: a unit found activating (started by someone, not yet listening) that becomes active
+	// at the next `gateway add` of its gateway, restoring its sandboxes as a start does.
+	comesUp map[string]bool
 }
 
 // fsb is one sandbox as the gateway records it.
@@ -238,6 +241,11 @@ func (f *fake) Run(ctx context.Context, c Cmd) (int, error) {
 	case c.Name == "openshell":
 		gw := gatewayOf(c.Env)
 		if len(a) >= 2 && a[0] == "gateway" && a[1] == "add" {
+			if u := unitOfGateway(gw); f.comesUp[u] && f.units[u] == "activating" {
+				delete(f.comesUp, u)
+				f.units[u] = "inactive"
+				f.startUnit(u)
+			}
 			if f.units[unitOfGateway(gw)] != "active" || f.hung[gw] {
 				return fail("connect error: transport error")
 			}

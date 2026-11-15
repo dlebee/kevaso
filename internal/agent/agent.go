@@ -1375,6 +1375,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				continue
 			}
 			if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {
+				a.keptNoted.Delete(id.UID) // known and placed here (again): no longer a kept copy
 				continue
 			}
 			// Not in the API (or replaced by another of the same name) and no delete of it seen
@@ -1406,7 +1407,8 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			}
 			if !remove {
 				if why == "" {
-					continue // placed here again: the reconcile goes on with it
+					a.keptNoted.Delete(id.UID) // placed here again: no longer a kept copy
+					continue                   // the reconcile goes on with it
 				}
 				if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
 					return err
