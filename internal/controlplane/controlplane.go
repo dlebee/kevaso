@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -298,10 +299,20 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	admin, closeInProcess := srv.InProcess() // the components' own way in, not the admin socket
 	hbCtx, stopHB := context.WithCancel(ctx)
 	var contact *worker.Contact // with a worker here: the fence's contact and whether it applies
+	var wm *agent.Watermark     // …and its judge of this control plane (§0.7)
+	held := func() bool { return false }
 	if cfg.Worker != nil {
 		contact = &worker.Contact{}
+		if wm = cfg.Worker.Watermark; wm == nil {
+			dir := cfg.Worker.DataDir
+			if dir == "" {
+				dir = cfg.DataDir
+			}
+			wm = agent.OpenWatermark(filepath.Join(dir, "control-plane-watermark.json"), cfg.Log)
+		}
+		held = wm.Held
 	}
-	go heartbeat(hbCtx, admin, cfg, cfg.self(r.APIAddr, st), contact)
+	go heartbeat(hbCtx, admin, cfg, cfg.self(r.APIAddr, st), contact, held)
 	// Every system node serves the API; one at a time runs the controllers (systemnodes.go).
 	go runLeader(hbCtx, st, cfg, func(ctx context.Context) {
 		go expireApprovals(ctx, srv, cfg)
@@ -333,7 +344,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		// This host's worker judges its answers as a worker-only host does (§0.7): its own client,
 		// stamped, with the watermark kept in its data directory.
 		if wc.Watermark == nil {
-			wc.Watermark = agent.OpenWatermark(filepath.Join(wc.DataDir, "control-plane-watermark.json"), cfg.Log)
+			wc.Watermark = wm // opened above, for the heartbeat too
 		}
 		wcl, closeWorker := workerClient(srv, st, wc.Watermark, cfg.HostName)
 		go func() {
@@ -565,8 +576,12 @@ func serveErr(err error) error {
 
 // heartbeat makes sure this host's Host object exists and keeps its Ready condition fresh.
 // With a worker here (contact set), a heartbeat that got through is also the fence's contact:
-// written through the store, so a system node cut off from the majority stops getting it.
-func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport, contact *worker.Contact) {
+// written through the store, so a system node cut off from the majority stops getting it. Not
+// while this node's worker is held (held, before and after the write; K-108): a beat sent held
+// says so (Ready reason WorkerHeld), so it is no contact to the control plane either
+// (hostctl.Beat); one sent trusted and answered held is the control plane's contact only, the
+// safe side.
+func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport, contact *worker.Contact, held func() bool) {
 	tick := func() {
 		var h v1.Host
 		err := c.Get(ctx, "Host", "", cfg.HostName, &h)
@@ -605,11 +620,19 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport
 				return
 			}
 		}
+		stored := h.Status
+		stored.Conditions = slices.Clone(h.Status.Conditions)
+		reason, msg := "ControlPlaneUp", "API serving"
+		if held() {
+			// This beat is not the fence's contact: said in it, so it is none to the control plane
+			// either (K-108).
+			reason, msg = hostcontroller.ReasonWorkerHeld, "API serving; this node's worker is held (ControlPlaneBehind): not a contact"
+		}
 		meta.SetCondition(&h.Status.Conditions, meta.Condition{
-			Type: "Ready", Status: meta.ConditionTrue, Reason: "ControlPlaneUp",
-			Message: "API serving", ObservedGeneration: h.Generation,
+			Type: "Ready", Status: meta.ConditionTrue, Reason: reason,
+			Message: msg, ObservedGeneration: h.Generation,
 		}, cfg.Clock.Now().UTC().Truncate(time.Second))
-		setHeartbeat(&h, cfg.Clock.Now())
+		isContact := hostcontroller.Beat(stored, &h.Status, cfg.Clock.Now())
 		reportSelf(&h, rep)
 		sent, sentBoot := cfg.Clock.Now(), boottime.Now() // when it was sent (§0.7, K-072)
 		if err := c.UpdateStatus(ctx, &h); err != nil {
@@ -621,7 +644,9 @@ func heartbeat(ctx context.Context, c *client.Client, cfg Config, rep selfReport
 		if contact == nil {
 			return
 		}
-		contact.Mark(sent, sentBoot)
+		if isContact && !held() { // sent trusted, and still trusted once answered
+			contact.Mark(sent, sentBoot)
+		}
 		hosts, err := c.List(ctx, "Host", "")
 		if err != nil {
 			return // undecided stays what it was

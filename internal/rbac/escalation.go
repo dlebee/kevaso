@@ -128,3 +128,10 @@ func (p *Policy) RulesOfRef(ns string, ref v1.RoleRef) ([]v1.PolicyRule, bool) {
 	}
 	return nil, false
 }
+
+// ClusterAdmin says whether user holds cluster-admin: every verb on every resource, cluster-wide
+// (the built-in cluster-admin role, or one that grants as much). Some actions are a
+// cluster-admin's by definition, whatever a role names (K-058: invites).
+func (p *Policy) ClusterAdmin(user string, groups []string) bool {
+	return len(Missing(p.Held(user, groups, ""), []v1.PolicyRule{{Verbs: []string{"*"}, Resources: []string{"*"}}})) == 0
+}

@@ -12,6 +12,8 @@ import (
 // K-070, the same shape in the control plane: whatever the silo controller decides for a silo in
 // a handoff (its destination lost, unplaced, ready or full hosts, every policy), it never drops or
 // replaces movingFrom (moves.Replaces), so the API server's guard can apply to its writes too.
+// (The one end it makes, of a handoff whose source is gone and armed its fence, needs that
+// source's silence counted: K-119, TestK119AHandoffFromAGoneSourceEndsOnlyForAnArmedStopSilo.)
 func TestK070TheSiloControllerNeverReplacesAHandoff(t *testing.T) {
 	docker := func(h *v1.Host) *v1.Host {
 		h.Spec.Components.Worker.Runtimes = []v1.RuntimeSpec{{Name: "docker"}}

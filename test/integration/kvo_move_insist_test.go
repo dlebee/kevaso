@@ -41,16 +41,17 @@ func TestKvoMoveInsistIsTheFlagTheRefusalNames(t *testing.T) {
 		must(c.UpdateStatus(ctx, hst))
 	}
 	s := containerSilo("web", "demo", "docker")
+	s.Spec.Availability.OnHostLoss = v1.OnHostLossRecreate // a container moves only as a fresh copy (--recreate)
 	must(c.Create(ctx, s))
 	s.Status.Host, s.Status.Phase = "hv1", "Starting"
 	s.Status.Conditions = []meta.Condition{{Type: moves.CondStartClaim, Status: meta.ConditionTrue, Reason: "Starting", Message: "starting on hv1 at " + now.Format(time.RFC3339Nano)}}
 	must(c.UpdateStatus(ctx, s))
 
-	_, errs, code := h.kvo(ctx, "", "move", "silo", "web", "-n", "demo", "--to", "hv2", "--confirm-fenced")
+	_, errs, code := h.kvo(ctx, "", "move", "silo", "web", "-n", "demo", "--to", "hv2", "--recreate", "--confirm-fenced")
 	if code == 0 || !strings.Contains(errs, "--insist") {
 		t.Fatalf("a confirm-fenced move while hv1's claim is fresh: exit %d, %q; want refused, naming --insist", code, errs)
 	}
-	out, errs, code := h.kvo(ctx, "", "move", "silo", "web", "-n", "demo", "--to", "hv2", "--confirm-fenced", "--insist")
+	out, errs, code := h.kvo(ctx, "", "move", "silo", "web", "-n", "demo", "--to", "hv2", "--recreate", "--confirm-fenced", "--insist")
 	if code != 0 {
 		t.Fatalf("with --insist, as the refusal says: exit %d, %q", code, errs)
 	}

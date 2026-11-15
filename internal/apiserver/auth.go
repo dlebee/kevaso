@@ -315,6 +315,11 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			}
 			s.record(r, id, groups, attributes(id, groups, r, t), ok, reason)
 			if !ok {
+				if t.token {
+					// K-077: a token holds whatever its account holds, so minting one is the
+					// namespace admins' (the built-in editor role no longer has it).
+					reason += fmt.Sprintf("; minting a service account's token is for the admins of namespace %s (ClusterRole admin bound there): ask one of them to run kvo create token %s -n %s", t.namespace, t.name, t.namespace)
+				}
 				writeErr(w, errf(http.StatusForbidden, "Forbidden", "%s: %s", id, reason))
 				return
 			}

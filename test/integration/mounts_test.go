@@ -121,7 +121,7 @@ func TestMountClassFollowsTheSilo(t *testing.T) {
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "pad", Namespace: "notes"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "busybox"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Placement:    v1.Placement{HostSelector: map[string]string{}},
-			Availability: v1.Availability{OnHostLoss: v1.OnHostLossMove}, // admitted: the class can go anywhere
+			Availability: v1.Availability{OnHostLoss: v1.OnHostLossRecreate}, // a container moves only as a fresh copy; its volume goes with it
 			Volumes:      []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"}}}}
 	if err := admin.Create(ctx, s); err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestMountClassFollowsTheSilo(t *testing.T) {
 
 	mv := func(to string) error {
 		var out v1.Silo
-		return admin.Call(ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/notes/silos/pad/move", moves.Request{To: to}, &out)
+		return admin.Call(ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/notes/silos/pad/move", moves.Request{To: to, Recreate: true}, &out)
 	}
 	if err := mv("hv3"); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "node side") {
 		t.Fatalf("moving to a host without the node side: %v", err)
