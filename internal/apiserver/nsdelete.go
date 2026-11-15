@@ -23,28 +23,26 @@ func (s *Server) checkDeleteNamespace(ctx context.Context, t target) error {
 		names []string
 	}
 	var in []held
-	look := func(kind, storeKind string) error {
-		objs, _, err := s.store.List(ctx, store.Selector{Kind: storeKind, Namespace: t.name})
-		if err != nil {
-			return err
-		}
+	note := func(kind string, objs []store.Object) {
 		if len(objs) == 0 {
-			return nil
+			return
 		}
 		h := held{kind: kind}
 		for _, o := range objs {
 			h.names = append(h.names, o.Key.Name)
 		}
 		in = append(in, h)
-		return nil
 	}
 	for _, k := range v1.Kinds() {
 		if k.Scope != v1.Namespaced {
 			continue
 		}
-		if err := look(k.Kind, k.Kind); err != nil {
+		kind := k.Kind // an API kind, stored under its name
+		objs, _, err := s.store.List(ctx, store.Selector{Kind: kind, Namespace: t.name})
+		if err != nil {
 			return err
 		}
+		note(kind, objs)
 	}
 	set, err := s.definedKinds(ctx)
 	if err != nil {
@@ -54,9 +52,12 @@ func (s *Server) checkDeleteNamespace(ctx context.Context, t target) error {
 		if dk.res.Scope != v1.Namespaced {
 			continue
 		}
-		if err := look(dk.res.Kind+" ("+dk.res.Resource+")", dk.def.Spec.Resource()); err != nil {
+		d := dk.def // a defined kind, stored under PLURAL.GROUP
+		objs, _, err := s.store.List(ctx, store.Selector{Kind: d.Spec.Resource(), Namespace: t.name})
+		if err != nil {
 			return err
 		}
+		note(dk.res.Kind+" ("+dk.res.Resource+")", objs)
 	}
 	if len(in) == 0 {
 		return nil
