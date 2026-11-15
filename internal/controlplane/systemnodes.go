@@ -550,12 +550,12 @@ func loadOrCreateCA(cfg Config, rec *ClusterRecord) (*pki.CA, error) {
 	ca, err := pki.LoadCA(pkiDir)
 	if errors.Is(err, os.ErrNotExist) && cfg.Join == nil {
 		if rec == nil {
-			return nil, refuseStart("this node belongs to no cluster (no record %s, no cluster CA in %s): kvoadm init creates one, or %s",
-				recordPath(cfg.DataDir), pkiDir, howToRestore)
+			return nil, refuseStart("this node belongs to no cluster (no record %s, no cluster CA in %s): %s",
+				recordPath(cfg.DataDir), pkiDir, howToRecover(cfg, false))
 		}
 		if rec.State != RecordNew {
 			return nil, refuseStart("this node belongs to cluster %q, but the cluster CA is missing from %s: not making a new one (every certificate would stop working). Put back %s from a backup, or %s",
-				rec.Cluster, pkiDir, pkiDir, howToRestore)
+				rec.Cluster, pkiDir, pkiDir, howToRecover(cfg, true))
 		}
 		cfg.Log("creating the cluster CA in %s", pkiDir)
 		if ca, err = pki.NewCA(cfg.ClusterName, cfg.Clock.Now()); err == nil {
