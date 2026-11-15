@@ -65,7 +65,10 @@ spec:
 	time.Sleep(150 * time.Second)
 	to := strings.TrimSpace(p.c2.mustSh("date +%s"))
 	p.c2.mustSh("nft delete table inet kvtest")
-	c.eventually("machine 2 back", 3*time.Minute, func() (bool, string) { return c.hostReady(metalHost2) })
+	c.eventually("machine 2 back (kvo exec reaches its guest)", 3*time.Minute, func() (bool, string) {
+		out, code := c.in(ns, "vm", "echo up")
+		return code == 0 && strings.TrimSpace(out) == "up", out
+	})
 	log, _ := c.in(ns, "vm", "cat /root/cut.log; systemctl status kvtcut --no-pager 2>&1 | head -5")
 	t.Logf("the guest's log (cut from %s to %s, machine 2's clock):\n%s", from, to, log)
 	n, bad := 0, 0
