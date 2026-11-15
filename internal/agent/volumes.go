@@ -248,11 +248,14 @@ func (a *Agent) mountedAt(ctx context.Context, dir string) bool {
 	return code == 0
 }
 
-// unmountDirs unmounts whatever is still mounted under the silo's volume folder, and removes it.
+// unmountDirs unmounts whatever is still mounted under the silo's volume folder, then removes the
+// empty mount points and the folder: never recursively (K-006). A check that can't say whether a
+// folder is mounted (mountpoint not run, killed) is an error, not "not mounted": nothing is removed.
 func (a *Agent) unmountDirs(ctx context.Context, uid string) error {
 	dirs, _ := a.Host.Glob(path.Join(a.volumesDir(), uid, "*"))
 	for _, d := range dirs {
-		if _, code, _ := a.run(ctx, "mountpoint", "-q", d); code == 0 {
+		switch _, code, err := a.run(ctx, "mountpoint", "-q", d); code {
+		case 0:
 			if _, _, err := a.run(ctx, "umount", d); err != nil {
 				return err
 			}
@@ -262,13 +265,25 @@ func (a *Agent) unmountDirs(ctx context.Context, uid string) error {
 				return fmt.Errorf("%s is still mounted after umount: not removing it (will try again)", d)
 			}
 			a.log("unmounted %s", d)
+		case notAMountPoint:
+		default:
+			return fmt.Errorf("can't tell whether %s is mounted (%v): not removing it (will try again)", d, err)
 		}
 	}
-	if len(dirs) > 0 {
-		return a.Host.RemoveAll(path.Join(a.volumesDir(), uid))
+	if len(dirs) == 0 {
+		return nil
 	}
-	return nil
+	for _, d := range dirs {
+		if _, _, err := a.run(ctx, "rmdir", d); err != nil {
+			return fmt.Errorf("%s isn't empty after its unmount: left as it is (%v)", d, err)
+		}
+	}
+	_, _, err := a.run(ctx, "rmdir", path.Join(a.volumesDir(), uid))
+	return err
 }
+
+// notAMountPoint is mountpoint's exit code for a folder that isn't one (util-linux).
+const notAMountPoint = 32
 
 // volumeWait is how soon to look again while a volume isn't there yet.
 const volumeWait = 3 * time.Second
