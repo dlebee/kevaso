@@ -185,7 +185,11 @@ type Agent struct {
 	// startedHere: silo UID → struct{}: this run started it, and hasn't stopped it since
 	// (stoppedByUs). Found stopped while it is there, it stopped by itself: a failed start (K-115).
 	startedHere sync.Map
-	applied     appliedLog // the resets and images applied here (applied.go, K-110)
+	// fenceFaulted: silo UID → why: its fence kill here failed, or wasn't confirmed (K-094). Not
+	// armed (the control plane doesn't restart it elsewhere on the strength of this host's
+	// fence) until a later kill of it here is confirmed. The host is never rebooted for it.
+	fenceFaulted sync.Map
+	applied      appliedLog // the resets and images applied here (applied.go, K-110)
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
