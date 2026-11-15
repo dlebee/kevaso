@@ -47,9 +47,11 @@ type longSoak struct {
 
 var longSoakSilos = []string{"vm", "app", "stops", "leased"}
 
-func longSoakFile(p *pair) string {
+// longSoakFile is in the kept cluster's home (with KEVASO_METAL_REUSE the run's HOME is that
+// home, ~/.kevaso-metal/pair-IP).
+func longSoakFile(*pair) string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".kevaso-metal", "pair-"+p.m1.cfg.ExternalIP, "longsoak.json")
+	return filepath.Join(home, "longsoak.json")
 }
 
 // longSoakLeaks is hostLeaks and more: every link, the mounts under Kevaso's folders, the
