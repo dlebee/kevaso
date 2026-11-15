@@ -60,6 +60,7 @@ const (
 	groupsKey
 	nsFilterKey
 	secretFilterKey
+	inProcessIDKey // an in-process connection's identity (InProcessAs)
 )
 
 // LocalAdmin is the identity of whoever reaches the admin socket (root on the host). Its name has
@@ -80,6 +81,9 @@ func (s *Server) authenticate(r *http.Request) (pki.Identity, []string, error) {
 	}
 	if c, _ := r.Context().Value(componentConnKey).(bool); c {
 		return Component, nil, nil
+	}
+	if id, ok := r.Context().Value(inProcessIDKey).(pki.Identity); ok {
+		return id, groupsOf(id), nil
 	}
 	if r.TLS != nil && len(r.TLS.VerifiedChains) > 0 { // verified against the cluster CA by TLS
 		id, err := pki.IdentityOf(r.TLS.PeerCertificates[0])

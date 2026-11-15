@@ -593,9 +593,13 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 	}
 	if id, ok := IdentityFrom(ctx); (!ok || id.Type != "host" || id.Role != "worker") && t.kind.Kind == "Silo" && t.status && !t.planned {
 		// K-070: whatever the caller does, a handoff under way is not replaced or dropped. The
-		// hosts are judged by moves.HostWrite above; the move handler's confirmed-fenced end of
-		// a handoff is decided by PlanMove and passes planned.
-		if err := moves.Replaces(old.(*v1.Silo).Status, obj.(*v1.Silo).Status); err != nil && !letGo(old.(*v1.Silo).Status, obj.(*v1.Silo).Status) {
+		// hosts are judged by moves.HostWrite above (only the source host lets go); the move
+		// handler's confirmed-fenced end of a handoff is decided by PlanMove and passes planned.
+		// Nobody else ends one: not a user, not the admin socket, not an in-process component
+		// (the worker on a system node writes as its host, InProcessAs). Only a server with no
+		// authentication at all (tests) has no identities to tell the source apart, and takes a
+		// let-go that unmounted the source's volumes from anyone.
+		if err := moves.Replaces(old.(*v1.Silo).Status, obj.(*v1.Silo).Status); err != nil && (s.auth != nil || !letGo(old.(*v1.Silo).Status, obj.(*v1.Silo).Status)) {
 			return store.Object{}, errf(http.StatusConflict, "Conflict", "%v", err)
 		}
 	}
