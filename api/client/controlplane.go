@@ -54,8 +54,8 @@ func SetControlPlane(h http.Header, s ControlPlaneSeen) {
 
 // Watermark is what a worker keeps (on disk, across its restarts) about the control plane it
 // trusts: the cluster, the history, and the highest revision seen in it. Held, once set, stays set
-// until an answer of that history at or above the kept revision arrives (a healthy system node, or
-// the one that was behind once it caught up), or a new history is accepted.
+// until a new history is accepted (a deliberate restore) or a person replaces what was kept
+// (kvoadm host trust-control-plane): never by the held history's revision catching up (K-107).
 type Watermark struct {
 	ClusterID string `json:"clusterID"`
 	History   string `json:"history"`
@@ -90,9 +90,10 @@ const (
 //
 //   - nothing kept yet: accept and keep it (a worker's first contact, or one from before this rule).
 //   - another cluster: Foreign; keep what was kept.
-//   - same history: a revision below the one kept when the request was sent is Hold; so is one
-//     below the one kept while held. Any other is Accept: it raises the revision kept and ends a
-//     hold (an answer at or above what was kept: that node's store is not older).
+//   - same history: a revision below the one kept when the request was sent is Hold; so is any
+//     answer of that history once held (K-107: a same-history hold is a rollback, and a rolled-back
+//     store passing the revision kept says nothing about which copy is newer). Any other is
+//     Accept: it raises the revision kept.
 //   - another history with an epoch at or above the one kept: NewHistory; keep the new one.
 //   - another history with a lower epoch: Hold (an older restore than one already accepted).
 func Judge(kept Watermark, seen ControlPlaneSeen) (Watermark, Verdict) {
@@ -119,11 +120,13 @@ func JudgeAnswer(kept Watermark, keptAtSend int64, seen ControlPlaneSeen) (Water
 	case seen.ClusterID != kept.ClusterID:
 		return kept, Foreign
 	case seen.History == kept.History:
-		if seen.Revision < keptAtSend || (kept.Held && seen.Revision < kept.Revision) {
+		// Held: a store of this history was older than what was seen, a rollback (a healthy
+		// member never answers lower in one history). It stays held whatever that store's
+		// revision comes to (K-107): only a new history, or a person, ends it.
+		if kept.Held || seen.Revision < keptAtSend {
 			kept.Held = true
 			return kept, Hold
 		}
-		kept.Held = false
 		kept.Revision = max(kept.Revision, seen.Revision)
 		return kept, Accept
 	case seen.Epoch >= kept.Epoch:
