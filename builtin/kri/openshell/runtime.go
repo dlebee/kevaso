@@ -286,7 +286,7 @@ func (r *Runtime) up(ctx context.Context, g Gateway, self kri.ID) error {
 		r.sleep(3 * time.Second)
 	}
 	for _, o := range r.all() {
-		if o.Gateway.Key != g.Key || o.ID == self || !(o.Created || o.ResetPending) || o.Deleted || before[SandboxName(o.ID)] {
+		if o.Gateway.Key != g.Key || o.ID == self || !o.Created && !o.ResetPending || o.Deleted || before[SandboxName(o.ID)] {
 			continue
 		}
 		sb, exists, err := r.get(ctx, o)
