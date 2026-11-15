@@ -709,7 +709,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 	case "Silo":
 		head = append(head, "RUNTIME", "PHASE", "READY", "HOST")
 		if wide {
-			head = append(head, "MOVABLE")
+			head = append(head, "MOVABLE", "ON-CP-LOSS")
 		}
 	case "Host":
 		head = append(head, "INTERNAL IP", "EXTERNAL IP", "REGION", "COMPONENTS", "RUNTIMES")
@@ -755,7 +755,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 		case *v1.Silo:
 			row = append(row, o.Spec.Runtime, dash(o.Status.Phase), readiness(o.Status.Conditions), dash(o.Status.Host))
 			if wide {
-				row = append(row, dash(o.Status.Movable))
+				row = append(row, dash(o.Status.Movable), cpLoss(o.Spec.Availability))
 			}
 		case *v1.Host:
 			var comps, rts []string
@@ -968,4 +968,25 @@ func readiness(conds []meta.Condition) string {
 		return "no (" + c.Reason + ")"
 	}
 	return "no"
+}
+
+// cpLoss is how a silo answers its host losing the control plane, for the wide table: "stops
+// after 2m" for onControlPlaneLoss: Stop, "-" otherwise (it keeps running).
+func cpLoss(a v1.Availability) string {
+	if stops, after := a.StopsOnControlPlaneLoss(); stops {
+		return "stops after " + shortDur(after)
+	}
+	return "-"
+}
+
+// shortDur writes 5m0s as 5m and 1h0m0s as 1h.
+func shortDur(d time.Duration) string {
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
 }
