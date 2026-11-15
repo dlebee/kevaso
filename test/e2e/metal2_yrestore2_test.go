@@ -144,7 +144,9 @@ func TestMetal2ResetBackupRestoreWipesOnce(t *testing.T) {
 	c.apply(vmEcho(ns, "vm", 8080) + on(metalHost2))
 	c.waitRunning(ns, 20*time.Minute, "vm")
 	n := cloudhypervisor.NamesFor(kri.ID{Namespace: ns, Name: "vm", UID: c.silo(ns, "vm").UID})
-	lvTime := func() string { return strings.TrimSpace(p.c2.mustSh("lvs --noheadings -o lv_time kevaso/" + n.LV)) }
+	lvTime := func() string { // "" while a reset has it removed and not yet made again
+		return strings.TrimSpace(p.c2.mustSh("lvs --noheadings -o lv_time kevaso/" + n.LV + " 2>/dev/null || true"))
+	}
 	mark := func(v string) {
 		if out, code := c.in(ns, "vm", "echo "+v+" > /root/marker && sync"); code != 0 {
 			t.Fatalf("write %s: %d %s", v, code, out)
@@ -183,7 +185,7 @@ func TestMetal2ResetBackupRestoreWipesOnce(t *testing.T) {
 	pending := c.silo(ns, "vm")
 	r.backup()
 	t.Logf("backed up with spec.reset %q, Ready %v", pending.Spec.Reset, meta.FindCondition(c.silo(ns, "vm").Status.Conditions, "Ready"))
-	c.eventually("the reset applied: a new root disk", 10*time.Minute, func() (bool, string) { now := lvTime(); return now != t0, now })
+	c.eventually("the reset applied: a new root disk", 10*time.Minute, func() (bool, string) { now := lvTime(); return now != t0 && now != "", now })
 	c.waitRunning(ns, 10*time.Minute, "vm")
 	t1 := lvTime()
 	got, _ = c.in(ns, "vm", "cat /root/marker 2>&1")
