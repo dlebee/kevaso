@@ -119,6 +119,12 @@ var builtinRules = map[string][]Rule{
 		{`!has(self.spec.routeWhen) || self.spec.routeWhen in ['ready', 'running']`,
 			"routeWhen must be ready or running"},
 	},
+	"ClusterSecret": {
+		{`has(self.spec.plugins) && self.spec.plugins.size() > 0 && self.spec.plugins.all(p, p != '')`,
+			"spec.plugins is required: the plugins that receive it, by install name"},
+		{`!has(self.spec.hosts) || self.spec.hosts.all(h, h != '')`,
+			"spec.hosts names hosts; an empty list is every host that runs one of the plugins"},
+	},
 	"Secret": {
 		{`!has(self.spec.type) || self.spec.type in ['opaque', 'ed25519', 'ecdsa-p256', 'registry']`,
 			"spec.type must be opaque, ed25519, ecdsa-p256 or registry"},

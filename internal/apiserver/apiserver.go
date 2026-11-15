@@ -207,7 +207,7 @@ func parsePath(path string) (target, error) {
 		t.lease = parts[2]
 	case len(parts) == 3 && parts[2] == "token" && k.Kind == "ServiceAccount":
 		t.token = true
-	case len(parts) == 3 && parts[2] == "value" && k.Kind == "Secret":
+	case len(parts) == 3 && parts[2] == "value" && (k.Kind == "Secret" || k.Kind == "ClusterSecret"):
 		t.value = true
 	case len(parts) == 3 && parts[2] == "bundle" && k.Kind == "Pane":
 		t.bundle = true
@@ -243,6 +243,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.siloLease(w, r, t)
 	case t.token:
 		s.serviceAccountToken(w, r, t)
+	case t.value && r.Method == http.MethodGet && t.kind.Kind == "ClusterSecret":
+		s.clusterSecretValue(ctx, w, t)
 	case t.value && r.Method == http.MethodGet:
 		s.secretValue(ctx, w, t)
 	case t.answer != "":
@@ -256,7 +258,11 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	case t.kind.Kind == "Pane" && (r.Method == http.MethodPost || r.Method == http.MethodPut) && !internal(ctx):
 		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "panes are reported by their silo (spec.panes); they can't be written through the API"))
 	case t.value:
-		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "%s %s: set a value with an update of the secret", r.Method, r.URL.Path))
+		what := "secret"
+		if t.kind.Kind == "ClusterSecret" {
+			what = "clustersecret"
+		}
+		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "%s %s: set a value with an update of the %s", r.Method, r.URL.Path, what))
 	case r.Method == http.MethodGet && t.name == "" && r.URL.Query().Get("watch") == "true":
 		s.watch(ctx, w, r, t)
 	case r.Method == http.MethodGet && t.name == "":
@@ -440,6 +446,13 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		writeErr(w, err)
 		return
 	}
+	if value == nil {
+		value, err = s.prepareClusterSecret(ctx, t, obj)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
 	sw := &secretWrite{value: value}
 	ctx = context.WithValue(ctx, secretWriteKey{}, sw)
 	o, err := fn(ctx, t, obj)
@@ -451,7 +464,12 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	if sw.sealed {
 		clear(value)
 	} else if value != nil && o.Data != nil && !dryRun(ctx) {
-		if o, err = s.storeSecretValue(ctx, o, value); err != nil {
+		if t.kind.Kind == "ClusterSecret" {
+			o, err = s.storeClusterSecretValue(ctx, o, value)
+		} else {
+			o, err = s.storeSecretValue(ctx, o, value)
+		}
+		if err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -556,6 +574,11 @@ func (s *Server) create(ctx context.Context, t target, obj meta.Object) (store.O
 	if err != nil {
 		return store.Object{}, err
 	}
+	if t.kind.Kind == "ClusterSecret" {
+		if data, err = withClusterStatus(data, v1.ClusterSecretStatus{}); err != nil {
+			return store.Object{}, err
+		}
+	}
 	if t.kind.Scope == v1.Namespaced {
 		return s.commitInNamespace(ctx, t, nsUID, data)
 	}
@@ -565,6 +588,9 @@ func (s *Server) create(ctx context.Context, t target, obj meta.Object) (store.O
 // update replaces an object (or only its status, for /status). It needs the resourceVersion the
 // client read: a stale one is a 409 Conflict, so concurrent writers never overwrite each other.
 func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.Object, error) {
+	if t.kind.Kind == "ClusterSecret" && t.status {
+		return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "ClusterSecret %s: status is set by the server when the value changes", t.name)
+	}
 	om := obj.GetObjectMeta()
 	if om.ResourceVersion == "" {
 		return store.Object{}, errf(http.StatusBadRequest, "BadRequest", "metadata.resourceVersion is required on update (read the object first)")
@@ -710,6 +736,11 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 	if err != nil {
 		return store.Object{}, err
 	}
+	if t.kind.Kind == "ClusterSecret" {
+		if data, err = withClusterStatus(data, old.(*v1.ClusterSecret).Status); err != nil {
+			return store.Object{}, err
+		}
+	}
 	if t.kind.Kind == "Secret" && !t.status {
 		if data, err = s.sealBeforeLoosening(ctx, old, data, cur.Revision, expected); err != nil {
 			return store.Object{}, err
@@ -786,7 +817,7 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 				writeErr(w, err)
 				return
 			}
-			if t.kind.Kind == "Secret" && s.vault != nil {
+			if s.vault != nil && (t.kind.Kind == "Secret" || t.kind.Kind == "ClusterSecret") {
 				s.vault.Forget(ctx, t.namespace, t.name)
 			}
 			writeJSON(w, http.StatusOK, Status{Code: http.StatusOK, Reason: "Deleted", Message: t.key().String() + " deleted"})

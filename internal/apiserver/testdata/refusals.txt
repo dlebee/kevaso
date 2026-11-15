@@ -210,6 +210,10 @@ Secret spec.generate=true spec.value="eA=="
   Secret k: spec.generate and spec.value don't go together: the server makes the value
 Secret spec.value="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA…
   Secret k: spec.value: at most 64 KiB
+ClusterSecret spec.plugins!
+  ClusterSecret k: spec.plugins is required: the plugins that receive it, by install name
+ClusterSecret spec.hosts=[""]
+  ClusterSecret k: spec.hosts names hosts; an empty list is every host that runs one of the plugins; spec.hosts: name "": want 1-63 lowercase letters, digits or '-', starting and ending with a letter or digit
 Grant spec.egress!
   Grant g: a grant needs egress, secrets or operations
 Grant spec.secrets=[{"name":"k","deliver":"email"}]

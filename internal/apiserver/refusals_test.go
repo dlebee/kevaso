@@ -24,6 +24,7 @@ var base = map[string]string{
 	"SiloSet":            `{"metadata":{"name":"set","namespace":"d"},"spec":{"instances":1,"template":{"runtime":"docker","container":{"image":"nginx:1.27"}}}}`,
 	"Service":            `{"metadata":{"name":"svc","namespace":"d"},"spec":{"selector":{"app":"a"},"ports":[{"name":"web","port":80}]}}`,
 	"Secret":             `{"metadata":{"name":"k","namespace":"d"},"spec":{}}`,
+	"ClusterSecret":      `{"metadata":{"name":"k"},"spec":{"plugins":["juicefs"]}}`,
 	"Grant":              `{"metadata":{"name":"g","namespace":"d"},"spec":{"egress":[{"to":"10.0.0.0/8"}]}}`,
 	"IngressClass":       `{"metadata":{"name":"public"},"spec":{"controller":{"driver":"nginx","namespace":"kevaso-system","silo":"ingress"}}}`,
 	"Ingress":            `{"metadata":{"name":"i","namespace":"d"},"spec":{"ingressClass":"public","hosts":["app.example.com"],"rules":[{"service":{"name":"web","port":"http"}}]}}`,
@@ -158,6 +159,9 @@ var refusals = []refusal{
 	{"Secret", []string{`spec.type="ed25519"`, `spec.allowedDelivery=["env"]`}, "a signing key is only used through sign"},
 	{"Secret", []string{`spec.generate=true`, `spec.value="eA=="`}, "spec.generate and spec.value don't go together"},
 	{"Secret", []string{`spec.value="` + base64.StdEncoding.EncodeToString(make([]byte, 64<<10+1)) + `"`}, "spec.value: at most 64 KiB"},
+	// ClusterSecret
+	{"ClusterSecret", []string{`spec.plugins!`}, "spec.plugins is required"},
+	{"ClusterSecret", []string{`spec.hosts=[""]`}, "spec.hosts names hosts"},
 	// Grant
 	{"Grant", []string{`spec.egress!`}, "a grant needs egress, secrets or operations"},
 	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"email"}]`}, "every grant secret needs a name, and deliver"},

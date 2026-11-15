@@ -178,6 +178,9 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 // authorizeRequest decides an API request. For people it asks RBAC; a person who may not list
 // namespaces still gets the list, cut down to the ones they have a role in.
 func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups []string, r *http.Request, t target) (allowed, filterNS bool, reason string, err error) {
+	if t.kind.Kind == "ClusterSecret" && id != LocalAdmin {
+		return s.authorizeClusterSecret(ctx, id, groups, t)
+	}
 	if id == LocalAdmin {
 		return true, false, "local admin socket", nil
 	}
@@ -210,6 +213,44 @@ func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups [
 		return true, true, "secrets your roles name or select", nil
 	}
 	return d.Allowed, false, d.Reason, nil
+}
+
+// authorizeClusterSecret: create, update, delete, get and list are a cluster-admin's, and so is
+// reveal. A host certificate may only reach the value route; whether the secret names that host
+// is checked when the value is read (clusterSecretValue). No namespaced role reaches here: a
+// request for a cluster-scoped kind has no namespace, and this check doesn't ask RBAC for the
+// resource, so a ClusterRole that names clustersecrets still isn't enough.
+func (s *Server) authorizeClusterSecret(ctx context.Context, id pki.Identity, groups []string, t target) (bool, bool, string, error) {
+	admin, err := s.clusterAdmin(ctx, id, groups)
+	if err != nil {
+		return false, false, "", err
+	}
+	if admin {
+		return true, false, "cluster-admin", nil
+	}
+	if t.value && hostCertificate(id) {
+		return true, false, "host " + id.Name, nil
+	}
+	if t.value {
+		return false, false, "a clustersecret's value is for a cluster-admin, or for a host the secret names", nil
+	}
+	return false, false, "clustersecrets are for a cluster-admin", nil
+}
+
+// clusterAdmin reports whether id holds cluster-admin: the admin socket, or rbac.Policy.ClusterAdmin
+// (the built-in cluster-admin role, or a role that grants as much). Hosts and kevasod itself don't.
+func (s *Server) clusterAdmin(ctx context.Context, id pki.Identity, groups []string) (bool, error) {
+	if id == LocalAdmin {
+		return true, nil
+	}
+	if id.Type == "host" || id.Type == "component" || id == Component {
+		return false, nil
+	}
+	p, err := s.policy.Policy(ctx)
+	if err != nil {
+		return false, err
+	}
+	return p.ClusterAdmin(id.Name, groups), nil
 }
 
 func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
