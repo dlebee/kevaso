@@ -35,6 +35,24 @@ type Strict struct {
 	smu        sync.Mutex
 	inits      map[kri.ID]*heldInit
 	refuseKill error
+	failStatus error
+	hangKill   <-chan struct{}
+}
+
+// FailStatus makes every Status from now on fail with err (nil: it answers again): an engine
+// that can't say.
+func (r *Strict) FailStatus(err error) {
+	r.smu.Lock()
+	defer r.smu.Unlock()
+	r.failStatus = err
+}
+
+// HangKill makes every Kill from now on hang, whatever its context, until release is closed (nil:
+// kills return again): a hung engine.
+func (r *Strict) HangKill(release <-chan struct{}) {
+	r.smu.Lock()
+	defer r.smu.Unlock()
+	r.hangKill = release
 }
 
 type heldInit struct {
@@ -177,6 +195,12 @@ func (r *Strict) Stop(ctx context.Context, id kri.ID) error {
 // Kill implements kri.Killer: everything of the silo ends at once (refused while RefuseKill is
 // set).
 func (r *Strict) Kill(ctx context.Context, id kri.ID) error {
+	r.smu.Lock()
+	hang := r.hangKill
+	r.smu.Unlock()
+	if hang != nil {
+		<-hang
+	}
 	if err := r.refused(); err != nil {
 		r.mu.Lock()
 		r.record("kill (refused)", id)
@@ -202,6 +226,12 @@ func (r *Strict) Reset(ctx context.Context, spec kri.Spec) error {
 
 // Status implements kri.Runtime: Running while its main process or an init step runs.
 func (r *Strict) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
+	r.smu.Lock()
+	ferr := r.failStatus
+	r.smu.Unlock()
+	if ferr != nil {
+		return kri.Status{}, ferr
+	}
 	st, err := r.Box.Status(ctx, id)
 	if err != nil || st.State == kri.Running {
 		return st, err

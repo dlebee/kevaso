@@ -228,7 +228,7 @@ func (a *Agent) lastContact() time.Time {
 func (a *Agent) fence(ctx context.Context, e *engine.Engine) {
 	t := time.NewTicker(fence.CheckEvery)
 	defer t.Stop()
-	killed := map[string]bool{} // in this outage
+	f := &fencing{a: a, inflight: map[string]time.Time{}, unconfirmed: map[string]string{}}
 	watcherWas := false
 	for {
 		select {
@@ -244,43 +244,11 @@ func (a *Agent) fence(ctx context.Context, e *engine.Engine) {
 			watcherWas = live
 			a.resyncAll() // arm, or disarm, the opted-in silos now (armFence)
 		}
-		for _, rt := range a.Runtimes {
-			ids, err := rt.List(ctx)
-			if err != nil {
-				continue
-			}
-			for _, id := range ids {
-				o, ok := a.silos.Get(id.Namespace, id.Name)
-				if !ok || killed[id.UID] {
-					continue
-				}
-				s := o.(*v1.Silo)
-				if s.UID != id.UID || !a.mustStop(s) {
-					continue
-				}
-				_, after := a.stopsOnLoss(s)
-				a.fenced.Store(true)
-				a.log("no contact with the control plane for over %s: stopping %s (onControlPlaneLoss: Stop, after %s)", after, id, after)
-				kctx, cancel := context.WithTimeout(ctx, fence.KillWithin)
-				// Killed, not stopped gracefully: it asked not to run on without the control plane.
-				err := kri.Kill(kctx, rt, id)
-				if err == nil {
-					if st, serr := rt.Status(kctx, id); serr == nil && st.State == kri.Running {
-						err = errors.New("it still runs")
-					}
-				}
-				cancel()
-				if err != nil {
-					a.log("fence %s: %v (trying again)", id, err) // done only once confirmed (K-067)
-					continue
-				}
-				killed[id.UID] = true
-			}
-		}
+		f.pass(ctx)
 		if a.fenced.Load() && a.inContact() {
 			a.fenced.Store(false)
-			clear(killed)
 			a.log("contact with the control plane is back: starting the silos stopped without it")
+			a.reportUnconfirmed(ctx, f.endOutage())
 			a.collectGarbage(ctx, e)
 			for _, o := range a.silos.List() {
 				s := o.(*v1.Silo)

@@ -85,8 +85,10 @@ func newK088(t *testing.T, hook *claimHook) *k088 {
 func (k *k088) place(steps ...v1.InitStep) {
 	k.t.Helper()
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "single", Namespace: "dev"},
-		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
-			Init: &v1.Init{Steps: steps}}}
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"}}}
+	if len(steps) > 0 {
+		s.Spec.Init = &v1.Init{Steps: steps}
+	}
 	if err := k.c.Create(k.ctx, s); err != nil {
 		k.t.Fatal(err)
 	}
