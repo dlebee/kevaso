@@ -203,6 +203,15 @@ func DesiredCertificate(ing *v1.Ingress, class *v1.IngressClass, d Defaults) *v1
 func (c *Controller) reconcileIngress(ctx context.Context, k engine.Key) error {
 	o, ok := c.Ingresses.Get(k.Namespace, k.Name)
 	if !ok {
+		// Gone from the cache: read fresh before removing anything. An Ingress made again under
+		// the name since (the cache saw neither) keeps its Certificate and Secret (review of
+		// check-then-act, item 8); it is reconciled once the cache has it.
+		var fresh v1.Ingress
+		if err := c.Client.Get(ctx, "Ingress", k.Namespace, k.Name, &fresh); err == nil {
+			return nil
+		} else if !client.IsNotFound(err) {
+			return err
+		}
 		// Gone: remove the Certificate made for it (and its Secret).
 		for _, co := range c.Certificates.List() {
 			cert := co.(*v1.Certificate)

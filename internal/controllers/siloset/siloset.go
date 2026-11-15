@@ -345,6 +345,18 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		return engine.Result{}, c.finalizer(ctx, set, true)
 	}
 	p := Decide(set, insts)
+	// A plan that changes or removes instances is committed first, by writing its status at the
+	// set's version it was decided from: if the set changed since (instances raised, template
+	// reverted, being deleted), that write conflicts and nothing of the plan is done (review of
+	// check-then-act, item 6). Decided again on the next look.
+	if len(p.Update) > 0 || len(p.Delete) > 0 {
+		if err := c.commit(ctx, set, p.Status); err != nil {
+			if client.IsConflict(err) {
+				return engine.Result{RequeueAfter: time.Second}, nil
+			}
+			return engine.Result{}, err
+		}
+	}
 	var errs []error
 	for _, s := range p.Create {
 		if err := c.Client.Create(ctx, s); err != nil && !client.IsAlreadyExists(err) {
@@ -356,12 +368,12 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 			errs = append(errs, fmt.Errorf("update %s: %w", s.Name, err))
 		}
 	}
-	uids := map[string]string{} // the instances decided on, not whatever has their names now (K-031)
+	decided := map[string]*v1.Silo{} // the instances decided on, not whatever has their names now (K-031)
 	for _, s := range insts {
-		uids[s.Name] = s.UID
+		decided[s.Name] = s
 	}
 	for _, name := range p.Delete {
-		if err := c.Client.Delete(ctx, "Silo", set.Namespace, name, client.Precondition{UID: uids[name]}); client.IgnoreNotFound(err) != nil {
+		if err := c.deleteInstance(ctx, set, decided[name]); err != nil {
 			errs = append(errs, fmt.Errorf("delete %s: %w", name, err))
 		}
 	}
@@ -473,3 +485,38 @@ var (
 	_ engine.Controller = (*Controller)(nil)
 	_ engine.Mapper     = (*Controller)(nil)
 )
+
+// commit writes want as the set's status at the version set was read at (a Conflict when the set
+// changed since).
+func (c *Controller) commit(ctx context.Context, set *v1.SiloSet, want v1.SiloSetStatus) error {
+	cur := *set
+	next := want
+	next.Conditions = append([]meta.Condition(nil), set.Status.Conditions...)
+	for _, cond := range want.Conditions {
+		meta.SetCondition(&next.Conditions, cond, c.now())
+	}
+	cur.Status = next
+	return c.Client.UpdateStatus(ctx, &cur)
+}
+
+// deleteInstance deletes an instance decided on from the cache, deciding again on a fresh read of
+// it: still the same object, still the set's, not protected; and only at the version just read,
+// so one protected (or changed) in between is not deleted. A conflict is no error: decided again
+// on the next look.
+func (c *Controller) deleteInstance(ctx context.Context, set *v1.SiloSet, s *v1.Silo) error {
+	if s == nil {
+		return nil
+	}
+	var cur v1.Silo
+	if err := c.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if cur.UID != s.UID || !Owned(set, &cur) || protected(&cur) || cur.DeletionTimestamp != nil {
+		return nil
+	}
+	err := c.Client.Delete(ctx, "Silo", cur.Namespace, cur.Name, client.Seen(&cur))
+	if client.IsConflict(err) {
+		return nil
+	}
+	return client.IgnoreNotFound(err)
+}

@@ -31,7 +31,9 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/approvals"
+	"kevaso.com/core/internal/claims"
 	"kevaso.com/core/internal/clock"
+	siloctl "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/ingress"
 	"kevaso.com/core/internal/leases"
 	"kevaso.com/core/internal/moves"
@@ -597,6 +599,33 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 			return store.Object{}, errf(http.StatusConflict, "Conflict", "%v", err)
 		}
 	}
+	if t.kind.Kind == "Silo" && t.status && !t.planned {
+		// K-029: a status write that puts the silo on another host (an admin's, a tool's) takes
+		// the scheduler's claims of its node ports and host ports there first, at the version the
+		// write is conditional on; held by another silo, it is refused. The silo controller's own
+		// placement claimed them already (taken again as its own); the move handler's planned
+		// write too. Read before the stored object is reused as the result below.
+		os, ns := old.(*v1.Silo), obj.(*v1.Silo)
+		if ns.Status.Host != "" && ns.Status.Host != os.Status.Host {
+			as := *os
+			as.ResourceVersion = om.ResourceVersion
+			held, err := siloctl.ClaimPorts(ctx, &claims.Claims{Store: s.store}, &as, ns.Status)
+			if err != nil {
+				return store.Object{}, err
+			}
+			if held != nil {
+				var ports []string
+				for p := range held.HostPorts {
+					ports = append(ports, fmt.Sprintf("host port %d/%s", p.Port, p.Proto))
+				}
+				for p := range held.NodePorts {
+					ports = append(ports, fmt.Sprintf("node port %d", p))
+				}
+				slices.Sort(ports)
+				return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s: status.host %s: %s held there by another silo", t.key(), ns.Status.Host, strings.Join(ports, ", "))
+			}
+		}
+	}
 	if id, ok := IdentityFrom(ctx); ok && id.Type == "host" && id.Role == "worker" && t.kind.Kind == "Host" && t.status {
 		// K-037: status.provider is the provider-hosts controller's (from the plugin), not the worker's.
 		oh, nh := old.(*v1.Host).Status, obj.(*v1.Host).Status
@@ -614,6 +643,10 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		if err := ingress.HostWrite(old.(*v1.IngressClass).Status, obj.(*v1.IngressClass).Status, id.Name); err != nil {
 			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%v", err)
 		}
+	}
+	if t.kind.Kind == "Silo" && t.status {
+		// A start claim's time is when the API received it, never the agent's clock (moves.CheckFenced).
+		moves.StampClaim(old.(*v1.Silo).Status, &obj.(*v1.Silo).Status, s.clock.Now())
 	}
 	var next meta.Object
 	if t.status {

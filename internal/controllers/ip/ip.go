@@ -136,7 +136,20 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	for _, h := range d.Holders {
 		now[h.UID] = true
 	}
-	if len(st.BoundTo) > 0 && (len(d.Holders) == 0 || (excl && !now[st.BoundTo[0].UID])) {
+	letGo := len(st.BoundTo) > 0 && (len(d.Holders) == 0 || (excl && !now[st.BoundTo[0].UID]))
+	if letGo || d.Delete {
+		// Letting go (and deleting the IP) is decided from the caches: decided again on a fresh
+		// read of the claimants first, so a silo or Service that claimed it since keeps it
+		// (review of check-then-act, item 7).
+		same, err := c.stillDecided(ctx, x, excl, d)
+		if err != nil {
+			return engine.Result{}, err
+		}
+		if !same {
+			return engine.Result{RequeueAfter: time.Second}, nil // the caches catch up; decided again
+		}
+	}
+	if letGo {
 		if again, err := c.letGo(ctx, x); err != nil || again > 0 {
 			return engine.Result{RequeueAfter: again}, err
 		}
@@ -515,3 +528,40 @@ var (
 	_ engine.Mapper     = (*Controller)(nil)
 	_ engine.Controller = (*Made)(nil)
 )
+
+// stillDecided reports whether the decision d, made from the caches, is the one a fresh read of
+// x's claimants makes: the same holders, and the same delete.
+func (c *Controller) stillDecided(ctx context.Context, x *v1.IP, excl bool, d ips.Decision) (bool, error) {
+	var silos []*v1.Silo
+	var svcs []*v1.Service
+	l, err := c.Client.List(ctx, "Silo", x.Namespace)
+	if err != nil {
+		return false, err
+	}
+	for _, raw := range l.Items {
+		if o, _, err := v1.Decode(raw); err == nil {
+			silos = append(silos, o.(*v1.Silo))
+		}
+	}
+	if c.Services != nil {
+		l, err := c.Client.List(ctx, "Service", x.Namespace)
+		if err != nil {
+			return false, err
+		}
+		for _, raw := range l.Items {
+			if o, _, err := v1.Decode(raw); err == nil {
+				svcs = append(svcs, o.(*v1.Service))
+			}
+		}
+	}
+	fresh := ips.Decide(x, excl, ips.Claims(x, excl, silos, svcs))
+	if fresh.Delete != d.Delete || len(fresh.Holders) != len(d.Holders) {
+		return false, nil
+	}
+	for i := range d.Holders {
+		if fresh.Holders[i].UID != d.Holders[i].UID {
+			return false, nil
+		}
+	}
+	return true, nil
+}

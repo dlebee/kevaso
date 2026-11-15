@@ -136,17 +136,10 @@ func TestK029AMoveHoldsItsPortAndARefusedMoveChangesNothing(t *testing.T) {
 	}
 }
 
-// K-029, the same shape, left open: a raw PUT of silos/status that puts a silo on another host
-// (an admin, a restore) takes no claim, so it can put a silo on a host where another holds its
-// host port. The fix is small (in apiserver update, before commitUpdate: when status.host changes
-// to another host, siloctl.ClaimPorts at the write's revision, 422 if held; the move handler's
-// planned write already claimed). It is not made here because the silo controller's
-// TestK029SilosPutOnAHostWithoutClaimingAreSortedOut (controllers lane) puts silos on a host by
-// exactly such raw writes to make the unclaimed state: that test must seed it another way
-// (a placement write the claim step is skipped for) first. Note for the fix: in a /status write
-// update() reuses the stored object as the result, so read the stored status before it is replaced.
+// K-029, the same shape: a raw PUT of silos/status that puts a silo on another host (an admin's,
+// a tool's) takes the scheduler's claims there first (apiserver update, siloctl.ClaimPorts at the
+// write's version), and is refused (422) when another silo holds its host port.
 func TestK029ARawStatusWriteOntoAHeldHostPortIsRefused(t *testing.T) {
-	t.Skip("K-029: needs controllers lane's TestK029SilosPutOnAHostWithoutClaimingAreSortedOut to stop relying on raw status writes; see the comment")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	st := store.NewMemory(0)
