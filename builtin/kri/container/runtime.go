@@ -912,3 +912,11 @@ func vethAdd(n Names, mac string) []string {
 	}
 	return cmd
 }
+
+// VolumesOf is what the silo's containers were made with (its volumes), and whether its state
+// could be read: a volume dropped from its spec stays in use until its main container is made
+// again (a reset), since a container's mounts can't change.
+func (r *Runtime) VolumesOf(id kri.ID) ([]kri.Volume, bool) {
+	s, ok, err := r.loadState(id)
+	return s.Volumes, ok && err == nil
+}

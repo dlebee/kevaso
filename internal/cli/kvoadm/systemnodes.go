@@ -39,6 +39,14 @@ const roleSystemNode = "system-node"
 
 // JoinReady says whether a cluster can take another system node now (pure): every control plane
 // keeps its state in etcd with a peer listener, and no member is mid-join.
+
+// exitRefused is kevasod's exit status for a start it refuses because of what the node is (its
+// data gone, another cluster's store: controlplane.ExitRefused, kept out of kvoadm's binary):
+// starting it again changes nothing, so the control-plane units don't restart on it (a wiped
+// system node was restarted every 2s for ever). TestControlPlaneUnitsDontRestartARefusedStart pins
+// it equal.
+const exitRefused = 78
+
 func JoinReady(hosts []v1.Host) error {
 	n := 0
 	for _, h := range hosts {
@@ -148,6 +156,7 @@ Wants=network-online.target
 [Service]
 ExecStart=/usr/local/bin/kevasod ` + strings.Join(args, " ") + `
 Restart=always
+RestartPreventExitStatus=` + strconv.Itoa(exitRefused) + `
 RestartSec=2
 RuntimeDirectory=kevaso
 RuntimeDirectoryMode=0700

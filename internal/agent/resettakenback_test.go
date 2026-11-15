@@ -2,7 +2,9 @@ package agent_test
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -100,7 +102,15 @@ func TestAVMResetTakenBackAtAnyPointBeforeItsGateWipesNothing(t *testing.T) {
 				c := client.New(ts.URL)
 				_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
 				rt := &gatedVM{Runtime: fake.New()}
-				a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": rt}, Clock: clock.Real{}, Log: t.Logf}
+				var logMu sync.Mutex
+				var logs []string
+				a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": rt}, Clock: clock.Real{},
+					Log: func(f string, args ...any) {
+						logMu.Lock()
+						logs = append(logs, fmt.Sprintf(f, args...))
+						logMu.Unlock()
+						t.Logf(f, args...)
+					}}
 				agent.RunForTest(t, ctx, a)
 				e := &env{c: c, ctx: ctx}
 				s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "db", Namespace: "dev"},
@@ -145,6 +155,15 @@ func TestAVMResetTakenBackAtAnyPointBeforeItsGateWipesNothing(t *testing.T) {
 				}
 				if at == "after the stop, right before the gate" && refused == 0 {
 					t.Fatalf("the gate inside the reset never refused the changed request: %v", rt.CallLog())
+				}
+				// The machines read the journal: a refusal past the first gate says the silo stopped
+				// and kept its disk, never "while the image was pulled: nothing stopped".
+				logMu.Lock()
+				defer logMu.Unlock()
+				for _, l := range logs {
+					if at != "during the pull" && strings.Contains(l, "while the image was pulled") {
+						t.Fatalf("a refusal after the stop began logged %q", l)
+					}
 				}
 			})
 		}

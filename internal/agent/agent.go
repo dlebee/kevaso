@@ -158,7 +158,10 @@ type Agent struct {
 	// Only such a delete removes a silo's disk and volumes (design §0.7): a silo that is merely
 	// missing from the API (a control plane restored from an older backup, a re-made cluster) is
 	// kept, running, with its data, and listed (kept, logged once).
-	seenDeleted   sync.Map
+	seenDeleted sync.Map // silo uid → the history (Watermark.history) its delete was seen under
+	// abandoned: silo uid → struct{}: a start ended because the store didn't know the silo, whose
+	// stop failed: tried again until it stops (stopAbandoned).
+	abandoned     sync.Map
 	inFlight      sync.Map   // engine.Key → time.Time: a reconcile under way since then (awaitReconciles)
 	deletes       deletesLog // the deletes seen whose copies may remain here, on disk (deletes.go)
 	keptNoted     sync.Map   // silo UID → what it is: kept, listed on the Host (ConditionKeptSilos)
@@ -545,6 +548,9 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	if restart, err := a.setVolumes(ctx, rt, s, rs.State, vols); err != nil || restart {
 		return engine.Result{RequeueAfter: time.Millisecond}, err
 	}
+	if err := a.releaseDropped(ctx, rt, s, rs.State); err != nil {
+		return engine.Result{}, err
+	}
 	image, resolved := imageOf(s)
 	if rs.State != kri.Absent && resolved {
 		// A new image, or a reset asked for: put it back onto the image, stop-first (design §0.4).
@@ -911,6 +917,9 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		st.Phase = PhaseStarting
 		setCond(st, "Ready", meta.ConditionFalse, "Updating", "stopping for "+what+" (StopFirst; volumes kept)", s.Generation, a.now())
 	}); err != nil || !ok {
+		if err == nil {
+			a.log("silo %s/%s: its reset or image changed while the image was pulled: nothing stopped, looking again", s.Namespace, s.Name)
+		}
 		return true, err
 	}
 	id := idOf(s)
@@ -988,8 +997,7 @@ func (a *Agent) gateReset(ctx context.Context, s *v1.Silo, image string, due fun
 	}
 	if im, resolved := imageOf(&cur); cur.UID != s.UID || cur.Generation != s.Generation || cur.DeletionTimestamp != nil ||
 		cur.Status.Host != a.HostName || !resolved || im != image || !due(&cur) {
-		a.log("silo %s/%s: its reset or image changed while the image was pulled: nothing stopped, looking again", s.Namespace, s.Name)
-		return false, nil
+		return false, nil // the caller says which gate refused
 	}
 	mutate(&cur.Status)
 	cur.Status.Routing = routing.Silo(cur.Spec, cur.Status)
@@ -1196,12 +1204,21 @@ func (a *Agent) createWait(s *v1.Silo) time.Duration {
 // doing for that silo; above all, it doesn't start it.
 var errPlacedElsewhere = errors.New("the control plane places this silo elsewhere now")
 
-// errReplaced: the store has another silo of that name (a new UID): this one was deleted.
-var errReplaced = fmt.Errorf("%w (deleted: the store has another silo of that name)", errPlacedElsewhere)
+// errReplaced: the store has another silo of that name (a new UID).
+var errReplaced = fmt.Errorf("%w (the store has another silo of that name)", errPlacedElsewhere)
 
-// deletedNow says whether err, from a read or write of s during its start, shows s deleted: not
-// found, or another silo of that name. That is a delete this host saw (sawDelete).
-func deletedNow(err error) bool { return client.IsNotFound(err) || errors.Is(err, errReplaced) }
+// errUnknown: the store doesn't have the silo being started here (NotFound), or has another of
+// that name: its start ends. It is not a delete seen here (review-batch4 claim 1): a control
+// plane restored from an older backup (a new history this worker accepts), or a system node
+// behind, says the same of a silo nobody deleted. The copy is then kept, stopped, with its disk
+// and volumes, and listed (removeEverywhere), unless the delete watch saw its delete.
+var errUnknown = fmt.Errorf("%w (the control plane doesn't know it now)", errPlacedElsewhere)
+
+// unknownNow says whether err, from a read or write of s during its start, shows the store without
+// s: not found, or another silo of that name. Never, by itself, a delete.
+func unknownNow(err error) bool {
+	return client.IsNotFound(err) || errors.Is(err, errReplaced) || errors.Is(err, errUnknown)
+}
 
 // ConditionStartClaim is the silo condition a host writes just before it starts the silo (its
 // start claim, K-015): written against the exact version it read, so it applies only if nothing
@@ -1264,9 +1281,11 @@ func startClaim(host string, gen int64, now time.Time) meta.Condition {
 // lostClaim is the end of a start this host didn't win: nothing is started; the init steps and
 // deliveries it made go with the copy when the cache shows the silo elsewhere.
 func (a *Agent) lostClaim(s *v1.Silo, err error) (engine.Result, error) {
-	if deletedNow(err) {
-		a.log("not starting %s/%s: it was deleted (%v): what of it is here is removed", s.Namespace, s.Name, err)
-		a.sawDelete(idOf(s), true)
+	if unknownNow(err) {
+		// Nothing of a start abandoned here keeps running; what it made stays (a delete only the
+		// delete watch sees removes it).
+		a.log("not starting %s/%s: the control plane doesn't know it now (%v): what of it runs here is stopped, its disk and volumes are kept unless its delete is seen", s.Namespace, s.Name, err)
+		a.stopAbandoned(s)
 		return engine.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 	if errors.Is(err, errPlacedElsewhere) {
@@ -1274,6 +1293,28 @@ func (a *Agent) lostClaim(s *v1.Silo, err error) (engine.Result, error) {
 		return engine.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 	return engine.Result{RequeueAfter: 2 * time.Second}, err // the claim couldn't be written: nothing starts
+}
+
+// stopAbandoned stops what of s runs here after its start was abandoned because the store
+// doesn't know it now: nothing of the silo runs on the strength of a start that ended. Its disk,
+// volumes and runtime copy stay.
+func (a *Agent) stopAbandoned(s *v1.Silo) {
+	rt, ok := a.Runtimes[s.Spec.Runtime]
+	if !ok {
+		return
+	}
+	ctx := a.runCtx
+	if ctx == nil || ctx.Err() != nil {
+		ctx = context.Background() // the agent stops: what came up is stopped all the same
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	if err := rt.Stop(ctx, idOf(s)); err != nil && !errors.Is(err, kri.ErrNotFound) {
+		a.log("%s/%s: stopping what of its abandoned start runs: %v (the next look tries again)", s.Namespace, s.Name, err)
+		a.abandoned.Store(s.UID, struct{}{})
+		return
+	}
+	a.abandoned.Delete(s.UID)
 }
 
 // mayStartHere reads the stored silo before anything of it is created or started here (K-015):
@@ -1339,8 +1380,14 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			// Not in the API (or replaced by another of the same name) and no delete of it seen
 			// here: keep it, running, its disk and volumes untouched (design §0.7, K-004).
 			if s == nil || id.UID != s.UID {
-				if _, seen := a.seenDeleted.Load(id.UID); !seen {
-					if _, logged := a.keptNoted.LoadOrStore(id.UID, id.String()+" ("+rt.Info().Name+")"); !logged {
+				if !a.seenHere(id.UID) {
+					if _, again := a.abandoned.Load(id.UID); again {
+						if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
+							return err
+						}
+						a.abandoned.Delete(id.UID)
+					}
+					if _, logged := a.keptNoted.LoadOrStore(id.UID, keptName(id, rt.Info().Name)); !logged {
 						a.log("keeping %s on %s: the control plane doesn't know it and no delete of it was seen here; it keeps running with its disk and volumes (nothing is removed without a delete)",
 							id, rt.Info().Name)
 					}
@@ -1364,7 +1411,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
 					return err
 				}
-				if _, logged := a.keptNoted.LoadOrStore(id.UID, id.String()+" ("+rt.Info().Name+", stopped: "+why+")"); !logged {
+				if _, logged := a.keptNoted.LoadOrStore(id.UID, keptName(id, rt.Info().Name+", stopped: "+why)); !logged {
 					a.log("keeping %s on %s, stopped, with its disk and volumes: %s (nothing is removed without a delete or a handoff from here)", id, rt.Info().Name, why)
 				}
 				continue
@@ -1411,14 +1458,32 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 
 const whyHandoff = "handed off from here"
 
+// keptName is how a kept copy is listed on the Host (KeptSilos): its name, the start of its UID
+// (two kept copies of one name, a silo deleted and made again, are told apart), and what.
+func keptName(id kri.ID, what string) string {
+	uid := id.UID
+	if len(uid) > 8 {
+		uid = uid[:8]
+	}
+	return id.String() + " uid " + uid + " (" + what + ")"
+}
+
 // mayRemove decides, on the stored silo read now, whether this host may remove its copy id (its
 // disk with it): yes for a delete the store holds or this host saw, or a handoff from this host
 // (why says which); no, with why, for anything else; no with why "" when the store places it here
 // again (the cache was behind).
 func (a *Agent) mayRemove(ctx context.Context, id kri.ID) (remove bool, why string, err error) {
 	var cur v1.Silo
+	m := a.watermark().mark()
 	err = a.Client.Get(ctx, "Silo", id.Namespace, id.Name, &cur)
-	_, seen := a.seenDeleted.Load(id.UID)
+	if err == nil || client.IsNotFound(err) {
+		// Only an answer this worker accepts, of the history it trusts now, is proof of anything
+		// here: a held answer (a system node behind), or one across a restore, removes nothing.
+		if !a.watermark().acceptedSince(m) {
+			return false, "", errors.New("the control plane's answer about " + id.String() + " can't be acted on (held, or another history): nothing removed")
+		}
+	}
+	seen := a.seenHere(id.UID)
 	switch {
 	case client.IsNotFound(err) || err == nil && cur.UID != id.UID:
 		if seen {
@@ -1571,13 +1636,36 @@ func (a *Agent) watchDeletes(ctx context.Context, e *engine.Engine) {
 	for ctx.Err() == nil {
 		// From now on only (a list's revision): a watch from nothing replays deletes made before
 		// this agent was watching, which it never saw.
+		//
+		// The stream is of the history accepted when it opened (its list and its answer judged,
+		// neither refused): its deletes are recorded under that history, and once another is
+		// accepted (a restore) it is opened anew, so a delete of the old history is never taken
+		// as one of the new (review-batch4 claim 1).
 		var ch <-chan client.Event
-		l, err := a.Client.List(ctx, "Silo", "")
+		wctx, stopWatch := context.WithCancel(ctx)
+		wm := a.watermark()
+		m0 := wm.mark()
+		l, err := a.Client.List(wctx, "Silo", "")
 		if err == nil {
-			ch, err = a.Client.Watch(ctx, "Silo", "", l.Metadata.ResourceVersion)
+			ch, err = a.Client.Watch(wctx, "Silo", "", l.Metadata.ResourceVersion)
+		}
+		hist := wm.history()
+		if err == nil && !wm.acceptedSince(m0) {
+			stopWatch()
+			if ch != nil {
+				for range ch { // drained: its goroutine ends with the stream
+				}
+			}
+			if now := wm.mark(); now.refusals == m0.refusals && !a.ControlPlaneHeld() {
+				continue // only a history accepted meanwhile (a first contact, a restore): open it again now
+			}
+			ch, err = nil, errors.New("the delete watch opened on an answer this worker doesn't act on")
 		}
 		if err == nil {
 			for ev := range ch {
+				if wm.mark().histories != m0.histories {
+					break // another history accepted: this stream's deletes are of the old one
+				}
 				if ev.Type != "DELETED" || a.ControlPlaneHeld() {
 					continue // a delete from a control plane this worker doesn't trust removes nothing
 				}
@@ -1587,8 +1675,13 @@ func (a *Agent) watchDeletes(ctx context.Context, e *engine.Engine) {
 				}
 				m := o.GetObjectMeta()
 				s, _ := o.(*v1.Silo)
-				a.sawDelete(kri.ID{Namespace: m.Namespace, Name: m.Name, UID: m.UID}, s != nil && a.mayHaveHere(ctx, s))
+				a.sawDelete(kri.ID{Namespace: m.Namespace, Name: m.Name, UID: m.UID}, s != nil && a.mayHaveHere(ctx, s), hist)
 				e.Changed(engine.Key{Kind: "Silo", Namespace: m.Namespace, Name: m.Name})
+			}
+		}
+		stopWatch()
+		if ch != nil {
+			for range ch { // drained: its goroutine ends with the stream
 			}
 		}
 		select {

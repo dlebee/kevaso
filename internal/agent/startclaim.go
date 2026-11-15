@@ -156,12 +156,12 @@ func (k *claimKeeper) tick() {
 		return
 	}
 	switch err := a.renewClaim(k.ctx, s); {
-	case deletedNow(err):
-		// The store no longer has it (or has another of that name): its delete, seen here. Kept
-		// on disk before anything acts on it, so a restart removes the copy too.
-		a.log("%s/%s: renewing its start claim found it deleted (%v): ending its start here; what of it is here is removed", s.Namespace, s.Name, err)
-		a.sawDelete(idOf(s), true)
-		k.cancel(errPlacedElsewhere)
+	case unknownNow(err):
+		// The store doesn't have it (or has another of that name): its start ends. Not a delete
+		// seen here (errUnknown): what of it runs is stopped, and its copy kept unless the delete
+		// watch saw its delete.
+		a.log("%s/%s: renewing its start claim found the control plane doesn't know it (%v): ending its start here (its disk and volumes are kept unless its delete is seen)", s.Namespace, s.Name, err)
+		k.cancel(errUnknown)
 		return
 	case errors.Is(err, errPlacedElsewhere):
 		a.log("%s/%s: renewing its start claim found it placed elsewhere or changed: ending its start here", s.Namespace, s.Name)
