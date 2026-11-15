@@ -52,7 +52,7 @@ func TestWatcherKills(t *testing.T) {
 		Silos: []fence.Silo{{ID: id, Runtime: "docker", OnHostLoss: v1.OnHostLossRecreate}}})
 	w := &fence.Watcher{Dir: dir, Runtimes: map[string]kri.Runtime{"docker": rt}, FenceAfter: fence.DefaultAfter}
 	w.Check(ctx)
-	calls := rt.Calls
+	calls := rt.CallLog()
 	if len(calls) == 0 || calls[len(calls)-1] != "kill dev/web" {
 		t.Fatalf("calls: %v", calls)
 	}

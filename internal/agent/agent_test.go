@@ -92,8 +92,8 @@ func TestRunsASiloAndItsInitStepsThenReady(t *testing.T) {
 		t.Fatalf("init %+v", s.Status.Init)
 	}
 	// The order the runtime saw: create, start, then nothing else needed.
-	if !slices.Contains(e.rt.Calls, "create dev/web") || !slices.Contains(e.rt.Calls, "start dev/web") {
-		t.Fatalf("runtime calls %v", e.rt.Calls)
+	if !slices.Contains(e.rt.CallLog(), "create dev/web") || !slices.Contains(e.rt.CallLog(), "start dev/web") {
+		t.Fatalf("runtime calls %v", e.rt.CallLog())
 	}
 }
 
@@ -124,7 +124,7 @@ func TestIgnoresSilosOnOtherHosts(t *testing.T) {
 	e.place(t, "elsewhere", "hv2", nil)
 	e.place(t, "mine", "hv1", nil)
 	e.wait(t, "mine", func(s *v1.Silo) bool { return meta.IsTrue(s.Status.Conditions, "Ready") })
-	if slices.Contains(e.rt.Calls, "create dev/elsewhere") {
+	if slices.Contains(e.rt.CallLog(), "create dev/elsewhere") {
 		t.Fatal("the agent created a silo placed on another host")
 	}
 }
@@ -323,7 +323,7 @@ func TestImageChangeAndResetAreStopFirst(t *testing.T) {
 	if len(s.Status.Init) != 1 || s.Status.Init[0].State != "Done" {
 		t.Fatalf("init steps didn't run again on the fresh disk: %+v", s.Status.Init)
 	}
-	calls := strings.Join(e.rt.Calls, ",")
+	calls := strings.Join(e.rt.CallLog(), ",")
 	if i, j := strings.LastIndex(calls, "stop dev/node"), strings.LastIndex(calls, "reset dev/node"); i < 0 || j < i {
 		t.Fatalf("not stop-first: %s", calls)
 	}
@@ -335,7 +335,7 @@ func TestImageChangeAndResetAreStopFirst(t *testing.T) {
 	e.wait(t, "node", func(s *v1.Silo) bool {
 		return s.Status.Image.Reset == "2026-11-12T10:00:00Z" && meta.IsTrue(s.Status.Conditions, "Ready")
 	})
-	if n := strings.Count(strings.Join(e.rt.Calls, ","), "reset dev/node"); n != 2 {
+	if n := strings.Count(strings.Join(e.rt.CallLog(), ","), "reset dev/node"); n != 2 {
 		t.Fatalf("%d resets, want 2", n)
 	}
 }
