@@ -118,8 +118,22 @@ func (c *IngressDNS) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		}
 		published = append(published, name)
 	}
+	// Deleting is decided from the cached Ingress: decided again on a fresh read first, so a name
+	// listed again since keeps its record (review of check-then-act, item 8). Not provable (the
+	// read fails, or another Ingress has the name now): nothing is deleted this time.
+	wantNow := want
+	for _, name := range ing.Status.DNSNames {
+		if !want[name] {
+			wantNow = c.wantedNow(ctx, ing, dns)
+			break
+		}
+	}
 	for _, name := range ing.Status.DNSNames {
 		if want[name] {
+			continue
+		}
+		if wantNow == nil || wantNow[name] {
+			published = append(published, name) // still listed, or not provably gone: kept
 			continue
 		}
 		var lastErr error
@@ -269,3 +283,19 @@ var (
 	_ engine.Controller = (*IngressDNS)(nil)
 	_ engine.Mapper     = (*IngressDNS)(nil)
 )
+
+// wantedNow is the names ing wants published, from a fresh read of it (nil: it can't be read, or
+// another Ingress has its name now: nothing provably unwanted).
+func (c *IngressDNS) wantedNow(ctx context.Context, ing *v1.Ingress, dns *v1.IngressDNS) map[string]bool {
+	var fresh v1.Ingress
+	if err := c.Client.Get(ctx, "Ingress", ing.Namespace, ing.Name, &fresh); err != nil || fresh.UID != ing.UID {
+		return nil
+	}
+	out := map[string]bool{}
+	if dns != nil && fresh.DeletionTimestamp == nil && fresh.Status.Address != "" {
+		for _, h := range fresh.Spec.Hosts {
+			out[strings.TrimSuffix(strings.ToLower(h), ".")] = true
+		}
+	}
+	return out
+}

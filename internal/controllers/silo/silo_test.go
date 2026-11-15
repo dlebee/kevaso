@@ -3,6 +3,7 @@ package silo_test
 import (
 	"context"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -117,7 +118,10 @@ func TestDecideOnHostLoss(t *testing.T) {
 }
 
 func TestControllerSchedulesAndRetriesWhenAHostArrives(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// Every reconcile is driven here, in order (an engine with two workers placed db or cache
+	// first, as it happened: the test then waited out its 20 s under load). The only waits are
+	// for the cache to show the test's own writes.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
 	ts := httptest.NewServer(srv)
 	defer func() { cancel(); ts.Close() }() // stop the watches first, or Close waits for them
@@ -126,24 +130,40 @@ func TestControllerSchedulesAndRetriesWhenAHostArrives(t *testing.T) {
 
 	silos, hosts := informer.New(c, "Silo"), informer.New(c, "Host")
 	ctrl := &silo.Controller{Client: c, Silos: silos, Hosts: hosts, Clock: clock.Real{}}
-	e := engine.New(clock.Real{})
-	e.Register(ctrl, engine.Options{Workers: 2})
-	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
-	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
 	go silos.Run(ctx)
 	go hosts.Run(ctx)
-	go e.Run(ctx)
+	if !silos.WaitSynced(ctx) || !hosts.WaitSynced(ctx) {
+		t.Fatal("caches never synced")
+	}
+	reconcile := func(name string) *v1.Silo {
+		t.Helper()
+		cacheShows(ctx, t, silos, "dev", name, func(any) bool { return true })
+		if _, err := ctrl.Reconcile(ctx, engine.Key{Kind: "Silo", Namespace: "dev", Name: name}); err != nil {
+			t.Fatal(err)
+		}
+		var s v1.Silo
+		if err := c.Get(ctx, "Silo", "dev", name, &s); err != nil {
+			t.Fatal(err)
+		}
+		return &s
+	}
+	scheduled := func(s *v1.Silo) string {
+		if cond := meta.FindCondition(s.Status.Conditions, "Scheduled"); cond != nil {
+			return cond.Message
+		}
+		return ""
+	}
 
 	// No hosts yet: the silo waits, with the reason.
 	if err := c.Create(ctx, newSilo("web")); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(ctx, t, c, "web", func(s *v1.Silo) bool {
-		cond := meta.FindCondition(s.Status.Conditions, "Scheduled")
-		return s.Status.Phase == silo.PhasePending && cond != nil && strings.Contains(cond.Message, "no hosts")
-	})
+	if s := reconcile("web"); s.Status.Phase != silo.PhasePending || !strings.Contains(scheduled(s), "no hosts") {
+		t.Fatalf("no hosts: %+v", s.Status)
+	}
 
-	// A Ready worker appears (agent registers, then reports status): the pending silo lands on it.
+	// A Ready worker appears (agent registers, then reports status): a host's change looks at the
+	// pending silos again (Map), and the pending silo lands on it.
 	h := readyHost("hv1")
 	st := h.Status
 	if err := c.Create(ctx, h); err != nil {
@@ -153,16 +173,24 @@ func TestControllerSchedulesAndRetriesWhenAHostArrives(t *testing.T) {
 	if err := c.UpdateStatus(ctx, h); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(ctx, t, c, "web", func(s *v1.Silo) bool { return s.Status.Host == "hv1" && s.Status.Phase == silo.PhaseScheduled })
+	cacheShows(ctx, t, hosts, "", "hv1", func(o any) bool { return meta.IsTrue(o.(*v1.Host).Status.Conditions, "Ready") })
+	cacheShows(ctx, t, silos, "dev", "web", func(o any) bool { return o.(*v1.Silo).Status.Phase == silo.PhasePending })
+	if keys := ctrl.Map(engine.Key{Kind: "Host", Name: "hv1"}); !slices.Contains(keys, engine.Key{Kind: "Silo", Namespace: "dev", Name: "web"}) {
+		t.Fatalf("a host arriving doesn't look at the pending silo again: %v", keys)
+	}
+	if s := reconcile("web"); s.Status.Host != "hv1" || s.Status.Phase != silo.PhaseScheduled {
+		t.Fatalf("not placed when the host arrived: %+v", s.Status)
+	}
 
-	// The host is now half full (4 of 8Gi): one more fits, the third waits.
+	// The host is now half full (2 of 4 CPUs, 4 of 8Gi): one more fits, the third waits.
 	_ = c.Create(ctx, newSilo("db"))
 	_ = c.Create(ctx, newSilo("cache"))
-	waitFor(ctx, t, c, "db", func(s *v1.Silo) bool { return s.Status.Host == "hv1" })
-	waitFor(ctx, t, c, "cache", func(s *v1.Silo) bool {
-		cond := meta.FindCondition(s.Status.Conditions, "Scheduled")
-		return cond != nil && strings.Contains(cond.Message, "not enough")
-	})
+	if s := reconcile("db"); s.Status.Host != "hv1" {
+		t.Fatalf("db: %+v", s.Status)
+	}
+	if s := reconcile("cache"); s.Status.Host != "" || !strings.Contains(scheduled(s), "not enough") {
+		t.Fatalf("cache, with hv1 full: %+v", s.Status)
+	}
 }
 
 func waitFor(ctx context.Context, t *testing.T, c *client.Client, name string, ok func(*v1.Silo) bool) {

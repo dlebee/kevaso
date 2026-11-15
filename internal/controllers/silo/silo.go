@@ -78,13 +78,13 @@ func fenceArmed(s *v1.Silo) bool { return fence.Armed(s) }
 // claim (K-015; internal/agent's ConditionStartClaim, the host lane's), written against the exact
 // version it read, so it applies only if nothing changed the silo since, and the host starts the
 // silo only if it applied. Its message names the host ("starting on HOST at …").
-const CondStartClaim = "StartClaim"
+const CondStartClaim = moves.CondStartClaim
 
 // StartClaimFresh is how long a start claim of a silo's host keeps the silo there, whatever the
 // control plane's silence count says (internal/agent's StartClaimFresh). It is counted from when
 // this control plane first saw the claim, on its own clock (Env.StartClaimAge), never from the
 // claim's timestamp, which is the agent's clock.
-const StartClaimFresh = 30 * time.Second
+const StartClaimFresh = moves.StartClaimFresh
 
 // StartClaimOf returns the start claim s carries: the host that wrote it ("" when its message
 // doesn't say) and the claim as written, as an id (any change to the claim is another id). ok
@@ -94,13 +94,29 @@ func StartClaimOf(s *v1.Silo) (host, id string, ok bool) {
 	if c == nil || c.Status != meta.ConditionTrue {
 		return "", "", false
 	}
-	if rest, found := strings.CutPrefix(c.Message, "starting on "); found {
-		if h, _, found := strings.Cut(rest, " at "); found {
-			host = h
-		}
-	}
+	host, _ = moves.StartClaimHost(c.Message)
 	id = strings.Join([]string{s.UID, c.Reason, c.Message, c.LastTransitionTime.UTC().Format(time.RFC3339Nano), strconv.FormatInt(c.ObservedGeneration, 10)}, "|")
 	return host, id, true
+}
+
+// ownClaim reports whether s carries a start claim naming its own host, the only kind that
+// counts (as a contact of that host, and as fresh).
+func ownClaim(s *v1.Silo) bool {
+	host, _, ok := StartClaimOf(s)
+	return ok && host != "" && host == s.Status.Host
+}
+
+// ignoredClaim says why a standing claim of s doesn't count ("" when none, or it does).
+func ignoredClaim(s *v1.Silo) string {
+	host, _, ok := StartClaimOf(s)
+	switch {
+	case !ok || ownClaim(s):
+		return ""
+	case host == "":
+		return fmt.Sprintf(" (a start claim that names no host is ignored: only %s's own counts)", s.Status.Host)
+	default:
+		return fmt.Sprintf(" (a start claim naming %s is ignored: only %s's own counts)", host, s.Status.Host)
+	}
 }
 
 // claimKey is what the control plane's memory of a silo's start claim is kept under.
@@ -108,12 +124,13 @@ func claimKey(namespace, name string) string { return namespace + "/" + name }
 
 // freshClaim reports whether a start claim of the silo's current host stands (K-015): the host
 // is about to start it, or just did, so it is in contact and the silo is not placed elsewhere.
-// One whose writer it doesn't name counts as the host's. left: how long it still stands by this
-// control plane's count (0: unknown, Env.StartClaimAge nil, so it stands as long as it is there).
+// Only a claim naming the silo's own host counts: a worker may write any condition on a silo
+// placed on it, so one naming another host, or none, stands for nothing (ignoredClaim says so).
+// left: how long it still stands by this control plane's count (0: unknown, Env.StartClaimAge
+// nil, so it stands as long as it is there).
 func freshClaim(s *v1.Silo, env scheduler.Env) (fresh bool, age, left time.Duration) {
-	host, _, ok := StartClaimOf(s)
-	if !ok || (host != "" && host != s.Status.Host) {
-		return false, 0, 0 // none, or one left by a host it was on before: not this placement's
+	if !ownClaim(s) {
+		return false, 0, 0
 	}
 	if env.StartClaimAge == nil {
 		return true, 0, 0
@@ -156,15 +173,15 @@ func restartsItself(s *v1.Silo, env scheduler.Env) (bool, string) {
 	wait := after + StopMargin(after)
 	silent := env.Silence(host)
 	if silent < wait {
-		return false, fmt.Sprintf("It stops itself after %s without the control plane (onControlPlaneLoss: Stop): started elsewhere once the control plane has heard nothing from %s for %s (%s margin); %s so far",
-			after, host, wait, StopMargin(after), silent.Round(time.Second))
+		return false, fmt.Sprintf("It stops itself after %s without the control plane (onControlPlaneLoss: Stop): started elsewhere once the control plane has heard nothing from %s for %s (%s margin); %s so far%s",
+			after, host, wait, StopMargin(after), silent.Round(time.Second), ignoredClaim(s))
 	}
 	how := "recreated from its image"
 	if s.Policy() == v1.OnHostLossMove {
 		how = "moved with its data"
 	}
-	return true, fmt.Sprintf("%s silent for %s by the control plane's count; this silo stops itself after %s without it (onControlPlaneLoss: Stop), %s margin: %s elsewhere (onHostLoss: %s)",
-		host, silent.Round(time.Second), after, StopMargin(after), how, s.Policy())
+	return true, fmt.Sprintf("%s silent for %s by the control plane's count; this silo stops itself after %s without it (onControlPlaneLoss: Stop), %s margin: %s elsewhere (onHostLoss: %s)%s",
+		host, silent.Round(time.Second), after, StopMargin(after), how, s.Policy(), ignoredClaim(s))
 }
 
 // stopWait is when to look again at an opted-in silo waiting for its margin (0: only on changes).
@@ -358,7 +375,22 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 	changed := meta.SetCondition(&conds, cond, now)
 	st.Conditions = conds
 	changed = changed || imageChanged || movableChanged || st.Phase != s.Status.Phase || st.Host != s.Status.Host
+	if st.Host != s.Status.Host {
+		// A claim is of the placement it was written for: placed elsewhere, it is dropped, so a
+		// new leader (who would count it as just seen) never finds it standing on the new host.
+		st.Conditions = dropCondition(st.Conditions, CondStartClaim)
+	}
 	return st, changed, again, nil
+}
+
+func dropCondition(conds []meta.Condition, typ string) []meta.Condition {
+	out := conds[:0:0]
+	for _, c := range conds {
+		if c.Type != typ {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // Controller reconciles silos.
@@ -423,7 +455,9 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	}
 	s := o.(*v1.Silo)
 	// Its host's start claim, if new to us, is seen now: fresh from now, and a contact (K-015).
-	if host, id, ok := StartClaimOf(s); ok {
+	// Only a claim in the name of the host the silo is placed on: one naming another host (any
+	// worker may write conditions on a silo placed on it) is no contact of that host.
+	if host, id, ok := StartClaimOf(s); ok && ownClaim(s) {
 		c.Contacts.SawStartClaim(claimKey(s.Namespace, s.Name), host, id, c.Clock.Now())
 	}
 	c.mu.Lock()
@@ -462,6 +496,21 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	}
 	now := c.Clock.Now().UTC().Truncate(time.Second)
 	st, changed, again, err := DecideIn(s, hosts, silos, now, env)
+	// A placement change is decided from the host cache, and its write is conditional on the
+	// silo's version only: the hosts it depends on are read fresh first (review of check-then-act,
+	// item 4). A host cordoned or lost since, or an old host heartbeating in the store though not
+	// in the cache, makes it decide again on the fresh copies.
+	for attempt := 0; err == nil && changed && st.Host != s.Status.Host && attempt < 3; attempt++ {
+		fresh, differs, ferr := c.freshHosts(ctx, hosts, s.Status.Host, st.Host)
+		if ferr != nil {
+			return engine.Result{}, ferr
+		}
+		if !differs {
+			break
+		}
+		hosts, env.Hosts = fresh, fresh
+		st, changed, again, err = DecideIn(s, hosts, silos, now, env)
+	}
 	// The node ports and host ports it would have, claimed in the store before they are written
 	// (K-029): one another silo holds there is avoided, and it is decided again. A silo already
 	// on its host claims what it has there too, the first time this controller sees it there:
@@ -494,6 +543,12 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	}
 	if err != nil || !changed {
 		return engine.Result{RequeueAfter: again}, err
+	}
+	if st.Host != s.Status.Host {
+		// The claims may have moved it to another host: that one fresh too.
+		if _, differs, ferr := c.freshHosts(ctx, hosts, s.Status.Host, st.Host); ferr != nil || differs {
+			return engine.Result{RequeueAfter: time.Second}, ferr
+		}
 	}
 	prevHost := s.Status.Host
 	s.Status = st
@@ -668,3 +723,45 @@ var (
 	_ engine.Controller = (*Controller)(nil)
 	_ engine.Mapper     = (*Controller)(nil)
 )
+
+// freshHosts reads the hosts named (the silo's old host and its new one) fresh, and returns the
+// hosts with those fresh copies in, and whether any differs from the cached one in what a
+// placement depends on: whether it takes silos (cordoned, Ready, lost), and for the old host, a
+// heartbeat the cache hasn't shown, which is counted as a contact (Contacts) first.
+func (c *Controller) freshHosts(ctx context.Context, hosts []*v1.Host, names ...string) ([]*v1.Host, bool, error) {
+	out := append([]*v1.Host(nil), hosts...)
+	differs := false
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		var fresh v1.Host
+		err := c.Client.Get(ctx, "Host", "", name, &fresh)
+		i := slices.IndexFunc(out, func(h *v1.Host) bool { return h.Name == name })
+		if client.IsNotFound(err) {
+			if i >= 0 {
+				out, differs = slices.Delete(out, i, i+1), true
+			}
+			continue
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		if c.Contacts != nil {
+			c.Contacts.Observe(&fresh, c.Clock.Now())
+		}
+		if i < 0 {
+			out, differs = append(out, &fresh), true
+			continue
+		}
+		cached := out[i]
+		freshLost, _ := hostctl.Lost(&fresh)
+		cachedLost, _ := hostctl.Lost(cached)
+		beatSince := fresh.Status.LastHeartbeat != nil && (cached.Status.LastHeartbeat == nil || fresh.Status.LastHeartbeat.After(*cached.Status.LastHeartbeat))
+		if fresh.Spec.Unschedulable != cached.Spec.Unschedulable || freshLost != cachedLost ||
+			meta.IsTrue(fresh.Status.Conditions, "Ready") != meta.IsTrue(cached.Status.Conditions, "Ready") || beatSince {
+			out[i], differs = &fresh, true
+		}
+	}
+	return out, differs, nil
+}

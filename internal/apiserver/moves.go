@@ -132,6 +132,13 @@ func (s *Server) moveSilo(w http.ResponseWriter, r *http.Request, t target) {
 		if source != nil {
 			sourceLost, _ = hostctl.Lost(source)
 		}
+		if fromLost {
+			// A fresh start claim of its host says it is alive (review of the start claim, item 1).
+			if err := moves.CheckFenced(silo, req, s.clock.Now()); err != nil {
+				writeErr(w, errf(http.StatusConflict, "Conflict", "move %s/%s: %v", silo.Namespace, silo.Name, err))
+				return
+			}
+		}
 		plan, err := moves.PlanMove(silo, moves.Of(silo, s.classMap()), req, fromLost, sourceLost, fits)
 		if err != nil {
 			code := http.StatusUnprocessableEntity

@@ -3,7 +3,6 @@ package etcd
 import (
 	"context"
 	"errors"
-	"net"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/pki"
+	"kevaso.com/core/internal/testports"
 )
 
 func host(name, addr string, cp *v1.ControlPlaneSpec) v1.Host {
@@ -132,15 +132,10 @@ func TestNextStepKeepsMajority(t *testing.T) {
 	}
 }
 
-func freePort(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = l.Close() }()
-	return l.Addr().String()
-}
+// freePort is a port for an etcd member's peer listener, which must be named before the member
+// starts (its URL is announced first): reserved, never one the OS may hand to anyone else
+// meanwhile (testports).
+func freePort(t *testing.T) string { return testports.Reserve(t) }
 
 // The growth path on loopback: a member started alone without peers, restarted with a peer
 // listener, grows to two members through Reconcile (learner, then voter), then shrinks back.

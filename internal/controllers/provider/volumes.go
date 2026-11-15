@@ -117,7 +117,7 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 			want[v.Name] = v
 		}
 	}
-	if len(want) == 0 && len(s.Status.Volumes) == 0 {
+	if len(want) == 0 && len(s.Status.Volumes) == 0 && !c.removalsUnderWay(ctx, s) {
 		if hasFinalizer(s, FinalizerVolumes) {
 			return engine.Result{}, setFinalizers(ctx, c.Client, s, FinalizerVolumes, "")
 		}
@@ -143,11 +143,27 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 	// (K-037): a worker, or anyone allowed to write silos/status, may have rewritten it.
 	var have map[string]store.Object
 	untrusted := map[string]bool{}
+	pending := map[string]bool{} // removals under way: the records do them, not the status
+	var again time.Duration
+	var errs []error
 	if c.Records != nil {
 		var err error
 		if have, err = c.records(ctx, s); err != nil {
 			return engine.Result{}, err
 		}
+		// A record whose status entry is gone without being marked removing is put back (a
+		// status write lost, or an entry dropped by someone else).
+		for name, o := range have {
+			if r, derr := decodeRecord(o); derr == nil && !r.Removing && find(vols, name) < 0 {
+				r.Message = "put back from the control plane's record"
+				vols = append(vols, r.VolumeStatus)
+			}
+		}
+		var w time.Duration
+		if pending, w, err = c.removals(ctx, s, have); err != nil {
+			errs = append(errs, err)
+		}
+		again = w
 		for i, vs := range vols {
 			var rec *store.Object
 			if o, ok := have[vs.Name]; ok {
@@ -161,9 +177,8 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 			vols[i], untrusted[vs.Name] = tv, !ok
 		}
 	}
-	var again time.Duration
-	var errs []error
 	keep := vols[:0]
+	var dropping []string // removals to start: dropped from the status first, conditionally
 	for _, vs := range vols {
 		spec, wanted := want[vs.Name]
 		var (
@@ -175,6 +190,18 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 		switch {
 		case untrusted[vs.Name]:
 			next, wait = vs, time.Minute // a person's to sort out; nothing is asked of the plugin
+		case wanted && pending[vs.Name]:
+			next, wait = v1.VolumeStatus{Name: vs.Name, Class: vs.Class, Message: "waiting for the volume of this name being deleted to be gone"}, c.poll()
+		case !wanted && c.Records != nil && vs.Mounted:
+			next, wait = vs, c.poll()
+			next.Message = "waiting for " + vs.AttachedTo + " to unmount it"
+		case !wanted && c.Records != nil:
+			// Unmounted and not wanted, as read: dropped from the status by the write below, which
+			// applies only if that is still so (the detach and delete follow from the record).
+			done = true
+			if unknown(recorded(vs)) {
+				dropping = append(dropping, vs.Name)
+			}
 		case wanted:
 			next, wait, err = c.ensure(ctx, s, host, spec, vs)
 		default:
@@ -201,10 +228,24 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 		}
 	}
 	decided, stale := placesOf(s.Status.Volumes), false
-	if err := updateStatus(ctx, c.Client, s, func(st *v1.SiloStatus) {
+	if err := updateSiloStatus(ctx, c.Client, s, func(cur *v1.Silo) {
+		st := &cur.Status
 		if placesOf(st.Volumes) != decided {
 			stale = true // changed while the plugin was asked: decide again from that
 			return
+		}
+		// A removal applies only on the silo as this write finds it: still not wanted, still
+		// unmounted (the write is conditional on that copy's version).
+		for _, name := range dropping {
+			j := find(st.Volumes, name)
+			_, wantedNow := want[name]
+			for _, v := range v1.PluginVolumes(cur) {
+				wantedNow = wantedNow || (v.Name == name && cur.DeletionTimestamp == nil)
+			}
+			if wantedNow || (j >= 0 && st.Volumes[j].Mounted) {
+				stale = true
+				return
+			}
 		}
 		// The agent owns Mounted: keep what it says now.
 		for i := range keep {
@@ -223,8 +264,24 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 		return engine.Result{RequeueAfter: time.Second}, errors.Join(errs...)
 	}
 	if c.Records != nil {
-		if err := c.dropRecords(ctx, have, keep); err != nil {
+		removing := map[string]bool{}
+		for _, name := range dropping {
+			if err := c.markRemoving(ctx, s, name); err != nil {
+				return engine.Result{}, err
+			}
+			removing[name] = true
+		}
+		for name := range pending {
+			removing[name] = true
+		}
+		if err := c.dropRecords(ctx, have, keep, removing); err != nil {
 			return engine.Result{}, err
+		}
+		if len(dropping) > 0 {
+			return engine.Result{RequeueAfter: time.Millisecond}, errors.Join(errs...) // the removals, from their records
+		}
+		if len(pending) > 0 {
+			return engine.Result{RequeueAfter: max(again, time.Millisecond)}, errors.Join(errs...)
 		}
 	}
 	if len(keep) == 0 && s.DeletionTimestamp != nil {
@@ -317,6 +374,12 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 			vs.Message = "waiting for " + vs.AttachedTo + " to unmount it"
 			return vs, c.poll(), nil
 		}
+		if vs.Mounted { // forced off a lost host: only if it is lost now, not in a cache behind
+			if lost, err := c.lostNow(ctx, vs.AttachedTo); err != nil || !lost {
+				vs.Message = "waiting for " + vs.AttachedTo + " to unmount it"
+				return vs, c.poll(), err
+			}
+		}
 		old := hi
 		if oh, ok := c.Hosts.Get("", vs.AttachedTo); ok {
 			ohp, known := c.Providers.Of(oh.(*v1.Host))
@@ -396,6 +459,12 @@ func (c *Volumes) ensureMounted(ctx context.Context, s *v1.Silo, h *v1.Host, p *
 	if vs.AttachedTo != "" && vs.AttachedTo != h.Name {
 		if oh, ok := c.Hosts.Get("", vs.AttachedTo); ok {
 			attachedLost, _ = hostctl.Lost(oh.(*v1.Host))
+		}
+		if attachedLost && vs.Mounted { // forced off a lost host: only if it is lost now
+			var err error
+			if attachedLost, err = c.lostNow(ctx, vs.AttachedTo); err != nil {
+				return vs, c.poll(), err
+			}
 		}
 	}
 	next, wait := PlaceMounted(s, vs, h.Name, attachedLost)

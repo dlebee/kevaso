@@ -26,14 +26,11 @@ import (
 // in contact and about to run, or running, the silo: --confirm-fenced then moves it to a second
 // host while the first starts it.
 //
-// WHAT MUST CHANGE (control lane; it owns the full fix): moveSilo must treat a host whose
-// StartClaim on the silo stands (the same freshness the silo controller uses, freshClaim /
-// Env.StartClaimAge, which the API server doesn't have today: it needs the Contacts, or a
-// conservative rule such as "any StartClaim condition naming that host stands") as not lost, so
-// PlanMove gets fromLost=false (the move then hands off from it, or is refused as under way) and
-// sourceLost=false for a handoff's source. Today the move below is accepted.
+// How the handler knows the claim is fresh, without the leader's Contacts: the API server stamps
+// a new or changed claim with its own clock when it receives it (moves.StampClaim), and the move
+// handler judges its age by the same kind of clock (moves.CheckFenced: refused while younger than
+// StartClaimFresh, unless the person insists). Fixed in fdbd9ce.
 func TestK015ConfirmFencedIsRefusedWhileTheSourceHostHasAFreshStartClaim(t *testing.T) {
-	t.Skip("K-015: control lane to fix (moveSilo: a standing start claim of the host means it is not lost); see the comment")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	now := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)

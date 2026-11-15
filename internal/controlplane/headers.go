@@ -23,9 +23,15 @@ import (
 // client.HeaderUnavailable before anything is handled (K-008): this node can't serve (no quorum,
 // or its store doesn't answer), and a worker's client sends the request to another system node
 // as it is. The admin socket doesn't refuse: a person here may be repairing the store.
+// StampTimeout is how long the stamp's store reads may take. Past it the store counts as not
+// answering: no stamp, and on the API listener a 503. Long enough that a store slow under load
+// isn't taken for one without quorum (2 s was, on a loaded test runner); short enough that a
+// client's attempt (client.AttemptTimeout, 6 s) gets the 503 and goes on to another node.
+const StampTimeout = 4 * time.Second
+
 func withControlPlane(h http.Handler, st store.Store, refuse bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), StampTimeout)
 		id, _, found, err := readIdentity(ctx, st)
 		var rev int64
 		if err == nil && found {
