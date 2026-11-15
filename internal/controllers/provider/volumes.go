@@ -14,6 +14,7 @@ import (
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/plugins"
+	"kevaso.com/core/internal/store"
 	"kevaso.com/core/sdk/kplugin"
 )
 
@@ -30,6 +31,11 @@ type Volumes struct {
 	Silos   *informer.Informer
 	Hosts   *informer.Informer
 	Plugins *plugins.Registry
+	// Records is the store the controller keeps its own record of each volume in (K-037): what
+	// it acts on, whatever a silo's status says. Nil: status is trusted (tests only).
+	Records store.Store
+	// Providers are the hosts' provider details as the plugins said (K-037); nil: their status.
+	Providers *Providers
 	// Poll is how soon to look again while something is in progress (default 5s).
 	Poll time.Duration
 
@@ -133,6 +139,28 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 			vols = append(vols, v1.VolumeStatus{Name: v.Name, Class: v.Class})
 		}
 	}
+	// What the plugin is asked about is what this controller recorded, never what status says
+	// (K-037): a worker, or anyone allowed to write silos/status, may have rewritten it.
+	var have map[string]store.Object
+	untrusted := map[string]bool{}
+	if c.Records != nil {
+		var err error
+		if have, err = c.records(ctx, s); err != nil {
+			return engine.Result{}, err
+		}
+		for i, vs := range vols {
+			var rec *store.Object
+			if o, ok := have[vs.Name]; ok {
+				rec = &o
+			}
+			_, wanted := want[vs.Name]
+			tv, ok, err := trusted(vs, rec, wanted)
+			if err != nil {
+				return engine.Result{}, fmt.Errorf("volume %s: its record: %w", vs.Name, err)
+			}
+			vols[i], untrusted[vs.Name] = tv, !ok
+		}
+	}
 	var again time.Duration
 	var errs []error
 	keep := vols[:0]
@@ -144,9 +172,12 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 			wait time.Duration
 			err  error
 		)
-		if wanted {
+		switch {
+		case untrusted[vs.Name]:
+			next, wait = vs, time.Minute // a person's to sort out; nothing is asked of the plugin
+		case wanted:
 			next, wait, err = c.ensure(ctx, s, host, spec, vs)
-		} else {
+		default:
 			next, done, wait, err = c.remove(ctx, s, vs)
 		}
 		if err != nil {
@@ -160,6 +191,13 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 		}
 		if !done {
 			keep = append(keep, next)
+		}
+	}
+	if c.Records != nil {
+		// Recorded before status says so: a status write that fails leaves a record ahead of it,
+		// which the next look puts back on the status.
+		if err := c.keepRecords(ctx, s, have, keep); err != nil {
+			return engine.Result{}, err
 		}
 	}
 	decided, stale := placesOf(s.Status.Volumes), false
@@ -183,6 +221,11 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 	}
 	if stale {
 		return engine.Result{RequeueAfter: time.Second}, errors.Join(errs...)
+	}
+	if c.Records != nil {
+		if err := c.dropRecords(ctx, have, keep); err != nil {
+			return engine.Result{}, err
+		}
 	}
 	if len(keep) == 0 && s.DeletionTimestamp != nil {
 		return engine.Result{}, setFinalizers(ctx, c.Client, s, FinalizerVolumes, "")
@@ -225,11 +268,16 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 	if cls.Mounted() {
 		return c.ensureMounted(ctx, s, h, p, cls, spec, vs)
 	}
-	if h.Status.Provider == nil || h.Status.Provider.Name != p.Info.Name {
+	hp, known := c.Providers.Of(h)
+	if !known {
+		vs.Message = "waiting for the plugins to describe " + h.Name
+		return vs, c.poll(), nil
+	}
+	if hp == nil || hp.Name != p.Info.Name {
 		vs.Message = h.Name + " isn't a " + p.Info.Name + " machine"
 		return vs, time.Minute, nil
 	}
-	hi := info(h)
+	hi := info(h.Name, hp)
 	if vs.Handle == "" {
 		size, err := v1.ParseBytes(spec.Size)
 		if err != nil || size <= 0 {
@@ -270,8 +318,15 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 			return vs, c.poll(), nil
 		}
 		old := hi
-		if oh, ok := c.Hosts.Get("", vs.AttachedTo); ok && oh.(*v1.Host).Status.Provider != nil {
-			old = info(oh.(*v1.Host))
+		if oh, ok := c.Hosts.Get("", vs.AttachedTo); ok {
+			ohp, known := c.Providers.Of(oh.(*v1.Host))
+			if !known {
+				vs.Message = "waiting for the plugins to describe " + vs.AttachedTo
+				return vs, c.poll(), nil
+			}
+			if ohp != nil {
+				old = info(vs.AttachedTo, ohp)
+			}
 		}
 		err := p.Conn.DetachVolume(ctx, kplugin.Attachment{Class: spec.Class, Handle: vs.Handle, Host: old})
 		if errors.Is(err, kplugin.ErrInProgress) {
@@ -308,8 +363,11 @@ func (c *Volumes) ensureMounted(ctx context.Context, s *v1.Silo, h *v1.Host, p *
 	// Created once; asked again when the size grows (a quota grows online).
 	if vs.Handle == "" || size > vs.SizeBytes {
 		region := ""
-		if cls.Topology != kplugin.TopologyGlobal && h.Status.Provider != nil {
-			region = h.Status.Provider.Region
+		if hp, known := c.Providers.Of(h); cls.Topology != kplugin.TopologyGlobal && known && hp != nil {
+			region = hp.Region
+		} else if cls.Topology != kplugin.TopologyGlobal && !known {
+			vs.Message = "waiting for the plugins to describe " + h.Name
+			return vs, c.poll(), nil
 		}
 		label, err := VolumeLabel(s, spec.Name)
 		if err != nil { // admission refuses these; a silo from before it waits, saying why
@@ -382,8 +440,15 @@ func (c *Volumes) remove(ctx context.Context, s *v1.Silo, vs v1.VolumeStatus) (v
 	}
 	if vs.AttachedTo != "" {
 		hi := kplugin.HostInfo{Name: vs.AttachedTo}
-		if oh, ok := c.Hosts.Get("", vs.AttachedTo); ok && oh.(*v1.Host).Status.Provider != nil {
-			hi = info(oh.(*v1.Host))
+		if oh, ok := c.Hosts.Get("", vs.AttachedTo); ok {
+			ohp, known := c.Providers.Of(oh.(*v1.Host))
+			if !known {
+				vs.Message = "waiting for the plugins to describe " + vs.AttachedTo
+				return vs, false, c.poll(), nil
+			}
+			if ohp != nil {
+				hi = info(vs.AttachedTo, ohp)
+			}
 		}
 		err := p.Conn.DetachVolume(ctx, kplugin.Attachment{Class: vs.Class, Handle: vs.Handle, Host: hi})
 		if errors.Is(err, kplugin.ErrInProgress) {

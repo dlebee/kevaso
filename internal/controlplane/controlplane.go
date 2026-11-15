@@ -495,7 +495,10 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 		}
 	})
 	if reg := cfg.Plugins; reg != nil {
-		e.Register(&provider.Hosts{Client: c, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 1})
+		// What the plugins said about each host, and the volumes controller's own records: what
+		// those controllers act on, never what a worker may have written in a status (K-037).
+		known := &provider.Providers{}
+		e.Register(&provider.Hosts{Client: c, Hosts: hosts, Plugins: reg, Providers: known}, engine.Options{Workers: 1})
 		leaseInf := newInf("Lease") // a plugin's load balancer has no backend for a closed leased port
 		leaseInf.AddHandler(func(k informer.Key) {
 			if o, ok := leaseInf.Get(k.Namespace, k.Name); ok {
@@ -503,8 +506,8 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 			}
 		})
 		go leaseInf.Run(ctx)
-		e.Register(&provider.Balancers{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Leases: leaseInf, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 2})
-		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 2})
+		e.Register(&provider.Balancers{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Leases: leaseInf, Plugins: reg, Clock: cfg.Clock, Providers: known}, engine.Options{Workers: 2})
+		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg, Records: cd.store, Providers: known}, engine.Options{Workers: 2})
 		e.Register(&provider.IngressDNS{Client: c, Ingresses: ingresses, Classes: classes, Plugins: reg, Cluster: cfg.ClusterName, Clock: cfg.Clock}, engine.Options{Workers: 1})
 		classes.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IngressClass", Name: k.Name}) })
 		// A plugin came or went: everything that may use it looks again.

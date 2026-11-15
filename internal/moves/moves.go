@@ -346,6 +346,11 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 		switch {
 		case n.Name != o.Name || n.AttachedTo != o.AttachedTo:
 			return fmt.Errorf("%w: volume %s: where it is attached is the control plane's to write", ErrHostWrite, o.Name)
+		case !sameButMounted(o, n):
+			// K-037: the handle, class, region, device, size and message are the control plane's
+			// (its volumes controller acts on them: attach, detach, delete; the agent formats and
+			// mounts the device). A host that rewrote them would point those at another volume.
+			return fmt.Errorf("%w: volume %s: only whether it is mounted is the host's to write", ErrHostWrite, o.Name)
 		case n.Mounted != o.Mounted && o.AttachedTo != host:
 			to := o.AttachedTo
 			if to == "" {
@@ -355,4 +360,10 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 		}
 	}
 	return nil
+}
+
+// sameButMounted reports whether two volume statuses differ at most in mounted.
+func sameButMounted(a, b v1.VolumeStatus) bool {
+	a.Mounted = b.Mounted
+	return a == b
 }
