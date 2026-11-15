@@ -88,6 +88,7 @@ func TestAClaimThatIsNotTheHostsOwnIsIgnoredAndSaidSo(t *testing.T) {
 		s.Spec.Availability.OnControlPlaneLoss, s.Spec.Availability.After = v1.OnControlPlaneLossStop, "45s"
 		s.Status.Host, s.Status.Phase = "hv1", "Running"
 		s.Status.Conditions = []meta.Condition{fence.ArmedCondition("hv1", 45*time.Second, s.Generation), claim(by, now)}
+		confirmStopped(s, "hv1") // hv1 reported its fence stopped it, under that claim
 		env := scheduler.Env{Silence: func(string) time.Duration { return time.Hour }, StartClaimAge: func(*v1.Silo) time.Duration { return time.Second }}
 		st, _, _, err := silo.DecideIn(s, []*v1.Host{lostHost("hv1", now.Add(-time.Hour)), readyHost("hv2"), readyHost("hv3")}, nil, now, env)
 		if err != nil {
@@ -112,6 +113,7 @@ func TestAPlacementChangeClearsTheOldClaim(t *testing.T) {
 	s.Spec.Availability.OnControlPlaneLoss, s.Spec.Availability.After = v1.OnControlPlaneLossStop, "45s"
 	s.Status.Host, s.Status.Phase = "hv1", "Running"
 	s.Status.Conditions = []meta.Condition{fence.ArmedCondition("hv1", 45*time.Second, s.Generation), claim("hv1", now.Add(-time.Hour))}
+	confirmStopped(s, "hv1")
 	env := scheduler.Env{Silence: func(string) time.Duration { return time.Hour }, StartClaimAge: func(*v1.Silo) time.Duration { return time.Hour }}
 	st, _, _, err := silo.DecideIn(s, []*v1.Host{lostHost("hv1", now.Add(-time.Hour)), readyHost("hv2")}, nil, now, env)
 	if err != nil {

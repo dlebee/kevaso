@@ -40,6 +40,7 @@ func TestHostLossTruthTable(t *testing.T) {
 		if opted {
 			s.Spec.Availability.OnControlPlaneLoss = v1.OnControlPlaneLossStop // after: 2m (the default)
 			s.Status.Conditions = []meta.Condition{fence.ArmedCondition("hv1", 2*time.Minute, s.Generation)}
+			confirmStopped(s, "hv1") // hv1 reported its fence stopped it (without it, it waits: confirmstop_test.go)
 		}
 		s.Status.Host, s.Status.Phase, s.Status.SiloIP = "hv1", "Running", "10.64.1.2"
 		s.Status.Image = &v1.SiloImage{From: "app", Ref: "app:1", Running: "app:1"}
@@ -56,8 +57,9 @@ func TestHostLossTruthTable(t *testing.T) {
 			t.Run(name+"/silent", func(t *testing.T) {
 				s := mk(policy, opted)
 				hosts := []*v1.Host{docker(lostHost("hv1", lostAt)), docker(readyHost("hv2"))}
-				// Only an opted-in silo whose onHostLoss starts it elsewhere, once the control
-				// plane itself has heard nothing from hv1 for after + margin.
+				// Only an opted-in silo whose onHostLoss starts it elsewhere, whose host reported
+				// its fence stopped it, once the control plane itself has heard nothing from hv1
+				// for after + margin.
 				restarts := opted && policy != v1.OnHostLossWait
 				earliest := 2*time.Minute + silo.StopMargin(2*time.Minute)
 				for _, d := range silences {
@@ -152,8 +154,9 @@ func TestHostLossTruthTable(t *testing.T) {
 }
 
 // An onControlPlaneLoss: Stop silo is restarted elsewhere only when everything holds: its host's
-// fence said it stops this very spec (FenceArmed, this generation), and this control plane's own
-// silence count, not the agent's timestamp, reached after + margin.
+// fence said it stops this very spec (FenceArmed, this generation), the host reported its fence
+// stopped it (FenceStopped), and this control plane's own silence count, not the agent's
+// timestamp, reached after + margin.
 func TestAStopSiloRestartsOnlyWithItsFenceArmedAndOurOwnSilence(t *testing.T) {
 	env := scheduler.Env{Classes: map[string]scheduler.Class{"juicefs": {Plugin: "juicefs", Topology: kplugin.TopologyGlobal}}}
 	mk := func() *v1.Silo {
@@ -163,6 +166,7 @@ func TestAStopSiloRestartsOnlyWithItsFenceArmedAndOurOwnSilence(t *testing.T) {
 		s.Spec.Availability.OnControlPlaneLoss, s.Spec.Availability.After = v1.OnControlPlaneLossStop, "45s"
 		s.Status.Host, s.Status.Phase = "hv1", "Running"
 		s.Status.Conditions = []meta.Condition{fence.ArmedCondition("hv1", 45*time.Second, 3)}
+		confirmStopped(s, "hv1")
 		return s
 	}
 	margin := silo.StopMargin(45 * time.Second)
@@ -180,7 +184,8 @@ func TestAStopSiloRestartsOnlyWithItsFenceArmedAndOurOwnSilence(t *testing.T) {
 		{"all there", func(*v1.Silo) {}, long, true},
 		{"one second short, by our clock (the agent's stamp says an hour)", func(*v1.Silo) {}, func(string) time.Duration { return 45*time.Second + margin - time.Second }, false},
 		{"no silence count at all", func(*v1.Silo) {}, nil, false},
-		{"fence never armed", func(s *v1.Silo) { s.Status.Conditions = nil }, long, false},
+		{"fence never armed", func(s *v1.Silo) { s.Status.Conditions = s.Status.Conditions[1:] }, long, false},
+		{"its host never reported the stop", func(s *v1.Silo) { s.Status.Conditions = s.Status.Conditions[:1] }, long, false},
 		{"fence armed False", func(s *v1.Silo) { s.Status.Conditions[0].Status = meta.ConditionFalse }, long, false},
 		{"fence armed for an older spec", func(s *v1.Silo) { s.Status.Conditions[0].ObservedGeneration = 2 }, long, false},
 		{"fence armed by another host (before a move)", func(s *v1.Silo) { s.Status.Conditions[0] = fence.ArmedCondition("hv0", 45*time.Second, 3) }, long, false},

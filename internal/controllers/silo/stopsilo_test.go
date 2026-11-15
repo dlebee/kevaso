@@ -139,6 +139,8 @@ func TestAStopSiloRestartsAfterOurOwnCountWhateverTheAgentsClockSays(t *testing.
 	retry(t, func() error {
 		_ = c.Get(ctx, "Silo", "dev", "validator", &got)
 		meta.SetCondition(&got.Status.Conditions, fence.ArmedCondition("hv1", 2*time.Minute, got.Generation), clk.Now())
+		// …and reports, once its fence has stopped it, that it did (FenceStopped).
+		meta.SetCondition(&got.Status.Conditions, stoppedBy(&got, "hv1"), clk.Now())
 		return c.UpdateStatus(ctx, &got)
 	})
 	beat("hv2", t0)

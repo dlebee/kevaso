@@ -318,7 +318,10 @@ type Availability struct {
 	// OnControlPlaneLoss (design §0.7): Continue (default, also when empty: a worker that can't
 	// reach the control plane changes nothing) or Stop (the worker stops this silo once it has
 	// been cut off from the control plane for After). This is the ONLY thing that makes a worker
-	// stop a silo on its own: not onHostLoss, not exclusive, not a storage class.
+	// stop a silo on its own: not onHostLoss, not exclusive, not a storage class. With Stop, the
+	// control plane starts the silo elsewhere (per onHostLoss) only once its host has reported that
+	// it stopped this copy; while the host stays cut off it waits for that report, or for a
+	// person's kvo move --confirm-fenced.
 	OnControlPlaneLoss string `json:"onControlPlaneLoss,omitempty"`
 	// After is how long the worker waits (cut off) before stopping the silo: a duration, only
 	// with onControlPlaneLoss: Stop; default 2m, at least 30s, at most 24h.

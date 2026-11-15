@@ -83,6 +83,7 @@ func newClaimWorld(t *testing.T) *claimWorld {
 	must(w.admin.Create(ctx, s))
 	s.Status.Host, s.Status.Phase = "hv1", "Stopped" // hv1's fence stopped it when it lost us
 	s.Status.Conditions = []meta.Condition{fence.ArmedCondition("hv1", 45*time.Second, s.Generation)}
+	confirmStopped(s, "hv1") // …and reported it (a start claim since makes this report stale)
 	must(w.admin.UpdateStatus(ctx, s))
 	clk.Step(time.Hour) // silent for an hour by our count: far beyond 45s + StopMargin
 	return w
@@ -267,6 +268,12 @@ func TestAnOldStartClaimOfASilentHostDoesNotPinTheSilo(t *testing.T) {
 	cur := w.agentRead()
 	if cur == nil || !w.agentClaim(cur) {
 		t.Fatal("hv1's claim didn't apply")
+	}
+	// hv1's fence then stopped that start, and hv1 said so before it went silent again.
+	cur = w.stored()
+	confirmStopped(cur, "hv1")
+	if err := w.admin.UpdateStatus(w.ctx, cur); err != nil {
+		t.Fatal(err)
 	}
 	wait := 45*time.Second + silo.StopMargin(45*time.Second) // 61s
 	look := func(at time.Duration, want string, says string) {

@@ -74,6 +74,32 @@ func StopMargin(after time.Duration) time.Duration {
 // fenceArmed: the host's agent said its fence stops this silo, there, for this very spec.
 func fenceArmed(s *v1.Silo) bool { return fence.Armed(s) }
 
+// CondFenceStopped is the silo condition its host's agent writes once its fence stopped the silo
+// there and the runtime confirmed it: fence.StoppedCondition and fence.StoppedBy.
+const CondFenceStopped = fence.ConditionStopped
+
+// stopConfirmedBy reports whether host reported that its fence stopped s as it stands: a
+// FenceStopped condition of host for the start claim s carries now (or for none, if none stands).
+// Every start writes a new claim first, so a report from before the latest start no longer
+// matches. This, never the host's silence, is what says the copy there is stopped.
+func stopConfirmedBy(s *v1.Silo, host string) bool { return fence.StoppedBy(s, host, standingClaim(s)) }
+
+// standingClaim is s's start claim as stored, if one stands (whoever it names).
+func standingClaim(s *v1.Silo) *meta.Condition {
+	c := meta.FindCondition(s.Status.Conditions, CondStartClaim)
+	if c == nil || c.Status != meta.ConditionTrue {
+		return nil
+	}
+	return c
+}
+
+// waitsForStop is why an opted-in silo isn't started elsewhere while host hasn't reported its
+// fence stopped it, and what a person can do meanwhile.
+func waitsForStop(host string) string {
+	return fmt.Sprintf("It waits for %s to confirm that its fence stopped this copy (condition %s, for its latest start): silence alone, however long, doesn't show the copy stopped, so nothing is started elsewhere until %s reports it",
+		host, CondFenceStopped, host)
+}
+
 // CondStartClaim is the condition a host writes on a silo right before it starts it: its start
 // claim (K-015; internal/agent's ConditionStartClaim, the host lane's), written against the exact
 // version it read, so it applies only if nothing changed the silo since, and the host starts the
@@ -143,7 +169,9 @@ func freshClaim(s *v1.Silo, env scheduler.Env) (fresh bool, age, left time.Durat
 
 // restartsItself says whether a silo on a silent host may be started elsewhere now, without a
 // person (brainstorm §0.7: only onControlPlaneLoss: Stop), and why; or, when it may not but is
-// opted in, why not yet.
+// opted in, why not yet. Only once the host itself reported that its fence stopped this copy
+// (stopConfirmedBy): a fence whose kill failed, on a host cut off from the control plane, can't
+// say so, so the host's silence alone never lets it start elsewhere (Rule 1).
 func restartsItself(s *v1.Silo, env scheduler.Env) (bool, string) {
 	stops, after := s.StopsOnControlPlaneLoss()
 	if !stops {
@@ -170,25 +198,28 @@ func restartsItself(s *v1.Silo, env scheduler.Env) (bool, string) {
 		return false, fmt.Sprintf("%s claimed its start of this silo (condition %s; %s): it is in contact, so the silo is not started elsewhere",
 			host, CondStartClaim, standing)
 	}
+	if !stopConfirmedBy(s, host) {
+		return false, waitsForStop(host) + ignoredClaim(s)
+	}
 	wait := after + StopMargin(after)
 	silent := env.Silence(host)
 	if silent < wait {
-		return false, fmt.Sprintf("It stops itself after %s without the control plane (onControlPlaneLoss: Stop): started elsewhere once the control plane has heard nothing from %s for %s (%s margin); %s so far%s",
-			after, host, wait, StopMargin(after), silent.Round(time.Second), ignoredClaim(s))
+		return false, fmt.Sprintf("%s confirmed its fence stopped this copy (condition %s): started elsewhere once the control plane has heard nothing from %s for %s (onControlPlaneLoss: Stop after %s, %s margin); %s so far%s",
+			host, CondFenceStopped, host, wait, after, StopMargin(after), silent.Round(time.Second), ignoredClaim(s))
 	}
 	how := "recreated from its image"
 	if s.Policy() == v1.OnHostLossMove {
 		how = "moved with its data"
 	}
-	return true, fmt.Sprintf("%s silent for %s by the control plane's count; this silo stops itself after %s without it (onControlPlaneLoss: Stop), %s margin: %s elsewhere (onHostLoss: %s)%s",
-		host, silent.Round(time.Second), after, StopMargin(after), how, s.Policy(), ignoredClaim(s))
+	return true, fmt.Sprintf("%s confirmed its fence stopped this copy (condition %s) and is silent for %s by the control plane's count (onControlPlaneLoss: Stop after %s, %s margin): %s elsewhere (onHostLoss: %s)%s",
+		host, CondFenceStopped, silent.Round(time.Second), after, StopMargin(after), how, s.Policy(), ignoredClaim(s))
 }
 
 // stopWait is when to look again at an opted-in silo waiting for its margin (0: only on changes).
 func stopWait(s *v1.Silo, env scheduler.Env) time.Duration {
 	stops, after := s.StopsOnControlPlaneLoss()
-	if !stops || s.Policy() == v1.OnHostLossWait || !fenceArmed(s) || env.Silence == nil {
-		return 0
+	if !stops || s.Policy() == v1.OnHostLossWait || !fenceArmed(s) || env.Silence == nil || !stopConfirmedBy(s, s.Status.Host) {
+		return 0 // nothing to count down: it waits for a change (its host's report of the stop)
 	}
 	_, _, left := freshClaim(s, env)
 	return max(after+StopMargin(after)-env.Silence(s.Status.Host), left, 0)
@@ -235,17 +266,19 @@ func armedBy(s *v1.Silo, host string) bool {
 // EndsLostHandoff reports whether next is the silo controller ending a handoff whose source is
 // gone (K-119), as far as the API server can check it from what is stored: old hands off from a
 // source that is lost or gone (sourceGone), whose fence stands armed for this silo as it is, and
-// next only drops movingFrom, the silo staying on its destination. The silence the controller
+// next only drops movingFrom, the silo staying on its destination; and the source reported that
+// its fence stopped its latest start of the silo (stopConfirmedBy). The silence the controller
 // counted (after plus StopMargin, on the leader's clock) the API server can't see.
 func EndsLostHandoff(old *v1.Silo, next v1.SiloStatus, sourceGone bool) bool {
 	return sourceGone && moves.HandingOff(old.Status) && next.MovingFrom == "" && next.Host == old.Status.Host &&
-		armedBy(old, old.Status.MovingFrom)
+		armedBy(old, old.Status.MovingFrom) && stopConfirmedBy(old, old.Status.MovingFrom)
 }
 
 // handoffSource looks at the source of a handoff to the silo's (live) host: gone (lost, or its
-// Host removed), the handoff ends here only for a silo its source armed its fence for, once this
-// control plane has heard nothing from the source for after plus StopMargin (its fence has
-// stopped it by then); otherwise CondSourceUnreachable says what ends it. It returns whether st
+// Host removed), the handoff ends here only for a silo its source armed its fence for, once the
+// source reported that its fence stopped the silo (stopConfirmedBy) and this control plane has
+// heard nothing from it for after plus StopMargin; otherwise CondSourceUnreachable says what
+// ends it. Silence alone never ends it. It returns whether st
 // changed, and when to look again.
 func handoffSource(s *v1.Silo, st *v1.SiloStatus, hosts []*v1.Host, env scheduler.Env, now time.Time) (bool, time.Duration) {
 	if !moves.HandingOff(*st) {
@@ -289,19 +322,21 @@ func handoffSource(s *v1.Silo, st *v1.SiloStatus, hosts []*v1.Host, env schedule
 	case !stops:
 	case !armedBy(s, src):
 		msg += fmt.Sprintf(". It doesn't end by itself: %s never confirmed its fence stops this silo (condition %s for generation %d)", src, CondFenceArmed, s.Generation)
+	case !stopConfirmedBy(s, src):
+		msg += ". It doesn't end by itself yet. " + waitsForStop(src)
 	case env.Silence != nil:
 		wait := after + StopMargin(after)
 		silent := env.Silence(src)
 		if silent >= wait {
 			st.MovingFrom = ""
 			cond.Status, cond.Reason = meta.ConditionFalse, "HandoffEnded"
-			cond.Message = fmt.Sprintf("%s silent for %s by the control plane's count; its fence stops this silo after %s without the control plane (onControlPlaneLoss: Stop), %s margin: the handoff ended, %s starts it",
-				src, silent.Round(time.Second), after, StopMargin(after), st.Host)
+			cond.Message = fmt.Sprintf("%s confirmed its fence stopped this silo (condition %s) and is silent for %s by the control plane's count (onControlPlaneLoss: Stop after %s, %s margin): the handoff ended, %s starts it",
+				src, CondFenceStopped, silent.Round(time.Second), after, StopMargin(after), st.Host)
 			meta.SetCondition(&st.Conditions, cond, now)
 			return true, 0
 		}
-		msg += fmt.Sprintf(". It ends by itself once the control plane has heard nothing from %s for %s (its fence stops this silo after %s without the control plane, onControlPlaneLoss: Stop; %s margin); %s so far",
-			src, wait, after, StopMargin(after), silent.Round(time.Second))
+		msg += fmt.Sprintf(". %s confirmed its fence stopped this silo (condition %s): it ends by itself once the control plane has heard nothing from %s for %s (onControlPlaneLoss: Stop after %s, %s margin); %s so far",
+			src, CondFenceStopped, src, wait, after, StopMargin(after), silent.Round(time.Second))
 		again = wait - silent
 	}
 	cond.Status, cond.Reason, cond.Message = meta.ConditionTrue, "WaitingForSource", msg
@@ -403,9 +438,10 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 			// …and it's scheduled right away, below.
 		} else if ok, why := restartsItself(s, env); ok {
 			// The one opt-in (brainstorm §0.7): the silo stops itself when its host loses the
-			// control plane, its host's fence said so for this spec, and this control plane has
-			// heard nothing from that host for its `after` plus StopMargin, on its own clock.
-			// So the old copy is stopped: onHostLoss says how it goes on elsewhere.
+			// control plane, its host's fence said so for this spec, that host reported its fence
+			// stopped its latest start of the silo, and this control plane has heard nothing from
+			// it for its `after` plus StopMargin, on its own clock. So the old copy is stopped:
+			// onHostLoss says how it goes on elsewhere.
 			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "RestartedElsewhere", why
 			meta.SetCondition(&st.Conditions, cond, now)
 			if s.Policy() == v1.OnHostLossMove {
@@ -472,7 +508,7 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 	if st.Host != s.Status.Host {
 		// A claim is of the placement it was written for: placed elsewhere, it is dropped, so a
 		// new leader (who would count it as just seen) never finds it standing on the new host.
-		st.Conditions = dropCondition(st.Conditions, CondStartClaim)
+		st.Conditions = dropCondition(dropCondition(st.Conditions, CondStartClaim), CondFenceStopped)
 	}
 	return st, changed, again, nil
 }
