@@ -68,10 +68,12 @@ func (n noWatch) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	n.h.ServeHTTP(w, r)
 }
 
-// The same, with the host's delete watch down: the start claim's renewal reading NotFound is the
-// delete, seen by this host (the store had the silo when the claim applied). Before the fix the
-// start ended there but the copy was kept for good ("no delete of it was seen here").
-func TestANotFoundAtTheClaimsRenewalIsADeleteSeenHere(t *testing.T) {
+// The same, with the host's delete watch down: the start claim's renewal reading NotFound ends
+// the start (nothing of it runs on), but is not a delete seen here (review-batch4 claim 1: a
+// restore, or a system node behind, says the same of a silo nobody deleted). The copy is kept,
+// stopped, with its data, as for any delete this host didn't see (K-068). Last night's version
+// removed it.
+func TestANotFoundAtTheClaimsRenewalEndsTheStartAndKeepsTheCopy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
 	ts := httptest.NewServer(srv)
@@ -92,7 +94,14 @@ func TestANotFoundAtTheClaimsRenewalIsADeleteSeenHere(t *testing.T) {
 		t.Fatal(err)
 	}
 	k.waitFor("the init step ended on hv1", func() bool { return !w.RunsOn(k.id.UID, "hv1") })
-	k.waitFor("its copy removed", func() bool { return !holds(t, rt, k.id.UID) })
+	for end := time.Now().Add(time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if !holds(t, rt, k.id.UID) {
+			t.Fatal("a NotFound alone removed the copy")
+		}
+		if w.RunsOn(k.id.UID, "hv1") {
+			t.Fatal("something of the abandoned start runs again")
+		}
+	}
 }
 
 // failDelete is the strict fake whose Delete fails while fail is set (a removal under way when

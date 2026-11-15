@@ -20,11 +20,13 @@ import (
 // and this host saw it).
 const SeenDeletesFile = "seen-deletes.json"
 
-// seenDeleteFile is one entry: the silo the delete was of.
+// seenDeleteFile is one entry: the silo the delete was of, and the history of the control plane
+// it was seen from (cluster/history, Watermark.history): it is honoured only under that history.
 type seenDeleteFile struct {
 	UID       string `json:"uid"`
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
+	History   string `json:"history"`
 }
 
 // deletesLog is the file of seen deletes; its zero value (no path) keeps them in memory only.
@@ -71,23 +73,28 @@ func (a *Agent) loadSeenDeletes() {
 	}
 	for _, e := range list {
 		d.entries[e.UID] = e
-		a.seenDeleted.Store(e.UID, struct{}{})
+		a.seenDeleted.Store(e.UID, e.History)
 	}
 	if len(list) > 0 {
 		a.log("seen deletes %s: %d silo(s) deleted before this run whose copies here are removed now", d.path, len(list))
 	}
 }
 
-// sawDelete records the delete of silo id as seen here (in memory, and, if keep, on disk, written
-// and synced before the caller acts on it), and ends a start of it under way here: its init step or
-// Start stops now, not at its claim's next renewal.
-func (a *Agent) sawDelete(id kri.ID, keep bool) {
-	a.seenDeleted.Store(id.UID, struct{}{})
+// sawDelete records the delete of silo id as seen here, from the control plane of history hist
+// (in memory, and, if keep, on disk, written and synced before the caller acts on it), and ends a
+// start of it under way here: its init step or Start stops now, not at its claim's next renewal.
+//
+// Only a delete event of the delete watch, on a history this worker accepts and while it isn't
+// held, is a delete seen (watchDeletes). A NotFound, or another silo of that name, read anywhere
+// is not one: a restore (kvoadm init --restore), or a system node behind, says the same of a silo
+// nobody deleted (review-batch4 claim 1).
+func (a *Agent) sawDelete(id kri.ID, keep bool, hist string) {
+	a.seenDeleted.Store(id.UID, hist)
 	d := &a.deletes
 	d.mu.Lock()
 	if keep && d.path != "" {
-		if _, ok := d.entries[id.UID]; !ok {
-			d.entries[id.UID] = seenDeleteFile{UID: id.UID, Namespace: id.Namespace, Name: id.Name}
+		if e, ok := d.entries[id.UID]; !ok || e.History != hist {
+			d.entries[id.UID] = seenDeleteFile{UID: id.UID, Namespace: id.Namespace, Name: id.Name, History: hist}
 			if err := d.writeLocked(); err != nil {
 				a.log("seen deletes %s: %v: the delete of %s is kept in memory only (a restart before its copy is removed keeps the copy)", d.path, err, id)
 			}
@@ -95,6 +102,13 @@ func (a *Agent) sawDelete(id kri.ID, keep bool) {
 	}
 	d.mu.Unlock()
 	a.endStart(id.UID)
+}
+
+// seenHere says whether a delete of the silo uid was seen here under the history this worker
+// trusts now: one seen under another (before a restore) is not honoured, and its copy is kept.
+func (a *Agent) seenHere(uid string) bool {
+	h, ok := a.seenDeleted.Load(uid)
+	return ok && h.(string) == a.watermark().history()
 }
 
 // mayHaveHere says whether this host may hold something of the silo a delete was of: placed or
@@ -137,7 +151,8 @@ func (a *Agent) forgetDelete(uid string) {
 }
 
 // pruneDeletes drops the entries no runtime lists any more (their removal finished before a
-// restart could record it). Only when every runtime answered.
+// restart could record it), and those of another history than the one trusted now (never
+// honoured again: histories only move on). Only when every runtime answered.
 func (a *Agent) pruneDeletes(ctx context.Context) {
 	have := map[string]bool{}
 	for _, rt := range a.Runtimes {
@@ -153,8 +168,9 @@ func (a *Agent) pruneDeletes(ctx context.Context) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	changed := false
-	for uid := range d.entries {
-		if !have[uid] {
+	hist := a.watermark().history()
+	for uid, e := range d.entries {
+		if !have[uid] || e.History != hist {
 			delete(d.entries, uid)
 			changed = true
 		}
