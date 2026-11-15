@@ -99,7 +99,7 @@ func TestMetal2KevasodStopsQuickly(t *testing.T) {
 	p := metal2(t)
 	for _, h := range []*mt{p.c2, p.c1} {
 		since := strings.TrimSpace(h.mustSh("date -u '+%Y-%m-%d %H:%M:%S'"))
-		out := strings.TrimSpace(h.mustSh("s=$(date +%s.%N); systemctl stop kevasod; e=$(date +%s.%N); systemctl start kevasod; echo \"$e - $s\" | bc"))
+		out := strings.TrimSpace(h.mustSh("s=$(date +%s.%N); systemctl stop kevasod; e=$(date +%s.%N); systemctl start kevasod; awk -v e=$e -v s=$s 'BEGIN{print e-s}'"))
 		secs, _ := strconv.ParseFloat(out, 64)
 		t.Logf("%s: systemctl stop kevasod took %.1fs", h.cfg.ExternalIP, secs)
 		if secs > 35 {
