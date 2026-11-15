@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path"
 	"strconv"
@@ -380,10 +381,18 @@ func (r *Runtime) wire(ctx context.Context, s state, pid int) error {
 func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s, ok := r.load(spec.ID)
+	s, ok, lerr := r.loadState(spec.ID)
+	if lerr != nil {
+		// Never made over (K-105): its containers may run, and its address is in that file.
+		return fmt.Errorf("%s: %w: not making it again over it (restore the file, or delete the silo)", spec.ID, lerr)
+	}
 	if !ok {
 		cloudhypervisor.IPMu.Lock()
-		ip, err := cloudhypervisor.AllocateIP(cloudhypervisor.UsedIPs(chHost{r.Host}))
+		used, err := cloudhypervisor.UsedIPs(chHost{r.Host})
+		var ip netip.Addr
+		if err == nil {
+			ip, err = cloudhypervisor.AllocateIP(used)
+		}
 		if err == nil {
 			s = state{ID: spec.ID, IP: ip.String(), MAC: cloudhypervisor.MAC(spec.ID), Image: spec.Image, Command: spec.Command, Volumes: spec.Volumes, CPU: spec.CPU, Memory: spec.Memory}
 			err = r.save(s)

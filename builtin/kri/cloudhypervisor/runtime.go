@@ -274,7 +274,11 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		}
 	}
 	defer unlockIP()
-	ip, err := AllocateIP(UsedIPs(r.Host))
+	used, err := UsedIPs(r.Host)
+	if err != nil {
+		return err
+	}
+	ip, err := AllocateIP(used)
 	if err != nil {
 		return err
 	}

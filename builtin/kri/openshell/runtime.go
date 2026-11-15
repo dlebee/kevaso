@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -180,8 +181,14 @@ const gatewaysFile = StateDir + "/gateways.json"
 // that starts brings back what its record says ran.
 func (r *Runtime) prepare(ctx context.Context, key string) (Gateway, error) {
 	gws := map[string]Gateway{}
-	if b, err := r.Host.ReadFile(gatewaysFile); err == nil {
-		_ = json.Unmarshal(b, &gws)
+	b, err := r.Host.ReadFile(gatewaysFile)
+	if err == nil {
+		err = json.Unmarshal(b, &gws)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Its gateways' ports are unknown: a new one could be given a port one of them listens on,
+		// and the file written over would forget them all (K-105's shape).
+		return Gateway{}, fmt.Errorf("%s can't be read (%v): no gateway is readied on this host until it is restored", gatewaysFile, err)
 	}
 	g, ok := gws[key]
 	if !ok {
@@ -1018,11 +1025,15 @@ func (r *Runtime) removeGateway(ctx context.Context, g Gateway) error {
 		return err
 	}
 	gws := map[string]Gateway{}
-	if b, err := r.Host.ReadFile(gatewaysFile); err == nil {
-		_ = json.Unmarshal(b, &gws)
+	b, err := r.Host.ReadFile(gatewaysFile)
+	if err == nil {
+		err = json.Unmarshal(b, &gws)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%s can't be read (%v): not written over, the other gateways' ports would be forgotten", gatewaysFile, err)
 	}
 	delete(gws, g.Key)
-	b, _ := json.MarshalIndent(gws, "", "  ")
+	b, _ = json.MarshalIndent(gws, "", "  ")
 	return r.Host.WriteFile(gatewaysFile, b, 0o600)
 }
 
