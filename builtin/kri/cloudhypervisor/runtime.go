@@ -414,7 +414,8 @@ func (r *Runtime) active(ctx context.Context, unit string) string {
 // or cgroups mounted elsewhere on this host). Any of them there, or any of them that can't be
 // told (systemctl show failing or not naming the main process of a unit that isn't stopped, a
 // cgroup that can't be read, pgrep failing), and it may run: the fences take "not up" for
-// stopped. A unit wedged in another state (deactivating, activating, reloading, maintenance)
+// stopped. The VMM's lock on its silo (LockFile) held is proof it runs, whatever the rest says;
+// a MainPID counts only for a process that may be the VMM (mayBeVMM). A unit wedged in another state (deactivating, activating, reloading, maintenance)
 // with none of them is cleaned up (SIGKILL to the unit's nothing, reset-failed), so the silo can
 // move on: stopped, reset, started again or deleted.
 func (r *Runtime) vmm(ctx context.Context, n Names) (state string, up bool) {
@@ -433,7 +434,7 @@ func (r *Runtime) vmm(ctx context.Context, n Names) (state string, up bool) {
 		switch {
 		case k == "MainPID":
 			named = true
-			if v != "" && v != "0" {
+			if v != "" && v != "0" && r.mayBeVMM(v, n) {
 				return state, true
 			}
 		case k == "ControlGroup" && v != "":
@@ -446,7 +447,7 @@ func (r *Runtime) vmm(ctx context.Context, n Names) (state string, up bool) {
 	if !named && !stopped {
 		return state, true // a unit on its way somewhere, its main process not said: can't tell
 	}
-	if r.vmmProcess(ctx, n.Socket) {
+	if r.diskLocked(ctx, n) || r.vmmProcess(ctx, n.Socket) {
 		return state, true
 	}
 	if !stopped {
@@ -455,6 +456,41 @@ func (r *Runtime) vmm(ctx context.Context, n Names) (state string, up bool) {
 		_, _ = r.Host.Run(ctx, "systemctl", "reset-failed", n.Unit)
 	}
 	return state, false
+}
+
+// mayBeVMM says whether the process pid, the unit's MainPID as systemd still shows it, may be
+// this silo's VMM (review-batch4 claim 3a): a failed or inactive unit can show an old MainPID
+// whose number was since reused by an unrelated process, which then counted as the VMM for as
+// long as it ran. Its command line must name this silo's API socket (the VMM's, under its lock
+// as the unit starts it); a process that is gone isn't it; one that can't be read may be.
+func (r *Runtime) mayBeVMM(pid string, n Names) bool {
+	b, err := r.Host.ReadFile("/proc/" + pid + "/cmdline")
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	if err != nil {
+		return true // can't say
+	}
+	return bytes.Contains(b, []byte("--api-socket\x00"+n.Socket+"\x00"))
+}
+
+// LockFile is the lock a VMM holds on its silo for its whole life (review-batch4 claim 3b): the
+// unit starts it under flock --no-fork, so the lock is the VMM's own open file, whatever its
+// command line or cgroup look like, and a second VMM of the silo can never start while one runs.
+func LockFile(n Names) string { return n.Dir + "/vmm.lock" }
+
+// lockConflict is flock's exit code when the lock is held (-E).
+const lockConflict = 75
+
+// diskLocked says whether something holds the silo's VMM lock (a VMM runs, whatever else
+// says), or that can't be told. Taking it for an instant is the probe: a VMM's unit waits a few
+// seconds for it (UnitFor), so a probe never makes a start fail.
+func (r *Runtime) diskLocked(ctx context.Context, n Names) bool {
+	_, err := r.Host.Run(ctx, "flock", "-n", "-E", strconv.Itoa(lockConflict), LockFile(n), "true")
+	if err == nil {
+		return false
+	}
+	return true // held (exit 75), or flock couldn't say
 }
 
 // vmmProcess says whether a process runs with the VMM's API socket on its command line (the VMM,
