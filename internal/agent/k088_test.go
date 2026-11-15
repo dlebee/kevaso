@@ -231,7 +231,10 @@ func TestASlowInitStepKeepsItsStartClaimFresh(t *testing.T) {
 		st, _ := k.rt.Status(k.ctx, k.id)
 		return st.State == kri.Running && k.rt.RunningInit(k.id) == ""
 	})
-	// Running: the claim is no longer renewed (the heartbeat speaks for the host now).
+	// Reported Running: the claim is no longer renewed (the heartbeat speaks for the host now).
+	// Not before: between the main process starting and the Running write, the start is still
+	// under way and its claim rightly renewed (under load that took longer than a refresh).
+	k.waitFor("the silo is reported Running", func() bool { return k.get().Status.Phase == agent.PhaseRunning })
 	time.Sleep(100 * time.Millisecond) // a refresh already in flight lands
 	last := claimOf(k.get())
 	time.Sleep(5 * refresh)
