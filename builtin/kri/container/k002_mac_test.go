@@ -17,7 +17,6 @@ import (
 // learns it). Fix (host lane): create the peer with `address cloudhypervisor.MAC(id)` and save it
 // as "mac" in state.json; the worker then binds it with no change on its side.
 func TestAContainersVethHasAFixedMACInItsState(t *testing.T) {
-	t.Skip("K-002 host-lane half: the container runtime doesn't fix the veth peer's MAC yet (see the comment)")
 	f := newFake()
 	r := runtime(t, f)
 	if err := r.Create(context.Background(), kri.Spec{ID: silo, Image: "ubuntu-24.04", CPU: 1, Memory: 256 << 20}); err != nil {
