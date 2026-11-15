@@ -1140,6 +1140,16 @@ func (a *Agent) runSteps(ctx context.Context, s *v1.Silo, run func(context.Conte
 	for _, st := range s.Status.Init {
 		results[st.Name] = st
 	}
+	// spec.init.timeout (K-117): the steps a start runs, together, within it (on the agent's
+	// clock). A step still running then is stopped and recorded failed.
+	var timedOut atomic.Bool
+	if d, err := time.ParseDuration(s.Spec.Init.Timeout); err == nil && d > 0 {
+		tctx, cancel := context.WithCancelCause(ctx)
+		defer cancel(nil)
+		t := a.Clock.AfterFunc(d, func() { timedOut.Store(true); cancel(errInitTimeout) })
+		defer t.Stop()
+		ctx = tctx
+	}
 	for _, step := range s.Spec.Init.Steps {
 		switch results[step.Name].State {
 		case "Done":
@@ -1157,6 +1167,19 @@ func (a *Agent) runSteps(ctx context.Context, s *v1.Silo, run func(context.Conte
 		start := a.now()
 		var out bytes.Buffer
 		code, err := run(ctx, step, &out)
+		if timedOut.Load() {
+			// Its own deadline, not a start that ended: recorded failed (a reset or a spec change
+			// runs it again), with what it printed.
+			res := v1.StepStatus{Name: step.Name, State: "Failed", Duration: a.now().Sub(start).Round(time.Second).String()}
+			if werr := a.setStatus(context.WithoutCancel(ctx), s, func(st *v1.SiloStatus) {
+				st.Init = upsertStep(st.Init, res)
+				setCond(st, "InitFailed", meta.ConditionTrue, "StepTimedOut",
+					fmt.Sprintf("step %s was still running when spec.init.timeout (%s) ran out: %s", step.Name, s.Spec.Init.Timeout, tail(out.String(), 300)), s.Generation, a.now())
+			}); werr != nil {
+				return false, werr
+			}
+			return false, nil
+		}
 		if ctx.Err() != nil || a.mustStop(s) {
 			// Stopped, not failed (K-088): its start ended (placed elsewhere, the fence killed
 			// it). Nothing is recorded; it runs again with the next start.
@@ -1184,6 +1207,9 @@ func (a *Agent) runSteps(ctx context.Context, s *v1.Silo, run func(context.Conte
 	}
 	return true, nil
 }
+
+// errInitTimeout ends the steps of a start that ran past spec.init.timeout.
+var errInitTimeout = errors.New("spec.init.timeout ran out")
 
 // command turns a step into argv: `shell -c run` (sh by default; python3, bash, … work the same).
 func command(step v1.InitStep) []string {
