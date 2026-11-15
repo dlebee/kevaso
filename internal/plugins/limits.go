@@ -56,6 +56,10 @@ func (l Limits) withDefaults() Limits {
 // it did not; or it has as many calls waiting as it may.
 var ErrUnresponsive = errors.New("plugin unresponsive")
 
+// ErrBadAnswer: the plugin answered something core refuses to act on (a device path that isn't
+// one).
+var ErrBadAnswer = errors.New("plugin answer refused")
+
 // guarded is a plugin's connection behind its Limits.
 type guarded struct {
 	name   string
@@ -207,8 +211,17 @@ func (g *guarded) EnsureVolume(ctx context.Context, v kplugin.Volume) (kplugin.V
 	return do(ctx, g, "EnsureVolume", false, false, func(ctx context.Context) (kplugin.VolumeStatus, error) { return g.conn.EnsureVolume(ctx, v) })
 }
 
+// AttachVolume refuses a device that isn't a clean device path (K-038): it is formatted and
+// mounted as root on the host, so a plugin's answer is checked before it reaches the silo's status.
 func (g *guarded) AttachVolume(ctx context.Context, a kplugin.Attachment) (kplugin.AttachmentStatus, error) {
-	return do(ctx, g, "AttachVolume", false, false, func(ctx context.Context) (kplugin.AttachmentStatus, error) { return g.conn.AttachVolume(ctx, a) })
+	st, err := do(ctx, g, "AttachVolume", false, false, func(ctx context.Context) (kplugin.AttachmentStatus, error) { return g.conn.AttachVolume(ctx, a) })
+	if err != nil {
+		return st, err
+	}
+	if perr := kplugin.DevicePathProblem(st.Device); perr != nil {
+		return kplugin.AttachmentStatus{}, fmt.Errorf("plugin %s: AttachVolume %s: refused its answer: %w: %w", g.name, a.Handle, perr, ErrBadAnswer)
+	}
+	return st, nil
 }
 
 func (g *guarded) DetachVolume(ctx context.Context, a kplugin.Attachment) error {

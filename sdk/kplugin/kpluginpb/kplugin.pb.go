@@ -77,6 +77,9 @@ type PluginInfo struct {
 	LoadBalancers []*Class               `protobuf:"bytes,5,rep,name=load_balancers,json=loadBalancers,proto3" json:"load_balancers,omitempty"`
 	Storage       []*Class               `protobuf:"bytes,6,rep,name=storage,proto3" json:"storage,omitempty"`
 	Dns           []string               `protobuf:"bytes,7,rep,name=dns,proto3" json:"dns,omitempty"` // DNS provider names
+	// The wire revision of the sdk the plugin was built with (kplugin.Revision); 0: before there
+	// was one. Core refuses a plugin outside the revisions it serves.
+	Revision      uint32 `protobuf:"varint,8,opt,name=revision,proto3" json:"revision,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -158,6 +161,13 @@ func (x *PluginInfo) GetDns() []string {
 		return x.Dns
 	}
 	return nil
+}
+
+func (x *PluginInfo) GetRevision() uint32 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
 }
 
 type Class struct {
@@ -1798,7 +1808,7 @@ var File_kplugin_proto protoreflect.FileDescriptor
 const file_kplugin_proto_rawDesc = "" +
 	"\n" +
 	"\rkplugin.proto\x12\x10kevaso.plugin.v1\"\x16\n" +
-	"\x14GetPluginInfoRequest\"\xf1\x01\n" +
+	"\x14GetPluginInfoRequest\"\x8d\x02\n" +
 	"\n" +
 	"PluginInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
@@ -1807,7 +1817,8 @@ const file_kplugin_proto_rawDesc = "" +
 	"\x05hosts\x18\x04 \x01(\bR\x05hosts\x12>\n" +
 	"\x0eload_balancers\x18\x05 \x03(\v2\x17.kevaso.plugin.v1.ClassR\rloadBalancers\x121\n" +
 	"\astorage\x18\x06 \x03(\v2\x17.kevaso.plugin.v1.ClassR\astorage\x12\x10\n" +
-	"\x03dns\x18\a \x03(\tR\x03dns\"\xea\x02\n" +
+	"\x03dns\x18\a \x03(\tR\x03dns\x12\x1a\n" +
+	"\brevision\x18\b \x01(\rR\brevision\"\xea\x02\n" +
 	"\x05Class\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +

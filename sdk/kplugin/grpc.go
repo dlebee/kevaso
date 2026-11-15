@@ -167,7 +167,7 @@ func (s identityServer) GetPluginInfo(ctx context.Context, _ *pb.GetPluginInfoRe
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &pb.PluginInfo{Name: i.Name, Version: i.Version, Protocol: Protocol, Hosts: i.Hosts,
+	return &pb.PluginInfo{Name: i.Name, Version: i.Version, Protocol: Protocol, Revision: Revision, Hosts: i.Hosts,
 		LoadBalancers: classesTo(i.LoadBalancers), Storage: classesTo(i.Storage), Dns: i.DNS}, nil
 }
 
@@ -389,7 +389,7 @@ func (c *Client) Info(ctx context.Context) (Info, error) {
 	if err != nil {
 		return Info{}, fromStatus(err)
 	}
-	return Info{Name: r.GetName(), Version: r.GetVersion(), Protocol: r.GetProtocol(), Hosts: r.GetHosts(),
+	return Info{Name: r.GetName(), Version: r.GetVersion(), Protocol: r.GetProtocol(), Revision: int(r.GetRevision()), Hosts: r.GetHosts(),
 		LoadBalancers: classesFrom(r.GetLoadBalancers()), Storage: classesFrom(r.GetStorage()), DNS: r.GetDns()}, nil
 }
 
