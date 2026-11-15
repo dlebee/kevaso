@@ -3,6 +3,7 @@ package kvoadm
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"kevaso.com/core/api/client"
 	"kevaso.com/core/internal/agent"
 )
 
@@ -110,10 +112,15 @@ func runTrust(ctx context.Context, h hostRunner, o TrustOptions, in *bufio.Reade
 	}
 	why := agent.WatermarkUnreadable([]byte(body), nil)
 	if why == "" {
-		return fmt.Errorf("%s on %s is readable: nothing to set aside. kevasod reads it again by itself every second while it holds for it, so a hold for an unreadable record ends on its own once the file reads (the Host's ControlPlaneBehind says so); a worker held by an older control plane is released by a new history (kvoadm init --restore), not by this command", file, o.Address)
+		var k client.Watermark
+		if json.Unmarshal([]byte(body), &k) != nil || !k.Held {
+			return fmt.Errorf("%s on %s is readable and not held: nothing to set aside (kevasod reads an unreadable record again by itself every second, so that hold ends once the file reads; the Host's ControlPlaneBehind says so)", file, o.Address)
+		}
+		// K-107: a hold within one history ends only by this command or a new history.
+		why = fmt.Sprintf("held: its control plane (cluster %s, history %s) answered older than revision %d, which this worker saw; a hold within one history ends only by a new history (kvoadm init --restore) or by this command", k.ClusterID, k.History, k.Revision)
 	}
-	_, _ = fmt.Fprintf(out, "%s on %s is unreadable (%s).\nkvoadm will keep it as %s.unreadable-TIME and restart kevasod: the worker then trusts the control plane it reaches next as its own.\n"+
-		"Do this only once you know that control plane is the newest of this cluster (not one restored from an older backup outside kvoadm init --restore).\n", file, o.Address, why, file)
+	_, _ = fmt.Fprintf(out, "%s on %s: %s.\nkvoadm will keep it as %s.unreadable-TIME and restart kevasod: the worker then trusts the control plane it reaches next as its own.\n"+
+		"Do this only once you know that control plane is the newest of this cluster (not one restored from an older backup outside kvoadm init --restore), and that every silo this host runs is placed here in it.\n", file, o.Address, why, file)
 	if !o.Yes {
 		_, _ = fmt.Fprintf(out, "Type yes to go on: ")
 		line, _ := readLine(in)

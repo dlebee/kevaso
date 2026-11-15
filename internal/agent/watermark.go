@@ -197,6 +197,14 @@ func (w *Watermark) Judged(sentAt int64, seen client.ControlPlaneSeen, stamped b
 		keptAtSend = 0 // sent before the history it's judged against was accepted
 	}
 	next, v := client.JudgeStamp(w.kept, keptAtSend, seen, stamped)
+	if v == client.Accept && w.kept.Held && seen.ClusterID == w.kept.ClusterID && seen.History == w.kept.History {
+		// K-107: a hold within one history is a store rolled back (a healthy member never answers
+		// lower in one history). It ends only on a new history (kvoadm init --restore) or a
+		// person's command (kvoadm host trust-control-plane), never by the rolled-back store's
+		// revision passing what this worker kept: workers pass it at different times, and a silo
+		// moved since the backup would run on two of them.
+		next, v = w.kept, client.Hold
+	}
 	if v == client.NotYet {
 		if w.last != client.NotYet && !w.notYetSaid {
 			w.notYetSaid = true
@@ -401,7 +409,8 @@ func (a *Agent) controlPlaneCondition(kept client.Watermark, seen client.Control
 	if kept.Held {
 		return meta.Condition{Type: ConditionControlPlaneBehind, Status: meta.ConditionTrue, Reason: "Held",
 			Message: fmt.Sprintf("the control plane is older than what this worker saw: kept history %s revision %d (epoch %d), seen history %s revision %d (epoch %d). "+
-				"Every silo keeps running as it is and nothing is applied until a deliberate restore (kvoadm init --restore) starts a new history",
+				"Every silo keeps running as it is and nothing is applied until a deliberate restore (kvoadm init --restore) starts a new history, "+
+				"or a person who checked the control plane runs kvoadm host trust-control-plane [USER@]ADDRESS for this host (K-107: it doesn't end by itself)",
 				kept.History, kept.Revision, kept.Epoch, seen.History, seen.Revision, seen.Epoch)}
 	}
 	return meta.Condition{Type: ConditionControlPlaneBehind, Status: meta.ConditionFalse, Reason: "Trusted",
