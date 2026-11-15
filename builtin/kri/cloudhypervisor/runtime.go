@@ -55,6 +55,20 @@ type State struct {
 	// class's folder holding its root disk image (spec.disk.class).
 	Volumes []kri.Volume `json:"volumes,omitempty"`
 	RootDir string       `json:"rootDir,omitempty"`
+	// Remake, if set, says its root disk is being made afresh (a reset) and isn't to be trusted:
+	// saved before the first destructive step (lvremove), cleared after the last. A reset cut
+	// there (kevasod stopped, a kill) is finished by the next Start before the VM boots, and the
+	// half-made disk never boots (review-batch4 claim 2).
+	Remake *Remake `json:"remake,omitempty"`
+}
+
+// Remake is a reset under way: the image its root disk is made from and the disk's size, and
+// the layout it had before (its shares are taken down as the reset does).
+type Remake struct {
+	Image      string       `json:"image"`
+	DiskBytes  int64        `json:"diskBytes"`
+	OldVolumes []kri.Volume `json:"oldVolumes,omitempty"`
+	OldRootDir string       `json:"oldRootDir,omitempty"`
 }
 
 func (s State) layout() Layout { return LayoutFor(NamesFor(s.ID), s.Volumes, s.RootDir) }
@@ -308,6 +322,16 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 	st, ok := r.state(id)
 	if !ok {
 		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
+	}
+	if st.Remake != nil {
+		// Its reset was cut before its disk was made (kevasod stopped mid-convert, say): the disk
+		// is partial. Made again, from the same image, before anything boots it.
+		if err := r.finishRemake(ctx, id); err != nil {
+			return fmt.Errorf("%s: its reset was cut short and its disk is not finished: %w (it doesn't start on a half-made disk)", id, err)
+		}
+		if st, ok = r.state(id); !ok || st.Remake != nil {
+			return fmt.Errorf("%s: its reset could not be finished", id)
+		}
 	}
 	n := NamesFor(id)
 	// A TAP doesn't outlive a reboot of the host: make it again, as Create did.
@@ -779,8 +803,7 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 	if !ok {
 		return fmt.Errorf("%s: %w", spec.ID, kri.ErrNotFound)
 	}
-	ip, err := netip.ParseAddr(st.IP)
-	if err != nil {
+	if _, err := netip.ParseAddr(st.IP); err != nil {
 		return err
 	}
 	n := NamesFor(spec.ID)
@@ -796,47 +819,91 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 	if cpus <= 0 {
 		cpus = 1
 	}
+	old := st
+	st.CPUs, st.MemMiB, st.Volumes, st.RootDir = cpus, mem>>20, spec.Volumes, spec.DiskHostPath
+	for _, c := range StopPlan(n, old.layout()) {
+		_, _ = r.Host.Run(ctx, c[0], c[1:]...)
+	}
+	if err := r.gone(ctx, spec.ID, "a stop"); err != nil { // its disk is made afresh next: never under a VMM
+		return fmt.Errorf("reset %s: %w", spec.ID, err)
+	}
+	if gate != nil {
+		if err := gate(ctx); err != nil {
+			return fmt.Errorf("reset %s: %w", spec.ID, err)
+		}
+	}
+	// From here on its disk is destroyed: the intent is on disk first, so a cut reset is
+	// finished (finishRemake), never booted half-made.
+	st.Remake = &Remake{Image: spec.Image, DiskBytes: disk, OldVolumes: old.Volumes, OldRootDir: old.RootDir}
+	if err := r.saveState(st); err != nil {
+		return fmt.Errorf("reset %s: %w", spec.ID, err)
+	}
+	if err := r.remakeLocked(ctx, st, img); err != nil {
+		return fmt.Errorf("reset %s: %w", spec.ID, err)
+	}
+	return nil
+}
+
+// finishRemake makes afresh the root disk of a silo whose reset was cut (State.Remake), from the
+// same image, and clears the mark.
+func (r *Runtime) finishRemake(ctx context.Context, id kri.ID) error {
+	st, ok := r.state(id)
+	if !ok || st.Remake == nil {
+		return nil
+	}
+	img, err := r.image(ctx, st.Remake.Image)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st, ok = r.state(id); !ok || st.Remake == nil {
+		return nil
+	}
+	if _, up := r.vmm(ctx, NamesFor(id)); up {
+		return errors.New("its VMM runs") // never under a VMM (not reached: Remake means it was gone)
+	}
+	return r.remakeLocked(ctx, st, img)
+}
+
+// remakeLocked does a reset's destructive steps, each one safe to do again: the root disk made
+// afresh from img, the seed rebuilt with a new guest host key, the layout applied. Only after
+// the last is the mark cleared (with r.mu held).
+func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error {
+	n := NamesFor(st.ID)
+	ip, err := netip.ParseAddr(st.IP)
+	if err != nil {
+		return err
+	}
 	hostPub, hostPriv, err := newHostKey()
 	if err != nil {
 		return err
 	}
-	old := st.layout()
-	st.CPUs, st.MemMiB, st.Volumes, st.RootDir = cpus, mem>>20, spec.Volumes, spec.DiskHostPath
+	rm := st.Remake
+	oldLayout := LayoutFor(n, rm.OldVolumes, rm.OldRootDir)
 	layout := st.layout()
 	steps := []func() error{
-		func() error {
-			for _, c := range StopPlan(n, old) {
-				_, _ = r.Host.Run(ctx, c[0], c[1:]...)
-			}
-			return r.gone(ctx, spec.ID, "a stop") // its disk is made afresh next: never under a VMM
-		},
-		func() error {
-			if gate != nil {
-				return gate(ctx)
-			}
-			return nil
-		},
-		func() error { return r.rootDisk(ctx, n, layout, img, disk, true) },
+		func() error { return r.rootDisk(ctx, n, layout, img, rm.DiskBytes, true) },
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
 		},
-		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID, hostPub)), 0o600) },
+		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(st.ID, hostPub)), 0o600) },
 		func() error {
-			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, spec.ID.Namespace)), 0o600)
+			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, st.ID.Namespace)), 0o600)
 		},
 		func() error {
 			return r.run(ctx, "cloud-localds", "--network-config="+n.Dir+"/network-config", n.Dir+"/seed.img", n.Dir+"/user-data", n.Dir+"/meta-data")
 		},
 		func() error { return r.run(ctx, "rm", "-f", n.Dir+"/user-data") },
 		func() error { return r.run(ctx, "chown", VMMUser+":"+VMMUser, n.Dir+"/seed.img") },
-		func() error { return r.applyLayout(ctx, st, old, layout) },
+		func() error { return r.applyLayout(ctx, st, oldLayout, layout) },
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {
-			return fmt.Errorf("reset %s: %w", spec.ID, err)
+			return err
 		}
 	}
-	st.HostKey, st.Started = hostPub, false
+	st.HostKey, st.Started, st.Remake = hostPub, false, nil
 	return r.saveState(st)
 }
 
