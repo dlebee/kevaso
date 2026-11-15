@@ -63,6 +63,8 @@ func TestMetalOpenShell(t *testing.T) {
 	c.expect("OpenShell's package is installed", c.mustSh("dpkg-query -W -f '${Status} ${Version}' "+openshell.Package+" 2>&1"), "install ok installed "+strings.TrimPrefix(openshell.Version, "v"))
 
 	// Refused at admission, each with its reason.
+	apiKey := randomValue(t, "sk-os-")
+	c.must(apiKey, "create", "secret", "api-key", "-n", ns, "--from-file", "-", "--allow", "inject", "--write-only")
 	c.must("x", "create", "secret", "plain", "-n", ns, "--from-file", "-")
 	c.must("x", "create", "secret", "regcred", "-n", ns, "--type", "registry", "--server", "registry.example", "--username", "u", "--from-file", "-")
 	osSilo := func(name, runtime, extra string) string {
@@ -74,7 +76,7 @@ func TestMetalOpenShell(t *testing.T) {
 	}
 	c.apply(grant("files", "{ name: plain, deliver: file, path: /run/secrets/plain }") +
 		grant("vars", "{ name: plain, deliver: env, env: PLAIN }") + grant("broker", "{ name: plain, deliver: broker }") +
-		grant("preload", "{ name: plain, deliver: inject, env: LD_PRELOAD, to: { host: "+osInetName+" } }"))
+		grant("preload", "{ name: api-key, deliver: inject, env: LD_PRELOAD, to: { host: "+osInetName+" } }"))
 	for _, rt := range []string{"openshell", "openshell-container"} {
 		for what, c2 := range map[string]struct{ extra, want string }{
 			"a service (hostPort: [external])":  {"  ports: [{ name: web, port: 18150 }]\n  service:\n    ports: [{ port: web, hostPort: [external] }]\n", "no network interface, so no service"},
@@ -103,8 +105,6 @@ func TestMetalOpenShell(t *testing.T) {
 	// the machine's loopback that only its gateway's proxy reaches), with a certificate from the
 	// stand-in internet's CA.
 	c.mustSh(osInetSetup)
-	apiKey := randomValue(t, "sk-os-")
-	c.must(apiKey, "create", "secret", "api-key", "-n", ns, "--from-file", "-", "--allow", "inject", "--write-only")
 	c.apply(`apiVersion: kevaso/v1
 kind: Grant
 metadata: { name: api, namespace: ` + ns + ` }
