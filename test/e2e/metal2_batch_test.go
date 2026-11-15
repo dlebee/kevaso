@@ -131,7 +131,7 @@ func TestMetal2RootDiskKeptOverAConfirmedMove(t *testing.T) {
 	ns := "rootkept2"
 	c.namespace(ns)
 	t.Cleanup(p.uncut)
-	c.apply(vmEcho(ns, "vm", 8080))
+	c.apply(vmEcho(ns, "vm", 8080) + "  availability: { onHostLoss: Recreate }\n") // --recreate needs it
 	c.waitRunning(ns, 20*time.Minute, "vm")
 	if c.silo(ns, "vm").Status.Host != metalHost2 {
 		t.Skip("placed on machine 1, and a microVM's local root can't move to machine 2: run again")
@@ -210,9 +210,9 @@ spec:
 	host.mustSh("docker image rm -f " + image + " >/dev/null 2>&1 || true") // so the reset pulls it again
 	old := s.Spec.Reset
 	c.must("", "reset", "silo", "big", "-n", ns)
-	c.eventually("the pull runs", 2*time.Minute, func() (bool, string) {
-		out, _ := host.sh("pgrep -fa 'docker pull|docker-image-pull' | grep -v pgrep | head -1; pgrep -fa dockerd >/dev/null; docker events --since 30s --until 0s --filter type=image 2>/dev/null | grep -c pull || true")
-		return strings.Contains(out, "pull"), out
+	c.eventually("the image is being pulled again", 2*time.Minute, func() (bool, string) {
+		out, _ := host.sh("pgrep -fa 'docker pull " + image + "' | grep -v pgrep | head -1")
+		return strings.Contains(out, "docker pull"), out
 	})
 	for {
 		var cur v1.Silo
@@ -324,13 +324,13 @@ spec:
 ` + boxEcho(ns, "app", 8080) + `  ports: [{ name: http, port: 8080 }]
   service:
     ports: [{ port: http }]
-` + ing("a", "a.ib.test", "") + ing("b", "b.ib.test", "") + ing("broken", "broken.ib.test", ", annotations: { nginx/proxy-body-size: \"lots; return 500\" }"))
+` + ing("a", "a.ib.test", "") + ing("b", "b.ib.test", "") + ing("broken", "broken.ib.test", ""))
 	c.waitRunning("kevaso-system", 10*time.Minute, "ingress-ib")
 	c.waitRunning(ns, 10*time.Minute, "app")
 	c.apply(ing("new", "new.ib.test", ""))
 	ip := c.silo("kevaso-system", "ingress-ib").Status.SiloIP
 	ctl := "docker ps -q --filter label=kevaso.com/name=ingress-ib | head -1"
-	hosts := []string{"a.ib.test", "b.ib.test", "new.ib.test"}
+	hosts := []string{"a.ib.test", "b.ib.test", "broken.ib.test", "new.ib.test"}
 	c.eventually("every served host answers 200", 3*time.Minute, func() (bool, string) {
 		for _, h := range hosts {
 			if out, _ := p.c1.sh("curl -s -o /dev/null -w '%{http_code}' -H 'Host: " + h + "' http://" + ip + "/"); out != "200" {
@@ -338,6 +338,12 @@ spec:
 			}
 		}
 		return true, ""
+	})
+	// broken is served at a good version first, then edited broken: held at that last good one.
+	c.apply(ing("broken", "broken.ib.test", ", annotations: { nginx/proxy-body-size: \"lots; return 500\" }"))
+	c.eventually("the class holds broken at its last good version", 2*time.Minute, func() (bool, string) {
+		out, _ := c.kvo("", "get", "ingressclass", "ib", "-o", "yaml")
+		return strings.Contains(out, "ib2/broken"), out
 	})
 	// The loop: every answer that isn't 200, with its time.
 	loop := `mkdir -p /var/lib/kvt-ib; : > /var/lib/kvt-ib/answers.log
