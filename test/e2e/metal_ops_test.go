@@ -280,7 +280,7 @@ func TestMetalFence(t *testing.T) {
 	}
 	stopping := []string{}
 	for _, s := range r.Silos {
-		if fence.Stops(s.OnHostLoss) {
+		if s.StopAfter > 0 {
 			stopping = append(stopping, s.ID.Name)
 		}
 	}

@@ -10,7 +10,9 @@ import (
 
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/cli/kvoadm"
+	siloctl "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/fence"
+	"kevaso.com/core/internal/worker"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -186,13 +188,13 @@ func running(c *mt, uid string) bool {
 }
 
 // TestMetal2Fence is a worker cut off from its control plane (§0.7; a firewall rule on machine 2,
-// never port 22): it changes nothing, except that the silo that asked for it (onControlPlaneLoss:
-// Stop) stops past its after. The control plane starts nothing elsewhere by itself, onHostLoss:
-// Recreate or not; kvo move --confirm-fenced moves a silo off the lost host. With the cut lifted,
-// machine 2 starts the Stop silo again, removes its copy of what moved, and every other silo is
-// the same copy, never restarted.
-//
-// Needs the control plane's half of §0.7 (a lost host's silos wait).
+// never port 22): it changes nothing, except that the silos that asked for it (onControlPlaneLoss:
+// Stop) stop past their after. Only such a silo with onHostLoss: Recreate is started elsewhere by
+// the control plane, after its after plus the margin, counted on the control plane's own clock;
+// the Stop silo that waits stays assigned to machine 2, and nothing else moves by itself (a
+// Recreate silo that didn't opt in included). kvo move --confirm-fenced moves a silo off the lost
+// host. With the cut lifted, machine 2 starts the waiting Stop silo again, removes its copies of
+// what moved, and every other silo is the same copy, never restarted.
 //
 // Listens on nothing outside.
 func TestMetal2Fence(t *testing.T) {
@@ -205,13 +207,16 @@ func TestMetal2Fence(t *testing.T) {
 	c.apply(boxEcho(ns, "stay", 8080) + on(metalHost2) + "---\n" +
 		boxEcho(ns, "recreate", 8080) + on(metalHost2) + "  availability: { onHostLoss: Recreate }\n---\n" +
 		boxEcho(ns, "stops", 8080) + on(metalHost2) + "  availability: { onControlPlaneLoss: Stop, after: 30s }\n---\n" +
+		boxEcho(ns, "restarts", 8080) + "  availability: { onControlPlaneLoss: Stop, after: 30s, onHostLoss: Recreate }\n---\n" +
 		boxEcho(ns, "rescue", 8080))
-	c.waitRunning(ns, 10*time.Minute, "stay", "recreate", "stops", "rescue")
-	if s := c.silo(ns, "rescue"); s.Status.Host != metalHost2 {
-		c.must("", "move", "silo", "rescue", "-n", ns, "--to", metalHost2)
+	c.waitRunning(ns, 10*time.Minute, "stay", "recreate", "stops", "restarts", "rescue")
+	for _, n := range []string{"restarts", "rescue"} {
+		if s := c.silo(ns, n); s.Status.Host != metalHost2 {
+			c.must("", "move", "silo", n, "-n", ns, "--to", metalHost2)
+		}
 	}
-	names := []string{"stay", "recreate", "stops", "rescue"}
-	c.eventually("all four on "+metalHost2, 5*time.Minute, func() (bool, string) {
+	names := []string{"stay", "recreate", "stops", "restarts", "rescue"}
+	c.eventually("all five on "+metalHost2, 5*time.Minute, func() (bool, string) {
 		for _, n := range names {
 			s := c.silo(ns, n)
 			if s.Status.Host != metalHost2 || s.Status.Phase != "Running" {
@@ -239,14 +244,24 @@ func TestMetal2Fence(t *testing.T) {
 	p.cut()
 	cutAt := time.Now()
 	t.Log("machine 2 cut off from the system node")
-	c.eventually("the Stop silo stops on machine 2", fence.WorstStopped(30*time.Second)+30*time.Second, func() (bool, string) {
-		return !running(p.c2, uids["stops"]), "still running"
+	c.eventually("both Stop silos stop on machine 2", fence.WorstStopped(30*time.Second)+30*time.Second, func() (bool, string) {
+		return !running(p.c2, uids["stops"]) && !running(p.c2, uids["restarts"]), "still running"
 	})
 	if d := time.Since(cutAt); d < 30*time.Second {
-		t.Errorf("the Stop silo stopped %s into the cut, before its after (30s)", d.Round(time.Second))
+		t.Errorf("the Stop silos stopped %s into the cut, before their after (30s)", d.Round(time.Second))
 	}
-	// Well past the host lease: nothing else stops, and nothing starts elsewhere.
-	for end := time.Now().Add(2 * time.Minute); time.Now().Before(end); time.Sleep(10 * time.Second) {
+	c.eventually("the control plane starts the Stop + Recreate silo on machine 1", 5*time.Minute, func() (bool, string) {
+		s := c.silo(ns, "restarts")
+		return s.Status.Host == metalHost && s.Status.Phase == "Running", s.Status.Host + " " + s.Status.Phase
+	})
+	// The control plane counts from the last heartbeat it saw: up to one period before the cut.
+	if d := time.Since(cutAt); d < 30*time.Second+siloctl.StopMargin(30*time.Second)-worker.DefaultHeartbeat {
+		t.Errorf("restarted elsewhere %s into the cut, before after + margin", d.Round(time.Second))
+	} else {
+		t.Logf("restarted on machine 1 %s into the cut (after 30s + margin %s)", d.Round(time.Second), siloctl.StopMargin(30*time.Second))
+	}
+	// Well past the host lease: nothing else stops, and nothing else starts elsewhere.
+	for end := time.Now().Add(90 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Second) {
 		for _, n := range []string{"stay", "recreate", "rescue"} {
 			if !running(p.c2, uids[n]) {
 				t.Fatalf("the cut stopped %s on machine 2 (it didn't ask to stop)", n)
@@ -254,11 +269,11 @@ func TestMetal2Fence(t *testing.T) {
 		}
 		for _, n := range []string{"recreate", "stops"} {
 			if s := c.silo(ns, n); s.Status.Host != metalHost2 {
-				t.Fatalf("the control plane moved %s to %q by itself while machine 2 is only cut off", n, s.Status.Host)
+				t.Fatalf("the control plane moved %s to %q by itself (it didn't opt in, or waits)", n, s.Status.Host)
 			}
 		}
 	}
-	t.Log("2 minutes into the cut: the rest keeps running on machine 2, and nothing started elsewhere")
+	t.Log("well into the cut: the rest keeps running on machine 2, and nothing else started elsewhere")
 	if out, code := c.kvo("", "move", "silo", "rescue", "-n", ns, "--to", metalHost); code == 0 {
 		t.Errorf("a move off a lost host without --confirm-fenced went ahead: %s", out)
 	}
@@ -277,8 +292,8 @@ func TestMetal2Fence(t *testing.T) {
 		h := c.hostNamed(metalHost2)
 		return hostIs(*h, "Ready"), fmt.Sprint(h.Status.Conditions)
 	})
-	c.eventually("machine 2 starts the Stop silo again and keeps no copy of what moved", 5*time.Minute, func() (bool, string) {
-		return running(p.c2, uids["stops"]) && !running(p.c2, uids["rescue"]), "not yet"
+	c.eventually("machine 2 starts the waiting Stop silo again and keeps no copy of what moved", 5*time.Minute, func() (bool, string) {
+		return running(p.c2, uids["stops"]) && !running(p.c2, uids["rescue"]) && !running(p.c2, uids["restarts"]), "not yet"
 	})
 	for n, v := range before {
 		if got := startedAt(n); got != v {
