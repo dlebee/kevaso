@@ -257,7 +257,8 @@ func (r *Runtime) up(ctx context.Context, g Gateway, self kri.ID) error {
 		return err
 	}
 	if r.answers(ctx, g) {
-		return r.finishDeletes(ctx, g) // up and registered: its neighbours were settled when it came up
+		r.finishDeletes(ctx, g) // up and registered: its neighbours were settled when it came up
+		return nil
 	}
 	active, err := r.unitActive(ctx, g)
 	if err != nil {
@@ -309,13 +310,10 @@ func (r *Runtime) up(ctx context.Context, g Gateway, self kri.ID) error {
 // the gateway is stopped again and the error returned: no sandbox runs on a gateway that came up
 // without its own claim.
 func (r *Runtime) settled(ctx context.Context, g Gateway, self kri.ID, keep func(*state) bool) error {
-	err := r.stopNeighbours(ctx, g, self, keep)
-	if err == nil {
-		err = r.finishDeletes(ctx, g)
-	}
-	if err != nil {
+	if err := r.stopNeighbours(ctx, g, self, keep); err != nil {
 		return errors.Join(fmt.Errorf("gateway %s: what it brought back isn't confirmed stopped: %w", g.Key, err), r.stopAgain(ctx, g, self, keep))
 	}
+	r.finishDeletes(ctx, g)
 	return nil
 }
 
@@ -425,21 +423,21 @@ func sandboxPhases(out []byte) (map[string]string, error) {
 }
 
 // finishDeletes does the gateway's part of the deletes made while gateway g was down: each
-// sandbox removed, its providers revoked, then its record.
-func (r *Runtime) finishDeletes(ctx context.Context, g Gateway) error {
+// sandbox removed, its providers revoked, then its record. One that fails stays recorded and is
+// tried again at the next start on g: it never fails that start (K-116: one stuck delete held
+// every start on its gateway). Its sandbox is stopped already: settled stops every sandbox but
+// the one starting, and a deleted one is never kept.
+func (r *Runtime) finishDeletes(ctx context.Context, g Gateway) {
 	for _, o := range r.all() {
 		if o.Gateway.Key != g.Key || !o.Deleted {
 			continue
 		}
-		if err := r.deleteInGateway(ctx, &o); err != nil {
-			return err
+		if r.deleteInGateway(ctx, &o) != nil {
+			continue
 		}
 		_ = r.Host.RemoveAll(policyPath(o.ID))
-		if err := r.Host.RemoveAll(statePath(o.ID)); err != nil {
-			return err
-		}
+		_ = r.Host.RemoveAll(statePath(o.ID))
 	}
-	return nil
 }
 
 // down stops gateway g when none of its sandboxes should run (except is the one just stopped or
@@ -526,6 +524,12 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		return err
 	}
 	s := state{ID: spec.ID, Gateway: g, Image: spec.Image, CPU: spec.CPU, Memory: spec.Memory, Providers: map[string]int64{}}
+	if old, ok := r.loadAny(spec.ID); ok && old.Deleted && old.Gateway.Key == g.Key {
+		// Made again over a delete whose gateway part isn't done (K-116): the old sandbox, if its
+		// gateway still has it, is removed at the first start (never started with its data),
+		// and its providers stay known, to be revoked by the next policy.
+		s.ResetPending, s.Providers = old.Created || old.ResetPending, old.Providers
+	}
 	if err := r.Host.WriteFile(policyPath(spec.ID), []byte(basePolicy), 0o600); err != nil {
 		return err
 	}
@@ -842,9 +846,9 @@ func (r *Runtime) stopContainers(ctx context.Context, s state) error {
 //     driver's containers go by name.
 //   - Gateway down, neighbours left: its containers go by name, and its sandbox and providers
 //     are removed at the next claimed Start on that gateway (stopped first, as every sandbox a
-//     gateway brings back). Until then Delete returns ErrDeletePending and the silo stays listed:
-//     the delete isn't done. Nothing of it can run meanwhile: only a claimed Start brings the
-//     gateway up, and that stops it.
+//     gateway brings back). The delete is done for Kevaso and the silo no longer listed (K-116:
+//     it used to wait for a neighbour's start, which a stopped neighbour never makes): nothing
+//     of it can run meanwhile, since only a claimed Start brings the gateway up, and that stops it.
 func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -877,14 +881,16 @@ func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 		if err := r.removeContainers(ctx, g, &id); err != nil {
 			return err
 		}
-		s.Deleted = true
-		if err := r.save(s); err != nil {
-			return err
+		if runs, err := r.runs(ctx, s); err != nil || runs {
+			return fmt.Errorf("%s: delete: still runs with its gateway down (%v)", id, err)
 		}
 		// Its sandbox (the VM driver's disk, the gateway's record, its providers) stays in the
-		// gateway's home until a neighbour's claimed Start brings the gateway up: not done, and
-		// never said to be (review-batch4 claim 4). It stays listed, and Delete is asked again.
-		return fmt.Errorf("%s: %w", id, ErrDeletePending)
+		// gateway's home until a neighbour's claimed Start brings the gateway up, which stops it
+		// before anything else and then removes it (finishDeletes). For Kevaso the delete is done
+		// (K-116): nothing of it can run, and the gateway, with its neighbours, is never started
+		// for a delete. It is no longer listed.
+		s.Deleted = true
+		return r.save(s)
 	}
 	if !last {
 		_ = r.Host.RemoveAll(policyPath(id))
@@ -1115,7 +1121,9 @@ func firstLine(s string) string {
 func (r *Runtime) List(context.Context) ([]kri.ID, error) {
 	var ids []kri.ID
 	for _, s := range r.all() {
-		ids = append(ids, s.ID) // a Deleted one too: its sandbox remains until its gateway is up (ErrDeletePending)
+		if !s.Deleted { // deleted for Kevaso: what its gateway holds of it goes at the gateway's next start
+			ids = append(ids, s.ID)
+		}
 	}
 	return ids, nil
 }
@@ -1276,11 +1284,6 @@ var (
 
 // ErrNoKVM: the VM driver needs /dev/kvm.
 var ErrNoKVM = errors.New("openshell: the VM driver needs /dev/kvm (use openshell-container on hosts without KVM)")
-
-// ErrDeletePending: Delete ran with the silo's gateway down and neighbours on it: what of the
-// sandbox the gateway holds (the VM driver's disk, its record, its providers) is removed when a
-// neighbour's claimed Start brings the gateway up; until then the delete isn't done.
-var ErrDeletePending = errors.New("delete not finished: its sandbox stays in its gateway's records until the gateway is started by a neighbour's claimed start")
 
 // ErrGatewaySilent: the silo's gateway runs (its unit is up) and doesn't answer, so nothing can
 // say whether its sandbox runs, or stop it through the gateway. Status returns it for "unknown".
