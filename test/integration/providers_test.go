@@ -62,14 +62,13 @@ func TestProviderPlugin(t *testing.T) {
 		if err := admin.Create(ctx, h); err != nil {
 			t.Fatal(err)
 		}
-		now := time.Now().UTC().Truncate(time.Second)
-		meta.SetCondition(&h.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "WorkerUp"}, now)
-		h.Status.LastHeartbeat = &now
-		h.Status.Runtimes = map[string]v1.RuntimeStatus{"docker": {State: "Ready"}}
-		h.Status.Allocatable = v1.Resources{CPU: 8, Memory: "16Gi"}
-		if err := admin.UpdateStatus(ctx, h); err != nil {
-			t.Fatal(err)
-		}
+		writeHostStatus(ctx, t, admin, h, func(h *v1.Host) {
+			now := time.Now().UTC().Truncate(time.Second)
+			meta.SetCondition(&h.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "WorkerUp"}, now)
+			h.Status.LastHeartbeat = &now
+			h.Status.Runtimes = map[string]v1.RuntimeStatus{"docker": {State: "Ready"}}
+			h.Status.Allocatable = v1.Resources{CPU: 8, Memory: "16Gi"}
+		})
 	}
 	go func() { // the workers' heartbeats
 		for ctx.Err() == nil {

@@ -15,16 +15,14 @@ import (
 // volumes must never map to one cloud resource. The label is provider.VolumeLabel's: it keeps at
 // most 26 characters of kvo-NAMESPACE-SILO-VOLUME, then -UID[:5]. Admission refuses a silo (or a
 // SiloSet's instances) whose volume on a plugin's storage class would have the first part cut,
-// asking the same function for the label. When VolumeLabel stops cutting (a hash, or an error), this
-// is the one place to follow it.
+// asking the same function, which refuses (an error) instead of cutting.
 
 // volumeLabelCut reports whether VolumeLabel would cut the readable part of the label of volume
 // of silo, and what that part would be uncut.
 func volumeLabelCut(namespace, silo, volume string) (uncut string, cut bool) {
-	const uid = "uuuuuuuu"
 	uncut = "kvo-" + namespace + "-" + silo + "-" + volume
-	got := provider.VolumeLabel(&v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: namespace, Name: silo, UID: uid}}, volume)
-	return uncut, got != uncut+"-"+uid[:5]
+	_, err := provider.VolumeLabel(&v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: namespace, Name: silo, UID: "uuuuuuuu"}}, volume)
+	return uncut, err != nil
 }
 
 // checkVolumeLabels refuses a new or changed set of plugin volumes whose label would be cut.
@@ -71,4 +69,4 @@ func (s *Server) checkVolumeLabels(ctx context.Context, t target, obj meta.Objec
 
 // maxLabelBody is how much of kvo-NAMESPACE-SILO-VOLUME VolumeLabel keeps (its limit of 32
 // characters less -UID[:5]); a message only: the cut itself is asked of VolumeLabel.
-const maxLabelBody = 26
+const maxLabelBody = provider.LabelLimit

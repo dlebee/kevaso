@@ -29,6 +29,7 @@ import (
 	"kevaso.com/core/internal/clock"
 	hostctl "kevaso.com/core/internal/controllers/host"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/scheduler"
 )
@@ -45,6 +46,78 @@ const (
 // lane), until that test moves to the onControlPlaneLoss: Stop timing. Nothing in the control
 // plane reads it.
 var RecreateAfter = 30 * time.Second
+
+// CondFenceArmed is the silo condition its host's agent writes (host lane) when the host's fence
+// will stop the silo without the control plane: fence.ArmedCondition and fence.Armed.
+const CondFenceArmed = fence.ConditionArmed
+
+// StopMargin is what the control plane waits beyond a silo's `after` before starting another
+// copy of an onControlPlaneLoss: Stop silo whose host went silent. Both sides count durations on
+// their own clocks, never comparing them (K-014), from the same heartbeat: the agent from when it
+// sent it, the control plane from when it saw it, which is never earlier. So the margin covers
+// only what happens after the agent's count runs out:
+//
+//   - the fence's own reaction: it reads its record every fence.CheckEvery (1s) and kills within
+//     fence.KillWithin (5s);
+//   - the control plane noticing late is on the safe side, and so is a new leader (it counts from
+//     its own start);
+//   - the two clocks' rates: 1000 ppm of `after` (NTP keeps rates within 500 ppm; a free-running
+//     crystal is around 50 ppm);
+//   - and 9s of slack on top, so it is never under 15s.
+//
+// The result is rounded up to a whole second.
+func StopMargin(after time.Duration) time.Duration {
+	m := 15*time.Second + after/1000
+	return (m + time.Second - 1).Truncate(time.Second)
+}
+
+// fenceArmed: the host's agent said its fence stops this silo, there, for this very spec.
+func fenceArmed(s *v1.Silo) bool { return fence.Armed(s) }
+
+// restartsItself says whether a silo on a silent host may be started elsewhere now, without a
+// person (brainstorm §0.7: only onControlPlaneLoss: Stop), and why; or, when it may not but is
+// opted in, why not yet.
+func restartsItself(s *v1.Silo, env scheduler.Env) (bool, string) {
+	stops, after := s.StopsOnControlPlaneLoss()
+	if !stops {
+		return false, ""
+	}
+	host := s.Status.Host
+	switch {
+	case s.Policy() == v1.OnHostLossWait:
+		return false, fmt.Sprintf("It stops itself after %s without the control plane (onControlPlaneLoss: Stop), and onHostLoss: Wait keeps it on %s", after, host)
+	case s.Policy() == v1.OnHostLossMove && !moves.Of(s, env.Classes).WithData:
+		return false, ""
+	case !fenceArmed(s):
+		return false, fmt.Sprintf("onControlPlaneLoss: Stop, but %s never confirmed its fence stops this silo (condition %s for generation %d): not started elsewhere", host, CondFenceArmed, s.Generation)
+	case env.Silence == nil:
+		return false, ""
+	}
+	wait := after + StopMargin(after)
+	silent := env.Silence(host)
+	if silent < wait {
+		return false, fmt.Sprintf("It stops itself after %s without the control plane (onControlPlaneLoss: Stop): started elsewhere once the control plane has heard nothing from %s for %s (%s margin); %s so far",
+			after, host, wait, StopMargin(after), silent.Round(time.Second))
+	}
+	how := "recreated from its image"
+	if s.Policy() == v1.OnHostLossMove {
+		how = "moved with its data"
+	}
+	return true, fmt.Sprintf("%s silent for %s by the control plane's count; this silo stops itself after %s without it (onControlPlaneLoss: Stop), %s margin: %s elsewhere (onHostLoss: %s)",
+		host, silent.Round(time.Second), after, StopMargin(after), how, s.Policy())
+}
+
+// stopWait is when to look again at an opted-in silo waiting for its margin (0: only on changes).
+func stopWait(s *v1.Silo, env scheduler.Env) time.Duration {
+	stops, after := s.StopsOnControlPlaneLoss()
+	if !stops || s.Policy() == v1.OnHostLossWait || !fenceArmed(s) || env.Silence == nil {
+		return 0
+	}
+	if d := after + StopMargin(after) - env.Silence(s.Status.Host); d > 0 {
+		return d
+	}
+	return 0
+}
 
 // CondHostUnreachable is the silo condition saying its host is silent, since when, and what a
 // person can do (brainstorm §0.7).
@@ -157,6 +230,29 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 			meta.SetCondition(&st.Conditions, cond, now)
 			st.Host, st.SiloIP = "", ""
 			// …and it's scheduled right away, below.
+		} else if ok, why := restartsItself(s, env); ok {
+			// The one opt-in (brainstorm §0.7): the silo stops itself when its host loses the
+			// control plane, its host's fence said so for this spec, and this control plane has
+			// heard nothing from that host for its `after` plus StopMargin, on its own clock.
+			// So the old copy is stopped: onHostLoss says how it goes on elsewhere.
+			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "RestartedElsewhere", why
+			meta.SetCondition(&st.Conditions, cond, now)
+			if s.Policy() == v1.OnHostLossMove {
+				meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Moving",
+					Message: "moving with its data after losing " + st.Host, ObservedGeneration: s.Generation}, now)
+				if st.MovingFrom == st.Host {
+					st.MovingFrom = ""
+				}
+				st.Host, st.SiloIP = "", ""
+			} else { // Recreate
+				meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Recreating",
+					Message: "recreating after losing " + st.Host, ObservedGeneration: s.Generation}, now)
+				st.Host, st.SiloIP, st.Init = "", "", nil
+				if st.Image != nil { // a fresh instance from the image
+					st.Image.Running, st.Image.Reset = "", ""
+				}
+			}
+			// …and it's scheduled right away, below.
 		} else {
 			// Its host is silent (brainstorm §0.7). Kevaso can't tell a dead host from a cut-off
 			// one, and a cut-off host still runs the silo: so nothing is started elsewhere. A
@@ -164,9 +260,12 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 			// onHostLoss says how.
 			cond.Status, cond.Reason = meta.ConditionTrue, "Waiting"
 			cond.Message = UnreachableMessage(s, since, moves.Of(s, env.Classes))
+			if why != "" {
+				cond.Message += ". " + why
+			}
 			st.Phase = PhaseUnknown
 			changed := meta.SetCondition(&st.Conditions, cond, now)
-			return st, changed || imageChanged || s.Status.Phase != st.Phase, 0, nil
+			return st, changed || imageChanged || s.Status.Phase != st.Phase, stopWait(s, env), nil
 		}
 	}
 	sched := *s
@@ -218,6 +317,9 @@ type Controller struct {
 	Classes func() map[string]scheduler.Class
 	// Claims make each node port and host port on a host one silo's, by the store (K-029).
 	Claims *claims.Claims
+	// Contacts are how long each host has been silent by this control plane's clock (the host
+	// controller keeps them). Nil: no onControlPlaneLoss: Stop silo is ever restarted by itself.
+	Contacts *hostctl.Contacts
 
 	mu      sync.Mutex
 	assumed map[informer.Key]string // silo → host, written but not yet seen in the cache
@@ -273,6 +375,9 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	}
 	hosts, silos := c.lists()
 	env := scheduler.Env{Hosts: hosts, Suffix: v1.ClusterSuffix(hosts)}
+	if c.Contacts != nil {
+		env.Silence = func(host string) time.Duration { return c.Contacts.Silence(host, c.Clock.Now()) }
+	}
 	if c.IPs != nil {
 		for _, o := range c.IPs.List() {
 			env.IPs = append(env.IPs, o.(*v1.IP))
