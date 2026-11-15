@@ -54,6 +54,7 @@ func run() int {
 	file := flag.String("f", "hack/mutate/mutations.json", "the mutations")
 	runPat := flag.String("run", "", "go test -run pattern (to check one new test quickly)")
 	only := flag.String("pkgs", "", "space-separated packages, instead of each mutation's own")
+	check := flag.Bool("check", false, "only check that every entry's find text occurs exactly once in its file; no tests run")
 	flag.Parse()
 	raw, err := os.ReadFile(*file)
 	if err != nil {
@@ -70,6 +71,15 @@ func run() int {
 		}
 	}
 	root, _ := os.Getwd()
+	if *check {
+		stale := Stale(root, all)
+		if len(stale) > 0 {
+			fmt.Fprintf(os.Stderr, "mutate: %d stale entries in %s (the code they mutate has moved; update them):\n  %s\n", len(stale), *file, strings.Join(stale, "\n  "))
+			return 1
+		}
+		fmt.Printf("mutate: all %d entries match their code exactly once\n", len(all))
+		return 0
+	}
 	tmp, err := os.MkdirTemp("", "kevaso-mutate-")
 	if err != nil {
 		return fatal(err)
@@ -113,6 +123,32 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// Stale lists the entries whose find text does not occur exactly once in its file under root,
+// each as "G-005 internal/agent/agent.go: occurs 0 times (want 1)". Empty when the list is current.
+func Stale(root string, all []mutation) []string {
+	var out []string
+	for _, m := range all {
+		src, err := os.ReadFile(filepath.Join(root, m.File))
+		if err != nil {
+			out = append(out, fmt.Sprintf("%s %s: %v", m.ID, m.File, err))
+			continue
+		}
+		if m.Find == "" {
+			out = append(out, fmt.Sprintf("%s %s: empty find text", m.ID, m.File))
+		} else if n := bytes.Count(src, []byte(m.Find)); n != 1 {
+			out = append(out, fmt.Sprintf("%s %s: find text occurs %d times (want 1): %q", m.ID, m.File, n, firstLine(m.Find)))
+		}
+	}
+	return out
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i] + "..."
+	}
+	return s
 }
 
 func try(root, tmp string, m mutation, runPat, only string) result {

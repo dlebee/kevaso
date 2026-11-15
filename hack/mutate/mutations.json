@@ -53,10 +53,10 @@
  },
  {
   "id": "G-005",
-  "guard": "claimStart: same silo generation",
+  "guard": "writeClaim (claimStart): same silo generation",
   "file": "internal/agent/agent.go",
-  "find": "cur.UID != s.UID || cur.DeletionTimestamp != nil || cur.Generation != s.Generation ||",
-  "replace": "cur.UID != s.UID || cur.DeletionTimestamp != nil ||",
+  "find": "if cur.DeletionTimestamp != nil || cur.Generation != s.Generation || !moves.MayStart(&cur, a.HostName) {\n\t\treturn errPlacedElsewhere",
+  "replace": "if cur.DeletionTimestamp != nil || !moves.MayStart(&cur, a.HostName) {\n\t\treturn errPlacedElsewhere",
   "mutation": "generation check dropped",
   "packages": [
    "./internal/agent",
@@ -197,10 +197,10 @@
  },
  {
   "id": "G-016",
-  "guard": "removeEverywhere keeps a silo the API does not know unless a delete was seen (K-004)",
+  "guard": "mayRemove removes a copy the API does not know only if its delete was seen on the delete watch (K-004)",
   "file": "internal/agent/agent.go",
-  "find": "if _, seen := a.seenDeleted.Load(id.UID); !seen {",
-  "replace": "if _, seen := a.seenDeleted.Load(id.UID); false && !seen {",
+  "find": "\t\tif seen {\n\t\t\treturn true, \"its delete was seen here\", nil",
+  "replace": "\t\tif seen || true {\n\t\t\treturn true, \"its delete was seen here\", nil",
   "mutation": "unknown silo removed",
   "packages": [
    "./internal/agent",
@@ -225,8 +225,8 @@
   "id": "G-018",
   "guard": "removeEverywhere never removes the silo it is reconciling",
   "file": "internal/agent/agent.go",
-  "find": "if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {\n\t\t\t\tcontinue",
-  "replace": "if false {\n\t\t\t\tcontinue",
+  "find": "if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {\n\t\t\t\ta.keptNoted.Delete(id.UID)",
+  "replace": "if false {\n\t\t\t\ta.keptNoted.Delete(id.UID)",
   "mutation": "own copy removed",
   "packages": [
    "./internal/agent",
