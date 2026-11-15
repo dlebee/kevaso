@@ -1170,11 +1170,33 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				}
 				a.keptNoted.Delete(id.UID)
 			}
-			// The same silo, placed elsewhere but not deleted, with volumes on this host's disks:
-			// deleting the copy would delete them (every runtime removes a silo's local volumes on
-			// Delete). A volume is kept data (design §0.3): admission never lets such a silo be
-			// recreated elsewhere, so this shouldn't happen; if it does, stop the copy and keep it.
-			if local := hostLocalVolumes(s); s != nil && s.DeletionTimestamp == nil && id.UID == s.UID && len(local) > 0 {
+			// The same silo, placed elsewhere or being deleted as this host's cache has it. The
+			// copy here holds its disk (a microVM's Delete removes its root volume), so it goes
+			// only on proof read now: a delete the store holds, a delete seen here, or a handoff
+			// from this host. Anything else (a restart elsewhere, a restored or older store, a
+			// person's --confirm-fenced move) stops it and keeps it.
+			remove, why, err := a.mayRemove(ctx, id)
+			if err != nil {
+				return err
+			}
+			if !remove {
+				if why == "" {
+					continue // placed here again: the reconcile goes on with it
+				}
+				if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
+					return err
+				}
+				if _, logged := a.keptNoted.LoadOrStore(id.UID, id.String()+" ("+rt.Info().Name+", stopped: "+why+")"); !logged {
+					a.log("keeping %s on %s, stopped, with its disk and volumes: %s (nothing is removed without a delete or a handoff from here)", id, rt.Info().Name, why)
+				}
+				continue
+			}
+			a.keptNoted.Delete(id.UID)
+			// A handoff of a silo with volumes on this host's disks: deleting the copy would delete
+			// them (every runtime removes a silo's local volumes on Delete). A volume is kept data
+			// (design §0.3): admission never lets such a silo be recreated elsewhere, so this
+			// shouldn't happen; if it does, stop the copy and keep it.
+			if local := hostLocalVolumes(s); why == whyHandoff && len(local) > 0 {
 				if _, seen := a.heldBack.LoadOrStore(id.UID, struct{}{}); !seen {
 					a.log("%s isn't placed here any more (host %q), but keeps local volume(s) %s here: stopped, not removed (delete the silo to remove them)",
 						id, s.Status.Host, strings.Join(local, ", "))
@@ -1206,6 +1228,34 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 		}
 	}
 	return nil
+}
+
+const whyHandoff = "handed off from here"
+
+// mayRemove decides, on the stored silo read now, whether this host may remove its copy id (its
+// disk with it): yes for a delete the store holds or this host saw, or a handoff from this host
+// (why says which); no, with why, for anything else; no with why "" when the store places it here
+// again (the cache was behind).
+func (a *Agent) mayRemove(ctx context.Context, id kri.ID) (remove bool, why string, err error) {
+	var cur v1.Silo
+	err = a.Client.Get(ctx, "Silo", id.Namespace, id.Name, &cur)
+	_, seen := a.seenDeleted.Load(id.UID)
+	switch {
+	case client.IsNotFound(err) || err == nil && cur.UID != id.UID:
+		if seen {
+			return true, "its delete was seen here", nil
+		}
+		return false, "the control plane doesn't know it and no delete of it was seen here", nil
+	case err != nil:
+		return false, "", err
+	case cur.DeletionTimestamp != nil:
+		return true, "being deleted", nil
+	case cur.Status.Host == a.HostName:
+		return false, "", nil
+	case cur.Status.MovingFrom == a.HostName:
+		return true, whyHandoff, nil
+	}
+	return false, fmt.Sprintf("placed on %q with no handoff from this host", cur.Status.Host), nil
 }
 
 // hostLocalVolumes are the names of s's volumes on this host's own disks (class local).

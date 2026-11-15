@@ -380,7 +380,9 @@ func TestReadiness(t *testing.T) {
 // another host removes that copy, and with it (every runtime does, on Delete) its local volumes.
 // Admission never lets a silo with a host-local volume be recreated elsewhere, so that copy should
 // never hold one; if it does anyway (here: its status moved by hand), the host stops the copy and
-// keeps it, volumes and all, until the silo is deleted. A copy without local volumes goes as before.
+// keeps it, volumes and all, until the silo is deleted. A copy without local volumes is stopped
+// and kept too, its disk with it: placed elsewhere with no handoff from this host is no proof it may
+// go (review claim A; rootdisk_test.go).
 func TestOldCopyWithLocalVolumesIsKept(t *testing.T) {
 	e := setup(t)
 	mk := func(name string, vols []v1.Volume) *v1.Silo {
@@ -408,7 +410,7 @@ func TestOldCopyWithLocalVolumesIsKept(t *testing.T) {
 		ids, _ := e.rt.List(e.ctx)
 		return slices.ContainsFunc(ids, func(id kri.ID) bool { return id.Name == name })
 	}
-	calls := func() []string { return slices.Clone(e.rt.Calls) }
+	calls := func() []string { return e.rt.CallLog() }
 	until := func(what string, ok func() bool) {
 		t.Helper()
 		for !ok() {
@@ -419,9 +421,12 @@ func TestOldCopyWithLocalVolumesIsKept(t *testing.T) {
 			}
 		}
 	}
-	until("plain removed", func() bool { return !has("plain") })
+	until("plain stopped", func() bool { return slices.Contains(calls(), "stop dev/plain") })
 	until("keep stopped", func() bool { return slices.Contains(calls(), "stop dev/keep") })
 	time.Sleep(200 * time.Millisecond) // more reconciles: still kept
+	if !has("plain") || slices.Contains(calls(), "delete dev/plain") {
+		t.Fatalf("the copy placed elsewhere with no handoff was removed: %v", calls())
+	}
 	if !has("keep") || slices.Contains(calls(), "delete dev/keep") {
 		t.Fatalf("the copy with a local volume was removed: %v", calls())
 	}

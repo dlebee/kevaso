@@ -300,8 +300,8 @@ var (
 	_ kri.Resetter       = (*Strict)(nil)
 )
 
-// CallLog is every operation so far, in order (Calls, read safely).
-func (r *Strict) CallLog() []string {
+// CallLog is every operation so far, in order (Calls, read safely while the runtime is in use).
+func (r *Runtime) CallLog() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.Calls...)
