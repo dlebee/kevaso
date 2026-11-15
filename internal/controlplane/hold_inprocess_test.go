@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"kevaso.com/core/api/client"
+	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/apiserver"
@@ -131,5 +132,33 @@ func TestASystemNodesWorkerRunsAsItsHost(t *testing.T) {
 		if strings.Contains(l, "Forbidden") || strings.Contains(l, "(403)") {
 			t.Fatalf("a write of the system node's worker was refused: %s", l)
 		}
+	}
+}
+
+// Review of the control-plane fixes, item 3: the worker on a system node got its answers through
+// the stamping middleware without its refusal: a write whose stamp couldn't be read (the store
+// slow past StampTimeout) was still made, its answer came back unstamped, the client called it
+// NotYet, and the worker sent again a write that had landed. It is refused before anything is
+// handled, as on the API listener: nothing is made, and sending again is safe.
+func TestTheSystemNodesWorkerNeverHasAWriteMadeWithoutAStamp(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemory(0)
+	b, _ := json.Marshal(ClusterIdentity{ID: "c", History: "h1", Epoch: 1})
+	if _, err := st.Create(ctx, identityKey, b); err != nil {
+		t.Fatal(err)
+	}
+	slow := noRevision{st} // its revision can't be read: the stamp can't be made
+	srv, err := apiserver.New(slow, clock.Real{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, closeC := workerClient(srv, slow, agent.OpenWatermark("", nil), "cp-1")
+	defer closeC()
+	err = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
+	if !client.IsUnavailable(err) {
+		t.Fatalf("a write with no stamp possible: %v, want refused as unavailable before it is made", err)
+	}
+	if _, err := st.Get(ctx, store.Key{Kind: "Namespace", Name: "dev"}); err == nil {
+		t.Fatal("the write was made although its answer couldn't be stamped: sending it again makes it twice")
 	}
 }
