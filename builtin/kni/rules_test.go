@@ -118,8 +118,9 @@ func TestHostPortAndSameAsService(t *testing.T) {
 		"ip daddr 198.51.100.10 udp dport 30303 dnat ip to 10.64.2.2:30303",
 		`oifname "kvbr0" ip daddr 10.64.2.2 tcp dport 30303 ct original ip daddr 198.51.100.10 ct status dnat accept`,
 		`ip saddr 10.64.2.2 ip daddr != { 10.64.0.0/16, 10.62.0.0/16, 10.63.0.0/16 } oifname != "kvbr0" snat ip to 198.51.100.10`,
-		`iifname "kvt0011223344" ip saddr != 10.64.2.2 drop`,
-		`iifname "kvt0011223344" arp saddr ip != 10.64.2.2 drop`,
+		`iifname "kvt0011223344" ip saddr 10.64.2.2 accept`,
+		`iifname "kvt0011223344" arp saddr ip 10.64.2.2 accept`,
+		"type filter hook prerouting priority filter; policy drop;",
 		"ether type arp accept",
 		`oifname "kvbr0" drop`, // everything else to silos
 	)
@@ -347,8 +348,8 @@ func TestLocalEndpoint(t *testing.T) {
 	}
 	_, bt, _ := strings.Cut(r, "table bridge kevaso {")
 	pre, _, _ := strings.Cut(bt, "chain forward {")
-	if !strings.Contains(pre, "type filter hook prerouting") || !strings.Contains(pre, `iifname "kvt0011223344" ip saddr != 10.64.2.2 drop`) ||
-		!strings.Contains(pre, `iifname "kvt5566778899" arp saddr ip != 10.64.2.3 drop`) {
+	if !strings.Contains(pre, "type filter hook prerouting priority filter; policy drop;") || !strings.Contains(pre, `iifname "kvt0011223344" ip saddr 10.64.2.2 accept`) ||
+		!strings.Contains(pre, `iifname "kvt5566778899" arp saddr ip 10.64.2.3 accept`) {
 		t.Errorf("anti-spoofing isn't in the bridge's prerouting hook:\n%s", bt)
 	}
 	if hasEP := Rules(host(Silo{Key: "web3/node", IP: a("10.64.2.2"), Endpoint: true})); strings.Contains(hasEP, "169.254") {
