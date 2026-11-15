@@ -1723,7 +1723,7 @@
   "id": "G-184",
   "guard": "removeEverywhere keeps, running, a copy the cache and the store don't know whose delete wasn't seen (K-004)",
   "file": "internal/agent/agent.go",
-  "find": "\t\t\t\tif !a.seenHere(id.UID) {\n\t\t\t\t\tif _, again := a.abandoned.Load(id.UID); again {",
+  "find": "\t\t\t\tif !a.seenHere(id.UID) && !a.removalConfirmed(id.UID) {\n\t\t\t\t\tif _, again := a.abandoned.Load(id.UID); again {",
   "replace": "\t\t\t\tif false {\n\t\t\t\t\tif _, again := a.abandoned.Load(id.UID); again {",
   "mutation": "unknown copy not kept",
   "packages": [

@@ -195,7 +195,10 @@ type Agent struct {
 	// armed (the control plane doesn't restart it elsewhere on the strength of this host's
 	// fence) until a later kill of it here is confirmed. The host is never rebooted for it.
 	fenceFaulted sync.Map
-	applied      appliedLog // the resets and images applied here (applied.go, K-110)
+	// removeConfirmed: silo UID → kri.ID: a kept copy a person confirmed the removal of (K-068,
+	// keptcmd.go).
+	removeConfirmed sync.Map
+	applied         appliedLog // the resets and images applied here (applied.go, K-110)
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
@@ -1596,14 +1599,14 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			// Not in the API (or replaced by another of the same name) and no delete of it seen
 			// here: keep it, running, its disk and volumes untouched (design §0.7, K-004).
 			if s == nil || id.UID != s.UID {
-				if !a.seenHere(id.UID) {
+				if !a.seenHere(id.UID) && !a.removalConfirmed(id.UID) {
 					if _, again := a.abandoned.Load(id.UID); again {
 						if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
 							return err
 						}
 						a.abandoned.Delete(id.UID)
 					}
-					if _, logged := a.keptNoted.LoadOrStore(id.UID, keptCopy{runtime: rtName, name: keptName(id, rt.Info().Name)}); !logged {
+					if _, logged := a.keptNoted.LoadOrStore(id.UID, keptCopy{runtime: rtName, id: id, name: keptName(id, rt.Info().Name)}); !logged {
 						a.log("keeping %s on %s: the control plane doesn't know it and no delete of it was seen here; it keeps running with its disk and volumes (nothing is removed without a delete)",
 							id, rt.Info().Name)
 					}
@@ -1628,7 +1631,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
 					return err
 				}
-				if _, logged := a.keptNoted.LoadOrStore(id.UID, keptCopy{runtime: rtName, name: keptName(id, rt.Info().Name+", stopped: "+why)}); !logged {
+				if _, logged := a.keptNoted.LoadOrStore(id.UID, keptCopy{runtime: rtName, id: id, name: keptName(id, rt.Info().Name+", stopped: "+why)}); !logged {
 					a.log("keeping %s on %s, stopped, with its disk and volumes: %s (nothing is removed without a delete or a handoff from here)", id, rt.Info().Name, why)
 				}
 				continue
@@ -1669,6 +1672,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			}
 			a.forgetDelete(id.UID) // nothing of it left here
 			a.forgetApplied(id.UID)
+			a.removalDone(id.UID)
 		}
 	}
 	return a.stopUnlisted(ctx, k, s, listed)
@@ -1709,6 +1713,17 @@ func (a *Agent) mayRemove(ctx context.Context, id kri.ID) (remove bool, why stri
 		if !a.watermark().acceptedSince(m) {
 			return false, "", errors.New("the control plane's answer about " + id.String() + " can't be acted on (held, or another history): nothing removed")
 		}
+	}
+	if a.removalConfirmed(id.UID) {
+		// K-068: a person confirmed its removal (kvoadm host kept --remove): that is the proof,
+		// unless the store places this very silo here (it isn't a kept copy then).
+		if err == nil && cur.UID == id.UID && cur.Status.Host == a.HostName && cur.DeletionTimestamp == nil {
+			return false, "", nil
+		}
+		if err != nil && !client.IsNotFound(err) {
+			return false, "", err
+		}
+		return true, "its removal was confirmed by a person (kvoadm host kept --remove)", nil
 	}
 	seen := a.seenHere(id.UID)
 	switch {

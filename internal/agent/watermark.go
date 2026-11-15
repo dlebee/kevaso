@@ -423,6 +423,8 @@ func (a *Agent) controlPlaneCondition(kept client.Watermark, seen client.Control
 // left the condition goes.
 func (a *Agent) reportKept(ctx context.Context, said string) string {
 	a.pruneKept(ctx)
+	a.takeKeptRemovals()
+	a.writeKeptFile()
 	var kept []string
 	a.keptNoted.Range(func(_, v any) bool {
 		if c, ok := v.(keptCopy); ok {
