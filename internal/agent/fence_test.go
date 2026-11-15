@@ -98,8 +98,7 @@ func TestAgentWritesTheFenceRecord(t *testing.T) {
 	ts.Close()
 	runCtx, stop = context.WithCancel(ctx)
 	b := &agent.Agent{Client: client.New(ts.URL), HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": fake.New()}, Clock: clock.Real{},
-		LastContact: func() time.Time { return time.Time{} }, FenceDir: dir,
-		FenceApplies: func() (bool, bool) { return false, false }} // a control plane that can't tell yet
+		LastContact: func() time.Time { return time.Time{} }, FenceDir: dir}
 	done = make(chan struct{})
 	go func() { b.Run(runCtx); close(done) }()
 	time.Sleep(2500 * time.Millisecond)
@@ -114,50 +113,67 @@ func TestAgentWritesTheFenceRecord(t *testing.T) {
 	}
 }
 
-// On a host whose silos nobody could start elsewhere (a one-node cluster with a worker), the
-// record says no fence applies: neither the watcher nor the agent's own fence stops anything,
-// however long the contact is gone.
-func TestNoFenceWhereNobodyRecreates(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+// §0.7: the fence is inert unless a silo on the host asked to stop without the control plane;
+// then it acts for that silo alone, on a one-node cluster too (where it stops every time the
+// control plane is gone, which is why the docs say not to ask for it there).
+func TestTheFenceIsInertWithoutAStopSilo(t *testing.T) {
 	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel() // before the server closes: the agent's watches end first
 	c := client.New(ts.URL)
 	dir := t.TempDir()
 	contact := time.Now().Add(-time.Hour)
 	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
-	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "dev"},
-		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
-			Availability: v1.Availability{OnControlPlaneLoss: v1.OnControlPlaneLossStop, After: "30s"}}}
-	if err := c.Create(ctx, s); err != nil {
-		t.Fatal(err)
+	place := func(name string, av v1.Availability) kri.ID {
+		s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev"},
+			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
+				Availability: av}}
+		if err := c.Create(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		s.Status.Host, s.Status.Phase = "cp1", "Scheduled"
+		if err := c.UpdateStatus(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+		return kri.ID{Namespace: "dev", Name: name, UID: s.UID}
 	}
-	s.Status.Host, s.Status.Phase = "cp1", "Scheduled"
-	if err := c.UpdateStatus(ctx, s); err != nil {
-		t.Fatal(err)
-	}
+	web := place("web", v1.Availability{OnHostLoss: v1.OnHostLossRecreate})
 	rt := fake.New()
-	id := kri.ID{Namespace: "dev", Name: "web", UID: s.UID}
-	runCtx, stop := context.WithCancel(ctx)
 	a := &agent.Agent{Client: c, HostName: "cp1", Runtimes: map[string]kri.Runtime{"docker": rt}, Clock: clock.Real{},
-		LastContact: func() time.Time { return contact }, FenceDir: dir, FenceApplies: func() (bool, bool) { return false, true }}
-	done := make(chan struct{})
-	go func() { a.Run(runCtx); close(done) }()
+		LastContact: func() time.Time { return contact }, FenceDir: dir,
+		StopsOnLoss: func(s *v1.Silo) (bool, time.Duration) {
+			stop, after := s.StopsOnControlPlaneLoss()
+			return stop, after / 30
+		}} // 30s → 1s
+	go a.Run(ctx)
+	state := func(id kri.ID) kri.State { st, _ := rt.Status(ctx, id); return st.State }
 	var r fence.Record
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		r, _ = fence.Read(dir)
-		if st, _ := rt.Status(ctx, id); st.State == kri.Running && len(r.Silos) == 1 {
+		if r, _ = fence.Read(dir); state(web) == kri.Running && len(r.Silos) == 1 {
 			break
 		}
 	}
-	time.Sleep(1500 * time.Millisecond) // a fence tick or two
-	stop()
-	<-done
-	if r.Written.IsZero() || r.Fence {
-		t.Fatalf("record: %+v", r)
+	time.Sleep(1500 * time.Millisecond) // a fence tick or two, an hour without contact
+	if r, _ = fence.Read(dir); r.Written.IsZero() || r.Fence {
+		t.Fatalf("with no silo that asked to stop, the record says fence: %+v", r)
 	}
-	if st, _ := rt.Status(ctx, id); st.State != kri.Running {
-		t.Fatalf("the agent fenced a silo nobody could start elsewhere: %s", st.State)
+	if got := state(web); got != kri.Running {
+		t.Fatalf("an hour without the control plane stopped an onHostLoss: Recreate silo: %s", got)
+	}
+
+	stops := place("stops", v1.Availability{OnControlPlaneLoss: v1.OnControlPlaneLossStop, After: "30s"})
+	// Placed here an hour into the outage: past its after already, so it isn't even started.
+	for end := time.Now().Add(2500 * time.Millisecond); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		if got := state(stops); got == kri.Running {
+			t.Fatalf("the silo that asked to stop without the control plane was started without it")
+		}
+	}
+	if r, _ = fence.Read(dir); !r.Fence || len(r.Silos) != 2 {
+		t.Errorf("a silo here stops without the control plane, and the record says no fence: %+v", r)
+	}
+	if got := state(web); got != kri.Running {
+		t.Fatalf("the fence stopped the other silo too: %s", got)
 	}
 }

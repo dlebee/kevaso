@@ -69,7 +69,8 @@ func (a *Agent) loadRecorded() {
 
 // buildRecord is the record from what's recorded now. Called with fenceMu held.
 func (a *Agent) buildRecord() fence.Record {
-	r := fence.Record{Written: a.now().UTC(), LastContact: a.fencePrev.LastContact, Fence: a.fenceApplies()}
+	// The fence is inert unless a silo here asked to stop without the control plane (§0.7).
+	r := fence.Record{Written: a.now().UTC(), LastContact: a.fencePrev.LastContact}
 	if a.LastContact != nil {
 		last := a.LastContact()
 		if last.IsZero() && !a.started.IsZero() {
@@ -81,6 +82,7 @@ func (a *Agent) buildRecord() fence.Record {
 	}
 	for _, s := range a.recorded {
 		r.Silos = append(r.Silos, s)
+		r.Fence = r.Fence || fence.Stops(s.OnHostLoss)
 	}
 	sort.Slice(r.Silos, func(i, j int) bool { return r.Silos[i].ID.UID < r.Silos[j].ID.UID })
 	return r

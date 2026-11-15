@@ -69,9 +69,8 @@ type Agent struct {
 	// its last contact and which of its silos stop on control-plane loss, for the fence watcher,
 	// which stops those when this agent can no longer vouch for them, running or not.
 	FenceDir string
-	// FenceApplies says whether this host needs fencing at all (fence.Applies: a second copy of
-	// its silos could be started elsewhere); known false: not decided yet (the last record's
-	// answer stands). Nil: always (a worker-only host).
+	// FenceApplies is no longer read: per §0.7 the fence acts where a silo asked for it (Stop),
+	// whoever else could start its silos. Left for the worker's wiring until that goes.
 	FenceApplies func() (applies, known bool)
 	// EgressCA is the host's egress CA: the agent puts it in the trust store of the VM silos whose
 	// grants inject (containers get the runtime's read-only bundle).
@@ -147,10 +146,11 @@ func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
 	return s.StopsOnControlPlaneLoss()
 }
 
-// silence is how long the host has been without the control plane, where that can matter: zero
-// where no fence applies (nobody could start the silos elsewhere) or before the agent runs.
+// silence is how long the host has been without the control plane (zero before the agent runs).
+// It counts on a one-node cluster too: a silo that asked to stop without the control plane stops
+// whenever it's gone (§0.7 says not to ask for it there).
 func (a *Agent) silence() time.Duration {
-	if a.LastContact == nil || !a.fenceApplies() || a.started.IsZero() {
+	if a.LastContact == nil || a.started.IsZero() {
 		return 0
 	}
 	return a.Clock.Now().Sub(a.lastContact())
@@ -178,17 +178,6 @@ func (a *Agent) lastContact() time.Time {
 		return a.fencePrev.LastContact
 	}
 	return a.started
-}
-
-// fenceApplies is FenceApplies, or what an earlier run recorded while it's undecided.
-func (a *Agent) fenceApplies() bool {
-	if a.FenceApplies == nil {
-		return true
-	}
-	if applies, known := a.FenceApplies(); known {
-		return applies
-	}
-	return a.fencePrev.Fence
 }
 
 // fence runs while the agent runs. Without contact it changes nothing but this (§0.7): a silo
