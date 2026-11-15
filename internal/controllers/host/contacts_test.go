@@ -43,3 +43,70 @@ func TestContactsMeasureSilenceOnTheControlPlanesClock(t *testing.T) {
 		t.Fatalf("no contacts kept: %v (must never look silent)", d)
 	}
 }
+
+// K-015: a silo's start claim is judged by when this control plane first saw it, on its own
+// clock, and seeing a new one is a contact from the host that wrote it. A new leader (new
+// Contacts) has seen none: each is fresh from its start.
+func TestStartClaimsAreTimedWhenSeenAndAreContacts(t *testing.T) {
+	start := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	c := NewContacts(start)
+	stamp := start.Add(-24 * time.Hour)
+	h := &v1.Host{}
+	h.Name, h.Status.LastHeartbeat = "hv1", &stamp
+	c.Observe(h, start)
+	at := start.Add(time.Hour)
+	if d := c.Silence("hv1", at); d != time.Hour {
+		t.Fatalf("before any claim: %v", d)
+	}
+	if age := c.StartClaimAge("dev/one", "claim-1", at); age != 0 {
+		t.Fatalf("a claim not seen yet: age %v, want 0 (fresh)", age)
+	}
+	if age := c.SawStartClaim("dev/one", "hv1", "claim-1", at); age != 0 {
+		t.Fatalf("first sight: age %v", age)
+	}
+	if d := c.Silence("hv1", at.Add(10*time.Second)); d != 10*time.Second {
+		t.Fatalf("a new claim is a contact: silence %v, want 10s", d)
+	}
+	// The same claim again later: older, and not another contact.
+	if age := c.SawStartClaim("dev/one", "hv1", "claim-1", at.Add(20*time.Second)); age != 20*time.Second {
+		t.Fatalf("seen again: age %v", age)
+	}
+	if d := c.Silence("hv1", at.Add(40*time.Second)); d != 40*time.Second {
+		t.Fatalf("the same claim seen again counted as contact: silence %v", d)
+	}
+	// The same old heartbeat seen again doesn't take the contact back either.
+	c.Observe(h, at.Add(41*time.Second))
+	if d := c.Silence("hv1", at.Add(45*time.Second)); d != 45*time.Second {
+		t.Fatalf("an old heartbeat after a claim: silence %v", d)
+	}
+	// A changed claim (the host claimed again): fresh, and a contact.
+	if age := c.SawStartClaim("dev/one", "hv1", "claim-2", at.Add(50*time.Second)); age != 0 {
+		t.Fatalf("a new claim: age %v", age)
+	}
+	if age := c.StartClaimAge("dev/one", "claim-2", at.Add(55*time.Second)); age != 5*time.Second {
+		t.Fatalf("age %v", age)
+	}
+	if d := c.Silence("hv1", at.Add(55*time.Second)); d != 5*time.Second {
+		t.Fatalf("silence %v", d)
+	}
+	// A claim that doesn't say who wrote it: timed, nobody's contact.
+	c.SawStartClaim("dev/two", "", "claim-x", at.Add(56*time.Second))
+	if d := c.Silence("hv1", at.Add(60*time.Second)); d != 10*time.Second {
+		t.Fatalf("silence %v", d)
+	}
+	// Forgotten (the silo is gone): a claim under that name is new again.
+	c.ForgetStartClaim("dev/one")
+	if age := c.StartClaimAge("dev/one", "claim-2", at.Add(time.Hour)); age != 0 {
+		t.Fatalf("forgotten: age %v", age)
+	}
+	// A new leader: nothing seen, so every claim is fresh from its start.
+	next := NewContacts(at.Add(2 * time.Hour))
+	if age := next.StartClaimAge("dev/one", "claim-2", at.Add(2*time.Hour+time.Minute)); age != 0 {
+		t.Fatalf("a new leader: age %v", age)
+	}
+	var nilC *Contacts
+	if nilC.SawStartClaim("dev/one", "hv1", "c", at) != 0 || nilC.StartClaimAge("dev/one", "c", at) != 0 {
+		t.Fatal("nil contacts")
+	}
+	nilC.ForgetStartClaim("dev/one")
+}
