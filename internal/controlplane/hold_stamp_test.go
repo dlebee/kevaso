@@ -1,15 +1,20 @@
 package controlplane
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"kevaso.com/core/api/client"
+	"kevaso.com/core/internal/apiserver"
+	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/store"
 )
 
@@ -110,5 +115,39 @@ func TestK008ANodeWithoutAStoreSaysSoBeforeHandling(t *testing.T) {
 	withControlPlane(next, st, true).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
 	if _, ok := client.ParseControlPlane(rec.Header()); !ok || handled != 2 {
 		t.Fatalf("healthy: stamped %v, handled %d", ok, handled)
+	}
+}
+
+// Every answer the control plane sends is stamped, a hijacked upgrade's 101 included (an agent's
+// tunnel, an exec stream): it bypasses the server's own header writing, and before hijack wrote
+// the response's headers, a worker's judge took every tunnel for NotYet.
+func TestAnUpgradesAnswerIsStampedToo(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemory(0)
+	b, _ := json.Marshal(ClusterIdentity{ID: "c", History: "h1", Epoch: 1})
+	if _, err := st.Create(ctx, identityKey, b); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := apiserver.New(st, clock.Real{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(withControlPlane(srv, st, true))
+	defer ts.Close()
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_, _ = io.WriteString(conn, "GET /agent/connect?host=hv1 HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: kevaso-tunnel\r\n\r\n")
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	if s, ok := client.ParseControlPlane(resp.Header); !ok || s.History != "h1" {
+		t.Fatalf("the tunnel's 101 isn't stamped: %v", resp.Header)
 	}
 }
