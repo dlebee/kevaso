@@ -38,7 +38,9 @@ type watermark struct {
 	kept client.Watermark
 	seen client.ControlPlaneSeen
 	last client.Verdict
-	log  func(string, ...any)
+	// histories counts the histories accepted in this run (Sending).
+	histories int64
+	log       func(string, ...any)
 }
 
 func loadWatermark(path string, log func(string, ...any)) *watermark {
@@ -61,11 +63,28 @@ func loadWatermark(path string, log func(string, ...any)) *watermark {
 	return w
 }
 
-// observe judges one answer.
-func (w *watermark) observe(seen client.ControlPlaneSeen) {
+// Sending implements client.ControlPlaneJudge: the revision kept as a request leaves, with
+// which accepted history it belongs to (a count, in the top 16 bits): an answer whose request
+// left under another history is measured against nothing of it.
+func (w *watermark) Sending() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	next, v := client.Judge(w.kept, seen)
+	return w.histories<<48 | min(w.kept.Revision, 1<<48-1)
+}
+
+// Answer implements client.ControlPlaneJudge: one answer judged against what was kept when its
+// request was sent (K-071).
+func (w *watermark) Answer(sentAt int64, seen client.ControlPlaneSeen) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	keptAtSend := sentAt & (1<<48 - 1)
+	if sentAt>>48 != w.histories {
+		keptAtSend = 0 // sent before the history it's judged against was accepted
+	}
+	next, v := client.JudgeAnswer(w.kept, keptAtSend, seen)
+	if next.History != w.kept.History || next.ClusterID != w.kept.ClusterID {
+		w.histories++
+	}
 	if v != w.last {
 		switch v {
 		case client.Hold:
@@ -119,10 +138,10 @@ func (w *watermark) state() (client.Watermark, client.ControlPlaneSeen, client.V
 	return w.kept, w.seen, w.last
 }
 
-// ObserveControlPlane judges one answer of the control plane (client.Client.ControlPlane): the
+// ControlPlaneJudge is the judge of the control plane's answers (client.Client.ControlPlane): the
 // worker sets it on every client it uses toward the control plane (the agent's Client included),
 // before the client is used.
-func (a *Agent) ObserveControlPlane(s client.ControlPlaneSeen) { a.watermark().observe(s) }
+func (a *Agent) ControlPlaneJudge() client.ControlPlaneJudge { return a.watermark() }
 
 // watermark is the agent's watermark, read from WatermarkFile the first time it's needed.
 func (a *Agent) watermark() *watermark {
@@ -187,7 +206,7 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 		if want == meta.ConditionTrue {
 			cond.Reason = "Held"
 			cond.Message = fmt.Sprintf("the control plane is older than what this worker saw: kept history %s revision %d (epoch %d), seen history %s revision %d (epoch %d). "+
-				"Every silo keeps running as it is and nothing is applied until a deliberate restore (kvoadm restore) starts a new history",
+				"Every silo keeps running as it is and nothing is applied until a deliberate restore (kvoadm init --restore) starts a new history",
 				kept.History, kept.Revision, kept.Epoch, seen.History, seen.Revision, seen.Epoch)
 		}
 		meta.SetCondition(&h.Status.Conditions, cond, a.now().UTC().Truncate(time.Second))

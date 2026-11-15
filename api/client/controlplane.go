@@ -91,6 +91,22 @@ const (
 //   - another history with an epoch at or above the one kept: NewHistory; keep the new one.
 //   - another history with a lower epoch: Hold (an older restore than one already accepted).
 func Judge(kept Watermark, seen ControlPlaneSeen) (Watermark, Verdict) {
+	return JudgeAnswer(kept, kept.Revision, seen)
+}
+
+// ControlPlaneJudge judges a client's answers (Client.ControlPlane): Sending is called just
+// before each request is sent, and what it returns comes back to Answer with that request's
+// answer. A worker's judge returns the revision it had kept then (JudgeAnswer).
+type ControlPlaneJudge interface {
+	Sending() int64
+	Answer(sentAt int64, seen ControlPlaneSeen)
+}
+
+// JudgeAnswer is Judge for an answer whose request was sent when keptAtSend was the revision
+// kept (K-071): the store stamps an answer when its request arrives, and answers on one client
+// arrive in any order, so a slow answer stamped before a faster later one says nothing about the
+// control plane being older. Only an answer below what was kept when it was sent does. Pure.
+func JudgeAnswer(kept Watermark, keptAtSend int64, seen ControlPlaneSeen) (Watermark, Verdict) {
 	mark := Watermark{ClusterID: seen.ClusterID, History: seen.History, Epoch: seen.Epoch, Revision: seen.Revision}
 	switch {
 	case kept.ClusterID == "":
@@ -98,11 +114,11 @@ func Judge(kept Watermark, seen ControlPlaneSeen) (Watermark, Verdict) {
 	case seen.ClusterID != kept.ClusterID:
 		return kept, Foreign
 	case seen.History == kept.History:
-		if kept.Held || seen.Revision < kept.Revision {
+		if kept.Held || seen.Revision < keptAtSend {
 			kept.Held = true
 			return kept, Hold
 		}
-		kept.Revision = seen.Revision
+		kept.Revision = max(kept.Revision, seen.Revision)
 		return kept, Accept
 	case seen.Epoch >= kept.Epoch:
 		return mark, NewHistory

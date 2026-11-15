@@ -66,7 +66,7 @@ func TestAHeldWorkerChangesNothingUntilANewHistory(t *testing.T) {
 		cl := client.New(ts.URL)
 		a := &agent.Agent{Client: cl, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt},
 			Clock: clock.Real{}, WatermarkFile: file, Log: t.Logf}
-		cl.ControlPlane = a.ObserveControlPlane
+		cl.ControlPlane = a.ControlPlaneJudge()
 		done := make(chan struct{})
 		go func() { a.Run(actx); close(done) }()
 		return func() { stop(); <-done }

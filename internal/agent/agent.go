@@ -71,8 +71,8 @@ type Agent struct {
 	StopsOnLoss func(*v1.Silo) (stops bool, after time.Duration)
 	// WatermarkFile, if set, is where the agent keeps what it saw of its control plane (cluster,
 	// history, highest revision; watermark.go), across restarts and reboots. Answers are judged
-	// only where the client's ControlPlane hook is ObserveControlPlane (set by whoever makes the
-	// client, before it is used).
+	// only where the client's ControlPlane is ControlPlaneJudge (set by whoever makes the client,
+	// before it is used).
 	WatermarkFile string
 	// FenceDir, if set, is where the agent writes its fence record every second (internal/fence):
 	// its last contact and which of its silos stop on control-plane loss, for the fence watcher,
