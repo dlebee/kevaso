@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -66,7 +67,7 @@ func TestAHeldWorkerChangesNothingUntilANewHistory(t *testing.T) {
 		cl := client.New(ts.URL)
 		a := &agent.Agent{Client: cl, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt},
 			Clock: clock.Real{}, WatermarkFile: file, Log: t.Logf}
-		cl.ControlPlane = a.ObserveControlPlane
+		cl.ControlPlane = a.ControlPlaneJudge()
 		done := make(chan struct{})
 		go func() { a.Run(actx); close(done) }()
 		return func() { stop(); <-done }
@@ -174,6 +175,17 @@ func TestAHeldWorkerChangesNothingUntilANewHistory(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("ControlPlaneBehind not cleared: %+v", behind())
+		}
+	}
+	// What it keeps is listed for the operator, on the Host.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		var h v1.Host
+		_ = c.Get(ctx, "Host", "", "hv1", &h)
+		if k := meta.FindCondition(h.Status.Conditions, agent.ConditionKeptSilos); k != nil && k.Status == meta.ConditionTrue && strings.Contains(k.Message, "dev/web") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the kept silo isn't listed on the Host: %+v", h.Status.Conditions)
 		}
 	}
 	stop()

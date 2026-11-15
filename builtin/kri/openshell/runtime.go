@@ -422,6 +422,11 @@ func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 		return kri.Status{State: kri.Created}, nil
 	}
 	sb, exists, err := r.get(ctx, s)
+	if err != nil && gatewayDown(err) {
+		// Its gateway doesn't answer (stopped behind Kevaso's back, or failed): the silo isn't
+		// running, and Start sets the gateway up again before it starts the sandbox.
+		return kri.Status{State: kri.Stopped, Message: "its gateway " + s.Gateway.Name() + " doesn't answer (" + firstLine(err.Error()) + ")"}, nil
+	}
 	if err != nil {
 		return kri.Status{}, err
 	}
@@ -434,6 +439,17 @@ func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 		msg = "OpenShell sandbox phase " + sb.Phase
 	}
 	return kri.Status{State: st, Message: msg}, nil
+}
+
+// gatewayDown: the CLI couldn't reach the gateway at all (its words for a refused connection).
+func gatewayDown(err error) bool {
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "connect error") || strings.Contains(m, "transport error") || strings.Contains(m, "connection refused")
+}
+
+func firstLine(s string) string {
+	l, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	return l
 }
 
 // List implements kri.Runtime.
@@ -518,6 +534,9 @@ func (r *Runtime) SetPolicy(ctx context.Context, id kri.ID, p kri.Policy) error 
 	g := s.Gateway
 	want := map[string]kri.Credential{}
 	for _, c := range p.Credentials {
+		if err := CheckCredential(c); err != nil { // before anything is written or run (K-066)
+			return fmt.Errorf("%s: %w", id, err)
+		}
 		want[ProfileID(id, c)] = c
 	}
 	for name, c := range want {

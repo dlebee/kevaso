@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +17,11 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/fence"
 )
+
+// ConditionKeptSilos is the Host condition that lists the silos this host keeps although the
+// control plane doesn't know them (no delete of them was seen here: a restore from a backup from
+// before them, say). They run on, with their data, until an operator decides.
+const ConditionKeptSilos = "KeptSilos"
 
 // ConditionControlPlaneBehind is the Host condition of a held worker (§0.7): its control plane is
 // older than what it last saw.
@@ -32,17 +39,24 @@ const ConditionControlPlaneBehind = "ControlPlaneBehind"
 //     (removeEverywhere keeps a silo the API doesn't know unless its delete was seen here).
 //
 // An answer with no headers judges nothing.
-type watermark struct {
+type Watermark struct {
 	mu   sync.Mutex
 	path string
 	kept client.Watermark
 	seen client.ControlPlaneSeen
 	last client.Verdict
-	log  func(string, ...any)
+	// histories counts the histories accepted in this run (Sending).
+	histories int64
+	log       func(string, ...any)
 }
 
-func loadWatermark(path string, log func(string, ...any)) *watermark {
-	w := &watermark{path: path, log: log}
+// OpenWatermark reads the watermark kept at path ("": kept in memory only). kevasod makes it once
+// and gives it to the client (as its ControlPlane judge), the agent and the worker's network.
+func OpenWatermark(path string, log func(string, ...any)) *Watermark {
+	if log == nil {
+		log = func(string, ...any) {}
+	}
+	w := &Watermark{path: path, log: log}
 	if path == "" {
 		return w
 	}
@@ -61,11 +75,28 @@ func loadWatermark(path string, log func(string, ...any)) *watermark {
 	return w
 }
 
-// observe judges one answer.
-func (w *watermark) observe(seen client.ControlPlaneSeen) {
+// Sending implements client.ControlPlaneJudge: the revision kept as a request leaves, with
+// which accepted history it belongs to (a count, in the top 16 bits): an answer whose request
+// left under another history is measured against nothing of it.
+func (w *Watermark) Sending() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	next, v := client.Judge(w.kept, seen)
+	return w.histories<<48 | min(w.kept.Revision, 1<<48-1)
+}
+
+// Answer implements client.ControlPlaneJudge: one answer judged against what was kept when its
+// request was sent (K-071).
+func (w *Watermark) Answer(sentAt int64, seen client.ControlPlaneSeen) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	keptAtSend := sentAt & (1<<48 - 1)
+	if sentAt>>48 != w.histories {
+		keptAtSend = 0 // sent before the history it's judged against was accepted
+	}
+	next, v := client.JudgeAnswer(w.kept, keptAtSend, seen)
+	if next.History != w.kept.History || next.ClusterID != w.kept.ClusterID {
+		w.histories++
+	}
 	if v != w.last {
 		switch v {
 		case client.Hold:
@@ -88,7 +119,7 @@ func (w *watermark) observe(seen client.ControlPlaneSeen) {
 }
 
 // save writes the watermark atomically. Called with mu held.
-func (w *watermark) save() error {
+func (w *Watermark) save() error {
 	if w.path == "" {
 		return nil
 	}
@@ -106,27 +137,37 @@ func (w *watermark) save() error {
 	return os.Rename(tmp, w.path)
 }
 
+// Held says whether nothing may be applied from the control plane now (held, or another
+// cluster's): the worker's rules, routes and addresses stay as they are too.
+func (w *Watermark) Held() bool { return w.blocked() }
+
 // blocked: nothing may be applied from the control plane now (held, or another cluster's).
-func (w *watermark) blocked() bool {
+func (w *Watermark) blocked() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.kept.Held || w.last == client.Foreign
 }
 
-func (w *watermark) state() (client.Watermark, client.ControlPlaneSeen, client.Verdict) {
+func (w *Watermark) state() (client.Watermark, client.ControlPlaneSeen, client.Verdict) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.kept, w.seen, w.last
 }
 
-// ObserveControlPlane judges one answer of the control plane (client.Client.ControlPlane): the
+// ControlPlaneJudge is the judge of the control plane's answers (client.Client.ControlPlane): the
 // worker sets it on every client it uses toward the control plane (the agent's Client included),
 // before the client is used.
-func (a *Agent) ObserveControlPlane(s client.ControlPlaneSeen) { a.watermark().observe(s) }
+func (a *Agent) ControlPlaneJudge() client.ControlPlaneJudge { return a.watermark() }
 
-// watermark is the agent's watermark, read from WatermarkFile the first time it's needed.
-func (a *Agent) watermark() *watermark {
-	a.cpOnce.Do(func() { a.cp = loadWatermark(a.WatermarkFile, a.log) })
+// watermark is the agent's watermark: Watermark, or read from WatermarkFile the first time it's
+// needed.
+func (a *Agent) watermark() *Watermark {
+	a.cpOnce.Do(func() {
+		a.cp = a.Watermark
+		if a.cp == nil {
+			a.cp = OpenWatermark(a.WatermarkFile, a.log)
+		}
+	})
 	return a.cp
 }
 
@@ -141,6 +182,7 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 	t := time.NewTicker(fence.CheckEvery)
 	defer t.Stop()
 	var reported meta.ConditionStatus // the condition status last written
+	keptSaid := ""                    // the kept silos last listed
 	wasBlocked := false
 	for {
 		select {
@@ -158,6 +200,9 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 			}
 		}
 		wasBlocked = blocked
+		if !blocked {
+			keptSaid = a.reportKept(ctx, keptSaid)
+		}
 		want := meta.ConditionFalse
 		if kept.Held {
 			want = meta.ConditionTrue
@@ -187,7 +232,7 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 		if want == meta.ConditionTrue {
 			cond.Reason = "Held"
 			cond.Message = fmt.Sprintf("the control plane is older than what this worker saw: kept history %s revision %d (epoch %d), seen history %s revision %d (epoch %d). "+
-				"Every silo keeps running as it is and nothing is applied until a deliberate restore (kvoadm restore) starts a new history",
+				"Every silo keeps running as it is and nothing is applied until a deliberate restore (kvoadm init --restore) starts a new history",
 				kept.History, kept.Revision, kept.Epoch, seen.History, seen.Revision, seen.Epoch)
 		}
 		meta.SetCondition(&h.Status.Conditions, cond, a.now().UTC().Truncate(time.Second))
@@ -195,4 +240,35 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 			reported = want
 		}
 	}
+}
+
+// reportKept lists on the Host the silos kept although the control plane doesn't know them, when
+// that changed since said; it returns what is said now.
+func (a *Agent) reportKept(ctx context.Context, said string) string {
+	var kept []string
+	a.keptNoted.Range(func(_, v any) bool {
+		if name, ok := v.(string); ok {
+			kept = append(kept, name)
+		}
+		return true
+	})
+	sort.Strings(kept)
+	now := strings.Join(kept, ", ")
+	if now == said {
+		return said
+	}
+	var h v1.Host
+	if err := a.Client.Get(ctx, "Host", "", a.HostName, &h); err != nil {
+		return said
+	}
+	cond := meta.Condition{Type: ConditionKeptSilos, Status: meta.ConditionFalse, Reason: "None", Message: "no silo is kept that the control plane doesn't know"}
+	if now != "" {
+		cond.Status, cond.Reason = meta.ConditionTrue, "NoDeleteSeen"
+		cond.Message = "kept running with their disks and volumes, though the control plane doesn't know them (no delete of them was seen here): " + now
+	}
+	meta.SetCondition(&h.Status.Conditions, cond, a.now().UTC().Truncate(time.Second))
+	if err := a.Client.UpdateStatus(ctx, &h); err != nil {
+		return said
+	}
+	return now
 }

@@ -101,7 +101,7 @@ func TestAgentWritesTheFenceRecord(t *testing.T) {
 	for _, s := range r.Silos {
 		stops[s.ID.Name] = s.StopAfter > 0
 	}
-	if !r.LastContact.Equal(contact) || !r.Fence || len(r.Silos) != 2 || !stops["web"] || stops["db"] {
+	if !r.LastContact.Equal(contact) || r.Fence || len(r.Silos) != 2 || !stops["web"] || stops["db"] {
 		t.Fatalf("record: %+v", r)
 	}
 
@@ -116,7 +116,7 @@ func TestAgentWritesTheFenceRecord(t *testing.T) {
 	stop()
 	<-done
 	again, _ := fence.Read(dir)
-	if !again.LastContact.Equal(contact) || !again.Fence || len(again.Silos) != 2 || !again.Written.After(r.Written) {
+	if !again.LastContact.Equal(contact) || len(again.Silos) != 2 || !again.Written.After(r.Written) {
 		t.Fatalf("after a restart while cut off: %+v (before: %+v)", again, r)
 	}
 	if got := fence.Decide(again, contact.Add(v1.DefaultStopAfter+time.Second), fence.DefaultAfter, nil); len(got) != 1 || got[0].ID.Name != "web" {
@@ -167,8 +167,8 @@ func TestTheFenceIsInertWithoutAStopSilo(t *testing.T) {
 		}
 	}
 	time.Sleep(1500 * time.Millisecond) // a fence tick or two, an hour without contact
-	if r, _ = fence.Read(dir); r.Written.IsZero() || r.Fence {
-		t.Fatalf("with no silo that asked to stop, the record says fence: %+v", r)
+	if r, _ = fence.Read(dir); r.Written.IsZero() || len(fence.Decide(r, time.Now().Add(48*time.Hour), fence.DefaultAfter, nil)) > 0 {
+		t.Fatalf("with no silo that asked to stop, the record stops something: %+v", r)
 	}
 	if got := state(web); got != kri.Running {
 		t.Fatalf("an hour without the control plane stopped an onHostLoss: Recreate silo: %s", got)
@@ -181,8 +181,8 @@ func TestTheFenceIsInertWithoutAStopSilo(t *testing.T) {
 			t.Fatalf("the silo that asked to stop without the control plane was started without it")
 		}
 	}
-	if r, _ = fence.Read(dir); !r.Fence || len(r.Silos) != 2 {
-		t.Errorf("a silo here stops without the control plane, and the record says no fence: %+v", r)
+	if r, _ = fence.Read(dir); len(r.Silos) != 2 || len(fence.Decide(r, time.Now(), fence.DefaultAfter, nil)) != 1 {
+		t.Errorf("a silo here stops without the control plane, and the record doesn't stop it: %+v", r)
 	}
 	if got := state(web); got != kri.Running {
 		t.Fatalf("the fence stopped the other silo too: %s", got)

@@ -42,14 +42,11 @@ type ingressLoop struct {
 	a       *Agent
 	classes *informer.Informer
 	applied map[string]string // silo uid → the plan in effect ("?": unknown, the last try failed midway)
-	// lastGood is the state last applied in full to each controller silo. While the class is held
-	// (an Ingress refused), it's what keeps serving, with the current ACME challenges in it.
-	lastGood map[string]kic.State
-	kick     chan struct{}
+	kick    chan struct{}
 }
 
 func (a *Agent) runIngress(ctx context.Context) {
-	l := &ingressLoop{a: a, classes: informer.New(a.Client, "IngressClass"), applied: map[string]string{}, lastGood: map[string]kic.State{}, kick: make(chan struct{}, 1)}
+	l := &ingressLoop{a: a, classes: informer.New(a.Client, "IngressClass"), applied: map[string]string{}, kick: make(chan struct{}, 1)}
 	l.classes.AddHandler(func(informer.Key) { l.poke() })
 	go l.classes.Run(ctx)
 	if !l.classes.WaitSynced(ctx) || !a.silos.WaitSynced(ctx) {
@@ -112,7 +109,6 @@ func (l *ingressLoop) once(ctx context.Context) {
 	for uid := range l.applied {
 		if !seen[uid] {
 			delete(l.applied, uid) // not a controller here any more: a new one starts from what's there
-			delete(l.lastGood, uid)
 		}
 	}
 }

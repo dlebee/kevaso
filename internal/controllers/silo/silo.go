@@ -74,6 +74,56 @@ func StopMargin(after time.Duration) time.Duration {
 // fenceArmed: the host's agent said its fence stops this silo, there, for this very spec.
 func fenceArmed(s *v1.Silo) bool { return fence.Armed(s) }
 
+// CondStartClaim is the condition a host writes on a silo right before it starts it: its start
+// claim (K-015; internal/agent's ConditionStartClaim, the host lane's), written against the exact
+// version it read, so it applies only if nothing changed the silo since, and the host starts the
+// silo only if it applied. Its message names the host ("starting on HOST at …").
+const CondStartClaim = "StartClaim"
+
+// StartClaimFresh is how long a start claim of a silo's host keeps the silo there, whatever the
+// control plane's silence count says (internal/agent's StartClaimFresh). It is counted from when
+// this control plane first saw the claim, on its own clock (Env.StartClaimAge), never from the
+// claim's timestamp, which is the agent's clock.
+const StartClaimFresh = 30 * time.Second
+
+// StartClaimOf returns the start claim s carries: the host that wrote it ("" when its message
+// doesn't say) and the claim as written, as an id (any change to the claim is another id). ok
+// false: no claim stands.
+func StartClaimOf(s *v1.Silo) (host, id string, ok bool) {
+	c := meta.FindCondition(s.Status.Conditions, CondStartClaim)
+	if c == nil || c.Status != meta.ConditionTrue {
+		return "", "", false
+	}
+	if rest, found := strings.CutPrefix(c.Message, "starting on "); found {
+		if h, _, found := strings.Cut(rest, " at "); found {
+			host = h
+		}
+	}
+	id = strings.Join([]string{s.UID, c.Reason, c.Message, c.LastTransitionTime.UTC().Format(time.RFC3339Nano), strconv.FormatInt(c.ObservedGeneration, 10)}, "|")
+	return host, id, true
+}
+
+// claimKey is what the control plane's memory of a silo's start claim is kept under.
+func claimKey(namespace, name string) string { return namespace + "/" + name }
+
+// freshClaim reports whether a start claim of the silo's current host stands (K-015): the host
+// is about to start it, or just did, so it is in contact and the silo is not placed elsewhere.
+// One whose writer it doesn't name counts as the host's. left: how long it still stands by this
+// control plane's count (0: unknown, Env.StartClaimAge nil, so it stands as long as it is there).
+func freshClaim(s *v1.Silo, env scheduler.Env) (fresh bool, age, left time.Duration) {
+	host, _, ok := StartClaimOf(s)
+	if !ok || (host != "" && host != s.Status.Host) {
+		return false, 0, 0 // none, or one left by a host it was on before: not this placement's
+	}
+	if env.StartClaimAge == nil {
+		return true, 0, 0
+	}
+	if age = env.StartClaimAge(s); age < StartClaimFresh {
+		return true, age, StartClaimFresh - age
+	}
+	return false, age, 0
+}
+
 // restartsItself says whether a silo on a silent host may be started elsewhere now, without a
 // person (brainstorm §0.7: only onControlPlaneLoss: Stop), and why; or, when it may not but is
 // opted in, why not yet.
@@ -92,6 +142,16 @@ func restartsItself(s *v1.Silo, env scheduler.Env) (bool, string) {
 		return false, fmt.Sprintf("onControlPlaneLoss: Stop, but %s never confirmed its fence stops this silo (condition %s for generation %d): not started elsewhere", host, CondFenceArmed, s.Generation)
 	case env.Silence == nil:
 		return false, ""
+	}
+	if fresh, age, left := freshClaim(s, env); fresh {
+		// K-015: the host wrote its start claim (only one of that and a restart elsewhere can
+		// apply; this one did): it is in contact, and the silo may be starting there.
+		standing := "it stands while it is there"
+		if env.StartClaimAge != nil {
+			standing = fmt.Sprintf("seen %s ago by the control plane, it stands %s more", age.Round(time.Second), left.Round(time.Second))
+		}
+		return false, fmt.Sprintf("%s claimed its start of this silo (condition %s; %s): it is in contact, so the silo is not started elsewhere",
+			host, CondStartClaim, standing)
 	}
 	wait := after + StopMargin(after)
 	silent := env.Silence(host)
@@ -113,10 +173,8 @@ func stopWait(s *v1.Silo, env scheduler.Env) time.Duration {
 	if !stops || s.Policy() == v1.OnHostLossWait || !fenceArmed(s) || env.Silence == nil {
 		return 0
 	}
-	if d := after + StopMargin(after) - env.Silence(s.Status.Host); d > 0 {
-		return d
-	}
-	return 0
+	_, _, left := freshClaim(s, env)
+	return max(after+StopMargin(after)-env.Silence(s.Status.Host), left, 0)
 }
 
 // CondHostUnreachable is the silo condition saying its host is silent, since when, and what a
@@ -220,11 +278,13 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 			}
 			return st, changed || imageChanged || movableChanged, 0, nil
 		}
-		if st.MovingFrom != "" && st.MovingFrom != st.Host {
+		if fresh, _, _ := freshClaim(s, env); st.MovingFrom != "" && st.MovingFrom != st.Host && !fresh {
 			// The silent host is the destination of a handoff its source hasn't finished: it never
 			// started the silo (moves.MayStart: not before the source lets go), so no copy runs
 			// there and another destination is safe. The handoff stays: the next host waits for
-			// the source as the silent one did (K-005).
+			// the source as the silent one did (K-005). (A host claims its start only once it may
+			// start, K-015, so a destination's claim can't stand here; were one there anyway, the
+			// silo is left to the rule below.)
 			cond.Status, cond.Reason = meta.ConditionFalse, "NewDestination"
 			cond.Message = fmt.Sprintf("%s, where it was moving, is unreachable; it never started there (%s hasn't let go): placing it elsewhere", st.Host, st.MovingFrom)
 			meta.SetCondition(&st.Conditions, cond, now)
@@ -358,9 +418,14 @@ func (c *Controller) lists() ([]*v1.Host, []*v1.Silo) {
 func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
 	o, ok := c.Silos.Get(k.Namespace, k.Name)
 	if !ok {
+		c.Contacts.ForgetStartClaim(claimKey(k.Namespace, k.Name))
 		return engine.Result{}, nil // deleted
 	}
 	s := o.(*v1.Silo)
+	// Its host's start claim, if new to us, is seen now: fresh from now, and a contact (K-015).
+	if host, id, ok := StartClaimOf(s); ok {
+		c.Contacts.SawStartClaim(claimKey(s.Namespace, s.Name), host, id, c.Clock.Now())
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.assumed == nil {
@@ -377,6 +442,10 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	env := scheduler.Env{Hosts: hosts, Suffix: v1.ClusterSuffix(hosts)}
 	if c.Contacts != nil {
 		env.Silence = func(host string) time.Duration { return c.Contacts.Silence(host, c.Clock.Now()) }
+		env.StartClaimAge = func(x *v1.Silo) time.Duration {
+			_, id, _ := StartClaimOf(x)
+			return c.Contacts.StartClaimAge(claimKey(x.Namespace, x.Name), id, c.Clock.Now())
+		}
 	}
 	if c.IPs != nil {
 		for _, o := range c.IPs.List() {

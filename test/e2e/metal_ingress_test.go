@@ -132,8 +132,27 @@ spec:
 	if pid == "" {
 		t.Error("nginx's pid file is empty after the reloads: the next config change can't be loaded")
 	}
-	if n := strings.TrimSpace(c.mustSh(`journalctl -u kevasod --no-pager --since '`+since+`' | grep -c 'ingress-public: reload' || true`)); n != "0" {
+	if n := strings.TrimSpace(c.mustSh(`journalctl -u kevasod --no-pager --since '` + since + `' | grep -c 'ingress-public: reload' || true`)); n != "0" {
 		t.Errorf("%s failed reloads of the ingress controller in kevasod's log", n)
+	}
+
+	// network-2's I-2 (K-063): the record of what was applied sits next to nginx's config, 0600, a
+	// JSON record; and an agent restart changes nothing in what nginx serves.
+	ctl := "docker ps -q --filter label=kevaso.com/name=ingress-public | head -1"
+	rec := strings.TrimSpace(c.mustSh(`docker exec $(` + ctl + `) sh -c 'stat -c %a /etc/nginx/nginx.conf.kevaso; head -c 1 /etc/nginx/nginx.conf.kevaso'`))
+	c.expect("I-2: the applied record is 0600 and JSON", rec, "600\n{")
+	before := c.mustSh(`docker exec $(` + ctl + `) nginx -T 2>/dev/null | md5sum`)
+	restartAt := strings.TrimSpace(c.mustSh("date -u '+%Y-%m-%d %H:%M:%S'"))
+	c.mustSh("systemctl restart kevasod")
+	c.eventually("I-2: the API back", 3*time.Minute, func() (bool, string) { out, code := c.kvo("", "get", "hosts"); return code == 0, out })
+	time.Sleep(10 * time.Second)
+	if after := c.mustSh(`docker exec $(` + ctl + `) nginx -T 2>/dev/null | md5sum`); after != before {
+		t.Errorf("I-2: an agent restart changed nginx's config")
+	} else {
+		t.Log("I-2: an agent restart left nginx's config as it was")
+	}
+	if n := strings.TrimSpace(c.mustSh(`journalctl -u kevasod --no-pager --since '` + restartAt + `' | grep -c 'ingress-public: applied' || true`)); n != "0" {
+		t.Logf("I-2: %s applied lines after the restart", n)
 	}
 
 	host := c.cfg.Hostname

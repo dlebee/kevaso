@@ -160,22 +160,6 @@ spec:
 }
 
 // safeBuffer is a buffer written by one goroutine and read by another.
-type safeBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (s *safeBuffer) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.Write(p)
-}
-
-func (s *safeBuffer) String() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.String()
-}
 
 // paneServer is what a silo runs to answer the pane protocol (ADR 0009): GET /panes is
 // /srv/panes/list.json, GET /panes/bundles/sha256:HEX is /srv/panes/HEX.

@@ -60,6 +60,10 @@ type Config struct {
 	// GatewayScope is how many OpenShell gateways run (host | namespace | silo; default namespace):
 	// sandboxes of one gateway share its user (design §3.1).
 	GatewayScope string
+	// Watermark, if set, is what this worker trusts of its control plane (agent.OpenWatermark),
+	// already the judge of the client's answers: while it holds, the agent and the network change
+	// nothing (§0.7). Nil: nothing is judged (a system node's own worker: it is the control plane).
+	Watermark *agent.Watermark
 	// PluginsDir is where the plugins' node sides put their sockets, DIR/NAME/node.sock (default
 	// kplugin.Dir): they mount the volumes of mount-reach storage classes (juicefs).
 	PluginsDir string
@@ -176,17 +180,31 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	}
 	// The control plane registers the Host (and, on the mesh, gives it a subnet); wait for it
 	// before reporting worker fields and installing runtimes.
-	for {
+	// A restart while the control plane is away (K-062) doesn't wait for it: after a few tries it
+	// starts from what this host kept (its last state, its subnet), and reports once it can.
+	for attempt := 1; ; attempt++ {
 		var h v1.Host
-		if err := c.Get(ctx, "Host", "", cfg.HostName, &h); err == nil {
+		err := c.Get(ctx, "Host", "", cfg.HostName, &h)
+		if err == nil {
 			if !cfg.MeshSubnet {
 				break
 			}
 			if p, err := netip.ParsePrefix(h.Status.Network.SiloSubnet); err == nil {
 				cloudhypervisor.SetNetwork(p)
 				cfg.Log("silo subnet %s", p)
+				if cfg.DataDir != "" {
+					if err := keepSubnet(cfg.DataDir, p); err != nil {
+						cfg.Log("keep the silo subnet: %v", err)
+					}
+				}
 				break
 			}
+		} else if p, ok := keptStart(cfg.DataDir, cfg.MeshSubnet); ok && attempt >= 5 {
+			if cfg.MeshSubnet {
+				cloudhypervisor.SetNetwork(p)
+			}
+			cfg.Log("the control plane can't be reached (%v): starting from what this host kept, not waiting for it", err)
+			break
 		}
 		select {
 		case <-ctx.Done():
@@ -215,6 +233,15 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 		}
 	}
 	var networkOnce sync.Once
+	var held func() bool // nil: never held
+	if cfg.Watermark != nil {
+		held = cfg.Watermark.Held
+	}
+	bindings := NewBindings() // the loaded rules', shared with the agent's local endpoint (K-079)
+	stateFile := ""           // the network's last state (K-062), where the worker has a data directory
+	if cfg.DataDir != "" {
+		stateFile = filepath.Join(cfg.DataDir, LastStateFile)
+	}
 	for name, rt := range rts {
 		go func(name string, rt Installer) {
 			// A failed install (a download cut short, a mirror down) is tried again every minute.
@@ -235,7 +262,9 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 					st.EnvOutsideEngine = rt.Info().Capabilities.EnvOutsideEngine
 					cfg.Log("runtime %s ready", name)
 					if usesBridge(rt) { // the bridge is there now: keep its firewall current (once)
-						networkOnce.Do(func() { go RunNetwork(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log) })
+						networkOnce.Do(func() {
+							go RunNetworkWith(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log, NetworkOptions{Held: held, StateFile: stateFile, Bindings: bindings})
+						})
 					}
 				}
 				mu.Lock()
@@ -269,14 +298,14 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	for name, rt := range rts {
 		runtimes[name] = rt
 	}
-	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes,
+	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes, Watermark: cfg.Watermark, Bound: bindings.Port,
 		RuntimeReady: func(name string) bool {
 			mu.Lock()
 			defer mu.Unlock()
 			return states[name].State == "Ready"
 		}}
 	if cfg.Contact != nil {
-		a.LastContact, a.FenceApplies = cfg.Contact.Last, cfg.Contact.Fence
+		a.LastContact, a.LastContactBoot, a.FenceApplies = cfg.Contact.Last, cfg.Contact.LastBoot, cfg.Contact.Fence
 		if runtime.GOOS == "linux" {
 			a.FenceDir = fence.Dir // for kevasod fence-watch, which fences even when this agent is gone
 		}

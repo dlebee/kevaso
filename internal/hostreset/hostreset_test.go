@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
+	"kevaso.com/core/builtin/kri/openshell"
 )
 
 var fresh = State{
@@ -78,6 +79,16 @@ func TestPurgeableIsWatchedAndNew(t *testing.T) {
 		if !slices.Contains(Watched(), p) {
 			t.Errorf("the runtime's package %s isn't watched", p)
 		}
+	}
+}
+
+// The openshell runtimes install OpenShell's own package (and Docker, for the container driver):
+// a reset purges it like every other package a runtime brought.
+func TestTheOpenShellPackageIsWatched(t *testing.T) {
+	now := fresh
+	now.Packages = append(slices.Clone(fresh.Packages), openshell.Package)
+	if got := Purgeable(fresh, now); !slices.Equal(got, []string{openshell.Package}) {
+		t.Fatalf("purgeable %v: the OpenShell package stays after a reset", got)
 	}
 }
 

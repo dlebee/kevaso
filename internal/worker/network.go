@@ -152,11 +152,37 @@ func AnnouncedAddresses(hostName string, silos []*v1.Silo) []string {
 // (atomically: nft -f replaces the tables in one transaction). With an egress CA it also runs the
 // egress gate.
 func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate.CA, upstream *x509.CertPool, log func(string, ...any)) {
+	RunNetworkWith(ctx, c, hostName, ca, upstream, log, NetworkOptions{})
+}
+
+// NetworkOptions are RunNetworkWith's.
+type NetworkOptions struct {
+	// Held, if set, says when to change nothing on the host (§0.7: the control plane is older
+	// than what this worker saw, or another cluster's): the rules, the pool and announced
+	// addresses stay as they are, and the DNS listeners answer from what they have.
+	Held func() bool
+	// Bindings, if set, are the loaded rules' bindings, shared with the agent's local endpoint
+	// (K-079: it takes an address only from the port they bind it to).
+	Bindings *Bindings
+	// StateFile, if set, keeps the last state seen (laststate.go): a start while the control
+	// plane is away comes up from it (K-062).
+	StateFile string
+}
+
+// RunNetworkWith is RunNetwork with options.
+func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *gate.CA, upstream *x509.CertPool, log func(string, ...any), o NetworkOptions) {
+	held := o.Held
 	silos, hosts, grantsInf := informer.New(c, "Silo"), informer.New(c, "Host"), informer.New(c, "Grant")
 	secretsInf := informer.New(c, "Secret")
 	ingInf, classInf := informer.New(c, "Ingress"), informer.New(c, "IngressClass")
 	svcInf := informer.New(c, "Service")
 	leaseInf := informer.New(c, "Lease")
+	kept := []*informer.Informer{silos, hosts, grantsInf, ingInf, classInf, svcInf, leaseInf} // all but secrets
+	seeded := o.StateFile != "" && seedLastState(o.StateFile, kept...)
+	if seeded {
+		secretsInf.Seed(nil) // never on disk: the gate asks for a secret when it injects it
+		log("network: starting from the last state this host kept (%s), not waiting for the control plane", o.StateFile)
+	}
 	changed := make(chan struct{}, 1)
 	poke := func(informer.Key) {
 		select {
@@ -196,7 +222,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 	// Every input before the first ruleset: one built without the leases (or services, ingress
 	// classes) closes their ports and resets what an open lease let in, on every restart.
 	for _, inf := range []*informer.Informer{silos, hosts, grantsInf, secretsInf, ingInf, classInf, svcInf, leaseInf} {
-		if !inf.WaitSynced(ctx) {
+		if !inf.WaitReady(ctx) { // a seed, else the first list (K-062)
 			return
 		}
 	}
@@ -225,7 +251,10 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		hs := currentHosts()
 		return names.View{Silos: current(), Services: currentServices(), Hosts: hs, Suffix: v1.ClusterSuffix(hs)}
 	}
-	loaded := &loadedBindings{}
+	loaded := o.Bindings
+	if loaded == nil {
+		loaded = NewBindings()
+	}
 	readBindings := func() map[string]Bound { return LocalBindings(stateHost) }
 	go watchBindings(ctx, time.Second, readBindings, func() { poke(informer.Key{}) })
 	dnsOn := &dnsListeners{run: map[string]context.CancelFunc{}}
@@ -268,31 +297,34 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		view = WithLeases(view, all, ls, now)
 		leaseEnd, stopLeaseEnd := leaseTimer(ls, now)
 		rules, problems := kni.Generate(view)
-		if ok, err := fw.load(ctx, rules); err != nil {
-			log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
-		} else if ok {
-			loaded.set(kni.Bindings(view.Local))
-		}
-		reportHost(ctx, c, hostName, me, hostFirewallCondition(fw.err, problems), now)
-		reportPortRules(ctx, c, hostName, all, siloProblems(problems), now)
+		// Held: nothing from a control plane this worker doesn't trust (looked at again shortly).
+		isHeld := held != nil && held()
 		var retry <-chan time.Time
-		if fw.err != nil {
-			retry = time.After(fw.retryAfter())
+		if isHeld {
+			retry = time.After(2 * time.Second)
+		} else {
+			if ok, err := fw.load(ctx, rules); err != nil {
+				log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
+			} else if ok {
+				loaded.set(kni.Bindings(view.Local))
+			}
+			if o.StateFile != "" {
+				if err := saveLastState(o.StateFile, kept...); err != nil {
+					log("network: keeping the last state: %v", err)
+				}
+			}
+			reportHost(ctx, c, hostName, me, hostFirewallCondition(fw.err, problems), now)
+			reportPortRules(ctx, c, hostName, all, siloProblems(problems), now)
+			if fw.err != nil {
+				retry = time.After(fw.retryAfter())
+			}
 		}
 		dnsOn.keep(ctx, DNSListeners(me), func(addr string, from names.Asker) *DNS {
 			return &DNS{Listen: addr, From: from, View: nameView, Log: log,
 				SiloNamespace: func(a netip.Addr) (string, bool) { return boundNamespace(hostName, current(), loaded, a) }}
 		})
-		if me != nil {
-			if err := syncPoolAddresses(ctx, me.Reach(), PoolAddresses(hostName, all)); err != nil {
-				log("pool addresses: %v", err)
-			}
-		}
-		if err := syncAddresses(ctx, "lo", "lo:kv", AnnouncedAddresses(hostName, all)); err != nil {
-			log("announced addresses: %v", err)
-		}
-		if err := syncAddresses(ctx, cloudhypervisor.Bridge, cloudhypervisor.Bridge+":kv", []string{v1.EndpointAddress}); err != nil {
-			log("the local endpoint's address: %v", err)
+		if !isHeld { // no address added or removed either
+			syncHostAddresses(ctx, hostName, me, all, log)
 		}
 		select {
 		case <-ctx.Done():
@@ -306,6 +338,21 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 			fw.last = "" // reload anyway: someone may have flushed the ruleset
 		}
 		stopLeaseEnd()
+	}
+}
+
+// syncHostAddresses keeps the host's pool, announced and local endpoint addresses as the silos say.
+func syncHostAddresses(ctx context.Context, hostName string, me *v1.Host, all []*v1.Silo, log func(string, ...any)) {
+	if me != nil {
+		if err := syncPoolAddresses(ctx, me.Reach(), PoolAddresses(hostName, all)); err != nil {
+			log("pool addresses: %v", err)
+		}
+	}
+	if err := syncAddresses(ctx, "lo", "lo:kv", AnnouncedAddresses(hostName, all)); err != nil {
+		log("announced addresses: %v", err)
+	}
+	if err := syncAddresses(ctx, cloudhypervisor.Bridge, cloudhypervisor.Bridge+":kv", []string{v1.EndpointAddress}); err != nil {
+		log("the local endpoint's address: %v", err)
 	}
 }
 

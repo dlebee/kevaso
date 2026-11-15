@@ -27,6 +27,9 @@ import (
 // release).
 const Version = "v0.1.8"
 
+// Package is the name the release packages install as (dpkg): a reset purges it.
+const Package = "openshell"
+
 // Debs are the release packages and their SHA-256 (from the release's checksum file).
 var Debs = map[string]struct{ File, SHA256 string }{
 	"x86_64":  {"openshell_0.1.8-1_amd64.deb", "b3339527085d9b44afc0d5e4f835c2d34e44e33d0b67d6a4cac9d96f25a656b1"},

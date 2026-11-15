@@ -228,7 +228,7 @@ func (a *Agent) unmountVolumes(ctx context.Context, uid string, s *v1.Silo) erro
 	if !mine {
 		return nil
 	}
-	return a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+	return a.setStatusAway(ctx, s, func(st *v1.SiloStatus) {
 		for i := range st.Volumes {
 			if st.Volumes[i].AttachedTo == a.HostName {
 				st.Volumes[i].Mounted = false

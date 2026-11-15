@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,9 @@ type metalPair struct {
 	m1, m2   *metalSuite
 	m1Worker bool // machine 1 runs silos too (ensureTwoWorkers)
 	bin      string
+	// recoveryKey is what kvoadm init printed for the cluster (in memory only, never logged):
+	// TestMetal2RestoreKeepsWhatItDoesntKnow restores with it. Empty on a reused cluster.
+	recoveryKey string
 	mu       sync.Mutex
 }
 
@@ -189,11 +193,13 @@ func setUpPair() (p *metalPair, skip string, err error) {
 			}
 		}
 	}
+	lastOut := ""
 	run := func(args ...string) error {
 		var o bytes.Buffer
 		if code := kvoadm.Run(ctx, args, strings.NewReader(""), &o, &o); code != 0 {
 			return fmt.Errorf("kvoadm %s: exit %d\n%s", args[0], code, metalRedact(o.String()))
 		}
+		lastOut = o.String()
 		return nil
 	}
 	ssh := func(c remote.Config) []string {
@@ -204,6 +210,7 @@ func setUpPair() (p *metalPair, skip string, err error) {
 		"--api-server", "https://"+net.JoinHostPort(cfg1.ExternalIP, "6443"), "--external-ip", cfg1.ExternalIP)...); err != nil {
 		return nil, "", err
 	}
+	p.recoveryKey = regexp.MustCompile(`KVR1-[A-Z0-9-]+`).FindString(lastOut)
 	say("kvoadm init: %s, the system node", metalHost)
 	// Machine 2: a worker, joining over the external IPs.
 	storage := []string{"--loop-storage", metalLoop}

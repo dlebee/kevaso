@@ -31,10 +31,11 @@ type Client struct {
 	// what it accepted but the user should know).
 	Warnings func(string)
 
-	// ControlPlane, if set, gets what each answer says about the control plane that gave it
-	// (cluster, history, epoch, store revision; controlplane.go), for answers that carry it. It is
-	// called before the answer is read, so a worker can judge (Judge) before acting on it.
-	ControlPlane func(ControlPlaneSeen)
+	// ControlPlane, if set, judges what each answer says about the control plane that gave it
+	// (cluster, history, epoch, store revision; controlplane.go), for answers that carry it:
+	// before the answer is read, so a worker can judge (JudgeAnswer) before acting on it, and
+	// with what the judge said when its request was sent (answers aren't ordered, K-071).
+	ControlPlane ControlPlaneJudge
 
 	kindsMu sync.Mutex
 	kinds   []v1.APIResource // what the server serves, once asked (kinds.go)
@@ -49,10 +50,14 @@ func (c *Client) send(hc *http.Client, req *http.Request) (*http.Response, error
 		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
+	var sent int64
+	if c.ControlPlane != nil {
+		sent = c.ControlPlane.Sending()
+	}
 	resp, err := hc.Do(req)
 	if err == nil && c.ControlPlane != nil {
 		if s, ok := ParseControlPlane(resp.Header); ok {
-			c.ControlPlane(s)
+			c.ControlPlane.Answer(sent, s)
 		}
 	}
 	return resp, err

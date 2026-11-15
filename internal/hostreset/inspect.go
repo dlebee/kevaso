@@ -23,6 +23,8 @@ echo '== silos'
 } | grep -v -- '-fs-' | sort -u | sed 's/^/vm /'
 if command -v docker >/dev/null && systemctl is-active -q docker; then
   docker ps -a --filter label=kevaso.com/name --format 'container {{.Label "kevaso.com/namespace"}}/{{.Label "kevaso.com/name"}}' | sort -u
+else
+` + containerStateLines + `
 fi
 if command -v podman >/dev/null; then
   podman ps -a --filter label=kevaso.com/name --format 'container {{index .Labels "kevaso.com/namespace"}}/{{index .Labels "kevaso.com/name"}} (podman)' | sort -u
@@ -31,7 +33,10 @@ echo '== storagefile'
 if [ -f ` + StorageImage + ` ]; then
   echo "` + StorageImage + ` $(du -h --apparent-size ` + StorageImage + ` | cut -f1)"
   # Not attached (a reboot): attach it read-only so its volume group and volumes can be seen.
-  if [ -z "$(losetup -n -O NAME -j ` + StorageImage + `)" ]; then losetup -r -f ` + StorageImage + ` && pvscan --cache >/dev/null 2>&1; vgscan >/dev/null 2>&1; fi
+  if [ -z "$(losetup -n -O NAME -j ` + StorageImage + `)" ]; then
+    losetup -r -f ` + StorageImage + ` && attached=$(losetup -n -O NAME -j ` + StorageImage + ` | head -1)
+    pvscan --cache >/dev/null 2>&1; vgscan >/dev/null 2>&1
+  fi
 fi
 echo '== pvs'
 pvs --noheadings -o pv_name -S vg_name=` + VG + ` 2>/dev/null | tr -d ' ' | while read p; do
@@ -39,8 +44,20 @@ pvs --noheadings -o pv_name -S vg_name=` + VG + ` 2>/dev/null | tr -d ' ' | whil
 done
 echo '== lvs'
 lvs --noheadings -o lv_name,lv_size --units g ` + VG + ` 2>/dev/null | awk '$1 != "silos" {print $1, $2}'
+# What the inspection attached, it detaches (K-078): a kevasod started next must find its pool on
+# a writable device.
+if [ -n "$attached" ]; then vgchange -an ` + VG + ` >/dev/null 2>&1; losetup -d "$attached"; fi
 echo '== state'
 ` + strings.ReplaceAll(StateScript, "echo '== ", "echo '=== ")
+
+// containerStateLines lists container silos from the container runtime's state on disk, for
+// when their engine isn't running (K-078): its containers can't be listed, and would go with
+// its directories.
+const containerStateLines = `for f in ` + cloudhypervisor.ContainersDir + `/*/state.json; do
+  [ -f "$f" ] || continue
+  ns=$(sed -n 's/.*"namespace": *"\([^"]*\)".*/\1/p' "$f" | head -1); n=$(sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' "$f" | head -1)
+  echo "container $ns/$n (from its state; its engine isn't running)"
+done`
 
 // Inspection is the host as a reset sees it.
 type Inspection struct {

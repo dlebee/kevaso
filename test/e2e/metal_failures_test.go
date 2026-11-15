@@ -33,7 +33,9 @@ func TestMetalKilledMidStart(t *testing.T) {
 	c.waitRunning(ns, 15*time.Minute, "vm")
 	s := c.silo(ns, "vm")
 	n := cloudhypervisor.NamesFor(kri.ID{Namespace: s.Namespace, Name: s.Name, UID: s.UID})
-	if got := strings.TrimSpace(c.mustSh("pgrep -f -c -- " + n.Socket + " || true")); got != "1" {
+	// "[c]loud-hypervisor": the pattern doesn't match the shell and sudo running it (their command
+	// lines hold the socket's path too).
+	if got := strings.TrimSpace(c.mustSh("pgrep -f -c -- '[c]loud-hypervisor.*" + n.Socket + "' || true")); got != "1" {
 		t.Errorf("%s VMM processes for the silo, want 1", got)
 	}
 	c.expect("it answers", func() string { o, _ := c.in(ns, "vm", "echo alive"); return o }(), "alive")

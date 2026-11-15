@@ -93,6 +93,10 @@ type Env struct {
 	// Silence is how long the control plane itself has heard nothing from a host, on its own
 	// clock (controllers/host.Contacts; K-014). Nil: unknown, never long enough to act on.
 	Silence func(host string) time.Duration
+	// StartClaimAge is how long ago the control plane itself first saw the start claim the silo
+	// carries now (controllers/host.Contacts; K-015), on its own clock: 0 for one not seen yet.
+	// Nil: unknown, so a start claim of the silo's host always stands.
+	StartClaimAge func(s *v1.Silo) time.Duration
 }
 
 // Claimed are values held on one host.

@@ -9,6 +9,7 @@ import (
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/boottime"
 	"kevaso.com/core/internal/fence"
 )
 
@@ -27,10 +28,12 @@ var goneEvery = 10 * time.Second
 // What an earlier run of the agent recorded stands until this run knows better.
 
 // fenceEntry is how s is recorded for the fence watcher (record version 2): stopped without the
-// control plane only if it asked for it, after its own after (§0.7); its onHostLoss is kept for
-// people reading the record and means nothing to the fence.
+// control plane only if it asked for it, after its own after (§0.7). No onHostLoss, and no fence
+// flag on the record (K-067): a watcher from before version 2 (not yet restarted by an upgrade)
+// reads those its old way and would stop every Recreate and Move silo; without them it stops
+// nothing, and the agent arms nothing for it (no stamp).
 func fenceEntry(s *v1.Silo) fence.Silo {
-	e := fence.Silo{ID: idOf(s), Runtime: s.Spec.Runtime, OnHostLoss: s.Policy()}
+	e := fence.Silo{ID: idOf(s), Runtime: s.Spec.Runtime}
 	if stop, after := s.StopsOnControlPlaneLoss(); stop {
 		e.StopAfter = after
 	}
@@ -53,6 +56,18 @@ func (a *Agent) armFence(ctx context.Context, s *v1.Silo) error {
 				Message: a.HostName + " doesn't stop this silo without the control plane", ObservedGeneration: s.Generation}, a.now())
 		})
 	}
+	if !a.watcherLive() {
+		// No watcher of this version is seen running (K-067): stopped, failed, or one from before
+		// an upgrade. Nothing here would stop the silo with the agent gone: not armed.
+		if armed == nil || armed.Status != meta.ConditionTrue {
+			return nil
+		}
+		a.log("fence watcher not running (no fresh stamp in %s): disarming %s/%s", a.FenceDir, s.Namespace, s.Name)
+		return a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			meta.SetCondition(&st.Conditions, meta.Condition{Type: fence.ConditionArmed, Status: meta.ConditionFalse, Reason: "NoWatcher",
+				Message: "the fence watcher on " + a.HostName + " isn't running: nothing would stop this silo without its agent", ObservedGeneration: s.Generation}, a.now())
+		})
+	}
 	if fence.Armed(s) && s.Status.Host == a.HostName {
 		return nil
 	}
@@ -62,6 +77,15 @@ func (a *Agent) armFence(ctx context.Context, s *v1.Silo) error {
 	return a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		meta.SetCondition(&st.Conditions, fence.ArmedCondition(a.HostName, after, s.Generation), a.now())
 	})
+}
+
+// watcherLive: the fence watcher's stamp is fresh, of this boot and record version (K-067).
+func (a *Agent) watcherLive() bool {
+	if a.FenceDir == "" {
+		return false
+	}
+	st, ok, err := fence.ReadStamp(a.FenceDir)
+	return err == nil && ok && fence.Live(st, boottime.ID(), boottime.Now())
 }
 
 // recordForFence records s (and writes the record) before its runtime starts it.
@@ -96,7 +120,10 @@ func (a *Agent) loadRecorded() {
 // buildRecord is the record from what's recorded now. Called with fenceMu held.
 func (a *Agent) buildRecord() fence.Record {
 	// The fence is inert unless a silo here asked to stop without the control plane (§0.7).
-	r := fence.Record{Version: fence.RecordVersion, Written: a.now().UTC(), LastContact: a.fencePrev.LastContact}
+	r := fence.Record{Version: fence.RecordVersion, Written: a.now().UTC(), LastContact: a.fencePrev.LastContact, BootID: boottime.ID()}
+	if b, ok := a.contactBoot(); ok {
+		r.ContactBoot = b
+	}
 	if a.LastContact != nil {
 		last := a.LastContact()
 		if last.IsZero() && !a.started.IsZero() {
@@ -108,7 +135,6 @@ func (a *Agent) buildRecord() fence.Record {
 	}
 	for _, s := range a.recorded {
 		r.Silos = append(r.Silos, s)
-		r.Fence = r.Fence || s.StopAfter > 0
 	}
 	sort.Slice(r.Silos, func(i, j int) bool { return r.Silos[i].ID.UID < r.Silos[j].ID.UID })
 	return r

@@ -11,6 +11,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/apiserver"
+	"kevaso.com/core/internal/boottime"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/store"
 )
@@ -46,5 +47,16 @@ func TestContactIsWhenTheHeartbeatWasSent(t *testing.T) {
 	}
 	if late := contact.Last().Sub(before); late > 500*time.Millisecond {
 		t.Fatalf("contact marked %s after the heartbeat began: when the answer came, not when it was sent", late)
+	}
+}
+
+// K-072: the contact is also timed on the boot clock, which no time server steps.
+func TestContactKeepsTheBootClockReading(t *testing.T) {
+	c := &Contact{}
+	before := boottime.Now()
+	c.Mark(time.Now().Add(-time.Hour), boottime.Now()) // a wall clock stepped back an hour
+	got, ok := c.LastBoot()
+	if !ok || got < before || boottime.Since(got) > time.Second {
+		t.Fatalf("boot reading %s (ok %v), want just now", got, ok)
 	}
 }

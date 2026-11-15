@@ -27,6 +27,7 @@ import (
 
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/builtin/kri/container"
+	"kevaso.com/core/builtin/kri/openshell"
 )
 
 // Paths on the host.
@@ -106,6 +107,7 @@ func Watched() []string {
 		add(ps...)
 	}
 	add(dockerDeps...)
+	add(openshell.Package)
 	sort.Strings(out)
 	return out
 }

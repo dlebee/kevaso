@@ -13,6 +13,7 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/boottime"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/version"
 )
@@ -104,6 +105,7 @@ func KeepServers(dataDir string, servers []string) error {
 // whether a fence applies here at all (fence.Applies).
 type Contact struct {
 	unixNano atomic.Int64
+	boot     atomic.Int64 // boottime reading + 1 (0: none yet)
 	fence    atomic.Int32 // 0: not decided yet, 1: no, 2: yes
 }
 
@@ -122,8 +124,18 @@ func (c *Contact) Fence() (applies, known bool) {
 	return v == 2, v != 0
 }
 
-// Mark records a successful contact.
-func (c *Contact) Mark(t time.Time) { c.unixNano.Store(t.UnixNano()) }
+// Mark records a successful contact: when it was sent, on the wall clock and on the boot clock
+// (boottime.Now), which the fence counts silence on (K-072).
+func (c *Contact) Mark(t time.Time, boot time.Duration) {
+	c.unixNano.Store(t.UnixNano())
+	c.boot.Store(int64(boot) + 1)
+}
+
+// LastBoot is the boot clock's reading at the last successful contact; false if none yet.
+func (c *Contact) LastBoot() (time.Duration, bool) {
+	n := c.boot.Load()
+	return time.Duration(n - 1), n != 0
+}
 
 // Last is the last successful contact (zero if none yet).
 func (c *Contact) Last() time.Time {
@@ -149,7 +161,7 @@ func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Du
 				}
 				return
 			}
-			now := clk.Now().UTC()
+			now, sentBoot := clk.Now().UTC(), boottime.Now()
 			h.Status.Version = version.Version
 			meta.SetCondition(&h.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "WorkerUp",
 				Message: "kevasod reporting", ObservedGeneration: h.Generation}, now.Truncate(time.Second))
@@ -162,7 +174,7 @@ func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Du
 			if err == nil && contact != nil {
 				// When it was SENT, not when the answer came: the control plane's count starts at
 				// its arrival, so the agent's always ends first (§0.7, silo.StopMargin).
-				contact.Mark(now)
+				contact.Mark(now, sentBoot)
 			}
 			if err != nil && ctx.Err() == nil {
 				log("heartbeat: %v", err)

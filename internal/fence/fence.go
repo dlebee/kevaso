@@ -30,6 +30,7 @@ import (
 	"time"
 
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/boottime"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -84,6 +85,11 @@ type Record struct {
 	// judges by). Zero: never yet, so nothing here may run elsewhere.
 	LastContact time.Time `json:"lastContact"`
 	Written     time.Time `json:"written"` // when the agent wrote this (it's alive)
+	// BootID and ContactBoot (version 2, K-072): the last contact on the boot clock
+	// (internal/boottime), which no time server steps. A watcher of the same boot counts the
+	// silence on it; LastContact (wall) only across boots.
+	BootID      string        `json:"bootID,omitempty"`
+	ContactBoot time.Duration `json:"contactBoot,omitempty"`
 	// Fence: a second copy of this host's silos could be started elsewhere while this one may
 	// still run (see Applies). False: the watcher stops nothing, ever.
 	Fence bool   `json:"fence"`
@@ -208,6 +214,55 @@ func Read(dir string) (Record, error) {
 	return r, json.Unmarshal(b, &r)
 }
 
+// StampFile is the watcher's stamp, written on every check (K-067): which record version it
+// reads, and when, on the boot clock. The agent arms a silo's fence (ArmedCondition) only while
+// the stamp is fresh: "armed" means a watcher of this version is running, not that a file was
+// written.
+const StampFile = "watcher.json"
+
+// StampFresh is how old a stamp may be and still say its watcher runs.
+const StampFresh = 5 * time.Second
+
+// Stamp is the watcher's stamp.
+type Stamp struct {
+	Version int           `json:"version"` // the record version it reads
+	BootID  string        `json:"bootID"`
+	Boot    time.Duration `json:"boot"` // the boot clock at the check
+	At      time.Time     `json:"at"`   // the same, for people
+}
+
+// WriteStamp writes the stamp atomically.
+func WriteStamp(dir string, st Stamp) error {
+	b, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, "."+StampFile+".tmp")
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, StampFile))
+}
+
+// ReadStamp reads the stamp; false when there is none.
+func ReadStamp(dir string) (Stamp, bool, error) {
+	var st Stamp
+	b, err := os.ReadFile(filepath.Join(dir, StampFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return st, false, nil
+	}
+	if err != nil {
+		return st, false, err
+	}
+	return st, true, json.Unmarshal(b, &st)
+}
+
+// Live reports whether a stamp says a watcher of this boot, reading this record version or a
+// later one, checked within StampFresh. Pure.
+func Live(st Stamp, bootID string, bootNow time.Duration) bool {
+	return st.Version >= RecordVersion && st.BootID == bootID && bootNow-st.Boot <= StampFresh && bootNow >= st.Boot
+}
+
 // FaultsFile is the watcher's report of its last fence, for the agent to pick up.
 const FaultsFile = "faults.json"
 
@@ -278,11 +333,21 @@ type Watcher struct {
 	FenceAfter time.Duration
 	Every      time.Duration // how often the record is read (default CheckEvery)
 	Now        func() time.Time
-	Log        func(string, ...any)
+	// Boot, if set, is this boot's id and the boot clock now (default internal/boottime).
+	Boot func() (id string, now time.Duration)
+	Log  func(string, ...any)
 
-	done    map[string]bool // stopped in this fence, by silo UID
-	fencing bool
-	faults  Faults // this fence's
+	done      map[string]bool // stopped in this fence (confirmed), by silo UID
+	noRuntime map[string]bool // logged: must stop, no runtime here
+	fencing   bool
+	faults    Faults // this fence's
+}
+
+func (w *Watcher) boot() (string, time.Duration) {
+	if w.Boot != nil {
+		return w.Boot()
+	}
+	return boottime.ID(), boottime.Now()
 }
 
 // Check reads the record once and stops what must be stopped.
@@ -290,12 +355,23 @@ func (w *Watcher) Check(ctx context.Context) {
 	if w.done == nil {
 		w.done = map[string]bool{}
 	}
+	if w.noRuntime == nil {
+		w.noRuntime = map[string]bool{}
+	}
 	r, err := Read(w.Dir)
 	if err != nil {
 		w.log("fence: reading the record: %v", err)
 		return
 	}
 	now := w.now()
+	id, bnow := w.boot()
+	if err := WriteStamp(w.Dir, Stamp{Version: RecordVersion, BootID: id, Boot: bnow, At: now.UTC()}); err != nil {
+		w.log("fence: the stamp: %v", err)
+	}
+	if r.BootID != "" && r.BootID == id && r.ContactBoot > 0 && !r.LastContact.IsZero() {
+		// K-072: the silence on the boot clock, as Decide reads it (last contact + silence).
+		now = r.LastContact.Add(bnow - r.ContactBoot)
+	}
 	stop := Decide(r, now, w.FenceAfter, w.done)
 	cut := !r.LastContact.IsZero() && now.Sub(r.LastContact) > w.FenceAfter
 	if r.Version >= RecordVersion {
@@ -315,7 +391,7 @@ func (w *Watcher) Check(ctx context.Context) {
 			now.Sub(r.LastContact).Round(time.Second), w.FenceAfter)
 		w.writeFaults()
 	case !cut && w.fencing:
-		w.fencing, w.done = false, map[string]bool{}
+		w.fencing, w.done, w.noRuntime = false, map[string]bool{}, map[string]bool{}
 		w.log("fence: contact is back: the agent takes over again")
 	}
 	// All at once, each killed (no graceful stop): KillWithin bounds the whole fence.
@@ -336,8 +412,13 @@ func (w *Watcher) Check(ctx context.Context) {
 	for i, s := range stop {
 		switch err := errs[i]; {
 		case errors.Is(err, errNoRuntime):
-			w.log("fence: %s/%s: no runtime %s here", s.ID.Namespace, s.ID.Name, s.Runtime)
-			w.done[s.ID.UID] = true
+			// Never counted done (K-067): it may run. Logged once a fence; the agent reports it.
+			if !w.noRuntime[s.ID.UID] {
+				w.noRuntime[s.ID.UID] = true
+				w.log("FENCE FAULT: %s/%s must stop and this watcher has no runtime %s: trying on every check", s.ID.Namespace, s.ID.Name, s.Runtime)
+			}
+		case err == nil && w.stillRunning(ctx, s):
+			w.log("fence: killing %s/%s: it still runs (trying again)", s.ID.Namespace, s.ID.Name)
 		case err == nil || errors.Is(err, kri.ErrNotFound):
 			w.done[s.ID.UID] = true
 			if s.StopAfter > 0 {
@@ -352,6 +433,12 @@ func (w *Watcher) Check(ctx context.Context) {
 	if w.fencing {
 		w.findUnrecorded(ctx, r)
 	}
+}
+
+// stillRunning: a kill reported done is confirmed by the runtime (K-067).
+func (w *Watcher) stillRunning(ctx context.Context, s Silo) bool {
+	st, err := w.Runtimes[s.Runtime].Status(ctx, s.ID)
+	return err == nil && st.State == kri.Running
 }
 
 // findUnrecorded looks, during a fence, for running silos the record doesn't name: a fault (the
