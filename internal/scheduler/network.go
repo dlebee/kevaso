@@ -134,6 +134,21 @@ func PortStatus(s *v1.Silo, h *v1.Host, lb string) []v1.ServicePortStatus {
 	return out
 }
 
+// SetLoadBalancerIP puts lb (empty: none) as s's load-balancer address in st: loadBalancerIP and
+// each load-balanced port's loadBalancer, as PortStatus says them, so one write never leaves the
+// two disagreeing (an address in with no port on it, or a port on an address taken away).
+func SetLoadBalancerIP(s *v1.Silo, st *v1.SiloServiceStatus, lb string) {
+	st.LoadBalancerIP = lb
+	for i, ps := range st.Ports {
+		if p, ok := s.Spec.OpenPort(ps.Port); ok && p.LoadBalancer {
+			st.Ports[i].LoadBalancer = ""
+			if lb != "" {
+				st.Ports[i].LoadBalancer = net.JoinHostPort(lb, strconv.Itoa(p.HostNumber()))
+			}
+		}
+	}
+}
+
 // NodePorts gives each of s's service ports a host port on host, kept if it already has them there:
 // the lowest free in v1.NodePortMin…NodePortSiloMax among the silos placed on host.
 func NodePorts(s *v1.Silo, host string, placed []*v1.Silo) ([]v1.NodePort, error) {
