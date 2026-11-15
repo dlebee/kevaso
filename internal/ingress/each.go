@@ -303,9 +303,12 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 		}
 		return nil
 	}
-	// running: who's version here is one the proxy serves now. Unknown: any may be.
+	// backed: who's last good version was put back (hold); renewed: with its renewed certificates.
+	backed, renewed := map[string]bool{}, map[string]bool{}
+	// running: who's version here is one the proxy serves now (or the version put back, which
+	// it serves but for a renewed certificate). Unknown: any may be.
 	running := func(who string) bool {
-		if unknown != "" || opaque[who] {
+		if unknown != "" || opaque[who] || backed[who] {
 			return true
 		}
 		f, ok := before[who]
@@ -319,11 +322,15 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 	// hold puts who's last good version back in place of its refused change, so only the change
 	// is held back and what it served keeps being served; false: it has none to go back to, or
 	// another Ingress now holds one of that version's hosts and paths (Desire gave it away when
-	// who changed). Either way who's reason is put in LeftOut.
+	// who changed). Either way who's reason is put in LeftOut. A certificate of that version
+	// renewed since (same name) goes back renewed, so a held Ingress's certificate doesn't expire
+	// (K-104); if the proxy refuses that too, the second hold in a pass puts the version back as
+	// it was.
 	hold := func(who, why string) bool {
 		out.LeftOut[who] = why
 		f, ok := before[who]
-		if cur, has := by[who]; unknown != "" || !ok || (has && hashOf(cur) == hashOf(f)) {
+		cur, has := by[who]
+		if unknown != "" || !ok || (has && hashOf(cur) == hashOf(f)) {
 			return false
 		}
 		claims := map[string]string{}
@@ -351,8 +358,25 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 		if alone(f) != nil {
 			return false
 		}
+		backed[who] = true
 		by[who] = f
 		out.LeftOut[who] = "its change is refused, its last good version is still served: " + why
+		if has && !renewed[who] {
+			renewed[who] = true
+			r := f
+			r.Certificates = slices.Clone(f.Certificates)
+			for i, c := range r.Certificates {
+				for _, n := range cur.Certificates {
+					if n.Name == c.Name {
+						r.Certificates[i].Chain, r.Certificates[i].Key = n.Chain, n.Key
+					}
+				}
+			}
+			if h := hashOf(r); h != hashOf(f) && h != hashOf(cur) && alone(r) == nil {
+				by[who] = r
+				out.LeftOut[who] = "its change is refused, its last good version is still served (with its certificate as renewed since): " + why
+			}
+		}
 		return true
 	}
 	// Refused by Desire (the driver won't take an annotation, a host): it has no fragment now.

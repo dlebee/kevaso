@@ -36,14 +36,19 @@ import (
 //     leave out an Ingress it may be serving.
 // "No record" is never taken to mean "nothing of ours is served".
 
-// AdminRecordPath is where the record goes for a driver with no config file (an admin API).
+// AdminRecordPath is where the record goes for a driver with no config file (an admin API) whose
+// plans don't say (Plan.Record).
 var AdminRecordPath = "/tmp/kevaso-ingress.json"
 
 // RecordPath is where the record of what p's driver applied is kept in the silo: next to the
-// config (outside Plan.Dir, which is swept after each apply), or AdminRecordPath.
+// config (outside Plan.Dir, which is swept after each apply), else where the plan says, else
+// AdminRecordPath.
 func RecordPath(p kic.Plan) string {
-	if p.Config.Path != "" {
+	switch {
+	case p.Config.Path != "":
 		return p.Config.Path + ".kevaso"
+	case p.Record != "":
+		return p.Record
 	}
 	return AdminRecordPath
 }

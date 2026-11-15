@@ -14,6 +14,10 @@ import (
 	"kevaso.com/core/sdk/kic"
 )
 
+// RecordPath is where the agent keeps its record of what it applied: in Kong's prefix, which the
+// image gives to its own user (not /tmp, which anyone in the silo may write; K-104).
+const RecordPath = "/usr/local/kong/kevaso-ingress.json"
+
 // Driver is the Kong driver.
 type Driver struct{}
 
@@ -145,7 +149,8 @@ func (Driver) Render(s kic.State) (kic.Plan, error) {
 		return kic.Plan{}, err
 	}
 	port, _ := strconv.Atoi(optOr(s, "admin-port", "8001"))
-	return kic.Plan{Reload: kic.Action{Call: &kic.Call{Port: port, Method: "POST", Path: "/config", ContentType: "application/json", Body: body}}}, nil
+	return kic.Plan{Reload: kic.Action{Call: &kic.Call{Port: port, Method: "POST", Path: "/config", ContentType: "application/json", Body: body}},
+		Record: RecordPath}, nil
 }
 
 func optOr(s kic.State, name, def string) string {

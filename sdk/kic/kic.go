@@ -97,6 +97,9 @@ type Plan struct {
 	Check []string `json:"check,omitempty"`
 	// Reload makes the checked config take effect.
 	Reload Action `json:"reload"`
+	// Record, for a plan with no config file: where the agent keeps its record of what it applied
+	// in the silo, in a folder only the proxy's own user may write (empty: the agent's default).
+	Record string `json:"record,omitempty"`
 }
 
 // ConfigToken, in Check, is replaced by the staged config's path.
