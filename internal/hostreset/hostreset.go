@@ -666,15 +666,23 @@ const StopStep = "stop kevasod and the fence"
 
 // StillRunningScript prints what still runs of kevasod and its fence (nothing: neither runs): each
 // unit in any state but inactive or failed (activating, deactivating, reloading, active), each with
-// a main process, and every kevasod process (the fence watcher is one too), wherever it came
-// from. A stop step that succeeded may still leave a process (a unit left deactivating).
+// a main process, and every kevasod process of the host (the fence watcher is one too), wherever
+// it came from. A stop step that succeeded may still leave a process (a unit left deactivating).
+// A kevasod in another mount namespace than the host's is a silo's (Kevaso run in a container
+// silo), not this host's: it never held the reset back for good (K-114). One whose namespace
+// can't be told counts.
 const StillRunningScript = `for u in kevasod.service kevaso-fence.service; do
   s=$(systemctl is-active "$u" 2>/dev/null)
   case "$s" in inactive|failed) ;; "") echo "unit $u: systemd doesn't say" ;; *) echo "unit $u is $s" ;; esac
   pid=$(systemctl show -p MainPID --value "$u" 2>/dev/null)
   case "$pid" in ""|0) ;; *) echo "unit $u has its main process $pid" ;; esac
 done
-pgrep -a -x kevasod | sed 's/^/process /'
+host=$(readlink /proc/1/ns/mnt 2>/dev/null)
+pgrep -a -x kevasod | while read -r p rest; do
+  ns=$(readlink /proc/$p/ns/mnt 2>/dev/null)
+  [ -n "$host" ] && [ -n "$ns" ] && [ "$ns" != "$host" ] && continue
+  echo "process $p $rest"
+done
 true`
 
 // StartAgainScript starts kevasod and its fence again: a reset that stopped them and then found
