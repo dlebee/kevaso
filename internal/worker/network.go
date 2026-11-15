@@ -24,7 +24,8 @@ import (
 
 // NetworkView builds this host's KNI view from the API: its silos (with their taps, addresses,
 // what their grants open and the Ingress paths to them) and every running silo (allowFrom
-// sources). Pure.
+// sources). A local silo's address here is its status's; WithBindings puts in the one its
+// runtime made its port with. Pure.
 func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Grant, paths map[string]map[string][]string) kni.Host {
 	view := kni.Host{Bridge: cloudhypervisor.Bridge, Subnet: cloudhypervisor.Network, Gateway: cloudhypervisor.Gateway}
 	if h != nil {
@@ -32,12 +33,13 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 		view.ExternalIP, _ = netip.ParseAddr(h.External())
 	}
 	for _, s := range silos {
-		ip, err := netip.ParseAddr(s.Status.SiloIP)
-		if err != nil {
-			continue
+		ks := kni.Silo{Key: s.Namespace + "/" + s.Name, Spec: s.Spec}
+		if ip, err := netip.ParseAddr(s.Status.SiloIP); err == nil {
+			ks.IP = ip
+			view.All = append(view.All, ks)
 		}
-		ks := kni.Silo{Key: s.Namespace + "/" + s.Name, IP: ip, Spec: s.Spec}
-		view.All = append(view.All, ks)
+		// A silo placed here is in the view from the start, address or not: its port is bound
+		// to what its runtime gave it (WithBindings) or, until then, closed.
 		if s.Status.Host != hostName {
 			continue
 		}
@@ -206,11 +208,14 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		hs := currentHosts()
 		return names.View{Silos: current(), Services: currentServices(), Hosts: hs, Suffix: v1.ClusterSuffix(hs)}
 	}
+	loaded := &loadedBindings{}
+	readBindings := func() map[string]Bound { return LocalBindings(stateHost) }
+	go watchBindings(ctx, time.Second, readBindings, func() { poke(informer.Key{}) })
 	dnsOn := &dnsListeners{run: map[string]context.CancelFunc{}}
 	defer dnsOn.stop()
 	gatePort := 0
 	if ca != nil {
-		eg := &egress{c: c, hostName: hostName, ca: ca, upstream: upstream, log: log, silos: current, grants: currentGrants}
+		eg := &egress{c: c, hostName: hostName, ca: ca, upstream: upstream, log: log, silos: current, grants: currentGrants, bound: loaded}
 		secretsInf.AddHandler(func(informer.Key) { eg.invalidate() })
 		grantsInf.AddHandler(func(informer.Key) { eg.invalidate() })
 		go eg.run(ctx)
@@ -238,7 +243,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 			classes = append(classes, o.(*v1.IngressClass))
 		}
 		svcs := currentServices()
-		view := NetworkView(hostName, me, all, currentGrants(), WithIngressPaths(all, svcs, ings, classes))
+		view := WithBindings(NetworkView(hostName, me, all, currentGrants(), WithIngressPaths(all, svcs, ings, classes)), readBindings())
 		view.GatePort = gatePort
 		view.Endpoint = endpointAddr
 		view.Services = ServiceView(hostName, svcs)
@@ -251,11 +256,12 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 				log("silo firewall: %v", err)
 			} else {
 				last = rules
+				loaded.set(kni.Bindings(view.Local))
 			}
 		}
 		dnsOn.keep(ctx, DNSListeners(me), func(addr string, from names.Asker) *DNS {
 			return &DNS{Listen: addr, From: from, View: nameView, Log: log,
-				SiloNamespace: func(a netip.Addr) (string, bool) { return SiloNamespaces(current())(a) }}
+				SiloNamespace: func(a netip.Addr) (string, bool) { return boundNamespace(hostName, current(), loaded, a) }}
 		})
 		if me != nil {
 			if err := syncPoolAddresses(ctx, me.Reach(), PoolAddresses(hostName, all)); err != nil {

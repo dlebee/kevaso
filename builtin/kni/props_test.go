@@ -157,6 +157,16 @@ func genClusterOf(r *rand.Rand) genCluster {
 	return g
 }
 
+// tapOf is the tap of a silo on this host.
+func tapOf(h Host, key string) string {
+	for _, s := range h.Local {
+		if s.Key == key {
+			return s.Tap
+		}
+	}
+	return ""
+}
+
 func inSources(a netip.Addr, sources []string) bool {
 	if len(sources) == 0 {
 		return true
@@ -283,7 +293,7 @@ func TestPropertySiloToSiloOnlyByAllowFrom(t *testing.T) {
 						want := siloOracle(dst, caller.Key, proto, port)
 						var got bool
 						if local {
-							got = rs.bridged(t, pkt{iif: "kvt-caller", oif: "kvt-dst", saddr: caller.IP, daddr: dst.IP, proto: proto, dport: port})
+							got = rs.bridged(t, pkt{iif: tapOf(g.h, caller.Key), oif: dst.Tap, saddr: caller.IP, daddr: dst.IP, proto: proto, dport: port})
 						} else {
 							_, got = rs.reaches(t, g.h, pkt{iif: "kevaso0", saddr: caller.IP, daddr: dst.IP, proto: proto, dport: port})
 						}
@@ -299,8 +309,14 @@ func TestPropertySiloToSiloOnlyByAllowFrom(t *testing.T) {
 					if _, ok := rs.reaches(t, g.h, pkt{iif: "kevaso0", saddr: stranger, daddr: dst.IP, proto: "tcp", dport: port}); ok {
 						t.Fatalf("seed %d: %s reached %s:%d\n%s", seed, stranger, dst.Key, port, text)
 					}
-					if rs.bridged(t, pkt{iif: "kvt-x", oif: "kvt-y", saddr: stranger, daddr: dst.IP, proto: "tcp", dport: port}) {
-						t.Fatalf("seed %d: %s bridged to %s:%d\n%s", seed, stranger, dst.Key, port, text)
+					for _, from := range g.h.Local { // from any port on the bridge, by a stranger's address
+						if rs.bridged(t, pkt{iif: from.Tap, oif: dst.Tap, saddr: stranger, daddr: dst.IP, proto: "tcp", dport: port}) {
+							t.Fatalf("seed %d: %s bridged to %s:%d\n%s", seed, stranger, dst.Key, port, text)
+						}
+					}
+					// The bridge's forward chain alone (were a frame to get past prerouting).
+					if rs.verdict(t, "bridge forward", pkt{iif: "kvt-x", oif: dst.Tap, saddr: stranger, daddr: dst.IP, proto: "tcp", dport: port}) == "accept" {
+						t.Fatalf("seed %d: %s forwarded to %s:%d\n%s", seed, stranger, dst.Key, port, text)
 					}
 				}
 			}
