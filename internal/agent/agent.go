@@ -162,8 +162,8 @@ type Agent struct {
 	// seenIDs: silo uid → kri.ID, the seen deletes of silos this host may hold (mayHaveHere): a
 	// copy its runtime doesn't list is looked for by name (stopUnlisted).
 	seenIDs sync.Map
-	// placedUnder: silo uid → the history (Watermark.history) under which this host last found it
-	// placed here (runHere); historyAtStart: the one trusted when this run began. A handoff read
+	// placedUnder: silo uid → the history (Watermark.history) under which this host last read it
+	// placed here in the store (writeStatus); historyAtStart: the one trusted when this run began. A handoff read
 	// under another history is a restored store's replay, not an order (K-112).
 	placedUnder    sync.Map
 	historyAtStart string
@@ -507,7 +507,6 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 // runHere drives s, placed here, towards running (whileHere: a delete of it, or its placement
 // elsewhere, ends whatever of it is under way: a pull, a create, a start, a reset, its init steps).
 func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.Result, error) {
-	a.placedUnder.Store(s.UID, a.watermark().history())
 	if !moves.MayStart(s, a.HostName) {
 		// Moving here: the old host stops it and lets go of its volumes first.
 		return engine.Result{RequeueAfter: 2 * time.Second}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
@@ -1288,6 +1287,9 @@ func (a *Agent) writeStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.Sil
 		}
 		if !away && cur.Status.Host != a.HostName {
 			return errPlacedElsewhere // placed elsewhere since this host's cache was filled: not ours to write
+		}
+		if cur.Status.Host == a.HostName {
+			a.placedUnder.Store(cur.UID, a.watermark().history()) // the store read now places it here (K-112)
 		}
 		before := statusKey(cur.Status)
 		mutate(&cur.Status)

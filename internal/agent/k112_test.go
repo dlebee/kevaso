@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -18,8 +19,11 @@ func TestAHandoffReadUnderANewHistoryStopsAndKeeps(t *testing.T) {
 	r.trusted(seenA)
 	r.id = r.place(r.cA, "hv1")
 	r.waitFor("it runs", func() bool { st, _ := r.rt.Status(r.ctx, r.id); return st.State == kri.Running })
-	r.cp.switchTo(r.srvA, seenRestor) // a restore: a new history; the store says moving from hv1
-	r.trusted(seenRestor)
+	// A restore: a new history whose store says moving from hv1 from its first answer on (the
+	// worker gets no answer while the store is made so).
+	r.cp.switchTo(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "restoring", http.StatusServiceUnavailable)
+	}), seenA)
 	for {
 		var cur v1.Silo
 		if err := r.cA.Get(r.ctx, "Silo", "dev", "single", &cur); err != nil {
@@ -34,6 +38,8 @@ func TestAHandoffReadUnderANewHistoryStopsAndKeeps(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	r.cp.switchTo(r.srvA, seenRestor)
+	r.trusted(seenRestor)
 	r.waitFor("nothing of it runs on hv1", func() bool { return !r.w.RunsOn(r.id.UID, "hv1") })
 	r.keptFor(r.id, 2*time.Second)
 	r.listed(r.cA, r.id)
