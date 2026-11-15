@@ -608,7 +608,25 @@ func TestTheFenceRecordKnowsASiloBeforeAnExistingCopyIsStarted(t *testing.T) {
 
 // A silo placed on another host, with a copy still here (it moved away), has that copy stopped
 // and removed by this host, and only this host's own copy: the first branch of reconcile.
-func TestACopyOfASiloPlacedElsewhereIsRemovedFromThisHost(t *testing.T) {
+func TestACopyOfASiloHandedOverToAnotherHostIsRemovedFromThisHost(t *testing.T) {
+	g := newGuardRig(t, nil, nil)
+	s := g.create(guardSilo("web", nil), "hv1", "")
+	g.runtimeCopy(s, kri.Stopped)
+	g.setPlacement(s, "hv2", "hv1") // placed on hv2, which waits for hv1 to let go
+	g.cacheIs(g.stored("web"))
+	g.rt.Calls = nil
+	if _, err := g.reconcile("web"); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.calls("delete"); len(got) != 1 {
+		t.Fatalf("the copy of a silo handed over to hv2 was not removed from hv1: %v", g.rt.Calls)
+	}
+}
+
+// Placed elsewhere with no handoff from this host: nothing here says the other host has it
+// legitimately, so the copy is kept, stopped, never deleted (nothing is removed without a delete
+// or a handoff from here).
+func TestACopyOfASiloPlacedElsewhereWithoutAHandoffIsKept(t *testing.T) {
 	g := newGuardRig(t, nil, nil)
 	s := g.create(guardSilo("web", nil), "hv1", "")
 	g.runtimeCopy(s, kri.Stopped)
@@ -618,11 +636,11 @@ func TestACopyOfASiloPlacedElsewhereIsRemovedFromThisHost(t *testing.T) {
 	if _, err := g.reconcile("web"); err != nil {
 		t.Fatal(err)
 	}
-	if got := g.calls("delete"); len(got) != 1 {
-		t.Fatalf("the copy of a silo placed on hv2 was not removed from hv1: %v", g.rt.Calls)
+	if got := g.calls("delete"); len(got) != 0 {
+		t.Fatalf("a copy was deleted without a delete or a handoff from this host: %v", g.rt.Calls)
 	}
-	if ids, _ := g.rt.List(g.ctx); len(ids) != 0 {
-		t.Fatalf("still here: %v", ids)
+	if ids, _ := g.rt.List(g.ctx); len(ids) != 1 {
+		t.Fatalf("the copy is gone: %v", ids)
 	}
 }
 

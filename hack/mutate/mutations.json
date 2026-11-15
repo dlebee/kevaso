@@ -68,8 +68,8 @@
   "id": "G-006",
   "guard": "claimStart: a conflicting write abandons the start",
   "file": "internal/agent/agent.go",
-  "find": "if client.IsConflict(err) {\n\t\treturn errPlacedElsewhere\n\t}",
-  "replace": "if false {\n\t\treturn errPlacedElsewhere\n\t}",
+  "find": "if client.IsConflict(err) {\n\t\treturn errClaimConflict\n\t}",
+  "replace": "if false {\n\t\treturn errClaimConflict\n\t}",
   "mutation": "conflict ignored (start goes on)",
   "packages": [
    "./internal/agent",
@@ -146,8 +146,8 @@
   "id": "G-012",
   "guard": "start: claimStart before rt.Start",
   "file": "internal/agent/agent.go",
-  "find": "if err := a.claimStart(ctx, s); err != nil {\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tif err := rt.Start(ctx, id); err != nil {\n\t\t\treturn engine.Result{}, err",
-  "replace": "if false {\n\t\t\treturn a.lostClaim(s, nil)\n\t\t}\n\t\tif err := rt.Start(ctx, id); err != nil {\n\t\t\treturn engine.Result{}, err",
+  "find": "if err := a.claimStart(ctx, s); err != nil {\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tkp := a.keepClaim(s)",
+  "replace": "if false {\n\t\t\treturn a.lostClaim(s, nil)\n\t\t}\n\t\tkp := a.keepClaim(s)",
   "mutation": "claim removed",
   "packages": [
    "./internal/agent",
@@ -159,8 +159,8 @@
   "id": "G-013",
   "guard": "restart (Failed): claimStart before rt.Start",
   "file": "internal/agent/agent.go",
-  "find": "if err := a.claimStart(ctx, s); err != nil {\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tif err := rt.Start(ctx, id); err != nil {\n\t\t\treturn engine.Result{RequeueAfter: probes.Backoff",
-  "replace": "if false {\n\t\t\treturn a.lostClaim(s, nil)\n\t\t}\n\t\tif err := rt.Start(ctx, id); err != nil {\n\t\t\treturn engine.Result{RequeueAfter: probes.Backoff",
+  "find": "if err := a.claimStart(ctx, s); err != nil {\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tstctx, startKept",
+  "replace": "if false {\n\t\t\treturn a.lostClaim(s, nil)\n\t\t}\n\t\tstctx, startKept",
   "mutation": "claim removed",
   "packages": [
    "./internal/agent",
@@ -172,7 +172,7 @@
   "id": "G-014",
   "guard": "fence record written before a start",
   "file": "internal/agent/agent.go",
-  "find": "// Its policy is in the fence record before it runs, never after: a fence must know it.\n\t\tif err := a.recordForFence(s); err != nil {\n\t\t\treturn engine.Result{}, err\n\t\t}",
+  "find": "// Its policy is in the fence record before anything of it runs, never after: a fence must know it.\n\t\tif err := a.recordForFence(s); err != nil {\n\t\t\treturn engine.Result{}, err\n\t\t}",
   "replace": "",
   "mutation": "record not written",
   "packages": [
@@ -211,8 +211,8 @@
   "id": "G-017",
   "guard": "removeEverywhere stops, never removes, a moved silo that keeps local volumes",
   "file": "internal/agent/agent.go",
-  "find": "if local := hostLocalVolumes(s); s != nil && s.DeletionTimestamp == nil && id.UID == s.UID && len(local) > 0 {",
-  "replace": "if local := hostLocalVolumes(s); false && len(local) > 0 {",
+  "find": "if local := hostLocalVolumes(s); why == whyHandoff && len(local) > 0 {",
+  "replace": "if local := hostLocalVolumes(s); false && why == whyHandoff && len(local) > 0 {",
   "mutation": "copy and its volumes deleted",
   "packages": [
    "./internal/agent",
@@ -249,7 +249,7 @@
  {
   "id": "G-020",
   "guard": "fence loop only kills silos that asked to stop",
-  "file": "internal/agent/agent.go",
+  "file": "internal/agent/fencing.go",
   "find": "if s.UID != id.UID || !a.mustStop(s) {",
   "replace": "if s.UID != id.UID {",
   "mutation": "any silo killed on loss",
@@ -314,9 +314,9 @@
  {
   "id": "G-025",
   "guard": "fence kill is confirmed by the runtime (K-067)",
-  "file": "internal/agent/agent.go",
-  "find": "if st, serr := rt.Status(kctx, id); serr == nil && st.State == kri.Running {",
-  "replace": "if st, serr := rt.Status(kctx, id); false && serr == nil && st.State == kri.Running {",
+  "file": "internal/agent/fencing.go",
+  "find": "return st.State == kri.Running, nil",
+  "replace": "return false, nil",
   "mutation": "kill assumed done",
   "packages": [
    "./internal/agent",
@@ -693,10 +693,10 @@
  },
  {
   "id": "G-056",
-  "guard": "freshClaim: a claim left by another host is not this placement's",
+  "guard": "ownClaim: a claim left by another host is not this placement's",
   "file": "internal/controllers/silo/silo.go",
-  "find": "if !ok || (host != \"\" && host != s.Status.Host) {",
-  "replace": "if !ok || (host != \"\" && host != host) {",
+  "find": "return ok && host != \"\" && host == s.Status.Host",
+  "replace": "return ok",
   "mutation": "host check dropped",
   "packages": [
    "./internal/controllers/silo",
@@ -1458,8 +1458,8 @@
   "id": "G-154",
   "guard": "hostreset: Docker's containers are all removed only when Docker is Kevaso's",
   "file": "internal/hostreset/hostreset.go",
-  "find": "\tif in.DockerOurs {\n\t\tadd(\"remove containers, volumes and images\"",
-  "replace": "\tif true {\n\t\tadd(\"remove containers, volumes and images\"",
+  "find": "\tif in.DockerOurs {\n\t\tdestroys(\"remove containers, volumes and images\"",
+  "replace": "\tif true {\n\t\tdestroys(\"remove containers, volumes and images\"",
   "mutation": "always",
   "packages": [
    "./internal/hostreset",
@@ -1497,8 +1497,8 @@
   "id": "G-157",
   "guard": "hostreset: podman objects removed only when podman is Kevaso's",
   "file": "internal/hostreset/hostreset.go",
-  "find": "\tif in.PodmanOurs {\n\t\tadd(\"remove podman's containers, volumes and images\"",
-  "replace": "\tif true {\n\t\tadd(\"remove podman's containers, volumes and images\"",
+  "find": "\tif in.PodmanOurs {\n\t\tdestroys(\"remove podman's containers, volumes and images\"",
+  "replace": "\tif true {\n\t\tdestroys(\"remove podman's containers, volumes and images\"",
   "mutation": "always",
   "packages": [
    "./internal/hostreset",
@@ -1703,7 +1703,7 @@
  {
   "id": "G-183",
   "guard": "agent fence loop: only the cached silo of that uid is killed",
-  "file": "internal/agent/agent.go",
+  "file": "internal/agent/fencing.go",
   "find": "if s.UID != id.UID || !a.mustStop(s) {",
   "replace": "if !a.mustStop(s) {",
   "mutation": "uid not compared",
