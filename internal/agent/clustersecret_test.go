@@ -285,7 +285,7 @@ func newCSRig(t *testing.T) *csRig {
 func (l *logBuf) write(f string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.b.WriteString(fmt.Sprintf(f, args...))
+	fmt.Fprintf(&l.b, f, args...)
 	l.b.WriteByte('\n')
 }
 

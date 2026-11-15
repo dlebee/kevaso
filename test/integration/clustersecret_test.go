@@ -61,13 +61,6 @@ func (c *cluster) workerCert(t *testing.T, name string) *client.Client {
 	return w
 }
 
-func wantCode(t *testing.T, err error, code int, what string) {
-	t.Helper()
-	if status(err) != code {
-		t.Fatalf("%s: want %d, got %v", what, code, err)
-	}
-}
-
 func clusterRole(name string, rules ...v1.PolicyRule) *v1.ClusterRole {
 	return &v1.ClusterRole{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterRole"},
 		ObjectMeta: meta.ObjectMeta{Name: name}, Rules: rules}
