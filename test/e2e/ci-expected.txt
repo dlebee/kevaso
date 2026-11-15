@@ -1,0 +1,4 @@
+# The tests CI's e2e job (ubuntu-latest, KVM, KEVASO_TESTBED=local) must see PASS. A test listed
+# here that skips fails the job (hack/skipbudget). Add a test here when CI can run it; never
+# remove one to make a skip go away.
+TestLoopMachineRunsMicroVMs

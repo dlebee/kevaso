@@ -55,6 +55,9 @@ type Watermark struct {
 	saveErr error
 	// notYetSaid: a NotYet answer was logged (once).
 	notYetSaid bool
+	// judgeFrom: answers to requests sent under an earlier count of histories than this were
+	// sent while the file couldn't be read (ReadAgain): judged NotYet, never against nothing.
+	judgeFrom int64
 }
 
 // OpenWatermark reads the watermark kept at path ("": kept in memory only). kevasod makes it once
@@ -86,6 +89,44 @@ func OpenWatermark(path string, log func(string, ...any)) *Watermark {
 
 var _ client.ControlPlaneVerdicts = (*Watermark)(nil)
 
+// ReadAgain reads the file again while it couldn't be trusted (review of K-096, claim 5: a read
+// error at start, an EIO or EMFILE that passes, must not hold the worker for the life of the
+// process). The file is taken exactly as at start: one that holds a watermark of a cluster is
+// judged against from now on (a held one stays held), one that isn't there is first contact (what
+// kvoadm host trust-control-plane leaves, and what a restart would see), anything else still
+// holds. It says whether the hold for the file ended. The agent never writes the file while it
+// can't trust it, so what it reads now is what was there, or what a person put there.
+func (w *Watermark) ReadAgain() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.unreadable == "" || w.path == "" {
+		return false
+	}
+	b, err := os.ReadFile(w.path)
+	if why := WatermarkUnreadable(b, err); why != "" {
+		w.unreadable = why
+		return false
+	}
+	var k client.Watermark
+	if err == nil {
+		if err := json.Unmarshal(b, &k); err != nil {
+			return false // WatermarkUnreadable parsed it: not reached
+		}
+	}
+	w.kept, w.unreadable, w.last = k, "", ""
+	w.histories++
+	w.judgeFrom = w.histories
+	switch {
+	case err != nil:
+		w.log("control-plane watermark %s: gone (set aside): this worker takes the control plane it reaches next as its first", w.path)
+	case k.Held:
+		w.log("control-plane watermark %s reads again: held (kept on disk): the control plane of cluster %s was older than what this worker saw (history %s, revision %d)", w.path, k.ClusterID, k.History, k.Revision)
+	default:
+		w.log("control-plane watermark %s reads again: cluster %s, history %s, revision %d: answers are judged against it", w.path, k.ClusterID, k.History, k.Revision)
+	}
+	return true
+}
+
 // Sending implements client.ControlPlaneJudge: the revision kept as a request leaves, with
 // which accepted history it belongs to (a count, in the top 16 bits): an answer whose request
 // left under another history is measured against nothing of it.
@@ -109,6 +150,9 @@ func (w *Watermark) Judged(sentAt int64, seen client.ControlPlaneSeen, stamped b
 	if w.unreadable != "" {
 		w.seen = seen // shown on the Host; nothing is judged against a file that can't be read
 		return client.Hold
+	}
+	if sentAt>>48 < w.judgeFrom {
+		return client.NotYet // sent while the file couldn't be read: what was kept then is unknown
 	}
 	keptAtSend := sentAt & (1<<48 - 1)
 	if sentAt>>48 != w.histories {
@@ -248,6 +292,7 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 			return
 		case <-ticks:
 		}
+		a.watermark().ReadAgain() // an unreadable file is read again on every tick (claim 5)
 		blocked := a.watermark().blocked()
 		kept, seen, verdict := a.watermark().state()
 		if !blocked && wasBlocked {

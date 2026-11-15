@@ -193,8 +193,18 @@ func (r *Runtime) loadState(id kri.ID) (state, bool, error) {
 	return s, true, nil
 }
 
-// runs says whether a container in state st (inspect's status) has processes.
-func runs(st string) bool { return st == "running" || st == "restarting" || st == "paused" }
+// runs says whether a container in state st (inspect's status) with process id pid may have
+// processes. Only a container the engine says has none (not there, created, exited, stopped, dead,
+// or podman's configured and initialized) with no process id has gone: every other state
+// (running, paused, restarting, podman's stopping, docker's removing, one this runtime doesn't
+// know) may still run the silo's code, and the fences take "not running" for stopped.
+func runs(st string, pid int) bool {
+	switch st {
+	case "", "created", "configured", "initialized", "exited", "stopped", "dead":
+		return pid != 0
+	}
+	return true
+}
 
 // owns says whether a silo's state is this engine's.
 func (r *Runtime) owns(s state) bool {
@@ -573,8 +583,8 @@ func (r *Runtime) RunInit(ctx context.Context, id kri.ID, step kri.InitStep, out
 
 // InitRunning reports whether one of the silo's init steps runs now (its init container).
 func (r *Runtime) InitRunning(ctx context.Context, id kri.ID) (bool, error) {
-	st, _, err := r.inspect(ctx, NamesFor(id).Init)
-	return runs(st), err
+	st, pid, err := r.inspect(ctx, NamesFor(id).Init)
+	return runs(st, pid), err
 }
 
 func noSuch(err error) bool { return strings.Contains(strings.ToLower(err.Error()), "no such") }
@@ -587,15 +597,15 @@ func (r *Runtime) end(ctx context.Context, id kri.ID, kill bool) (found bool, er
 	n := NamesFor(id)
 	names := []string{n.Init, n.Main, n.Pause}
 	for _, c := range names {
-		st, _, err := r.inspect(ctx, c)
+		st, pid, err := r.inspect(ctx, c)
 		if err != nil {
 			return found, err
 		}
-		if st == "" {
+		if st == "" && pid == 0 {
 			continue
 		}
 		found = true
-		if !runs(st) {
+		if !runs(st, pid) {
 			continue
 		}
 		args := []string{"stop", "-t", "20", c}
@@ -607,10 +617,10 @@ func (r *Runtime) end(ctx context.Context, id kri.ID, kill bool) (found bool, er
 		}
 	}
 	for _, c := range names {
-		if st, _, err := r.inspect(ctx, c); err != nil {
+		if st, pid, err := r.inspect(ctx, c); err != nil {
 			return found, err
-		} else if runs(st) {
-			return found, fmt.Errorf("%s: container %s still runs (%s)", id, c, st)
+		} else if runs(st, pid) {
+			return found, fmt.Errorf("%s: container %s still runs (%s, pid %d)", id, c, st, pid)
 		}
 	}
 	return found, nil
@@ -664,11 +674,23 @@ func (r *Runtime) stop(ctx context.Context, id kri.ID, kill bool) error {
 // Reset implements kri.Resetter: the containers go, the volumes, address and pause container
 // stay, and the silo is Created again from spec's image (the main container comes with Start).
 func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
+	return r.ResetGated(ctx, spec, nil)
+}
+
+// ResetGated is Reset that asks gate (if set) right before the containers (their writable layers)
+// are removed. An error from gate ends the reset with nothing removed, and is returned as is.
+func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(context.Context) error) error {
 	r.mu.Lock()
 	s, ok := r.load(spec.ID)
 	if !ok {
 		r.mu.Unlock()
 		return fmt.Errorf("%s: %w", spec.ID, kri.ErrNotFound)
+	}
+	if gate != nil {
+		if err := gate(ctx); err != nil {
+			r.mu.Unlock()
+			return err
+		}
 	}
 	n := NamesFor(spec.ID)
 	for _, c := range []string{n.Main, n.Init} {
@@ -724,9 +746,9 @@ func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 	s, ok, lerr := r.loadState(id)
 	if lerr != nil {
 		for _, c := range []string{n.Init, n.Main} {
-			if st, _, err := r.inspect(ctx, c); err != nil {
+			if st, pid, err := r.inspect(ctx, c); err != nil {
 				return kri.Status{}, err
-			} else if runs(st) {
+			} else if runs(st, pid) {
 				return kri.Status{State: kri.Running, Message: "container " + c + " runs; " + lerr.Error()}, nil
 			}
 		}
@@ -735,29 +757,33 @@ func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 	if !ok {
 		return kri.Status{State: kri.Absent}, nil
 	}
-	st, _, err := r.inspect(ctx, n.Main)
+	st, pid, err := r.inspect(ctx, n.Main)
 	if err != nil {
 		return kri.Status{}, err
 	}
-	if st != "running" && st != "restarting" {
-		if is, _, err := r.inspect(ctx, n.Init); err != nil {
-			return kri.Status{}, err
-		} else if runs(is) {
-			return kri.Status{State: kri.Running, Address: s.IP, Message: "an init step runs (" + n.Init + ")"}, nil
+	if runs(st, pid) {
+		if st != "running" {
+			return kri.Status{State: kri.Running, Address: s.IP, Message: "its main container is " + st + " and may still run"}, nil
 		}
+		if ps, _, _ := r.inspect(ctx, n.Pause); ps != "running" {
+			// Its code runs, with its network gone: still Running (never Stopped while code of
+			// it runs). A stop and start wires it again.
+			return kri.Status{State: kri.Running, Address: s.IP, Message: "its pause container " + n.Pause + " doesn't run: its network is gone"}, nil
+		}
+		return kri.Status{State: kri.Running, Address: s.IP}, nil
+	}
+	if is, ipid, err := r.inspect(ctx, n.Init); err != nil {
+		return kri.Status{}, err
+	} else if runs(is, ipid) {
+		return kri.Status{State: kri.Running, Address: s.IP, Message: "an init step runs (" + n.Init + ")"}, nil
 	}
 	switch st {
 	case "":
 		return kri.Status{State: kri.Created}, nil
-	case "running", "restarting":
-		if ps, _, _ := r.inspect(ctx, n.Pause); ps != "running" {
-			return kri.Status{State: kri.Stopped}, nil // its network is gone: Start rewires it
-		}
-		return kri.Status{State: kri.Running, Address: s.IP}, nil
 	case "dead":
 		return kri.Status{State: kri.Failed, Message: "the container is dead"}, nil
 	}
-	return kri.Status{State: kri.Stopped}, nil // created, exited, paused
+	return kri.Status{State: kri.Stopped}, nil // created, exited, stopped
 }
 
 // List implements kri.Runtime.

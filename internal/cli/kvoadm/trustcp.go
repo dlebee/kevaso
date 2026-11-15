@@ -67,7 +67,8 @@ func parseTrust(args []string) (TrustOptions, error) {
 // plane it reaches is older than one it saw. Once a person has checked that it isn't, this sets
 // the unreadable record aside (kept, renamed) and restarts kevasod, which then takes the control
 // plane it reaches as its first. A readable record is never touched: a held worker is released by
-// a new history (kvoadm init --restore), not by this.
+// a new history (kvoadm init --restore), not by this. kevasod reads an unreadable record again by
+// itself while it holds for it (a read error that passes ends the hold on its own).
 func trustControlPlane(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	o, err := parseTrust(args)
 	if err != nil {
@@ -109,7 +110,7 @@ func runTrust(ctx context.Context, h hostRunner, o TrustOptions, in *bufio.Reade
 	}
 	why := agent.WatermarkUnreadable([]byte(body), nil)
 	if why == "" {
-		return fmt.Errorf("%s on %s is readable: nothing to set aside. A worker held by an older control plane is released by a new history (kvoadm init --restore), not by this command", file, o.Address)
+		return fmt.Errorf("%s on %s is readable: nothing to set aside. kevasod reads it again by itself every second while it holds for it, so a hold for an unreadable record ends on its own once the file reads (the Host's ControlPlaneBehind says so); a worker held by an older control plane is released by a new history (kvoadm init --restore), not by this command", file, o.Address)
 	}
 	_, _ = fmt.Fprintf(out, "%s on %s is unreadable (%s).\nkvoadm will keep it as %s.unreadable-TIME and restart kevasod: the worker then trusts the control plane it reaches next as its own.\n"+
 		"Do this only once you know that control plane is the newest of this cluster (not one restored from an older backup outside kvoadm init --restore).\n", file, o.Address, why, file)

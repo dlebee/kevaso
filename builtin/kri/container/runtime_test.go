@@ -97,7 +97,11 @@ func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
 			if !ok {
 				return fail("Error: No such object")
 			}
-			out(fmt.Sprintf("%s %d", st, f.pid))
+			pid := f.pid // an engine gives a process id only while the container has one
+			if st != "running" && st != "paused" && st != "restarting" {
+				pid = 0
+			}
+			out(fmt.Sprintf("%s %d", st, pid))
 		case "image":
 			if !f.images[a[len(a)-1]] && f.pid1[a[len(a)-1]] == "" {
 				return fail("No such image")
