@@ -250,6 +250,9 @@ func TestPlanRemovesFilesOnlyUnderKevasosPaths(t *testing.T) {
 		for _, s := range Plan(in) {
 			for _, m := range rmArgs.FindAllStringSubmatch(s.Script, -1) {
 				for _, p := range strings.Fields(m[1]) {
+					if strings.HasPrefix(p, "-") {
+						continue // a flag
+					}
 					n++
 					if !underAllowed(p) {
 						t.Errorf("step %q removes %q, outside Kevaso's paths", s.Name, p)
@@ -364,5 +367,22 @@ func TestReport(t *testing.T) {
 	err := Report(checks, map[string]string{"a": "kvbr0\nkvt123\n"}, []string{"package still installed: docker.io"})
 	if !errors.Is(err, ErrNotClean) || !strings.Contains(err.Error(), "a: kvbr0, kvt123") || !strings.Contains(err.Error(), "docker.io") || strings.Contains(err.Error(), "b:") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// K-022: unmount errors were ignored, then rm -rf ran over Kevaso's paths, into whatever was
+// still mounted there.
+func TestFilesAreNeverRemovedThroughAMount(t *testing.T) {
+	steps := Plan(full)
+	um := steps[stepIndex(t, steps, "unmount what is mounted")].Script
+	if strings.Contains(um, "; true") || !strings.Contains(um, "exit 1") {
+		t.Errorf("the unmount step ignores what stays mounted:\n%s", um)
+	}
+	rm := steps[stepIndex(t, steps, "remove Kevaso's files")].Script
+	if !strings.Contains(rm, "rm -rf --one-file-system ") {
+		t.Errorf("the files are removed across file systems:\n%s", rm)
+	}
+	if i, j := strings.Index(rm, "/proc/mounts"), strings.Index(rm, "rm -rf"); i < 0 || i > j {
+		t.Errorf("nothing checks for mounts before rm -rf:\n%s", rm)
 	}
 }
