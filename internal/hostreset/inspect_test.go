@@ -21,7 +21,13 @@ func inspectOut(record *Record, installed bool, silos, pvs, lvs []string, now St
 	} else {
 		b.WriteString("kevasod=no\nrunning=no\n")
 	}
-	b.WriteString("== silos\n" + strings.Join(silos, "\n") + "\n== pvs\n" + strings.Join(pvs, "\n") + "\n== lvs\n" + strings.Join(lvs, "\n") + "\n")
+	b.WriteString("== silos\n" + strings.Join(silos, "\n") + "\n== storagefile\n")
+	for _, p := range pvs {
+		if strings.HasSuffix(p, StorageImage) {
+			b.WriteString(StorageImage + " 60G\n")
+		}
+	}
+	b.WriteString("== pvs\n" + strings.Join(pvs, "\n") + "\n== lvs\n" + strings.Join(lvs, "\n") + "\n")
 	b.WriteString("== state\n" + strings.ReplaceAll(now.Render(), "== ", "=== "))
 	return b.String()
 }
@@ -173,7 +179,7 @@ func TestDecideNeverWipesARealDiskUnasked(t *testing.T) {
 }
 
 func TestInspectScriptPrintsEverySection(t *testing.T) {
-	for _, sec := range []string{"record", "installed", "silos", "pvs", "lvs", "state"} {
+	for _, sec := range []string{"record", "installed", "silos", "storagefile", "pvs", "lvs", "state"} {
 		if !strings.Contains(InspectScript, "echo '== "+sec+"'") {
 			t.Errorf("InspectScript prints no %q section", sec)
 		}
@@ -185,5 +191,39 @@ func TestInspectScriptPrintsEverySection(t *testing.T) {
 	}
 	if strings.Contains(InspectScript, "echo '== packages'") {
 		t.Error("the state's sections aren't nested")
+	}
+}
+
+// K-007: after a reboot the loop file isn't attached, no volume group is seen, and the reset
+// deleted the file (every microVM disk and volume in it) without a word.
+func TestAStorageFileIsNeverStray(t *testing.T) {
+	rec := Record{State: fresh}
+	in := Inspection{Record: &rec, StorageFile: StorageImage + " 60G", Now: afterInstall}
+	d, err := Decide(in, Flags{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Lost) == 0 || !strings.Contains(strings.Join(d.Lost, " "), StorageImage) {
+		t.Fatalf("the storage file isn't listed as lost: %v", d.Lost)
+	}
+	if !strings.Contains(strings.Join(d.Summary, "\n"), "storage file "+StorageImage) {
+		t.Errorf("the summary doesn't say it: %v", d.Summary)
+	}
+	// With its volume group seen, the file is still named among what is lost.
+	in.PVs, in.Volumes = []PV{{"/dev/loop0", StorageImage}}, []string{"kv-01 5.00g"}
+	d, _ = Decide(in, Flags{})
+	if !slices.Contains(d.Lost, "kv-01 5.00g") || !strings.Contains(strings.Join(d.Lost, " "), StorageImage) {
+		t.Errorf("lost: %v", d.Lost)
+	}
+}
+
+func TestInspectFindsSilosOnDiskAndAttachesTheStorageFile(t *testing.T) {
+	for _, want := range []string{"/etc/systemd/system/kevaso-silo-*.service", "/var/lib/kevaso-silos/*/", "losetup -r -f " + StorageImage, "pvscan --cache", "== storagefile"} {
+		if !strings.Contains(InspectScript, want) {
+			t.Errorf("InspectScript lacks %q", want)
+		}
+	}
+	if strings.Index(InspectScript, "losetup -r -f") > strings.Index(InspectScript, "== pvs") {
+		t.Error("the storage file is attached after the volume group is read")
 	}
 }

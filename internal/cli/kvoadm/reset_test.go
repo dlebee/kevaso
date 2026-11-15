@@ -62,9 +62,18 @@ func inspection(rec *hostreset.Record, silos []string, pvs []string, lvs []strin
 	if rec != nil {
 		b.WriteString(strings.ReplaceAll(rec.Render(), "== ", "=== "))
 	}
-	b.WriteString("== installed\nkevasod=yes\nrunning=yes\n== silos\n" + strings.Join(silos, "\n") + "\n== pvs\n" + strings.Join(pvs, "\n") +
+	b.WriteString("== installed\nkevasod=yes\nrunning=yes\n== silos\n" + strings.Join(silos, "\n") + "\n== storagefile\n" + storageLine(pvs) + "== pvs\n" + strings.Join(pvs, "\n") +
 		"\n== lvs\n" + strings.Join(lvs, "\n") + "\n== state\n" + strings.ReplaceAll(now.Render(), "== ", "=== "))
 	return b.String()
+}
+
+func storageLine(pvs []string) string {
+	for _, p := range pvs {
+		if strings.HasSuffix(p, hostreset.StorageImage) {
+			return hostreset.StorageImage + " 60G\n"
+		}
+	}
+	return ""
 }
 
 func newResetHost(t *testing.T, rec *hostreset.Record, silos, pvs, lvs []string, f hostreset.Flags) *fakeResetHost {
