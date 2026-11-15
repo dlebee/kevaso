@@ -14,25 +14,21 @@ import (
 // Cluster secrets from the command line. Values come from a file or stdin, never from argv,
 // the same way a Secret's do.
 //
-//	kvo create clustersecret NAME --plugin P [--plugin P2] [--host H]… [--description D] --from-file F|-
+//	kvo create clustersecret NAME [--description D] --from-file F|-
 //	kvo set clustersecret NAME --from-file F|-
 //	kvo get clustersecret [NAME] [--reveal]
 //	kvo delete clustersecret NAME
 
 type clusterOpts struct {
-	plugins, hosts []string
-	description    string
+	description string
 }
 
 func createClusterSecret(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdout io.Writer) error {
 	if len(o.args) != 2 {
-		return errors.New("create clustersecret needs a NAME: kvo create clustersecret NAME --plugin PLUGIN --from-file FILE|-")
+		return errors.New("create clustersecret needs a NAME: kvo create clustersecret NAME [--description TEXT] --from-file FILE|-")
 	}
 	if o.secret.literalSet || o.secret.generate {
 		return errors.New("a clustersecret's value comes from --from-file FILE or --from-file - (stdin)")
-	}
-	if len(o.cluster.plugins) == 0 {
-		return errors.New("a clustersecret needs a plugin: --plugin PLUGIN [--plugin PLUGIN]")
 	}
 	value, err := o.secret.value(stdin)
 	if err != nil {
@@ -43,7 +39,7 @@ func createClusterSecret(ctx context.Context, c *client.Client, o opts, stdin io
 	}
 	s := &v1.ClusterSecret{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterSecret"},
 		ObjectMeta: meta.ObjectMeta{Name: o.args[1]},
-		Spec:       v1.ClusterSecretSpec{Description: o.cluster.description, Plugins: o.cluster.plugins, Hosts: o.cluster.hosts, Value: value}}
+		Spec:       v1.ClusterSecretSpec{Description: o.cluster.description, Value: value}}
 	if err := c.Create(ctx, s); err != nil {
 		return err
 	}

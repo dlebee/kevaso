@@ -10,14 +10,14 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/operators"
 	"kevaso.com/core/internal/pki"
-	"kevaso.com/core/internal/store"
+	"kevaso.com/core/internal/rbac"
 )
 
-func clusterSecret(name string, plugins, hosts []string, value string) *v1.ClusterSecret {
+func clusterSecret(name, value string) *v1.ClusterSecret {
 	cs := &v1.ClusterSecret{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterSecret"},
-		ObjectMeta: meta.ObjectMeta{Name: name},
-		Spec:       v1.ClusterSecretSpec{Plugins: plugins, Hosts: hosts}}
+		ObjectMeta: meta.ObjectMeta{Name: name}}
 	if value != "" {
 		cs.Spec.Value = []byte(value)
 	}
@@ -27,6 +27,11 @@ func clusterSecret(name string, plugins, hosts []string, value string) *v1.Clust
 func (c *cluster) asUser(t *testing.T, name string) (*client.Client, func()) {
 	t.Helper()
 	return c.srv.InProcessAs(pki.Identity{Type: "user", Name: name})
+}
+
+func (c *cluster) asServiceAccount(t *testing.T, namespace, name string) (*client.Client, func()) {
+	t.Helper()
+	return c.srv.InProcessAs(pki.Identity{Type: "serviceaccount", Name: rbac.ServiceAccountUser(namespace, name)})
 }
 
 func (c *cluster) asHost(t *testing.T, name, role string) (*client.Client, func()) {
@@ -63,10 +68,42 @@ func wantCode(t *testing.T, err error, code int, what string) {
 	}
 }
 
-// ClusterSecret is cluster-admin only for every verb, including a namespace admin and a
-// ClusterRole that names the resource; status is the server's; the value is write-only except
-// --reveal for a cluster-admin and the host value route.
-func TestClusterSecret(t *testing.T) {
+func clusterRole(name string, rules ...v1.PolicyRule) *v1.ClusterRole {
+	return &v1.ClusterRole{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterRole"},
+		ObjectMeta: meta.ObjectMeta{Name: name}, Rules: rules}
+}
+
+func clusterBind(name, role string, subs ...v1.Subject) *v1.ClusterRoleBinding {
+	return &v1.ClusterRoleBinding{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterRoleBinding"},
+		ObjectMeta: meta.ObjectMeta{Name: name}, RoleRef: v1.RoleRef{Kind: "ClusterRole", Name: role}, Subjects: subs}
+}
+
+func saSubject(namespace, name string) v1.Subject {
+	return v1.Subject{Kind: "ServiceAccount", Name: name, Namespace: namespace}
+}
+
+func installedPlugin(name, serviceAccount string) *v1.Plugin {
+	return &v1.Plugin{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Plugin"},
+		ObjectMeta: meta.ObjectMeta{Name: name},
+		Spec: v1.PluginSpec{Version: "1", Controller: &v1.PluginController{
+			Host: "10.0.0.8", ServiceAccount: serviceAccount}}}
+}
+
+func (c *cluster) readClusterValue(t *testing.T, cl *client.Client, name, query string) (client.SecretValue, error) {
+	t.Helper()
+	var v client.SecretValue
+	path := "/apis/kevaso/v1/clustersecrets/" + name + "/value"
+	if query != "" {
+		path += "?" + query
+	}
+	err := cl.Call(c.ctx, http.MethodGet, path, nil, &v)
+	return v, err
+}
+
+// Manage (create, update, delete, reveal) stays a cluster-admin's when a ClusterRole grants
+// those verbs. The same role's get and list are allowed, and the body never carries the value:
+// dropping either half makes this fail.
+func TestClusterSecretManageIsClusterAdminOnly(t *testing.T) {
 	c := newCluster(t)
 	if err := c.admin.Create(c.ctx, ns("web3")); err != nil {
 		t.Fatal(err)
@@ -76,22 +113,17 @@ func TestClusterSecret(t *testing.T) {
 		Subjects: []v1.Subject{{Kind: "User", Name: "ada"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.admin.Create(c.ctx, &v1.ClusterRole{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterRole"},
-		ObjectMeta: meta.ObjectMeta{Name: "cs-all"}, Rules: []v1.PolicyRule{{Verbs: []string{"*"}, Resources: []string{"clustersecrets"}}}}); err != nil {
+	// "*" would allow create through ordinary evaluation. It must not, here.
+	if err := c.admin.Create(c.ctx, clusterRole("cs-all", v1.PolicyRule{Verbs: []string{"*"}, Resources: []string{"clustersecrets"}})); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.admin.Create(c.ctx, &v1.ClusterRoleBinding{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterRoleBinding"},
-		ObjectMeta: meta.ObjectMeta{Name: "bob-cs"}, RoleRef: v1.RoleRef{Kind: "ClusterRole", Name: "cs-all"},
-		Subjects: []v1.Subject{{Kind: "User", Name: "bob"}}}); err != nil {
+	if err := c.admin.Create(c.ctx, clusterBind("bob-cs", "cs-all", v1.Subject{Kind: "User", Name: "bob"})); err != nil {
 		t.Fatal(err)
 	}
 	ada, doneAda := c.asUser(t, "ada")
 	defer doneAda()
 	bob, doneBob := c.asUser(t, "bob")
 	defer doneBob()
-	if err := ada.Create(c.ctx, secretObj("ada-key", nil, "x")); err != nil {
-		t.Fatalf("namespace admin creating a namespaced secret: %v", err)
-	}
 
 	cred, err := c.admin.IssueUserCert(c.ctx, "root")
 	if err != nil {
@@ -102,91 +134,278 @@ func TestClusterSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Plugins are required. A caller's status is not stored.
+	cs := clusterSecret("bucket", "s3cret-bytes")
+	cs.Spec.Description = "bucket key"
+	if err := root.Create(c.ctx, cs); err != nil {
+		t.Fatal(err)
+	}
+
+	var got v1.ClusterSecret
+	if err := bob.Get(c.ctx, "ClusterSecret", "", "bucket", &got); err != nil || got.Spec.Description != "bucket key" || got.Status.Version != 1 {
+		t.Fatalf("a ClusterRole's get: %+v %v", got, err)
+	}
+	if l, err := bob.List(c.ctx, "ClusterSecret", ""); err != nil || len(l.Items) != 1 {
+		t.Fatalf("a ClusterRole's list: %v %v", l, err)
+	}
+	var raw json.RawMessage
+	if err := bob.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/bucket", nil, &raw); err != nil || strings.Contains(string(raw), "s3cret") {
+		t.Fatalf("get carries a value: %s %v", raw, err)
+	}
+	if err := bob.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets", nil, &raw); err != nil || strings.Contains(string(raw), "s3cret") {
+		t.Fatalf("list carries a value: %s %v", raw, err)
+	}
+
+	if err := bob.Create(c.ctx, clusterSecret("other", "nope")); status(err) != http.StatusForbidden {
+		t.Fatalf("create with a ClusterRole granting it: want 403, got %v", err)
+	}
+	stale := got
+	stale.Spec.Description = "changed"
+	stale.Spec.Value = []byte("nope")
+	if err := bob.Update(c.ctx, &stale); status(err) != http.StatusForbidden {
+		t.Fatalf("update: want 403, got %v", err)
+	}
+	if err := bob.Delete(c.ctx, "ClusterSecret", "", "bucket"); status(err) != http.StatusForbidden {
+		t.Fatalf("delete: want 403, got %v", err)
+	}
+	if _, err := c.readClusterValue(t, bob, "bucket", ""); status(err) != http.StatusForbidden {
+		t.Fatalf("reveal through a role on clustersecrets: want 403, got %v", err)
+	}
+
+	for _, who := range []struct {
+		name string
+		cl   *client.Client
+	}{{"namespace admin", ada}} {
+		if err := who.cl.Create(c.ctx, clusterSecret("from-"+who.name, "nope")); status(err) != http.StatusForbidden {
+			t.Fatalf("%s create: want 403, got %v", who.name, err)
+		}
+		if err := who.cl.Get(c.ctx, "ClusterSecret", "", "bucket", &v1.ClusterSecret{}); status(err) != http.StatusForbidden {
+			t.Fatalf("%s get: want 403, got %v", who.name, err)
+		}
+		if _, err := c.readClusterValue(t, who.cl, "bucket", ""); status(err) != http.StatusForbidden {
+			t.Fatalf("%s reveal: want 403, got %v", who.name, err)
+		}
+	}
+
+	v, err := c.readClusterValue(t, root, "bucket", "")
+	if err != nil || string(v.Value) != "s3cret-bytes" || v.Version != 1 {
+		t.Fatalf("cluster-admin reveal: %q v%d %v", v.Value, v.Version, err)
+	}
+}
+
+// A pinned ClusterRole bound to a service account reads exactly the names it lists.
+func TestClusterSecretPinnedRoleReadsItsNames(t *testing.T) {
+	c := newCluster(t)
+	for _, name := range []string{"bucket", "metering", "other"} {
+		if err := c.admin.Create(c.ctx, clusterSecret(name, name+"-bytes")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sa := operators.ServiceAccountName("juicefs")
+	if err := c.admin.Create(c.ctx, clusterRole("juicefs-secrets", v1.PolicyRule{
+		Verbs: []string{"get"}, Resources: []string{"clustersecrets/value"}, ResourceNames: []string{"bucket", "metering"},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, clusterBind("juicefs-secrets", "juicefs-secrets", saSubject(v1.PluginNamespace, sa))); err != nil {
+		t.Fatal(err)
+	}
+	juice, done := c.asServiceAccount(t, v1.PluginNamespace, sa)
+	defer done()
+
+	for _, name := range []string{"bucket", "metering"} {
+		v, err := c.readClusterValue(t, juice, name, "")
+		if err != nil || string(v.Value) != name+"-bytes" || v.Version != 1 {
+			t.Fatalf("pinned %s: %q v%d %v", name, v.Value, v.Version, err)
+		}
+	}
+	if _, err := c.readClusterValue(t, juice, "other", ""); status(err) != http.StatusForbidden {
+		t.Fatalf("a name the role doesn't list: want 403, got %v", err)
+	}
+	// The value rule is not get on the object.
+	if err := juice.Get(c.ctx, "ClusterSecret", "", "bucket", &v1.ClusterSecret{}); status(err) != http.StatusForbidden {
+		t.Fatalf("value rule granted get of the object: %v", err)
+	}
+}
+
+// An unpinned rule (no resourceNames) grants no value. The same binding can still get the object,
+// so a broken binding can't masquerade as the pin.
+func TestClusterSecretUnpinnedRuleReadsNone(t *testing.T) {
+	c := newCluster(t)
+	if err := c.admin.Create(c.ctx, clusterSecret("bucket", "s3cret-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	sa := operators.ServiceAccountName("open")
+	if err := c.admin.Create(c.ctx, clusterRole("open-values",
+		v1.PolicyRule{Verbs: []string{"get", "list"}, Resources: []string{"clustersecrets"}},
+		v1.PolicyRule{Verbs: []string{"get"}, Resources: []string{"clustersecrets/value"}},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, clusterBind("open-values", "open-values", saSubject(v1.PluginNamespace, sa))); err != nil {
+		t.Fatal(err)
+	}
+	open, done := c.asServiceAccount(t, v1.PluginNamespace, sa)
+	defer done()
+	if err := open.Get(c.ctx, "ClusterSecret", "", "bucket", &v1.ClusterSecret{}); err != nil {
+		t.Fatalf("the binding no longer grants get: %v", err)
+	}
+	if _, err := c.readClusterValue(t, open, "bucket", ""); status(err) != http.StatusForbidden {
+		t.Fatalf("unpinned clustersecrets/value: want 403, got %v", err)
+	}
+
+	// "*" with no names matches the resource and still grants no value.
+	star := operators.ServiceAccountName("star")
+	if err := c.admin.Create(c.ctx, clusterRole("star-get", v1.PolicyRule{Verbs: []string{"get"}, Resources: []string{"*"}})); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, clusterBind("star-get", "star-get", saSubject(v1.PluginNamespace, star))); err != nil {
+		t.Fatal(err)
+	}
+	wide, doneWide := c.asServiceAccount(t, v1.PluginNamespace, star)
+	defer doneWide()
+	if err := wide.Get(c.ctx, "ClusterSecret", "", "bucket", &v1.ClusterSecret{}); err != nil {
+		t.Fatalf("get * no longer matches clustersecrets: %v", err)
+	}
+	if _, err := c.readClusterValue(t, wide, "bucket", ""); status(err) != http.StatusForbidden {
+		t.Fatalf("unpinned *: want 403, got %v", err)
+	}
+}
+
+// A namespaced Role that names clustersecrets or clustersecrets/value is refused, and the message
+// says to use a ClusterRole. A ClusterRole with the same rule is accepted.
+func TestClusterSecretRoleNamingItIsRefused(t *testing.T) {
+	c := newCluster(t)
+	if err := c.admin.Create(c.ctx, ns("web3")); err != nil {
+		t.Fatal(err)
+	}
+	role := func(name string, resources ...string) *v1.Role {
+		return &v1.Role{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Role"},
+			ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "web3"},
+			Rules:      []v1.PolicyRule{{Verbs: []string{"get"}, Resources: resources}}}
+	}
+	for _, tc := range []struct {
+		name      string
+		resources []string
+	}{
+		{"bad-objects", []string{"clustersecrets"}},
+		{"bad-value", []string{"clustersecrets/value"}},
+		{"bad-mixed", []string{"secrets", "clustersecrets"}},
+	} {
+		err := c.admin.Create(c.ctx, role(tc.name, tc.resources...))
+		if status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "ClusterRole") {
+			t.Fatalf("Role %s resources %v: want 422 pointing at a ClusterRole, got %v", tc.name, tc.resources, err)
+		}
+	}
+	if err := c.admin.Create(c.ctx, role("secrets-only", "secrets")); err != nil {
+		t.Fatalf("a Role naming secrets: %v", err)
+	}
+	if err := c.admin.Create(c.ctx, clusterRole("cs-ok", v1.PolicyRule{Verbs: []string{"get"}, Resources: []string{"clustersecrets", "clustersecrets/value"}, ResourceNames: []string{"bucket"}})); err != nil {
+		t.Fatalf("a ClusterRole naming clustersecrets: %v", err)
+	}
+}
+
+// ?for=PLUGIN is allowed only for a host certificate, and only when that plugin's service account
+// may read the name. A host has no access of its own.
+func TestClusterSecretHostForPlugin(t *testing.T) {
+	c := newCluster(t)
+	for _, name := range []string{"bucket", "metering", "other"} {
+		if err := c.admin.Create(c.ctx, clusterSecret(name, name+"-bytes")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	juiceSA := operators.ServiceAccountName("juicefs")
+	s3SA := operators.ServiceAccountName("s3")
+	if err := c.admin.Create(c.ctx, clusterRole("juicefs-secrets", v1.PolicyRule{
+		Verbs: []string{"get"}, Resources: []string{"clustersecrets/value"}, ResourceNames: []string{"bucket", "metering"},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, clusterBind("juicefs-secrets", "juicefs-secrets",
+		saSubject(v1.PluginNamespace, juiceSA),
+		v1.Subject{Kind: "User", Name: "hv1"}, // a host must not be allowed as this user
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, installedPlugin("juicefs", juiceSA)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, installedPlugin("s3", s3SA)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, &v1.Plugin{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Plugin"},
+		ObjectMeta: meta.ObjectMeta{Name: "idle"},
+		Spec:       v1.PluginSpec{Version: "1", Controller: &v1.PluginController{Host: "10.0.0.8"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	hv1 := c.workerCert(t, "hv1")
+	cp, doneCP := c.asHost(t, "cp1", "control-plane")
+	defer doneCP()
+	ada, doneAda := c.asUser(t, "ada")
+	defer doneAda()
+
+	for _, who := range []struct {
+		name string
+		cl   *client.Client
+	}{{"worker", hv1}, {"system node", cp}} {
+		for _, name := range []string{"bucket", "metering"} {
+			v, err := c.readClusterValue(t, who.cl, name, "for=juicefs")
+			if err != nil || string(v.Value) != name+"-bytes" {
+				t.Fatalf("%s ?for=juicefs %s: %q %v", who.name, name, v.Value, err)
+			}
+		}
+		if _, err := c.readClusterValue(t, who.cl, "other", "for=juicefs"); status(err) != http.StatusForbidden {
+			t.Fatalf("%s ?for=juicefs other: want 403, got %v", who.name, err)
+		}
+		if _, err := c.readClusterValue(t, who.cl, "bucket", ""); status(err) != http.StatusForbidden {
+			t.Fatalf("%s without ?for: want 403, got %v", who.name, err)
+		}
+		if _, err := c.readClusterValue(t, who.cl, "bucket", "for=s3"); status(err) != http.StatusForbidden {
+			t.Fatalf("%s ?for=s3: want 403, got %v", who.name, err)
+		}
+		if _, err := c.readClusterValue(t, who.cl, "bucket", "for=missing"); status(err) != http.StatusForbidden {
+			t.Fatalf("%s ?for=missing: want 403, got %v", who.name, err)
+		}
+		if _, err := c.readClusterValue(t, who.cl, "bucket", "for=idle"); status(err) != http.StatusForbidden {
+			t.Fatalf("%s ?for=idle: want 403, got %v", who.name, err)
+		}
+		if err := who.cl.Get(c.ctx, "ClusterSecret", "", "bucket", &v1.ClusterSecret{}); status(err) != http.StatusForbidden {
+			t.Fatalf("%s get of the object: want 403, got %v", who.name, err)
+		}
+		if err := who.cl.Create(c.ctx, clusterSecret("from-"+who.name, "nope")); status(err) != http.StatusForbidden {
+			t.Fatalf("%s create: want 403, got %v", who.name, err)
+		}
+	}
+	if _, err := c.readClusterValue(t, ada, "bucket", "for=juicefs"); status(err) != http.StatusForbidden {
+		t.Fatalf("a user with ?for=: want 403, got %v", err)
+	}
+	comp, doneComp := c.srv.InProcess()
+	defer doneComp()
+	if _, err := c.readClusterValue(t, comp, "bucket", "for=juicefs"); status(err) != http.StatusForbidden {
+		t.Fatalf("kevasod with ?for=: want 403, got %v", err)
+	}
+}
+
+// Status is the server's on create and on update, with or without a new value. /status is refused.
+func TestClusterSecretStatusIsServerSet(t *testing.T) {
+	c := newCluster(t)
 	past := time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)
-	noPlug := clusterSecret("no-plugin", nil, nil, "x")
-	if err := c.admin.Create(c.ctx, noPlug); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "plugins") {
-		t.Fatalf("no plugins: want 422 mentioning plugins, got %v", err)
-	}
-	badName := clusterSecret("bad-plugin", []string{"JuiceFS"}, nil, "x")
-	if err := c.admin.Create(c.ctx, badName); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "plugins") {
-		t.Fatalf("plugin name: want 422, got %v", err)
-	}
-	if err := c.admin.Create(c.ctx, clusterSecret("no-value", []string{"juicefs"}, nil, "")); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "needs a value") {
+	if err := c.admin.Create(c.ctx, clusterSecret("no-value", "")); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "needs a value") {
 		t.Fatalf("no value: want 422 needs a value, got %v", err)
 	}
 
-	cs := clusterSecret("bucket", []string{"juicefs", "s3"}, nil, "s3cret-bytes")
+	cs := clusterSecret("bucket", "s3cret-bytes")
 	cs.Spec.Description = "bucket key"
 	cs.Status.Version = 99
 	cs.Status.ChangedAt = &past
-	if err := root.Create(c.ctx, cs); err != nil {
+	if err := c.admin.Create(c.ctx, cs); err != nil {
 		t.Fatal(err)
 	}
 	if cs.Status.Version != 1 || cs.Status.ChangedAt == nil || cs.Status.ChangedAt.Year() == 1999 {
 		t.Fatalf("create kept the caller's status: %+v", cs.Status)
 	}
 
-	// Every verb: cluster-admin yes, namespace admin and a ClusterRole that names the resource no.
 	var got v1.ClusterSecret
-	if err := c.admin.Get(c.ctx, "ClusterSecret", "", "bucket", &got); err != nil || got.Spec.Description != "bucket key" || got.Status.Version != 1 {
-		t.Fatalf("admin get: %+v %v", got, err)
-	}
-	if l, err := c.admin.List(c.ctx, "ClusterSecret", ""); err != nil || len(l.Items) != 1 {
-		t.Fatalf("admin list: %v %v", l, err)
-	}
-	for _, who := range []struct {
-		name string
-		cl   *client.Client
-	}{{"namespace admin", ada}, {"clusterrole naming clustersecrets", bob}} {
-		if err := who.cl.Create(c.ctx, clusterSecret("other", []string{"juicefs"}, nil, "nope")); status(err) != http.StatusForbidden {
-			t.Fatalf("%s create: want 403, got %v", who.name, err)
-		}
-		if err := who.cl.Get(c.ctx, "ClusterSecret", "", "bucket", &v1.ClusterSecret{}); status(err) != http.StatusForbidden {
-			t.Fatalf("%s get: want 403, got %v", who.name, err)
-		}
-		if _, err := who.cl.List(c.ctx, "ClusterSecret", ""); status(err) != http.StatusForbidden {
-			t.Fatalf("%s list: want 403, got %v", who.name, err)
-		}
-		stale := got
-		stale.Spec.Description = "changed"
-		stale.Spec.Value = []byte("nope")
-		if err := who.cl.Update(c.ctx, &stale); status(err) != http.StatusForbidden {
-			t.Fatalf("%s update: want 403, got %v", who.name, err)
-		}
-		if err := who.cl.Delete(c.ctx, "ClusterSecret", "", "bucket"); status(err) != http.StatusForbidden {
-			t.Fatalf("%s delete: want 403, got %v", who.name, err)
-		}
-		var v client.SecretValue
-		if err := who.cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/bucket/value", nil, &v); status(err) != http.StatusForbidden {
-			t.Fatalf("%s reveal: want 403, got %v", who.name, err)
-		}
-	}
-
-	// A worker and a system node (control-plane certificate) can't get, list or write the object.
-	hv1 := c.workerCert(t, "hv1")
-	hv2, done2 := c.asHost(t, "hv2", "worker")
-	defer done2()
-	cp, doneCP := c.asHost(t, "cp1", "control-plane")
-	defer doneCP()
-	comp, doneComp := c.srv.InProcess()
-	defer doneComp()
-	for _, who := range []struct {
-		name string
-		cl   *client.Client
-	}{{"worker", hv1}, {"system node", cp}, {"kevasod", comp}} {
-		if err := who.cl.Get(c.ctx, "ClusterSecret", "", "bucket", &v1.ClusterSecret{}); status(err) != http.StatusForbidden {
-			t.Fatalf("%s get: want 403, got %v", who.name, err)
-		}
-		if _, err := who.cl.List(c.ctx, "ClusterSecret", ""); status(err) != http.StatusForbidden {
-			t.Fatalf("%s list: want 403, got %v", who.name, err)
-		}
-		if err := who.cl.Create(c.ctx, clusterSecret("from-"+who.name, []string{"juicefs"}, nil, "nope")); status(err) != http.StatusForbidden {
-			t.Fatalf("%s create: want 403, got %v", who.name, err)
-		}
-	}
-
-	// Status on update is the server's, on a value change and without one. /status is refused.
 	if err := c.admin.Get(c.ctx, "ClusterSecret", "", "bucket", &got); err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +433,6 @@ func TestClusterSecret(t *testing.T) {
 		t.Fatalf("status write landed: %+v %v", got.Status, err)
 	}
 
-	// The value is never on get or list, and there is no list of values. Reveal is one value.
 	var raw json.RawMessage
 	if err := c.admin.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/bucket", nil, &raw); err != nil || strings.Contains(string(raw), "s3cret") || strings.Contains(string(raw), `"value"`) {
 		t.Fatalf("get carries a value: %s %v", raw, err)
@@ -225,66 +443,9 @@ func TestClusterSecret(t *testing.T) {
 	if err := c.admin.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/value", nil, &raw); status(err) != http.StatusNotFound {
 		t.Fatalf("a list of values: want 404, got %v %s", err, raw)
 	}
-	if err := root.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/bucket/value", nil, &raw); err != nil {
-		t.Fatal(err)
-	}
-	body := strings.TrimSpace(string(raw))
-	if strings.HasPrefix(body, "[") {
-		t.Fatalf("reveal answered a list: %s", body)
-	}
-	var v client.SecretValue
-	if err := json.Unmarshal(raw, &v); err != nil || string(v.Value) != "s3cret-bytes-2" || v.Version != 2 {
-		t.Fatalf("cluster-admin reveal: %q v%d %v (%s)", v.Value, v.Version, err, body)
-	}
-
-	// Hosts empty, plugins set: a worker certificate and a system node both read the value.
-	for _, who := range []struct {
-		name string
-		cl   *client.Client
-	}{{"worker", hv1}, {"other worker", hv2}, {"system node", cp}} {
-		if err := who.cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/bucket/value", nil, &v); err != nil || string(v.Value) != "s3cret-bytes-2" {
-			t.Fatalf("%s value, hosts empty: %q %v", who.name, v.Value, err)
-		}
-	}
-
-	// hosts names hv1 only: hv1 yes, everyone else who is a host no.
-	only := clusterSecret("only-hv1", []string{"juicefs"}, []string{"hv1"}, "only-hv1-bytes")
-	if err := c.admin.Create(c.ctx, only); err != nil {
-		t.Fatal(err)
-	}
-	if err := hv1.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/only-hv1/value", nil, &v); err != nil || string(v.Value) != "only-hv1-bytes" {
-		t.Fatalf("named worker: %q %v", v.Value, err)
-	}
-	for _, who := range []struct {
-		name string
-		cl   *client.Client
-	}{{"other worker", hv2}, {"system node", cp}, {"namespace admin", ada}} {
-		if err := who.cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/only-hv1/value", nil, &v); status(err) != http.StatusForbidden {
-			t.Fatalf("%s reading a secret that doesn't name them: want 403, got %v", who.name, err)
-		}
-	}
-
-	// plugins empty: the value route refuses the named host. Stored past admission, so the check
-	// is the route's and not only the schema's.
-	bare := &v1.ClusterSecret{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterSecret"},
-		ObjectMeta: meta.ObjectMeta{Name: "bare", UID: "bare-uid"},
-		Spec:       v1.ClusterSecretSpec{Hosts: []string{"hv1"}}}
-	b, _ := json.Marshal(bare)
-	if _, err := c.store.Create(c.ctx, store.Key{Kind: "ClusterSecret", Name: "bare"}, b); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.srv.Vault().PutCluster(c.ctx, bare, []byte("bare-value")); err != nil {
-		t.Fatal(err)
-	}
-	if err := hv1.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/bare/value", nil, &v); status(err) != http.StatusForbidden {
-		t.Fatalf("empty plugins: want 403, got %v %q", err, v.Value)
-	}
-
-	if err := c.admin.Delete(c.ctx, "ClusterSecret", "", "bucket"); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.admin.Get(c.ctx, "ClusterSecret", "", "bucket", &got); status(err) != http.StatusNotFound {
-		t.Fatalf("deleted secret still there: %v", err)
+	v, err := c.readClusterValue(t, c.admin, "bucket", "")
+	if err != nil || string(v.Value) != "s3cret-bytes-2" || v.Version != 2 {
+		t.Fatalf("reveal: %q v%d %v", v.Value, v.Version, err)
 	}
 }
 
@@ -295,10 +456,10 @@ func TestClusterSecretIsNotANamespacedSecret(t *testing.T) {
 	if err := c.admin.Create(c.ctx, ns("web3")); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.admin.Create(c.ctx, clusterSecret("regcred", []string{"juicefs"}, nil, "cluster-token")); err != nil {
+	if err := c.admin.Create(c.ctx, clusterSecret("regcred", "cluster-token")); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.admin.Create(c.ctx, clusterSecret("signer", []string{"juicefs"}, nil, "cluster-key")); err != nil {
+	if err := c.admin.Create(c.ctx, clusterSecret("signer", "cluster-key")); err != nil {
 		t.Fatal(err)
 	}
 	puller := containerSilo("puller", "web3", "docker")

@@ -143,6 +143,8 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 		a.Verb, a.Resource = v1.VerbOpen, v1.ResourceExposure // open and close
 	case t.token:
 		a.Verb, a.Resource = "create", t.kind.Plural+"/token"
+	case t.value && t.kind.Kind == "ClusterSecret":
+		a.Verb, a.Resource = "get", rbac.ClusterSecretValue // pinned: resourceNames, never an empty list
 	case t.value:
 		a.Verb = "read-value"
 	case t.answer != "":
@@ -179,7 +181,7 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 // namespaces still gets the list, cut down to the ones they have a role in.
 func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups []string, r *http.Request, t target) (allowed, filterNS bool, reason string, err error) {
 	if t.kind.Kind == "ClusterSecret" && id != LocalAdmin {
-		return s.authorizeClusterSecret(ctx, id, groups, t)
+		return s.authorizeClusterSecret(ctx, id, groups, r, t)
 	}
 	if id == LocalAdmin {
 		return true, false, "local admin socket", nil
@@ -215,12 +217,17 @@ func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups [
 	return d.Allowed, false, d.Reason, nil
 }
 
-// authorizeClusterSecret: create, update, delete, get and list are a cluster-admin's, and so is
-// reveal. A host certificate may only reach the value route; whether the secret names that host
-// is checked when the value is read (clusterSecretValue). No namespaced role reaches here: a
-// request for a cluster-scoped kind has no namespace, and this check doesn't ask RBAC for the
-// resource, so a ClusterRole that names clustersecrets still isn't enough.
-func (s *Server) authorizeClusterSecret(ctx context.Context, id pki.Identity, groups []string, t target) (bool, bool, string, error) {
+// authorizeClusterSecret (hack/design/clustersecret.md, "Who can do what"):
+//   - manage (create, update, delete, and reveal) is a cluster-admin's. No role grants these,
+//     whatever it says, on the clustersecrets resource;
+//   - get, list and watch of the objects (never a value) is a cluster-admin's, or what a
+//     ClusterRole grants on clustersecrets;
+//   - one value is a cluster-admin's, or get on clustersecrets/value pinned to that name
+//     (rbac.namesGrant: an empty resourceNames grants nothing);
+//   - a host certificate reads a value only with ?for=PLUGIN, and only when that plugin's
+//     service account would be allowed the same read. A host has no access of its own, so a
+//     binding that happens to name the host is not consulted.
+func (s *Server) authorizeClusterSecret(ctx context.Context, id pki.Identity, groups []string, r *http.Request, t target) (bool, bool, string, error) {
 	admin, err := s.clusterAdmin(ctx, id, groups)
 	if err != nil {
 		return false, false, "", err
@@ -228,13 +235,28 @@ func (s *Server) authorizeClusterSecret(ctx context.Context, id pki.Identity, gr
 	if admin {
 		return true, false, "cluster-admin", nil
 	}
-	if t.value && hostCertificate(id) {
-		return true, false, "host " + id.Name, nil
+	if id.Type == "host" || id.Type == "component" || id == Component {
+		if t.value && hostCertificate(id) {
+			ok, reason, err := s.hostForPlugin(ctx, r, t.name)
+			return ok, false, reason, err
+		}
+		return false, false, "a host has no clustersecret access of its own", nil
 	}
-	if t.value {
-		return false, false, "a clustersecret's value is for a cluster-admin, or for a host the secret names", nil
+	a := attributes(id, groups, r, t)
+	switch {
+	case t.value, a.Verb == "get", a.Verb == "list", a.Verb == "watch":
+		p, err := s.policy.Policy(ctx)
+		if err != nil {
+			return false, false, "", err
+		}
+		d := p.Authorize(a)
+		if !d.Allowed && t.value {
+			d.Reason = "reading a clustersecret's value needs a ClusterRole pinned to its name (clustersecrets/value, get, resourceNames)"
+		}
+		return d.Allowed, false, d.Reason, nil
+	default:
+		return false, false, "creating, updating and deleting clustersecrets is for a cluster-admin", nil
 	}
-	return false, false, "clustersecrets are for a cluster-admin", nil
 }
 
 // clusterAdmin reports whether id holds cluster-admin: the admin socket, or rbac.Policy.ClusterAdmin

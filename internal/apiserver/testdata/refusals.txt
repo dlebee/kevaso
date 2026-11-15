@@ -210,10 +210,6 @@ Secret spec.generate=true spec.value="eA=="
   Secret k: spec.generate and spec.value don't go together: the server makes the value
 Secret spec.value="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA…
   Secret k: spec.value: at most 64 KiB
-ClusterSecret spec.plugins!
-  ClusterSecret k: spec.plugins is required: the plugins that receive it, by install name
-ClusterSecret spec.hosts=[""]
-  ClusterSecret k: spec.hosts names hosts; an empty list is every host that runs one of the plugins; spec.hosts: name "": want 1-63 lowercase letters, digits or '-', starting and ending with a letter or digit
 Grant spec.egress!
   Grant g: a grant needs egress, secrets or operations
 Grant spec.secrets=[{"name":"k","deliver":"email"}]
@@ -282,6 +278,10 @@ ClusterRole rules=[{"verbs":["sudo"],"resources":["silos"]}]
   ClusterRole r: verbs must be *, get, list, watch, create, update, patch, delete, or for secrets use, read-value, write and approve, for ips use, or for silos/exposure open and approve
 Role rules=[{"verbs":["get"],"resources":["silos"],"selector":{"a":"b"}}]
   Role r: a rule's selector (by label) only works on secrets and silos/exposure
+Role rules=[{"verbs":["get"],"resources":["clustersecrets"]}]
+  Role r: a Role can't grant clustersecrets or clustersecrets/value: use a ClusterRole
+Role rules=[{"verbs":["get"],"resources":["clustersecrets/value"]}]
+  Role r: a Role can't grant clustersecrets or clustersecrets/value: use a ClusterRole
 ClusterRole rules=[{"verbs":["get"]}]
   ClusterRole r: every rule needs verbs and resources (no such overload: size)
 Role rules=[{"verbs":["sudo"],"resources":["silos"]}]

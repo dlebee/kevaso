@@ -76,17 +76,6 @@ func semantic(obj meta.Object) []string {
 		if len(o.Spec.Value) > 64<<10 {
 			errs = append(errs, "spec.value: at most 64 KiB")
 		}
-	case *v1.ClusterSecret:
-		for _, p := range o.Spec.Plugins {
-			if err := meta.ValidateName(p); err != nil {
-				errs = append(errs, "spec.plugins: "+err.Error())
-			}
-		}
-		for _, h := range o.Spec.Hosts {
-			if err := meta.ValidateName(h); err != nil {
-				errs = append(errs, "spec.hosts: "+err.Error())
-			}
-		}
 	case *v1.IP:
 		if a := o.Spec.Address; a != "" {
 			if ad, err := netip.ParseAddr(a); err != nil {

@@ -23,9 +23,9 @@ func TestClusterSecretUsage(t *testing.T) {
 		want string
 	}{
 		{[]string{"create", "clustersecret"}, "create clustersecret needs a NAME"},
-		{[]string{"create", "clustersecret", "bucket"}, "needs a plugin"},
-		{[]string{"create", "clustersecret", "bucket", "--plugin", "juicefs"}, "needs a value"},
-		{[]string{"create", "clustersecret", "bucket", "--plugin", "juicefs", "--from-literal", "x", "--i-know"}, "comes from --from-file"},
+		{[]string{"create", "clustersecret", "bucket"}, "needs a value"},
+		{[]string{"create", "clustersecret", "bucket", "--plugin", "juicefs"}, "unknown flag --plugin"},
+		{[]string{"create", "clustersecret", "bucket", "--from-literal", "x", "--i-know"}, "comes from --from-file"},
 		{[]string{"set"}, "usage: kvo set clustersecret"},
 		{[]string{"set", "secret", "bucket"}, "usage: kvo set clustersecret"},
 		{[]string{"set", "clustersecret", "bucket"}, "needs the new value"},
@@ -87,18 +87,12 @@ func TestClusterSecretCommands(t *testing.T) {
 	t.Setenv("KVO_SERVER", srv.URL)
 
 	var out, errb bytes.Buffer
-	args := []string{"create", "clustersecret", "bucket", "--plugin", "juicefs", "--plugin", "s3", "--host", "hv1", "--host", "hv2", "--description", "bucket key", "--from-file", path}
+	args := []string{"create", "clustersecret", "bucket", "--description", "bucket key", "--from-file", path}
 	if code := Run(context.Background(), args, strings.NewReader(""), &out, &errb); code != 0 || strings.TrimSpace(out.String()) != "clustersecret/bucket created (version 1)" {
 		t.Fatalf("create: %d %q %q", code, out.String(), errb.String())
 	}
 	if string(sent.Spec.Value) != "s3cret-bytes" || sent.Spec.Description != "bucket key" {
 		t.Fatalf("stored spec: %+v", sent.Spec)
-	}
-	if len(sent.Spec.Plugins) != 2 || sent.Spec.Plugins[0] != "juicefs" || sent.Spec.Plugins[1] != "s3" {
-		t.Fatalf("plugins: %v", sent.Spec.Plugins)
-	}
-	if len(sent.Spec.Hosts) != 2 || sent.Spec.Hosts[0] != "hv1" || sent.Spec.Hosts[1] != "hv2" {
-		t.Fatalf("hosts: %v", sent.Spec.Hosts)
 	}
 	if sent.Status.Version != 0 || sent.Status.ChangedAt != nil {
 		t.Fatalf("create sent a status: %+v", sent.Status)
@@ -114,7 +108,7 @@ func TestClusterSecretCommands(t *testing.T) {
 	}
 
 	out.Reset()
-	if code := Run(context.Background(), []string{"get", "clustersecret"}, strings.NewReader(""), &out, &errb); code != 0 || strings.Contains(out.String(), "s3cret") || strings.Contains(out.String(), "next-bytes") || !strings.Contains(out.String(), "juicefs") {
+	if code := Run(context.Background(), []string{"get", "clustersecret"}, strings.NewReader(""), &out, &errb); code != 0 || strings.Contains(out.String(), "s3cret") || strings.Contains(out.String(), "next-bytes") || !strings.Contains(out.String(), "bucket key") {
 		t.Fatalf("get: %d %q %q", code, out.String(), errb.String())
 	}
 	out.Reset()

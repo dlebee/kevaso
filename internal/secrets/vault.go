@@ -79,7 +79,7 @@ func (v *Vault) Put(ctx context.Context, sec *v1.Secret, value []byte) (v1.Secre
 }
 
 // PutCluster seals value as the cluster secret's new version. The value is readable again (a
-// cluster-admin's --reveal, or a host the secret names): it is not write-only in the vault.
+// cluster-admin's --reveal, or a ClusterRole pinned to the name): it is not write-only in the vault.
 // The version is what the caller records; the clock that stamps changedAt is the server's.
 func (v *Vault) PutCluster(ctx context.Context, cs *v1.ClusterSecret, value []byte) (int64, error) {
 	r, err := v.putRecord(ctx, "", cs.Name, cs.UID, value, false)

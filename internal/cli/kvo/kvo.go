@@ -23,9 +23,9 @@
 //	        [--default-pull]                    a registry credential, write-only; the password on stdin
 //	kvo secret set NAME --from-file F|-        rotate: every silo using it follows
 //	kvo get secret NAME --reveal               the value (read-value; never a write-only secret)
-//	kvo create clustersecret NAME --plugin P [--plugin P2] [--host H]… [--description D] --from-file F|-
+//	kvo create clustersecret NAME [--description D] --from-file F|-
 //	kvo set clustersecret NAME --from-file F|-   rotate the value
-//	kvo get clustersecret [NAME] [--reveal]     spec and status; --reveal is the value (cluster-admin)
+//	kvo get clustersecret [NAME] [--reveal]     spec and status; --reveal is the value
 //	kvo delete clustersecret NAME
 //	kvo get approvals | kvo watch approvals    silos waiting for a person's yes to use a secret
 //	kvo pane watch SILO                        follow a silo's panes (plain text; one way)
@@ -203,15 +203,6 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.ip.class, err = val()
 		case "--host":
 			o.ip.host, err = val()
-			if err == nil && o.ip.host != "" {
-				o.cluster.hosts = append(o.cluster.hosts, o.ip.host)
-			}
-		case "--plugin":
-			var v string
-			v, err = val()
-			if err == nil {
-				o.cluster.plugins = append(o.cluster.plugins, v)
-			}
 		case "--description":
 			o.cluster.description, err = val()
 		case "--region":
@@ -746,7 +737,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 	case "Secret":
 		head = append(head, "TYPE", "VERSION", "UPDATED", "READABLE")
 	case "ClusterSecret":
-		head = append(head, "PLUGINS", "HOSTS", "VERSION", "CHANGED")
+		head = append(head, "DESCRIPTION", "VERSION", "CHANGED")
 	case "Grant":
 		head = append(head, "EGRESS", "SECRETS")
 	case "Ingress":
@@ -829,10 +820,6 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			}
 			row = append(row, typ, ver, updated, readable)
 		case *v1.ClusterSecret:
-			hosts := "every host"
-			if len(o.Spec.Hosts) > 0 {
-				hosts = strings.Join(o.Spec.Hosts, ",")
-			}
 			changed := "-"
 			if o.Status.ChangedAt != nil {
 				changed = since(*o.Status.ChangedAt)
@@ -841,7 +828,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			if o.Status.Version > 0 {
 				ver = fmt.Sprint(o.Status.Version)
 			}
-			row = append(row, dash(strings.Join(o.Spec.Plugins, ",")), hosts, ver, changed)
+			row = append(row, dash(o.Spec.Description), ver, changed)
 		case *v1.Grant:
 			var eg, secs []string
 			for _, e := range o.Spec.Egress {
