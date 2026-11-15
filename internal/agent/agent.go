@@ -1417,7 +1417,7 @@ const ClaimRefreshEvery = StartClaimFresh / 3
 // free to start here, and not being deleted. Any other outcome, a conflict included, is
 // errPlacedElsewhere: the start is abandoned.
 func (a *Agent) claimStart(ctx context.Context, s *v1.Silo) error {
-	err := a.writeClaim(ctx, s)
+	err := a.writeClaim(ctx, s, false)
 	if errors.Is(err, errClaimConflict) {
 		return errPlacedElsewhere
 	}
@@ -1425,7 +1425,11 @@ func (a *Agent) claimStart(ctx context.Context, s *v1.Silo) error {
 }
 
 // writeClaim is one claim: a read, the checks, a compare-and-swap (errClaimConflict if it lost).
-func (a *Agent) writeClaim(ctx context.Context, s *v1.Silo) error {
+//
+// renewal: a renewal of a start under way (its init step running) goes on through a spec edit (a
+// newer generation), placed here all the same (K-117: an edit killed the step, which then ran
+// again); the start's next claim, right before the main process, is at the generation it read.
+func (a *Agent) writeClaim(ctx context.Context, s *v1.Silo, renewal bool) error {
 	var cur v1.Silo
 	if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
 		return err
@@ -1433,7 +1437,8 @@ func (a *Agent) writeClaim(ctx context.Context, s *v1.Silo) error {
 	if cur.UID != s.UID {
 		return errReplaced
 	}
-	if cur.DeletionTimestamp != nil || cur.Generation != s.Generation || !moves.MayStart(&cur, a.HostName) {
+	sameSpec := cur.Generation == s.Generation || renewal && cur.Generation > s.Generation
+	if cur.DeletionTimestamp != nil || !sameSpec || !moves.MayStart(&cur, a.HostName) {
 		return errPlacedElsewhere
 	}
 	claim := startClaim(a.HostName, s.Generation, a.Clock.Now().UTC())

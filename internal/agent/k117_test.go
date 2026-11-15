@@ -16,7 +16,7 @@ import (
 func TestAnInitStepPastSpecInitTimeoutIsStoppedAndFailed(t *testing.T) {
 	rt := fake.NewStrict("hv1", nil)
 	rt.HoldInit = func(kri.ID, kri.InitStep) <-chan struct{} { return make(chan struct{}) } // never ends by itself
-	hook, clk, get := newK115WithInit(t, rt, &v1.Init{Timeout: "10m", Steps: []v1.InitStep{{Name: "migrate", Run: "sleep 3600"}}})
+	hook, clk, get, _ := newK115WithInit(t, rt, &v1.Init{Timeout: "10m", Steps: []v1.InitStep{{Name: "migrate", Run: "sleep 3600"}}})
 	waitReal(t, "the step runs", func() bool { return runningStep(rt, get()) == "migrate" })
 	clk.Step(9 * time.Minute)
 	time.Sleep(50 * time.Millisecond)

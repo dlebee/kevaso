@@ -223,7 +223,7 @@ func (k *claimKeeper) within(ctx context.Context) (context.Context, func() error
 // read and a compare-and-swap, so a renewal never applies to a silo placed elsewhere.
 func (a *Agent) renewClaim(ctx context.Context, s *v1.Silo) error {
 	for range 5 {
-		err := a.writeClaim(ctx, s)
+		err := a.writeClaim(ctx, s, true)
 		if !errors.Is(err, errClaimConflict) {
 			return err
 		}

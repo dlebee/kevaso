@@ -54,11 +54,12 @@ func newK115(t *testing.T, rt kri.Runtime, steps ...v1.InitStep) (*claimHook, *c
 	if len(steps) > 0 {
 		init = &v1.Init{Steps: steps}
 	}
-	return newK115WithInit(t, rt, init)
+	hook, clk, get, _ := newK115WithInit(t, rt, init)
+	return hook, clk, get
 }
 
 // newK115WithInit is newK115 with the silo's spec.init as given (nil: none).
-func newK115WithInit(t *testing.T, rt kri.Runtime, init *v1.Init) (*claimHook, *clock.Fake, func() *v1.Silo) {
+func newK115WithInit(t *testing.T, rt kri.Runtime, init *v1.Init) (*claimHook, *clock.Fake, func() *v1.Silo, *client.Client) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
@@ -87,7 +88,7 @@ func newK115WithInit(t *testing.T, rt kri.Runtime, init *v1.Init) (*claimHook, *
 		}
 		return &cur
 	}
-	return hook, clk, get
+	return hook, clk, get, c
 }
 
 func waitReal(t *testing.T, what string, ok func() bool) {
