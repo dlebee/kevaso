@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -320,6 +321,25 @@ func (r *Runtime) PoolSize(ctx context.Context) (size, provisioned int64, err er
 		return 0, 0, fmt.Errorf("no thin pool %s/%s", VG, ThinPool)
 	}
 	return size, provisioned, nil
+}
+
+// fits refuses a new thin volume of size bytes when the pool hasn't that much left unpromised
+// (§0.8: refused at creation, with the numbers; a pool is never promised more than its size).
+func (r *Runtime) fits(ctx context.Context, what string, size int64) error {
+	pool, promised, err := r.PoolSize(ctx)
+	if err != nil {
+		return err
+	}
+	if left := pool - promised; size > left {
+		return fmt.Errorf("%s needs %s: this host's storage (%s/%s) is %s, %s of it promised to other disks already (%s left)",
+			what, gib(size), VG, ThinPool, gib(pool), gib(promised), gib(max(left, 0)))
+	}
+	return nil
+}
+
+// gib says a size in GiB, the way silo specs write them (40Gi, 1.5Gi).
+func gib(b int64) string {
+	return strconv.FormatFloat(math.Round(float64(b)/(1<<30)*10)/10, 'f', -1, 64) + "Gi"
 }
 
 // poolReady says whether the thin pool exists.

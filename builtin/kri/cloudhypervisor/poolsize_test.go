@@ -1,6 +1,7 @@
 package cloudhypervisor
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -29,5 +30,34 @@ func TestPoolSizeAndWhatIsProvisioned(t *testing.T) {
 	h.answer = func(cmd string) (string, error) { return "  root 10737418240 \n", nil }
 	if _, _, err := r.PoolSize(t.Context()); err == nil {
 		t.Error("no pool, and no error")
+	}
+}
+
+// §0.8: a local volume beyond what the host's pool has left is refused at creation, with the
+// numbers, and nothing is made. One that fits is made (a thin pool is never promised more than
+// its size, so running out inside a volume is the silo's own problem, not the host's).
+func TestALocalVolumeBeyondThePoolIsRefusedWithTheNumbers(t *testing.T) {
+	h := newFakeHost()
+	h.answer = func(cmd string) (string, error) {
+		switch {
+		case strings.HasPrefix(cmd, "lvs --noheadings --units b"):
+			return "  silos 107374182400 \n  kv-other 75161927680 silos\n", nil // 100 GiB, 70 GiB promised
+		case strings.HasPrefix(cmd, "lvs --noheadings kevaso/"):
+			return "", errors.New("not found")
+		}
+		return "", nil
+	}
+	r := &Runtime{Host: h}
+	st := State{ID: id("web")}
+	err := r.applyLayout(t.Context(), st, Layout{}, Layout{Disks: []VolumeDisk{{Name: "data", LV: "kv-web-data", SizeBytes: 40 << 30}}})
+	if err == nil || !strings.Contains(err.Error(), "volume data needs 40Gi") || !strings.Contains(err.Error(), "100Gi") || !strings.Contains(err.Error(), "30Gi left") {
+		t.Fatalf("refusal: %v", err)
+	}
+	if has(h.commands(), "lvcreate") {
+		t.Fatalf("made it anyway: %v", h.commands())
+	}
+	_ = r.applyLayout(t.Context(), st, Layout{}, Layout{Disks: []VolumeDisk{{Name: "data", LV: "kv-web-data", SizeBytes: 20 << 30}}})
+	if !has(h.commands(), "lvcreate -q -T kevaso/silos -V 20480m -n kv-web-data") {
+		t.Fatalf("a volume that fits wasn't made: %v", h.commands())
 	}
 }

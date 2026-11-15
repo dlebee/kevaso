@@ -36,14 +36,24 @@ type fakeHost struct {
 
 func newFakeHost() *fakeHost { return &fakeHost{files: map[string][]byte{}} }
 
+// bigPool is a thin pool of 1 TiB with nothing promised (lvs, as PoolSize asks).
+const bigPool = "  silos 1099511627776 \n"
+
 func (h *fakeHost) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	cmd := strings.TrimSpace(name + " " + strings.Join(args, " "))
 	h.cmds = append(h.cmds, cmd)
+	pool := strings.HasPrefix(cmd, "lvs --noheadings --units b")
 	if h.answer != nil {
 		out, err := h.answer(cmd)
+		if pool && out == "" && err == nil {
+			out = bigPool // tests that don't say: a pool with room
+		}
 		return []byte(out), err
+	}
+	if pool {
+		return []byte(bigPool), nil
 	}
 	if strings.HasPrefix(cmd, "systemctl is-active") {
 		return []byte("inactive"), errors.New("exit 3")
