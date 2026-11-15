@@ -18,6 +18,10 @@ const Authenticated = "system:authenticated"
 // certificates are in it).
 const ClusterAdmins = "kevaso:cluster-admins"
 
+// ClusterSecretValue is GET …/clustersecrets/NAME/value. A rule grants it only when resourceNames
+// contains that name: an empty list grants nothing (a cluster secret's value is always pinned).
+const ClusterSecretValue = "clustersecrets/value"
+
 // ServiceAccountUser is how a service account appears as a user.
 func ServiceAccountUser(namespace, name string) string {
 	return "system:serviceaccount:" + namespace + ":" + name
@@ -163,12 +167,21 @@ func bound(subjects []v1.Subject, bindingNS string, a Attributes) bool {
 func allows(rules []v1.PolicyRule, a Attributes) bool {
 	for _, r := range rules {
 		if matchVerb(r.Verbs, a.Verb, a.Resource) && matchResource(r.Resources, a.Resource) &&
-			(len(r.ResourceNames) == 0 || (a.Name != "" && slices.Contains(r.ResourceNames, a.Name))) &&
+			namesGrant(r, a) &&
 			(len(r.Selector) == 0 || (a.Name != "" && a.Labels != nil && selects(r.Selector, a.Labels))) {
 			return true
 		}
 	}
 	return false
+}
+
+// namesGrant: an empty resourceNames list is every name, except on a cluster secret's value,
+// which is always pinned. Empty resourceNames grants none of those, whatever else the rule says.
+func namesGrant(r v1.PolicyRule, a Attributes) bool {
+	if a.Resource == ClusterSecretValue {
+		return a.Name != "" && slices.Contains(r.ResourceNames, a.Name)
+	}
+	return len(r.ResourceNames) == 0 || (a.Name != "" && slices.Contains(r.ResourceNames, a.Name))
 }
 
 func selects(sel, labels map[string]string) bool {
