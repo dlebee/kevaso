@@ -24,10 +24,10 @@ func boxOn2(c *mt, ns, name string, pin bool) container.Names {
 	if pin {
 		c.apply(boxEcho(ns, name, 8080) + on(metalHost2))
 	} else { // movable: placed anywhere, then moved to machine 2
-		c.apply(boxEcho(ns, name, 8080))
+		c.apply(boxEcho(ns, name, 8080) + "  availability: { onHostLoss: Recreate }\n") // a container moves only as a fresh copy
 		c.waitRunning(ns, 15*time.Minute, name)
 		if c.silo(ns, name).Status.Host != metalHost2 {
-			c.must("", "move", "silo", name, "-n", ns, "--to", metalHost2)
+			c.must("", "move", "silo", name, "-n", ns, "--to", metalHost2, "--recreate")
 		}
 		c.eventually("on machine 2", 10*time.Minute, func() (bool, string) {
 			s := c.silo(ns, name)
@@ -59,7 +59,7 @@ func TestMetal2UnreadableStateMove(t *testing.T) {
 	t.Cleanup(func() { dropBox(p.c2, n) })
 	since := strings.TrimSpace(p.c2.mustSh("date -u '+%Y-%m-%d %H:%M:%S'"))
 	p.c2.mustSh("echo '{\"id\": ' > " + n.Dir + "/state.json")
-	c.must("", "move", "silo", "box", "-n", ns, "--to", metalHost)
+	c.must("", "move", "silo", "box", "-n", ns, "--to", metalHost, "--recreate")
 	runsAtRelease := false
 	c.eventually("released here (machine 2's journal)", 5*time.Minute, func() (bool, string) {
 		runs := strings.TrimSpace(p.c2.mustSh("docker ps --format '{{.Names}}' | grep -c '^"+n.Main+"$' || true")) != "0"

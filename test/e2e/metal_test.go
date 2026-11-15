@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -575,10 +576,69 @@ func (c *mt) namespace(ns string, extra ...string) {
 				c.t.Logf("cleanup %s: %s", e, strings.TrimSpace(o))
 			}
 		}
-		if o, code := c.kvo("", "delete", "namespace", ns); code != 0 {
-			c.t.Logf("cleanup namespace %s: %s", ns, strings.TrimSpace(o))
-		}
+		c.deleteNamespace(ns)
 	})
+}
+
+// heldKinds reads a refused namespace delete ("namespace NS still holds 2 Grant (a, b), 1 Widget
+// (widgets.example.com) (w), …"): the kind, or a defined kind's resource, of each.
+var heldKinds = regexp.MustCompile(`(\d+) ([A-Za-z]+)(?: \(([a-z0-9.-]+)\))? \(`)
+
+// deleteNamespace deletes a test's namespace. A namespace is deleted only once it is empty
+// (control-6): whatever the refusal names is deleted first, a few rounds at most.
+func (c *mt) deleteNamespace(ns string) {
+	c.t.Helper()
+	for round := 0; ; round++ {
+		o, code := c.kvo("", "delete", "namespace", ns)
+		if code == 0 || strings.Contains(o, "NotFound") {
+			return
+		}
+		if round == 4 || !strings.Contains(o, "still holds") {
+			c.t.Logf("cleanup namespace %s: %s", ns, strings.TrimSpace(o))
+			return
+		}
+		for _, m := range heldKinds.FindAllStringSubmatch(o, -1) {
+			kind := strings.ToLower(m[2])
+			if m[3] != "" {
+				kind = m[3]
+			}
+			out, _ := c.kvo("", "get", kind, "-n", ns, "-o", "json")
+			for _, name := range objectNames(out) {
+				if d, code := c.kvo("", "delete", kind, name, "-n", ns); code != 0 {
+					c.t.Logf("cleanup %s/%s in %s: %s", kind, name, ns, strings.TrimSpace(d))
+				}
+			}
+		}
+		time.Sleep(3 * time.Second) // a silo's delete takes its host a moment
+	}
+}
+
+// objectNames is the metadata.name of each object in kvo's JSON (a list, an array or one).
+func objectNames(out string) []string {
+	data := []byte(strings.TrimSpace(out))
+	var raws []json.RawMessage
+	if json.Unmarshal(data, &raws) != nil {
+		var list struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		if json.Unmarshal(data, &list) != nil {
+			return nil
+		}
+		raws = list.Items
+		if raws == nil {
+			raws = []json.RawMessage{data}
+		}
+	}
+	var names []string
+	for _, raw := range raws {
+		var o struct {
+			Metadata struct{ Name string } `json:"metadata"`
+		}
+		if json.Unmarshal(raw, &o) == nil && o.Metadata.Name != "" {
+			names = append(names, o.Metadata.Name)
+		}
+	}
+	return names
 }
 
 // fromMac is an HTTP GET from this Mac (no proxy, redirects not followed), with Host set when

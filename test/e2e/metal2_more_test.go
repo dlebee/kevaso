@@ -102,10 +102,10 @@ func TestMetal2RebootMidMove(t *testing.T) {
 	c := p.c1
 	ns := "midmove2"
 	c.namespace(ns)
-	c.apply(boxEcho(ns, "web", 8080))
+	c.apply(boxEcho(ns, "web", 8080) + "  availability: { onHostLoss: Recreate }\n") // a container moves only as a fresh copy
 	c.waitRunning(ns, 10*time.Minute, "web")
 	if c.silo(ns, "web").Status.Host != metalHost2 {
-		c.must("", "move", "silo", "web", "-n", ns, "--to", metalHost2)
+		c.must("", "move", "silo", "web", "-n", ns, "--to", metalHost2, "--recreate")
 		c.eventually("web on "+metalHost2, 5*time.Minute, func() (bool, string) {
 			s := c.silo(ns, "web")
 			return s.Status.Host == metalHost2 && s.Status.Phase == "Running" && s.Status.MovingFrom == "", s.Status.Host
@@ -113,7 +113,7 @@ func TestMetal2RebootMidMove(t *testing.T) {
 	}
 	uid := c.silo(ns, "web").UID
 	boot := strings.TrimSpace(p.c2.mustSh("cat /proc/sys/kernel/random/boot_id"))
-	c.must("", "move", "silo", "web", "-n", ns, "--to", metalHost)
+	c.must("", "move", "silo", "web", "-n", ns, "--to", metalHost, "--recreate")
 	_, _ = p.c2.sh("nohup sh -c 'sleep 1; systemctl reboot' >/dev/null 2>&1 &")
 	_ = p.m2.d.Close()
 	t.Log("moving web off machine 2, which reboots")
@@ -195,7 +195,7 @@ func TestMetal2MoveUnlikeStorage(t *testing.T) {
 	c := p.c1
 	ns := "unlike2"
 	c.namespace(ns)
-	c.apply(boxEcho(ns, "web", 8080) + "---\n" + vmEcho(ns, "vm", 8080) + on(metalHost))
+	c.apply(boxEcho(ns, "web", 8080) + "  availability: { onHostLoss: Recreate }\n---\n" + vmEcho(ns, "vm", 8080) + on(metalHost))
 	c.waitRunning(ns, 20*time.Minute, "web", "vm")
 	if out, code := c.in(ns, "web", "head -c 16M /dev/urandom > /root/blob && sync"); code != 0 {
 		t.Fatalf("write: %d %s", code, out)
@@ -203,7 +203,7 @@ func TestMetal2MoveUnlikeStorage(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		from := c.silo(ns, "web").Status.Host
 		to := map[string]string{metalHost: metalHost2, metalHost2: metalHost}[from]
-		c.must("", "move", "silo", "web", "-n", ns, "--to", to)
+		c.must("", "move", "silo", "web", "-n", ns, "--to", to, "--recreate")
 		c.eventually("web on "+to, 10*time.Minute, func() (bool, string) {
 			s := c.silo(ns, "web")
 			return s.Status.Host == to && s.Status.Phase == "Running" && s.Status.MovingFrom == "", s.Status.Host + " " + s.Status.Phase

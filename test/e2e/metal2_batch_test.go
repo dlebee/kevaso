@@ -77,7 +77,7 @@ func TestMetal2InitStepUnderACut(t *testing.T) {
 		"  init: { when: everyBoot, steps: [{ name: slow, run: \"sleep 300\" }] }\n")
 	c.eventually("placed", 5*time.Minute, func() (bool, string) { s := c.silo(ns, "slow"); return s.Status.Host != "", s.Status.Host })
 	if c.silo(ns, "slow").Status.Host != metalHost2 {
-		c.must("", "move", "silo", "slow", "-n", ns, "--to", metalHost2)
+		c.must("", "move", "silo", "slow", "-n", ns, "--to", metalHost2, "--recreate")
 	}
 	uid := c.silo(ns, "slow").UID
 	short := cloudhypervisor.NamesFor(kri.ID{Namespace: ns, Name: "slow", UID: uid}).Short
@@ -233,9 +233,11 @@ spec:
 	c.expect("its files are all there", got, "kept")
 }
 
-// TestMetal2DrainDuringAMove is K-070 on the machines: a silo moving from machine 2 to machine 1,
-// machine 2 cut off just after kvo move (so it still holds it): kvoadm host drain metal-1 says a
-// move from metal-2 is under way and leaves it, and status.movingFrom stays metal-2.
+// TestMetal2DrainDuringAMove is K-070 on the machines: a container moving (as a fresh copy: the
+// only way a container moves since control-6) from machine 2 to machine 1, machine 2 cut off just
+// after kvo move (so it still holds it), then kvoadm host drain metal-1. Drain either leaves the
+// move (status.movingFrom stays metal-2) or re-places the silo (onHostLoss: Recreate), and at no
+// moment does it run on both machines.
 //
 // Listens on nothing outside.
 func TestMetal2DrainDuringAMove(t *testing.T) {
@@ -249,24 +251,37 @@ func TestMetal2DrainDuringAMove(t *testing.T) {
 		var o bytes.Buffer
 		_ = kvoadm.Run(c.ctx, []string{"host", "uncordon", metalHost, "--context", "metal2"}, strings.NewReader(""), &o, &o)
 	})
-	c.apply(boxEcho(ns, "web", 8080))
+	c.apply(boxEcho(ns, "web", 8080) + "  availability: { onHostLoss: Recreate }\n") // a container moves only as a fresh copy
 	c.waitRunning(ns, 10*time.Minute, "web")
 	if c.silo(ns, "web").Status.Host != metalHost2 {
-		c.must("", "move", "silo", "web", "-n", ns, "--to", metalHost2)
+		c.must("", "move", "silo", "web", "-n", ns, "--to", metalHost2, "--recreate")
 		c.eventually("web on "+metalHost2, 5*time.Minute, func() (bool, string) {
 			s := c.silo(ns, "web")
 			return s.Status.Host == metalHost2 && s.Status.Phase == "Running" && s.Status.MovingFrom == "", s.Status.Host
 		})
 	}
-	c.must("", "move", "silo", "web", "-n", ns, "--to", metalHost)
+	uid := c.silo(ns, "web").UID
+	stop := p.neverBoth(func(h *mt) int { return anyOf(h, uid) })
+	c.must("", "move", "silo", "web", "-n", ns, "--to", metalHost, "--recreate")
 	p.cut() // machine 2 holds it: it can't hand it off now
 	t.Log("moving web from machine 2 to machine 1, machine 2 cut off")
 	var o bytes.Buffer
 	code := kvoadm.Run(c.ctx, []string{"host", "drain", metalHost, "--context", "metal2"}, strings.NewReader(""), &o, &o)
 	t.Logf("kvoadm host drain %s: exit %d\n%s", metalHost, code, o.String())
-	c.expect("drain leaves the move alone", o.String(), "a move from "+metalHost2+" is under way")
-	if s := c.silo(ns, "web"); s.Status.MovingFrom != metalHost2 {
-		t.Errorf("movingFrom is %q after the drain, want %s", s.Status.MovingFrom, metalHost2)
+	left := strings.Contains(o.String(), "a move from "+metalHost2+" is under way")
+	time.Sleep(30 * time.Second) // what the drain set going plays out, machine 2 still cut off
+	s := c.silo(ns, "web")
+	t.Logf("after the drain: host %q, movingFrom %q, phase %s; on machine 1 %d, on machine 2 %d", s.Status.Host, s.Status.MovingFrom, s.Status.Phase, anyOf(p.c1, uid), anyOf(p.c2, uid))
+	switch {
+	case left && s.Status.MovingFrom != metalHost2:
+		t.Errorf("drain said it leaves the move, but movingFrom is %q", s.Status.MovingFrom)
+	case !left && !strings.Contains(o.String(), ns+"/web: recreated elsewhere"):
+		t.Errorf("drain neither left the move nor re-placed it")
+	}
+	if both, checks := stop(); both != "" {
+		t.Errorf("it ran on both machines at %s (%d checks)", both, checks)
+	} else {
+		t.Logf("never on both machines (%d checks)", checks)
 	}
 }
 

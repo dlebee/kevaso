@@ -133,7 +133,7 @@ func TestMetal2Moves(t *testing.T) {
 	c := p.c1
 	ns := "moves2"
 	c.namespace(ns)
-	c.apply(boxEcho(ns, "web", 8080) + "---\n" + vmEcho(ns, "db", 8080) + on(metalHost2) + "  volumes: [{ name: data, size: 1Gi, mountPath: /data }]\n")
+	c.apply(boxEcho(ns, "web", 8080) + "  availability: { onHostLoss: Recreate }\n---\n" + vmEcho(ns, "db", 8080) + on(metalHost2) + "  volumes: [{ name: data, size: 1Gi, mountPath: /data }]\n")
 	c.waitRunning(ns, 20*time.Minute, "web", "db")
 	from := c.silo(ns, "web").Status.Host
 	to := map[string]string{metalHost: metalHost2, metalHost2: metalHost}[from]
@@ -143,7 +143,7 @@ func TestMetal2Moves(t *testing.T) {
 		t.Fatalf("write: %d %s", code, out)
 	}
 	uid := c.silo(ns, "web").UID
-	c.must("", "move", "silo", "web", "-n", ns, "--to", to)
+	c.must("", "move", "silo", "web", "-n", ns, "--to", to, "--recreate")
 	c.eventually("web runs on "+to, 10*time.Minute, func() (bool, string) {
 		s := c.silo(ns, "web")
 		return s.Status.Host == to && s.Status.Phase == "Running" && s.Status.MovingFrom == "", fmt.Sprint(s.Status.Host, s.Status.Phase, s.Status.MovingFrom)
@@ -211,11 +211,11 @@ func TestMetal2Fence(t *testing.T) {
 		boxEcho(ns, "recreate", 8080) + on(metalHost2) + "  availability: { onHostLoss: Recreate }\n---\n" +
 		boxEcho(ns, "stops", 8080) + on(metalHost2) + "  availability: { onControlPlaneLoss: Stop, after: 30s }\n---\n" +
 		boxEcho(ns, "restarts", 8080) + "  availability: { onControlPlaneLoss: Stop, after: 30s, onHostLoss: Recreate }\n---\n" +
-		boxEcho(ns, "rescue", 8080))
+		boxEcho(ns, "rescue", 8080) + "  availability: { onHostLoss: Recreate }\n") // a container moves only as a fresh copy; Recreate alone never restarts it elsewhere by itself
 	c.waitRunning(ns, 10*time.Minute, "stay", "recreate", "stops", "restarts", "rescue")
 	for _, n := range []string{"restarts", "rescue"} {
 		if s := c.silo(ns, n); s.Status.Host != metalHost2 {
-			c.must("", "move", "silo", n, "-n", ns, "--to", metalHost2)
+			c.must("", "move", "silo", n, "-n", ns, "--to", metalHost2, "--recreate")
 		}
 	}
 	names := []string{"stay", "recreate", "stops", "restarts", "rescue"}
@@ -278,13 +278,13 @@ func TestMetal2Fence(t *testing.T) {
 		}
 	}
 	t.Log("well into the cut: the rest keeps running on machine 2, and nothing else started elsewhere")
-	if out, code := c.kvo("", "move", "silo", "rescue", "-n", ns, "--to", metalHost); code == 0 {
+	if out, code := c.kvo("", "move", "silo", "rescue", "-n", ns, "--to", metalHost, "--recreate"); code == 0 {
 		t.Errorf("a move off a lost host without --confirm-fenced went ahead: %s", out)
 	}
 	// Machine 2 still runs rescue. Confirming the fence is the operator's word that it doesn't:
 	// make it true first, as an operator would on a host they can reach.
 	p.c2.mustSh("docker ps -q --filter label=kevaso.com/uid=" + uids["rescue"] + " | xargs -r docker stop -t 2 >/dev/null; true")
-	c.must("", "move", "silo", "rescue", "-n", ns, "--to", metalHost, "--confirm-fenced")
+	c.must("", "move", "silo", "rescue", "-n", ns, "--to", metalHost, "--confirm-fenced", "--recreate")
 	c.eventually("--confirm-fenced: rescue runs on machine 1", 5*time.Minute, func() (bool, string) {
 		s := c.silo(ns, "rescue")
 		return s.Status.Host == metalHost && s.Status.Phase == "Running", s.Status.Host + " " + s.Status.Phase
@@ -325,7 +325,7 @@ func TestMetal2HostLoss(t *testing.T) {
 		boxEcho(ns, "moves", 8080) + "  availability: { onHostLoss: Recreate }\n")
 	c.waitRunning(ns, 20*time.Minute, "stay", "vm", "moves")
 	if s := c.silo(ns, "moves"); s.Status.Host != metalHost2 {
-		c.must("", "move", "silo", "moves", "-n", ns, "--to", metalHost2)
+		c.must("", "move", "silo", "moves", "-n", ns, "--to", metalHost2, "--recreate")
 		c.eventually("moves on "+metalHost2, 5*time.Minute, func() (bool, string) {
 			s := c.silo(ns, "moves")
 			return s.Status.Host == metalHost2 && s.Status.Phase == "Running", s.Status.Host
@@ -451,7 +451,7 @@ func TestMetal2Drain(t *testing.T) {
 	c.apply(boxEcho(ns, "job", 8080) + "  availability: { onHostLoss: Recreate }\n---\n" + boxEcho(ns, "stay", 8080) + on(metalHost2))
 	c.waitRunning(ns, 10*time.Minute, "job", "stay")
 	if c.silo(ns, "job").Status.Host != metalHost2 {
-		c.must("", "move", "silo", "job", "-n", ns, "--to", metalHost2)
+		c.must("", "move", "silo", "job", "-n", ns, "--to", metalHost2, "--recreate")
 		c.eventually("job on "+metalHost2, 5*time.Minute, func() (bool, string) {
 			s := c.silo(ns, "job")
 			return s.Status.Host == metalHost2 && s.Status.Phase == "Running" && s.Status.MovingFrom == "", s.Status.Host
@@ -569,7 +569,7 @@ func TestMetal2NeverTwice(t *testing.T) {
 		"  init: { when: everyBoot, steps: [{ name: slow, run: \"sleep 15\" }] }\n")
 	c.waitRunning(ns, 10*time.Minute, "single")
 	if c.silo(ns, "single").Status.Host != metalHost2 {
-		c.must("", "move", "silo", "single", "-n", ns, "--to", metalHost2)
+		c.must("", "move", "silo", "single", "-n", ns, "--to", metalHost2, "--recreate")
 	}
 	c.eventually("single on "+metalHost2, 5*time.Minute, func() (bool, string) {
 		s := c.silo(ns, "single")
