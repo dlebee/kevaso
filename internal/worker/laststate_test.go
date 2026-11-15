@@ -114,3 +114,42 @@ func TestAWorkerStartsWithoutItsControlPlaneOnlyFromWhatItKept(t *testing.T) {
 		t.Fatal("off the mesh with nothing kept")
 	}
 }
+
+// K-079: the agent's local endpoint takes an address only from the port the loaded rules bind it
+// to: the worker hands it the same bindings the network loaded.
+func TestTheLoadedBindingsAreShared(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
+	api := httptest.NewServer(srv)
+	defer api.Close()
+	admin := client.New(api.URL)
+	_ = admin.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
+	_ = admin.Create(ctx, &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: "hv1"},
+		Spec: v1.HostSpec{InternalIP: "10.0.0.5", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}})
+	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "dev"},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "nginx"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
+	if err := admin.Create(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	s.Status.Host, s.Status.Phase, s.Status.SiloIP = "hv1", "Running", "10.64.0.2"
+	if err := admin.UpdateStatus(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	old := applyRules
+	applyRules = func(context.Context, string) error { return nil }
+	defer func() { applyRules = old }()
+	b := NewBindings()
+	if _, ok := b.Port(netip.MustParseAddr("10.64.0.2")); ok {
+		t.Fatal("bound before any rules were loaded")
+	}
+	go RunNetworkWith(ctx, client.New(api.URL), "hv1", nil, nil, t.Logf, NetworkOptions{Bindings: b})
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if _, ok := b.Port(netip.MustParseAddr("10.64.0.2")); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the loaded rules' bindings never reached the shared bindings")
+		}
+	}
+}

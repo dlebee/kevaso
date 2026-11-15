@@ -237,7 +237,8 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	if cfg.Watermark != nil {
 		held = cfg.Watermark.Held
 	}
-	stateFile := "" // the network's last state (K-062), where the worker has a data directory
+	bindings := NewBindings() // the loaded rules', shared with the agent's local endpoint (K-079)
+	stateFile := ""           // the network's last state (K-062), where the worker has a data directory
 	if cfg.DataDir != "" {
 		stateFile = filepath.Join(cfg.DataDir, LastStateFile)
 	}
@@ -262,7 +263,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 					cfg.Log("runtime %s ready", name)
 					if usesBridge(rt) { // the bridge is there now: keep its firewall current (once)
 						networkOnce.Do(func() {
-							go RunNetworkWith(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log, NetworkOptions{Held: held, StateFile: stateFile})
+							go RunNetworkWith(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log, NetworkOptions{Held: held, StateFile: stateFile, Bindings: bindings})
 						})
 					}
 				}
@@ -297,7 +298,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	for name, rt := range rts {
 		runtimes[name] = rt
 	}
-	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes, Watermark: cfg.Watermark,
+	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes, Watermark: cfg.Watermark, Bound: bindings.Port,
 		RuntimeReady: func(name string) bool {
 			mu.Lock()
 			defer mu.Unlock()

@@ -98,8 +98,16 @@ func watchBindings(ctx context.Context, every time.Duration, read func() map[str
 	}
 }
 
-// loadedBindings are the bindings of the ruleset that is loaded now (the last one nft took): the
-// only addresses that say which port, so which silo, a packet came from.
+// Bindings are the bindings of the ruleset that is loaded now (the last one nft took): the only
+// addresses that say which port, so which silo, a packet came from.
+type Bindings = loadedBindings
+
+// NewBindings is an empty set: nothing bound until a ruleset is loaded.
+func NewBindings() *Bindings { return &loadedBindings{} }
+
+// Port is the port the loaded rules bind ip to (agent.Agent.Bound).
+func (l *loadedBindings) Port(ip netip.Addr) (string, bool) { return l.tap(ip) }
+
 type loadedBindings struct {
 	mu   sync.Mutex
 	byIP map[netip.Addr]string // address → tap

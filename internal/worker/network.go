@@ -161,6 +161,9 @@ type NetworkOptions struct {
 	// than what this worker saw, or another cluster's): the rules, the pool and announced
 	// addresses stay as they are, and the DNS listeners answer from what they have.
 	Held func() bool
+	// Bindings, if set, are the loaded rules' bindings, shared with the agent's local endpoint
+	// (K-079: it takes an address only from the port they bind it to).
+	Bindings *Bindings
 	// StateFile, if set, keeps the last state seen (laststate.go): a start while the control
 	// plane is away comes up from it (K-062).
 	StateFile string
@@ -248,7 +251,10 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 		hs := currentHosts()
 		return names.View{Silos: current(), Services: currentServices(), Hosts: hs, Suffix: v1.ClusterSuffix(hs)}
 	}
-	loaded := &loadedBindings{}
+	loaded := o.Bindings
+	if loaded == nil {
+		loaded = NewBindings()
+	}
 	readBindings := func() map[string]Bound { return LocalBindings(stateHost) }
 	go watchBindings(ctx, time.Second, readBindings, func() { poke(informer.Key{}) })
 	dnsOn := &dnsListeners{run: map[string]context.CancelFunc{}}
