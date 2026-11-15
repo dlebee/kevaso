@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -233,11 +234,29 @@ func mode(f kic.File) string {
 	return fmt.Sprintf("%04o", m)
 }
 
-// tail is the end of a command's output, enough to say why.
+// tail is the end of a command's output, enough to say why, with any key material taken out
+// (Redact): it goes into statuses, logs and errors.
 func tail(s string) string {
-	s = string(bytes.TrimSpace([]byte(s)))
+	s = Redact(string(bytes.TrimSpace([]byte(s))))
 	if len(s) > 2000 {
 		s = "…" + s[len(s)-2000:]
 	}
 	return s
+}
+
+// What a proxy may echo of what it refused (K-085: Kong's errors carry the refused entity, a
+// certificate's key included): PEM blocks, whole or cut off at either end (the base64 before a
+// lone END line), and the values of key, secret, password and token fields (JSON, escaped or not).
+var (
+	pemBlock = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*-----.*?(-----END [A-Z0-9 ]*-----|$)`)
+	pemTail  = regexp.MustCompile(`[A-Za-z0-9+/=\s\\]*-----END [A-Z0-9 ]*-----`)
+	secretKV = regexp.MustCompile(`(?i)(\\?"[A-Za-z0-9_-]*(?:key|secret|password|passwd|token|private|credential)[A-Za-z0-9_-]*\\?"\s*:\s*)(\\?")(?:[^"\\]|\\[^"])*(\\?")`)
+)
+
+// Redact takes key material out of what a proxy said, before it reaches a status, a log or an
+// error.
+func Redact(s string) string {
+	s = pemBlock.ReplaceAllString(s, "[key material removed]")
+	s = pemTail.ReplaceAllString(s, "[key material removed]")
+	return secretKV.ReplaceAllString(s, "${1}${2}[removed]${3}")
 }
