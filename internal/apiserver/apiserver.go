@@ -597,6 +597,19 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 			return store.Object{}, errf(http.StatusConflict, "Conflict", "%v", err)
 		}
 	}
+	if id, ok := IdentityFrom(ctx); ok && id.Type == "host" && id.Role == "worker" && t.kind.Kind == "Host" && t.status {
+		// K-037: status.provider is the provider-hosts controller's (from the plugin), not the worker's.
+		oh, nh := old.(*v1.Host).Status, obj.(*v1.Host).Status
+		if !reflect.DeepEqual(oh.Provider, nh.Provider) {
+			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s may not write status.provider of a host", id.Name)
+		}
+		// Likewise the mesh addresses the host controller assigns (a host that rewrote them
+		// would claim another's addresses in its peers' AllowedIPs); the host's keys are its own.
+		on, nn := oh.Network, nh.Network
+		if on.Index != nn.Index || on.MeshIP != nn.MeshIP || on.SiloSubnet != nn.SiloSubnet || on.InnerIP != nn.InnerIP {
+			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s may not write the mesh addresses the control plane assigned it", id.Name)
+		}
+	}
 	if id, ok := IdentityFrom(ctx); ok && id.Type == "host" && id.Role == "worker" && t.kind.Kind == "IngressClass" {
 		if err := ingress.HostWrite(old.(*v1.IngressClass).Status, obj.(*v1.IngressClass).Status, id.Name); err != nil {
 			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%v", err)
