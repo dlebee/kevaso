@@ -22,35 +22,6 @@ import (
 	"kevaso.com/core/testbed"
 )
 
-// hgetGo is a tiny HTTP client for the silos (OpenShell's default image has no curl or python):
-// hget URL [HEADER=VALUE]… prints the status and body, or "error: …".
-const hgetGo = `package main
-
-import (
-	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"strings"
-	"time"
-)
-
-func main() {
-	req, _ := http.NewRequest("GET", os.Args[1], nil)
-	for _, h := range os.Args[2:] {
-		k, v, _ := strings.Cut(h, "=")
-		req.Header.Set(k, v)
-	}
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
-	if err != nil {
-		fmt.Println("error:", err)
-		os.Exit(1)
-	}
-	b, _ := io.ReadAll(resp.Body)
-	fmt.Println(resp.StatusCode, string(b))
-}
-`
-
 // TestOpenShellSilos is M8's "done when": an OpenShell silo with an injected key, on both drivers.
 // One KVM host runs the openshell (VM) and openshell-container (Docker) runtimes, each sandbox under
 // a gateway of its own user in a locked-down unit; a grant becomes OpenShell's policy (one name
