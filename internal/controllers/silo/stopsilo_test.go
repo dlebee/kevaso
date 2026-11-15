@@ -38,10 +38,19 @@ func TestAStopSiloRestartsAfterOurOwnCountWhateverTheAgentsClockSays(t *testing.
 	contacts := hostctl.NewContacts(clk.Now())
 	e := engine.New(clk)
 	e.Register(&silo.Controller{Client: c, Silos: silos, Hosts: hosts, Clock: clk, Contacts: contacts}, engine.Options{Workers: 1})
-	e.Register(&hostctl.Controller{Client: c, Hosts: hosts, Clock: clk, Lease: 40 * time.Second, Contacts: contacts}, engine.Options{Workers: 1})
 	e.WaitFor(silos, hosts)
+	// The host controller runs in its own engine, started only once the silo is on hv1: hv1's
+	// stamp is an hour behind, so the host controller calls hv1 lost as soon as it looks at it,
+	// and had it looked before the silo was placed, the silo could never be placed at all (the
+	// test then waited out its 20 s). The silo's placement isn't what is tested here.
+	eh := engine.New(clk)
+	eh.Register(&hostctl.Controller{Client: c, Hosts: hosts, Clock: clk, Lease: 40 * time.Second, Contacts: contacts}, engine.Options{Workers: 1})
+	eh.WaitFor(hosts)
 	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
-	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
+	hosts.AddHandler(func(k informer.Key) {
+		e.Changed(engine.Key{Kind: "Host", Name: k.Name})
+		eh.Changed(engine.Key{Kind: "Host", Name: k.Name})
+	})
 	go silos.Run(ctx)
 	go hosts.Run(ctx)
 	go e.Run(ctx)
@@ -79,6 +88,7 @@ func TestAStopSiloRestartsAfterOurOwnCountWhateverTheAgentsClockSays(t *testing.
 		t.Fatal(err)
 	}
 	waitFor(ctx, t, c, "validator", func(s *v1.Silo) bool { return s.Status.Host == "hv1" })
+	go eh.Run(ctx) // from now on hv1's stamp is judged
 	// hv1's agent arms its fence for this spec (the host lane's half).
 	var got v1.Silo
 	retry(t, func() error {
