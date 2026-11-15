@@ -22,11 +22,10 @@ func (failingKill) Kill(context.Context, kri.ID) error { return errors.New("engi
 // Rule 1 with kevasod dead: the agent armed the silo (FenceArmed True) and died; only the fence
 // watcher is left on the host, and its kill fails on every check. Nothing on that host can reach
 // the control plane (the watcher reads and writes local files only), so the silo stays armed in
-// the API, and the control plane, past after + StopMargin of silence, starts a second copy while
-// the first still runs. Needs a new mechanism (see the report: self-fence by reboot/watchdog when
-// a kill can't be confirmed, or a positive "stopped" confirmation the control plane waits for).
+// the API. Before the fix, the control plane, past after + StopMargin of silence, started a second
+// copy while the first still ran. Now it waits for the host to report the stop (FenceStopped),
+// which never comes: silence alone, however long, starts nothing elsewhere.
 func TestRule1AWatcherWhoseKillFailsStillLetsTheSiloRestartElsewhere(t *testing.T) {
-	t.Skip("Rule 1, needs design: a failed watcher kill with kevasod dead leaves the silo armed")
 	ctx := context.Background()
 	after := 2 * time.Minute
 	t0 := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)

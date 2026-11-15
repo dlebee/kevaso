@@ -21,9 +21,10 @@ import (
 
 // K-119, the API server's half: on a cluster only the source host ends a handoff, or a person's
 // confirm-fenced move (K-070). The one other end is the silo controller's (Component), for a
-// handoff whose source is lost or gone and armed its fence for the silo as it is: the API server
-// checks what it can see (the source lost, its armed fence stored), the controller the silence it
-// counted. Anyone else, or without those, is still refused.
+// handoff whose source is lost or gone, armed its fence for the silo as it is, and reported that
+// its fence stopped it (FenceStopped): the API server checks what it can see (the source lost, its
+// armed fence and its report stored), the controller the silence it counted. Anyone else, or
+// without those, is still refused: silence alone never ends it.
 func TestK119OnlyTheControllerEndsAHandoffFromAGoneArmedSource(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -64,8 +65,9 @@ func TestK119OnlyTheControllerEndsAHandoffFromAGoneArmedSource(t *testing.T) {
 		}
 		must(admin.UpdateStatus(ctx, &h))
 	}
-	// handingOff makes NAME on src, armed by src if asked, then hands it off to dst.
-	handingOff := func(name string, armed bool) {
+	// handingOff makes NAME on src, armed by src if asked (and, if asked, its fenced stop reported
+	// by src), then hands it off to dst.
+	handingOff := func(name string, armed, stopped bool) {
 		s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev"},
 			Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Availability: v1.Availability{OnControlPlaneLoss: v1.OnControlPlaneLossStop}}}
 		must(admin.Create(ctx, s))
@@ -74,6 +76,9 @@ func TestK119OnlyTheControllerEndsAHandoffFromAGoneArmedSource(t *testing.T) {
 		if armed {
 			must(admin.Get(ctx, "Silo", "dev", name, s))
 			s.Status.Conditions = append(s.Status.Conditions, fence.ArmedCondition("src", 2*time.Minute, s.Generation))
+			if stopped {
+				s.Status.Conditions = append(s.Status.Conditions, fence.StoppedCondition("src", nil, s.Generation))
+			}
 			must(hostS.UpdateStatus(ctx, s))
 		}
 		must(admin.Get(ctx, "Silo", "dev", name, s))
@@ -87,8 +92,9 @@ func TestK119OnlyTheControllerEndsAHandoffFromAGoneArmedSource(t *testing.T) {
 		return c.UpdateStatus(ctx, &s)
 	}
 
-	handingOff("armed", true)
-	handingOff("unarmed", false)
+	handingOff("armed", true, true)
+	handingOff("unarmed", false, false)
+	handingOff("unreported", true, false)
 	setLost(false)
 	if err := end(comp, "armed"); code(err) != http.StatusConflict {
 		t.Fatalf("the controller ending a handoff from a live source: %v, want 409", err)
@@ -100,6 +106,9 @@ func TestK119OnlyTheControllerEndsAHandoffFromAGoneArmedSource(t *testing.T) {
 	if err := end(comp, "unarmed"); code(err) != http.StatusConflict {
 		t.Fatalf("the controller ending a handoff from a lost source that never armed: %v, want 409", err)
 	}
+	if err := end(comp, "unreported"); code(err) != http.StatusConflict {
+		t.Fatalf("the controller ending a handoff from a lost armed source that never reported the stop: %v, want 409", err)
+	}
 	if err := end(comp, "armed"); err != nil {
 		t.Fatalf("the controller ending a handoff from a lost armed source: %v", err)
 	}
@@ -109,7 +118,7 @@ func TestK119OnlyTheControllerEndsAHandoffFromAGoneArmedSource(t *testing.T) {
 		t.Fatalf("after: %+v", got.Status)
 	}
 	// Its Host removed counts as gone.
-	handingOff("removed", true)
+	handingOff("removed", true, true)
 	must(admin.Delete(ctx, "Host", "", "src"))
 	if err := end(comp, "removed"); err != nil {
 		t.Fatalf("the controller ending a handoff from a removed armed source: %v", err)

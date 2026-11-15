@@ -1731,5 +1731,129 @@
    "./test/integration"
   ],
   "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-185",
+  "guard": "silo controller: restarts elsewhere only once its host reported the stop (Rule 1)",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "if !stopConfirmedBy(s, host) {",
+  "replace": "if false {",
+  "mutation": "silence alone restarts",
+  "packages": [
+   "./internal/controllers/silo",
+   "./internal/controlplane",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-186",
+  "guard": "silo controller: a handoff from a gone source ends only once the source reported the stop (K-119)",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "case !stopConfirmedBy(s, src):",
+  "replace": "case false:",
+  "mutation": "silence alone ends it",
+  "packages": [
+   "./internal/controllers/silo",
+   "./internal/controlplane",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-187",
+  "guard": "EndsLostHandoff: the API server lets the controller end a handoff only with the source's stop report",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "armedBy(old, old.Status.MovingFrom) && stopConfirmedBy(old, old.Status.MovingFrom)",
+  "replace": "armedBy(old, old.Status.MovingFrom)",
+  "mutation": "report not required",
+  "packages": [
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-188",
+  "guard": "fence.StoppedBy: for this host, this start claim and generation",
+  "file": "internal/fence/armed.go",
+  "find": "c.ObservedGeneration == want.ObservedGeneration && c.Message == want.Message",
+  "replace": "want.ObservedGeneration == want.ObservedGeneration",
+  "mutation": "stale report counts",
+  "packages": [
+   "./internal/fence",
+   "./internal/controllers/silo",
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-189",
+  "guard": "a host reports a fenced stop only in its own name",
+  "file": "internal/moves/moves.go",
+  "find": "if !strings.HasPrefix(n.Message, fence.StoppedPrefix(host)+\" \") {",
+  "replace": "if false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-190",
+  "guard": "only the silo's host writes its stop report (HostConditions)",
+  "file": "internal/moves/moves.go",
+  "find": "var HostConditions = []string{CondStartClaim, fence.ConditionArmed, fence.ConditionStopped}",
+  "replace": "var HostConditions = []string{CondStartClaim, fence.ConditionArmed}",
+  "mutation": "report writable by anyone",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-191",
+  "guard": "agent reports a stop only for the start claim its fence stopped",
+  "file": "internal/agent/fencing.go",
+  "find": "if !sameClaim(claim, x.claim) {",
+  "replace": "if false {",
+  "mutation": "claim not compared",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-192",
+  "guard": "agent reports a stop only while its runtime says nothing of it runs",
+  "file": "internal/agent/fencing.go",
+  "find": "if err != nil || st.State == kri.Running {\n\t\t\ta.log(\"fence: %s isn't reported stopped",
+  "replace": "if (err != nil || st.State == kri.Running) && false {\n\t\t\ta.log(\"fence: %s isn't reported stopped",
+  "mutation": "runtime not asked",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-193",
+  "guard": "agent: a start claim takes away the report of an earlier start",
+  "file": "internal/agent/agent.go",
+  "find": "removeCondition(&cur.Status, fence.ConditionStopped)",
+  "replace": "_ = fence.ConditionStopped",
+  "mutation": "old report kept",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
  }
 ]

@@ -606,8 +606,9 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		// let-go that unmounted the source's volumes from anyone.
 		//
 		// K-119: the one other end is the silo controller's (Component) of a handoff whose source
-		// is lost or gone and armed its fence for the silo: checked here as far as the store shows
-		// it (siloctl.EndsLostHandoff); the silence it waited for is the leader's count.
+		// is lost or gone, armed its fence for the silo, and reported its fence stopped it: checked
+		// here as far as the store shows it (siloctl.EndsLostHandoff); the silence it waited for
+		// is the leader's count.
 		if err := moves.Replaces(old.(*v1.Silo).Status, obj.(*v1.Silo).Status); err != nil && (s.auth != nil || !letGo(old.(*v1.Silo).Status, obj.(*v1.Silo).Status)) {
 			if !ok || id != Component || !siloctl.EndsLostHandoff(old.(*v1.Silo), obj.(*v1.Silo).Status, s.hostGone(ctx, old.(*v1.Silo).Status.MovingFrom)) {
 				return store.Object{}, errf(http.StatusConflict, "Conflict", "%v", err)
