@@ -144,12 +144,13 @@ type Agent struct {
 	// Only such a delete removes a silo's disk and volumes (design §0.7): a silo that is merely
 	// missing from the API (a control plane restored from an older backup, a re-made cluster) is
 	// kept, running, with its data, and listed (kept, logged once).
-	seenDeleted sync.Map
-	keptNoted   sync.Map
-	engine      *engine.Engine
-	cp          *watermark // the control plane this worker trusts (watermark.go); via watermark()
-	cpOnce      sync.Once
-	staleNoted  sync.Map // silo UID → logged once that its cache was stale at a start
+	seenDeleted   sync.Map
+	keptNoted     sync.Map
+	engine        *engine.Engine
+	cp            *watermark // the control plane this worker trusts (watermark.go); via watermark()
+	cpOnce        sync.Once
+	staleNoted    sync.Map // silo UID → logged once that its cache was stale at a start
+	createBackoff sync.Map // silo UID → createBackoff
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
@@ -486,6 +487,9 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	}
 	switch rs.State {
 	case kri.Absent:
+		if wait := a.createWait(s); wait > 0 {
+			return engine.Result{RequeueAfter: wait}, nil // its last create failed: the backoff first
+		}
 		if wait, err := a.mayStartHere(ctx, s); wait || err != nil {
 			return engine.Result{RequeueAfter: 2 * time.Second}, nil
 		}
@@ -512,12 +516,15 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 				Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath})
 		}
 		if err != nil {
+			wait := a.createFailed(s)
 			_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 				st.Phase = PhaseFailed
-				setCond(st, "Ready", meta.ConditionFalse, failReason(err, "CreateFailed"), err.Error(), s.Generation, a.now())
+				setCond(st, "Ready", meta.ConditionFalse, failReason(err, "CreateFailed"), err.Error()+" (trying again in "+wait.String()+")", s.Generation, a.now())
 			})
-			return engine.Result{}, err
+			a.log("silo %s/%s: create: %v (trying again in %s)", s.Namespace, s.Name, err, wait)
+			return engine.Result{RequeueAfter: wait}, nil
 		}
+		a.createBackoff.Delete(s.UID)
 		return engine.Result{RequeueAfter: time.Millisecond}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 			st.Image = running(st.Image, s, image)
 			st.Image.Digest = digest
@@ -932,6 +939,42 @@ func (a *Agent) writeStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.Sil
 		return err
 	}
 	return errors.New("status kept changing; will retry")
+}
+
+// createBackoff is a silo's failed creates (a pull of an image that isn't there, say): each
+// waits before the next, 5s doubling up to 5m, for as long as its spec stays the same. Its
+// status writes come back as changes; without this each started the next try at once.
+type createBackoff struct {
+	generation int64
+	delay      time.Duration
+	until      time.Time
+}
+
+// createFailed records a failed create of s and says how long until the next.
+func (a *Agent) createFailed(s *v1.Silo) time.Duration {
+	b := createBackoff{generation: s.Generation, delay: 5 * time.Second}
+	if o, ok := a.createBackoff.Load(s.UID); ok {
+		if prev := o.(createBackoff); prev.generation == s.Generation {
+			b.delay = min(2*prev.delay, 5*time.Minute)
+		}
+	}
+	b.until = a.Clock.Now().Add(b.delay)
+	a.createBackoff.Store(s.UID, b)
+	return b.delay
+}
+
+// createWait is how long s's next create must still wait (0: now).
+func (a *Agent) createWait(s *v1.Silo) time.Duration {
+	o, ok := a.createBackoff.Load(s.UID)
+	if !ok {
+		return 0
+	}
+	b := o.(createBackoff)
+	if b.generation != s.Generation {
+		a.createBackoff.Delete(s.UID) // a new spec: try it now
+		return 0
+	}
+	return max(b.until.Sub(a.Clock.Now()), 0)
 }
 
 // mayStartHere reads the stored silo before anything of it is created or started here (K-015):
