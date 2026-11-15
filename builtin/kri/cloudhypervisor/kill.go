@@ -17,8 +17,20 @@ func KillPlan(n Names, l Layout) [][]string {
 
 // Kill implements kri.Killer: for a fence, the VM goes at once (a stop asks the guest to power off
 // and waits up to 30s for it). Killing a stopped one only runs the teardown again (a no-op).
+//
+// A VM whose state file can't be read is killed too (K-094), by its unit's name: its virtiofsd
+// daemons aren't known then, and are left (they serve files, they run nothing of the silo's).
 func (r *Runtime) Kill(ctx context.Context, id kri.ID) error {
-	st, ok := r.state(id)
+	st, ok, err := r.readState(id)
+	if err != nil {
+		n := NamesFor(id)
+		_, _ = r.Host.Run(ctx, "systemctl", "kill", "--signal=SIGKILL", "--kill-whom=all", n.Unit)
+		_, _ = r.Host.Run(ctx, "systemctl", "stop", n.Unit)
+		if r.active(ctx, n.Unit) == "active" {
+			return fmt.Errorf("%s: the VMM is still running after SIGKILL (%v)", id, err)
+		}
+		return nil
+	}
 	if !ok {
 		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
 	}

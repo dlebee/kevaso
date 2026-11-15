@@ -377,7 +377,7 @@ func Plan(in PlanInput) []Step {
 
 	// 1. Nothing restarts anything: kevasod and the fence first, then every silo, gateway and
 	// plugin unit, then the tests' transient units.
-	add("stop kevasod and the fence", `systemctl disable --now kevasod.service kevaso-fence.service 2>/dev/null; true`)
+	add(StopStep, `systemctl disable --now kevasod.service kevaso-fence.service 2>/dev/null; true`)
 	add("stop every kevaso-* and "+TestUnitPrefix+"* unit", `for u in $(systemctl list-units --all --plain --no-legend 'kevaso*' '`+TestUnitPrefix+`*' | awk '{print $1}'); do
   systemctl disable --now "$u" 2>/dev/null; systemctl kill -s KILL "$u" 2>/dev/null
 done
@@ -618,3 +618,11 @@ func Report(checks []Check, outputs map[string]string, leftovers []string) error
 
 // ErrNotClean: the reset left something behind.
 var ErrNotClean = errors.New("the host is not clean after the reset")
+
+// StopStep is the plan's first step: kevasod and the fence stopped, so nothing new is placed or
+// made on the host while the rest runs.
+const StopStep = "stop kevasod and the fence"
+
+// StartAgainScript starts kevasod and its fence again: a reset that stopped them and then found
+// the host changed since it was shown (a silo or volume placed meanwhile) undoes its first step.
+const StartAgainScript = `systemctl enable --now kevaso-fence.service kevasod.service`

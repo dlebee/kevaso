@@ -170,9 +170,11 @@ func TestContainerFileAndEnvSecrets(t *testing.T) {
 		e, _ := b2.Env(id, "LEGACY_TOKEN")
 		return f == "KEY-2" && e == "tok-2"
 	})
-	waitFor("nothing left on hv1", func() bool { return !b1.Known(id) && b1.HostValues(id) == 0 })
-	if st, _ := b1.Status(ctx, id); st.State != kri.Absent {
-		t.Fatalf("still on hv1: %s", st.State)
+	// hv1's copy is stopped, its secret values off the host; with no handoff from hv1 it is kept
+	// with its data, not deleted (review claim A, K-004).
+	waitFor("no secret value left on hv1", func() bool { return b1.HostValues(id) == 0 })
+	if st, _ := b1.Status(ctx, id); st.State == kri.Running {
+		t.Fatalf("still running on hv1: %s", st.State)
 	}
 
 	// The grant gives them another way (the local endpoint): off the host.

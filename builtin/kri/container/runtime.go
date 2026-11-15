@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -167,16 +168,33 @@ func (r *Runtime) Info() kri.Info {
 func statePath(id kri.ID) string { return NamesFor(id).Dir + "/state.json" }
 
 func (r *Runtime) load(id kri.ID) (state, bool) {
+	s, ok, err := r.loadState(id)
+	return s, ok && err == nil
+}
+
+// loadState is a silo's state: absent (no file, or another engine's silo), or the error of a file
+// that is there but can't be read or parsed (K-094): never "absent" for that, or a fence would
+// count a silo whose containers run as gone.
+func (r *Runtime) loadState(id kri.ID) (state, bool, error) {
 	b, err := r.Host.ReadFile(statePath(id))
+	if errors.Is(err, os.ErrNotExist) {
+		return state{}, false, nil
+	}
 	if err != nil {
-		return state{}, false
+		return state{}, false, fmt.Errorf("%s: %w", statePath(id), err)
 	}
 	var s state
-	if json.Unmarshal(b, &s) != nil || s.ID != id || !r.owns(s) {
-		return state{}, false
+	if err := json.Unmarshal(b, &s); err != nil {
+		return state{}, false, fmt.Errorf("%s is unreadable: %w", statePath(id), err)
 	}
-	return s, true
+	if s.ID != id || !r.owns(s) {
+		return state{}, false, nil
+	}
+	return s, true, nil
 }
+
+// runs says whether a container in state st (inspect's status) has processes.
+func runs(st string) bool { return st == "running" || st == "restarting" || st == "paused" }
 
 // owns says whether a silo's state is this engine's.
 func (r *Runtime) owns(s state) bool {
@@ -539,43 +557,106 @@ func (r *Runtime) RunInit(ctx context.Context, id kri.ID, step kri.InitStep, out
 	}
 	args := append([]string{"run", "--rm"}, ra...)
 	args = append(args, "--entrypoint", shell, ref, "-c", step.Run)
-	return r.Host.Run(ctx, hostexec.Cmd{Name: r.engine(), Args: args, Stdout: out, Stderr: out})
+	code, err := r.Host.Run(ctx, hostexec.Cmd{Name: r.engine(), Args: args, Stdout: out, Stderr: out})
+	if ctx.Err() != nil {
+		// Its caller went away (the start ended: placed elsewhere, the fence, kevasod stopping).
+		// The engine's CLI is gone, not the container: it would run on, unseen (K-088).
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if _, rerr := r.eng(rctx, nil, "rm", "-f", n.Init); rerr != nil && !noSuch(rerr) {
+			return -1, fmt.Errorf("%w; removing its init container %s: %v", ctx.Err(), n.Init, rerr)
+		}
+		return -1, ctx.Err()
+	}
+	return code, err
 }
 
-// Stop implements kri.Runtime (the pause container keeps the address). The silo's secrets leave
-// the host's tmpfs once it's stopped.
-func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
-	s, ok := r.load(id)
-	if !ok {
-		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
+// InitRunning reports whether one of the silo's init steps runs now (its init container).
+func (r *Runtime) InitRunning(ctx context.Context, id kri.ID) (bool, error) {
+	st, _, err := r.inspect(ctx, NamesFor(id).Init)
+	return runs(st), err
+}
+
+func noSuch(err error) bool { return strings.Contains(strings.ToLower(err.Error()), "no such") }
+
+// end ends the silo's containers that run, init container first, then its main container, then
+// its pause container (stop: each with a grace period; kill: SIGKILL), and confirms none still
+// runs. They are found by name, so a silo whose state file is lost or unreadable is ended too.
+// found says whether any of them exists.
+func (r *Runtime) end(ctx context.Context, id kri.ID, kill bool) (found bool, err error) {
+	n := NamesFor(id)
+	names := []string{n.Init, n.Main, n.Pause}
+	for _, c := range names {
+		st, _, err := r.inspect(ctx, c)
+		if err != nil {
+			return found, err
+		}
+		if st == "" {
+			continue
+		}
+		found = true
+		if !runs(st) {
+			continue
+		}
+		args := []string{"stop", "-t", "20", c}
+		if kill {
+			args = []string{"kill", "--signal", "KILL", c}
+		}
+		if _, err := r.eng(ctx, nil, args...); err != nil && !strings.Contains(err.Error(), "is not running") && !noSuch(err) {
+			return found, err // (not running, gone: ended meanwhile)
+		}
 	}
-	st, _, err := r.inspect(ctx, NamesFor(id).Main)
+	for _, c := range names {
+		if st, _, err := r.inspect(ctx, c); err != nil {
+			return found, err
+		} else if runs(st) {
+			return found, fmt.Errorf("%s: container %s still runs (%s)", id, c, st)
+		}
+	}
+	return found, nil
+}
+
+// wipeLost takes every secret value of a silo whose state can't be read off the host: all its
+// files and its env file.
+func (r *Runtime) wipeLost(id kri.ID) error {
+	_, files, envFile := SecretsPaths(id)
+	if err := r.Host.RemoveAll(files); err != nil {
+		return err
+	}
+	return r.Host.RemoveAll(envFile)
+}
+
+// Stop implements kri.Runtime: everything of the silo that can run code stops (K-088): an init
+// step's container, the main container, with every command exec'd in it (processes of its PID
+// namespace, which end with its PID 1), and the pause container. The address stays in its state,
+// and Start brings the pause container and its network back. The silo's secrets leave the host's
+// tmpfs once it's stopped.
+func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
+	return r.stop(ctx, id, false)
+}
+
+// Kill implements kri.Killer: Stop with SIGKILL, no grace period, for fencing. Found by name, a
+// silo whose state is unreadable is killed too (K-094).
+func (r *Runtime) Kill(ctx context.Context, id kri.ID) error {
+	return r.stop(ctx, id, true)
+}
+
+func (r *Runtime) stop(ctx context.Context, id kri.ID, kill bool) error {
+	s, ok, lerr := r.loadState(id)
+	found, err := r.end(ctx, id, kill)
 	if err != nil {
 		return err
 	}
-	if st == "running" {
-		if _, err := r.eng(ctx, nil, "stop", "-t", "20", NamesFor(id).Main); err != nil {
+	switch {
+	case lerr != nil:
+		if err := r.wipeLost(id); err != nil {
 			return err
 		}
-	}
-	return r.wipeSecrets(s)
-}
-
-// Kill implements kri.Killer: SIGKILL to the main container's PID 1 (its init: the whole
-// container goes with it), no grace period. For fencing.
-func (r *Runtime) Kill(ctx context.Context, id kri.ID) error {
-	s, ok := r.load(id)
-	if !ok {
+		return nil // nothing of it runs: what a stop is for; Status says its state is unreadable
+	case !ok && !found:
 		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
-	}
-	st, _, err := r.inspect(ctx, NamesFor(id).Main)
-	if err != nil {
-		return err
-	}
-	if st == "running" {
-		if _, err = r.eng(ctx, nil, "kill", "--signal", "KILL", NamesFor(id).Main); err != nil && !strings.Contains(err.Error(), "is not running") {
-			return err // (not running: stopped meanwhile)
-		}
+	case !ok:
+		return nil
 	}
 	return r.wipeSecrets(s)
 }
@@ -634,21 +715,42 @@ func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 	return r.Host.RemoveAll(n.Dir)
 }
 
-// Status implements kri.Runtime.
+// Status implements kri.Runtime: Running while anything of the silo that can run code runs, its
+// main container or an init step's container (K-088: the fences ask Status whether a silo still
+// runs). A silo whose state file is unreadable is never Absent (K-094): Running if a container of
+// it runs, else Failed, saying why.
 func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
-	s, ok := r.load(id)
+	n := NamesFor(id)
+	s, ok, lerr := r.loadState(id)
+	if lerr != nil {
+		for _, c := range []string{n.Init, n.Main} {
+			if st, _, err := r.inspect(ctx, c); err != nil {
+				return kri.Status{}, err
+			} else if runs(st) {
+				return kri.Status{State: kri.Running, Message: "container " + c + " runs; " + lerr.Error()}, nil
+			}
+		}
+		return kri.Status{State: kri.Failed, Message: lerr.Error() + ": nothing of it runs; delete the silo, or restore the file, to go on"}, nil
+	}
 	if !ok {
 		return kri.Status{State: kri.Absent}, nil
 	}
-	st, _, err := r.inspect(ctx, NamesFor(id).Main)
+	st, _, err := r.inspect(ctx, n.Main)
 	if err != nil {
 		return kri.Status{}, err
+	}
+	if st != "running" && st != "restarting" {
+		if is, _, err := r.inspect(ctx, n.Init); err != nil {
+			return kri.Status{}, err
+		} else if runs(is) {
+			return kri.Status{State: kri.Running, Address: s.IP, Message: "an init step runs (" + n.Init + ")"}, nil
+		}
 	}
 	switch st {
 	case "":
 		return kri.Status{State: kri.Created}, nil
 	case "running", "restarting":
-		if ps, _, _ := r.inspect(ctx, NamesFor(id).Pause); ps != "running" {
+		if ps, _, _ := r.inspect(ctx, n.Pause); ps != "running" {
 			return kri.Status{State: kri.Stopped}, nil // its network is gone: Start rewires it
 		}
 		return kri.Status{State: kri.Running, Address: s.IP}, nil
