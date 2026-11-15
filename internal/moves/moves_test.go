@@ -110,7 +110,10 @@ func TestCheckPolicy(t *testing.T) {
 }
 
 func TestPlanMove(t *testing.T) {
-	movable := silo("docker", "", v1.Volume{Name: "data", Class: "juicefs"})
+	// A microVM whose root disk and volume travel (a container never moves with its data:
+	// TestAPlainMoveOfAContainerIsRefusedLikeAMicroVMs).
+	movable := silo("cloud-hypervisor", "", v1.Volume{Name: "data", Class: "juicefs"})
+	movable.Spec.Disk.Class = "juicefs"
 	m := Of(movable, classes)
 	p, err := PlanMove(movable, m, Request{To: "hv3"}, false, false, "")
 	if err != nil || !p.WithData || !p.Handoff || p.From != "hv1" || p.To != "hv3" {
