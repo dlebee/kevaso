@@ -149,11 +149,12 @@ func TestMetal2RootDiskKeptOverAConfirmedMove(t *testing.T) {
 	// Confirming the fence is the operator's word: make it true first, on the host.
 	p.c2.mustSh("systemctl stop " + n.Unit)
 	c.must("", "move", "silo", "vm", "-n", ns, "--to", metalHost, "--confirm-fenced", "--recreate")
+	// The cut lifted at once: kept short (the long soak's opted-in silo stops after 2m of one).
+	p.uncut()
 	c.eventually("it runs on machine 1", 15*time.Minute, func() (bool, string) {
 		s := c.silo(ns, "vm")
 		return s.Status.Host == metalHost && s.Status.Phase == "Running", s.Status.Host + " " + s.Status.Phase
 	})
-	p.uncut()
 	c.eventually(metalHost2+" is Ready again", 5*time.Minute, func() (bool, string) { return c.hostReady(metalHost2) })
 	time.Sleep(time.Minute)
 	c.expect("machine 2 keeps its root disk", p.c2.mustSh("lvs --noheadings -o lv_name kevaso | tr -d ' '"), n.LV)
