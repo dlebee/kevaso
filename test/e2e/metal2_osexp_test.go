@@ -131,4 +131,13 @@ func TestMetal2OpenShellExperiment(t *testing.T) {
 		"echo '-- profile delete (missing):'; " + cli(b, "profile delete kv-nosuchprofile") + " 2>&1 | head -3; " +
 		"echo '-- provider delete (missing):'; " + cli(b, "provider delete kv-nosuchprovider") + " 2>&1 | head -3; true")
 	t.Logf("CLI WORDS:\n%s", words)
+	// The silos deleted and their gateways gone before the runtimes are taken off the worker
+	// (the cleanups run after, in reverse: taken off first, nothing would remove the sandboxes).
+	for _, b := range boxes {
+		c.must("", "delete", "silo", b.name, "-n", ns)
+	}
+	c.eventually("their gateways are gone", 5*time.Minute, func() (bool, string) {
+		out := strings.TrimSpace(p.c1.mustSh("systemctl list-units --all --plain --no-legend 'kevaso-openshell-*' | wc -l"))
+		return out == "0", out + " gateway units"
+	})
 }
