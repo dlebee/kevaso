@@ -72,7 +72,7 @@ func (r *gatedVM) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 	r.mu.Lock()
 	r.wiped = append(r.wiped, spec.Image)
 	r.mu.Unlock()
-	return r.Runtime.Reset(ctx, spec)
+	return r.Reset(ctx, spec) // the fake's own: gatedVM has no Reset of its own
 }
 
 func (r *gatedVM) result() ([]string, int) {
