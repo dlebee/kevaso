@@ -5,6 +5,7 @@ package e2e
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -544,4 +545,73 @@ func TestMetal2KeptWhenMissing(t *testing.T) {
 		return got == before && strings.TrimSpace(active) == "active", got + " " + active
 	})
 	c.expect("kevasod says it keeps it", p.c2.mustSh("journalctl -u kevasod --no-pager --since '-10min' | grep -c 'keeping "+ns+"/db' || true"), "1")
+}
+
+// TestMetal2NeverTwice is K-015 on the machines: an opted-in silo (onControlPlaneLoss: Stop,
+// onHostLoss: Recreate) on machine 2, machine 2 cut off, the silo stopped there and started on
+// machine 1 by the control plane, the cut lifted, and minutes after. Both hosts are asked
+// every half second, from themselves, throughout: at no moment do both run it.
+//
+// Listens on nothing outside.
+func TestMetal2NeverTwice(t *testing.T) {
+	p := metal2(t)
+	p.ensureTwoWorkers()
+	c := p.c1
+	ns := "twice2"
+	c.namespace(ns)
+	t.Cleanup(p.uncut)
+	c.apply(boxEcho(ns, "single", 8080) + on(metalHost2) + "  availability: { onControlPlaneLoss: Stop, after: 30s, onHostLoss: Recreate }\n")
+	c.waitRunning(ns, 10*time.Minute, "single")
+	uid := c.silo(ns, "single").UID
+	c.eventually("its fence armed on "+metalHost2, 2*time.Minute, func() (bool, string) {
+		s := c.silo(ns, "single")
+		return fence.Armed(s), fmt.Sprint(s.Status.Conditions)
+	})
+	stop := make(chan struct{})
+	both := make(chan string, 1)
+	var checks atomic.Int64
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			r1, r2 := make(chan bool, 1), make(chan bool, 1)
+			go func() { r1 <- running(p.c1, uid) }()
+			go func() { r2 <- running(p.c2, uid) }()
+			if a, b := <-r1, <-r2; a && b {
+				select {
+				case both <- time.Now().Format(time.TimeOnly):
+				default:
+				}
+			}
+			checks.Add(1)
+			time.Sleep(500 * time.Millisecond)
+		}
+	}()
+	p.cut()
+	t.Log("machine 2 cut off from the system node")
+	c.eventually("the control plane starts it on machine 1", 5*time.Minute, func() (bool, string) {
+		s := c.silo(ns, "single")
+		return s.Status.Host == metalHost && s.Status.Phase == "Running", s.Status.Host + " " + s.Status.Phase
+	})
+	time.Sleep(20 * time.Second)
+	p.uncut()
+	t.Log("the cut lifted: machine 2's contact comes back before its cache does")
+	c.eventually(metalHost2+" is Ready again", 5*time.Minute, func() (bool, string) { return c.hostReady(metalHost2) })
+	time.Sleep(3 * time.Minute)
+	close(stop)
+	select {
+	case at := <-both:
+		t.Errorf("both machines ran the silo at %s: two copies", at)
+	default:
+		t.Logf("never two copies: both machines asked %d times", checks.Load())
+	}
+	if running(p.c2, uid) || !running(p.c1, uid) {
+		t.Errorf("after: machine 1 runs it %v, machine 2 %v", running(p.c1, uid), running(p.c2, uid))
+	}
+	if j := p.c2.mustSh("journalctl -u kevasod --no-pager --since '-6min' | grep -c 'not starting " + ns + "/single' || true"); strings.TrimSpace(j) != "0" {
+		t.Logf("machine 2 held back a start from its old cache %s times (K-015's guard)", strings.TrimSpace(j))
+	}
 }
