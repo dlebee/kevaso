@@ -57,7 +57,7 @@ func TestEnvSecretWarningFollowsTheHosts(t *testing.T) {
 		t.Fatalf("warned with every host through the runtime: %q", w)
 	}
 	host("hv2", false) // podman, rootless, a non-runc default: --env-file there
-	if w := create("may-be-in"); len(w) != 1 || !strings.Contains(w[0], "without Kevaso's OCI runtime") {
+	if w := create("may-be-in"); len(w) != 1 || !strings.Contains(w[0], "the value is visible in the engine's records on that worker") {
 		t.Fatalf("warnings %q", w)
 	}
 }
