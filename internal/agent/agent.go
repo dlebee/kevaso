@@ -126,7 +126,13 @@ type Agent struct {
 	// heldBack: silo uid → struct{}: an old copy kept here, stopped, for its host-local volumes
 	// (removeEverywhere).
 	heldBack sync.Map
-	engine   *engine.Engine
+	// seenDeleted: silo uid → struct{}: a delete of that silo this agent saw on its own watch.
+	// Only such a delete removes a silo's disk and volumes (design §0.7): a silo that is merely
+	// missing from the API (a control plane restored from an older backup, a re-made cluster) is
+	// kept, running, with its data, and listed (kept, logged once).
+	seenDeleted sync.Map
+	keptNoted   sync.Map
+	engine      *engine.Engine
 }
 
 // DefaultFenceAfter is under the host lease (40s), so a cut-off host has stopped its Recreate silos
@@ -254,6 +260,7 @@ func (a *Agent) Run(ctx context.Context) {
 	e.Register(a, engine.Options{Workers: 4})
 	a.silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	go a.silos.Run(ctx)
+	go a.watchDeletes(ctx, e)
 	// Rotation fan-out: a secret or grant changing looks again at every silo here that receives
 	// it (its files and env vars are written again, its endpoint and policy follow its grants).
 	for kind, inf := range map[string]*informer.Informer{"Secret": a.secrets, "Grant": a.grants} {
@@ -875,6 +882,18 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {
 				continue
 			}
+			// Not in the API (or replaced by another of the same name) and no delete of it seen
+			// here: keep it, running, its disk and volumes untouched (design §0.7, K-004).
+			if s == nil || id.UID != s.UID {
+				if _, seen := a.seenDeleted.Load(id.UID); !seen {
+					if _, logged := a.keptNoted.LoadOrStore(id.UID, struct{}{}); !logged {
+						a.log("keeping %s on %s: the control plane doesn't know it and no delete of it was seen here; it keeps running with its disk and volumes (nothing is removed without a delete)",
+							id, rt.Info().Name)
+					}
+					continue
+				}
+				a.keptNoted.Delete(id.UID)
+			}
 			// The same silo, placed elsewhere but not deleted, with volumes on this host's disks:
 			// deleting the copy would delete them (every runtime removes a silo's local volumes on
 			// Delete). A volume is kept data (design §0.3): admission never lets such a silo be
@@ -1038,4 +1057,38 @@ func removeCondition(st *v1.SiloStatus, typ string) {
 func firstLineOf(s string) string {
 	l, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
 	return l
+}
+
+// watchDeletes records every silo delete the control plane announces while this agent is
+// watching (its UID), then looks at the silo again: only a delete seen here removes a silo's data.
+// A delete made while the watch was down is never seen, and that silo is kept (design §0.7).
+func (a *Agent) watchDeletes(ctx context.Context, e *engine.Engine) {
+	for ctx.Err() == nil {
+		// From now on only (a list's revision): a watch from nothing replays deletes made before
+		// this agent was watching, which it never saw.
+		var ch <-chan client.Event
+		l, err := a.Client.List(ctx, "Silo", "")
+		if err == nil {
+			ch, err = a.Client.Watch(ctx, "Silo", "", l.Metadata.ResourceVersion)
+		}
+		if err == nil {
+			for ev := range ch {
+				if ev.Type != "DELETED" {
+					continue
+				}
+				o, _, err := v1.Decode(ev.Object)
+				if err != nil {
+					continue
+				}
+				m := o.GetObjectMeta()
+				a.seenDeleted.Store(m.UID, struct{}{})
+				e.Changed(engine.Key{Kind: "Silo", Namespace: m.Namespace, Name: m.Name})
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
