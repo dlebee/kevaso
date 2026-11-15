@@ -99,3 +99,22 @@ func TestWithIngressPaths(t *testing.T) {
 		t.Fatalf("a SiloSet's silos: %+v", got)
 	}
 }
+
+// Addresses a silo's status asks this host to hold go on its interfaces only as IPv4 /32s: an
+// IPv6 or malformed one (a plugin's answer, K-045) is never added, so it can't be left behind.
+func TestPoolAndAnnouncedAddressesAreIPv4Only(t *testing.T) {
+	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "x", Namespace: "dev"}}
+	s.Status.Host = "hv1"
+	s.Status.Service.HostAddresses = []string{"198.51.100.17", "2001:db8::17", "::", "0.0.0.0", "198.51.100.18/24", "1.2.3.4 dev lo", "169.254.1.1"}
+	s.Status.Service.Announce, s.Status.Service.LoadBalancerIP = true, "2001:db8::18"
+	if got := PoolAddresses("hv1", []*v1.Silo{s}); len(got) != 1 || got[0] != "198.51.100.17" {
+		t.Errorf("pool addresses %v", got)
+	}
+	if got := AnnouncedAddresses("hv1", []*v1.Silo{s}); len(got) != 0 {
+		t.Errorf("announced %v", got)
+	}
+	s.Status.Service.LoadBalancerIP = "198.51.100.19"
+	if got := AnnouncedAddresses("hv1", []*v1.Silo{s}); len(got) != 1 || got[0] != "198.51.100.19" {
+		t.Errorf("announced %v", got)
+	}
+}

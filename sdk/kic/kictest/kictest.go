@@ -124,11 +124,84 @@ func Conformance(t *testing.T, d kic.Driver, goodAnnotations map[string]string) 
 			t.Errorf("rendered %+v", evil)
 		}
 	}
+	perIngress(t, d, s)
 	if _, err := d.Render(kic.State{Class: "c\nevil;"}); err == nil {
 		t.Error("rendered a class name with a newline in it")
 	}
 	if _, err := d.Render(kic.State{Challenges: []kic.Challenge{{Token: "t\"; evil", KeyAuthorization: "k"}}}); err == nil {
 		t.Error("rendered a challenge with a quote in it")
+	}
+}
+
+// perIngress checks what applying per Ingress relies on (design §0.8: a broken Ingress holds
+// back only itself): any Ingress can be left out and the rest still renders, unchanged; a config
+// file's check takes the staged path (ConfigToken), so a fragment can be tested beside the running
+// config; and a driver that blames by line marks every Ingress's section, so the line a check
+// names is traced to its Ingress.
+func perIngress(t *testing.T, d kic.Driver, s kic.State) {
+	t.Helper()
+	full, err := d.Render(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.Config.Path != "" {
+		found := false
+		for _, a := range full.Check {
+			found = found || strings.Contains(a, kic.ConfigToken)
+		}
+		if !found {
+			t.Error("the config check doesn't take the staged config's path (kic.ConfigToken)")
+		}
+	}
+	ingresses := map[string]bool{}
+	for _, r := range s.Routes {
+		ingresses[r.Ingress] = true
+	}
+	for ing := range ingresses {
+		less := s
+		less.Routes, less.Certificates = nil, nil
+		for _, r := range s.Routes {
+			if r.Ingress != ing {
+				less.Routes = append(less.Routes, r)
+			}
+		}
+		for _, c := range s.Certificates {
+			if c.Ingress != ing {
+				less.Certificates = append(less.Certificates, c)
+			}
+		}
+		p, err := d.Render(less)
+		if err != nil {
+			t.Errorf("without %s: %v", ing, err)
+			continue
+		}
+		text := string(p.Config.Data)
+		if p.Reload.Call != nil {
+			text += string(p.Reload.Call.Body)
+		}
+		for _, r := range less.Routes {
+			if !strings.Contains(text, r.Host) {
+				t.Errorf("without %s, %s's host %s is gone", ing, r.Ingress, r.Host)
+			}
+		}
+	}
+	if _, ok := d.(kic.Blamer); ok && full.Config.Path != "" {
+		lines := strings.Split(string(full.Config.Data), "\n")
+		seen := 0
+		for _, r := range s.Routes {
+			for i, l := range lines {
+				if !strings.Contains(l, r.Backend.Address+":") {
+					continue
+				}
+				seen++
+				if got := kic.MarkedBlame(full.Config.Data, i+1); len(got) != 1 || got[0] != r.Ingress {
+					t.Errorf("line %d (%s's backend) traces to %v, want %s: mark each Ingress's section (kic.BlameMark)", i+1, r.Ingress, got, r.Ingress)
+				}
+			}
+		}
+		if seen == 0 {
+			t.Error("no route's backend found in the config to trace its blame")
+		}
 	}
 }
 

@@ -283,7 +283,8 @@ func HostWrite(old, next v1.IngressClassStatus, host string) error {
 
 // Refused says why ing isn't served as it is on class, as a condition's reason and message ("" if
 // it is): the class's driver refuses it (an annotation it doesn't know, a value it won't take), or a
-// controller's proxy refused the latest configuration and blames it.
+// controller left it out because its proxy refused it (design §0.8: only it is held back). The
+// message is that Ingress's own part of the controller's report (LeftOutMessage).
 func Refused(drivers kic.Registry, class *v1.IngressClass, ing *v1.Ingress) (reason, msg string) {
 	d, err := drivers.Get(class.Spec.Controller.Driver)
 	if err != nil {
@@ -295,7 +296,7 @@ func Refused(drivers kic.Registry, class *v1.IngressClass, ing *v1.Ingress) (rea
 	who := ing.Namespace + "/" + ing.Name
 	for _, e := range class.Status.Controllers {
 		if e.Rejected != "" && slices.Contains(e.Blamed, who) {
-			return "Rejected", fmt.Sprintf("controller %s refused the configuration with it (the last good one is still served): %s", e.Silo, e.Rejected)
+			return "Rejected", fmt.Sprintf("controller %s left it out (the class's other Ingresses are served): %s", e.Silo, segmentFor(e.Rejected, who))
 		}
 	}
 	return "", ""

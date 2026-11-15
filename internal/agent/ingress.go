@@ -127,42 +127,15 @@ func (l *ingressLoop) apply(ctx context.Context, s *v1.Silo, classes []*v1.Ingre
 	}
 	report := ingressReport{silo: s, class: d.Class}
 	drv, err := IngressDrivers.Get(d.Driver)
-	state, held := d.State, false
 	switch {
-	case d.Problem != "":
+	case d.Problem != "": // the class itself can't be served (an unknown driver, an option it refuses)
 		report.rejected = d.Problem
 	case err != nil:
 		report.rejected = err.Error()
-	case len(d.Refused) > 0:
-		// The driver refuses an Ingress: like a config the proxy refuses, nothing is applied
-		// and the last good configuration stays until it's fixed.
-		for _, who := range slices.Sorted(maps.Keys(d.Refused)) {
-			report.blamed = append(report.blamed, who)
-			if report.rejected == "" {
-				report.rejected = "ingress " + who + ": " + d.Refused[who]
-			}
-		}
-		report.applied = l.applied[s.UID]
-		// The class holds its last good configuration, but ACME challenges aren't anyone's
-		// configuration: one refused Ingress mustn't stop every certificate in the class from
-		// being issued or renewed. Serve the last good state with today's challenges in it.
-		if lg, ok := l.lastGood[s.UID]; ok && err == nil {
-			state, held = lg, true
-			state.Challenges = d.State.Challenges
-		}
-	}
-	if report.rejected == "" {
-		if err := kic.Validate(drv, state); err != nil {
-			report.rejected = err.Error()
-		}
-	}
-	var plan kic.Plan
-	if report.rejected == "" || held {
-		if plan, err = drv.Render(state); err != nil {
-			report.rejected, held = "render: "+err.Error(), false
-		}
-	}
-	if report.rejected == "" || held {
+	default:
+		// Per Ingress (design §0.8): a broken one is held back alone, at its last good version,
+		// and every other one, new ones and the current ACME challenges included, goes out; the
+		// class is held only when even its own part (options, challenges) is refused.
 		id := idOf(s)
 		exec := func(ctx context.Context, argv []string, stdin []byte) (int, string, error) {
 			var out bytes.Buffer
@@ -185,31 +158,33 @@ func (l *ingressLoop) apply(ctx context.Context, s *v1.Silo, classes []*v1.Ingre
 			}
 			return adminCall(ctx, st.Address, c)
 		}
-		res, err := ingress.Apply(ctx, exec, call, drv, plan, l.applied[s.UID])
+		var lastGood *kic.State
+		if lg, ok := l.lastGood[s.UID]; ok {
+			lastGood = &lg
+		}
+		res, err := ingress.ApplyEach(ctx, exec, call, drv, d, lastGood, l.applied[s.UID], ingress.MemoryOf(s.UID), 0)
 		if err != nil {
 			l.applied[s.UID] = "?" // it may be half done: never take what's there as applied
 			return err
 		}
 		l.applied[s.UID] = res.Hash
-		if held {
-			// Still held: say so, whatever the challenges did.
-			report.applied = res.Hash
-			if res.Rejected != "" {
-				report.rejected, report.blamed = res.Rejected, res.Blamed
-			}
-		} else {
-			report.applied, report.rejected, report.blamed = res.Hash, res.Rejected, res.Blamed
-			if res.Rejected == "" {
-				l.lastGood[s.UID] = d.State
-			}
+		report.applied = res.Hash
+		report.blamed = slices.Sorted(maps.Keys(res.LeftOut))
+		switch {
+		case res.Held != "":
+			report.rejected = "held (the last good configuration stays): the proxy refuses even the class's own part: " + res.Held
+		case res.Rejected != "":
+			report.rejected = res.Rejected
+		default:
+			l.lastGood[s.UID] = res.Served
+			report.rejected = ingress.LeftOutMessage(res.LeftOut)
 		}
 		switch {
 		case res.Changed:
-			a.log("ingress controller %s/%s: class %s applied (%s: %d routes, %d certificates, %d challenges)",
-				s.Namespace, s.Name, d.Class, d.Driver, len(d.State.Routes), len(d.State.Certificates), len(d.State.Challenges))
-		case res.Rejected != "":
-			a.log("ingress controller %s/%s: class %s: the proxy refused the new configuration (keeping the last good one): %s",
-				s.Namespace, s.Name, d.Class, res.Rejected)
+			a.log("ingress controller %s/%s: class %s applied (%s: %d routes, %d certificates, %d challenges; %d Ingresses held back, %d test runs)",
+				s.Namespace, s.Name, d.Class, d.Driver, len(res.Served.Routes), len(res.Served.Certificates), len(res.Served.Challenges), len(res.LeftOut), res.Tests)
+		case res.Held != "":
+			a.log("ingress controller %s/%s: class %s held (keeping the last good configuration): %s", s.Namespace, s.Name, d.Class, res.Held)
 		}
 	}
 	for _, c := range classes {
