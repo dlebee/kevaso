@@ -23,6 +23,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kcc/acme"
 	kicdrivers "kevaso.com/core/builtin/kic"
+	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/audit"
@@ -283,8 +284,8 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	apiSrv := srv.HTTPServer(false)
 	apiSrv.TLSConfig = srv.TLSConfig(serverCert)
 	adminSrv := srv.HTTPServer(true)
-	apiSrv.Handler = withControlPlane(apiSrv.Handler, st, ident)
-	adminSrv.Handler = withControlPlane(adminSrv.Handler, st, ident)
+	apiSrv.Handler = withControlPlane(apiSrv.Handler, st, true)
+	adminSrv.Handler = withControlPlane(adminSrv.Handler, st, false)
 
 	r := &Running{APIAddr: apiL.Addr().String(), CA: ca, Tokens: tokens, Cluster: ident, done: make(chan struct{})}
 	var wg sync.WaitGroup
@@ -328,7 +329,17 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 			closeInProcess()
 			return nil, err
 		}
-		go worker.Run(hbCtx, admin, wc, rts)
+		// This host's worker judges its answers as a worker-only host does (§0.7): its own client,
+		// stamped, with the watermark kept in its data directory.
+		if wc.Watermark == nil {
+			wc.Watermark = agent.OpenWatermark(filepath.Join(wc.DataDir, "control-plane-watermark.json"), cfg.Log)
+		}
+		wcl, closeWorker := workerClient(srv, st, wc.Watermark)
+		go func() {
+			<-hbCtx.Done()
+			closeWorker()
+		}()
+		go worker.Run(hbCtx, wcl, wc, rts)
 	}
 
 	go func() {
@@ -495,7 +506,10 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 		}
 	})
 	if reg := cfg.Plugins; reg != nil {
-		e.Register(&provider.Hosts{Client: c, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 1})
+		// What the plugins said about each host, and the volumes controller's own records: what
+		// those controllers act on, never what a worker may have written in a status (K-037).
+		known := &provider.Providers{}
+		e.Register(&provider.Hosts{Client: c, Hosts: hosts, Plugins: reg, Providers: known}, engine.Options{Workers: 1})
 		leaseInf := newInf("Lease") // a plugin's load balancer has no backend for a closed leased port
 		leaseInf.AddHandler(func(k informer.Key) {
 			if o, ok := leaseInf.Get(k.Namespace, k.Name); ok {
@@ -503,8 +517,8 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 			}
 		})
 		go leaseInf.Run(ctx)
-		e.Register(&provider.Balancers{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Leases: leaseInf, Plugins: reg, Clock: cfg.Clock}, engine.Options{Workers: 2})
-		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg}, engine.Options{Workers: 2})
+		e.Register(&provider.Balancers{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Leases: leaseInf, Plugins: reg, Clock: cfg.Clock, Providers: known}, engine.Options{Workers: 2})
+		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg, Records: cd.store, Providers: known}, engine.Options{Workers: 2})
 		e.Register(&provider.IngressDNS{Client: c, Ingresses: ingresses, Classes: classes, Plugins: reg, Cluster: cfg.ClusterName, Clock: cfg.Clock}, engine.Options{Workers: 1})
 		classes.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IngressClass", Name: k.Name}) })
 		// A plugin came or went: everything that may use it looks again.

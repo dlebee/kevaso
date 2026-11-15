@@ -231,6 +231,35 @@ func Apply(st v1.SiloStatus, p Plan) v1.SiloStatus {
 	return st
 }
 
+// HandingOff reports a handoff under way: the silo waits for another host than its own to let
+// go. (movingFrom naming its own host is no handoff: that host may start it, MayStart.)
+func HandingOff(st v1.SiloStatus) bool { return st.MovingFrom != "" && st.MovingFrom != st.Host }
+
+// Begin is the check before a handoff starts (kvo move, kvoadm host drain): not while one is
+// under way (K-070). Whoever starts one writes at the version it checked (client.StartHandoff),
+// so a handoff that begins in between makes the write conflict instead of being overwritten.
+func Begin(st v1.SiloStatus) error {
+	if HandingOff(st) {
+		return fmt.Errorf("%w (from %s, which hasn't let go)", ErrMoving, st.MovingFrom)
+	}
+	return nil
+}
+
+// Replaces judges a write of a silo's status by anyone but the host it is moving from (whose
+// writes HostWrite judges) and the move handler's confirmed-fenced end of a handoff (PlanMove):
+// while a handoff from S is under way, movingFrom stays S, unless the silo is back on S (nothing
+// to hand off). Dropping or replacing it would let another host start the silo while S still runs
+// it (K-070). nil: allowed.
+func Replaces(old, next v1.SiloStatus) error {
+	if !HandingOff(old) || next.MovingFrom == old.MovingFrom {
+		return nil
+	}
+	if next.MovingFrom == "" && next.Host == old.MovingFrom {
+		return nil
+	}
+	return fmt.Errorf("%w (from %s): only %s can say it has let go of this silo", ErrMoving, old.MovingFrom, old.MovingFrom)
+}
+
 // MayStart reports whether the silo's (new) host may start it: not while another host still
 // has to let go of it.
 func MayStart(s *v1.Silo, host string) bool {
@@ -317,6 +346,11 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 		switch {
 		case n.Name != o.Name || n.AttachedTo != o.AttachedTo:
 			return fmt.Errorf("%w: volume %s: where it is attached is the control plane's to write", ErrHostWrite, o.Name)
+		case !sameButMounted(o, n):
+			// K-037: the handle, class, region, device, size and message are the control plane's
+			// (its volumes controller acts on them: attach, detach, delete; the agent formats and
+			// mounts the device). A host that rewrote them would point those at another volume.
+			return fmt.Errorf("%w: volume %s: only whether it is mounted is the host's to write", ErrHostWrite, o.Name)
 		case n.Mounted != o.Mounted && o.AttachedTo != host:
 			to := o.AttachedTo
 			if to == "" {
@@ -326,4 +360,10 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 		}
 	}
 	return nil
+}
+
+// sameButMounted reports whether two volume statuses differ at most in mounted.
+func sameButMounted(a, b v1.VolumeStatus) bool {
+	a.Mounted = b.Mounted
+	return a == b
 }

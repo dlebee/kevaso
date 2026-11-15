@@ -19,11 +19,16 @@ import (
 var Component = pki.Identity{Type: "component", Name: "kevasod", Role: "control-plane"}
 
 // InProcess returns a client for kevasod's own components: an in-memory connection, no socket or
-// port, authenticated as Component. Close the returned function when done.
-func (s *Server) InProcess() (*client.Client, func()) {
+// port, authenticated as Component. Close the returned function when done. wrap, if given, wraps
+// the handler (the control plane stamps the answers its worker judges, §0.7).
+func (s *Server) InProcess(wrap ...func(http.Handler) http.Handler) (*client.Client, func()) {
 	l := &pipeListener{conns: make(chan net.Conn), done: make(chan struct{})}
+	var h http.Handler = s
+	for _, w := range wrap {
+		h = w(h)
+	}
 	hs := &http.Server{
-		Handler:           s,
+		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 		ConnContext: func(ctx context.Context, _ net.Conn) context.Context {
 			return context.WithValue(ctx, componentConnKey, true)

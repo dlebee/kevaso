@@ -49,14 +49,13 @@ func SetControlPlane(h http.Header, s ControlPlaneSeen) {
 	h.Set(HeaderClusterID, s.ClusterID)
 	h.Set(HeaderHistory, s.History)
 	h.Set(HeaderEpoch, strconv.FormatInt(s.Epoch, 10))
-	if s.Revision > 0 {
-		h.Set(HeaderRevision, strconv.FormatInt(s.Revision, 10))
-	}
+	h.Set(HeaderRevision, strconv.FormatInt(s.Revision, 10)) // 0 too: a stamp, judged like any other
 }
 
 // Watermark is what a worker keeps (on disk, across its restarts) about the control plane it
 // trusts: the cluster, the history, and the highest revision seen in it. Held, once set, stays set
-// until a new history is accepted or an operator clears it.
+// until an answer of that history at or above the kept revision arrives (a healthy system node, or
+// the one that was behind once it caught up), or a new history is accepted.
 type Watermark struct {
 	ClusterID string `json:"clusterID"`
 	History   string `json:"history"`
@@ -79,6 +78,11 @@ const (
 	Hold Verdict = "Hold"
 	// Foreign: another cluster's control plane: ignore it entirely.
 	Foreign Verdict = "Foreign"
+	// NotYet: an answer that says nothing to act on yet: it has no usable stamp (its store didn't
+	// say its revision), or it is from a system node of this cluster that hasn't caught up with a
+	// restore already accepted (an older epoch). Not applied, no hold, nothing kept changes; the
+	// client tries the next system node.
+	NotYet Verdict = "NotYet"
 )
 
 // Judge is the worker's rule (brainstorm §0.7) for one answer, pure: given what the worker kept
@@ -86,8 +90,9 @@ const (
 //
 //   - nothing kept yet: accept and keep it (a worker's first contact, or one from before this rule).
 //   - another cluster: Foreign; keep what was kept.
-//   - same history: a revision at or above the one kept is Accept (and raises it), unless the
-//     worker is held; a lower one is Hold. Held stays until a new history.
+//   - same history: a revision below the one kept when the request was sent is Hold; so is one
+//     below the one kept while held. Any other is Accept: it raises the revision kept and ends a
+//     hold (an answer at or above what was kept: that node's store is not older).
 //   - another history with an epoch at or above the one kept: NewHistory; keep the new one.
 //   - another history with a lower epoch: Hold (an older restore than one already accepted).
 func Judge(kept Watermark, seen ControlPlaneSeen) (Watermark, Verdict) {
@@ -114,10 +119,11 @@ func JudgeAnswer(kept Watermark, keptAtSend int64, seen ControlPlaneSeen) (Water
 	case seen.ClusterID != kept.ClusterID:
 		return kept, Foreign
 	case seen.History == kept.History:
-		if kept.Held || seen.Revision < keptAtSend {
+		if seen.Revision < keptAtSend || (kept.Held && seen.Revision < kept.Revision) {
 			kept.Held = true
 			return kept, Hold
 		}
+		kept.Held = false
 		kept.Revision = max(kept.Revision, seen.Revision)
 		return kept, Accept
 	case seen.Epoch >= kept.Epoch:
@@ -127,3 +133,34 @@ func JudgeAnswer(kept Watermark, keptAtSend int64, seen ControlPlaneSeen) (Water
 		return kept, Hold
 	}
 }
+
+// JudgeStamp is JudgeAnswer with NotYet (ControlPlaneVerdicts): stamped says whether the answer
+// carried a usable stamp (ParseControlPlane). Pure.
+//
+//   - no usable stamp: NotYet once anything is kept (Accept, keeping nothing, on a first contact).
+//   - this cluster, another history with a lower epoch than the one kept: NotYet (a system node
+//     that hasn't caught up with a restore already accepted), never a hold.
+//   - otherwise JudgeAnswer.
+func JudgeStamp(kept Watermark, keptAtSend int64, seen ControlPlaneSeen, stamped bool) (Watermark, Verdict) {
+	switch {
+	case !stamped && kept.ClusterID == "":
+		return kept, Accept
+	case !stamped:
+		return kept, NotYet
+	case kept.ClusterID != "" && seen.ClusterID == kept.ClusterID && seen.History != kept.History && seen.Epoch < kept.Epoch:
+		return kept, NotYet
+	}
+	return JudgeAnswer(kept, keptAtSend, seen)
+}
+
+// ControlPlaneVerdicts is a ControlPlaneJudge that judges every answer, stamped or not, and says
+// its verdict (JudgeStamp). The client then never hands over an answer judged NotYet, and moves
+// on from a system node that answered NotYet or Hold.
+type ControlPlaneVerdicts interface {
+	ControlPlaneJudge
+	Judged(sentAt int64, seen ControlPlaneSeen, stamped bool) Verdict
+}
+
+// IsNotYet reports an answer the client didn't hand over: judged NotYet (ControlPlaneVerdicts),
+// or, for a judge that isn't one, an answer with no usable stamp.
+func IsNotYet(err error) bool { return reasonOf(err) == "NotYet" }
