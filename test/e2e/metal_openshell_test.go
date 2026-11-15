@@ -165,6 +165,20 @@ spec:
 				out, code := c.in(ns, s, "echo back")
 				return strings.TrimSpace(active) == "active" && code == 0 && out == "back", strings.TrimSpace(active) + " " + out
 			})
+			// Does the gateway bring its sandbox back by itself (outside Runtime.Start)? With
+			// kevasod stopped, so the agent starts nothing: the gateway restarted, then a minute.
+			// Recorded either way (a finding, not an expectation).
+			c.mustSh("systemctl stop kevasod")
+			c.mustSh("systemctl restart " + gw)
+			time.Sleep(time.Minute)
+			own := strings.TrimSpace(c.mustSh(`systemctl is-active ` + gw + ` || true; ` +
+				`docker ps --filter name=` + name + ` --format '{{.Names}} {{.Status}}' 2>/dev/null; pgrep -af -- '` + name + `' | grep -v pgrep | head -3 || true`))
+			t.Logf("FINDING (b) %s: its gateway restarted with kevasod stopped, a minute later: %q", s, own)
+			c.mustSh("systemctl start kevasod")
+			c.eventually("kevasod back: the silo runs", 10*time.Minute, func() (bool, string) {
+				out, code := c.in(ns, s, "echo back")
+				return code == 0 && out == "back", out
+			})
 			// kvo reset: fresh, the file is gone.
 			c.must("", "reset", "silo", s, "-n", ns)
 			c.eventually("kvo reset: a fresh sandbox", 10*time.Minute, func() (bool, string) {
