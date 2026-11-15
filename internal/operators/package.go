@@ -204,6 +204,9 @@ var forbidden = []string{"roles", "rolebindings", "clusterroles", "clusterrolebi
 // plugin kind's "plural.group"), and at most one subresource. No wildcard of any kind.
 var resourceRE = regexp.MustCompile(`^[a-z][a-z0-9.-]*(/[a-z][a-z0-9-]*)?$`)
 
+// verbRE is a verb: get, create, read-value, ...
+var verbRE = regexp.MustCompile(`^[a-z][a-z-]*$`)
+
 // forbiddenVerbs on a resource: secrets' values and every approval are people's.
 var forbiddenVerbs = map[string][]string{"secrets": {v1.VerbReadValue, v1.VerbApprove}, v1.ResourceExposure: {v1.VerbApprove}}
 
@@ -294,8 +297,13 @@ func RuleProblems(r v1.PolicyRule) []string {
 	if len(r.Verbs) == 0 || len(r.Resources) == 0 {
 		errs = append(errs, "needs verbs and resources")
 	}
-	if slices.Contains(r.Verbs, "*") {
-		errs = append(errs, "verbs: * isn't for plugins: name each verb")
+	for _, v := range r.Verbs {
+		switch {
+		case v == "*":
+			errs = append(errs, "verbs: * isn't for plugins: name each verb")
+		case !verbRE.MatchString(v):
+			errs = append(errs, fmt.Sprintf("verbs: %q isn't a verb (lower-case letters and -)", v))
+		}
 	}
 	for _, res := range r.Resources {
 		switch {

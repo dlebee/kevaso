@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
@@ -197,9 +199,20 @@ func wanted(p *Package) []meta.Object {
 
 // Summary is what the operator confirms: what the plugin defines, and every power its controller
 // gets.
+//
+// Everything a package wrote is shown as plain text on its own line (text): no escape sequence,
+// control character or bidi override reaches the operator's terminal, and no newline in a
+// description makes a line of its own (K-048).
 func Summary(p *Package, host string) string {
 	var b strings.Builder
-	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
+	w := func(f string, a ...any) {
+		for i, x := range a {
+			if s, ok := x.(string); ok {
+				a[i] = text(s)
+			}
+		}
+		fmt.Fprintf(&b, f+"\n", a...)
+	}
 	m := p.Manifest
 	w("Plugin %s %s: %s", p.Name(), m.Spec.Version, m.Spec.Description)
 	var kinds []string
@@ -215,12 +228,43 @@ func Summary(p *Package, host string) string {
 		pols = append(pols, "MutationPolicy "+x.Name)
 	}
 	w("  policies: %s", orNone(pols))
+	match := func(m v1.PolicyMatch) string {
+		s := strings.Join(m.Kinds, ", ")
+		if len(m.Namespaces) > 0 {
+			s += " in " + strings.Join(m.Namespaces, ", ")
+		}
+		if len(m.Operations) > 0 {
+			s += " (" + strings.Join(m.Operations, ", ") + ")"
+		}
+		return s
+	}
+	for _, x := range p.VPols {
+		for _, v := range x.Spec.Validations {
+			w("    ValidationPolicy %s on %s: %s", x.Name, match(x.Spec.Match), v.Expression)
+		}
+	}
+	for _, x := range p.MPols {
+		for _, mu := range x.Spec.Mutations {
+			when := ""
+			if mu.When != "" {
+				when = " when " + mu.When
+			}
+			w("    MutationPolicy %s on %s: sets %s = %s%s", x.Name, match(x.Spec.Match), mu.Field, mu.Value, when)
+		}
+	}
 	w("Its controller runs on %s as %s/%s, allowed to:", host, v1.PluginNamespace, p.ServiceAccount())
 	rules := func(where string, rs []v1.PolicyRule) {
 		for _, r := range rs {
 			names := ""
 			if len(r.ResourceNames) > 0 {
 				names = " (only " + strings.Join(r.ResourceNames, ", ") + ")"
+			}
+			if len(r.Selector) > 0 {
+				var sel []string
+				for _, k := range slices.Sorted(maps.Keys(r.Selector)) {
+					sel = append(sel, k+"="+r.Selector[k])
+				}
+				names += " (only labelled " + strings.Join(sel, ", ") + ")"
 			}
 			w("  %-28s %s%s, %s", strings.Join(r.Verbs, " "), strings.Join(r.Resources, " "), names, where)
 		}
@@ -241,6 +285,41 @@ func Summary(p *Package, host string) string {
 		}
 	}
 	return b.String()
+}
+
+// Changes says what an install does beyond the package's own objects: what --adopt takes over
+// from nobody, and what an upgrade deletes because the new version no longer has it ("" if
+// neither). The operator sees it with the summary, before the yes.
+func Changes(adopted, deleted []v1.PluginObject) string {
+	var b strings.Builder
+	list := func(what string, refs []v1.PluginObject) {
+		if len(refs) == 0 {
+			return
+		}
+		var s []string
+		for _, r := range refs {
+			s = append(s, text(refString(r)))
+		}
+		fmt.Fprintf(&b, "It %s: %s\n", what, strings.Join(s, ", "))
+	}
+	list("takes over (--adopt), no plugin's now", adopted)
+	list("deletes (the new version no longer has)", deleted)
+	return b.String()
+}
+
+// text is s as one line of plain text: what could drive a terminal (control characters, C1
+// controls, bidi embeddings and overrides) is dropped, and a newline or tab is a space.
+func text(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return ' '
+		case unicode.IsControl(r), r >= 0x80 && r <= 0x9f, r == utf8.RuneError,
+			r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+			return -1
+		}
+		return r
+	}, s)
 }
 
 func orNone(l []string) string {
@@ -311,7 +390,17 @@ func (in *Installer) Install(ctx context.Context, p *Package, host Host, o Insta
 	if len(errs) > 0 {
 		return fmt.Errorf("can't install plugin %s:\n  %s", p.Name(), strings.Join(errs, "\n  "))
 	}
-	if in.Confirm == nil || !in.Confirm(Summary(p, host.Address())) {
+	var adopted []v1.PluginObject
+	for i, w := range want {
+		if decisions[i] == Update && v1.OwnerPlugin(stored[i].GetObjectMeta()) == "" {
+			adopted = append(adopted, Ref(w))
+		}
+	}
+	nowOwns := make([]v1.PluginObject, len(want))
+	for i, w := range want {
+		nowOwns[i] = Ref(w)
+	}
+	if in.Confirm == nil || !in.Confirm(Summary(p, host.Address())+Changes(adopted, Leftovers(prev.Spec.Owns, nowOwns))) {
 		return errors.New("not installed")
 	}
 
