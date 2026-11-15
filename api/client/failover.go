@@ -176,3 +176,16 @@ func unreached(err error) bool {
 	}
 	return false
 }
+
+// passOver makes the next request start after host (scheme-less host:port), if it is the current
+// one: it answered, but not with anything to act on (client.send).
+func (f *failover) passOver(host string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.hosts) < 2 {
+		return
+	}
+	if u, err := url.Parse(f.hosts[f.cur]); err == nil && u.Host == host {
+		f.cur = (f.cur + 1) % len(f.hosts)
+	}
+}

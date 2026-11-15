@@ -50,17 +50,40 @@ func (c *Client) send(hc *http.Client, req *http.Request) (*http.Response, error
 		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
-	var sent int64
-	if c.ControlPlane != nil {
-		sent = c.ControlPlane.Sending()
-	}
-	resp, err := hc.Do(req)
-	if err == nil && c.ControlPlane != nil {
-		if s, ok := ParseControlPlane(resp.Header); ok {
+	for attempt := 1; ; attempt++ {
+		var sent int64
+		if c.ControlPlane != nil {
+			sent = c.ControlPlane.Sending()
+		}
+		resp, err := hc.Do(req)
+		if err != nil || c.ControlPlane == nil {
+			return resp, err
+		}
+		s, stamped := ParseControlPlane(resp.Header)
+		v := Accept
+		if vj, ok := c.ControlPlane.(ControlPlaneVerdicts); ok {
+			v = vj.Judged(sent, s, stamped)
+		} else if stamped {
 			c.ControlPlane.Answer(sent, s)
+		} else {
+			v = NotYet // a judge that can't say: an answer it can't judge is never handed over
+		}
+		f, failsOver := hc.Transport.(*failover)
+		if failsOver && (v == NotYet || v == Hold) && resp.Request != nil {
+			f.passOver(resp.Request.URL.Host) // later requests start at the next system node
+		}
+		if v != NotYet {
+			return resp, nil
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		_ = resp.Body.Close()
+		// A read goes to the next system node; a write, which that node may have applied, is
+		// never sent twice.
+		if !failsOver || attempt >= len(f.urls()) || (req.Method != http.MethodGet && req.Method != http.MethodHead) {
+			return nil, &Error{Code: http.StatusServiceUnavailable, Reason: "NotYet",
+				Message: fmt.Sprintf("%s %s: the control plane's answer can't be acted on yet (no usable stamp, or a system node behind a restore already accepted)", req.Method, req.URL.Path)}
 		}
 	}
-	return resp, err
 }
 
 // New returns a client for the server at baseURL.
