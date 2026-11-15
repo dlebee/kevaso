@@ -250,6 +250,9 @@ func servedCert(ip, name string) (*x509.Certificate, error) {
 
 // externalListeners is what listens on a machine's external IP or on every address.
 func externalListeners(h *mt) string {
-	out, _ := h.sh(`ss -Htlnp | awk '{print $4, $6}' | grep -E '^(0\.0\.0\.0|\*|\[::\]|` + strings.ReplaceAll(h.cfg.ExternalIP, ".", `\.`) + `):' | sort -u`)
+	out, err := h.sh(`ss -Htlnp | awk '{print $4, $6}' | grep -E '^(0\.0\.0\.0|\*|\[::\]|` + strings.ReplaceAll(h.cfg.ExternalIP, ".", `\.`) + `):' | sort -u`)
+	if err != nil {
+		return "(couldn't list: " + err.Error() + ") " + out
+	}
 	return out
 }

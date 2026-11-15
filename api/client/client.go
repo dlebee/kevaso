@@ -287,6 +287,9 @@ func (c *Client) Update(ctx context.Context, obj meta.Object) error {
 	if err != nil {
 		return err
 	}
+	if obj.GetObjectMeta().ResourceVersion != "" {
+		ctx = conditional(ctx) // a second send (after a node that didn't answer) conflicts
+	}
 	return c.do(ctx, http.MethodPut, p, obj, obj)
 }
 
@@ -295,6 +298,9 @@ func (c *Client) UpdateStatus(ctx context.Context, obj meta.Object) error {
 	p, err := c.objPathFor(ctx, obj, obj.GetObjectMeta().Name, true)
 	if err != nil {
 		return err
+	}
+	if obj.GetObjectMeta().ResourceVersion != "" {
+		ctx = conditional(ctx)
 	}
 	return c.do(ctx, http.MethodPut, p, obj, obj)
 }

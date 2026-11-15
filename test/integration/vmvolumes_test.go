@@ -38,9 +38,10 @@ func TestVMVolumesFollowTheSilo(t *testing.T) {
 	if err := reg.Add(ctx, share); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controlplane.Start(ctx, controlplane.Config{Create: true, ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
+	cp, err := controlplane.Start(ctx, controlplane.Config{Create: true, ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond,
-		Plugins: reg}); err != nil {
+		Plugins: reg})
+	if err != nil {
 		t.Fatal(err)
 	}
 	admin := client.NewUnix(filepath.Join(dir, "a.sock"))
@@ -76,7 +77,7 @@ func TestVMVolumesFollowTheSilo(t *testing.T) {
 		writeHostStatus(ctx, t, admin, h, heartbeat)
 		rt := fake.NewVM()
 		runtimes[name] = rt
-		a := &agent.Agent{Client: admin, HostName: name, Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{},
+		a := &agent.Agent{Client: hostClient(t, ctx, admin, cp, name), HostName: name, Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{},
 			Nodes: &plugins.Registry{}}
 		if err := a.Nodes.Add(ctx, share.Node(name)); err != nil {
 			t.Fatal(err)

@@ -1,7 +1,6 @@
 package apiserver_test
 
 import (
-	"net/http"
 	"testing"
 	"time"
 
@@ -11,8 +10,9 @@ import (
 // K-037 (surface lane): a worker writes its own Host's status (heartbeats, runtimes), but
 // status.provider is the control plane's provider-hosts controller's, from the plugin's
 // DescribeHosts: a worker that rewrote it would name another machine for its volumes and its
-// balancer backends. The control plane no longer acts on it (provider.Providers), but the API
-// should refuse it too (403), as it refuses a silo's placement.
+// balancer backends. The control plane doesn't act on it (provider.Providers), and the API keeps
+// it as stored whatever a worker sends: the write is accepted for the worker's own fields, never
+// refused (a refusal of a write that carried an older copy left a worker unable to report).
 func TestK037AWorkerMayNotRewriteItsProvider(t *testing.T) {
 	e := setupAuth(t)
 	_ = e.admin.Create(e.ctx, host("hv2"))
@@ -37,21 +37,34 @@ func TestK037AWorkerMayNotRewriteItsProvider(t *testing.T) {
 	if err := worker.UpdateStatus(e.ctx, &h); err != nil {
 		t.Fatalf("a worker's heartbeat: %v", err)
 	}
-	h.Status.Provider = &v1.HostProvider{Name: "linode", ID: "999", Region: "ca-central", PrivateAddress: "192.168.1.1"}
-	if err := worker.UpdateStatus(e.ctx, &h); code(err) != http.StatusForbidden {
-		t.Fatalf("a worker rewriting its status.provider: want 403, got %v", err)
+	kept := func(what string) {
+		t.Helper()
+		var now v1.Host
+		if err := e.admin.Get(e.ctx, "Host", "", "hv2", &now); err != nil {
+			t.Fatal(err)
+		}
+		if now.Status.Provider == nil || now.Status.Provider.ID != "1" {
+			t.Fatalf("a worker %s its status.provider: stored %+v", what, now.Status.Provider)
+		}
 	}
+	h.Status.Provider = &v1.HostProvider{Name: "linode", ID: "999", Region: "ca-central", PrivateAddress: "192.168.1.1"}
+	if err := worker.UpdateStatus(e.ctx, &h); err != nil {
+		t.Fatalf("a worker's write carrying another provider: %v, want accepted", err)
+	}
+	kept("rewriting")
 	if err := worker.Get(e.ctx, "Host", "", "hv2", &h); err != nil {
 		t.Fatal(err)
 	}
 	h.Status.Provider = nil
-	if err := worker.UpdateStatus(e.ctx, &h); code(err) != http.StatusForbidden {
-		t.Fatalf("a worker clearing its status.provider: want 403, got %v", err)
+	if err := worker.UpdateStatus(e.ctx, &h); err != nil {
+		t.Fatalf("a worker's write clearing the provider: %v, want accepted", err)
 	}
+	kept("clearing")
 }
 
 // K-037, next to it: the mesh addresses of a host's status.network are assigned by the host
-// controller; a worker may publish its keys but not rewrite index, meshIP, siloSubnet or innerIP.
+// controller; a worker may publish its keys, and index, meshIP, siloSubnet and innerIP stay as
+// stored whatever it sends.
 func TestK037AWorkerMayNotRewriteItsMeshAddresses(t *testing.T) {
 	e := setupAuth(t)
 	_ = e.admin.Create(e.ctx, host("hv2"))
@@ -86,8 +99,15 @@ func TestK037AWorkerMayNotRewriteItsMeshAddresses(t *testing.T) {
 			t.Fatal(err)
 		}
 		mut(&h.Status.Network)
-		if err := worker.UpdateStatus(e.ctx, &h); code(err) != http.StatusForbidden {
-			t.Fatalf("a worker rewriting network.%s: want 403, got %v", name, err)
+		if err := worker.UpdateStatus(e.ctx, &h); err != nil {
+			t.Fatalf("a worker's write carrying another network.%s: %v, want accepted", name, err)
+		}
+		var now v1.Host
+		if err := e.admin.Get(e.ctx, "Host", "", "hv2", &now); err != nil {
+			t.Fatal(err)
+		}
+		if n := now.Status.Network; n.Index != 3 || n.MeshIP != "10.63.0.3" || n.SiloSubnet != "10.64.3.0/24" || n.InnerIP != "10.65.0.3" || n.PublicKey != "k" {
+			t.Fatalf("network.%s: stored %+v", name, n)
 		}
 	}
 }

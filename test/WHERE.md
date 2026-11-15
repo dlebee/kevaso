@@ -11,8 +11,8 @@ for linux and darwin (`make vet-tags`), so tagged code cannot rot, but compiling
 | Tag | Where it can run | Tests | Run in CI |
 |---|---|---|---|
 | `e2e` | Lima VMs on macOS, or a Linux machine with SSH access to its test machines | 20 | 1 |
-| `metal` | two bare-metal machines (test/e2e/METAL.md) | 19 | 0 |
-| `metal` | one bare-metal machine (test/e2e/METAL.md) | 21 | 0 |
+| `metal` | two bare-metal machines (test/e2e/METAL.md) | 29 | 0 |
+| `metal` | one bare-metal machine (test/e2e/METAL.md) | 22 | 0 |
 | `metal` | bare metal (test/e2e/METAL.md) | 1 | 0 |
 
 CI's `e2e` job (ubuntu-latest, KVM, no SSH to itself) runs the tests in `test/e2e/ci-expected.txt`, and
@@ -47,6 +47,15 @@ fails when any of them reports SKIP (`hack/skipbudget`). Every other tagged test
 
 | Test | File | Where | CI |
 |---|---|---|---|
+| TestMetal2DrainDuringAMove | test/e2e/metal2_batch_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
+| TestMetal2IngressRecordDeleted | test/e2e/metal2_batch_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
+| TestMetal2InitStepUnderACut | test/e2e/metal2_batch_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
+| TestMetal2ResetTakenBackDuringThePull | test/e2e/metal2_batch_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
+| TestMetal2RootDiskKeptOverAConfirmedMove | test/e2e/metal2_batch_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
+| TestMetal2StartClaimFreshThroughSlowInit | test/e2e/metal2_hc2_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
+| TestMetal2StuckStopIsNotStopped | test/e2e/metal2_hc2_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
+| TestMetal2UnreadableWatermarkClearsItself | test/e2e/metal2_hc2_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
+| TestMetal2VMResetTakenBackDuringStop | test/e2e/metal2_hc2_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
 | TestMetal2LongSoakCheck | test/e2e/metal2_longsoak_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
 | TestMetal2LongSoakSetup | test/e2e/metal2_longsoak_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
 | TestMetal2MoveUnlikeStorage | test/e2e/metal2_more_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
@@ -83,6 +92,8 @@ fails when any of them reports SKIP (`hack/skipbudget`). Every other tagged test
 | TestMetalVolumes | test/e2e/metal_ops_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMetalRegistry | test/e2e/metal_registry_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMetalSecrets | test/e2e/metal_secrets_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
+| TestMetal2KvoStreams | test/e2e/metal_streams_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
+| TestMetalKvoStreams | test/e2e/metal_streams_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMain | test/e2e/metal_test.go | bare metal (test/e2e/METAL.md) | skips |
 | TestMetalCheck | test/e2e/metal_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMetalReset | test/e2e/metal_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
