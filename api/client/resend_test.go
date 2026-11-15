@@ -48,6 +48,12 @@ func TestOnlyWhatCantApplyTwiceIsResentAfterATimeout(t *testing.T) {
 	if err := mk().UpdateScale(ctx, "SiloSet", sc); !IsTimeout(err) || hitsA.Load()-a0 != 1 || hitsB.Load()-b0 != 0 {
 		t.Fatalf("a scale: %v, sent to a %d, to b %d; want a timeout, sent once", err, hitsA.Load()-a0, hitsB.Load()-b0)
 	}
+	// A scale with the version it was read at (kvo scale sends it): conditional, sent on.
+	sc.ResourceVersion = "7"
+	b0 = hitsB.Load()
+	if err := mk().UpdateScale(ctx, "SiloSet", sc); err != nil || hitsB.Load()-b0 != 1 {
+		t.Fatalf("a scale with its version: %v, sent to b %d; want it sent on", err, hitsB.Load()-b0)
+	}
 	// A raw PUT: the same.
 	a0, b0 = hitsA.Load(), hitsB.Load()
 	if err := mk().Call(ctx, http.MethodPut, "/apis/x", map[string]string{"a": "b"}, nil); !IsTimeout(err) || hitsA.Load()-a0 != 1 || hitsB.Load()-b0 != 0 {
