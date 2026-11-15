@@ -37,12 +37,21 @@ type rig struct {
 
 const poison = "poison"
 
-// poisonLine is the 1-based line of the first poisoned line in cfg.
+// poisonLine is the 1-based line a proxy's error names for the first poisoned Ingress in cfg: the
+// first line from its host on that lies in an Ingress's marked section (a real proxy names the
+// directive it can't take, inside the Ingress's part; the host line itself is outside it).
 func poisonLine(cfg []byte) int {
-	for i, l := range strings.Split(string(cfg), "\n") {
-		if strings.Contains(l, poison) {
-			return i + 1
+	lines := strings.Split(string(cfg), "\n")
+	for i, l := range lines {
+		if !strings.Contains(l, poison) {
+			continue
 		}
+		for n := i + 1; n <= len(lines); n++ {
+			if len(kic.MarkedBlame(cfg, n)) > 0 {
+				return n
+			}
+		}
+		return i + 1
 	}
 	return 0
 }
