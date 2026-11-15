@@ -101,9 +101,9 @@ func TestMetalOpenShell(t *testing.T) {
 	}
 
 	// A silo of each, with a key by inject. A sandbox resolves names through OpenShell's own DNS,
-	// not the host's /etc/hosts: the stand-in API gets a public name (sslip.io, for an address on
-	// the machine's loopback that only its gateway's proxy reaches), with a certificate from the
-	// stand-in internet's CA.
+	// not the host's /etc/hosts, and that refuses a name for a loopback address: the stand-in API
+	// gets a public name (sslip.io) for a private address on a link of the test's on the machine
+	// (kvt-inet0, which the reset removes), with a certificate from the stand-in internet's CA.
 	c.mustSh(osInetSetup)
 	c.apply(`apiVersion: kevaso/v1
 kind: Grant
@@ -205,16 +205,18 @@ spec:
 	t.Logf("on the host after the deletes:\n%s", c.mustSh(`systemctl list-units --plain --no-legend 'kevaso-openshell-*'; ls /var/lib/kevaso-openshell/gw 2>&1; docker images --format '{{.Repository}}:{{.Tag}}' | grep -iv python | head`))
 }
 
-// osInetName is the stand-in API for OpenShell's sandboxes: a public name for 127.0.0.78.
-const osInetName = "kvt-inject.127-0-0-78.sslip.io"
+// osInetName is the stand-in API for OpenShell's sandboxes: a public name for 192.168.250.1.
+const osInetName = "kvt-inject.192-168-250-1.sslip.io"
 
-// osInetSetup serves osInetName on 127.0.0.78:443 like metalInetSetup's server (the same CA,
-// which the egress gate trusts), as a transient unit the reset stops (kvt-inet-os).
+// osInetSetup serves osInetName on 192.168.250.1:443 (a dummy link, kvt-inet0) like
+// metalInetSetup's server (the same CA, which the egress gate trusts), as a transient unit the
+// reset stops (kvt-inet-os).
 const osInetSetup = `set -e; cd /var/lib/kvt-inet
+ip link show kvt-inet0 >/dev/null 2>&1 || { ip link add kvt-inet0 type dummy; ip addr add 192.168.250.1/32 dev kvt-inet0; ip link set kvt-inet0 up; }
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout os.key -out os.csr -subj /CN=` + osInetName + ` 2>/dev/null
 printf 'subjectAltName=DNS:` + osInetName + `\n' > os.ext
 openssl x509 -req -in os.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -extfile os.ext -out os.pem 2>/dev/null
-sed -e 's#/var/lib/kvt-inet/leaf.pem#/var/lib/kvt-inet/os.pem#' -e 's#/var/lib/kvt-inet/leaf.key#/var/lib/kvt-inet/os.key#' -e 's#"127.0.0.77"#"127.0.0.78"#' server.py > os-server.py
+sed -e 's#/var/lib/kvt-inet/leaf.pem#/var/lib/kvt-inet/os.pem#' -e 's#/var/lib/kvt-inet/leaf.key#/var/lib/kvt-inet/os.key#' -e 's#"127.0.0.77"#"192.168.250.1"#' server.py > os-server.py
 systemctl stop kvt-inet-os 2>/dev/null || true
 systemd-run --unit=kvt-inet-os python3 /var/lib/kvt-inet/os-server.py >/dev/null
 `
