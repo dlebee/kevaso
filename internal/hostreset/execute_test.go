@@ -204,7 +204,7 @@ func TestARestartStartsForeignContainersAgain(t *testing.T) {
 			ps := strings.Index(r.text(), eng+" ps -q")
 			restart := strings.Index(r.text(), "systemctl try-restart "+eng)
 			start := strings.Index(r.text(), eng+" start aaa")
-			if ps < 0 || restart < 0 || start < 0 || !(ps < restart && restart < start) {
+			if ps < 0 || restart < 0 || start < 0 || ps >= restart || restart >= start {
 				t.Fatalf("record, then restart, then start:\n%s", r.text())
 			}
 		})

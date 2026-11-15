@@ -208,7 +208,7 @@ func TestRestartingDockerStartsForeignContainersAgain(t *testing.T) {
 			t.Fatal("no daemon.json step")
 		}
 		ps, restart, start := strings.Index(s, "docker ps -q"), strings.Index(s, "try-restart docker"), strings.Index(s, "docker start")
-		if ps < 0 || restart < 0 || start < 0 || !(ps < restart && restart < start) {
+		if ps < 0 || restart < 0 || start < 0 || ps >= restart || restart >= start {
 			t.Errorf("foreign containers aren't recorded before the restart and started after it:\n%s", s)
 		}
 		for _, want := range []string{"kevaso.com/uid", kevasoContainerPrefix(), "started foreign container"} {
