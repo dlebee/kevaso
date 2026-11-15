@@ -9,7 +9,7 @@
 //	kvo ssh silo NAME [-n NS]     a login shell in the silo, on a terminal (through the relay; no SSH)
 //	kvo cp SRC DST [--max-size 1GiB]   copy a file or folder in or out: one side is silo/NAME:/PATH
 //	kvo ui silo NAME [--no-browser]   a small local web page for one silo: a terminal and its files
-//	kvo move silo NAME --to HOST [--recreate] [--confirm-fenced]   move it (with its data if it can)
+//	kvo move silo NAME --to HOST [--recreate] [--confirm-fenced [--insist]]   move it (with its data if it can)
 //	kvo login [SERVER --ca sha256:…] [--context NAME] [--no-browser]   sign in (browser + invite code)
 //	kvo logout                    forget this context's session
 //	kvo ctx [NAME]                list contexts, or switch to one
@@ -69,7 +69,7 @@ type opts struct {
 	duration                                 string // kvo create token
 	reason                                   string // kvo deny / approve
 	moveTo                                   string // kvo move --to
-	recreate, confirmFenced                  bool   // kvo move
+	recreate, confirmFenced, insist          bool   // kvo move
 	uid, resourceVersion                     string // kvo delete: only the object seen
 	request                                  string // kvo approve: the request read
 	all, noBrowser                           bool
@@ -139,6 +139,8 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.recreate = true
 		case "--confirm-fenced":
 			o.confirmFenced = true
+		case "--insist":
+			o.insist = true
 		case "--request":
 			o.request, err = val()
 		case "--uid":
