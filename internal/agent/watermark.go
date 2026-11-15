@@ -53,6 +53,8 @@ type Watermark struct {
 	unreadable string
 	// saveErr: the last save failed; the worker holds until one succeeds.
 	saveErr error
+	// notYetSaid: a NotYet answer was logged (once).
+	notYetSaid bool
 }
 
 // OpenWatermark reads the watermark kept at path ("": kept in memory only). kevasod makes it once
@@ -82,6 +84,8 @@ func OpenWatermark(path string, log func(string, ...any)) *Watermark {
 	return w
 }
 
+var _ client.ControlPlaneVerdicts = (*Watermark)(nil)
+
 // Sending implements client.ControlPlaneJudge: the revision kept as a request leaves, with
 // which accepted history it belongs to (a count, in the top 16 bits): an answer whose request
 // left under another history is measured against nothing of it.
@@ -93,18 +97,31 @@ func (w *Watermark) Sending() int64 {
 
 // Answer implements client.ControlPlaneJudge: one answer judged against what was kept when its
 // request was sent (K-071).
-func (w *Watermark) Answer(sentAt int64, seen client.ControlPlaneSeen) {
+func (w *Watermark) Answer(sentAt int64, seen client.ControlPlaneSeen) { w.Judged(sentAt, seen, true) }
+
+// Judged implements client.ControlPlaneVerdicts: Answer, judged with client.JudgeStamp, saying
+// its verdict. NotYet (no usable stamp, or a system node that hasn't caught up with a restore
+// already accepted) changes nothing; the client tries another node. A watermark that can't be
+// read, or whose raise can't be saved, judges Hold (K-096).
+func (w *Watermark) Judged(sentAt int64, seen client.ControlPlaneSeen, stamped bool) client.Verdict {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.unreadable != "" {
 		w.seen = seen // shown on the Host; nothing is judged against a file that can't be read
-		return
+		return client.Hold
 	}
 	keptAtSend := sentAt & (1<<48 - 1)
 	if sentAt>>48 != w.histories {
 		keptAtSend = 0 // sent before the history it's judged against was accepted
 	}
-	next, v := client.JudgeAnswer(w.kept, keptAtSend, seen)
+	next, v := client.JudgeStamp(w.kept, keptAtSend, seen, stamped)
+	if v == client.NotYet {
+		if w.last != client.NotYet && !w.notYetSaid {
+			w.notYetSaid = true
+			w.log("an answer with nothing to act on yet (no stamp, or a system node behind a restore already accepted: epoch %d, kept %d): trying another", seen.Epoch, w.kept.Epoch)
+		}
+		return v
+	}
 	if next != w.kept {
 		// On disk before it counts (K-096): an answer acted on whose watermark a restart would
 		// forget lets an older control plane in between.
@@ -113,7 +130,7 @@ func (w *Watermark) Answer(sentAt int64, seen client.ControlPlaneSeen) {
 				w.log("CONTROL-PLANE WATERMARK NOT SAVED: %v: holding (nothing is applied) until it can be", err)
 			}
 			w.saveErr = err
-			return
+			return client.Hold
 		}
 		if w.saveErr != nil {
 			w.log("control-plane watermark saved again: no longer held for it")
@@ -135,6 +152,7 @@ func (w *Watermark) Answer(sentAt int64, seen client.ControlPlaneSeen) {
 		}
 	}
 	w.last, w.seen, w.kept = v, seen, next
+	return v
 }
 
 // save writes k durably (K-096): a temporary file, flushed to the disk, renamed over the
