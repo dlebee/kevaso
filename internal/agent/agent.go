@@ -65,6 +65,9 @@ type Agent struct {
 	LastContact func() time.Time
 	// StopsOnLoss, if set, replaces (*v1.Silo).StopsOnControlPlaneLoss (tests shorten the times).
 	StopsOnLoss func(*v1.Silo) (stops bool, after time.Duration)
+	// WatermarkFile, if set, is where the agent keeps what it saw of its control plane (cluster,
+	// history, highest revision; watermark.go), across restarts and reboots.
+	WatermarkFile string
 	// FenceDir, if set, is where the agent writes its fence record every second (internal/fence):
 	// its last contact and which of its silos stop on control-plane loss, for the fence watcher,
 	// which stops those when this agent can no longer vouch for them, running or not.
@@ -137,6 +140,7 @@ type Agent struct {
 	seenDeleted sync.Map
 	keptNoted   sync.Map
 	engine      *engine.Engine
+	cp          *watermark // the control plane this worker trusts (watermark.go)
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
@@ -254,6 +258,10 @@ func idOf(s *v1.Silo) kri.ID { return kri.ID{Namespace: s.Namespace, Name: s.Nam
 
 // Run runs the agent until ctx ends.
 func (a *Agent) Run(ctx context.Context) {
+	a.cp = loadWatermark(a.WatermarkFile, a.log)
+	if a.Client.ControlPlane == nil {
+		a.Client.ControlPlane = a.ObserveControlPlane
+	}
 	a.silos = informer.New(a.Client, "Silo")
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
 	a.runCtx = ctx
@@ -285,6 +293,7 @@ func (a *Agent) Run(ctx context.Context) {
 		a.fencePrev, _ = fence.Read(a.FenceDir)
 	}
 	go a.fence(ctx, e)
+	go a.watchControlPlane(ctx)
 	go a.resync(ctx, e)
 	go func() { // after the first sync, look for runtime silos the API no longer knows
 		if a.silos.WaitSynced(ctx) {
@@ -314,10 +323,15 @@ func (a *Agent) resync(ctx context.Context, e *engine.Engine) {
 			return
 		case <-t.C:
 		}
-		for _, o := range a.silos.List() {
-			if s := o.(*v1.Silo); s.Status.Host == a.HostName {
-				e.Changed(engine.Key{Kind: "Silo", Namespace: s.Namespace, Name: s.Name})
-			}
+		a.resyncAll()
+	}
+}
+
+// resyncAll looks at every silo of this host again.
+func (a *Agent) resyncAll() {
+	for _, o := range a.silos.List() {
+		if s := o.(*v1.Silo); s.Status.Host == a.HostName {
+			a.engine.Changed(engine.Key{Kind: "Silo", Namespace: s.Namespace, Name: s.Name})
 		}
 	}
 }
@@ -339,6 +353,9 @@ func (a *Agent) collectGarbage(ctx context.Context, e *engine.Engine) {
 
 // Reconcile implements engine.Controller.
 func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
+	if a.ControlPlaneHeld() {
+		return engine.Result{RequeueAfter: 5 * time.Second}, nil // §0.7: everything stays as it is
+	}
 	o, ok := a.silos.Get(k.Namespace, k.Name)
 	var s *v1.Silo
 	if ok {
@@ -1083,8 +1100,8 @@ func (a *Agent) watchDeletes(ctx context.Context, e *engine.Engine) {
 		}
 		if err == nil {
 			for ev := range ch {
-				if ev.Type != "DELETED" {
-					continue
+				if ev.Type != "DELETED" || a.ControlPlaneHeld() {
+					continue // a delete from a control plane this worker doesn't trust removes nothing
 				}
 				o, _, err := v1.Decode(ev.Object)
 				if err != nil {

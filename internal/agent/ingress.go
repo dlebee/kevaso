@@ -82,6 +82,9 @@ func (l *ingressLoop) poke() {
 // once looks at every controller silo on this host.
 func (l *ingressLoop) once(ctx context.Context) {
 	a := l.a
+	if a.ControlPlaneHeld() {
+		return // §0.7: the routes stay as they are
+	}
 	var classes []*v1.IngressClass
 	for _, o := range l.classes.List() {
 		classes = append(classes, o.(*v1.IngressClass))
