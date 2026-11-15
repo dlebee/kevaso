@@ -48,6 +48,11 @@ type Watermark struct {
 	// histories counts the histories accepted in this run (Sending).
 	histories int64
 	log       func(string, ...any)
+	// unreadable: the file is there and can't be trusted (why); the worker holds until a person
+	// decides, and no answer is judged against it.
+	unreadable string
+	// saveErr: the last save failed; the worker holds until one succeeds.
+	saveErr error
 }
 
 // OpenWatermark reads the watermark kept at path ("": kept in memory only). kevasod makes it once
@@ -61,16 +66,18 @@ func OpenWatermark(path string, log func(string, ...any)) *Watermark {
 		return w
 	}
 	b, err := os.ReadFile(path)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-	case err == nil && json.Unmarshal(b, &w.kept) == nil:
+	if why := WatermarkUnreadable(b, err); why != "" {
+		// Unreadable: hold, never act on a control plane this worker can't judge, and say so.
+		w.unreadable = why
+		log("CONTROL-PLANE WATERMARK UNREADABLE: %s: %s. This worker keeps running every silo and starts, removes and applies nothing "+
+			"until a person checks its control plane and runs kvoadm host trust-control-plane for this host", path, why)
+		return w
+	}
+	if err == nil {
+		_ = json.Unmarshal(b, &w.kept)
 		if w.kept.Held {
 			log("held (kept on disk): the control plane of cluster %s was older than what this worker saw (history %s, revision %d)", w.kept.ClusterID, w.kept.History, w.kept.Revision)
 		}
-	default:
-		// Unreadable: hold, never act on a control plane this worker can't judge.
-		w.kept = client.Watermark{ClusterID: "unreadable", Held: true}
-		log("the control-plane watermark %s is unreadable (%v): holding until it is fixed or removed", path, err)
 	}
 	return w
 }
@@ -89,11 +96,30 @@ func (w *Watermark) Sending() int64 {
 func (w *Watermark) Answer(sentAt int64, seen client.ControlPlaneSeen) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.unreadable != "" {
+		w.seen = seen // shown on the Host; nothing is judged against a file that can't be read
+		return
+	}
 	keptAtSend := sentAt & (1<<48 - 1)
 	if sentAt>>48 != w.histories {
 		keptAtSend = 0 // sent before the history it's judged against was accepted
 	}
 	next, v := client.JudgeAnswer(w.kept, keptAtSend, seen)
+	if next != w.kept {
+		// On disk before it counts (K-096): an answer acted on whose watermark a restart would
+		// forget lets an older control plane in between.
+		if err := w.save(next); err != nil {
+			if w.saveErr == nil {
+				w.log("CONTROL-PLANE WATERMARK NOT SAVED: %v: holding (nothing is applied) until it can be", err)
+			}
+			w.saveErr = err
+			return
+		}
+		if w.saveErr != nil {
+			w.log("control-plane watermark saved again: no longer held for it")
+		}
+		w.saveErr = nil
+	}
 	if next.History != w.kept.History || next.ClusterID != w.kept.ClusterID {
 		w.histories++
 	}
@@ -108,33 +134,48 @@ func (w *Watermark) Answer(sentAt int64, seen client.ControlPlaneSeen) {
 			w.log("a new history of cluster %s (epoch %d, a deliberate restore): accepted; what it doesn't know is kept", seen.ClusterID, seen.Epoch)
 		}
 	}
-	w.last, w.seen = v, seen
-	if next == w.kept {
-		return
-	}
-	w.kept = next
-	if err := w.save(); err != nil {
-		w.log("control-plane watermark: %v", err)
-	}
+	w.last, w.seen, w.kept = v, seen, next
 }
 
-// save writes the watermark atomically. Called with mu held.
-func (w *Watermark) save() error {
+// save writes k durably (K-096): a temporary file, flushed to the disk, renamed over the
+// watermark, the folder flushed too. Called with mu held.
+func (w *Watermark) save(k client.Watermark) error {
 	if w.path == "" {
 		return nil
 	}
-	b, err := json.Marshal(w.kept)
+	b, err := json.Marshal(k)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(w.path), 0o700); err != nil {
+	dir := filepath.Dir(w.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	tmp := w.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, w.path)
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, w.path); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	return d.Sync()
 }
 
 // Held says whether nothing may be applied from the control plane now (held, or another
@@ -145,7 +186,7 @@ func (w *Watermark) Held() bool { return w.blocked() }
 func (w *Watermark) blocked() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.kept.Held || w.last == client.Foreign
+	return w.kept.Held || w.last == client.Foreign || w.unreadable != "" || w.saveErr != nil
 }
 
 func (w *Watermark) state() (client.Watermark, client.ControlPlaneSeen, client.Verdict) {
@@ -181,8 +222,8 @@ func (a *Agent) ControlPlaneHeld() bool { return a.watermark().blocked() }
 func (a *Agent) watchControlPlane(ctx context.Context) {
 	t := time.NewTicker(fence.CheckEvery)
 	defer t.Stop()
-	var reported meta.ConditionStatus // the condition status last written
-	keptSaid := ""                    // the kept silos last listed
+	reported := "" // the condition last written: status and reason
+	keptSaid := "" // the kept silos last listed
 	wasBlocked := false
 	for {
 		select {
@@ -203,14 +244,12 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 		if !blocked {
 			keptSaid = a.reportKept(ctx, keptSaid)
 		}
-		want := meta.ConditionFalse
-		if kept.Held {
-			want = meta.ConditionTrue
-		}
-		if !blocked && want == reported {
+		cond := a.controlPlaneCondition(kept, seen)
+		key := string(cond.Status) + "/" + cond.Reason
+		if key == reported {
 			continue
 		}
-		if verdict == client.Foreign {
+		if verdict == client.Foreign && cond.Status == meta.ConditionFalse {
 			// Nothing is written to another cluster's control plane; asking keeps the verdict fresh.
 			var h v1.Host
 			_ = a.Client.Get(ctx, "Host", "", a.HostName, &h)
@@ -220,26 +259,40 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 		if err := a.Client.Get(ctx, "Host", "", a.HostName, &h); err != nil {
 			continue
 		}
-		if want == reported {
+		if cond.Status == meta.ConditionFalse && meta.FindCondition(h.Status.Conditions, ConditionControlPlaneBehind) == nil {
+			reported = key
 			continue
-		}
-		if want == meta.ConditionFalse && meta.FindCondition(h.Status.Conditions, ConditionControlPlaneBehind) == nil {
-			reported = want
-			continue
-		}
-		cond := meta.Condition{Type: ConditionControlPlaneBehind, Status: want, Reason: "Trusted",
-			Message: fmt.Sprintf("cluster %s, history %s, revision %d", kept.ClusterID, kept.History, kept.Revision)}
-		if want == meta.ConditionTrue {
-			cond.Reason = "Held"
-			cond.Message = fmt.Sprintf("the control plane is older than what this worker saw: kept history %s revision %d (epoch %d), seen history %s revision %d (epoch %d). "+
-				"Every silo keeps running as it is and nothing is applied until a deliberate restore (kvoadm init --restore) starts a new history",
-				kept.History, kept.Revision, kept.Epoch, seen.History, seen.Revision, seen.Epoch)
 		}
 		meta.SetCondition(&h.Status.Conditions, cond, a.now().UTC().Truncate(time.Second))
 		if err := a.Client.UpdateStatus(ctx, &h); err == nil {
-			reported = want
+			reported = key
 		}
 	}
+}
+
+// controlPlaneCondition is the Host's ControlPlaneBehind as the watermark says now: held (an older
+// control plane), unreadable or not saved (K-096: never silent), or trusted.
+func (a *Agent) controlPlaneCondition(kept client.Watermark, seen client.ControlPlaneSeen) meta.Condition {
+	w := a.watermark()
+	const meanwhile = "Every silo keeps running as it is; nothing is started, removed or applied meanwhile"
+	if why := w.Unreadable(); why != "" {
+		return meta.Condition{Type: ConditionControlPlaneBehind, Status: meta.ConditionTrue, Reason: "WatermarkUnreadable",
+			Message: fmt.Sprintf("this worker's record of its control plane (%s) is unreadable (%s): it can't tell whether this control plane is older than one it saw. %s. "+
+				"Check that this host's control plane is the one it last used (not one restored from an older backup outside kvoadm init --restore), "+
+				"then run kvoadm host trust-control-plane [USER@]ADDRESS (the address of %s)", w.path, why, meanwhile, a.HostName)}
+	}
+	if why := w.NotSaved(); why != "" {
+		return meta.Condition{Type: ConditionControlPlaneBehind, Status: meta.ConditionTrue, Reason: "WatermarkNotSaved",
+			Message: fmt.Sprintf("this worker can't save its record of its control plane (%s): %s. %s, until it can (check the disk of %s)", w.path, why, meanwhile, a.HostName)}
+	}
+	if kept.Held {
+		return meta.Condition{Type: ConditionControlPlaneBehind, Status: meta.ConditionTrue, Reason: "Held",
+			Message: fmt.Sprintf("the control plane is older than what this worker saw: kept history %s revision %d (epoch %d), seen history %s revision %d (epoch %d). "+
+				"Every silo keeps running as it is and nothing is applied until a deliberate restore (kvoadm init --restore) starts a new history",
+				kept.History, kept.Revision, kept.Epoch, seen.History, seen.Revision, seen.Epoch)}
+	}
+	return meta.Condition{Type: ConditionControlPlaneBehind, Status: meta.ConditionFalse, Reason: "Trusted",
+		Message: fmt.Sprintf("cluster %s, history %s, revision %d", kept.ClusterID, kept.History, kept.Revision)}
 }
 
 // reportKept lists on the Host the silos kept although the control plane doesn't know them, when
@@ -271,4 +324,44 @@ func (a *Agent) reportKept(ctx context.Context, said string) string {
 		return said
 	}
 	return now
+}
+
+// Unreadable is why the watermark file can't be trusted ("" if it can): until a person decides
+// (kvoadm host trust-control-plane), the worker holds.
+func (w *Watermark) Unreadable() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.unreadable
+}
+
+// NotSaved is the error of the last save that failed ("" since one succeeded): until a save
+// succeeds the worker holds, and the answer that raised the watermark doesn't count.
+func (w *Watermark) NotSaved() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.saveErr == nil {
+		return ""
+	}
+	return w.saveErr.Error()
+}
+
+// WatermarkUnreadable says why a watermark file's contents (b, as read with err) can't be trusted:
+// "" for a file that holds a watermark of a cluster, or that isn't there at all (first contact).
+// Empty, partial, unparsable, or without a cluster all count as unreadable (K-096): never "never
+// seen a control plane", which would accept whatever answers next.
+func WatermarkUnreadable(b []byte, err error) string {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return ""
+	case err != nil:
+		return err.Error()
+	}
+	var k client.Watermark
+	if err := json.Unmarshal(b, &k); err != nil {
+		return "not a watermark: " + err.Error()
+	}
+	if k.ClusterID == "" {
+		return "it names no cluster"
+	}
+	return ""
 }
