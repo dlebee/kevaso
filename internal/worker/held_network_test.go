@@ -35,7 +35,7 @@ func TestAHeldWorkerLoadsNoRules(t *testing.T) {
 	held.Store(true)
 	done := make(chan struct{})
 	go func() {
-		RunNetworkHeld(ctx, client.New(api.URL), "hv1", nil, nil, func(string, ...any) {}, held.Load)
+		RunNetworkWith(ctx, client.New(api.URL), "hv1", nil, nil, func(string, ...any) {}, NetworkOptions{Held: held.Load})
 		close(done)
 	}()
 	defer func() { cancel(); <-done; api.CloseClientConnections() }()

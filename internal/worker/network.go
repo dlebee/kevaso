@@ -152,18 +152,34 @@ func AnnouncedAddresses(hostName string, silos []*v1.Silo) []string {
 // (atomically: nft -f replaces the tables in one transaction). With an egress CA it also runs the
 // egress gate.
 func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate.CA, upstream *x509.CertPool, log func(string, ...any)) {
-	RunNetworkHeld(ctx, c, hostName, ca, upstream, log, nil)
+	RunNetworkWith(ctx, c, hostName, ca, upstream, log, NetworkOptions{})
 }
 
-// RunNetworkHeld is RunNetwork that changes nothing on the host while held says so (§0.7: the
-// control plane is older than what this worker saw, or another cluster's): the rules, the pool
-// and announced addresses stay as they are, and the DNS listeners answer from what they have.
-func RunNetworkHeld(ctx context.Context, c *client.Client, hostName string, ca *gate.CA, upstream *x509.CertPool, log func(string, ...any), held func() bool) {
+// NetworkOptions are RunNetworkWith's.
+type NetworkOptions struct {
+	// Held, if set, says when to change nothing on the host (§0.7: the control plane is older
+	// than what this worker saw, or another cluster's): the rules, the pool and announced
+	// addresses stay as they are, and the DNS listeners answer from what they have.
+	Held func() bool
+	// StateFile, if set, keeps the last state seen (laststate.go): a start while the control
+	// plane is away comes up from it (K-062).
+	StateFile string
+}
+
+// RunNetworkWith is RunNetwork with options.
+func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *gate.CA, upstream *x509.CertPool, log func(string, ...any), o NetworkOptions) {
+	held := o.Held
 	silos, hosts, grantsInf := informer.New(c, "Silo"), informer.New(c, "Host"), informer.New(c, "Grant")
 	secretsInf := informer.New(c, "Secret")
 	ingInf, classInf := informer.New(c, "Ingress"), informer.New(c, "IngressClass")
 	svcInf := informer.New(c, "Service")
 	leaseInf := informer.New(c, "Lease")
+	kept := []*informer.Informer{silos, hosts, grantsInf, ingInf, classInf, svcInf, leaseInf} // all but secrets
+	seeded := o.StateFile != "" && seedLastState(o.StateFile, kept...)
+	if seeded {
+		secretsInf.Seed(nil) // never on disk: the gate asks for a secret when it injects it
+		log("network: starting from the last state this host kept (%s), not waiting for the control plane", o.StateFile)
+	}
 	changed := make(chan struct{}, 1)
 	poke := func(informer.Key) {
 		select {
@@ -203,7 +219,7 @@ func RunNetworkHeld(ctx context.Context, c *client.Client, hostName string, ca *
 	// Every input before the first ruleset: one built without the leases (or services, ingress
 	// classes) closes their ports and resets what an open lease let in, on every restart.
 	for _, inf := range []*informer.Informer{silos, hosts, grantsInf, secretsInf, ingInf, classInf, svcInf, leaseInf} {
-		if !inf.WaitSynced(ctx) {
+		if !inf.WaitReady(ctx) { // a seed, else the first list (K-062)
 			return
 		}
 	}
@@ -285,6 +301,11 @@ func RunNetworkHeld(ctx context.Context, c *client.Client, hostName string, ca *
 				log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
 			} else if ok {
 				loaded.set(kni.Bindings(view.Local))
+			}
+			if o.StateFile != "" {
+				if err := saveLastState(o.StateFile, kept...); err != nil {
+					log("network: keeping the last state: %v", err)
+				}
 			}
 			reportHost(ctx, c, hostName, me, hostFirewallCondition(fw.err, problems), now)
 			reportPortRules(ctx, c, hostName, all, siloProblems(problems), now)

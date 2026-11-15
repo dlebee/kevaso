@@ -29,11 +29,41 @@ type Informer struct {
 	handlers []func(Key)
 	synced   chan struct{}
 	once     sync.Once
+	ready    chan struct{} // seeded or synced
+	readyOne sync.Once
 }
 
 // New returns an informer for kind. Call Run to start it.
 func New(c *client.Client, kind string) *Informer {
-	return &Informer{c: c, kind: kind, items: map[Key]meta.Object{}, synced: make(chan struct{})}
+	return &Informer{c: c, kind: kind, items: map[Key]meta.Object{}, synced: make(chan struct{}), ready: make(chan struct{})}
+}
+
+// Seed fills the cache, before Run's first list, with objects kept from an earlier run: the last
+// known state, for a process that starts while the control plane is away (K-062). Get and List
+// serve them; Synced stays false (an object missing from a seed may exist, one in it may be gone),
+// so nothing that removes things trusts it. The first list replaces the seed, telling handlers.
+func (i *Informer) Seed(objs []meta.Object) {
+	i.mu.Lock()
+	if !i.Synced() {
+		for _, o := range objs {
+			m := o.GetObjectMeta()
+			i.items[Key{m.Namespace, m.Name}] = o
+		}
+	}
+	i.mu.Unlock()
+	i.readyOne.Do(func() { close(i.ready) })
+}
+
+// WaitReady blocks until the cache holds a seed or the first list (or ctx ends).
+func (i *Informer) WaitReady(ctx context.Context) bool {
+	select {
+	case <-i.ready:
+		return true
+	case <-i.synced:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // Kind is the kind this informer caches.
@@ -179,6 +209,7 @@ func (i *Informer) relist(ctx context.Context) (string, error) {
 	i.items = fresh
 	i.mu.Unlock()
 	i.once.Do(func() { close(i.synced) })
+	i.readyOne.Do(func() { close(i.ready) })
 	i.notify(changed)
 	return l.Metadata.ResourceVersion, nil
 }

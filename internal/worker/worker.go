@@ -180,17 +180,31 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	}
 	// The control plane registers the Host (and, on the mesh, gives it a subnet); wait for it
 	// before reporting worker fields and installing runtimes.
-	for {
+	// A restart while the control plane is away (K-062) doesn't wait for it: after a few tries it
+	// starts from what this host kept (its last state, its subnet), and reports once it can.
+	for attempt := 1; ; attempt++ {
 		var h v1.Host
-		if err := c.Get(ctx, "Host", "", cfg.HostName, &h); err == nil {
+		err := c.Get(ctx, "Host", "", cfg.HostName, &h)
+		if err == nil {
 			if !cfg.MeshSubnet {
 				break
 			}
 			if p, err := netip.ParsePrefix(h.Status.Network.SiloSubnet); err == nil {
 				cloudhypervisor.SetNetwork(p)
 				cfg.Log("silo subnet %s", p)
+				if cfg.DataDir != "" {
+					if err := keepSubnet(cfg.DataDir, p); err != nil {
+						cfg.Log("keep the silo subnet: %v", err)
+					}
+				}
 				break
 			}
+		} else if p, ok := keptStart(cfg.DataDir, cfg.MeshSubnet); ok && attempt >= 5 {
+			if cfg.MeshSubnet {
+				cloudhypervisor.SetNetwork(p)
+			}
+			cfg.Log("the control plane can't be reached (%v): starting from what this host kept, not waiting for it", err)
+			break
 		}
 		select {
 		case <-ctx.Done():
@@ -223,6 +237,10 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	if cfg.Watermark != nil {
 		held = cfg.Watermark.Held
 	}
+	stateFile := "" // the network's last state (K-062), where the worker has a data directory
+	if cfg.DataDir != "" {
+		stateFile = filepath.Join(cfg.DataDir, LastStateFile)
+	}
 	for name, rt := range rts {
 		go func(name string, rt Installer) {
 			// A failed install (a download cut short, a mirror down) is tried again every minute.
@@ -243,7 +261,9 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 					st.EnvOutsideEngine = rt.Info().Capabilities.EnvOutsideEngine
 					cfg.Log("runtime %s ready", name)
 					if usesBridge(rt) { // the bridge is there now: keep its firewall current (once)
-						networkOnce.Do(func() { go RunNetworkHeld(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log, held) })
+						networkOnce.Do(func() {
+							go RunNetworkWith(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log, NetworkOptions{Held: held, StateFile: stateFile})
+						})
 					}
 				}
 				mu.Lock()
