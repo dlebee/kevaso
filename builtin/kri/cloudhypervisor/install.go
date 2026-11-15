@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"kevaso.com/core/builtin/kni"
@@ -289,6 +290,36 @@ func (r *Runtime) setupStorage(ctx context.Context, o StorageOptions) error {
 	}
 	// A full pool fails writes fast instead of hanging guests (E012).
 	return r.run(ctx, "lvchange", "-q", "--errorwhenfull", "y", VG+"/"+ThinPool)
+}
+
+// PoolSize is the thin pool's size and what the thin volumes in it promise already, in bytes:
+// what a host offers for local volumes (§0.8, refused at creation past it), not what's written.
+func (r *Runtime) PoolSize(ctx context.Context) (size, provisioned int64, err error) {
+	out, err := r.Host.Run(ctx, "lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "lv_name,lv_size,pool_lv", VG)
+	if err != nil {
+		return 0, 0, fmt.Errorf("lvs %s: %w", VG, err)
+	}
+	found := false
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		n, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("lvs %s: size %q", VG, f[1])
+		}
+		switch {
+		case f[0] == ThinPool:
+			size, found = n, true
+		case len(f) == 3 && f[2] == ThinPool:
+			provisioned += n
+		}
+	}
+	if !found {
+		return 0, 0, fmt.Errorf("no thin pool %s/%s", VG, ThinPool)
+	}
+	return size, provisioned, nil
 }
 
 // poolReady says whether the thin pool exists.
