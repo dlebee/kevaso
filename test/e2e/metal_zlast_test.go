@@ -38,7 +38,9 @@ func (c *mt) enableWorker(runtimes ...string) {
 	})
 }
 
-// runtimeReady waits for a runtime of the host to be Ready, failing on Failed.
+// runtimeReady waits for a runtime of the host to be Ready. Failed is not the end: a failed
+// install is tried again every minute (internal/worker), and the first try after a boot can lose
+// the race to create kvbr0 ("RTNETLINK answers: File exists") while the other runtime creates it.
 func (c *mt) runtimeReady(rt string, within time.Duration) {
 	c.t.Helper()
 	c.eventually("runtime "+rt+" Ready", within, func() (bool, string) {
@@ -48,9 +50,6 @@ func (c *mt) runtimeReady(rt string, within time.Duration) {
 			return false, out
 		}
 		st := h.Status.Runtimes[rt]
-		if st.State == "Failed" {
-			c.t.Fatalf("runtime %s failed: %s", rt, st.Message)
-		}
 		return st.State == "Ready", fmt.Sprintf("%+v", st)
 	})
 }
