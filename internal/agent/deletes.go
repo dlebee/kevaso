@@ -198,6 +198,11 @@ func (d *deletesLog) writeLocked() error {
 	if err != nil {
 		return err
 	}
+	return d.writeBytes(b)
+}
+
+// writeBytes writes b to the file atomically.
+func (d *deletesLog) writeBytes(b []byte) error {
 	dir := filepath.Dir(d.path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

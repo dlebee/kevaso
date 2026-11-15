@@ -172,11 +172,12 @@ type Agent struct {
 	engine        *engine.Engine
 	cp            *Watermark // the control plane this worker trusts (watermark.go); via watermark()
 	cpOnce        sync.Once
-	staleNoted    sync.Map // silo UID → logged once that its cache was stale at a start
-	claims        sync.Map // silo UID → *claimKeeper: its start claim, kept fresh while it starts here
-	reported      sync.Map // silo UID → generation: reported Running in this run since its last start here
-	createBackoff sync.Map // silo UID → createBackoff
-	startBackoff  sync.Map // silo UID → createBackoff: its failed starts (K-115)
+	staleNoted    sync.Map   // silo UID → logged once that its cache was stale at a start
+	claims        sync.Map   // silo UID → *claimKeeper: its start claim, kept fresh while it starts here
+	reported      sync.Map   // silo UID → generation: reported Running in this run since its last start here
+	createBackoff sync.Map   // silo UID → createBackoff
+	startBackoff  sync.Map   // silo UID → createBackoff: its failed starts (K-115)
+	applied       appliedLog // the resets and images applied here (applied.go, K-110)
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
@@ -942,6 +943,16 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 	if cur.Running != image {
 		what = "image " + image
 	}
+	if a.alreadyApplied(s.UID, s.Spec.Reset, image) {
+		// K-110: this host made the disk afresh for this very request already; the store's status
+		// is from before (a control plane restored from a backup taken while it was due). Nothing
+		// is wiped again: the status is brought up to what was done.
+		a.log("silo %s/%s: %s was applied here already (this host's record): its disk is kept, the status says so again", s.Namespace, s.Name, what)
+		return true, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			st.Image = running(st.Image, s, image)
+			setCond(st, "Updated", meta.ConditionTrue, "AlreadyApplied", what+" was applied on "+a.HostName+" already: nothing done again", s.Generation, a.now())
+		})
+	}
 	rr, ok := rt.(kri.Resetter)
 	if !ok {
 		return true, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
@@ -1015,6 +1026,8 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		})
 		return true, fmt.Errorf("reset onto %s: %w", image, err)
 	}
+	// Recorded here before the store is told (K-110): a restored status replays nothing.
+	a.recordApplied(s.UID, s.Spec.Reset, image)
 	a.delivered.Delete(s.UID) // a fresh disk: its secrets and CA are written again, and its mounts
 	a.guestMounted.Delete(s.UID)
 	a.log("silo %s/%s: reset onto %s (%s)", s.Namespace, s.Name, image, what)
@@ -1532,6 +1545,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				return err
 			}
 			a.forgetDelete(id.UID) // nothing of it left here
+			a.forgetApplied(id.UID)
 		}
 	}
 	return a.stopUnlisted(ctx, k, s, listed)
