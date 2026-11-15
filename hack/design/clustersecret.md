@@ -1,8 +1,9 @@
 # ClusterSecret (v1)
 
-Owner's decisions (2026-11-15): a secret with no namespace, for things with no namespace. No backward
-compatibility. Delegation to namespaces is a later feature, defined by policies on the ClusterSecret;
-v1 must leave room for it but not build it.
+Owner's decisions (2026-11-15): a secret with no namespace, for things with no namespace. Access is plain RBAC,
+pinned to names: a ClusterRole with `resourceNames`, bound to the plugin's service account, so a storage class's
+controller reads exactly its own secrets and nothing else. No backward compatibility. Delegation to namespaces is
+a later feature (a `use` verb through bindings); v1 leaves room for it and does not build it.
 
 ## The kind
 
@@ -12,63 +13,61 @@ kind: ClusterSecret
 metadata:
   name: bucket-secret-key          # no namespace
 spec:
-  description: "JuiceFS bucket secret key"   # optional
-  plugins: [juicefs]               # required: the plugins that receive it (by plugin install name)
-  hosts: []                        # optional: host names; empty = every host that runs one of those plugins
+  description: "JuiceFS bucket secret key"   # optional; nothing else in spec
 status:
-  version: 3                       # bumps on every value change
+  version: 3                       # bumps on every value change; set by the server only
   changedAt: ...
 ```
 
-- Cluster-scoped (no namespace), like Host or Namespace. Stored sealed, the same way Secret values are.
-- The value is write-only: `kvo create clustersecret NAME --plugin juicefs --from-file F` (or `-`),
-  `kvo set clustersecret NAME --from-file F` to rotate. `kvo get clustersecret NAME` shows spec and status, never
-  the value; `--reveal` works for cluster admins only, exactly like Secrets.
-- Leave room, do not build: a later `spec.delegate` (namespaces that may *use* it). v1 rejects unknown fields as
-  usual, so nothing to add now beyond not using the name `delegate` for anything else.
+- Cluster-scoped, stored sealed like Secret values. The caller's `status` is dropped on create and on update.
+- Value write-only: `kvo create clustersecret NAME [--description D] --from-file F|-`,
+  `kvo set clustersecret NAME --from-file F|-` (rotate), `kvo get clustersecret [NAME] [--reveal]`,
+  `kvo delete clustersecret NAME`.
 
 ## Who can do what
 
-- Create, update, delete, get, list, reveal: cluster-admin only (`rbac.Policy.ClusterAdmin` or the built-in
-  cluster-admin role). No namespaced role, binding or grant can name a ClusterSecret. A namespaced object that
-  references a ClusterSecret is refused at admission (there is none in v1; make sure grants' `secrets` and
-  `container.pull.secretRef` can't resolve to one).
-- A host (worker or system node certificate) may read the VALUE of a ClusterSecret only if its `spec.plugins` is
-  non-empty and its `spec.hosts` is empty or names that host. Through a dedicated route, e.g.
-  `GET /apis/kevaso/v1/clustersecrets/NAME/value` with the host's identity; every other identity is refused
-  (403), and listing values is never possible. A host may list ClusterSecrets (names, spec, status) so it can see
-  which ones are for plugins it runs.
+- **Manage** (create, update, delete, and `--reveal`): cluster-admin only (`rbac.Policy.ClusterAdmin`). No role,
+  whatever it says, grants these on clustersecrets.
+- **get, list** of the objects (name, description, status; never a value): cluster-admin, and any identity a
+  ClusterRole grants `get`/`list` on `clustersecrets` (pinned or not: names and versions only).
+- **Read one value**: `GET /apis/kevaso/v1/clustersecrets/NAME/value`. Allowed for cluster-admin, or for an identity
+  holding, through a **ClusterRoleBinding** to a **ClusterRole**, a rule with resource `clustersecrets/value`, verb
+  `get`, and `resourceNames` containing NAME. A rule with empty `resourceNames` does NOT grant a value (always pinned).
+  A namespaced Role or RoleBinding never reaches a ClusterSecret: refuse a Role that names `clustersecrets` or
+  `clustersecrets/value` at admission, with a message saying to use a ClusterRole.
+- **Hosts on behalf of a plugin** (the node side, see delivery):
+  `GET .../clustersecrets/NAME/value?for=PLUGIN` with a host certificate (worker or system node). Allowed only if the
+  service account of plugin PLUGIN (the Plugin object's `spec.controller.serviceAccount`, read how plugin installs
+  name it) would itself be allowed to read NAME by the rule above. The host has no ClusterSecret access of its own.
+- No namespaced object may reference a ClusterSecret (grants' secrets, container pull secretRef).
 
 ## Delivery to plugins on a host
 
-Today: `kvoadm plugin install --credential NAME=FILE` copies FILE to the host (root only) and the plugin's systemd
-unit reads it with LoadCredential; the plugin reads it from `$CREDENTIALS_DIRECTORY` via `operator.FromEnv()` /
-the sdk.
+Today: `kvoadm plugin install --credential NAME=FILE` copies FILE to the host (root only); the plugin's systemd
+unit loads it with LoadCredential; the plugin reads it from `$CREDENTIALS_DIRECTORY` via the sdk.
 
 v1:
-- `--credential` is removed from `kvoadm plugin install`. Nothing else changes for the plugin: the same names, the
-  same credential directory, the same sdk call.
-- kevasod (the agent) on each host watches ClusterSecrets. For each plugin installed on this host
-  (`/etc/kevaso/plugins/NAME/` or wherever install puts them; read plugin.go), for each ClusterSecret whose
-  `spec.plugins` contains that plugin name and whose `spec.hosts` is empty or names this host: fetch the value
-  and write it, root only (0600, owned root), to the same path `--credential` used to write. That file IS the
-  host's cache: it stays while the control plane is unreachable, and volumes keep mounting.
-- On a value change (status.version), rewrite the file atomically (write temp, fsync, rename) and restart that
-  plugin's unit(s) so LoadCredential picks it up. Do not restart if the bytes are the same.
-- When a ClusterSecret is deleted, or no longer names this plugin/host, the agent does NOT delete the cached file
-  while held or while the control plane is unreachable (a worker keeps its last state); it removes it only on a
-  DELETED event or a spec change seen on an accepted history while not held, the same rule as seen deletes.
-- Never log the value. Never pass it on a command line or environment of a child process other than through the
-  existing systemd credential path.
+- `--credential` is removed from `kvoadm plugin install`, replaced by `--cluster-secret NAME` (repeatable): the names
+  the plugin's unit will find in its credential directory. Install records them in the same place it recorded the
+  credential list, and creates nothing on the API. The plugin and the sdk do not change.
+- kevasod on each host, for each plugin installed there and each recorded cluster-secret name: fetch it with
+  `?for=PLUGIN`, write it root-only (0600, owner root) to the same path `--credential` used, atomically (temp in
+  the same dir, fsync, rename). That file is the host's cache: volumes keep mounting while the control plane is away.
+- Watch ClusterSecrets (names and status.version only) to notice rotations; on a version change rewrite and restart
+  that plugin's unit(s); unchanged bytes: write nothing, restart nothing.
+- 403 or a deleted ClusterSecret: remove the cached file ONLY when the agent is not held and the answer came on an
+  accepted history (the seen-delete rule); held or cut off: keep it. Restart the plugin after a removal.
+- Never log the value; never pass it on a command line or a child's environment.
 
 ## Out of v1
 
-- Per-volume buckets from a namespace Secret; namespaces using a ClusterSecret; templated references.
+- Namespaces using a ClusterSecret; per-volume buckets from a namespace Secret; templated references.
 
 ## Done when
 
-- `make race vet lint`, `go run ./hack/mutate -check` green; new tests for: cluster-admin only (each verb, plus a
-  namespace admin refused); value route refused to non-hosts and to hosts not named; delivery writes the file 0600
-  and restarts on change only; a held or cut-off agent keeps the file; delete removes it only when not held.
-- provider-juicefs and provider-linode docs and the kevaso docs say `kvo create clustersecret` instead of
-  `--credential`.
+- `make race vet lint`, `go run ./hack/mutate -check` green; tests: manage is cluster-admin only (a ClusterRole
+  granting create/delete still refused); a pinned ClusterRole bound to an SA reads exactly its names and not
+  another; an unpinned rule reads none; a Role naming clustersecrets is refused; `?for=` only for a plugin whose SA
+  is allowed; delivery writes 0600 and restarts on change only; held keeps the file; seen delete removes it.
+- provider-juicefs, provider-linode and kevaso docs use `kvo create clustersecret` + a ClusterRole/Binding +
+  `--cluster-secret` instead of `--credential`.
