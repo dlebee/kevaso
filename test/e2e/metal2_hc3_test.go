@@ -127,13 +127,16 @@ func TestMetal2BackoffHoldsNoClaim(t *testing.T) {
 	s := c.silo(ns, "vm")
 	host := map[string]*mt{metalHost: p.c1, metalHost2: p.c2}[s.Status.Host]
 	n := cloudhypervisor.NamesFor(kri.ID{Namespace: ns, Name: "vm", UID: s.UID})
-	kill := func() { host.mustSh("kill -KILL $(systemctl show -p MainPID --value " + n.Unit + ") 2>/dev/null; true") }
-	kill()
-	c.eventually("started again once", 5*time.Minute, func() (bool, string) {
-		st := strings.TrimSpace(host.mustSh("systemctl is-active " + n.Unit + " || true"))
-		return st == "active", st
+	mainPID := func() string { return strings.TrimSpace(host.mustSh("systemctl show -p MainPID --value " + n.Unit)) }
+	// Never kill 0 (that would be this shell's own group).
+	kill := func(pid string) { host.mustSh("[ '" + pid + "' -gt 0 ] 2>/dev/null && kill -KILL " + pid + "; true") }
+	first := mainPID()
+	kill(first)
+	c.eventually("started again once (another VMM)", 5*time.Minute, func() (bool, string) {
+		pid := mainPID()
+		return pid != "0" && pid != first, pid
 	})
-	kill()
+	kill(mainPID())
 	c.eventually("waiting out its backoff", 3*time.Minute, func() (bool, string) {
 		r := meta.FindCondition(c.silo(ns, "vm").Status.Conditions, "Ready")
 		return r != nil && strings.Contains(r.Message, "starting it again in"), fmt.Sprint(r)
