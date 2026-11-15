@@ -401,11 +401,20 @@ func (c *mt) mustSh(script string) string {
 	return out
 }
 
-// kvo runs kvo and returns its combined output and exit code.
+// kvo runs kvo and returns its combined output and exit code. A read (get, describe) that got
+// no answer at all is tried twice more: this Mac's path to the machines drops a TLS handshake now
+// and then (the machine logs an i/o timeout from this Mac), and a test isn't about that. Writes are
+// never repeated.
 func (c *mt) kvo(stdin string, args ...string) (string, int) {
-	var o bytes.Buffer
-	code := kvo.Run(c.ctx, args, strings.NewReader(stdin), &o, &o)
-	return o.String(), code
+	read := len(args) > 0 && (args[0] == "get" || args[0] == "describe")
+	for try := 0; ; try++ {
+		var o bytes.Buffer
+		code := kvo.Run(c.ctx, args, strings.NewReader(stdin), &o, &o)
+		if code == 0 || !read || try == 2 || !strings.Contains(o.String(), "no answer from") {
+			return o.String(), code
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // must runs kvo and fails the test unless it exits 0.
