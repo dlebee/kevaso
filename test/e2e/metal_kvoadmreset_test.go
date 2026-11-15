@@ -25,7 +25,7 @@ docker run -d -q --name kvt-foreign --restart unless-stopped -v kvt-foreign-vol:
 // installed with this build, Docker installed before Kevaso (KEVASO_METAL_PREINSTALL=
 // MetalForeignDocker) and podman after it:
 //   - a silo whose main process is a binary named kevasod doesn't make kvoadm reset refuse;
-//   - a step made to fail (a mount under /var/lib/kevaso held busy) keeps the install record, and
+//   - a step made to fail (an immutable file under /var/lib/kevaso) keeps the install record, and
 //     a second look shows the same plan;
 //   - the reset done: Docker, its foreign container (running) and volume stay, Kevaso's
 //     containers are gone, podman works, and the install record is gone.
@@ -47,7 +47,9 @@ spec:
   resources: { cpu: 1, memory: 256Mi }
 `)
 	c.waitRunning(ns, 15*time.Minute, "named")
-	c.expect("its main process is named kevasod", c.mustSh("pgrep -xc kevasod || true"), "2") // kevasod itself and the silo's
+	if n, _ := strconv.Atoi(strings.TrimSpace(c.mustSh("pgrep -xc kevasod || true"))); n < 2 {
+		t.Fatalf("%d processes named kevasod: want kevasod itself and the silo's", n)
+	}
 	c.mustSh("DEBIAN_FRONTEND=noninteractive apt-get install -y -q podman >/dev/null")
 	t.Logf("the install record: %s", c.mustSh("ls -l /var/lib/kevaso-install/ 2>&1; wc -l < /var/lib/kevaso-install/installed 2>&1"))
 
@@ -69,24 +71,23 @@ spec:
 	}
 	first, code := reset("--force", "--dry-run")
 	t.Logf("kvoadm reset --dry-run (exit %d):\n%s", code, first)
-	for _, w := range []string{"docker.io", "podman"} {
+	for _, w := range []string{"Docker stays (it was there before)", "podman"} {
 		if !strings.Contains(first, w) {
 			t.Errorf("the plan doesn't name %s", w)
 		}
 	}
 
-	// A step made to fail: a tmpfs under /var/lib/kevaso, held busy.
-	c.mustSh("mkdir -p /var/lib/kevaso/kvt-hold && mount -t tmpfs kvt-hold /var/lib/kevaso/kvt-hold && systemd-run -q --unit kvt-hold sh -c 'cd /var/lib/kevaso/kvt-hold && exec sleep 3600'")
-	t.Cleanup(func() {
-		_, _ = c.sh("systemctl stop kvt-hold 2>/dev/null; umount /var/lib/kevaso/kvt-hold 2>/dev/null; rmdir /var/lib/kevaso/kvt-hold 2>/dev/null; true")
-	})
+	// A step made to fail: a file under /var/lib/kevaso no one can remove (immutable). (A busy
+	// mount doesn't: the reset stops every kvt-* unit and unmounts what is under its paths.)
+	c.mustSh("touch /var/lib/kevaso/kvt-stuck && chattr +i /var/lib/kevaso/kvt-stuck")
+	t.Cleanup(func() { _, _ = c.sh("chattr -i /var/lib/kevaso/kvt-stuck 2>/dev/null; rm -f /var/lib/kevaso/kvt-stuck; true") })
 	cut, code := reset("--force", "--yes")
 	t.Logf("kvoadm reset with a step made to fail (exit %d):\n%s", code, cut)
 	if strings.Contains(cut, "still running") || strings.Contains(cut, "still runs") {
 		t.Errorf("refused for a silo's process named kevasod")
 	}
 	if code == 0 {
-		t.Errorf("the reset passed with a mount held busy under /var/lib/kevaso: the failing step wasn't made")
+		t.Errorf("the reset passed with an immutable file under /var/lib/kevaso: the failing step wasn't made")
 	}
 	c.expect("the install record is kept", c.mustSh("test -e /var/lib/kevaso-install/installed && echo kept || echo gone"), "kept")
 	again, _ := reset("--force", "--dry-run")
@@ -104,7 +105,7 @@ spec:
 		t.Errorf("the packages in the plan changed after the cut reset:\nbefore:\n%s\nafter:\n%s", a, b)
 	}
 
-	c.mustSh("systemctl stop kvt-hold; umount /var/lib/kevaso/kvt-hold; rmdir /var/lib/kevaso/kvt-hold")
+	c.mustSh("chattr -i /var/lib/kevaso/kvt-stuck && rm -f /var/lib/kevaso/kvt-stuck")
 	done, code := reset("--force", "--yes")
 	t.Logf("kvoadm reset (exit %d):\n%s", code, done)
 	if code != 0 {
