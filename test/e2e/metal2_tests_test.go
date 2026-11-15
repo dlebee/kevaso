@@ -259,7 +259,7 @@ func TestMetal2Fence(t *testing.T) {
 	t.Log("the cut lifted")
 	c.eventually(metalHost2+" is Ready again", 5*time.Minute, func() (bool, string) {
 		h := c.hostNamed(metalHost2)
-		return meta(*h, "Ready"), fmt.Sprint(h.Status.Conditions)
+		return hostIs(*h, "Ready"), fmt.Sprint(h.Status.Conditions)
 	})
 	c.eventually("machine 2 keeps no copy of what moved", 5*time.Minute, func() (bool, string) {
 		return !running(p.c2, uids["moves"]) && !running(p.c2, uids["rescue"]), "a copy still runs"
@@ -321,7 +321,7 @@ func TestMetal2HostLoss(t *testing.T) {
 	})
 	c.eventually(metalHost2+" is Ready again", 10*time.Minute, func() (bool, string) {
 		h := c.hostNamed(metalHost2)
-		return meta(*h, "Ready"), fmt.Sprint(h.Status.Conditions)
+		return hostIs(*h, "Ready"), fmt.Sprint(h.Status.Conditions)
 	})
 	c.waitRunning(ns, 15*time.Minute, "stay", "vm", "moves")
 	for _, n := range []string{"stay", "vm"} {

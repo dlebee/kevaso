@@ -255,7 +255,7 @@ func waitRuntimes(ctx context.Context, host string, runtimes ...string) error {
 					return fmt.Errorf("%s: runtime %s failed: %s", host, rt, st.Message)
 				}
 			}
-			if ready == len(runtimes) && meta(h, "Ready") {
+			if ready == len(runtimes) && hostIs(h, "Ready") {
 				return nil
 			}
 		}
@@ -266,7 +266,7 @@ func waitRuntimes(ctx context.Context, host string, runtimes ...string) error {
 	}
 }
 
-func meta(h v1.Host, cond string) bool {
+func hostIs(h v1.Host, cond string) bool {
 	for _, c := range h.Status.Conditions {
 		if c.Type == cond {
 			return c.Status == "True"

@@ -135,7 +135,7 @@ func (p *pair) waitBack(boot string) {
 	})
 	p.c1.eventually(metalHost2+" Ready", 10*time.Minute, func() (bool, string) {
 		h := p.c1.hostNamed(metalHost2)
-		return meta(*h, "Ready"), fmt.Sprint(h.Status.Conditions)
+		return hostIs(*h, "Ready"), fmt.Sprint(h.Status.Conditions)
 	})
 }
 
@@ -168,7 +168,7 @@ func TestMetal2Upgrade(t *testing.T) {
 	for _, name := range []string{metalHost, metalHost2} {
 		c.eventually(name+" runs "+version, 5*time.Minute, func() (bool, string) {
 			h := c.hostNamed(name)
-			return h.Status.Version == version && meta(*h, "Ready"), h.Status.Version
+			return h.Status.Version == version && hostIs(*h, "Ready"), h.Status.Version
 		})
 	}
 	c.waitRunning(ns, 5*time.Minute, "a", "b", "vm")

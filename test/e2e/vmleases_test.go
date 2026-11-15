@@ -286,7 +286,7 @@ spec:
 	appr, _ := r.kvo("", "get", "approvals", "-n", "lz")
 	t.Logf("kvo get approvals:\n%s", appr)
 	staysClosed("gated", "its ask waiting for a yes", 8*time.Second)
-	r.must(kvo.Run, "", "approve", pending, "-n", "lz")
+	r.approve("lz", pending)
 	select {
 	case res := <-done:
 		t.Logf("endpoint ports/debug/open --wait after the yes: %d %s", res.code, res.out)

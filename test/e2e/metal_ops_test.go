@@ -109,7 +109,7 @@ func TestMetalLeases(t *testing.T) {
 	if pending == "" {
 		return
 	}
-	c.must("", "approve", pending, "-n", ns)
+	c.approve(ns, pending)
 	c.eventually("approved: it opens", 30*time.Second, func() (bool, string) { return c.open(18121) })
 	c.must("", "close", "silo", "dbg", "-n", ns, "--port", "gated")
 	c.eventually("kvo close: closed again", 30*time.Second, func() (bool, string) { return c.closed(18121) })
