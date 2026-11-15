@@ -279,6 +279,13 @@ func TestFencingWhenCutOff(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	// Started again (its claim applied): the fence counts from the contact that came back, not an
+	// older heartbeat, so it doesn't stop them again.
+	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		if state("stops") != kri.Running || state("later") != kri.Running {
+			t.Fatalf("stopped again right after the start: %s %s", state("stops"), state("later"))
+		}
+	}
 }
 
 // A new image (resolved by the control plane) or a reset puts the silo back onto its image:

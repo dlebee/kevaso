@@ -1023,10 +1023,7 @@ func (a *Agent) claimStart(ctx context.Context, s *v1.Silo) error {
 	if cur.UID != s.UID || cur.DeletionTimestamp != nil || cur.Generation != s.Generation || !moves.MayStart(&cur, a.HostName) {
 		return errPlacedElsewhere
 	}
-	now := a.Clock.Now().UTC()
-	claim := meta.Condition{Type: ConditionStartClaim, Status: meta.ConditionTrue, Reason: "Starting",
-		Message: "starting on " + a.HostName + " at " + now.Format(time.RFC3339Nano), ObservedGeneration: s.Generation,
-		LastTransitionTime: now.Truncate(time.Second)}
+	claim := startClaim(a.HostName, s.Generation, a.Clock.Now().UTC())
 	removeCondition(&cur.Status, ConditionStartClaim)
 	cur.Status.Conditions = append(cur.Status.Conditions, claim) // always a change: the write is the claim
 	cur.Status.Routing = routing.Silo(cur.Spec, cur.Status)
@@ -1035,6 +1032,14 @@ func (a *Agent) claimStart(ctx context.Context, s *v1.Silo) error {
 		return errPlacedElsewhere
 	}
 	return err
+}
+
+// startClaim is the claim host writes before it starts a silo of generation gen. The control
+// plane reads the host out of its message (silo.StartClaimOf): "starting on HOST at TIME".
+func startClaim(host string, gen int64, now time.Time) meta.Condition {
+	return meta.Condition{Type: ConditionStartClaim, Status: meta.ConditionTrue, Reason: "Starting",
+		Message: "starting on " + host + " at " + now.Format(time.RFC3339Nano), ObservedGeneration: gen,
+		LastTransitionTime: now.Truncate(time.Second)}
 }
 
 // lostClaim is the end of a start this host didn't win: nothing is started; the init steps and
