@@ -162,6 +162,7 @@ type target struct {
 	token     bool   // a service account's /token
 	value     bool   // a secret's /value
 	move      bool   // a silo's /move
+	planned   bool   // a write the move handler's PlanMove decided (set only by moveSilo)
 	answer    string // an approval's /approve or /deny
 	bundle    bool   // a pane's /bundle
 	stream    string // a silo's /ssh or /files (silostreams.go)
@@ -588,6 +589,14 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%v", err)
 		}
 	}
+	if id, ok := IdentityFrom(ctx); (!ok || id.Type != "host" || id.Role != "worker") && t.kind.Kind == "Silo" && t.status && !t.planned {
+		// K-070: whatever the caller does, a handoff under way is not replaced or dropped. The
+		// hosts are judged by moves.HostWrite above; the move handler's confirmed-fenced end of
+		// a handoff is decided by PlanMove and passes planned.
+		if err := moves.Replaces(old.(*v1.Silo).Status, obj.(*v1.Silo).Status); err != nil && !letGo(old.(*v1.Silo).Status, obj.(*v1.Silo).Status) {
+			return store.Object{}, errf(http.StatusConflict, "Conflict", "%v", err)
+		}
+	}
 	if id, ok := IdentityFrom(ctx); ok && id.Type == "host" && id.Role == "worker" && t.kind.Kind == "IngressClass" {
 		if err := ingress.HostWrite(old.(*v1.IngressClass).Status, obj.(*v1.IngressClass).Status, id.Name); err != nil {
 			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%v", err)
@@ -630,6 +639,24 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		}
 	}
 	return s.commitUpdate(ctx, t.key(), data, expected)
+}
+
+// letGo reports whether next is the end of a handoff by the host it is moving from having let go:
+// movingFrom cleared, the silo still on the host it was handed to, and no volume attached to the
+// source still mounted. The source's own agent writes this, as the in-process agent (identity
+// Component) and the stand-ins of unauthenticated servers do, so it is not refused (only the
+// source can say it, but the API can't tell which of them wrote it: moves.HostWrite judges
+// worker hosts exactly). Anything else that replaces or drops a handoff is K-070's 409.
+func letGo(old, next v1.SiloStatus) bool {
+	if next.MovingFrom != "" || next.Host != old.Host {
+		return false
+	}
+	for _, v := range next.Volumes {
+		if v.AttachedTo == old.MovingFrom && v.Mounted {
+			return false
+		}
+	}
+	return true
 }
 
 // delete removes an object, or, while it has finalizers, marks it as being deleted and leaves the

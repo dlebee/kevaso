@@ -145,7 +145,7 @@ func (s *Server) moveSilo(w http.ResponseWriter, r *http.Request, t target) {
 			Message: "moving " + how + " from " + plan.From + " to " + plan.To, ObservedGeneration: silo.Generation}, s.clock.Now().UTC().Truncate(time.Second))
 		silo.Status = st
 		silo.ResourceVersion = strconv.FormatInt(cur.Revision, 10)
-		o, err := s.update(ctx, target{kind: t.kind, namespace: t.namespace, name: t.name, status: true}, silo)
+		o, err := s.update(ctx, target{kind: t.kind, namespace: t.namespace, name: t.name, status: true, planned: true}, silo)
 		if errors.Is(err, store.ErrConflict) {
 			continue
 		}
