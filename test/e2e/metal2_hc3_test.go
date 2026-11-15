@@ -155,3 +155,44 @@ func TestMetal2BackoffHoldsNoClaim(t *testing.T) {
 	t.Logf("during the backoff the claim stayed %q", held)
 	c.waitRunning(ns, 10*time.Minute, "vm")
 }
+
+// TestMetal2VolumeDroppedFromSpec is host-code's second batch: a microVM with a local volume, the
+// volume taken out of its spec: it restarts, the guest no longer mounts it, its status lists it
+// no more, and its host says it let it go. What becomes of the volume's logical volume is recorded.
+//
+// Listens on nothing outside.
+func TestMetal2VolumeDroppedFromSpec(t *testing.T) {
+	p := metal2(t)
+	c := p.c1
+	ns := "dropvol2"
+	c.namespace(ns)
+	c.apply(vmEcho(ns, "vm", 8080) + "  volumes: [{ name: data, size: 1Gi, mountPath: /data }]\n")
+	c.waitRunning(ns, 20*time.Minute, "vm")
+	if out, code := c.in(ns, "vm", "echo kept > /data/marker && sync"); code != 0 {
+		t.Fatalf("write: %d %s", code, out)
+	}
+	s := c.silo(ns, "vm")
+	host := map[string]*mt{metalHost: p.c1, metalHost2: p.c2}[s.Status.Host]
+	n := cloudhypervisor.NamesFor(kri.ID{Namespace: ns, Name: "vm", UID: s.UID})
+	started := strings.TrimSpace(host.mustSh("systemctl show -p ActiveEnterTimestamp --value " + n.Unit))
+	lvs := func() string {
+		return strings.TrimSpace(host.mustSh("lvs --noheadings -o lv_name kevaso | tr -d ' ' | grep '^" + n.LV + "' | sort | tr '\\n' ' '"))
+	}
+	before := lvs()
+	since := strings.TrimSpace(host.mustSh("date -u '+%Y-%m-%d %H:%M:%S'"))
+	c.apply(vmEcho(ns, "vm", 8080)) // the same silo, its volume gone from the spec
+	c.eventually("it restarts", 5*time.Minute, func() (bool, string) {
+		now := strings.TrimSpace(host.mustSh("systemctl show -p ActiveEnterTimestamp --value " + n.Unit))
+		return now != started && now != "", now
+	})
+	c.waitRunning(ns, 10*time.Minute, "vm")
+	got, _ := c.in(ns, "vm", "mountpoint -q /data && echo mounted || echo not-mounted")
+	c.expect("the guest no longer mounts it", got, "not-mounted")
+	for _, v := range c.silo(ns, "vm").Status.Volumes {
+		if v.Name == "data" {
+			t.Errorf("its status still lists the volume: %+v", v)
+		}
+	}
+	t.Logf("its LVs before: %q; after: %q", before, lvs())
+	t.Logf("its host's journal:\n%s", host.mustSh("journalctl -u kevasod --no-pager --since '"+since+"' | grep -E '"+ns+"/vm' | grep -iE 'volume|let go|releas|restart' | tail -6"))
+}
