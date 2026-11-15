@@ -66,7 +66,8 @@ spec:
 	to := strings.TrimSpace(p.c2.mustSh("date +%s"))
 	p.c2.mustSh("nft delete table inet kvtest")
 	c.eventually("machine 2 back", 3*time.Minute, func() (bool, string) { return c.hostReady(metalHost2) })
-	log, _ := c.in(ns, "vm", "cat /root/cut.log")
+	log, _ := c.in(ns, "vm", "cat /root/cut.log; systemctl status kvtcut --no-pager 2>&1 | head -5")
+	t.Logf("the guest's log (cut from %s to %s, machine 2's clock):\n%s", from, to, log)
 	n, bad := 0, 0
 	for _, l := range strings.Split(strings.TrimSpace(log), "\n") {
 		f := strings.SplitN(l, " ", 2)
