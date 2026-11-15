@@ -63,12 +63,11 @@ func (h *mountHost) isMounted(dir string) bool {
 }
 
 // withVolumes is the fake saying what its copy of a silo uses (the built-in runtimes'
-// VolumesOf); with setter, it changes them as a VM does (SetVolumes: a restart while it runs).
+// VolumesOf); asVM adds SetVolumes, as a VM changes them (a restart while it runs).
 type withVolumes struct {
 	*fake.Runtime
-	mu     sync.Mutex
-	set    map[kri.ID][]kri.Volume
-	setter bool
+	mu  sync.Mutex
+	set map[kri.ID][]kri.Volume
 }
 
 func (r *withVolumes) VolumesOf(id kri.ID) ([]kri.Volume, bool) {
