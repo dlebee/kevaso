@@ -12,6 +12,13 @@ go run ./hack/mutate -id G-001,G-014 # some of them
 go run ./hack/mutate -id G-001 -run TestAMoveTo -pkgs ./internal/agent   # check one new test fast
 ```
 
+```bash
+go run ./hack/mutate -check          # fast: every entry's text still occurs exactly once; names the stale ones
+```
+
+`go test ./hack/mutate` runs the same check in the normal suite, and the nightly job runs it before
+the long run, so a guard that moved fails with the entry named instead of silently mutating nothing.
+
 It never touches the working tree: the mutated file goes to a temporary directory and
 `go test -overlay` reads it from there. Each mutation prints `killed` (a test failed: the name is
 shown), `SURVIVED` (every test passed with the guard gone: write a test, in a new file, that
