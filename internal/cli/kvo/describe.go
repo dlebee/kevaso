@@ -121,6 +121,11 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			kv(0, "Moving from", o.Status.MovingFrom+" (it stops the silo and lets go first)")
 		}
 		kv(0, "Movable", dash(o.Status.Movable)+" (onHostLoss: "+o.Policy()+")")
+		if stops, after := o.StopsOnControlPlaneLoss(); stops {
+			kv(0, "On control-plane loss", "STOPS: the host stops this silo after "+shortDur(after)+" without the control plane (onControlPlaneLoss: Stop)")
+		} else {
+			kv(0, "On control-plane loss", "keeps running (onControlPlaneLoss: Continue)")
+		}
 		kv(0, "Silo IP", dash(o.Status.SiloIP))
 		st := o.Status.Service
 		if sv := o.Spec.Service; sv == nil {
@@ -491,6 +496,9 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		}
 		if o.Spec.Template.Exclusive {
 			how += "; exclusive: one at a time, stop-first"
+		}
+		if stops, after := o.Spec.Template.Availability.StopsOnControlPlaneLoss(); stops {
+			kv(0, "On control-plane loss", "instances STOP after "+shortDur(after)+" without the control plane (onControlPlaneLoss: Stop)")
 		}
 		kv(0, "Upgrades", how)
 		scaleIn := o.Spec.ScaleInPolicy
