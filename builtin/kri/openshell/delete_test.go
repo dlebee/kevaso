@@ -65,8 +65,10 @@ func TestDeleteRemovesTheSandboxAndWithTheLastOneTheGateway(t *testing.T) {
 		if err := r.Delete(ctx, siloA); err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := f.sandboxes[SandboxName(siloA)]; ok {
-			t.Fatalf("%s: the sandbox stayed in OpenShell", d)
+		// Its gateway is down and isn't started for a delete: a is gone for Kevaso, its sandbox
+		// waits for the next claimed start on that gateway, or goes with the gateway.
+		if st, err := r.Status(ctx, siloA); err != nil || st.State != kri.Absent {
+			t.Fatalf("%s: after Delete: %v %v", d, st.State, err)
 		}
 		if f.units[g.Unit()] == "active" || f.files[unitPath(g)] == nil || !f.users[g.User()] {
 			t.Fatalf("%s: one of two deleted: the gateway must stay, down", d)
@@ -80,7 +82,8 @@ func TestDeleteRemovesTheSandboxAndWithTheLastOneTheGateway(t *testing.T) {
 		for p := range f.files {
 			home = home || strings.HasPrefix(p, g.Dir()+"/")
 		}
-		if f.units[g.Unit()] == "active" || f.files[unitPath(g)] != nil || f.users[g.User()] || home || len(gws) != 0 || f.ran("systemctl daemon-reload") < 2 {
+		if f.units[g.Unit()] == "active" || f.files[unitPath(g)] != nil || f.users[g.User()] || home || len(gws) != 0 || f.ran("systemctl daemon-reload") < 2 ||
+			len(f.containers) != 0 || len(f.Glob0(StateDir+"/silos/*")) != 0 {
 			t.Fatalf("%s: the last delete left the gateway: active %v, unit %v, user %v, home %v, registered %v", d,
 				f.units[g.Unit()] == "active", f.files[unitPath(g)] != nil, f.users[g.User()], home, gws)
 		}
@@ -135,7 +138,12 @@ func TestAResetOfAStoppedSiloRemovesItsSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := gatewayFor(DriverVM, silo)
-	if _, ok := f.sandboxes[SandboxName(silo)]; ok || f.units[g.Unit()] == "active" {
-		t.Fatalf("after Reset: sandbox kept %v, gateway up %v", ok, f.units[g.Unit()] == "active")
+	if st, err := r.Status(ctx, silo); err != nil || st.State != kri.Created || f.units[g.Unit()] == "active" {
+		t.Fatalf("after Reset: %v %v, gateway up %v", st.State, err, f.units[g.Unit()] == "active")
+	}
+	// The next (claimed) Start removes the old sandbox and makes a fresh one.
+	n := f.ran("sandbox delete " + SandboxName(silo))
+	if err := r.Start(ctx, silo); err != nil || f.ran("sandbox delete "+SandboxName(silo)) != n+1 || !f.Runs(SandboxName(silo)) {
+		t.Fatalf("the Start after a reset: %v", err)
 	}
 }

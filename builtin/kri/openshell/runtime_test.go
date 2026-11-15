@@ -93,16 +93,21 @@ func TestPolicyAndCredentials(t *testing.T) {
 	_ = r.Create(ctx, kri.Spec{ID: silo})
 	cred := kri.Credential{Name: "anthropic-key", Env: "ANTHROPIC_API_KEY", Host: "api.anthropic.com", Header: "x-api-key", Value: []byte("sk-secret-1"), Version: 1}
 	p := kri.Policy{Egress: []kri.Endpoint{{Host: "api.github.com", Port: 443}, {Host: "api.anthropic.com", Port: 443}}, Credentials: []kri.Credential{cred}}
-	// Before the sandbox exists: providers made, policy file written; create attaches them.
+	// Before its first start its gateway is down, and only a claimed Start brings it up: the
+	// policy waits (the agent applies it after Start), and nothing is made.
+	if err := r.SetPolicy(ctx, silo, p); err == nil || f.ran("provider create") != 0 {
+		t.Fatalf("a policy before the first start: %v", err)
+	}
+	if err := r.Start(ctx, silo); err != nil {
+		t.Fatal(err)
+	}
 	if err := r.SetPolicy(ctx, silo, p); err != nil {
 		t.Fatal(err)
 	}
 	name := ProfileID(silo, cred)
-	if f.ran("profile import -f") != 1 || f.ran("provider create --name "+name+" --type "+name+" --credential ANTHROPIC_API_KEY") != 1 {
+	if f.ran("profile import -f") != 1 || f.ran("provider create --name "+name+" --type "+name+" --credential ANTHROPIC_API_KEY") != 1 ||
+		f.ran("sandbox provider attach "+SandboxName(silo)+" "+name) != 1 {
 		t.Fatalf("providers:\n%s", strings.Join(f.cmds, "\n"))
-	}
-	if err := r.Start(ctx, silo); err != nil || !strings.Contains(f.cmds[len(f.cmds)-1], "--provider "+name) {
-		t.Fatalf("create without the provider: %v %s", err, f.cmds[len(f.cmds)-1])
 	}
 	pol := string(f.files[policyPath(silo)])
 	for _, want := range []string{"network_policies:", `host: "api.github.com"`, `host: "api.anthropic.com"`, "protocol: rest", `path: "/**"`} {
@@ -120,7 +125,7 @@ func TestPolicyAndCredentials(t *testing.T) {
 	if err := r.SetPolicy(ctx, silo, p); err != nil {
 		t.Fatal(err)
 	}
-	if f.ran("provider update "+name+" --credential ANTHROPIC_API_KEY --wait") != 1 || f.ran("policy set "+SandboxName(silo)) != 1 {
+	if f.ran("provider update "+name+" --credential ANTHROPIC_API_KEY --wait") != 1 || f.ran("policy set "+SandboxName(silo)) != 2 {
 		t.Fatalf("rotation:\n%s", strings.Join(f.cmds[n:], "\n"))
 	}
 	if !strings.Contains(f.envs[len(f.envs)-2], "ANTHROPIC_API_KEY=sk-secret-2") {

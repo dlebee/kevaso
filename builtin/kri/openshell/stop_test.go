@@ -3,10 +3,7 @@ package openshell
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
-
-	"kevaso.com/core/sdk/kri"
 )
 
 func newRuntimeOn(f *fake, driver string) *Runtime {
@@ -87,48 +84,5 @@ func TestStopWithASilentGateway(t *testing.T) {
 		if f.Runs(SandboxName(siloA)) {
 			t.Fatalf("%s: runs after Stop with its gateway down", d)
 		}
-	}
-}
-
-// Item 2, if the experiment (item 5) shows that a gateway that starts brings back a Stopped
-// sandbox too: Stop removes the sandbox (its files go: that is the cost) and keeps Kevaso's own
-// state, so Start makes it again with its policy and providers. The capability says so.
-func TestStopRemovesTheSandboxWhereTheGatewayRestoresStoppedOnes(t *testing.T) {
-	ctx := context.Background()
-	for _, d := range []string{DriverVM, DriverDocker} {
-		f := newFake()
-		f.restoresStopped = true
-		r := newRuntimeOn(f, d)
-		r.StopRemoves = true
-		if p := r.Info().Capabilities.Persistence; p != PersistenceUntilStop {
-			t.Fatalf("%s: persistence %q, want %q", d, p, PersistenceUntilStop)
-		}
-		started(t, r, siloA, siloB)
-		if err := r.Stop(ctx, siloA); err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := f.sandboxes[SandboxName(siloA)]; ok {
-			t.Fatalf("%s: the sandbox is still in OpenShell after Stop", d)
-		}
-		if st, err := r.Status(ctx, siloA); err != nil || st.State != kri.Created {
-			t.Fatalf("%s: after Stop: %v %v, want Created (Kevaso's state kept)", d, st.State, err)
-		}
-		if err := r.Stop(ctx, siloB); err != nil {
-			t.Fatal(err)
-		}
-		f.Reboot()
-		if err := r.Start(ctx, siloB); err != nil {
-			t.Fatal(err)
-		}
-		if f.Runs(SandboxName(siloA)) {
-			t.Fatalf("%s: a stopped sandbox came back with its gateway", d)
-		}
-		n := f.ran("sandbox create --name " + SandboxName(siloA))
-		if err := r.Start(ctx, siloA); err != nil || f.ran("sandbox create --name "+SandboxName(siloA)) != n+1 || !f.Runs(SandboxName(siloA)) {
-			t.Fatalf("%s: Start after a removing Stop: %v", d, err)
-		}
-	}
-	if p := (&Runtime{Driver: DriverVM}).Info().Capabilities.Persistence; p != "workspace" || strings.Contains(p, "stop") {
-		t.Fatalf("default persistence %q", p)
 	}
 }

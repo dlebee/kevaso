@@ -36,23 +36,28 @@ type Runtime struct {
 	Wait time.Duration
 	// Sleep pauses between polls (tests: no-op).
 	Sleep func(time.Duration)
-	// StopRemoves: Stop removes the sandbox (its files go) and keeps Kevaso's state, so Start makes
-	// it again. Needed where a gateway that starts brings back its Stopped sandboxes too (the
-	// experiment of item 5 decides); the capabilities then say PersistenceUntilStop.
-	StopRemoves bool
 
 	mu sync.Mutex
 }
 
 // state is what the runtime remembers about a silo.
 type state struct {
-	ID         kri.ID           `json:"id"`
-	Gateway    Gateway          `json:"gateway"`
-	Image      string           `json:"image,omitempty"`
-	CPU        int              `json:"cpu"`
-	Memory     int64            `json:"memory"`
-	Created    bool             `json:"created"`    // the sandbox exists in OpenShell
-	Running    bool             `json:"running"`    // Kevaso started it and hasn't stopped it: its gateway stays up
+	ID      kri.ID  `json:"id"`
+	Gateway Gateway `json:"gateway"`
+	Image   string  `json:"image,omitempty"`
+	CPU     int     `json:"cpu"`
+	Memory  int64   `json:"memory"`
+	Created bool    `json:"created"` // the sandbox exists in OpenShell
+	Running bool    `json:"running"` // Kevaso started it and hasn't stopped it: its gateway stays up
+	// Deleted: Delete ran while its gateway was down. The silo is gone for Kevaso; the gateway's
+	// part (the sandbox, the providers) is done at the next claimed Start on that gateway.
+	Deleted bool `json:"deleted,omitempty"`
+	// ResetPending: Reset ran while its gateway was down; its next (claimed) Start removes the old
+	// sandbox before it makes a fresh one.
+	ResetPending bool `json:"resetPending,omitempty"`
+	// Boot is the host's boot when Kevaso last started it: Running from an earlier boot isn't a
+	// start of this one (no claim of it applied since the reboot).
+	Boot       string           `json:"boot,omitempty"`
 	PolicyHash string           `json:"policyHash"` // last applied
 	Providers  map[string]int64 `json:"providers"`  // provider name → credential version applied
 }
@@ -87,7 +92,7 @@ func (r *Runtime) load(id kri.ID) (state, bool) {
 		return state{}, false
 	}
 	var s state
-	if json.Unmarshal(b, &s) != nil || s.ID != id {
+	if json.Unmarshal(b, &s) != nil || s.ID != id || s.Deleted {
 		return state{}, false
 	}
 	if s.Providers == nil {
@@ -151,10 +156,7 @@ func (r *Runtime) Info() kri.Info {
 	if r.Driver == DriverDocker {
 		iso = "container"
 	}
-	persistence := PersistenceWorkspace
-	if r.StopRemoves {
-		persistence = PersistenceUntilStop
-	}
+	persistence := PersistenceWorkspace // a stopped sandbox stays stopped with its files (seen on both drivers)
 	return kri.Info{Name: r.Name, Version: Version, Capabilities: kri.Capabilities{
 		Isolation: iso, Network: "proxy", UDP: false, InboundServices: false, Persistence: persistence, Injection: true, Exec: true,
 	}}
@@ -244,7 +246,7 @@ func (r *Runtime) up(ctx context.Context, g Gateway, self kri.ID) error {
 		return err
 	}
 	if r.answers(ctx, g) {
-		return nil // up and registered
+		return r.finishDeletes(ctx, g) // up and registered
 	}
 	active, err := r.unitActive(ctx, g)
 	if err != nil {
@@ -284,7 +286,7 @@ func (r *Runtime) up(ctx context.Context, g Gateway, self kri.ID) error {
 		r.sleep(3 * time.Second)
 	}
 	for _, o := range r.all() {
-		if o.Gateway.Key != g.Key || o.ID == self || !o.Created || before[SandboxName(o.ID)] {
+		if o.Gateway.Key != g.Key || o.ID == self || !(o.Created || o.ResetPending) || o.Deleted || before[SandboxName(o.ID)] {
 			continue
 		}
 		sb, exists, err := r.get(ctx, o)
@@ -295,6 +297,24 @@ func (r *Runtime) up(ctx context.Context, g Gateway, self kri.ID) error {
 			if _, err := r.cli(ctx, g, nil, nil, "sandbox", "stop", SandboxName(o.ID)); err != nil {
 				return err
 			}
+		}
+	}
+	return r.finishDeletes(ctx, g)
+}
+
+// finishDeletes does the gateway's part of the deletes made while gateway g was down: each
+// sandbox removed, its providers revoked, then its record.
+func (r *Runtime) finishDeletes(ctx context.Context, g Gateway) error {
+	for _, o := range r.all() {
+		if o.Gateway.Key != g.Key || !o.Deleted {
+			continue
+		}
+		if err := r.deleteInGateway(ctx, &o); err != nil {
+			return err
+		}
+		_ = r.Host.RemoveAll(policyPath(o.ID))
+		if err := r.Host.RemoveAll(statePath(o.ID)); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -457,13 +477,24 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 	if err := r.up(ctx, s.Gateway, id); err != nil { // e.g. after a host reboot
 		return err
 	}
-	s.Running = true // before the start: a gateway with a sandbox that may run stays up
+	s.Running, s.Boot = true, r.boot() // before the start: a gateway with a sandbox that may run stays up
 	if err := r.save(s); err != nil {
 		return err
 	}
 	sb, exists, err := r.get(ctx, s)
 	if err != nil {
 		return err
+	}
+	if s.ResetPending { // a reset made while its gateway was down: the old sandbox goes first
+		if exists {
+			if err := r.removeSandbox(ctx, s); err != nil {
+				return err
+			}
+		}
+		s.ResetPending, s.Created, exists = false, false, false
+		if err := r.save(s); err != nil {
+			return err
+		}
 	}
 	if exists {
 		if Phase(sb.Phase) == kri.Failed {
@@ -516,7 +547,7 @@ func imageRef(image string) string {
 // driver's unit down, or the gateway's phase while a neighbour keeps it up; the Docker driver's
 // containers), not by the gateway's word. The last sandbox of its gateway that should run takes
 // the gateway down with it (item 1), so nothing of OpenShell runs for a host whose silos are all
-// stopped, and nothing starts it again but kevasod. With StopRemoves the sandbox goes too.
+// stopped, and nothing starts it again but a silo's claimed Start.
 func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -530,14 +561,7 @@ func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
 	}
 	g := s.Gateway
 	if s.Created {
-		answers := r.answers(ctx, g)
-		if !answers && r.StopRemoves {
-			if err := r.up(ctx, g, kri.ID{}); err != nil { // it must be told: it would bring the sandbox back
-				return err
-			}
-			answers = true
-		}
-		if !answers {
+		if !r.answers(ctx, g) {
 			active, err := r.unitActive(ctx, g)
 			if err != nil {
 				return err
@@ -555,21 +579,29 @@ func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
 					return err
 				}
 			}
-			if exists && r.StopRemoves {
-				if err := r.removeSandbox(ctx, s); err != nil {
-					return err
-				}
-				s.Created = false
-				if err := r.save(s); err != nil {
-					return err
-				}
-			}
 		}
 	}
 	if err := r.down(ctx, g, id); err != nil {
 		return err
 	}
 	return r.stopped(ctx, s)
+}
+
+// boot is the host's boot id ("" if it can't be read).
+func (r *Runtime) boot() string {
+	b, err := r.Host.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// startedThisBoot: Kevaso started s (after its claim) in this boot of the host and hasn't
+// stopped it since. Only such a silo may bring its gateway back outside Start (a policy change,
+// an exec): after a reboot, nothing of OpenShell starts before a silo's claim.
+func (r *Runtime) startedThisBoot(s state) bool {
+	b := r.boot()
+	return s.Running && b != "" && s.Boot == b
 }
 
 // answers: gateway g answers the CLI.
@@ -630,6 +662,36 @@ func (r *Runtime) runs(ctx context.Context, s state) (bool, error) {
 	return exists && Phase(sb.Phase) != kri.Stopped, nil
 }
 
+// removeContainers removes the Docker driver's containers of every sandbox of g (only: of that
+// silo's alone), running or not, by name (they carry OpenShell's labels, not Kevaso's: their
+// names contain the sandbox's, seen on the machines).
+func (r *Runtime) removeContainers(ctx context.Context, g Gateway, only *kri.ID) error {
+	if g.Driver != DriverDocker {
+		return nil
+	}
+	var b bytes.Buffer
+	code, err := r.Host.Run(ctx, Cmd{Name: "docker", Args: []string{"ps", "-a", "--format", "{{.Names}}"}, Stdout: &b, Stderr: io.Discard})
+	if err == nil && code != 0 {
+		err = fmt.Errorf("exit %d", code)
+	}
+	if err != nil {
+		return fmt.Errorf("docker ps -a: %w", err)
+	}
+	var names []string
+	for _, n := range strings.Fields(b.String()) {
+		for _, o := range r.all() {
+			if o.Gateway.Key == g.Key && (only == nil || o.ID == *only) && strings.Contains(n, SandboxName(o.ID)) {
+				names = append(names, n)
+				break
+			}
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return r.run(ctx, "docker", append([]string{"rm", "-f"}, names...)...)
+}
+
 // stopContainers stops the Docker driver's running containers of s's sandbox, by name.
 func (r *Runtime) stopContainers(ctx context.Context, s state) error {
 	var b bytes.Buffer
@@ -650,8 +712,15 @@ func (r *Runtime) stopContainers(ctx context.Context, s state) error {
 
 // Delete implements kri.Runtime: the sandbox, its providers and profiles, its state; with the
 // last sandbox of its gateway, the gateway too (unit, user, home with its registration and
-// credential store, port). Its gateway must answer (started for this if it is down): when it
-// can't, Delete returns the error and removes nothing it can't confirm (K-080).
+// credential store, port). It never starts the gateway (only a silo's claimed Start does):
+//   - Gateway answering: removed through it, each step confirmed (K-080).
+//   - Gateway running and silent: the error, nothing removed.
+//   - Gateway down, and this the last silo on it: the gateway goes whole, with no word of it
+//     needed (its home holds the VM disks, its records and its credential store); the Docker
+//     driver's containers go by name.
+//   - Gateway down, neighbours left: the silo is gone for Kevaso (Absent), and its sandbox and
+//     providers are removed at the next claimed Start on that gateway. Nothing of it can run
+//     meanwhile: the gateway is down and only a claimed Start brings it up.
 func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -664,44 +733,93 @@ func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 		return err
 	}
 	g := s.Gateway
-	if s.Created || len(s.Providers) > 0 {
-		if err := r.up(ctx, g, kri.ID{}); err != nil {
-			return fmt.Errorf("%s: delete: %w", id, err)
+	last := true
+	for _, o := range r.all() {
+		if o.Gateway.Key == g.Key && o.ID != id && !o.Deleted {
+			last = false
 		}
-		if s.Created {
-			_, exists, err := r.get(ctx, s)
-			if err != nil {
+	}
+	reach, err := r.reachable(ctx, g)
+	if err != nil {
+		return fmt.Errorf("%s: delete: %w", id, err)
+	}
+	switch {
+	case reach:
+		if err := r.deleteInGateway(ctx, &s); err != nil {
+			return err
+		}
+	case !last:
+		// The Docker driver's containers may outlive a gateway that crashed: they go now, by name.
+		if err := r.removeContainers(ctx, g, &id); err != nil {
+			return err
+		}
+		s.Deleted = true
+		return r.save(s)
+	}
+	if !last {
+		_ = r.Host.RemoveAll(policyPath(id))
+		if err := r.Host.RemoveAll(statePath(id)); err != nil {
+			return err
+		}
+		return r.down(ctx, g, id) // a neighbour keeps it
+	}
+	if err := r.removeGateway(ctx, g); err != nil {
+		return err
+	}
+	for _, o := range r.all() { // this silo, and deletes left for a start that won't come now
+		if o.Gateway.Key == g.Key {
+			_ = r.Host.RemoveAll(policyPath(o.ID))
+			for p := range o.Providers {
+				_ = r.Host.RemoveAll(StateDir + "/policies/" + p + ".profile.yaml")
+			}
+			if err := r.Host.RemoveAll(statePath(o.ID)); err != nil {
 				return err
 			}
-			if exists {
-				if err := r.removeSandbox(ctx, s); err != nil {
-					return err
-				}
-			}
-			s.Created = false
-			if err := r.save(s); err != nil {
+		}
+	}
+	return nil
+}
+
+// reachable: gateway g answers (true), is down (false), or runs and doesn't answer (an error
+// wrapping ErrGatewaySilent).
+func (r *Runtime) reachable(ctx context.Context, g Gateway) (bool, error) {
+	if r.answers(ctx, g) {
+		return true, nil
+	}
+	active, err := r.unitActive(ctx, g)
+	if err != nil {
+		return false, err
+	}
+	if active {
+		return false, fmt.Errorf("gateway %s: %w", g.Key, ErrGatewaySilent)
+	}
+	return false, nil
+}
+
+// deleteInGateway removes s's sandbox and providers through its answering gateway, each step
+// confirmed before it is forgotten.
+func (r *Runtime) deleteInGateway(ctx context.Context, s *state) error {
+	if s.Created {
+		_, exists, err := r.get(ctx, *s)
+		if err != nil {
+			return err
+		}
+		if exists {
+			if err := r.removeSandbox(ctx, *s); err != nil {
 				return err
 			}
 		}
-		names := make([]string, 0, len(s.Providers))
-		for p := range s.Providers {
-			names = append(names, p)
-		}
-		sort.Strings(names)
-		if err := r.revoke(ctx, &s, names); err != nil {
+		s.Created = false
+		if err := r.save(*s); err != nil {
 			return err
 		}
 	}
-	_ = r.Host.RemoveAll(policyPath(id))
-	if err := r.Host.RemoveAll(statePath(id)); err != nil {
-		return err
+	names := make([]string, 0, len(s.Providers))
+	for p := range s.Providers {
+		names = append(names, p)
 	}
-	for _, o := range r.all() {
-		if o.Gateway.Key == g.Key {
-			return r.down(ctx, g, id) // a neighbour keeps it
-		}
-	}
-	return r.removeGateway(ctx, g)
+	sort.Strings(names)
+	return r.revoke(ctx, s, names)
 }
 
 // revoke takes providers names of s out of its gateway: detached from the sandbox, deleted with
@@ -746,6 +864,9 @@ func (r *Runtime) removeGateway(ctx context.Context, g Gateway) error {
 	if active, err := r.unitActive(ctx, g); err != nil || active {
 		return fmt.Errorf("gateway %s: still active after its stop (%v)", g.Key, err)
 	}
+	if err := r.removeContainers(ctx, g, nil); err != nil {
+		return err
+	}
 	if err := r.Host.RemoveAll(unitPath(g)); err != nil {
 		return err
 	}
@@ -784,22 +905,17 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 	if !ok {
 		return fmt.Errorf("%s: %w", spec.ID, kri.ErrNotFound)
 	}
-	exists := false
+	// The silo is stopped, so its gateway may be down (item 1). It isn't started for this (only a
+	// claimed Start does): the old sandbox then goes at the next Start, before the fresh one.
+	exists, reach := false, false
 	if s.Created {
-		// The silo is stopped, so its gateway may be down (item 1): started for this, it goes down
-		// again unless a neighbour should run.
-		if err := r.up(ctx, s.Gateway, kri.ID{}); err != nil {
+		if reach, err = r.reachable(ctx, s.Gateway); err != nil {
 			return err
 		}
-		if !s.Running {
-			defer func() {
-				if derr := r.down(ctx, s.Gateway, spec.ID); err == nil {
-					err = derr
-				}
-			}()
-		}
-		if _, exists, err = r.get(ctx, s); err != nil {
-			return err
+		if reach {
+			if _, exists, err = r.get(ctx, s); err != nil {
+				return err
+			}
 		}
 	}
 	if gate != nil {
@@ -812,6 +928,7 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 			return err
 		}
 	}
+	s.ResetPending = s.Created && !reach
 	s.Image, s.CPU, s.Memory, s.Created, s.PolicyHash = spec.Image, spec.CPU, spec.Memory, false, ""
 	return r.save(s)
 }
@@ -868,7 +985,9 @@ func firstLine(s string) string {
 func (r *Runtime) List(context.Context) ([]kri.ID, error) {
 	var ids []kri.ID
 	for _, s := range r.all() {
-		ids = append(ids, s.ID)
+		if !s.Deleted {
+			ids = append(ids, s.ID)
+		}
 	}
 	return ids, nil
 }
@@ -928,7 +1047,7 @@ func (r *Runtime) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int
 // Running, so the agent starts nothing, and nothing reaches it without its gateway. The VM
 // driver's silo reads Stopped instead, and the agent's Start brings the gateway back.
 func (r *Runtime) recover(ctx context.Context, s state) error {
-	if s.Gateway.Driver != DriverDocker || !s.Running || r.answers(ctx, s.Gateway) {
+	if s.Gateway.Driver != DriverDocker || !r.startedThisBoot(s) || r.answers(ctx, s.Gateway) {
 		return nil
 	}
 	if active, err := r.unitActive(ctx, s.Gateway); err != nil || active {
@@ -936,7 +1055,7 @@ func (r *Runtime) recover(ctx context.Context, s state) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if s, ok := r.load(s.ID); !ok || !s.Running {
+	if s, ok := r.load(s.ID); !ok || !r.startedThisBoot(s) {
 		return nil
 	}
 	return r.up(ctx, s.Gateway, s.ID)
@@ -973,17 +1092,17 @@ func (r *Runtime) SetPolicy(ctx context.Context, id kri.ID, p kri.Policy) (err e
 		}
 		want[ProfileID(id, c)] = c
 	}
-	// The providers live in the gateway's store: it must answer. Started for this only, it goes
-	// down again unless one of its sandboxes should run.
-	if err := r.up(ctx, g, kri.ID{}); err != nil {
+	// The providers live in the gateway's store: it must answer. Only a silo Kevaso started (its
+	// start claimed) may bring it back; a stopped silo's policy waits for its next start (the
+	// agent applies it after Start), and its gateway down, nothing of it runs to use a credential.
+	if r.startedThisBoot(s) {
+		if err := r.up(ctx, g, id); err != nil {
+			return err
+		}
+	} else if reach, err := r.reachable(ctx, g); err != nil {
 		return err
-	}
-	if !s.Running {
-		defer func() {
-			if derr := r.down(ctx, g, id); err == nil {
-				err = derr
-			}
-		}()
+	} else if !reach {
+		return fmt.Errorf("%s: policy: its gateway %s is down (the silo is stopped): applied at its next start", id, g.Name())
 	}
 	for name, c := range want {
 		ver, have := s.Providers[name]
@@ -1052,8 +1171,6 @@ var ErrNoKVM = errors.New("openshell: the VM driver needs /dev/kvm (use openshel
 // say whether its sandbox runs, or stop it through the gateway. Status returns it for "unknown".
 var ErrGatewaySilent = errors.New("its OpenShell gateway runs and doesn't answer: whether the sandbox runs is unknown")
 
-// Persistence values of the capabilities.
-const (
-	PersistenceWorkspace = "workspace"  // the sandbox's files are kept across a stop
-	PersistenceUntilStop = "until-stop" // a stop removes the sandbox and its files (StopRemoves)
-)
+// PersistenceWorkspace is the capabilities' persistence: the sandbox's files are kept across a
+// stop (a gateway that starts leaves a Stopped sandbox stopped, seen on both drivers).
+const PersistenceWorkspace = "workspace"
