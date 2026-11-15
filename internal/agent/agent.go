@@ -66,7 +66,9 @@ type Agent struct {
 	// StopsOnLoss, if set, replaces (*v1.Silo).StopsOnControlPlaneLoss (tests shorten the times).
 	StopsOnLoss func(*v1.Silo) (stops bool, after time.Duration)
 	// WatermarkFile, if set, is where the agent keeps what it saw of its control plane (cluster,
-	// history, highest revision; watermark.go), across restarts and reboots.
+	// history, highest revision; watermark.go), across restarts and reboots. Answers are judged
+	// only where the client's ControlPlane hook is ObserveControlPlane (set by whoever makes the
+	// client, before it is used).
 	WatermarkFile string
 	// FenceDir, if set, is where the agent writes its fence record every second (internal/fence):
 	// its last contact and which of its silos stop on control-plane loss, for the fence watcher,
@@ -140,7 +142,8 @@ type Agent struct {
 	seenDeleted sync.Map
 	keptNoted   sync.Map
 	engine      *engine.Engine
-	cp          *watermark // the control plane this worker trusts (watermark.go)
+	cp          *watermark // the control plane this worker trusts (watermark.go); via watermark()
+	cpOnce      sync.Once
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
@@ -258,10 +261,7 @@ func idOf(s *v1.Silo) kri.ID { return kri.ID{Namespace: s.Namespace, Name: s.Nam
 
 // Run runs the agent until ctx ends.
 func (a *Agent) Run(ctx context.Context) {
-	a.cp = loadWatermark(a.WatermarkFile, a.log)
-	if a.Client.ControlPlane == nil {
-		a.Client.ControlPlane = a.ObserveControlPlane
-	}
+	a.watermark() // read at start, before any answer is judged
 	a.silos = informer.New(a.Client, "Silo")
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
 	a.runCtx = ctx

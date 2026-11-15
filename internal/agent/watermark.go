@@ -120,13 +120,19 @@ func (w *watermark) state() (client.Watermark, client.ControlPlaneSeen, client.V
 }
 
 // ObserveControlPlane judges one answer of the control plane (client.Client.ControlPlane): the
-// worker sets it on every client it uses toward the control plane. The agent's own client gets it
-// when the agent starts.
-func (a *Agent) ObserveControlPlane(s client.ControlPlaneSeen) { a.cp.observe(s) }
+// worker sets it on every client it uses toward the control plane (the agent's Client included),
+// before the client is used.
+func (a *Agent) ObserveControlPlane(s client.ControlPlaneSeen) { a.watermark().observe(s) }
+
+// watermark is the agent's watermark, read from WatermarkFile the first time it's needed.
+func (a *Agent) watermark() *watermark {
+	a.cpOnce.Do(func() { a.cp = loadWatermark(a.WatermarkFile, a.log) })
+	return a.cp
+}
 
 // ControlPlaneHeld says whether nothing may be applied from the control plane now (§0.7): the
 // worker's own changes (rules, routes, leases) follow it too.
-func (a *Agent) ControlPlaneHeld() bool { return a.cp != nil && a.cp.blocked() }
+func (a *Agent) ControlPlaneHeld() bool { return a.watermark().blocked() }
 
 // watchControlPlane reports the hold on the Host, and keeps asking while blocked so an answer
 // that ends it (a new history; the kept cluster again) is seen. When it ends, every silo is
@@ -142,8 +148,8 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 			return
 		case <-t.C:
 		}
-		blocked := a.cp.blocked()
-		kept, seen, verdict := a.cp.state()
+		blocked := a.watermark().blocked()
+		kept, seen, verdict := a.watermark().state()
 		if !blocked && wasBlocked {
 			a.log("the control plane is trusted again (%s): looking at every silo", verdict)
 			if a.engine != nil {
