@@ -38,13 +38,18 @@ func (p *Proxy) Handle(argv []string, stdin []byte) (string, int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.Ran = append(p.Ran, strings.Join(argv, " "))
-	write, list := ingress.WriteCmd("", ""), ingress.ListCmd("")
+	write, list, readIf := ingress.WriteCmd("", ""), ingress.ListCmd(""), ingress.ReadIfCmd("")
 	switch {
 	case len(argv) == 2 && argv[0] == "cat":
 		if b, ok := p.Files[argv[1]]; ok {
 			return string(b), 0
 		}
 		return "cat: no such file", 1
+	case len(argv) == 5 && prefix(argv, readIf[:3]):
+		if b, ok := p.Files[argv[4]]; ok {
+			return string(b), 0
+		}
+		return "", 3
 	case len(argv) == 5 && prefix(argv, list[:3]):
 		var names []string
 		for f := range p.Files {

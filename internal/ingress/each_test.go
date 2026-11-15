@@ -29,7 +29,8 @@ type rig struct {
 	px     *ingresstest.Proxy
 	served func() string // what the proxy runs now
 	calls  int
-	blame  bool // the proxy's refusal says where
+	blame  bool   // the proxy's refusal says where
+	live   []byte // what an admin-API proxy runs
 	exec   ingress.Exec
 	call   ingress.Caller
 }
@@ -76,11 +77,10 @@ func rigs(blame bool) []*rig {
 			}
 			r.served = func() string { f, _, _ := r.px.Snapshot(); return string(f[caddy.ConfigPath]) }
 		case "kong":
-			var live []byte
 			r.call = func(_ context.Context, c kic.Call) (int, string, error) {
 				r.calls++
 				if !bytes.Contains(c.Body, []byte(poison)) {
-					live = c.Body
+					r.live = c.Body
 					return 201, "", nil
 				}
 				if !blame {
@@ -101,7 +101,7 @@ func rigs(blame bool) []*rig {
 				}
 				return 400, `{"flattened_errors":[` + strings.Join(names, ",") + `]}`, nil
 			}
-			r.served = func() string { return string(live) }
+			r.served = func() string { return string(r.live) }
 		}
 		px := r.px
 		r.exec = func(_ context.Context, argv []string, stdin []byte) (int, string, error) {
@@ -168,7 +168,10 @@ func TestOneBrokenIngressHoldsBackOnlyItself(t *testing.T) {
 				if err != nil || res2.Tests != 0 || len(r.px.Commands()) != before || r.px.Checks != checks || r.calls != calls || res2.LeftOut["shop/bad"] == "" {
 					t.Errorf("an unchanged state cost %d tests (%d commands): %+v %v", res2.Tests, len(r.px.Commands())-before, res2, err)
 				}
-				// Another change elsewhere: the broken one isn't tested again (its verdict is kept).
+				// Another change elsewhere: the broken one isn't tested again (its verdict is kept:
+				// the proxy refused it alone). An admin-API driver can't test an Ingress alone, so
+				// its verdict holds only while nothing in the class changes (K-063): it is found
+				// again, within the bound.
 				w3 := w2
 				w3.State.Routes = append(slices.Clone(w2.State.Routes), route("shop/c", "c.example.com", 84))
 				checks, calls = r.px.Checks, r.calls
@@ -176,7 +179,7 @@ func TestOneBrokenIngressHoldsBackOnlyItself(t *testing.T) {
 				if err != nil || res3.Held != "" || res3.Rejected != "" || !strings.Contains(r.served(), "c.example.com") {
 					t.Fatalf("a later change: %+v %v", res3, err)
 				}
-				if n := r.px.Checks - checks + r.calls - calls; n != 1 {
+				if n := r.px.Checks - checks + r.calls - calls; (r.name != "kong" && n != 1) || n > ingress.DefaultTests {
 					t.Errorf("a later change cost %d proxy tests, want 1 (the apply)", n)
 				}
 				// The Ingress's own status gets its own reason.

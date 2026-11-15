@@ -161,11 +161,12 @@ func (l *ingressLoop) apply(ctx context.Context, s *v1.Silo, classes []*v1.Ingre
 			}
 			return adminCall(ctx, st.Address, c)
 		}
-		var lastGood *kic.State
-		if lg, ok := l.lastGood[s.UID]; ok {
-			lastGood = &lg
-		}
-		res, err := ingress.ApplyEach(ctx, exec, call, drv, d, lastGood, l.applied[s.UID], ingress.MemoryOf(s.UID), 0)
+		// What the proxy serves is the Memory's (what it last took from this agent), else, after a
+		// restart, the record ApplyEach keeps in the silo and checks against the running config
+		// (K-063): never assumed from an empty memory.
+		mem := ingress.MemoryOf(s.UID)
+		mem.Now = a.now
+		res, err := ingress.ApplyEach(ctx, exec, call, drv, d, nil, l.applied[s.UID], mem, 0)
 		if err != nil {
 			l.applied[s.UID] = "?" // it may be half done: never take what's there as applied
 			return err
@@ -175,12 +176,17 @@ func (l *ingressLoop) apply(ctx context.Context, s *v1.Silo, classes []*v1.Ingre
 		report.blamed = slices.Sorted(maps.Keys(res.LeftOut))
 		switch {
 		case res.Held != "":
-			report.rejected = "held (the last good configuration stays): the proxy refuses even the class's own part: " + res.Held
+			report.rejected = "held (the last good configuration stays): " + res.Held
+			if len(res.LeftOut) > 0 {
+				report.rejected += "; " + ingress.LeftOutMessage(res.LeftOut)
+			}
 		case res.Rejected != "":
 			report.rejected = res.Rejected
 		default:
-			l.lastGood[s.UID] = res.Served
 			report.rejected = ingress.LeftOutMessage(res.LeftOut)
+		}
+		if res.RecordProblem != "" {
+			a.log("ingress controller %s/%s: the record of what was applied: %s", s.Namespace, s.Name, res.RecordProblem)
 		}
 		switch {
 		case res.Changed:

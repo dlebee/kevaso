@@ -60,15 +60,21 @@ func TestIngressClassHoldsBackOnlyTheBrokenIngress(t *testing.T) {
 	}
 	var logMu sync.Mutex
 	var logs bytes.Buffer
-	a := &agent.Agent{Client: c.host(t, "hv1"), HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": rt}, Clock: clock.Real{},
-		IngressEvery: 50 * time.Millisecond, Log: func(f string, args ...any) {
-			logMu.Lock()
-			defer logMu.Unlock()
-			fmt.Fprintf(&logs, f+"\n", args...)
-		}}
-	ctx, cancel := context.WithCancel(c.ctx)
-	defer cancel()
-	go a.Run(ctx)
+	// start runs an agent on hv1; the function it returns stops it and waits until it has.
+	start := func() (stop func()) {
+		a := &agent.Agent{Client: c.host(t, "hv1"), HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": rt}, Clock: clock.Real{},
+			IngressEvery: 50 * time.Millisecond, Log: func(f string, args ...any) {
+				logMu.Lock()
+				defer logMu.Unlock()
+				fmt.Fprintf(&logs, f+"\n", args...)
+			}}
+		ctx, cancel := context.WithCancel(c.ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); a.Run(ctx) }()
+		return func() { cancel(); <-done }
+	}
+	stop := start()
+	defer func() { stop() }()
 	place := func(name, ns string, ports []v1.SiloPort, svc *v1.SiloService) {
 		t.Helper()
 		s := containerSilo(name, ns, "docker")
@@ -162,6 +168,44 @@ func TestIngressClassHoldsBackOnlyTheBrokenIngress(t *testing.T) {
 			t.Fatalf("statuses: class %+v\na: %q\nb: %q\nnew: %q", cl.Status, aw, bw, nw)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+
+	// K-063: kevasod restarts, nothing changes. The new agent has no memory; what the proxy serves
+	// is read back from the record in the silo. Not a route changes: a stays at its last good
+	// version, new stays served, and the statuses stay as they were.
+	files, _, reloads := proxy.Snapshot()
+	cfg := string(files[nginx.ConfigPath])
+	ran := len(proxy.Commands())
+	stop()
+	var web v1.Silo
+	if err := c.admin.Get(c.ctx, "Silo", "kevaso-system", "ingress-web", &web); err != nil {
+		t.Fatal(err)
+	}
+	ingress.ForgetMemory(web.UID)
+	stop = start()
+	deadline = time.Now().Add(10 * time.Second)
+	for { // until the new agent has read the record and settled (the reload of what's there)
+		_, _, r := proxy.Snapshot()
+		if r > reloads {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the restarted agent never got to the proxy: %v", proxy.Commands()[ran:])
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond) // a few more passes
+	files, _, after := proxy.Snapshot()
+	if got := string(files[nginx.ConfigPath]); got != cfg {
+		t.Fatalf("a restart changed the proxy's configuration:\n%s\nwas:\n%s", got, cfg)
+	}
+	if after != reloads+1 {
+		t.Errorf("%d reloads after the restart, want 1 (of what's there)", after-reloads)
+	}
+	var cl v1.IngressClass
+	_ = c.admin.Get(c.ctx, "IngressClass", "", "web", &cl)
+	if len(cl.Status.Controllers) != 1 || strings.Join(cl.Status.Controllers[0].Blamed, ",") != "shop/a,shop/b" || strings.HasPrefix(cl.Status.Controllers[0].Rejected, "held") {
+		t.Errorf("after the restart, the class says %+v", cl.Status.Controllers)
 	}
 
 	// Fixed: a's new version goes out.

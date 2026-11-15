@@ -38,10 +38,14 @@ type Caller func(ctx context.Context, c kic.Call) (status int, body string, err 
 var (
 	writeScript = `umask 077 && mkdir -p "$(dirname "$1")" && cat > "$1.tmp" && chmod "$2" "$1.tmp" && mv -f "$1.tmp" "$1"`
 	listScript  = `mkdir -p "$1" && ls -1 "$1"`
+	readScript  = `if [ -e "$1" ]; then exec cat "$1"; fi; exit 3`
 )
 
 // ReadCmd prints a file.
 func ReadCmd(p string) []string { return []string{"cat", p} }
+
+// ReadIfCmd prints a file, or exits 3 if there is none (any other failure is another code).
+func ReadIfCmd(p string) []string { return []string{"sh", "-c", readScript, "sh", p} }
 
 // ListCmd lists a folder's names, making it if it isn't there.
 func ListCmd(dir string) []string { return []string{"sh", "-c", listScript, "sh", dir} }

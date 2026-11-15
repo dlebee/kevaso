@@ -43,6 +43,7 @@ var sites = map[string]string{
 	"internal/agent/deliveries.go hasDeliveries":               "scriptEnv and a test -s of the delivery list",
 	"internal/apiserver/silostreams.go ":                       "LoginShell",
 	"internal/ingress/apply.go ListCmd":                        "listScript",
+	"internal/ingress/apply.go ReadIfCmd":                      "readScript: cat a file, or exit 3 if there is none (K-063)",
 	"internal/ingress/apply.go WriteCmd":                       "writeScript",
 	"internal/keep/keep.go StartCommand":                       "dynamic: a silo's own daemon (rendered below)",
 	"internal/keep/keep.go ProbeCommand":                       "dynamic: pid and exit file paths (rendered below)",
