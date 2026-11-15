@@ -1,6 +1,8 @@
 package v1
 
 import (
+	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 )
@@ -358,4 +360,58 @@ func DiskVolume(s *Silo) (Volume, bool) {
 		return Volume{}, false
 	}
 	return Volume{Name: RootDiskVolume, Class: c, Size: s.Spec.Disk.Size}, true
+}
+
+// ParseSource parses one address range a user wrote for the firewall (a port's sources): an IPv4
+// address or CIDR, returned as the masked prefix (10.0.0.5/24 is 10.0.0.0/24, 1.2.3.4 is
+// 1.2.3.4/32). What the rules can't express is refused with a message: IPv6 (also the IPv4-mapped
+// form and a zone) until the rules support it, and anything that isn't an address or a CIDR.
+func ParseSource(c string) (netip.Prefix, error) {
+	var p netip.Prefix
+	if pp, err := netip.ParsePrefix(c); err == nil {
+		p = pp
+	} else if a, err := netip.ParseAddr(c); err == nil {
+		p = netip.PrefixFrom(a, a.BitLen())
+	} else {
+		return p, fmt.Errorf("%q isn't an address or CIDR", c)
+	}
+	if !p.Addr().Is4() {
+		return p, fmt.Errorf("%q: IPv6 comes later; IPv4 for now", c)
+	}
+	return p.Masked(), nil
+}
+
+// NormalizeSources writes ranges in their one form: masked, a single address without /32, sorted,
+// and without any range another one already holds (so a firewall set never has an overlap or a
+// duplicate, which nft refuses). An entry ParseSource refuses is kept as it is (admission says so).
+func NormalizeSources(in []string) []string {
+	var ok []netip.Prefix
+	var bad []string
+	for _, c := range in {
+		if p, err := ParseSource(c); err == nil {
+			ok = append(ok, p)
+		} else {
+			bad = append(bad, c)
+		}
+	}
+	slices.SortFunc(ok, func(a, b netip.Prefix) int {
+		if c := a.Addr().Compare(b.Addr()); c != 0 {
+			return c
+		}
+		return a.Bits() - b.Bits() // the wider first
+	})
+	var out []string
+	var last netip.Prefix
+	for i, p := range ok {
+		if i > 0 && last.Contains(p.Addr()) && last.Bits() <= p.Bits() {
+			continue
+		}
+		last = p
+		if p.Bits() == 32 {
+			out = append(out, p.Addr().String())
+		} else {
+			out = append(out, p.String())
+		}
+	}
+	return append(out, bad...)
 }

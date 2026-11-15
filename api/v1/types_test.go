@@ -270,3 +270,16 @@ func TestOnControlPlaneLossHelpers(t *testing.T) {
 		t.Errorf("silo: %v %v", ok, d)
 	}
 }
+
+func TestSourcesAreParsedAndNormalized(t *testing.T) {
+	for _, bad := range []string{"", "x", "10.0.0.0/33", "2001:db8::/32", "2001:db8::1", "::ffff:10.0.0.1", "fe80::1%eth0", "10.0.0.1 ", "10.0.0.0/8,10.1.0.0/16"} {
+		if _, err := ParseSource(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	got := NormalizeSources([]string{"10.1.2.3/8", "10.0.0.0/8", "10.5.5.5", "192.0.2.1/32", "192.0.2.1", "bad"})
+	want := []string{"10.0.0.0/8", "192.0.2.1", "bad"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

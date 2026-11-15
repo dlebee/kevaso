@@ -78,8 +78,10 @@ func semantic(obj meta.Object) []string {
 		}
 	case *v1.IP:
 		if a := o.Spec.Address; a != "" {
-			if _, err := netip.ParseAddr(a); err != nil {
+			if ad, err := netip.ParseAddr(a); err != nil {
 				errs = append(errs, fmt.Sprintf("spec.address: %q isn't an address", a))
+			} else if !ad.Is4() {
+				errs = append(errs, fmt.Sprintf("spec.address: %q: IPv6 comes later; IPv4 for now", a))
 			}
 		}
 	case *v1.Host:
@@ -106,6 +108,38 @@ func semantic(obj meta.Object) []string {
 		}
 	}
 	return errs
+}
+
+// normalize writes what users give for the firewall in its one form, before it is checked and
+// stored: a port's sources (silo, and a SiloSet's template) and the CIDRs of a Grant's egress.
+// Entries that don't parse are left for semantic to refuse.
+func normalize(obj meta.Object) {
+	ports := func(sv *v1.SiloService) {
+		if sv == nil {
+			return
+		}
+		for i := range sv.Ports {
+			if len(sv.Ports[i].Sources) > 0 {
+				sv.Ports[i].Sources = v1.NormalizeSources(sv.Ports[i].Sources)
+			}
+		}
+	}
+	switch o := obj.(type) {
+	case *v1.Silo:
+		ports(o.Spec.Service)
+	case *v1.SiloSet:
+		ports(o.Spec.Template.Service)
+	case *v1.Grant:
+		for i, r := range o.Spec.Egress {
+			if e, err := r.Parse(); err == nil && e.Prefix.IsValid() {
+				if e.Prefix.Bits() == 32 {
+					o.Spec.Egress[i].To = e.Prefix.Addr().String()
+				} else {
+					o.Spec.Egress[i].To = e.Prefix.String()
+				}
+			}
+		}
+	}
 }
 
 // transition checks what may change on an update: a VMImage's versions are immutable once added
