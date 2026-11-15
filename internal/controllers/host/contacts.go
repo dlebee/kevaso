@@ -34,8 +34,26 @@ func NewContacts(now time.Time) *Contacts {
 	return &Contacts{start: now, last: map[string]contact{}, claims: map[string]claimSeen{}}
 }
 
+// HeartbeatStamp is the lastHeartbeat a heartbeat writes over stored: now, to the nanosecond, and
+// never stored itself (K-106). The stamp changing is the only sign on a Host that a heartbeat
+// landed (Observe), so a heartbeat whose write stored the same stamp again was a contact to the
+// host that sent it and none to the control plane: a worker's clock one period behind did that on
+// every other beat, and two beats within one second did it too. Not max(now, stored+δ): a stamp
+// a fast clock left in the future is replaced at the next beat, not kept.
+func HeartbeatStamp(stored *time.Time, now time.Time) *time.Time {
+	t := now.UTC().Round(0)
+	if stored != nil && t.Equal(*stored) {
+		t = t.Add(time.Nanosecond)
+	}
+	return &t
+}
+
 // Observe records that h was seen at now: a heartbeat stamp different from the last one seen is a
-// contact. Call it for every version of every Host as it is seen.
+// contact, counted from now on this control plane's clock. The stamp is only told apart from the
+// last one, never compared with our clock; every heartbeat that lands stores a new one
+// (HeartbeatStamp), so every one is a contact. Seeing only the latest of several versions is the
+// same contact, a little later (later is the safe side: less silence). Call it for every version
+// of every Host as it is seen.
 func (c *Contacts) Observe(h *v1.Host, now time.Time) {
 	if c == nil || h.Status.LastHeartbeat == nil {
 		return

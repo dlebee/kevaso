@@ -15,6 +15,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/boottime"
 	"kevaso.com/core/internal/clock"
+	hostctl "kevaso.com/core/internal/controllers/host"
 	"kevaso.com/core/internal/version"
 )
 
@@ -165,8 +166,9 @@ func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Du
 			h.Status.Version = version.Version
 			meta.SetCondition(&h.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "WorkerUp",
 				Message: "kevasod reporting", ObservedGeneration: h.Generation}, now.Truncate(time.Second))
-			hb := now.Truncate(time.Second)
-			h.Status.LastHeartbeat = &hb
+			// The server stamps it on receipt (K-106); what is sent never equals what was read, so
+			// even a server that took it as sent would see the beat.
+			h.Status.LastHeartbeat = hostctl.HeartbeatStamp(h.Status.LastHeartbeat, now)
 			err := c.UpdateStatus(ctx, &h)
 			if client.IsConflict(err) {
 				continue

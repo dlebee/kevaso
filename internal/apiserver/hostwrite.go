@@ -12,6 +12,7 @@ import (
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	hostctl "kevaso.com/core/internal/controllers/host"
 	"kevaso.com/core/internal/mesh"
 	"kevaso.com/core/internal/store"
 )
@@ -19,8 +20,9 @@ import (
 // What a worker may write in its own Host's status, and what bounds it (review batch 3; the
 // control plane's own fields, provider and the mesh addresses, are kept as stored in update):
 //
-//	lastHeartbeat   the worker says it is alive; the time is the server's on receipt (a stamp far
-//	                in the future would keep the host from ever being lost)
+//	lastHeartbeat   every write is the worker saying it is alive; the time is the server's on
+//	                receipt (a stamp far in the future would keep the host from ever being lost),
+//	                and never the one stored (K-106: else the write is no contact)
 //	controlPlane    the control plane's own (a system node's API URL every agent dials, the cluster's
 //	                DNS suffix): kept as stored
 //	network keys    the host's: published once; a different key for a host that has one is a
@@ -37,10 +39,9 @@ import (
 const CondReportedChange = "ReportedChange"
 
 func boundHostWrite(oh v1.HostStatus, nh *v1.HostStatus, host string, now time.Time) error {
-	if !sameTime(oh.LastHeartbeat, nh.LastHeartbeat) {
-		t := now.UTC().Truncate(time.Second)
-		nh.LastHeartbeat = &t
-	}
+	// Every status write a host makes of its own Host is a heartbeat, whatever it sent: stamped on
+	// receipt, never with the stamp stored, so the control plane counts it as a contact (K-106).
+	nh.LastHeartbeat = hostctl.HeartbeatStamp(oh.LastHeartbeat, now)
 	nh.ControlPlane = oh.ControlPlane
 	if oh.Network.PublicKey != "" && nh.Network.PublicKey != oh.Network.PublicKey {
 		return errf(http.StatusForbidden, "Forbidden", "%s may not change its published mesh key: a new key is a new join (kvoadm host remove %s, then add it again)", host, host)
@@ -58,13 +59,6 @@ func boundHostWrite(oh v1.HostStatus, nh *v1.HostStatus, host string, now time.T
 			Message: host + " reported " + strings.Join(steps, "; ") + " (the scheduler places silos by what a host reports)"}, now.UTC().Truncate(time.Second))
 	}
 	return nil
-}
-
-func sameTime(a, b *time.Time) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return a.Equal(*b)
 }
 
 // largeSteps says what changed by a large step in what the host offers, after its first report.
