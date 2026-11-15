@@ -13,7 +13,6 @@ import (
 	"kevaso.com/core/internal/cli/kvo"
 	"kevaso.com/core/internal/cli/kvoadm"
 	"kevaso.com/core/internal/fence"
-	"kevaso.com/core/internal/worker"
 	"kevaso.com/core/sdk/kri"
 	"kevaso.com/core/testbed"
 )
@@ -21,8 +20,9 @@ import (
 // TestMoves is design §0.3 on two real workers: a docker silo with no local volume moves with
 // kvo move silo NAME --to OTHER (the old host stops it first, then the new one starts it, and
 // status.movingFrom clears); a cloud-hypervisor silo, on its host's local disk, is refused as
-// pinned; and when a worker is lost, an onHostLoss: Recreate silo comes up on the other one, only
-// after the lost host has fenced its copy, so two never run.
+// pinned; and when a worker is lost, a silo that opted in (onControlPlaneLoss: Stop, onHostLoss:
+// Recreate) comes up on the other one, only after the lost host has stopped its copy, so two never
+// run (§0.7: no other silo restarts elsewhere by itself).
 //
 //	w1  control plane + worker with KVM (cloud-hypervisor) and docker
 //	w2  worker with docker
@@ -59,7 +59,7 @@ spec:
   runtime: docker
   container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 256Mi }
-  availability: { onHostLoss: Recreate }
+  availability: { onHostLoss: Recreate, onControlPlaneLoss: Stop, after: 30s }
 ---
 apiVersion: kevaso/v1
 kind: Silo
@@ -180,8 +180,9 @@ spec:
 	}
 	name := mainOf(st)
 
-	// 3a. w2's agent is alive but cut off from the control plane: it fences (stops the copy) before
-	// the control plane, past the host lease and RecreateAfter, starts one on w1.
+	// 3a. w2's agent is alive but cut off from the control plane: it stops the copy (the silo asked
+	// for it: onControlPlaneLoss: Stop, after 30s) before the control plane, past after and the
+	// margin (silo.StopMargin) on its own count, starts one on w1 (§0.7).
 	if out, err := r.sh("w2", fmt.Sprintf(`nft -f - <<'NFT'
 table inet cutoff {
   chain out { type filter hook output priority filter; policy accept; ip daddr %[1]s drop; }
@@ -194,7 +195,7 @@ NFT`, w1IP)); err != nil {
 	watchHandoff("w2 cut off: stateless", name, "w2", "w1", 4*time.Minute)
 	t.Logf("recreated on w1 %s after w2 was cut off", time.Since(cut).Round(time.Second))
 	j, _ := r.sh("w2", "journalctl -u kevasod --no-pager | grep -i fenc | tail -3")
-	expect(t, "w2's agent says it fenced", j, "fencing")
+	expect(t, "w2's agent says it stopped it", j, "onControlPlaneLoss: Stop")
 	r.eventually("stateless runs on w1", 2*time.Minute, func() (bool, string) {
 		s := r.silo("mv", "stateless")
 		return s.Status.Host == "w1" && s.Status.Phase == "Running", s.Status.Host + " " + s.Status.Phase
@@ -218,8 +219,8 @@ NFT`, w1IP)); err != nil {
 	})
 
 	// 3b–3d: w2's kevasod is gone, not just cut off. Its fence (kevaso-fence.service, a unit of
-	// its own) stops the Recreate silo within FenceAfter; the control plane recreates it on w1
-	// after the host lease and RecreateAfter; never two copies. A quick restart fences nothing.
+	// its own) stops the opted-in silo after its after; the control plane recreates it on w1 after
+	// after plus the margin, on its own count; never two copies. A quick restart stops nothing.
 	if out, _ := r.sh("w2", "systemctl is-active kevaso-fence.service"); strings.TrimSpace(out) != "active" {
 		t.Fatalf("w2's fence isn't running: %q", out)
 	}
@@ -255,18 +256,17 @@ NFT`, w1IP)); err != nil {
 		lastStop = time.Time{}
 		watchHandoff(what+": stateless", name, "w2", "w1", 4*time.Minute)
 		if !lastStop.IsZero() {
-			// The last contact can be a heartbeat old when kevasod goes, and a container's stop waits
-			// out its grace (docker stop -t 20; sleep as PID 1 ignores SIGTERM): still well before
-			// the control plane recreates it (host lease + RecreateAfter after the last heartbeat).
-			if d, most := lastStop.Sub(at), agentFenceAfter+worker.DefaultHeartbeat+20*time.Second+5*time.Second; d > most {
-				t.Errorf("%s: the old copy stopped %s after, past FenceAfter + a heartbeat + the stop's grace (%s)", what, d.Round(time.Second), most)
+			// Counted from the last heartbeat, which can be one period old when kevasod goes; a
+			// fence kills (no grace): still before the control plane starts it elsewhere.
+			if d, most := lastStop.Sub(at), fence.WorstStopped(stopAfter); d > most {
+				t.Errorf("%s: the old copy stopped %s after, past its after and the fence's check (%s)", what, d.Round(time.Second), most)
 			} else {
-				t.Logf("%s: the old copy stopped %s after (FenceAfter %s, at most %s with a heartbeat and the stop's grace)", what, d.Round(time.Second), agentFenceAfter, most)
+				t.Logf("%s: the old copy stopped %s after (after %s, at most %s)", what, d.Round(time.Second), stopAfter, most)
 			}
 		}
 		t.Logf("%s: recreated on w1 %s after", what, time.Since(at).Round(time.Second))
 		fenced, _ := r.sh("w2", "journalctl -u kevaso-fence --no-pager --since '-5min' | grep 'fence: stopped' | tail -2")
-		expect(t, what+": w2's fence stopped it", fenced, "fence: stopped mv/stateless (onHostLoss Recreate)")
+		expect(t, what+": w2's fence stopped it", fenced, "fence: stopped mv/stateless (onControlPlaneLoss: Stop, after 30s)")
 		r.eventually(what+": stateless runs on w1", 2*time.Minute, func() (bool, string) {
 			s := r.silo("mv", "stateless")
 			return s.Status.Host == "w1" && s.Status.Phase == "Running", s.Status.Host + " " + s.Status.Phase
@@ -290,7 +290,7 @@ NFT`, w1IP)); err != nil {
 	if out, err := r.sh("w2", "systemctl restart kevasod"); err != nil {
 		t.Fatalf("restart: %v %s", err, out)
 	}
-	for end := time.Now().Add(agentFenceAfter + 30*time.Second); time.Now().Before(end); time.Sleep(2 * time.Second) {
+	for end := time.Now().Add(stopAfter + 30*time.Second); time.Now().Before(end); time.Sleep(2 * time.Second) {
 		if st := state("w2", name); st != "running" {
 			t.Fatalf("a quick restart of kevasod: the silo is %s on w2", st)
 		}
@@ -301,9 +301,9 @@ NFT`, w1IP)); err != nil {
 	if s := r.silo("mv", "stateless"); s.Status.Host != "w2" {
 		t.Errorf("after a quick restart: on %s", s.Status.Host)
 	} else {
-		t.Logf("a quick restart of w2's kevasod: the silo kept running on w2 for %s", agentFenceAfter+30*time.Second)
+		t.Logf("a quick restart of w2's kevasod: the silo kept running on w2 for %s", stopAfter+30*time.Second)
 	}
 }
 
-// agentFenceAfter is the agent's and the fence's default.
-const agentFenceAfter = fence.DefaultAfter
+// stopAfter is the stateless silo's after (onControlPlaneLoss: Stop).
+const stopAfter = 30 * time.Second
