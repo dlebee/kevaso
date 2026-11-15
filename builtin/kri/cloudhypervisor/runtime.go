@@ -624,6 +624,9 @@ func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, s
 				return fmt.Errorf("root volume %s/%s is there already: only a reset makes it afresh", VG, n.LV)
 			}
 			if err := r.run(ctx, "lvremove", "-q", "-y", VG+"/"+n.LV); err != nil {
+				if r.lvExists(ctx, n.LV) {
+					return fmt.Errorf("%w: %v", errRootKept, err)
+				}
 				return err
 			}
 		}
@@ -639,11 +642,20 @@ func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, s
 	for _, c := range RootFilePlan(img, tmp, l.RootFile, size) {
 		if err := r.run(ctx, c[0], c[1:]...); err != nil {
 			_ = r.Host.RemoveAll(tmp)
+			if _, terr := r.Host.Run(ctx, "test", "-e", l.RootFile); terr == nil {
+				return fmt.Errorf("%w: %v", errRootKept, err) // written beside it, put in place last
+			}
 			return err
 		}
 	}
 	return nil
 }
+
+// errRootKept: making a root disk afresh failed before the old one was touched (its lvremove
+// failed; the new image file never put in place). K-112: a reset cut there removed nothing, so
+// its mark goes and the disk is kept as it was: the next reset is asked for again, through its
+// gate, never finished at a start with no one asked.
+var errRootKept = errors.New("the root disk was kept as it was")
 
 // RootFilePlan makes a root disk image file from an image: written next to it, grown to the disk's
 // size (never shrunk), made the VMM's alone (qemu-img leaves it world-readable: the whole disk),
@@ -962,6 +974,11 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 		return fmt.Errorf("reset %s: %w", spec.ID, err)
 	}
 	if err := r.remakeLocked(ctx, st, img); err != nil {
+		if errors.Is(err, errRootKept) {
+			if serr := r.saveState(old); serr != nil { // nothing removed: as it was, with no mark
+				err = errors.Join(err, serr)
+			}
+		}
 		return fmt.Errorf("reset %s: %w", spec.ID, err)
 	}
 	return nil
@@ -986,7 +1003,14 @@ func (r *Runtime) finishRemake(ctx context.Context, id kri.ID) error {
 	if _, up := r.vmm(ctx, NamesFor(id)); up {
 		return errors.New("its VMM runs") // never under a VMM (not reached: Remake means it was gone)
 	}
-	return r.remakeLocked(ctx, st, img)
+	err = r.remakeLocked(ctx, st, img)
+	if errors.Is(err, errRootKept) {
+		// Nothing of its disk was removed (K-112): the mark goes, the old disk stays, and it
+		// starts as it was; a reset still asked for comes again through its gate.
+		st.Remake, st.Volumes, st.RootDir = nil, st.Remake.OldVolumes, st.Remake.OldRootDir
+		return r.saveState(st)
+	}
+	return err
 }
 
 // remakeLocked does a reset's destructive steps, each one safe to do again: the root disk made
