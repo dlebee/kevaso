@@ -22,7 +22,9 @@ import (
 //
 //	lastHeartbeat   every write is the worker saying it is alive; the time is the server's on
 //	                receipt (a stamp far in the future would keep the host from ever being lost),
-//	                and never the one stored (K-106: else the write is no contact)
+//	                and never the one stored (K-106: else the write is no contact); a held
+//	                worker's beat (Ready reason WorkerHeld) is no contact: stamp and Ready kept
+//	                as stored (K-108)
 //	controlPlane    the control plane's own (a system node's API URL every agent dials, the cluster's
 //	                DNS suffix): kept as stored
 //	network keys    the host's: published once; a different key for a host that has one is a
@@ -40,8 +42,10 @@ const CondReportedChange = "ReportedChange"
 
 func boundHostWrite(oh v1.HostStatus, nh *v1.HostStatus, host string, now time.Time) error {
 	// Every status write a host makes of its own Host is a heartbeat, whatever it sent: stamped on
-	// receipt, never with the stamp stored, so the control plane counts it as a contact (K-106).
-	nh.LastHeartbeat = hostctl.HeartbeatStamp(oh.LastHeartbeat, now)
+	// receipt, never with the stamp stored, so the control plane counts it as a contact (K-106);
+	// unless the beat says its worker is held (Ready reason WorkerHeld): no contact, its stamp and
+	// Ready kept as stored, as its fence counts none (K-108).
+	hostctl.Beat(oh, nh, now)
 	nh.ControlPlane = oh.ControlPlane
 	if oh.Network.PublicKey != "" && nh.Network.PublicKey != oh.Network.PublicKey {
 		return errf(http.StatusForbidden, "Forbidden", "%s may not change its published mesh key: a new key is a new join (kvoadm host remove %s, then add it again)", host, host)
