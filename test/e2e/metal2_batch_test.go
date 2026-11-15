@@ -28,6 +28,19 @@ func anyOf(c *mt, uid string) int {
 	return len(strings.Fields(out))
 }
 
+// confirmMove is Rule 1 since FenceStopped: during a cut, the control plane doesn't restart an
+// opted-in silo elsewhere by itself (60s watched); a person who knows the copy stopped confirms
+// the fence and moves it as a fresh copy.
+func confirmMove(t *testing.T, c *mt, ns, name, to string) {
+	t.Helper()
+	from := c.silo(ns, name).Status.Host
+	c.holds("cut off: the control plane doesn't restart "+name+" elsewhere by itself", time.Minute, func() (bool, string) {
+		s := c.silo(ns, name)
+		return s.Status.Host == from, s.Status.Host
+	})
+	c.must("", "move", "silo", name, "-n", ns, "--to", to, "--confirm-fenced", "--recreate")
+}
+
 // neverBoth asks both machines every half second, from themselves, whether something of the
 // silo runs on each; it returns a stop func that says when both did, if ever, and how often it
 // asked.
@@ -96,7 +109,8 @@ func TestMetal2InitStepUnderACut(t *testing.T) {
 	if d := time.Since(cutAt); d > 30*time.Second+6*time.Second+10*time.Second { // a heartbeat's slack
 		t.Errorf("machine 2 stopped it %s into the cut, past after + 6s", d.Round(time.Second))
 	}
-	c.eventually("the control plane starts it on machine 1", 5*time.Minute, func() (bool, string) {
+	confirmMove(t, c, ns, "slow", metalHost)
+	c.eventually("--confirm-fenced: it starts on machine 1", 5*time.Minute, func() (bool, string) {
 		s := c.silo(ns, "slow")
 		return s.Status.Host == metalHost, s.Status.Host + " " + s.Status.Phase
 	})

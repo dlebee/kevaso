@@ -30,7 +30,9 @@ func TestMetal2InjectCutOff(t *testing.T) {
 			t.Fatal("machine 2's kevasod command line: not found")
 		}
 		d := "/run/systemd/system/kevasod.service.d"
-		t.Cleanup(func() { _, _ = p.c2.sh("rm -f " + d + "/kvt-ca.conf; systemctl daemon-reload; systemctl restart kevasod; true") })
+		t.Cleanup(func() {
+			_, _ = p.c2.sh("rm -f " + d + "/kvt-ca.conf; systemctl daemon-reload; systemctl restart kevasod; true")
+		})
 		p.c2.mustSh("mkdir -p " + d + " && printf '[Service]\\nExecStart=\\nExecStart=%s --egress-extra-ca /etc/kevaso/test-internet-ca.pem\\n' '" + exec + "' > " + d + "/kvt-ca.conf && systemctl daemon-reload && systemctl restart kevasod")
 		c.eventually("machine 2 back with the CA", 3*time.Minute, func() (bool, string) { return c.hostReady(metalHost2) })
 	}

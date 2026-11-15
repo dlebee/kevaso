@@ -3,14 +3,12 @@
 package e2e
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/cli/kvoadm"
 	siloctl "kevaso.com/core/internal/controllers/silo"
@@ -254,16 +252,11 @@ func TestMetal2Fence(t *testing.T) {
 	if d := time.Since(cutAt); d < 30*time.Second-worker.DefaultHeartbeat {
 		t.Errorf("the Stop silos stopped %s into the cut, before their after (30s, less a heartbeat)", d.Round(time.Second))
 	}
-	c.eventually("the control plane starts the Stop + Recreate silo on machine 1", 5*time.Minute, func() (bool, string) {
+	confirmMove(t, c, ns, "restarts", metalHost)
+	c.eventually("--confirm-fenced: the Stop + Recreate silo runs on machine 1", 5*time.Minute, func() (bool, string) {
 		s := c.silo(ns, "restarts")
 		return s.Status.Host == metalHost && s.Status.Phase == "Running", s.Status.Host + " " + s.Status.Phase
 	})
-	// The control plane counts from the last heartbeat it saw: up to one period before the cut.
-	if d := time.Since(cutAt); d < 30*time.Second+siloctl.StopMargin(30*time.Second)-worker.DefaultHeartbeat {
-		t.Errorf("restarted elsewhere %s into the cut, before after + margin", d.Round(time.Second))
-	} else {
-		t.Logf("restarted on machine 1 %s into the cut (after 30s + margin %s)", d.Round(time.Second), siloctl.StopMargin(30*time.Second))
-	}
 	// Well past the host lease: nothing else stops, and nothing else starts elsewhere.
 	for end := time.Now().Add(90 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Second) {
 		for _, n := range []string{"stay", "recreate", "rescue"} {
@@ -605,20 +598,11 @@ func TestMetal2NeverTwice(t *testing.T) {
 	}()
 	p.cut()
 	t.Log("machine 2 cut off from the system node")
-	// The cut lifted the moment the restart elsewhere is committed (the placement written).
-	for deadline := time.Now().Add(5 * time.Minute); ; time.Sleep(200 * time.Millisecond) {
-		out, code := c.kvo("", "get", "silo", "single", "-n", ns, "-o", "json")
-		var s v1.Silo
-		if code == 0 && json.Unmarshal([]byte(out), &s) == nil && s.Status.Host != metalHost2 {
-			p.uncut()
-			t.Logf("the restart elsewhere committed (host %q): the cut lifted at once", s.Status.Host)
-			break
-		}
-		if time.Now().After(deadline) {
-			p.uncut()
-			t.Fatal("the control plane never restarted it elsewhere")
-		}
-	}
+	c.eventually("machine 2's fence stops it", 2*time.Minute, func() (bool, string) { return !running(p.c2, uid), "still running" })
+	confirmMove(t, c, ns, "single", metalHost)
+	c.eventually("the move committed", time.Minute, func() (bool, string) { s := c.silo(ns, "single"); return s.Status.Host == metalHost, s.Status.Host })
+	p.uncut()
+	t.Log("the confirmed move committed: the cut lifted at once")
 	c.eventually("it runs on machine 1", 5*time.Minute, func() (bool, string) {
 		s := c.silo(ns, "single")
 		return s.Status.Host == metalHost && s.Status.Phase == "Running", s.Status.Host + " " + s.Status.Phase
