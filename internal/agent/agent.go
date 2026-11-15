@@ -803,10 +803,14 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		})
 		return true, fmt.Errorf("reset onto %s: %w", image, err)
 	}
-	if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+	// The gate (review, check-then-act claim 1): the pull took a while, and the reset or the image
+	// may have been taken back meanwhile. Right before the disk is touched, a compare-and-swap on
+	// what is stored now: the same silo, generation and placement, the reset still due onto this
+	// image. Anything else, a conflict included, stops nothing: it looks again.
+	if ok, err := a.gateReset(ctx, s, image, due, func(st *v1.SiloStatus) {
 		st.Phase = PhaseStarting
 		setCond(st, "Ready", meta.ConditionFalse, "Updating", "stopping for "+what+" (StopFirst; volumes kept)", s.Generation, a.now())
-	}); err != nil {
+	}); err != nil || !ok {
 		return true, err
 	}
 	id := idOf(s)
@@ -836,6 +840,28 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		st.Image.Digest = digest
 		setCond(st, "Updated", meta.ConditionTrue, "Reset", "reset onto "+image+" (stop-first, volumes kept)", s.Generation, a.now())
 	})
+}
+
+// gateReset writes mutate onto the stored silo only if it is still s, at s's generation, placed
+// here, resolving to image, with the reset due (due), in one compare-and-swap: ok says it applied.
+func (a *Agent) gateReset(ctx context.Context, s *v1.Silo, image string, due func(*v1.Silo) bool, mutate func(*v1.SiloStatus)) (bool, error) {
+	var cur v1.Silo
+	if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	if im, resolved := imageOf(&cur); cur.UID != s.UID || cur.Generation != s.Generation || cur.DeletionTimestamp != nil ||
+		cur.Status.Host != a.HostName || !resolved || im != image || !due(&cur) {
+		a.log("silo %s/%s: its reset or image changed while the image was pulled: nothing stopped, looking again", s.Namespace, s.Name)
+		return false, nil
+	}
+	mutate(&cur.Status)
+	cur.Status.Routing = routing.Silo(cur.Spec, cur.Status)
+	if err := a.Client.UpdateStatus(ctx, &cur); client.IsConflict(err) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // runInit runs the init steps that haven't run yet inside the running silo (through Exec).
