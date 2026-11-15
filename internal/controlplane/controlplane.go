@@ -282,6 +282,8 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	apiSrv := srv.HTTPServer(false)
 	apiSrv.TLSConfig = srv.TLSConfig(serverCert)
 	adminSrv := srv.HTTPServer(true)
+	apiSrv.Handler = withControlPlane(apiSrv.Handler, st, ident)
+	adminSrv.Handler = withControlPlane(adminSrv.Handler, st, ident)
 
 	r := &Running{APIAddr: apiL.Addr().String(), CA: ca, Tokens: tokens, Cluster: ident, done: make(chan struct{})}
 	var wg sync.WaitGroup
