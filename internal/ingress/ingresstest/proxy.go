@@ -19,6 +19,7 @@ type Proxy struct {
 	Ran     []string // every command, argv joined by spaces (stdin never shown)
 	Writes  []string // the paths written, in order
 	Reloads int
+	Checks  int // config checks run
 	// CheckCmd and ReloadCmd are the driver's check and reload (argv[0], e.g. "nginx" and "-t");
 	// Check, if set, refuses a staged config: it returns the check's output ("" passes).
 	CheckCmd, ReloadCmd []string
@@ -71,7 +72,14 @@ func (p *Proxy) Handle(argv []string, stdin []byte) (string, int) {
 		delete(p.Files, argv[2])
 		return "", 0
 	case prefix(argv, p.CheckCmd):
-		cfg := p.Files[argv[len(argv)-1]]
+		at := argv[len(argv)-1] // the staged config: after -c or --config, else the last argument
+		for i, a := range argv[:len(argv)-1] {
+			if a == "-c" || a == "--config" {
+				at = argv[i+1]
+			}
+		}
+		p.Checks++
+		cfg := p.Files[at]
 		if p.Check != nil {
 			if out := p.Check(cfg, p.Files); out != "" {
 				return out, 1
