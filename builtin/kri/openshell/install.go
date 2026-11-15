@@ -32,7 +32,7 @@ func (r *Runtime) Install(ctx context.Context, progress func(string)) error {
 		if err := r.run(ctx, "sh", "-c", "command -v docker"); err != nil {
 			progress("installing Docker (docker.io)")
 			unlock := hostpkg.Lock()
-			err := r.run(ctx, "sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get -o "+hostpkg.LockTimeout+" install -y -q docker.io")
+			err := r.run(ctx, "sh", "-c", hostpkg.Recording("DEBIAN_FRONTEND=noninteractive apt-get -o "+hostpkg.LockTimeout+" install -y -q docker.io"))
 			unlock()
 			if err != nil {
 				return err
@@ -59,7 +59,7 @@ func (r *Runtime) Install(ctx context.Context, progress func(string)) error {
 		}
 		progress("installing OpenShell " + Version)
 		unlock := hostpkg.Lock()
-		err := r.run(ctx, "sh", "-c", "DEBIAN_FRONTEND=noninteractive apt-get -o "+hostpkg.LockTimeout+" install -y -q "+path)
+		err := r.run(ctx, "sh", "-c", hostpkg.Recording("DEBIAN_FRONTEND=noninteractive apt-get -o "+hostpkg.LockTimeout+" install -y -q "+path))
 		unlock()
 		if err != nil {
 			return err

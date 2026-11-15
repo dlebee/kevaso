@@ -549,8 +549,15 @@ func removeWorkerHost(ctx context.Context, c *client.Client, name string, say fu
 		if err != nil {
 			return err
 		}
-		if s := obj.(*v1.Silo); s.Status.Host == name {
+		s := obj.(*v1.Silo)
+		if s.Status.Host == name {
 			return fmt.Errorf("silo %s/%s is on %s: kvoadm host drain %s first", s.Namespace, s.Name, name, name)
+		}
+		if s.Status.MovingFrom == name {
+			// K-119: its handoff ends only when this host lets go of it; with the Host gone it never
+			// would, and its copy here may still run.
+			return fmt.Errorf("silo %s/%s is moving from %s to %s, and %s hasn't let go of it yet: wait for the move to finish (kvo get silo %s -n %s), or, once %s is known stopped, end it with kvo move silo %s -n %s --to %s --confirm-fenced",
+				s.Namespace, s.Name, name, s.Status.Host, name, s.Name, s.Namespace, name, s.Name, s.Namespace, s.Status.Host)
 		}
 	}
 	if err := c.Delete(ctx, "Host", "", name); err != nil {

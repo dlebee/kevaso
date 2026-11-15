@@ -11,6 +11,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/boottime"
 	"kevaso.com/core/internal/fence"
+	"kevaso.com/core/sdk/kri"
 )
 
 // goneEvery is how often a recorded silo the API no longer places here is looked for in the
@@ -169,12 +170,25 @@ func (a *Agent) fenceRecord(ctx context.Context) fence.Record {
 		present, ok := a.runtimeUIDs(ctx)
 		for _, uid := range gone {
 			rt := a.recorded[uid].Runtime
-			if ok[rt] && !present[uid] {
+			if ok[rt] && !present[uid] && a.absentByName(ctx, rt, a.recorded[uid].ID) {
 				delete(a.recorded, uid) // gone from its runtime: only now
 			}
 		}
 	}
 	return a.buildRecord()
+}
+
+// absentByName says whether runtime rt, asked for id by its name, says cleanly it has nothing of
+// it: a silo whose state file can't be read isn't in its List and may still run (K-105).
+func (a *Agent) absentByName(ctx context.Context, rt string, id kri.ID) bool {
+	r, ok := a.Runtimes[rt]
+	if !ok {
+		return true
+	}
+	sctx, cancel := context.WithTimeout(ctx, fence.KillWithin) // a hung engine never stalls the record
+	defer cancel()
+	st, err := r.Status(sctx, id)
+	return err == nil && st.State == kri.Absent
 }
 
 // runtimeUIDs is every silo the runtimes here have, and which runtimes could say.

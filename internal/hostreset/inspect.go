@@ -13,6 +13,8 @@ import (
 // InspectScript prints what a reset needs to know about the host, in sections.
 var InspectScript = `echo '== record'
 cat ` + RecordFile + ` 2>/dev/null | sed 's/^== /=== /'
+echo '== kevaso-installed'
+cat ` + KevasoInstalledFile + ` 2>/dev/null | sort -u
 echo '== installed'
 { [ -e /usr/local/bin/kevasod ] || [ -e /etc/systemd/system/kevasod.service ]; } && echo kevasod=yes || echo kevasod=no
 systemctl is-active -q kevasod 2>/dev/null && echo running=yes || echo running=no
@@ -73,12 +75,15 @@ done`
 
 // Inspection is the host as a reset sees it.
 type Inspection struct {
-	Record    *Record  // nil: no install record (an older install, or never installed)
-	Installed bool     // kevasod's binary or unit is there
-	Running   bool     // kevasod is active
-	Silos     []string // "vm UNIT", "container NS/NAME" or "openshell NS/NAME"
-	PVs       []PV     // the volume group's physical volumes (none: no volume group)
-	Volumes   []string // its logical volumes but the thin pool, "NAME SIZE"
+	Record *Record // nil: no install record (an older install, or never installed)
+	// KevasoInstalled are the packages Kevaso's runtimes installed here (KevasoInstalledFile):
+	// only those are purged (K-113).
+	KevasoInstalled []string
+	Installed       bool     // kevasod's binary or unit is there
+	Running         bool     // kevasod is active
+	Silos           []string // "vm UNIT", "container NS/NAME" or "openshell NS/NAME"
+	PVs             []PV     // the volume group's physical volumes (none: no volume group)
+	Volumes         []string // its logical volumes but the thin pool, "NAME SIZE"
 	// StorageFile is Kevaso's loop file when it exists ("PATH SIZE"), attached or not.
 	StorageFile string
 	Now         State
@@ -144,6 +149,7 @@ func ParseInspection(out string) (Inspection, error) {
 	in.Installed = slices.Contains(sec["installed"], "kevasod=yes")
 	in.Running = slices.Contains(sec["installed"], "running=yes")
 	in.Silos = sec["silos"]
+	in.KevasoInstalled = sec["kevaso-installed"]
 	for _, l := range sec["pvs"] {
 		f := strings.Fields(l)
 		if len(f) != 2 {
@@ -180,6 +186,9 @@ type Decision struct {
 	Checks  CheckOptions
 	Summary []string // what will be removed and kept, for the operator, before they confirm
 	Lost    []string // the volumes (silo data) that will be lost
+	// NotOurs are watched packages there now that the record didn't have but Kevaso didn't
+	// install either (a person's, after Kevaso): left installed, and not reported as left over.
+	NotOurs []string
 }
 
 // ErrSilos: silos are on the host and --force wasn't given.
@@ -202,7 +211,16 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 	}
 
 	if r := in.Record; r != nil {
-		d.Plan.Purge = Purgeable(r.State, in.Now)
+		// Only what Kevaso's runtimes recorded installing is purged (K-113): a package that came
+		// after the record may be the owner's (docker.io installed later: purging it took every
+		// container, volume and image on the host).
+		for _, p := range Purgeable(r.State, in.Now) {
+			if slices.Contains(in.KevasoInstalled, p) {
+				d.Plan.Purge = append(d.Plan.Purge, p)
+			} else {
+				d.NotOurs = append(d.NotOurs, p)
+			}
+		}
 		d.Plan.Tables = ExtraTables(r.State, in.Now)
 		d.Plan.IPForward = r.IPForward
 		d.Plan.DockerOurs = slices.Contains(d.Plan.Purge, "docker.io")
@@ -211,6 +229,9 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 		}
 		say("from the install record: purge %s; delete nftables tables %s; set net.ipv4.ip_forward back to %s",
 			orNone(d.Plan.Purge), orNone(d.Plan.Tables), r.IPForward)
+		if len(d.NotOurs) > 0 {
+			say("left installed (not in the install record, but not installed by Kevaso either: someone installed them since): %s", strings.Join(d.NotOurs, " "))
+		}
 	} else {
 		d.Plan.Tables = KevasoTables(in.Now)
 		say("NO INSTALL RECORD (an install older than the record): fixed lists only. Delete nftables tables %s; no package is purged; IP forwarding is left as it is",

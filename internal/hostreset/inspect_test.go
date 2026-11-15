@@ -32,6 +32,9 @@ func inspectOut(record *Record, installed bool, silos, pvs, lvs []string, now St
 	return b.String()
 }
 
+// kevasoInstalled is what Kevaso's runtimes recorded installing to get from fresh to afterInstall.
+var kevasoInstalled = []string{"containerd", "docker.io", "qemu-utils", "virtiofsd"}
+
 var afterInstall = State{
 	Packages:  append(slices.Clone(fresh.Packages), "docker.io", "containerd", "qemu-utils", "virtiofsd"),
 	Tables:    []string{"bridge kevaso", "inet kevaso", "inet provider"},
@@ -80,7 +83,7 @@ func TestDecideRefusesAHostWithSilos(t *testing.T) {
 
 func TestDecideFromARecord(t *testing.T) {
 	rec := Record{State: fresh}
-	d, err := Decide(Inspection{Record: &rec, Installed: true, PVs: []PV{{"/dev/loop3", StorageImage}}, Volumes: []string{"kv-01-ab 1.00g"}, Now: afterInstall}, Flags{})
+	d, err := Decide(Inspection{Record: &rec, KevasoInstalled: kevasoInstalled, Installed: true, PVs: []PV{{"/dev/loop3", StorageImage}}, Volumes: []string{"kv-01-ab 1.00g"}, Now: afterInstall}, Flags{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +117,7 @@ func TestDecidePodmanOurs(t *testing.T) {
 	rec := Record{State: fresh}
 	now := afterInstall
 	now.Packages = append(slices.Clone(now.Packages), "podman", "catatonit")
-	d, err := Decide(Inspection{Record: &rec, Now: now}, Flags{})
+	d, err := Decide(Inspection{Record: &rec, KevasoInstalled: append(slices.Clone(kevasoInstalled), "podman", "catatonit"), Now: now}, Flags{})
 	if err != nil || !d.Plan.PodmanOurs || !d.Checks.PodmanGone || !slices.Contains(d.Plan.Purge, "podman") || !slices.Contains(d.Plan.Purge, "catatonit") {
 		t.Fatalf("podman installed by Kevaso: %+v %+v %v", d.Plan, d.Checks, err)
 	}
@@ -225,5 +228,54 @@ func TestInspectFindsSilosOnDiskAndAttachesTheStorageFile(t *testing.T) {
 	}
 	if strings.Index(InspectScript, "losetup -r -f") > strings.Index(InspectScript, "== pvs") {
 		t.Error("the storage file is attached after the volume group is read")
+	}
+}
+
+// K-113: Docker installed by a person after Kevaso (there now, not in the install record, and not
+// in what Kevaso's runtimes recorded installing) is not Kevaso's: the package, its images and
+// other containers stay; only Kevaso's containers and volumes go (by label), and the plan says
+// what is left and why.
+func TestDecideLeavesADockerSomeoneInstalledAfterKevaso(t *testing.T) {
+	rec := Record{State: fresh}
+	d, err := Decide(Inspection{Record: &rec, KevasoInstalled: []string{"qemu-utils", "virtiofsd"}, Installed: true, Now: afterInstall}, Flags{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Plan.DockerOurs || d.Checks.DockerGone || slices.Contains(d.Plan.Purge, "docker.io") || slices.Contains(d.Plan.Purge, "containerd") {
+		t.Fatalf("a Docker Kevaso didn't install is purged: %+v %+v", d.Plan, d.Checks)
+	}
+	if !slices.Equal(d.Plan.Purge, []string{"qemu-utils", "virtiofsd"}) || !slices.Equal(d.NotOurs, []string{"containerd", "docker.io"}) {
+		t.Fatalf("purge %v, left %v", d.Plan.Purge, d.NotOurs)
+	}
+	sum := strings.Join(d.Summary, "\n")
+	for _, want := range []string{"not installed by Kevaso either", "containerd docker.io", "Kevaso's containers and volumes go"} {
+		if !strings.Contains(sum, want) {
+			t.Errorf("summary lacks %q:\n%s", want, sum)
+		}
+	}
+	plan := Plan(d.Plan)
+	var all []string
+	for _, st := range plan {
+		all = append(all, st.Script)
+	}
+	script := strings.Join(all, "\n")
+	for _, never := range []string{"docker system prune", "docker ps -aq;", "apt-get purge -y -qq docker.io", "/var/lib/docker"} {
+		if strings.Contains(script, never) {
+			t.Errorf("the plan has %q, for a Docker that isn't Kevaso's", never)
+		}
+	}
+	if !strings.Contains(script, "--filter label=kevaso.com/uid") {
+		t.Error("Kevaso's own containers aren't removed by label")
+	}
+	// No record of what Kevaso installed at all (nothing recorded): nothing is purged.
+	d, err = Decide(Inspection{Record: &rec, Installed: true, Now: afterInstall}, Flags{})
+	if err != nil || len(d.Plan.Purge) != 0 || d.Plan.DockerOurs {
+		t.Fatalf("with nothing recorded as Kevaso's: %+v %v", d.Plan, err)
+	}
+	// Parsed from the inspection.
+	out := strings.Replace(inspectOut(&rec, true, nil, nil, nil, afterInstall), "== installed\n", "== kevaso-installed\ndocker.io\nqemu-utils\n== installed\n", 1)
+	in, err := ParseInspection(out)
+	if err != nil || !slices.Equal(in.KevasoInstalled, []string{"docker.io", "qemu-utils"}) {
+		t.Fatalf("parsed %v %v", in.KevasoInstalled, err)
 	}
 }
