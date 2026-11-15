@@ -635,6 +635,19 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 			}
 		}
 		ic, initContainers := rt.(kri.InitContainers)
+		if initContainers && s.Spec.Init != nil && len(s.Spec.Init.Steps) > 0 {
+			// The steps are decided on what is stored (the cache may be behind this agent's own
+			// write of a step's result: a step that failed, or is done, would run again).
+			var cur v1.Silo
+			if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
+				return engine.Result{}, err
+			}
+			if cur.UID == s.UID && cur.Generation == s.Generation {
+				sc := *s
+				sc.Status.Init = cur.Status.Init
+				s = &sc
+			}
+		}
 		// K-115: nothing is claimed for a start that can't go on now. A failed init step stays
 		// failed until the silo is reset or its spec changes (runSteps), and a start that failed
 		// waits out its backoff: the agent's own writes (the claim above all) come back as events,
