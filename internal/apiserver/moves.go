@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/claims"
 	hostctl "kevaso.com/core/internal/controllers/host"
+	siloctl "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/internal/store"
@@ -143,9 +148,13 @@ func (s *Server) moveSilo(w http.ResponseWriter, r *http.Request, t target) {
 		}
 		meta.SetCondition(&st.Conditions, meta.Condition{Type: "Moved", Status: meta.ConditionTrue, Reason: "Moving",
 			Message: "moving " + how + " from " + plan.From + " to " + plan.To, ObservedGeneration: silo.Generation}, s.clock.Now().UTC().Truncate(time.Second))
+		if err := s.claimMove(ctx, silo, cur.Revision, to, &st); err != nil {
+			writeErr(w, err)
+			return
+		}
 		silo.Status = st
 		silo.ResourceVersion = strconv.FormatInt(cur.Revision, 10)
-		o, err := s.update(ctx, target{kind: t.kind, namespace: t.namespace, name: t.name, status: true}, silo)
+		o, err := s.update(ctx, target{kind: t.kind, namespace: t.namespace, name: t.name, status: true, planned: true}, silo)
 		if errors.Is(err, store.ErrConflict) {
 			continue
 		}
@@ -164,19 +173,20 @@ func (s *Server) moveSilo(w http.ResponseWriter, r *http.Request, t target) {
 	writeErr(w, errf(http.StatusConflict, "Conflict", "the silo kept changing; try again"))
 }
 
-// fits is why host to can't take the silo ("" when it can), by the scheduler's own rules.
-func (s *Server) fits(ctx context.Context, silo *v1.Silo, to *v1.Host) (string, error) {
+// placement is what the scheduler judges a silo's placement by: the other placed silos, and the
+// environment (IPs, hosts, classes).
+func (s *Server) placement(ctx context.Context, silo *v1.Silo) ([]*v1.Silo, scheduler.Env, error) {
 	silos, err := listAs[*v1.Silo](ctx, s.store, "Silo")
 	if err != nil {
-		return "", err
+		return nil, scheduler.Env{}, err
 	}
 	ipList, err := listAs[*v1.IP](ctx, s.store, "IP")
 	if err != nil {
-		return "", err
+		return nil, scheduler.Env{}, err
 	}
 	hosts, err := listAs[*v1.Host](ctx, s.store, "Host")
 	if err != nil {
-		return "", err
+		return nil, scheduler.Env{}, err
 	}
 	var placed []*v1.Silo
 	for _, x := range silos {
@@ -184,9 +194,18 @@ func (s *Server) fits(ctx context.Context, silo *v1.Silo, to *v1.Host) (string, 
 			placed = append(placed, x)
 		}
 	}
+	return placed, scheduler.Env{IPs: ipList, Hosts: hosts, Classes: s.classMap(), Suffix: v1.ClusterSuffix(hosts)}, nil
+}
+
+// fits is why host to can't take the silo ("" when it can), by the scheduler's own rules.
+func (s *Server) fits(ctx context.Context, silo *v1.Silo, to *v1.Host) (string, error) {
+	placed, env, err := s.placement(ctx, silo)
+	if err != nil {
+		return "", err
+	}
 	c := *silo
 	c.Status.Host = ""
-	d, err := scheduler.ScheduleIn(&c, []*v1.Host{to}, placed, scheduler.Env{IPs: ipList, Hosts: hosts, Classes: s.classMap()})
+	d, err := scheduler.ScheduleIn(&c, []*v1.Host{to}, placed, env)
 	if err != nil {
 		return "", err
 	}
@@ -194,4 +213,47 @@ func (s *Server) fits(ctx context.Context, silo *v1.Silo, to *v1.Host) (string, 
 		return "", nil
 	}
 	return d.Message(), nil
+}
+
+// claimMove gives st (the silo's status once moved to host to) the service the silo has there,
+// not the old host's node ports, and takes the same store-backed claims the scheduler takes
+// before a placement is written (K-029; silo is as read, at revision rev). A node port another
+// silo holds on to is avoided, as the silo controller does; a host port held is an error (422).
+func (s *Server) claimMove(ctx context.Context, silo *v1.Silo, rev int64, to *v1.Host, st *v1.SiloStatus) error {
+	placed, env, err := s.placement(ctx, silo)
+	if err != nil {
+		return err
+	}
+	as := *silo
+	as.ResourceVersion = strconv.FormatInt(rev, 10)
+	sched := as
+	sched.Status = *st
+	cl := &claims.Claims{Store: s.store}
+	for range 5 {
+		svc, err := scheduler.ServiceStatus(&sched, to, placed, env)
+		if err != nil {
+			return errf(http.StatusUnprocessableEntity, "Invalid", "move: %s can't take it: %v", to.Name, err)
+		}
+		st.Service = svc
+		held, err := siloctl.ClaimPorts(ctx, cl, &as, *st)
+		if err != nil {
+			return err
+		}
+		if held == nil {
+			return nil
+		}
+		if len(held.HostPorts) > 0 {
+			var ports []string
+			for p := range held.HostPorts {
+				ports = append(ports, fmt.Sprintf("%d/%s", p.Port, p.Proto))
+			}
+			slices.Sort(ports)
+			return errf(http.StatusUnprocessableEntity, "Invalid", "move: %s can't take it: host port %s is held by another silo", to.Name, strings.Join(ports, ", "))
+		}
+		if env.Claimed == nil {
+			env.Claimed = map[string]scheduler.Claimed{}
+		}
+		env.Claimed[to.Name] = *held // node ports held there: decide the service again without them
+	}
+	return errf(http.StatusConflict, "Conflict", "move: the node ports on %s kept being taken; try again", to.Name)
 }
