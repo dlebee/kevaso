@@ -30,6 +30,6 @@ type SystemNodeJoinResponse struct {
 // certificate needed) to take this host into the store.
 func (c *Client) JoinSystemNode(ctx context.Context, req SystemNodeJoinRequest) (SystemNodeJoinResponse, error) {
 	var resp SystemNodeJoinResponse
-	err := c.do(ctx, http.MethodPost, PathSystemNodeJoin, req, &resp)
+	err := c.do(Patient(ctx), http.MethodPost, PathSystemNodeJoin, req, &resp) // waits for its store to catch up
 	return resp, err
 }

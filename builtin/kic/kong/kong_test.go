@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"kevaso.com/core/sdk/kic"
 	"kevaso.com/core/sdk/kic/kictest"
 )
 
@@ -39,7 +40,7 @@ func TestGolden(t *testing.T) {
 		d.Services[0].ReadTimeout != 300000 || !d.Services[0].Routes[0].StripPath {
 		t.Fatalf("services %+v", d.Services)
 	}
-	if len(d.Routes) != 1 || d.Routes[0].Plugins[0].Name != "request-termination" || len(d.Certificates) != 1 || d.Certificates[0].SNIs[0].Name != "api.example.com" {
+	if len(d.Routes) != 2 || d.Routes[0].Plugins[0].Name != "request-termination" || len(d.Certificates) != 1 || d.Certificates[0].SNIs[0].Name != "api.example.com" {
 		t.Fatalf("routes %+v, certificates %d", d.Routes, len(d.Certificates))
 	}
 	p2, _ := Driver{}.Render(kictest.Sample(map[string]string{}))
@@ -76,5 +77,53 @@ func TestKongAcceptsIt(t *testing.T) {
 	}
 	if out, err := exec.Command(bin, "config", "parse", f).CombinedOutput(); err != nil || strings.Contains(string(out), "Error") {
 		t.Fatalf("kong config parse: %v\n%s", err, out)
+	}
+}
+
+// K-089: Kong's GET /status says which declarative config it runs; all zeros is none.
+func TestFingerprint(t *testing.T) {
+	d := Driver{}
+	p, _ := d.Render(kictest.Sample(good))
+	if c := d.Running(p); c.Method != "GET" || c.Path != "/status" || c.Port != p.Reload.Call.Port {
+		t.Fatalf("%+v", c)
+	}
+	for _, tc := range []struct {
+		status int
+		body   string
+		want   string
+		err    bool
+	}{
+		{200, `{"configuration_hash":"0e5b1c4a7d2f9e8b3a6c1d4f7e2b5a8c","server":{}}`, "0e5b1c4a7d2f9e8b3a6c1d4f7e2b5a8c", false},
+		{200, `{"configuration_hash":"00000000000000000000000000000000"}`, "", false},
+		{200, `{"server":{}}`, "", true}, // not DB-less: no hash, can't tell
+		{200, `not json`, "", true},
+		{500, `{}`, "", true},
+	} {
+		got, err := d.Fingerprint(tc.status, tc.body)
+		if got != tc.want || (err != nil) != tc.err {
+			t.Errorf("%d %s: %q %v", tc.status, tc.body, got, err)
+		}
+	}
+}
+
+// K-085: an ACME answer is also routed for every host that has a route of its own, which Kong
+// would otherwise rank above a route with a path only.
+func TestChallengesOnRoutedHosts(t *testing.T) {
+	p, err := Driver{}.Render(kictest.Sample(good))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d declarative
+	if err := json.Unmarshal(p.Reload.Call.Body, &d); err != nil {
+		t.Fatal(err)
+	}
+	var hosted *route
+	for i, r := range d.Routes {
+		if r.Name == "acme.tok-123_abc.hosts" {
+			hosted = &d.Routes[i]
+		}
+	}
+	if hosted == nil || !slices.Equal(hosted.Hosts, []string{"api.example.com", "pending.example.com", "plain.example.com"}) || hosted.Paths[0] != kic.ChallengePrefix+"tok-123_abc" {
+		t.Fatalf("no ACME route for the routed hosts: %+v", d.Routes)
 	}
 }

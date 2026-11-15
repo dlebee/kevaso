@@ -143,12 +143,13 @@ func TestAHeldWorkerChangesNothingUntilANewHistory(t *testing.T) {
 		t.Fatalf("held, and the Host doesn't say ControlPlaneBehind: %+v", c)
 	}
 
-	// A restart, the revision caught up: still held. A new silo isn't started.
+	// A restart, the revision still below what was kept: still held (a hold clears only on an
+	// answer at or above the kept revision, client.JudgeAnswer). A new silo isn't started.
 	stop()
-	cp.set(client.ControlPlaneSeen{ClusterID: "c1", History: "h1", Epoch: 1, Revision: 500})
+	cp.set(client.ControlPlaneSeen{ClusterID: "c1", History: "h1", Epoch: 1, Revision: 99})
 	stop = start()
 	e.place(t, "new", "hv1", nil)
-	notChanging("held after a restart and a revision caught up", 2*time.Second, map[string]kri.State{"web": kri.Running, "new": kri.Absent})
+	notChanging("held after a restart, the revision still behind", 2*time.Second, map[string]kri.State{"web": kri.Running, "new": kri.Absent})
 
 	// Another cluster's control plane: ignored entirely.
 	switchTo(client.ControlPlaneSeen{ClusterID: "c2", History: "x", Epoch: 1, Revision: 900})

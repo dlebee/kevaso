@@ -43,6 +43,8 @@ type Balancers struct {
 	Leases   *informer.Informer // optional
 	Plugins  *plugins.Registry
 	Clock    clock.Clock
+	// Providers are the hosts' provider details as the plugins said (K-037); nil: their status.
+	Providers *Providers
 	// Resync is how often an unchanged balancer is ensured anyway, to repair changes made outside
 	// Kevaso (default 10m).
 	Resync time.Duration
@@ -124,14 +126,19 @@ func (c *Balancers) Reconcile(ctx context.Context, k engine.Key) (engine.Result,
 		lb.Address = x.Status.Address
 	}
 	for _, ho := range c.Hosts.List() {
-		if h := ho.(*v1.Host); h.Status.Provider != nil && h.Status.Provider.Name == p.Info.Name {
-			lb.Hosts = append(lb.Hosts, info(h))
+		h := ho.(*v1.Host)
+		hp, known := c.Providers.Of(h)
+		if !known {
+			return engine.Result{RequeueAfter: 5 * time.Second}, nil // the plugins haven't described it yet
+		}
+		if hp != nil && hp.Name == p.Info.Name {
+			lb.Hosts = append(lb.Hosts, info(h.Name, hp))
 		}
 	}
 	sort.Slice(lb.Hosts, func(i, j int) bool { return lb.Hosts[i].Name < lb.Hosts[j].Name })
 	var states []*holderState
 	var leaseEnd time.Time
-	var region *v1.Host
+	region := ""
 	backends := map[string]kplugin.HostInfo{}
 	for _, h := range x.Status.BoundTo {
 		st := &holderState{}
@@ -153,8 +160,8 @@ func (c *Balancers) Reconcile(ctx context.Context, k engine.Key) (engine.Result,
 			if why != "" {
 				continue
 			}
-			if region == nil {
-				region = host
+			if region == "" && host != nil {
+				region = host.Region
 			}
 			if !end.IsZero() && (leaseEnd.IsZero() || end.Before(leaseEnd)) {
 				leaseEnd = end
@@ -253,7 +260,7 @@ func (c *Balancers) Reconcile(ctx context.Context, k engine.Key) (engine.Result,
 }
 
 // siloPorts are a silo's open ports on its IP's balancer, to its host, or why it has none yet.
-func (c *Balancers) siloPorts(s *v1.Silo, p *plugins.Plugin, pc kplugin.Class, unenforced *[]string) (ports []kplugin.Port, host *v1.Host, leaseEnd time.Time, why, reason string) {
+func (c *Balancers) siloPorts(s *v1.Silo, p *plugins.Plugin, pc kplugin.Class, unenforced *[]string) (ports []kplugin.Port, host *v1.HostProvider, leaseEnd time.Time, why, reason string) {
 	if s.Status.Host == "" {
 		return nil, nil, time.Time{}, "waiting to be placed", "Pending"
 	}
@@ -262,7 +269,11 @@ func (c *Balancers) siloPorts(s *v1.Silo, p *plugins.Plugin, pc kplugin.Class, u
 		return nil, nil, time.Time{}, "its host " + s.Status.Host + " is gone", "Pending"
 	}
 	h := ho.(*v1.Host)
-	if h.Status.Provider == nil || h.Status.Provider.Name != p.Info.Name {
+	hp, known := c.Providers.Of(h)
+	if !known {
+		return nil, nil, time.Time{}, "waiting for the plugins to describe " + h.Name, "Pending"
+	}
+	if hp == nil || hp.Name != p.Info.Name {
 		return nil, nil, time.Time{}, s.Status.Host + " isn't a " + p.Info.Name + " machine", "NotOnProvider"
 	}
 	if pc.NodePorts && len(s.Status.Service.NodePorts) == 0 {
@@ -290,9 +301,9 @@ func (c *Balancers) siloPorts(s *v1.Silo, p *plugins.Plugin, pc kplugin.Class, u
 			src = nil
 		}
 		ports = append(ports, kplugin.Port{Name: sp.Name, Protocol: sp.Protocol, Port: sp.HostNumber(), NodePort: nps[sp.Name], Sources: src,
-			Service: v1.HolderSiloPrefix + s.Name, Backends: []kplugin.HostInfo{info(h)}, Annotations: ann})
+			Service: v1.HolderSiloPrefix + s.Name, Backends: []kplugin.HostInfo{info(h.Name, hp)}, Annotations: ann})
 	}
-	return ports, h, end, "", ""
+	return ports, hp, end, "", ""
 }
 
 // servicePorts are a Service's ports on its IP's balancer, to the hosts with its endpoints (each
@@ -316,11 +327,15 @@ func (c *Balancers) servicePorts(svc *v1.Service, p *plugins.Plugin, pc kplugin.
 			continue
 		}
 		h := ho.(*v1.Host)
-		if h.Status.Provider == nil || h.Status.Provider.Name != p.Info.Name {
+		hp, known := c.Providers.Of(h)
+		if !known {
+			return nil, nil, "waiting for the plugins to describe " + h.Name, "Pending"
+		}
+		if hp == nil || hp.Name != p.Info.Name {
 			off = append(off, ep.Host)
 			continue
 		}
-		backends = append(backends, info(h))
+		backends = append(backends, info(h.Name, hp))
 	}
 	sort.Slice(backends, func(i, j int) bool { return backends[i].Name < backends[j].Name })
 	if len(backends) == 0 {

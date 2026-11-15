@@ -118,6 +118,32 @@
           }
         }
       ]
+    },
+    {
+      "name": "acme.tok-123_abc.hosts",
+      "hosts": [
+        "api.example.com",
+        "pending.example.com",
+        "plain.example.com"
+      ],
+      "paths": [
+        "/.well-known/acme-challenge/tok-123_abc"
+      ],
+      "protocols": [
+        "http"
+      ],
+      "strip_path": false,
+      "preserve_host": false,
+      "plugins": [
+        {
+          "name": "request-termination",
+          "config": {
+            "body": "tok-123_abc.thumbprint-XYZ",
+            "content_type": "text/plain",
+            "status_code": 200
+          }
+        }
+      ]
     }
   ],
   "certificates": [

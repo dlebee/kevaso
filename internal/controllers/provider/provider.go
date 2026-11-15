@@ -52,6 +52,9 @@ type Hosts struct {
 	Hosts   *informer.Informer
 	Plugins *plugins.Registry
 	Every   time.Duration // look again this often (default 5m)
+	// Providers keeps what the plugins said, for the controllers that act on it (K-037; nil:
+	// nobody needs it).
+	Providers *Providers
 
 	mu   sync.Mutex
 	seen map[string]asked // host → what it was last described with, and when
@@ -114,7 +117,9 @@ func (c *Hosts) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	// Heartbeats change the Host every 30 s; the plugins only need asking when its addresses or the
 	// plugins changed, and now and then.
 	key := h.Spec.InternalIP + "|" + h.Spec.ExternalIP + "|" + pluginsKey(c.Plugins)
-	if remember(&c.mu, &c.seen, h.Name, key, every) {
+	// A status that isn't what the plugins said (a worker may write its own Host's status) is
+	// put back now, not at the next look (K-037).
+	if kp, known := c.Providers.Of(h); known && same(h.Status.Provider, kp) && remember(&c.mu, &c.seen, h.Name, key, every) {
 		return engine.Result{}, nil
 	}
 	var want *v1.HostProvider
@@ -135,6 +140,9 @@ func (c *Hosts) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			break
 		}
 	}
+	if c.Providers != nil {
+		c.Providers.set(h.Name, want)
+	}
 	if !same(h.Status.Provider, want) {
 		h.Status.Provider = want
 		if err := c.Client.UpdateStatus(ctx, h); err != nil {
@@ -152,20 +160,15 @@ func same(a, b *v1.HostProvider) bool {
 	return *a == *b
 }
 
-func info(h *v1.Host) kplugin.HostInfo {
-	p := h.Status.Provider
-	return kplugin.HostInfo{Name: h.Name, ID: p.ID, Region: p.Region, PrivateAddress: p.PrivateAddress}
+func info(name string, p *v1.HostProvider) kplugin.HostInfo {
+	return kplugin.HostInfo{Name: name, ID: p.ID, Region: p.Region, PrivateAddress: p.PrivateAddress}
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
 
 // ipAddress records a load balancer's address on the IP it is, for a class that can't reserve:
 // the balancer is the IP's, so its address is.
-func ipAddress(ctx context.Context, c *client.Client, ip *v1.IP, addr string, h *v1.Host) error {
-	region := ""
-	if h != nil && h.Status.Provider != nil {
-		region = h.Status.Provider.Region
-	}
+func ipAddress(ctx context.Context, c *client.Client, ip *v1.IP, addr string, region string) error {
 	for attempt := 0; attempt < 5; attempt++ {
 		var cur v1.IP
 		if err := c.Get(ctx, "IP", ip.Namespace, ip.Name, &cur); err != nil {

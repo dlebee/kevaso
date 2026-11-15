@@ -463,16 +463,24 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	now := c.Clock.Now().UTC().Truncate(time.Second)
 	st, changed, again, err := DecideIn(s, hosts, silos, now, env)
 	// The node ports and host ports it would have, claimed in the store before they are written
-	// (K-029): one another silo holds there is avoided, and it is decided again.
-	for attempt := 0; err == nil && changed && c.Claims != nil && st.Host != ""; attempt++ {
+	// (K-029): one another silo holds there is avoided, and it is decided again. A silo already
+	// on its host claims what it has there too, the first time this controller sees it there:
+	// a silo put there by another path (kvo move, a write from before claims) holds its ports by
+	// the store from then on. Its host ports there are held by another silo only if that path
+	// didn't claim them first: it can't be re-placed, so the HostPorts condition says so.
+	var heldHere map[scheduler.HostPort]bool
+	for attempt := 0; err == nil && c.Claims != nil && st.Host != "" && s.DeletionTimestamp == nil; attempt++ {
 		if attempt == 8 {
 			return engine.Result{}, errors.New("node or host ports kept being taken; will retry")
 		}
-		held, cerr := c.claim(ctx, s, st)
+		held, cerr := claimPorts(ctx, c.Claims, s, st, &c.mine)
 		if cerr != nil {
 			return engine.Result{}, cerr
 		}
-		if held == nil {
+		if held != nil && st.Host == s.Status.Host && len(held.HostPorts) > 0 {
+			heldHere, held.HostPorts = held.HostPorts, nil
+		}
+		if held == nil || len(held.NodePorts) == 0 && len(held.HostPorts) == 0 {
 			break
 		}
 		if env.Claimed == nil {
@@ -480,6 +488,9 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		}
 		env.Claimed[st.Host] = merge(env.Claimed[st.Host], *held)
 		st, changed, again, err = DecideIn(s, hosts, silos, now, env)
+	}
+	if err == nil && c.Claims != nil && st.Host != "" && st.Host == s.Status.Host {
+		changed = hostPortsCondition(&st, s, heldHere, now) || changed
 	}
 	if err != nil || !changed {
 		return engine.Result{RequeueAfter: again}, err
@@ -528,21 +539,35 @@ func usesHostPort(host string) claims.Uses {
 	}
 }
 
-// claim claims st's node ports and s's host ports on st.Host for s, at the version its status
-// write is conditional on. held: what someone else holds there (nil: everything is s's).
-func (c *Controller) claim(ctx context.Context, s *v1.Silo, st v1.SiloStatus) (*scheduler.Claimed, error) {
+// ClaimPorts claims, for silo s (as read: its version is the one the status write is
+// conditional on), the node ports in st and s's host ports on st.Host, in the same pools and by
+// the same rules as the scheduler's placements. Every path that puts a silo on a host takes them
+// before its write (K-029): the silo controller, and the API server's move handler. held: what
+// another silo holds there (nil: everything is s's); such a placement must not be written.
+//
+// Claims are let go by being taken over: a claim whose silo is gone, or is no longer on that host
+// (placed there or still handing off from it) or no longer has that value, is another's to take.
+func ClaimPorts(ctx context.Context, cl *claims.Claims, s *v1.Silo, st v1.SiloStatus) (*scheduler.Claimed, error) {
+	return claimPorts(ctx, cl, s, st, nil)
+}
+
+// claimPorts is ClaimPorts; mine (nil: none) remembers what this controller claimed, so a value a
+// silo already has there is not claimed in the store again on each reconcile.
+func claimPorts(ctx context.Context, cl *claims.Claims, s *v1.Silo, st v1.SiloStatus, mine *sync.Map) (*scheduler.Claimed, error) {
 	h := claims.Holder{Kind: "Silo", Namespace: s.Namespace, Name: s.Name, UID: s.UID, Version: s.ResourceVersion}
 	held := scheduler.Claimed{NodePorts: map[int]bool{}, HostPorts: map[scheduler.HostPort]bool{}}
 	there := s.Status.Host == st.Host // what it has now, it has on this host
 	take := func(pool, value string, has bool, uses claims.Uses) (bool, error) {
 		// A value it already has there, claimed by this controller, is still its own (a claim is
 		// only taken over once the stored silo stops having it).
-		if u, ok := c.mine.Load(pool + "/" + value); has && ok && u == h.UID {
-			return true, nil
+		if mine != nil {
+			if u, ok := mine.Load(pool + "/" + value); has && ok && u == h.UID {
+				return true, nil
+			}
 		}
-		ok, err := c.Claims.Take(ctx, pool, value, h, uses)
-		if ok {
-			c.mine.Store(pool+"/"+value, h.UID)
+		ok, err := cl.Take(ctx, pool, value, h, uses)
+		if ok && mine != nil {
+			mine.Store(pool+"/"+value, h.UID)
 		}
 		return ok, err
 	}
@@ -569,6 +594,30 @@ func (c *Controller) claim(ctx context.Context, s *v1.Silo, st v1.SiloStatus) (*
 		return nil, nil
 	}
 	return &held, nil
+}
+
+// CondHostPorts says a silo placed on its host by a path that didn't claim (K-029) has host ports
+// there that another silo holds: it is not re-placed (it may run there already); a person moves
+// one of the two. Written only once that happens, and set back to True when it is over.
+const CondHostPorts = "HostPorts"
+
+func hostPortsCondition(st *v1.SiloStatus, s *v1.Silo, held map[scheduler.HostPort]bool, now time.Time) bool {
+	cond := meta.Condition{Type: CondHostPorts, ObservedGeneration: s.Generation}
+	if len(held) == 0 {
+		if c := meta.FindCondition(st.Conditions, CondHostPorts); c == nil || c.Status == meta.ConditionTrue {
+			return false
+		}
+		cond.Status, cond.Reason, cond.Message = meta.ConditionTrue, "Held", "its host ports on "+st.Host+" are its own"
+		return meta.SetCondition(&st.Conditions, cond, now)
+	}
+	var ports []string
+	for p := range held {
+		ports = append(ports, hostPortValue(p))
+	}
+	slices.Sort(ports)
+	cond.Status, cond.Reason = meta.ConditionFalse, "HeldByAnother"
+	cond.Message = fmt.Sprintf("host ports %s on %s are held by another silo (it was put there without claiming them); move one of the two", strings.Join(ports, ", "), st.Host)
+	return meta.SetCondition(&st.Conditions, cond, now)
 }
 
 func merge(a, b scheduler.Claimed) scheduler.Claimed {

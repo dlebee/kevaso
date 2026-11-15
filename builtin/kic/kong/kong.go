@@ -14,6 +14,10 @@ import (
 	"kevaso.com/core/sdk/kic"
 )
 
+// RecordPath is where the agent keeps its record of what it applied: in Kong's prefix, which the
+// image gives to its own user (not /tmp, which anyone in the silo may write; K-104).
+const RecordPath = "/usr/local/kong/kevaso-ingress.json"
+
 // Driver is the Kong driver.
 type Driver struct{}
 
@@ -122,9 +126,16 @@ func (Driver) Render(s kic.State) (kic.Plan, error) {
 				StripPath: r.Annotations["strip-path"] == "true", PreserveHost: true, HTTPSRedirectStatusCode: redirect}},
 		})
 	}
+	// ACME answers: Kong ranks a route with hosts above one with paths only, so a host's own "/"
+	// route would answer its challenge (K-085). Each answer is also a route with every routed
+	// host (its longer path wins among those), besides the one for any other host.
+	hosts, _ := kic.Hosts(s.Routes)
 	for _, c := range s.Challenges {
-		d.Routes = append(d.Routes, route{Name: "acme." + c.Token, Paths: []string{kic.ChallengePrefix + c.Token}, Protocols: []string{"http"},
-			Plugins: []plugin{{Name: "request-termination", Config: map[string]any{"status_code": 200, "content_type": "text/plain", "body": c.KeyAuthorization}}}})
+		answer := []plugin{{Name: "request-termination", Config: map[string]any{"status_code": 200, "content_type": "text/plain", "body": c.KeyAuthorization}}}
+		d.Routes = append(d.Routes, route{Name: "acme." + c.Token, Paths: []string{kic.ChallengePrefix + c.Token}, Protocols: []string{"http"}, Plugins: answer})
+		if len(hosts) > 0 {
+			d.Routes = append(d.Routes, route{Name: "acme." + c.Token + ".hosts", Hosts: hosts, Paths: []string{kic.ChallengePrefix + c.Token}, Protocols: []string{"http"}, Plugins: answer})
+		}
 	}
 	for _, c := range s.Certificates {
 		cert := certificate{Cert: string(c.Chain), Key: string(c.Key)}
@@ -138,7 +149,8 @@ func (Driver) Render(s kic.State) (kic.Plan, error) {
 		return kic.Plan{}, err
 	}
 	port, _ := strconv.Atoi(optOr(s, "admin-port", "8001"))
-	return kic.Plan{Reload: kic.Action{Call: &kic.Call{Port: port, Method: "POST", Path: "/config", ContentType: "application/json", Body: body}}}, nil
+	return kic.Plan{Reload: kic.Action{Call: &kic.Call{Port: port, Method: "POST", Path: "/config", ContentType: "application/json", Body: body}},
+		Record: RecordPath}, nil
 }
 
 func optOr(s kic.State, name, def string) string {
@@ -176,7 +188,41 @@ func (Driver) Blame(p kic.Plan, out string) []string {
 	return who
 }
 
+// Running implements kic.Reader: Kong's GET /status says which declarative configuration it runs
+// (configuration_hash, DB-less mode).
+func (Driver) Running(p kic.Plan) kic.Call {
+	port := 8001
+	if p.Reload.Call != nil {
+		port = p.Reload.Call.Port
+	}
+	return kic.Call{Port: port, Method: "GET", Path: "/status"}
+}
+
+// emptyHash is Kong's configuration_hash when it runs no declarative configuration.
+const emptyHash = "00000000000000000000000000000000"
+
+// Fingerprint implements kic.Reader: the configuration_hash of Kong's /status.
+func (Driver) Fingerprint(status int, body string) (string, error) {
+	if status < 200 || status > 299 {
+		return "", fmt.Errorf("GET /status: %d", status)
+	}
+	var st struct {
+		Hash *string `json:"configuration_hash"`
+	}
+	if err := json.Unmarshal([]byte(body), &st); err != nil {
+		return "", fmt.Errorf("GET /status: %w", err)
+	}
+	switch {
+	case st.Hash == nil:
+		return "", fmt.Errorf("GET /status has no configuration_hash (Kong in DB-less mode has one)")
+	case *st.Hash == emptyHash || *st.Hash == "":
+		return "", nil
+	}
+	return *st.Hash, nil
+}
+
 var (
 	_ kic.Driver = Driver{}
 	_ kic.Blamer = Driver{}
+	_ kic.Reader = Driver{}
 )

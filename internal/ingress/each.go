@@ -66,6 +66,7 @@ type Memory struct {
 	Now func() time.Time
 
 	served   *kic.State        // what the proxy last accepted from this Memory's applies (nil: ask the record)
+	seen     string            // what the proxy was seen to run with served: its config's digest, or its fingerprint
 	recorded string            // the state the silo's record holds (hashOf), "" if not known
 	verdicts map[string]string // fragment key → why it was refused
 	want     string            // the desired state last handled
@@ -172,6 +173,24 @@ func ApplyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 	if m.Now != nil {
 		now = m.Now
 	}
+	// K-090: the proxy is asked every pass whether it still runs what this Memory had it take. A
+	// controller silo recreated with the same UID (its files the image's again), a proxy
+	// restarted on another config or a hand edit all mean the Memory is no longer the proxy's
+	// state: it is forgotten, what is served is established again, and nothing is skipped.
+	if lastGood == nil && m.served != nil && exec != nil {
+		base, _ := split(want.State)
+		if p0, err := d.Render(base); err == nil {
+			digest, _, why, err := look(ctx, exec, call, d, p0)
+			if err != nil {
+				m.want, m.served, m.seen = "", nil, ""
+				return EachResult{Result: Result{Hash: last}}, fmt.Errorf("what the proxy runs: %w", err)
+			}
+			if (why != "" && p0.Config.Path != "") || (why == "" && digest != m.seen) {
+				m.want, m.served, m.seen, m.recorded = "", nil, "", ""
+				last = ""
+			}
+		}
+	}
 	wantKey := hashOf(want) + "@" + d.Info().Name
 	due := !m.retryAt.IsZero() && !now().Before(m.retryAt)
 	if m.want == wantKey && last != "?" && last == m.outcome.Hash && !m.outcome.unchecked && !due {
@@ -188,7 +207,7 @@ func ApplyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 	}
 	if err != nil {
 		// It may be half done: what the proxy serves is read back from the record next time.
-		m.want, m.served = "", nil
+		m.want, m.served, m.seen = "", nil, ""
 		return r, err
 	}
 	switch {
@@ -236,8 +255,10 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 	}
 	testable := len(p0.Check) > 0 && p0.Config.Path != ""
 
-	// What the proxy serves now.
+	// What the proxy serves now: what this Memory had it accept, else established from the proxy
+	// with the record's help (record.go). opaque: Ingresses it serves at a version not known.
 	unknown := ""
+	opaque := map[string]bool{}
 	if lastGood == nil {
 		lastGood = m.served
 	}
@@ -245,13 +266,19 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 		if exec == nil {
 			return out, fmt.Errorf("no way to read the controller silo's record")
 		}
-		lg, inRecord, why, err := readRecord(ctx, exec, d, p0)
+		sn, err := readRecord(ctx, exec, call, d, p0, want.State)
 		if err != nil {
-			return out, fmt.Errorf("the record of what was applied: %w", err)
+			return out, fmt.Errorf("what the proxy serves: %w", err)
 		}
-		lastGood, unknown, m.served = lg, why, lg
-		if inRecord {
-			m.recorded = hashOf(*lg)
+		lastGood, unknown = sn.served, sn.unknown
+		for _, w := range sn.opaque {
+			opaque[w] = true
+		}
+		if sn.exact { // remembered only when it is exactly what the proxy runs
+			m.served, m.seen = lastGood, sn.running
+		}
+		if sn.inRecord {
+			m.recorded = hashOf(*lastGood)
 		}
 	}
 	var before map[string]fragment
@@ -276,9 +303,12 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 		}
 		return nil
 	}
-	// running: who's version here is one the proxy serves now. Unknown: any may be.
+	// backed: who's last good version was put back (hold); renewed: with its renewed certificates.
+	backed, renewed := map[string]bool{}, map[string]bool{}
+	// running: who's version here is one the proxy serves now (or the version put back, which
+	// it serves but for a renewed certificate). Unknown: any may be.
 	running := func(who string) bool {
-		if unknown != "" {
+		if unknown != "" || opaque[who] || backed[who] {
 			return true
 		}
 		f, ok := before[who]
@@ -287,16 +317,20 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 	}
 	changed := func(who string) bool {
 		f, ok := before[who]
-		return lastGood == nil || !ok || hashOf(f) != hashOf(by[who])
+		return lastGood == nil || opaque[who] || !ok || hashOf(f) != hashOf(by[who])
 	}
 	// hold puts who's last good version back in place of its refused change, so only the change
 	// is held back and what it served keeps being served; false: it has none to go back to, or
 	// another Ingress now holds one of that version's hosts and paths (Desire gave it away when
-	// who changed). Either way who's reason is put in LeftOut.
+	// who changed). Either way who's reason is put in LeftOut. A certificate of that version
+	// renewed since (same name) goes back renewed, so a held Ingress's certificate doesn't expire
+	// (K-104); if the proxy refuses that too, the second hold in a pass puts the version back as
+	// it was.
 	hold := func(who, why string) bool {
 		out.LeftOut[who] = why
 		f, ok := before[who]
-		if cur, has := by[who]; unknown != "" || !ok || (has && hashOf(cur) == hashOf(f)) {
+		cur, has := by[who]
+		if unknown != "" || !ok || (has && hashOf(cur) == hashOf(f)) {
 			return false
 		}
 		claims := map[string]string{}
@@ -305,14 +339,14 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 				continue
 			}
 			for _, r := range g.Routes {
-				claims[r.Host+" "+r.Path] = w
+				claims[claimKey(r.Host, r.Path)] = w
 			}
 			for _, c := range g.Certificates {
 				claims["certificate "+c.Name] = w
 			}
 		}
 		for _, r := range f.Routes {
-			if w, taken := claims[r.Host+" "+r.Path]; taken {
+			if w, taken := claims[claimKey(r.Host, r.Path)]; taken {
 				out.LeftOut[who] = why + "; its last good version isn't served instead: " + w + " now has " + r.Host + r.Path
 				return false
 			}
@@ -324,8 +358,25 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 		if alone(f) != nil {
 			return false
 		}
+		backed[who] = true
 		by[who] = f
 		out.LeftOut[who] = "its change is refused, its last good version is still served: " + why
+		if has && !renewed[who] {
+			renewed[who] = true
+			r := f
+			r.Certificates = slices.Clone(f.Certificates)
+			for i, c := range r.Certificates {
+				for _, n := range cur.Certificates {
+					if n.Name == c.Name {
+						r.Certificates[i].Chain, r.Certificates[i].Key = n.Chain, n.Key
+					}
+				}
+			}
+			if h := hashOf(r); h != hashOf(f) && h != hashOf(cur) && alone(r) == nil {
+				by[who] = r
+				out.LeftOut[who] = "its change is refused, its last good version is still served (with its certificate as renewed since): " + why
+			}
+		}
 		return true
 	}
 	// Refused by Desire (the driver won't take an annotation, a host): it has no fragment now.
@@ -369,7 +420,22 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 		if unknown != "" {
 			out.Held = "the proxy's configuration stays and nothing new is applied until every Ingress of the class can be: the agent can't tell what the proxy serves now (" + unknown + ")"
 		} else {
-			out.Held = "the proxy's configuration stays and nothing new is applied: the proxy refuses, or couldn't be asked about, Ingresses it serves now that didn't change: " + strings.Join(l, ", ")
+			var same, notKnown []string
+			for _, w := range l {
+				if opaque[w] {
+					notKnown = append(notKnown, w)
+				} else {
+					same = append(same, w)
+				}
+			}
+			var why []string
+			if len(same) > 0 {
+				why = append(why, "the proxy refuses, or couldn't be asked about, Ingresses it serves now that didn't change: "+strings.Join(same, ", "))
+			}
+			if len(notKnown) > 0 {
+				why = append(why, "Ingresses it serves at a version the agent can't tell (no record of what was applied matches the proxy) would be removed: "+strings.Join(notKnown, ", "))
+			}
+			out.Held = "the proxy's configuration stays and nothing new is applied: " + strings.Join(why, "; ")
 		}
 		return errHold
 	}
@@ -411,8 +477,12 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 	recPath := RecordPath(p0)
 	put := func(st kic.State, p kic.Plan) (Result, error) {
 		h, staged := hashOf(st), false
-		if m.recorded != h {
-			b, _ := json.Marshal(record{Driver: d.Info().Name, State: st})
+		rec := record{Driver: d.Info().Name, State: st}
+		if p.Config.Path != "" {
+			rec.Config = digestOf(p.Config.Data)
+		}
+		if m.recorded != h || last != p.Hash() { // K-090: whenever the config is (re)written, its record is too
+			b, _ := json.Marshal(rec)
 			if code, o, err := exec(ctx, WriteCmd(recPath+".next", "0600"), b); err != nil || code != 0 {
 				out.RecordProblem = fmt.Sprintf("write %s.next: exit %d: %s %v", recPath, code, tail(o), err)
 			} else {
@@ -430,10 +500,36 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 			return r, nil
 		}
 		s := st
-		m.served = &s
+		m.served, m.seen = &s, rec.Config
+		if rd, ok := d.(kic.Reader); ok && p.Config.Path == "" && call != nil {
+			// The proxy's own word for what it runs now goes into the record: a restarted agent
+			// checks the record against it.
+			fp, why := "", ""
+			if status, body, err := call(ctx, rd.Running(p)); err != nil {
+				why = err.Error()
+			} else if fp, err = rd.Fingerprint(status, body); err != nil {
+				why = err.Error()
+			}
+			if why != "" {
+				out.RecordProblem = "the proxy can't say what it runs, so its record can't be checked after a restart: " + tail(why)
+				m.served = nil // established again on the next pass
+			}
+			rec.Proxy, m.seen = fp, fp
+		}
 		if staged {
-			if code, o, err := exec(ctx, MoveCmd(recPath+".next", recPath), nil); err != nil || code != 0 {
-				out.RecordProblem = fmt.Sprintf("move %s.next: exit %d: %s %v", recPath, code, tail(o), err)
+			var code int
+			var o string
+			var err error
+			if p.Config.Path == "" { // the record with the proxy's fingerprint, then the staged one goes
+				b, _ := json.Marshal(rec)
+				if code, o, err = exec(ctx, WriteCmd(recPath, "0600"), b); err == nil && code == 0 {
+					code, o, err = exec(ctx, RemoveCmd(recPath+".next"), nil)
+				}
+			} else {
+				code, o, err = exec(ctx, MoveCmd(recPath+".next", recPath), nil)
+			}
+			if err != nil || code != 0 {
+				out.RecordProblem = fmt.Sprintf("keep %s: exit %d: %s %v", recPath, code, tail(o), err)
 			} else {
 				m.recorded = h
 			}

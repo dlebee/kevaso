@@ -37,7 +37,10 @@ func NewTLS(baseURL string, caPEM, certPEM, keyPEM []byte) (*Client, error) {
 	}
 	c := New(baseURL)
 	c.HTTP = &http.Client{Transport: &http.Transport{TLSClientConfig: cfg, ForceAttemptHTTP2: true,
-		DialContext: (&net.Dialer{Timeout: DialTimeout, KeepAlive: 30 * time.Second}).DialContext, TLSHandshakeTimeout: 10 * time.Second}}
+		DialContext: (&net.Dialer{Timeout: DialTimeout, KeepAlive: 30 * time.Second}).DialContext, TLSHandshakeTimeout: 10 * time.Second,
+		// A connection whose peer went silent (no RST: powered off, cut off) is found by its
+		// pings and closed, so neither new requests nor a watch wait on it (K-008).
+		HTTP2: &http.HTTP2Config{SendPingTimeout: PingAfter, PingTimeout: PingTimeout}}}
 	return c, nil
 }
 
