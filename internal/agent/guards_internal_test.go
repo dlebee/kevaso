@@ -779,3 +779,61 @@ func TestTheArmedConditionIsWrittenOnlyOnceTheFenceRecordHoldsTheSilo(t *testing
 		t.Fatal("the Armed condition was written before the fence record held the silo: the control plane may start it elsewhere while nothing here would stop it")
 	}
 }
+
+// A silo handed over to another host whose copy here holds host-local volumes is stopped and kept,
+// never deleted: deleting the copy deletes the volumes (kept data).
+func TestAHandedOverCopyWithLocalVolumesIsStoppedNotDeleted(t *testing.T) {
+	g := newGuardRig(t, nil, nil)
+	s := g.create(guardSilo("web", func(s *v1.Silo) { s.Spec.Volumes = []v1.Volume{{Name: "db", MountPath: "/var/lib/db"}} }), "hv1", "")
+	g.runtimeCopy(s, kri.Stopped)
+	g.setPlacement(s, "hv2", "hv1")
+	g.cacheIs(g.stored("web"))
+	g.rt.Calls = nil
+	if _, err := g.reconcile("web"); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.calls("delete"); len(got) != 0 {
+		t.Fatalf("a copy with host-local volumes was deleted (its volumes with it): %v", g.rt.Calls)
+	}
+	if ids, _ := g.rt.List(g.ctx); len(ids) != 1 {
+		t.Fatalf("the copy is gone: %v", ids)
+	}
+}
+
+// The fence stops the silo of the uid the runtime has only if the cache's silo of that name is the
+// same one: a silo deleted and created again under a name is another silo, and the old copy is not
+// stopped for what the new one asked.
+func TestTheFenceTargetsOnlyTheSiloTheCacheHasUnderThatUID(t *testing.T) {
+	inner := fake.New()
+	g := newGuardRig(t, inner, func(a *Agent) {
+		base := time.Now().Add(-time.Hour)
+		a.LastContact = func() time.Time { return base }
+	})
+	g.rt = inner
+	s := g.create(stopAfter("1m"), "hv1", "")
+	g.cacheIs(s)
+	g.runtimeCopy(s, kri.Stopped)
+	if err := inner.Create(g.ctx, kri.Spec{ID: kri.ID{Namespace: "dev", Name: "web", UID: "an-older-silo-of-that-name"}, Image: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	f := &fencing{a: g.a, inflight: map[string]time.Time{}, unconfirmed: map[string]string{}}
+	var uids []string
+	for _, tg := range f.targets(g.ctx) {
+		uids = append(uids, tg.id.UID)
+	}
+	if len(uids) != 1 || uids[0] != s.UID {
+		t.Fatalf("fence targets %v, want only %s", uids, s.UID)
+	}
+}
+
+// No OPTIONS (and so no CORS preflight) on the local endpoint, answered before anything else.
+func TestTheEndpointAnswersOptionsWith405BeforeAnythingElse(t *testing.T) {
+	e := &Endpoint{Identify: func(*http.Request) (kri.ID, bool) { return kri.ID{Namespace: "dev", Name: "web", UID: "u"}, true }}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/v1/secrets/x", nil)
+	req.Host = "evil.example"
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("OPTIONS: %d, want 405", rec.Code)
+	}
+}

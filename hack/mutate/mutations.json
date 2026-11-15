@@ -127,7 +127,8 @@
    "./internal/agent",
    "./test/integration"
   ],
-  "protects": "a silo never runs on two hosts"
+  "protects": "a silo never runs on two hosts",
+  "known": "claimStart (taken before any init step now) repeats it: same behaviour"
  },
  {
   "id": "G-011",
@@ -231,7 +232,8 @@
    "./internal/agent",
    "./test/integration"
   ],
-  "protects": "no delete of disk or volume without an explicit delete"
+  "protects": "no delete of disk or volume without an explicit delete",
+  "known": "mayRemove repeats it (a copy placed here is never removed): same behaviour"
  },
  {
   "id": "G-019",
@@ -316,7 +318,7 @@
   "guard": "fence kill is confirmed by the runtime (K-067)",
   "file": "internal/agent/fencing.go",
   "find": "return st.State == kri.Running, nil",
-  "replace": "return false, nil",
+  "replace": "return st.State == kri.Running && false, nil",
   "mutation": "kill assumed done",
   "packages": [
    "./internal/agent",
@@ -675,7 +677,8 @@
    "./internal/controlplane",
    "./test/integration"
   ],
-  "protects": "a silo never runs on two hosts"
+  "protects": "a silo never runs on two hosts",
+  "known": "fence.Armed requires the opt-in too: same behaviour"
  },
  {
   "id": "G-055",
@@ -696,7 +699,7 @@
   "guard": "ownClaim: a claim left by another host is not this placement's",
   "file": "internal/controllers/silo/silo.go",
   "find": "return ok && host != \"\" && host == s.Status.Host",
-  "replace": "return ok",
+  "replace": "return ok && host == host",
   "mutation": "host check dropped",
   "packages": [
    "./internal/controllers/silo",
@@ -949,7 +952,7 @@
   "guard": "fence.Armed: for this host and after",
   "file": "internal/fence/armed.go",
   "find": "c.Message == armedMessage(s.Status.Host, after)",
-  "replace": "true",
+  "replace": "c.Message == armedMessage(s.Status.Host, after) || true",
   "mutation": "message not compared",
   "packages": [
    "./internal/fence",
@@ -1290,7 +1293,7 @@
   "guard": "apiserver: a silo's new grant needs use on its secrets",
   "file": "internal/apiserver/secrets.go",
   "find": "\"silo \"+o.Name, had, o.Spec.Grants)",
-  "replace": "\"silo \"+o.Name, o.Spec.Grants, o.Spec.Grants)",
+  "replace": "\"silo \"+o.Name, append(had, o.Spec.Grants...), o.Spec.Grants)",
   "mutation": "every grant counted as already held",
   "packages": [
    "./internal/apiserver",
@@ -1316,7 +1319,7 @@
   "guard": "apiserver: already-exposed-the-same-way is the only exemption",
   "file": "internal/apiserver/apiserver.go",
   "find": "exposure(prev) == how {",
-  "replace": "true {",
+  "replace": "exposure(prev) == how || true {",
   "mutation": "any write exempt",
   "packages": [
    "./internal/apiserver",
@@ -1342,7 +1345,7 @@
   "guard": "ports: a service port must be declared",
   "file": "internal/apiserver/ports.go",
   "find": "if !ok {\n\t\t\tadd(\"%s: %q isn't a declared port",
-  "replace": "if false {\n\t\t\tadd(\"%s: %q isn't a declared port",
+  "replace": "if !ok && false {\n\t\t\tadd(\"%s: %q isn't a declared port",
   "mutation": "check removed",
   "packages": [
    "./internal/apiserver",
@@ -1634,7 +1637,8 @@
    "./internal/apiserver",
    "./test/integration"
   ],
-  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+  "protects": "a secret reaches only the silo, host and delivery it was granted for",
+  "known": "the transition check in guard repeats it: same behaviour"
  },
  {
   "id": "G-169",
@@ -1673,7 +1677,8 @@
    "./internal/worker",
    "./internal/agent"
   ],
-  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+  "protects": "a secret reaches only the silo, host and delivery it was granted for",
+  "known": "needs a product seam to reach the agent worker.Run builds (see test/ notes, tests.md)"
  },
  {
   "id": "G-181",
@@ -1686,7 +1691,8 @@
    "./internal/worker",
    "./internal/agent"
   ],
-  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+  "protects": "a secret reaches only the silo, host and delivery it was granted for",
+  "known": "needs a product seam to reach the agent worker.Run builds (see test/ notes, tests.md)"
  },
  {
   "id": "G-182",
