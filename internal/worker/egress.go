@@ -28,6 +28,7 @@ type egress struct {
 	ca       *gate.CA
 	upstream *x509.CertPool // nil: the system roots
 	log      func(string, ...any)
+	bound    *loadedBindings // the loaded ruleset's ports and addresses
 
 	mu       sync.Mutex
 	silos    func() []*v1.Silo
@@ -61,14 +62,19 @@ func upstreamRoots(extraCA string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// local finds the silo on this host with address ip.
+// local finds the silo on this host a connection from ip came from: the one whose port the
+// loaded rules bind ip to (K-002). The bridge drops any other source on that port, so this is the
+// port the packet came in on, which the silo can't choose; status.siloIP, which a stale or forged
+// status could make anything, plays no part. Nothing is bound before the first ruleset loads.
 func (e *egress) local(ip netip.Addr) (*v1.Silo, bool) {
-	for _, s := range e.silos() {
-		if s.Status.Host == e.hostName && s.Status.SiloIP == ip.String() {
-			return s, true
-		}
+	if e.bound == nil {
+		return nil, false
 	}
-	return nil, false
+	tap, ok := e.bound.tap(ip)
+	if !ok {
+		return nil, false
+	}
+	return siloOnTap(e.hostName, e.silos(), tap)
 }
 
 // invalidate drops cached injections (a secret rotated or a grant changed): the next request

@@ -14,6 +14,7 @@ package kni
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"sort"
 	"strings"
@@ -23,9 +24,12 @@ import (
 
 // Silo is what the rules need about one silo.
 type Silo struct {
-	Key  string // namespace/name
-	IP   netip.Addr
-	Tap  string // its tap device on the bridge (local silos only)
+	Key string // namespace/name
+	IP  netip.Addr
+	Tap string // its tap device on the bridge (local silos only)
+	// MAC is the source MAC its runtime fixed for that tap ("": not fixed; the address alone is
+	// bound then).
+	MAC  string
 	Spec v1.SiloSpec
 	// LoadBalancerIP is the address its loadBalancer ports are reached on when it's on this host
 	// (ip-pool, an announced shared IP); EgressIP where its traffic leaves from ("" = the host
@@ -58,6 +62,62 @@ type Silo struct {
 	// Paths are extra silo-to-silo openings (an Ingress's controller to its target's port), as if
 	// that port's allowFrom named them: port name → callers (NAMESPACE/NAME).
 	Paths map[string][]string
+}
+
+// Binding is one bridge port and the only source it may send from.
+type Binding struct {
+	Tap string
+	IP  netip.Addr
+	MAC string // normalized; "": the address alone
+}
+
+// Bindings are the ports of the local silos and the address (and MAC) each may send from: only
+// silos with a tap whose name and address the rules can write (an IPv4 address; a MAC that parses),
+// one binding per tap and per address. Anything else binds nothing, so that port stays closed.
+func Bindings(local []Silo) []Binding {
+	var out []Binding
+	taps, ips := map[string]int{}, map[netip.Addr]int{}
+	for _, s := range local {
+		if !s.IP.Is4() || !validIfname(s.Tap) {
+			continue
+		}
+		b := Binding{Tap: s.Tap, IP: s.IP}
+		if s.MAC != "" {
+			m, err := net.ParseMAC(s.MAC)
+			if err != nil || len(m) != 6 {
+				continue // a MAC we can't write: the port stays closed rather than unbound
+			}
+			b.MAC = m.String()
+		}
+		taps[b.Tap]++
+		ips[b.IP]++
+		out = append(out, b)
+	}
+	// Two silos claiming one tap or one address: neither is bound (one of them is stale, and the
+	// rules can't tell which).
+	var keep []Binding
+	for _, b := range out {
+		if taps[b.Tap] == 1 && ips[b.IP] == 1 {
+			keep = append(keep, b)
+		}
+	}
+	sort.Slice(keep, func(i, j int) bool { return keep[i].Tap < keep[j].Tap })
+	return keep
+}
+
+// validIfname: a Linux interface name nft can take quoted (1-15 bytes, none of them a quote,
+// space, slash or control character).
+func validIfname(n string) bool {
+	if n == "" || len(n) > 15 {
+		return false
+	}
+	for _, c := range []byte(n) {
+		ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.'
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // Outside is what one outside port's rule is now: open (a rule) only when its lease, if
@@ -415,13 +475,23 @@ func Rules(h Host) string {
 	w("table bridge kevaso {")
 	// Prerouting, not forward: frames for the host itself (its DNS, the egress gate, the local
 	// endpoint, ARP to it) never cross forward, and the host tells silos apart by these addresses.
+	// Default deny per port: a port passes only its own silo's IPv4 address (and the MAC its
+	// runtime fixed), as IP or ARP; any other source, IPv6, any other ether type, and every frame
+	// from a port whose silo has no address yet or that these rules don't know, are dropped. Frames
+	// the host itself sends onto the bridge don't pass this hook.
 	w("  chain prerouting {")
-	w("    type filter hook prerouting priority filter; policy accept;")
-	for _, s := range local {
-		if s.Tap != "" && s.IP.IsValid() {
-			w("    iifname %q ip saddr != %s drop", s.Tap, s.IP)     // no silo speaks for another…
-			w("    iifname %q arp saddr ip != %s drop", s.Tap, s.IP) // …nor claims its address
+	w("    type filter hook prerouting priority filter; policy drop;")
+	for _, b := range Bindings(local) {
+		e := ""
+		if b.MAC != "" {
+			e = "ether saddr " + b.MAC + " "
 		}
+		w("    iifname %q %sip saddr %s accept", b.Tap, e, b.IP) // no silo speaks for another…
+		ae := ""
+		if b.MAC != "" {
+			ae = " arp saddr ether " + b.MAC
+		}
+		w("    iifname %q %sarp saddr ip %s%s accept", b.Tap, e, b.IP, ae) // …nor claims its address
 	}
 	w("  }")
 	w("  chain forward {")
