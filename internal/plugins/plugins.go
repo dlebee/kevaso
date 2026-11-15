@@ -1,8 +1,10 @@
 // Package plugins is the control plane's registry of provider plugins (design §12, registration
 // copied from the kubelet's plugin watcher): it watches kplugin.Dir for NAME/plugin.sock, asks each
 // new socket for its Info, and from then on routes load-balancer and storage classes and DNS
-// provider names to the plugin that serves them. A plugin that stops answering is dropped until its
-// socket answers again. A worker's agent keeps one too, for the plugins' node sides
+// provider names to the plugin that serves them. A plugin that stops answering (its Info fails, or
+// its socket is gone: a restart, an upgrade) keeps its last answer for Hold, ten minutes by default,
+// and says so in the log and in every error a call to it returns; it is dropped only when it hasn't
+// answered for that long (K-040). A worker's agent keeps one too, for the plugins' node sides
 // (NAME/node.sock), which mount the volumes of mount-reach storage classes.
 package plugins
 
@@ -36,6 +38,17 @@ type Plugin struct {
 	Conn Conn
 }
 
+// Away says since when the plugin hasn't answered the registry, and why (zero: it answers).
+func (p *Plugin) Away() (since time.Time, why string) {
+	if g, ok := p.Conn.(*guarded); ok {
+		return g.away()
+	}
+	return time.Time{}, ""
+}
+
+// DefaultHold is how long a plugin that stops answering keeps what it serves (K-040).
+const DefaultHold = 10 * time.Minute
+
 // Registry is the registered plugins.
 type Registry struct {
 	Dir      string        // default kplugin.Dir
@@ -45,6 +58,9 @@ type Registry struct {
 	OnChange func() // after a plugin is added or removed
 	// Limits bound every call to a registered plugin (deadlines, calls in flight); zero: defaults.
 	Limits Limits
+	// Hold is how long a plugin that stops answering keeps its last answer before it is dropped
+	// (default DefaultHold): one missed Info is never an outage of what it serves.
+	Hold time.Duration
 
 	mu      sync.RWMutex
 	plugins map[string]*Plugin // by name
@@ -177,9 +193,12 @@ func (r *Registry) scan(ctx context.Context, dir string) {
 		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		info, err := c.Info(cctx)
 		cancel()
+		if err == nil && cur != nil {
+			r.answered(cur)
+		}
 		switch {
 		case err != nil && cur != nil:
-			r.drop(sock)
+			r.missed(sock, cur, err.Error())
 		case err != nil:
 			closeConn(c) // not up yet
 		case info.Protocol != kplugin.Protocol || skew(info) != "":
@@ -206,15 +225,50 @@ func (r *Registry) scan(ctx context.Context, dir string) {
 	}
 	r.mu.Unlock()
 	r.mu.RLock()
-	var gone []string
-	for sock := range r.sockets {
+	gone := map[string]*Plugin{}
+	for sock, name := range r.sockets {
 		if !seen[sock] {
-			gone = append(gone, sock)
+			gone[sock] = r.plugins[name]
 		}
 	}
 	r.mu.RUnlock()
-	for _, sock := range gone {
+	for sock, p := range gone {
+		r.missed(sock, p, "its socket is gone")
+	}
+}
+
+func (r *Registry) hold() time.Duration {
+	if r.Hold > 0 {
+		return r.Hold
+	}
+	return DefaultHold
+}
+
+// missed: plugin p at sock didn't answer. The first time it is marked away and kept, with what it
+// serves; once it has been away for the hold it is dropped.
+func (r *Registry) missed(sock string, p *Plugin, why string) {
+	g, ok := p.Conn.(*guarded)
+	if !ok {
 		r.drop(sock)
+		return
+	}
+	since, first := g.setAway(why, r.hold())
+	switch {
+	case first:
+		r.logf("plugin %s %s not answering (%s): %s; what it serves (%s) is kept until %s, dropped then unless it answers",
+			p.Info.Name, p.Info.Version, sock, why, describe(p.Info), since.Add(r.hold()).Format(time.RFC3339))
+	case time.Since(since) >= r.hold():
+		r.drop(sock)
+		r.logf("plugin %s: no answer for %s (%s): dropped", p.Info.Name, r.hold(), why)
+	}
+}
+
+// answered: a plugin that was away answers again.
+func (r *Registry) answered(p *Plugin) {
+	if g, ok := p.Conn.(*guarded); ok {
+		if since, was := g.clearAway(); was {
+			r.logf("plugin %s answering again (after %s)", p.Info.Name, time.Since(since).Round(time.Second))
+		}
 	}
 }
 
