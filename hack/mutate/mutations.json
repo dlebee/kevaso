@@ -1,0 +1,1716 @@
+[
+ {
+  "id": "G-001",
+  "guard": "agent handoff gate (moves.MayStart in reconcile)",
+  "file": "internal/agent/agent.go",
+  "find": "if !moves.MayStart(s, a.HostName) {",
+  "replace": "if false {",
+  "mutation": "gate removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-002",
+  "guard": "agent cut-off gate (mustStop in reconcile)",
+  "file": "internal/agent/agent.go",
+  "find": "if a.mustStop(s) {\n\t\treturn engine.Result{RequeueAfter: 5 * time.Second}, nil // cut off",
+  "replace": "if false {\n\t\treturn engine.Result{RequeueAfter: 5 * time.Second}, nil // cut off",
+  "mutation": "gate removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-003",
+  "guard": "agent holds everything while the control plane is held (\u00a70.7 watermark)",
+  "file": "internal/agent/agent.go",
+  "find": "if a.ControlPlaneHeld() {",
+  "replace": "if false {",
+  "mutation": "gate removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a worker keeps its last desired state"
+ },
+ {
+  "id": "G-004",
+  "guard": "claimStart: placement must allow this host",
+  "file": "internal/agent/agent.go",
+  "find": "cur.Generation != s.Generation || !moves.MayStart(&cur, a.HostName) {",
+  "replace": "cur.Generation != s.Generation {",
+  "mutation": "MayStart dropped from the claim",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-005",
+  "guard": "claimStart: same silo generation",
+  "file": "internal/agent/agent.go",
+  "find": "cur.UID != s.UID || cur.DeletionTimestamp != nil || cur.Generation != s.Generation ||",
+  "replace": "cur.UID != s.UID || cur.DeletionTimestamp != nil ||",
+  "mutation": "generation check dropped",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-006",
+  "guard": "claimStart: a conflicting write abandons the start",
+  "file": "internal/agent/agent.go",
+  "find": "if client.IsConflict(err) {\n\t\treturn errClaimConflict\n\t}",
+  "replace": "if false {\n\t\treturn errClaimConflict\n\t}",
+  "mutation": "conflict ignored (start goes on)",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-007",
+  "guard": "mayStartHere: stored silo must still be ours",
+  "file": "internal/agent/agent.go",
+  "find": "ok := cur.UID == s.UID && cur.DeletionTimestamp == nil && cur.Generation == s.Generation && moves.MayStart(&cur, a.HostName)",
+  "replace": "ok := true",
+  "mutation": "always ok",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-008",
+  "guard": "mayStartHere: decides on the stored silo, not the cache (K-015)",
+  "file": "internal/agent/agent.go",
+  "find": "if err := a.Client.Get(ctx, \"Silo\", s.Namespace, s.Name, &cur); err != nil {\n\t\treturn true, err\n\t}",
+  "replace": "_ = a.Client.Get(ctx, \"Silo\", s.Namespace, s.Name, &cur)\n\tcur = *s",
+  "mutation": "reads the cache copy",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-009",
+  "guard": "create: mayStartHere before Create",
+  "file": "internal/agent/agent.go",
+  "find": "if wait, err := a.mayStartHere(ctx, s); wait || err != nil {\n\t\t\treturn engine.Result{RequeueAfter: 2 * time.Second}, nil\n\t\t}\n\t\tmem, err",
+  "replace": "if false {\n\t\t\treturn engine.Result{RequeueAfter: 2 * time.Second}, nil\n\t\t}\n\t\tmem, err",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-010",
+  "guard": "start (Created/Stopped): mayStartHere",
+  "file": "internal/agent/agent.go",
+  "find": "case kri.Created, kri.Stopped:\n\t\tif wait, err := a.mayStartHere(ctx, s); wait || err != nil {",
+  "replace": "case kri.Created, kri.Stopped:\n\t\tif false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-011",
+  "guard": "restart (Failed): mayStartHere",
+  "file": "internal/agent/agent.go",
+  "find": "if wait, err := a.mayStartHere(ctx, s); wait || err != nil {\n\t\t\treturn engine.Result{RequeueAfter: 2 * time.Second}, nil\n\t\t}\n\t\tr := probes.Restarted",
+  "replace": "if false {\n\t\t\treturn engine.Result{RequeueAfter: 2 * time.Second}, nil\n\t\t}\n\t\tr := probes.Restarted",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-012",
+  "guard": "start: claimStart before rt.Start",
+  "file": "internal/agent/agent.go",
+  "find": "if err := a.claimStart(ctx, s); err != nil {\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tkp := a.keepClaim(s)",
+  "replace": "if false {\n\t\t\treturn a.lostClaim(s, nil)\n\t\t}\n\t\tkp := a.keepClaim(s)",
+  "mutation": "claim removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-013",
+  "guard": "restart (Failed): claimStart before rt.Start",
+  "file": "internal/agent/agent.go",
+  "find": "if err := a.claimStart(ctx, s); err != nil {\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tstctx, startKept",
+  "replace": "if false {\n\t\t\treturn a.lostClaim(s, nil)\n\t\t}\n\t\tstctx, startKept",
+  "mutation": "claim removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-014",
+  "guard": "fence record written before a start",
+  "file": "internal/agent/agent.go",
+  "find": "// Its policy is in the fence record before anything of it runs, never after: a fence must know it.\n\t\tif err := a.recordForFence(s); err != nil {\n\t\t\treturn engine.Result{}, err\n\t\t}",
+  "replace": "",
+  "mutation": "record not written",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a cut-off silo that asked to stop is stopped"
+ },
+ {
+  "id": "G-015",
+  "guard": "fence record written before a create",
+  "file": "internal/agent/agent.go",
+  "find": "if err := a.recordForFence(s); err != nil {\n\t\t\treturn engine.Result{}, err\n\t\t}\n\t\tdigest, err := a.pull",
+  "replace": "digest, err := a.pull",
+  "mutation": "record not written",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a cut-off silo that asked to stop is stopped"
+ },
+ {
+  "id": "G-016",
+  "guard": "removeEverywhere keeps a silo the API does not know unless a delete was seen (K-004)",
+  "file": "internal/agent/agent.go",
+  "find": "if _, seen := a.seenDeleted.Load(id.UID); !seen {",
+  "replace": "if _, seen := a.seenDeleted.Load(id.UID); false && !seen {",
+  "mutation": "unknown silo removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-017",
+  "guard": "removeEverywhere stops, never removes, a moved silo that keeps local volumes",
+  "file": "internal/agent/agent.go",
+  "find": "if local := hostLocalVolumes(s); why == whyHandoff && len(local) > 0 {",
+  "replace": "if local := hostLocalVolumes(s); false && why == whyHandoff && len(local) > 0 {",
+  "mutation": "copy and its volumes deleted",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-018",
+  "guard": "removeEverywhere never removes the silo it is reconciling",
+  "file": "internal/agent/agent.go",
+  "find": "if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {\n\t\t\t\tcontinue",
+  "replace": "if false {\n\t\t\t\tcontinue",
+  "mutation": "own copy removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-019",
+  "guard": "reconcile: only silos placed on this host run here",
+  "file": "internal/agent/agent.go",
+  "find": "if s == nil || s.Status.Host != a.HostName || s.DeletionTimestamp != nil {",
+  "replace": "if s == nil || s.DeletionTimestamp != nil {",
+  "mutation": "host check dropped",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-020",
+  "guard": "fence loop only kills silos that asked to stop",
+  "file": "internal/agent/fencing.go",
+  "find": "if s.UID != id.UID || !a.mustStop(s) {",
+  "replace": "if s.UID != id.UID {",
+  "mutation": "any silo killed on loss",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo that did not ask to stop keeps running"
+ },
+ {
+  "id": "G-021",
+  "guard": "mustStop requires the silo's own opt-in",
+  "file": "internal/agent/agent.go",
+  "find": "return stop && a.silence() > after",
+  "replace": "return (stop || true) && a.silence() > after",
+  "mutation": "opt-in ignored",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo that did not ask to stop keeps running"
+ },
+ {
+  "id": "G-022",
+  "guard": "mustStop waits for the silo's own after",
+  "file": "internal/agent/agent.go",
+  "find": "return stop && a.silence() > after",
+  "replace": "return stop && a.silence() > 0*after",
+  "mutation": "after ignored",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo is not stopped before its after"
+ },
+ {
+  "id": "G-023",
+  "guard": "inContact: contact must be recent",
+  "file": "internal/agent/agent.go",
+  "find": "func (a *Agent) inContact() bool { return a.silence() <= fence.DefaultAfter }",
+  "replace": "func (a *Agent) inContact() bool { return true }",
+  "mutation": "always in contact",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "stopped silos restart only once contact is back"
+ },
+ {
+  "id": "G-024",
+  "guard": "agent releases a moved silo (stop, let go)",
+  "file": "internal/agent/agent.go",
+  "find": "if _, ok := moves.Released(s.Status, a.HostName); ok && s.DeletionTimestamp == nil {",
+  "replace": "if _, ok := moves.Released(s.Status, a.HostName); false && ok && s.DeletionTimestamp == nil {",
+  "mutation": "never lets go",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a move completes"
+ },
+ {
+  "id": "G-025",
+  "guard": "fence kill is confirmed by the runtime (K-067)",
+  "file": "internal/agent/fencing.go",
+  "find": "return st.State == kri.Running, nil",
+  "replace": "return false, nil",
+  "mutation": "kill assumed done",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a cut-off silo that asked to stop is stopped"
+ },
+ {
+  "id": "G-026",
+  "guard": "armFence: a missing watcher disarms",
+  "file": "internal/agent/fencerecord.go",
+  "find": "if !a.watcherLive() {",
+  "replace": "if false {",
+  "mutation": "watcher not checked",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "the control plane restarts a silo elsewhere only while a fence is armed"
+ },
+ {
+  "id": "G-027",
+  "guard": "armFence: record on disk before the Armed condition",
+  "file": "internal/agent/fencerecord.go",
+  "find": "if err := a.recordForFence(s); err != nil { // on disk first\n\t\treturn err\n\t}",
+  "replace": "",
+  "mutation": "record not written first",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "the control plane restarts a silo elsewhere only while a fence is armed"
+ },
+ {
+  "id": "G-030",
+  "guard": "moves.MayStart: not while another host still holds it",
+  "file": "internal/moves/moves.go",
+  "find": "return s.Status.Host == host && (s.Status.MovingFrom == \"\" || s.Status.MovingFrom == host)",
+  "replace": "return s.Status.Host == host",
+  "mutation": "movingFrom ignored",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration",
+   "./internal/agent"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-031",
+  "guard": "moves.MayStart: only the placed host",
+  "file": "internal/moves/moves.go",
+  "find": "return s.Status.Host == host && (s.Status.MovingFrom == \"\"",
+  "replace": "return (s.Status.MovingFrom == \"\"",
+  "mutation": "host equality dropped",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration",
+   "./internal/agent"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-032",
+  "guard": "HostWrite: a host never places a silo",
+  "file": "internal/moves/moves.go",
+  "find": "if next.Host != old.Host {",
+  "replace": "if false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-033",
+  "guard": "HostWrite: only the old host says it let go",
+  "file": "internal/moves/moves.go",
+  "find": "if next.MovingFrom != old.MovingFrom {",
+  "replace": "if false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-034",
+  "guard": "HostWrite: a host writes only silos placed on it",
+  "file": "internal/moves/moves.go",
+  "find": "if old.Host != host {\n\t\treturn fmt.Errorf(\"%w: %s may only write",
+  "replace": "if false {\n\t\treturn fmt.Errorf(\"%w: %s may only write",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-035",
+  "guard": "HostWrite: only the attached host says a volume is mounted",
+  "file": "internal/moves/moves.go",
+  "find": "case n.Mounted != o.Mounted && o.AttachedTo != host:",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-036",
+  "guard": "HostWrite: the old host of a handoff may only unmount and let go",
+  "file": "internal/moves/moves.go",
+  "find": "if old.MovingFrom == host && old.Host != host {",
+  "replace": "if false {",
+  "mutation": "restriction removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-037",
+  "guard": "HostWrite: volumes and attachments are the control plane's",
+  "file": "internal/moves/moves.go",
+  "find": "if len(next.Volumes) != len(old.Volumes) {",
+  "replace": "if false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-038",
+  "guard": "PlanMove: a move under way is refused",
+  "file": "internal/moves/moves.go",
+  "find": "case s.Status.MovingFrom != \"\" && !sourceLost:",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-039",
+  "guard": "PlanMove: a lost source needs --confirm-fenced",
+  "file": "internal/moves/moves.go",
+  "find": "if fromLost && !r.ConfirmFenced {",
+  "replace": "if false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-040",
+  "guard": "CheckPolicy: Recreate never leaves a volume behind",
+  "file": "internal/moves/moves.go",
+  "find": "if len(m.Local) > 0 {",
+  "replace": "if false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-041",
+  "guard": "Of: a host-local disk pins the silo",
+  "file": "internal/moves/moves.go",
+  "find": "if t == kplugin.TopologyHost && m.Pinned == \"\" {",
+  "replace": "if false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-042",
+  "guard": "ForceRelease: not while a handoff waits on that host",
+  "file": "internal/moves/moves.go",
+  "find": " && s.Status.MovingFrom != vs.AttachedTo",
+  "replace": "",
+  "mutation": "check dropped",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-043",
+  "guard": "ForceRelease: only a lost host",
+  "file": "internal/moves/moves.go",
+  "find": "return vs.Mounted && attachedLost &&",
+  "replace": "return vs.Mounted &&",
+  "mutation": "check dropped",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-044",
+  "guard": "LetGo: only the source of a handoff",
+  "file": "internal/moves/moves.go",
+  "find": "if st.MovingFrom != host || st.Host == host {",
+  "replace": "if false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-045",
+  "guard": "PlanMove: --recreate only with onHostLoss Recreate",
+  "file": "internal/moves/moves.go",
+  "find": "if s.Policy() != v1.OnHostLossRecreate {\n\t\t\treturn p, ErrNoRecreate",
+  "replace": "if false {\n\t\t\treturn p, ErrNoRecreate",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-046",
+  "guard": "PlanMove: a non-movable silo is not moved with its data",
+  "file": "internal/moves/moves.go",
+  "find": "if !m.WithData {\n\t\t\treturn p, fmt.Errorf(\"%w: %s; a fresh copy",
+  "replace": "if false {\n\t\t\treturn p, fmt.Errorf(\"%w: %s; a fresh copy",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/moves",
+   "./internal/apiserver",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-050",
+  "guard": "silo controller: restarts elsewhere only while the fence is armed",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "case !fenceArmed(s):",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/controllers/silo",
+   "./internal/controlplane",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-051",
+  "guard": "silo controller: onHostLoss Wait never restarts elsewhere",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "case s.Policy() == v1.OnHostLossWait:",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/controllers/silo",
+   "./internal/controlplane",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-052",
+  "guard": "silo controller: waits out the host's silence plus margin",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "if silent < wait {",
+  "replace": "if false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/controllers/silo",
+   "./internal/controlplane",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-053",
+  "guard": "silo controller: a fresh start claim stops a restart elsewhere (K-015)",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "if fresh, age, left := freshClaim(s, env); fresh {",
+  "replace": "if fresh, age, left := freshClaim(s, env); false && fresh {",
+  "mutation": "claim ignored",
+  "packages": [
+   "./internal/controllers/silo",
+   "./internal/controlplane",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-054",
+  "guard": "silo controller: only an opted-in silo restarts itself",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "if !stops {\n\t\treturn false, \"\"\n\t}\n\thost := s.Status.Host",
+  "replace": "if !stops && false {\n\t\treturn false, \"\"\n\t}\n\thost := s.Status.Host",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/controllers/silo",
+   "./internal/controlplane",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-055",
+  "guard": "silo controller: Move only when it can move with its data",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "case s.Policy() == v1.OnHostLossMove && !moves.Of(s, env.Classes).WithData:",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/controllers/silo",
+   "./internal/controlplane",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-056",
+  "guard": "ownClaim: a claim left by another host is not this placement's",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "return ok && host != \"\" && host == s.Status.Host",
+  "replace": "return ok",
+  "mutation": "host check dropped",
+  "packages": [
+   "./internal/controllers/silo",
+   "./internal/controlplane",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-057",
+  "guard": "freshClaim: a claim stands only StartClaimFresh",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "age < StartClaimFresh {",
+  "replace": "age < StartClaimFresh*1000 {",
+  "mutation": "claim never expires",
+  "packages": [
+   "./internal/controllers/silo",
+   "./internal/controlplane",
+   "./test/integration"
+  ],
+  "protects": "a stuck claim does not block recovery forever"
+ },
+ {
+  "id": "G-058",
+  "guard": "silo controller: no new destination while the claim stands",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "if fresh, _, _ := freshClaim(s, env); st.MovingFrom != \"\" && st.MovingFrom != st.Host && !fresh {",
+  "replace": "if fresh, _, _ := freshClaim(s, env); st.MovingFrom != \"\" && st.MovingFrom != st.Host && !fresh && false {",
+  "mutation": "branch removed",
+  "packages": [
+   "./internal/controllers/silo",
+   "./internal/controlplane",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-060",
+  "guard": "Contacts.Silence counts on the control plane's own clock from its start",
+  "file": "internal/controllers/host/contacts.go",
+  "find": "from := c.start\n\tif l, ok := c.last[host]; ok {\n\t\tfrom = l.at\n\t}",
+  "replace": "from := c.start\n\tif l, ok := c.last[host]; ok {\n\t\tfrom = l.stamp\n\t}",
+  "mutation": "uses the agent's heartbeat stamp",
+  "packages": [
+   "./internal/controllers/host",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a skewed host clock does not shorten the wait"
+ },
+ {
+  "id": "G-061",
+  "guard": "Contacts.Observe: only a changed stamp is a contact",
+  "file": "internal/controllers/host/contacts.go",
+  "find": "prev.stamp.Equal(*h.Status.LastHeartbeat) {",
+  "replace": "false && prev.stamp.Equal(*h.Status.LastHeartbeat) {",
+  "mutation": "every observation is a contact",
+  "packages": [
+   "./internal/controllers/host",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a replayed heartbeat does not count as contact"
+ },
+ {
+  "id": "G-062",
+  "guard": "Contacts.SawStartClaim: a claim is a contact from its host",
+  "file": "internal/controllers/host/contacts.go",
+  "find": "\tl := c.last[host]\n\tl.at = now // the heartbeat stamp stays: only a new one is a heartbeat\n\tc.last[host] = l\n\treturn 0",
+  "replace": "\treturn 0",
+  "mutation": "claim not a contact",
+  "packages": [
+   "./internal/controllers/host",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-064",
+  "guard": "host Decide: never lose a host that has not reported",
+  "file": "internal/controllers/host/host.go",
+  "find": "if h.Status.LastHeartbeat == nil {\n\t\treturn meta.Condition{}, false, lease // never reported: nothing to expire yet\n\t}",
+  "replace": "if h.Status.LastHeartbeat == nil {\n\t\th.Status.LastHeartbeat = &time.Time{}\n\t}",
+  "mutation": "a never-reported host is lost",
+  "packages": [
+   "./internal/controllers/host",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a new host is not marked lost before its first heartbeat"
+ },
+ {
+  "id": "G-065",
+  "guard": "host Decide: a host is lost only after its lease",
+  "file": "internal/controllers/host/host.go",
+  "find": "if age < lease {",
+  "replace": "if age < lease/100 {",
+  "mutation": "lease shortened",
+  "packages": [
+   "./internal/controllers/host",
+   "./internal/controllers/silo",
+   "./test/integration"
+  ],
+  "protects": "a slow heartbeat does not trigger recovery"
+ },
+ {
+  "id": "G-070",
+  "guard": "fence.Decide: nothing to stop until a contact is known",
+  "file": "internal/fence/fence.go",
+  "find": "if r.LastContact.IsZero() {\n\t\treturn nil\n\t}",
+  "replace": "",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/fence",
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a fresh host does not kill its silos"
+ },
+ {
+  "id": "G-071",
+  "guard": "fence.Decide: a silo stops only after its own StopAfter",
+  "file": "internal/fence/fence.go",
+  "find": "if s.StopAfter > 0 && silent > s.StopAfter {",
+  "replace": "if s.StopAfter > 0 {",
+  "mutation": "after ignored",
+  "packages": [
+   "./internal/fence",
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo is not stopped before its after"
+ },
+ {
+  "id": "G-072",
+  "guard": "fence.Decide: a silo with no StopAfter is never stopped",
+  "file": "internal/fence/fence.go",
+  "find": "if s.StopAfter > 0 && silent > s.StopAfter {",
+  "replace": "if silent > s.StopAfter {",
+  "mutation": "opt-in ignored",
+  "packages": [
+   "./internal/fence",
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a silo that did not ask to stop keeps running"
+ },
+ {
+  "id": "G-073",
+  "guard": "fence.Decide: a silo already stopped is not killed again",
+  "file": "internal/fence/fence.go",
+  "find": "if done[s.ID.UID] {\n\t\t\tcontinue\n\t\t}",
+  "replace": "",
+  "mutation": "done ignored",
+  "packages": [
+   "./internal/fence",
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a restarted silo is not killed in a loop"
+ },
+ {
+  "id": "G-074",
+  "guard": "fence.Live: a stamp must be of this boot",
+  "file": "internal/fence/fence.go",
+  "find": "st.BootID == bootID && ",
+  "replace": "",
+  "mutation": "boot id dropped",
+  "packages": [
+   "./internal/fence",
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a stale watcher stamp from before a reboot does not arm"
+ },
+ {
+  "id": "G-075",
+  "guard": "fence.Live: a stamp must be fresh",
+  "file": "internal/fence/fence.go",
+  "find": "bootNow-st.Boot <= StampFresh && ",
+  "replace": "",
+  "mutation": "freshness dropped",
+  "packages": [
+   "./internal/fence",
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a dead watcher does not arm"
+ },
+ {
+  "id": "G-076",
+  "guard": "watcher: a kill reported done is confirmed (K-067)",
+  "file": "internal/fence/fence.go",
+  "find": "case err == nil && w.stillRunning(ctx, s):",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/fence",
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a cut-off silo that asked to stop is stopped"
+ },
+ {
+  "id": "G-077",
+  "guard": "watcher: no runtime for a silo is never counted done",
+  "file": "internal/fence/fence.go",
+  "find": "errs[i] = errNoRuntime",
+  "replace": "errs[i] = nil",
+  "mutation": "counted done",
+  "packages": [
+   "./internal/fence",
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a cut-off silo that asked to stop is stopped"
+ },
+ {
+  "id": "G-078",
+  "guard": "watcher: silence on the boot clock (K-072)",
+  "file": "internal/fence/fence.go",
+  "find": "now = r.LastContact.Add(bnow - r.ContactBoot)",
+  "replace": "_ = bnow - r.ContactBoot",
+  "mutation": "wall clock used",
+  "packages": [
+   "./internal/fence",
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a stepped clock does not shorten silence"
+ },
+ {
+  "id": "G-079",
+  "guard": "fence.Armed: for this generation",
+  "file": "internal/fence/armed.go",
+  "find": "c.ObservedGeneration == s.Generation && ",
+  "replace": "",
+  "mutation": "generation dropped",
+  "packages": [
+   "./internal/fence",
+   "./internal/agent",
+   "./test/integration",
+   "./internal/controllers/silo"
+  ],
+  "protects": "the control plane restarts a silo elsewhere only while a fence is armed"
+ },
+ {
+  "id": "G-080",
+  "guard": "fence.Armed: for this host and after",
+  "file": "internal/fence/armed.go",
+  "find": "c.Message == armedMessage(s.Status.Host, after)",
+  "replace": "true",
+  "mutation": "message not compared",
+  "packages": [
+   "./internal/fence",
+   "./internal/agent",
+   "./test/integration",
+   "./internal/controllers/silo"
+  ],
+  "protects": "the control plane restarts a silo elsewhere only while a fence is armed"
+ },
+ {
+  "id": "G-081",
+  "guard": "fence record written atomically (rename)",
+  "file": "internal/fence/fence.go",
+  "find": "return os.Rename(tmp, filepath.Join(dir, RecordFile))",
+  "replace": "return os.WriteFile(filepath.Join(dir, RecordFile), nil, 0o600)",
+  "mutation": "record truncated",
+  "packages": [
+   "./internal/fence",
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a cut-off silo that asked to stop is stopped"
+ },
+ {
+  "id": "G-100",
+  "guard": "kni: silos cannot reach the mesh's host addresses",
+  "file": "builtin/kni/rules.go",
+  "find": "w(\"    iifname %q ip daddr %s drop\", h.Bridge, meshHosts)",
+  "replace": "_ = meshHosts",
+  "mutation": "rule removed",
+  "packages": [
+   "./builtin/kni",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-101",
+  "guard": "kni: a silo address never arrives from the uplink",
+  "file": "builtin/kni/rules.go",
+  "find": "w(\"    oifname %q ip saddr %s iifname != { %q, %q, %q } drop\", h.Bridge, silosAll, h.Bridge, MeshDevices[0], MeshDevices[1])",
+  "replace": "_ = silosAll",
+  "mutation": "rule removed",
+  "packages": [
+   "./builtin/kni",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-102",
+  "guard": "kni: default deny into the bridge",
+  "file": "builtin/kni/rules.go",
+  "find": "w(\"    oifname %q drop\", h.Bridge)",
+  "replace": "_ = h.Bridge",
+  "mutation": "rule removed",
+  "packages": [
+   "./builtin/kni",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-103",
+  "guard": "kni: default deny out of the bridge",
+  "file": "builtin/kni/rules.go",
+  "find": "w(\"    iifname %q drop\", h.Bridge)\n\tw(\"  }\")\n\tw(\"  chain input {\")",
+  "replace": "w(\"  }\")\n\tw(\"  chain input {\")",
+  "mutation": "rule removed",
+  "packages": [
+   "./builtin/kni",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-104",
+  "guard": "kni: default deny of silos to the host",
+  "file": "builtin/kni/rules.go",
+  "find": "w(\"    iifname %q drop\", h.Bridge)\n\tw(\"  }\")\n\tw(\"}\")\n",
+  "replace": "w(\"  }\")\n\tw(\"}\")\n",
+  "mutation": "rule removed",
+  "packages": [
+   "./builtin/kni",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-105",
+  "guard": "kni: the local endpoint is the bridge's only",
+  "file": "builtin/kni/rules.go",
+  "find": "w(\"    iifname != %q ip daddr %s drop\", h.Bridge, h.Endpoint)",
+  "replace": "_ = h.Endpoint",
+  "mutation": "rule removed",
+  "packages": [
+   "./builtin/kni",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-106",
+  "guard": "kni: bridge prerouting drops frames of unknown ports",
+  "file": "builtin/kni/rules.go",
+  "find": "type filter hook prerouting priority filter; policy drop;",
+  "replace": "type filter hook prerouting priority filter; policy accept;",
+  "mutation": "policy accept",
+  "packages": [
+   "./builtin/kni",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-107",
+  "guard": "kni: a tap speaks only with its silo's MAC",
+  "file": "builtin/kni/rules.go",
+  "find": "b.Tap, e, b.IP) // no silo speaks for another\u2026",
+  "replace": "b.Tap, \"\", b.IP) // no silo speaks for another\u2026",
+  "mutation": "MAC not bound",
+  "packages": [
+   "./builtin/kni",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-108",
+  "guard": "kni: silos do not talk to each other on the bridge by default",
+  "file": "builtin/kni/rules.go",
+  "find": "w(\"    iifname \\\"kvt*\\\" oifname \\\"kvt*\\\" drop\")",
+  "replace": "_ = br",
+  "mutation": "rule removed",
+  "packages": [
+   "./builtin/kni",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-109",
+  "guard": "kni: allowFrom opens only the named port",
+  "file": "builtin/kni/rules.go",
+  "find": "m := fmt.Sprintf(\"ip saddr %s ip daddr %s %s dport %d accept\", src.IP, s.IP, lower(p.Protocol), p.Number)",
+  "replace": "m := fmt.Sprintf(\"ip saddr %s ip daddr %s accept%.0s%.0d\", src.IP, s.IP, lower(p.Protocol), p.Number)",
+  "mutation": "any port from the caller",
+  "packages": [
+   "./builtin/kni",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-110",
+  "guard": "kni: a hostPort whose every source is left out is closed",
+  "file": "builtin/kni/rules.go",
+  "find": "if shut {\n\t\t\t\tcontinue // every source left out: closed, not open to all\n\t\t\t}",
+  "replace": "if false && shut {\n\t\t\t\tcontinue\n\t\t\t}",
+  "mutation": "open to all",
+  "packages": [
+   "./builtin/kni",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-111",
+  "guard": "kni: input accepts the gate port only with redirects",
+  "file": "builtin/kni/rules.go",
+  "find": "if h.GatePort > 0 && len(redirect) > 0 {",
+  "replace": "if h.GatePort > 0 {",
+  "mutation": "gate port always open",
+  "packages": [
+   "./builtin/kni",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-112",
+  "guard": "kni: a closed leased port has no rule",
+  "file": "builtin/kni/rules.go",
+  "find": "if contains(s.Closed, port) {",
+  "replace": "if false {",
+  "mutation": "closed port open",
+  "packages": [
+   "./builtin/kni",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-120",
+  "guard": "broker: only hosts relay broker requests",
+  "file": "internal/apiserver/broker.go",
+  "find": "(id.Type != \"host\" && id != Component)",
+  "replace": "false",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-121",
+  "guard": "broker: the silo must be placed on the asking host",
+  "file": "internal/apiserver/broker.go",
+  "find": "case host == \"\" || silo.Status.Host != host:",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-122",
+  "guard": "broker: the silo is the one asked for (uid)",
+  "file": "internal/apiserver/broker.go",
+  "find": "case silo.UID != req.UID:",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-123",
+  "guard": "broker: a silo being deleted gets nothing",
+  "file": "internal/apiserver/broker.go",
+  "find": "case silo.DeletionTimestamp != nil:",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-124",
+  "guard": "broker: a grant's required assurance",
+  "file": "internal/apiserver/broker.go",
+  "find": "if !assured(g) {\n\t\t\t\twhy = \"grant \"",
+  "replace": "if false {\n\t\t\t\twhy = \"grant \"",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-125",
+  "guard": "broker: the secret must allow that delivery",
+  "file": "internal/apiserver/broker.go",
+  "find": "if !sec.Allows(mode) {\n\t\t\t\twhy = ",
+  "replace": "if false {\n\t\t\t\twhy = ",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-126",
+  "guard": "broker: a grant gives only the secret and mode it names",
+  "file": "internal/apiserver/broker.go",
+  "find": "if gs.Name != name || !contains(modes, mode) {",
+  "replace": "if gs.Name != name {",
+  "mutation": "mode ignored",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-127",
+  "guard": "ingress config: only hosts get an ingress controller's keys",
+  "file": "internal/apiserver/ingress.go",
+  "find": "(id.Type != \"host\" && id != Component)",
+  "replace": "false",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-128",
+  "guard": "ingress config: only the silo's own host",
+  "file": "internal/apiserver/ingress.go",
+  "find": "if id != Component && silo.Status.Host != id.Name {",
+  "replace": "if false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-129",
+  "guard": "apiserver: host status writes are judged by moves.HostWrite",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if err := moves.HostWrite(old.(*v1.Silo).Status, obj.(*v1.Silo).Status, id.Name); err != nil {",
+  "replace": "if err := moves.HostWrite(old.(*v1.Silo).Status, obj.(*v1.Silo).Status, id.Name); false && err != nil {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-130",
+  "guard": "apiserver: writing a Grant needs use on every secret it names",
+  "file": "internal/apiserver/secrets.go",
+  "find": "return s.canUseSecrets(ctx, t.namespace, grantUses(o))",
+  "replace": "return nil",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-131",
+  "guard": "apiserver: a silo's new grant needs use on its secrets",
+  "file": "internal/apiserver/secrets.go",
+  "find": "\"silo \"+o.Name, had, o.Spec.Grants)",
+  "replace": "\"silo \"+o.Name, o.Spec.Grants, o.Spec.Grants)",
+  "mutation": "every grant counted as already held",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-132",
+  "guard": "apiserver: exposing publicly needs expose-public",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if id == LocalAdmin || id == Component || id.Type == \"host\" {\n\t\treturn nil\n\t}\n\tp, err := s.policy.Policy(ctx)",
+  "replace": "if true {\n\t\treturn nil\n\t}\n\tp, err := s.policy.Policy(ctx)",
+  "mutation": "everyone allowed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-133",
+  "guard": "apiserver: already-exposed-the-same-way is the only exemption",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "exposure(prev) == how {",
+  "replace": "true {",
+  "mutation": "any write exempt",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-134",
+  "guard": "ports: egress source pool needs an IP",
+  "file": "internal/apiserver/ports.go",
+  "find": "if spec.Network.Egress.Source == v1.EgressPool && spec.Network.Egress.IP == \"\" &&",
+  "replace": "if false && spec.Network.Egress.IP == \"\" &&",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-135",
+  "guard": "ports: a service port must be declared",
+  "file": "internal/apiserver/ports.go",
+  "find": "if !ok {\n\t\t\tadd(\"%s: %q isn't a declared port",
+  "replace": "if false {\n\t\t\tadd(\"%s: %q isn't a declared port",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-136",
+  "guard": "ports: a port opened twice is refused",
+  "file": "internal/apiserver/ports.go",
+  "find": "if opened[p.Port] {",
+  "replace": "if false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-137",
+  "guard": "ports: allowFrom does not take a network range",
+  "file": "internal/apiserver/ports.go",
+  "find": "} else if _, err := netip.ParsePrefix(a); err == nil {",
+  "replace": "} else if _, err := netip.ParsePrefix(a); err == nil && false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-138",
+  "guard": "ports: two ports with one number and protocol",
+  "file": "internal/apiserver/ports.go",
+  "find": "if other, ok := numbers[k]; ok {",
+  "replace": "if other, ok := numbers[k]; ok && false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-139",
+  "guard": "ports: port range 1 to 65535",
+  "file": "internal/apiserver/ports.go",
+  "find": "if p.Port < 1 || p.Port > 65535 {",
+  "replace": "if false {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "nothing reachable that was not declared and opened"
+ },
+ {
+  "id": "G-150",
+  "guard": "hostreset: never into another file system",
+  "file": "internal/hostreset/hostreset.go",
+  "find": "rm -rf --one-file-system ",
+  "replace": "rm -rf ",
+  "mutation": "flag removed",
+  "packages": [
+   "./internal/hostreset",
+   "./test/snippets"
+  ],
+  "protects": "a destructive command runs only on Kevaso's paths"
+ },
+ {
+  "id": "G-151",
+  "guard": "hostreset: nothing is removed while something is mounted under Kevaso's paths",
+  "file": "internal/hostreset/hostreset.go",
+  "find": "if awk '{print $2}' /proc/mounts | grep -qE '`+mountPattern+`'; then echo \"something is still mounted",
+  "replace": "if false; then echo \"something is still mounted",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/hostreset",
+   "./test/snippets"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-152",
+  "guard": "hostreset: only words that are safe go into a purge command",
+  "file": "internal/hostreset/hostreset.go",
+  "find": "if safeWord(p) {\n\t\t\tok = append(ok, p)",
+  "replace": "if true {\n\t\t\tok = append(ok, p)",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/hostreset",
+   "./test/snippets"
+  ],
+  "protects": "a destructive command runs only on the intended target"
+ },
+ {
+  "id": "G-153",
+  "guard": "hostreset: nft tables are deleted only when safe words",
+  "file": "internal/hostreset/hostreset.go",
+  "find": "if len(f) == 2 && safeWord(f[0]) && safeWord(f[1]) {",
+  "replace": "if len(f) == 2 {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/hostreset",
+   "./test/snippets"
+  ],
+  "protects": "a destructive command runs only on the intended target"
+ },
+ {
+  "id": "G-154",
+  "guard": "hostreset: Docker's containers are all removed only when Docker is Kevaso's",
+  "file": "internal/hostreset/hostreset.go",
+  "find": "\tif in.DockerOurs {\n\t\tdestroys(\"remove containers, volumes and images\"",
+  "replace": "\tif true {\n\t\tdestroys(\"remove containers, volumes and images\"",
+  "mutation": "always",
+  "packages": [
+   "./internal/hostreset",
+   "./test/snippets"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-155",
+  "guard": "hostreset: the loop volume group is removed only on its own file",
+  "file": "internal/hostreset/hostreset.go",
+  "find": "[ \"$b\" = `+StorageImage+` ] || { echo \"refusing:",
+  "replace": "true || { echo \"refusing:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/hostreset",
+   "./test/snippets"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-156",
+  "guard": "hostreset: a real disk is never wiped without --wipe-storage",
+  "file": "internal/hostreset/hostreset.go",
+  "find": "*) echo \"refusing: volume group $vg is on $p, a real disk (--wipe-storage removes it)\" >&2; exit 1 ;;",
+  "replace": "*) true ;;",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/hostreset",
+   "./test/snippets"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-157",
+  "guard": "hostreset: podman objects removed only when podman is Kevaso's",
+  "file": "internal/hostreset/hostreset.go",
+  "find": "\tif in.PodmanOurs {\n\t\tdestroys(\"remove podman's containers, volumes and images\"",
+  "replace": "\tif true {\n\t\tdestroys(\"remove podman's containers, volumes and images\"",
+  "mutation": "always",
+  "packages": [
+   "./internal/hostreset",
+   "./test/snippets"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-158",
+  "guard": "hostreset: Kevaso's daemon.json removed only if still Kevaso's",
+  "file": "internal/hostreset/hostreset.go",
+  "find": "`[ -f `+DockerDaemonJSONPath+` ] && { `+strings.Join(cmp, \" || \")+`; } && rm -f",
+  "replace": "`[ -f `+DockerDaemonJSONPath+` ] && { true; } && rm -f",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/hostreset",
+   "./test/snippets"
+  ],
+  "protects": "a destructive command runs only on the intended target"
+ },
+ {
+  "id": "G-160",
+  "guard": "endpoint: a request must come from the silo's own port (Bound)",
+  "file": "internal/agent/endpoint.go",
+  "find": "|| port != cloudhypervisor.NamesFor(id).Tap {",
+  "replace": "|| (port != cloudhypervisor.NamesFor(id).Tap && false) {",
+  "mutation": "port not compared",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-161",
+  "guard": "endpoint: every request needs the Kevaso header",
+  "file": "internal/agent/endpoint.go",
+  "find": "case r.Header.Get(v1.EndpointHeader) != \"1\":",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-162",
+  "guard": "endpoint: no requests from a browser",
+  "file": "internal/agent/endpoint.go",
+  "find": "case len(r.Header.Values(\"Origin\")) > 0 || hasSecFetch(r.Header):",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-163",
+  "guard": "endpoint: the Host header must be the endpoint's",
+  "file": "internal/agent/endpoint.go",
+  "find": "case !slices.Contains(hosts, r.Host):",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-164",
+  "guard": "endpoint: names are validated",
+  "file": "internal/agent/endpoint.go",
+  "find": "if !endpointName.MatchString(name) {\n\t\tendpointFail(w, http.StatusBadRequest, fmt.Sprintf(\"name",
+  "replace": "if false {\n\t\tendpointFail(w, http.StatusBadRequest, fmt.Sprintf(\"name",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-165",
+  "guard": "endpoint: no OPTIONS (no CORS)",
+  "file": "internal/agent/endpoint.go",
+  "find": "case r.Method == http.MethodOptions:",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-166",
+  "guard": "endpoint: a silo's requests in flight are limited",
+  "file": "internal/agent/endpoint.go",
+  "find": "if e.inFlight[uid] >= endpointMaxInFlight {",
+  "replace": "if false {",
+  "mutation": "limit removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-167",
+  "guard": "apiserver: a secret's value is taken out of the object before it is stored",
+  "file": "internal/apiserver/secrets.go",
+  "find": "\tvalue := sec.Spec.Value\n\tsec.Spec.Value = nil",
+  "replace": "\tvalue := sec.Spec.Value",
+  "mutation": "value stored in the clear",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-168",
+  "guard": "apiserver: a secret's type cannot change",
+  "file": "internal/apiserver/secrets.go",
+  "find": "if old != nil && old.Spec.Type != sec.Spec.Type {",
+  "replace": "if false && old != nil && old.Spec.Type != sec.Spec.Type {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-169",
+  "guard": "apiserver: a person needs use on every secret a grant names",
+  "file": "internal/apiserver/secrets.go",
+  "find": "\t\tif p != nil {\n\t\t\ta := rbac.Attributes{User: user, Groups: GroupsFrom(ctx), Verb: v1.VerbUse",
+  "replace": "\t\tif false && p != nil {\n\t\t\ta := rbac.Attributes{User: user, Groups: GroupsFrom(ctx), Verb: v1.VerbUse",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-170",
+  "guard": "apiserver: a new grant is checked for a person",
+  "file": "internal/apiserver/secrets.go",
+  "find": "if _, ok := person(ctx); !ok || s.auth == nil {\n\t\treturn nil\n\t}\n\tfor _, g := range grants {",
+  "replace": "if _, ok := person(ctx); !ok || s.auth == nil || true {\n\t\treturn nil\n\t}\n\tfor _, g := range grants {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-180",
+  "guard": "worker: the agent's local endpoint takes the loaded rules' bindings (K-079)",
+  "file": "internal/worker/worker.go",
+  "find": "Bound: bindings.Port,",
+  "replace": "",
+  "mutation": "Bound not set on the agent",
+  "packages": [
+   "./internal/worker",
+   "./internal/agent"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-181",
+  "guard": "worker: the network loop is given the shared bindings (K-079)",
+  "file": "internal/worker/worker.go",
+  "find": "StateFile: stateFile, Bindings: bindings})",
+  "replace": "StateFile: stateFile})",
+  "mutation": "bindings not shared",
+  "packages": [
+   "./internal/worker",
+   "./internal/agent"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-182",
+  "guard": "network: loaded rules' bindings are published after a load (K-079)",
+  "file": "internal/worker/network.go",
+  "find": "loaded.set(kni.Bindings(view.Local))",
+  "replace": "_ = loaded",
+  "mutation": "bindings never set",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-183",
+  "guard": "agent fence loop: only the cached silo of that uid is killed",
+  "file": "internal/agent/fencing.go",
+  "find": "if s.UID != id.UID || !a.mustStop(s) {",
+  "replace": "if !a.mustStop(s) {",
+  "mutation": "uid not compared",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a recreated silo of the same name is not killed for its predecessor"
+ }
+]
