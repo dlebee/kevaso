@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path"
 	"strconv"
@@ -380,10 +381,18 @@ func (r *Runtime) wire(ctx context.Context, s state, pid int) error {
 func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s, ok := r.load(spec.ID)
+	s, ok, lerr := r.loadState(spec.ID)
+	if lerr != nil {
+		// Never made over (K-105): its containers may run, and its address is in that file.
+		return fmt.Errorf("%s: %w: not making it again over it (restore the file, or delete the silo)", spec.ID, lerr)
+	}
 	if !ok {
 		cloudhypervisor.IPMu.Lock()
-		ip, err := cloudhypervisor.AllocateIP(cloudhypervisor.UsedIPs(chHost{r.Host}))
+		used, err := cloudhypervisor.UsedIPs(chHost{r.Host})
+		var ip netip.Addr
+		if err == nil {
+			ip, err = cloudhypervisor.AllocateIP(used)
+		}
 		if err == nil {
 			s = state{ID: spec.ID, IP: ip.String(), MAC: cloudhypervisor.MAC(spec.ID), Image: spec.Image, Command: spec.Command, Volumes: spec.Volumes, CPU: spec.CPU, Memory: spec.Memory}
 			err = r.save(s)
@@ -801,6 +810,25 @@ func (r *Runtime) List(context.Context) ([]kri.ID, error) {
 		}
 	}
 	return ids, nil
+}
+
+// Unreadable names the state files List skips because they can't be read or parsed (K-105): the
+// silo behind one may still run (Status, Kill and Stop find it by its name), so the agent lists
+// them on the Host. Which engine's such a file is can't be told: every engine's runtime names it.
+func (r *Runtime) Unreadable(context.Context) []string {
+	paths, _ := r.Host.Glob(Dir + "/*/state.json")
+	var out []string
+	for _, p := range paths {
+		b, err := r.Host.ReadFile(p)
+		var s state
+		if err == nil {
+			err = json.Unmarshal(b, &s)
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // Exec implements kri.Runtime: `docker exec -i`, stdin, stdout, stderr and the exit code passed

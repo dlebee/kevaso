@@ -159,6 +159,9 @@ type Agent struct {
 	// missing from the API (a control plane restored from an older backup, a re-made cluster) is
 	// kept, running, with its data, and listed (kept, logged once).
 	seenDeleted sync.Map // silo uid → the history (Watermark.history) its delete was seen under
+	// seenIDs: silo uid → kri.ID, the seen deletes of silos this host may hold (mayHaveHere): a
+	// copy its runtime doesn't list is looked for by name (stopUnlisted).
+	seenIDs sync.Map
 	// abandoned: silo uid → struct{}: a start ended because the store didn't know the silo, whose
 	// stop failed: tried again until it stops (stopAbandoned).
 	abandoned     sync.Map
@@ -169,10 +172,12 @@ type Agent struct {
 	engine        *engine.Engine
 	cp            *Watermark // the control plane this worker trusts (watermark.go); via watermark()
 	cpOnce        sync.Once
-	staleNoted    sync.Map // silo UID → logged once that its cache was stale at a start
-	claims        sync.Map // silo UID → *claimKeeper: its start claim, kept fresh while it starts here
-	reported      sync.Map // silo UID → generation: reported Running in this run since its last start here
-	createBackoff sync.Map // silo UID → createBackoff
+	staleNoted    sync.Map   // silo UID → logged once that its cache was stale at a start
+	claims        sync.Map   // silo UID → *claimKeeper: its start claim, kept fresh while it starts here
+	reported      sync.Map   // silo UID → generation: reported Running in this run since its last start here
+	createBackoff sync.Map   // silo UID → createBackoff
+	startBackoff  sync.Map   // silo UID → createBackoff: its failed starts (K-115)
+	applied       appliedLog // the resets and images applied here (applied.go, K-110)
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
@@ -630,6 +635,31 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 			}
 		}
 		ic, initContainers := rt.(kri.InitContainers)
+		if initContainers && s.Spec.Init != nil && len(s.Spec.Init.Steps) > 0 {
+			// The steps are decided on what is stored (the cache may be behind this agent's own
+			// write of a step's result: a step that failed, or is done, would run again).
+			var cur v1.Silo
+			if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
+				return engine.Result{}, err
+			}
+			if cur.UID == s.UID && cur.Generation == s.Generation {
+				sc := *s
+				sc.Status.Init = cur.Status.Init
+				s = &sc
+			}
+		}
+		// K-115: nothing is claimed for a start that can't go on now. A failed init step stays
+		// failed until the silo is reset or its spec changes (runSteps), and a start that failed
+		// waits out its backoff: the agent's own writes (the claim above all) come back as events,
+		// and each used to claim and try again at once.
+		if initContainers && initFailed(s) {
+			a.endClaim(s.UID)
+			return engine.Result{}, nil
+		}
+		if wait := a.backoffWait(&a.startBackoff, s); wait > 0 {
+			a.endClaim(s.UID)
+			return engine.Result{RequeueAfter: wait}, nil
+		}
 		if initContainers && rs.State == kri.Stopped && s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" && initDone(s) {
 			// Init containers run again at every boot: the steps start over (a status write only).
 			if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Init = nil }); err != nil {
@@ -695,8 +725,13 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 		}
 		if err != nil {
 			a.settleClaim(ctx, rt, s)
-			return engine.Result{}, err
+			wait := a.backoffFailed(&a.startBackoff, s)
+			a.log("silo %s/%s: start: %v (trying again in %s)", s.Namespace, s.Name, err, wait)
+			return engine.Result{RequeueAfter: wait}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+				setCond(st, "Ready", meta.ConditionFalse, failReason(err, "StartFailed"), err.Error()+" (trying again in "+wait.String()+")", s.Generation, a.now())
+			})
 		}
+		a.startBackoff.Delete(s.UID)
 		if _, ok := rt.(kri.InitContainers); !ok && s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" {
 			if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Init = nil }); err != nil {
 				return engine.Result{}, err
@@ -921,6 +956,16 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 	if cur.Running != image {
 		what = "image " + image
 	}
+	if a.alreadyApplied(s.UID, s.Spec.Reset, image) {
+		// K-110: this host made the disk afresh for this very request already; the store's status
+		// is from before (a control plane restored from a backup taken while it was due). Nothing
+		// is wiped again: the status is brought up to what was done.
+		a.log("silo %s/%s: %s was applied here already (this host's record): its disk is kept, the status says so again", s.Namespace, s.Name, what)
+		return true, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			st.Image = running(st.Image, s, image)
+			setCond(st, "Updated", meta.ConditionTrue, "AlreadyApplied", what+" was applied on "+a.HostName+" already: nothing done again", s.Generation, a.now())
+		})
+	}
 	rr, ok := rt.(kri.Resetter)
 	if !ok {
 		return true, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
@@ -994,6 +1039,8 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		})
 		return true, fmt.Errorf("reset onto %s: %w", image, err)
 	}
+	// Recorded here before the store is told (K-110): a restored status replays nothing.
+	a.recordApplied(s.UID, s.Spec.Reset, image)
 	a.delivered.Delete(s.UID) // a fresh disk: its secrets and CA are written again, and its mounts
 	a.guestMounted.Delete(s.UID)
 	a.log("silo %s/%s: reset onto %s (%s)", s.Namespace, s.Name, image, what)
@@ -1200,30 +1247,59 @@ type createBackoff struct {
 }
 
 // createFailed records a failed create of s and says how long until the next.
-func (a *Agent) createFailed(s *v1.Silo) time.Duration {
+func (a *Agent) createFailed(s *v1.Silo) time.Duration { return a.backoffFailed(&a.createBackoff, s) }
+
+// createWait is how long s's next create must still wait (0: now).
+func (a *Agent) createWait(s *v1.Silo) time.Duration { return a.backoffWait(&a.createBackoff, s) }
+
+// backoffFailed records a failed try of s in m (createBackoff, startBackoff) and says how long
+// until the next.
+func (a *Agent) backoffFailed(m *sync.Map, s *v1.Silo) time.Duration {
 	b := createBackoff{generation: s.Generation, delay: 5 * time.Second}
-	if o, ok := a.createBackoff.Load(s.UID); ok {
+	if o, ok := m.Load(s.UID); ok {
 		if prev := o.(createBackoff); prev.generation == s.Generation {
 			b.delay = min(2*prev.delay, 5*time.Minute)
 		}
 	}
 	b.until = a.Clock.Now().Add(b.delay)
-	a.createBackoff.Store(s.UID, b)
+	m.Store(s.UID, b)
 	return b.delay
 }
 
-// createWait is how long s's next create must still wait (0: now).
-func (a *Agent) createWait(s *v1.Silo) time.Duration {
-	o, ok := a.createBackoff.Load(s.UID)
+// backoffWait is how long s's next try must still wait by m (0: now).
+func (a *Agent) backoffWait(m *sync.Map, s *v1.Silo) time.Duration {
+	o, ok := m.Load(s.UID)
 	if !ok {
 		return 0
 	}
 	b := o.(createBackoff)
 	if b.generation != s.Generation {
-		a.createBackoff.Delete(s.UID) // a new spec: try it now
+		m.Delete(s.UID) // a new spec: try it now
 		return 0
 	}
 	return max(b.until.Sub(a.Clock.Now()), 0)
+}
+
+// initFailed reports whether an init step of s is recorded failed: its start goes no further
+// until the silo is reset or its spec changes (runSteps).
+func initFailed(s *v1.Silo) bool {
+	if s.Spec.Init == nil {
+		return false
+	}
+	state := map[string]string{}
+	for _, st := range s.Status.Init {
+		state[st.Name] = st.State
+	}
+	for _, step := range s.Spec.Init.Steps {
+		switch state[step.Name] {
+		case "Done":
+			continue
+		case "Failed":
+			return true
+		}
+		return false // runSteps runs this one next
+	}
+	return false
 }
 
 // errPlacedElsewhere: a status write or a start claim found the silo placed on another host (or
@@ -1392,6 +1468,7 @@ func (a *Agent) releaseMove(ctx context.Context, s *v1.Silo) error {
 // removeEverywhere deletes the silo from every runtime that has it. For a silo still in the API
 // but no longer ours (or being deleted), only the runtime copy is removed.
 func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) error {
+	listed := map[string]bool{} // the UIDs of this name some runtime lists
 	for rtName, rt := range a.Runtimes {
 		ids, err := rt.List(ctx)
 		if err != nil {
@@ -1401,6 +1478,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			if id.Namespace != k.Namespace || id.Name != k.Name {
 				continue
 			}
+			listed[id.UID] = true
 			if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {
 				a.keptNoted.Delete(id.UID) // known and placed here (again): no longer a kept copy
 				continue
@@ -1480,16 +1558,22 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				return err
 			}
 			a.forgetDelete(id.UID) // nothing of it left here
+			a.forgetApplied(id.UID)
 		}
 	}
-	return nil
+	return a.stopUnlisted(ctx, k, s, listed)
 }
 
 const whyHandoff = "handed off from here"
 
 // keptCopy is a copy kept here that the control plane doesn't know (keptNoted): the runtime that
 // holds it (its key in Runtimes), and how it is listed.
-type keptCopy struct{ runtime, name string }
+type keptCopy struct {
+	runtime, name string
+	// unlisted: a copy its runtime doesn't list (its state can't be read, K-105), found by id.
+	unlisted bool
+	id       kri.ID
+}
 
 // keptName is how a kept copy is listed on the Host (KeptSilos): its name, the start of its UID
 // (two kept copies of one name, a silo deleted and made again, are told apart), and what.

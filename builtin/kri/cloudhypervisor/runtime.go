@@ -253,6 +253,18 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 				"keep it (restore silo.json) or remove it yourself (lvremove %s/%s) to start afresh", spec.ID, VG, n.LV, n.Dir, VG, n.LV)
 		}
 	}
+	// The same for its local volumes (K-111): one there with no state is an earlier copy's data.
+	// Made over, it was taken into the new silo, and a failed step's clean-up removed it.
+	if _, ok, _ := r.readState(spec.ID); !ok {
+		if out, err := r.Host.Run(ctx, "lvs", "--noheadings", "-o", "lv_name", VG); err == nil {
+			for _, f := range strings.Fields(string(out)) {
+				if strings.HasPrefix(f, n.LV+"-") {
+					return fmt.Errorf("%s: local volume %s/%s is there with no state of this host's (%s/silo.json): not making the silo over it; "+
+						"keep it (restore silo.json) or remove it yourself (lvremove %s/%s) to start afresh", spec.ID, VG, f, n.Dir, VG, f)
+				}
+			}
+		}
+	}
 	IPMu.Lock() // container silos share the bridge and its addresses: until the state is saved
 	ipLocked := true
 	unlockIP := func() {
@@ -262,7 +274,11 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		}
 	}
 	defer unlockIP()
-	ip, err := AllocateIP(UsedIPs(r.Host))
+	used, err := UsedIPs(r.Host)
+	if err != nil {
+		return err
+	}
+	ip, err := AllocateIP(used)
 	if err != nil {
 		return err
 	}
@@ -612,6 +628,9 @@ func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, s
 				return fmt.Errorf("root volume %s/%s is there already: only a reset makes it afresh", VG, n.LV)
 			}
 			if err := r.run(ctx, "lvremove", "-q", "-y", VG+"/"+n.LV); err != nil {
+				if r.lvExists(ctx, n.LV) {
+					return fmt.Errorf("%w: %v", errRootKept, err)
+				}
 				return err
 			}
 		}
@@ -627,11 +646,20 @@ func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, s
 	for _, c := range RootFilePlan(img, tmp, l.RootFile, size) {
 		if err := r.run(ctx, c[0], c[1:]...); err != nil {
 			_ = r.Host.RemoveAll(tmp)
+			if _, terr := r.Host.Run(ctx, "test", "-e", l.RootFile); terr == nil {
+				return fmt.Errorf("%w: %v", errRootKept, err) // written beside it, put in place last
+			}
 			return err
 		}
 	}
 	return nil
 }
+
+// errRootKept: making a root disk afresh failed before the old one was touched (its lvremove
+// failed; the new image file never put in place). K-112: a reset cut there removed nothing, so
+// its mark goes and the disk is kept as it was: the next reset is asked for again, through its
+// gate, never finished at a start with no one asked.
+var errRootKept = errors.New("the root disk was kept as it was")
 
 // RootFilePlan makes a root disk image file from an image: written next to it, grown to the disk's
 // size (never shrunk), made the VMM's alone (qemu-img leaves it world-readable: the whole disk),
@@ -692,6 +720,25 @@ func (r *Runtime) List(context.Context) ([]kri.ID, error) {
 		ids = append(ids, s.ID)
 	}
 	return ids, nil
+}
+
+// Unreadable names the state files List skips because they can't be read or parsed (K-105): the
+// VM behind one may still run (Status and Kill find its VMM by its unit), so the agent lists them
+// on the Host.
+func (r *Runtime) Unreadable(context.Context) []string {
+	paths, _ := r.Host.Glob(SilosDir + "/*/silo.json")
+	var out []string
+	for _, p := range paths {
+		b, err := r.Host.ReadFile(p)
+		var s State
+		if err == nil {
+			err = json.Unmarshal(b, &s)
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // Exec implements kri.Runtime: SSH to the guest over the bridge as root with the exec key (only
@@ -931,6 +978,11 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 		return fmt.Errorf("reset %s: %w", spec.ID, err)
 	}
 	if err := r.remakeLocked(ctx, st, img); err != nil {
+		if errors.Is(err, errRootKept) {
+			if serr := r.saveState(old); serr != nil { // nothing removed: as it was, with no mark
+				err = errors.Join(err, serr)
+			}
+		}
 		return fmt.Errorf("reset %s: %w", spec.ID, err)
 	}
 	return nil
@@ -955,7 +1007,14 @@ func (r *Runtime) finishRemake(ctx context.Context, id kri.ID) error {
 	if _, up := r.vmm(ctx, NamesFor(id)); up {
 		return errors.New("its VMM runs") // never under a VMM (not reached: Remake means it was gone)
 	}
-	return r.remakeLocked(ctx, st, img)
+	err = r.remakeLocked(ctx, st, img)
+	if errors.Is(err, errRootKept) {
+		// Nothing of its disk was removed (K-112): the mark goes, the old disk stays, and it
+		// starts as it was; a reset still asked for comes again through its gate.
+		st.Remake, st.Volumes, st.RootDir = nil, st.Remake.OldVolumes, st.Remake.OldRootDir
+		return r.saveState(st)
+	}
+	return err
 }
 
 // remakeLocked does a reset's destructive steps, each one safe to do again: the root disk made

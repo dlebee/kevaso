@@ -20,12 +20,16 @@ import (
 type hung struct {
 	Conn
 	name  string
+	only  string // serve only this storage class ("": the fake's)
 	calls atomic.Int32
 }
 
 func (h *hung) Info(ctx context.Context) (kplugin.Info, error) {
 	i, err := h.Conn.Info(ctx)
 	i.Name = h.name
+	if h.only != "" { // a second plugin in one registry serves classes of its own (K-042)
+		i.Storage, i.LoadBalancers, i.DNS = []kplugin.Class{{Name: h.only}}, nil, nil
+	}
 	return i, err
 }
 
@@ -195,7 +199,7 @@ func TestOnePluginsCallsInFlightAreLimited(t *testing.T) {
 func TestHungPluginDoesNotHoldSharedWorkers(t *testing.T) {
 	r := &Registry{Limits: fast}
 	_ = r.Add(context.Background(), &hung{Conn: kplugintest.New(), name: "stuck"})
-	_ = r.Add(context.Background(), &hung{Conn: kplugintest.New(), name: "fine"})
+	_ = r.Add(context.Background(), &hung{Conn: kplugintest.New(), name: "fine", only: "fine-block"})
 	fine := plugin(t, r, "fine")
 	done := make(chan struct{})
 	ctl := &oneWorker{reg: r, done: done, fine: fine}

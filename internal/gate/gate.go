@@ -8,6 +8,10 @@
 //     enters the silo;
 //   - a host a grant allows by name: the TLS stream is passed through untouched, to the name the
 //     client asked for (resolved here, so an address can't be smuggled in);
+//   - a name is never followed to an address the outside can't reach from the internet (private,
+//     loopback, link-local, the mesh, silos, services, the host's own: Special), unless a grant of
+//     the silo names that address itself (K-057, K-092). Every address is checked when it is
+//     dialled, so a name that changes its answer (DNS rebinding) gets no further;
 //   - an address a grant allows by CIDR: passed through to where the client dialled;
 //   - anything else, including no SNI: refused.
 //
@@ -31,6 +35,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	v1 "kevaso.com/core/api/v1"
@@ -152,6 +157,10 @@ type Gate struct {
 	// Dial reaches the outside; Resolve is used for names (default: the system's).
 	Dial    func(ctx context.Context, network, addr string) (net.Conn, error)
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
+	// Internal are addresses of this host and its cluster that a name must not lead to, on top of
+	// the ranges Special always refuses (the host's own public addresses, the cluster's hosts and
+	// load balancers): each is refused unless a grant names exactly it. Nil: none.
+	Internal func() []netip.Prefix
 	// Upstream verifies the real hosts (nil: the system roots).
 	Upstream *x509.CertPool
 	Log      func(string, ...any)
@@ -208,16 +217,20 @@ func (g *Gate) handle(ctx context.Context, c net.Conn) {
 	}
 }
 
-func (g *Gate) dial(ctx context.Context, addr string, byName bool) (net.Conn, error) {
+func (g *Gate) dial(ctx context.Context, p Policy, addr string, byName bool) (net.Conn, error) {
 	d := g.Dial
 	if d == nil {
 		var nd net.Dialer
+		if byName {
+			nd.Control = g.atConnect(p)
+		}
 		d = nd.DialContext
 	}
-	if !byName {
+	if !byName { // a CIDR rule's address, where the client dialled: the rule decided
 		return d(ctx, "tcp", addr)
 	}
 	host, port, _ := net.SplitHostPort(addr)
+	pn, _ := strconv.Atoi(port)
 	resolve := g.Resolve
 	if resolve == nil {
 		resolve = func(ctx context.Context, h string) ([]netip.Addr, error) {
@@ -228,14 +241,118 @@ func (g *Gate) dial(ctx context.Context, addr string, byName bool) (net.Conn, er
 	if err != nil || len(ips) == 0 {
 		return nil, fmt.Errorf("resolve %s: %v", host, err)
 	}
-	return d(ctx, "tcp", net.JoinHostPort(ips[0].String(), port))
+	// Every address the name resolves to is checked, and only one that passes is dialled.
+	var refusals []string
+	for _, ip := range ips {
+		if err := g.refused(p, ip, uint16(pn)); err != nil {
+			refusals = append(refusals, err.Error())
+			continue
+		}
+		return d(ctx, "tcp", net.JoinHostPort(ip.Unmap().String(), port))
+	}
+	return nil, fmt.Errorf("%s: %s", host, strings.Join(refusals, "; "))
+}
+
+// atConnect is the default dialer's last check, at connect time, on the socket's own address:
+// whatever chose the address, it is checked again just before the connection is made.
+func (g *Gate) atConnect(p Policy) func(network, address string, c syscall.RawConn) error {
+	return func(_, address string, _ syscall.RawConn) error {
+		a, err := netip.ParseAddrPort(address)
+		if err != nil {
+			return err
+		}
+		return g.refused(p, a.Addr(), a.Port())
+	}
+}
+
+// refused says why a name may not lead to a on port (nil: it may). An address Special refuses,
+// or one in Internal, is opened only by a CIDR rule of the silo's grants that names it: inside
+// the refused range, for that port, over TCP (a wider rule, 0.0.0.0/0, doesn't name it).
+func (g *Gate) refused(p Policy, resolved netip.Addr, port uint16) error {
+	a := resolved.Unmap().WithZone("") // a zone would make every range miss it
+	r, why := Special(a)
+	if why == "" && g.Internal != nil {
+		for _, pr := range g.Internal() {
+			if pr.Contains(a) && (!r.IsValid() || pr.Bits() > r.Bits()) {
+				r, why = pr, "an address of this host or its cluster"
+			}
+		}
+	}
+	if why == "" {
+		return nil
+	}
+	for _, c := range p.CIDRs {
+		if c.Prefix.Contains(a) && c.Prefix.Bits() >= r.Bits() && r.Contains(c.Prefix.Addr()) &&
+			c.AllowsPort(int(port)) && contains(c.Protocols, "tcp") {
+			return nil
+		}
+	}
+	return fmt.Errorf("it resolves to %s (%s), which a name never leads to: name the address itself in a grant's egress `to` (as %s) to allow it", resolved, why, netip.PrefixFrom(a, a.BitLen()))
+}
+
+// special are the ranges a host name never leads to: the host itself, its networks and the
+// cluster's (all of 10/8: the mesh, silos and services are in it), and nothing the internet can
+// route to. IPv6 forms that carry an IPv4 address are checked on that address.
+var special = []struct {
+	p   netip.Prefix
+	why string
+}{
+	{netip.MustParsePrefix("0.0.0.0/8"), "this network"},
+	{netip.MustParsePrefix("10.0.0.0/8"), "a private address: the mesh, silos and services are in it"},
+	{netip.MustParsePrefix("100.64.0.0/10"), "a shared address (carrier-grade NAT)"},
+	{netip.MustParsePrefix("127.0.0.0/8"), "loopback: this host itself"},
+	{netip.MustParsePrefix("169.254.0.0/16"), "link-local: a cloud's metadata, the silos' local endpoint"},
+	{netip.MustParsePrefix("172.16.0.0/12"), "a private address"},
+	{netip.MustParsePrefix("192.0.0.0/24"), "an IETF protocol address"},
+	{netip.MustParsePrefix("192.168.0.0/16"), "a private address"},
+	{netip.MustParsePrefix("198.18.0.0/15"), "a benchmarking address"},
+	{netip.MustParsePrefix("224.0.0.0/4"), "multicast"},
+	{netip.MustParsePrefix("240.0.0.0/4"), "reserved"},
+	{netip.MustParsePrefix("::/96"), "unspecified, loopback or IPv4-compatible"},
+	{netip.MustParsePrefix("64:ff9b:1::/48"), "local NAT64"},
+	{netip.MustParsePrefix("100::/64"), "discard"},
+	{netip.MustParsePrefix("fc00::/7"), "a unique local address"},
+	{netip.MustParsePrefix("fe80::/10"), "link-local"},
+	{netip.MustParsePrefix("fec0::/10"), "site-local"},
+	{netip.MustParsePrefix("ff00::/8"), "multicast"},
+}
+
+// Special says whether a host name may never lead to a, and why: the smallest range of the
+// refused ones holding it, else "" (an ordinary internet address). Pure.
+func Special(a netip.Addr) (netip.Prefix, string) {
+	a = a.Unmap().WithZone("")
+	if a.Is6() {
+		b := a.As16()
+		var v4 netip.Addr
+		switch {
+		case netip.MustParsePrefix("64:ff9b::/96").Contains(a): // NAT64: the IPv4 address in its last 32 bits
+			v4 = netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
+		case netip.MustParsePrefix("2002::/16").Contains(a): // 6to4: the IPv4 address after 2002:
+			v4 = netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]})
+		}
+		if v4.IsValid() {
+			if _, why := Special(v4); why != "" {
+				return netip.PrefixFrom(a, 128), why + " (as " + v4.String() + ")"
+			}
+		}
+	}
+	best, why := netip.Prefix{}, ""
+	for _, s := range special {
+		if s.p.Contains(a) && (!best.IsValid() || s.p.Bits() > best.Bits()) {
+			best, why = s.p, s.why
+		}
+	}
+	if why == "" && a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+		return netip.PrefixFrom(a, 32), "broadcast"
+	}
+	return best, why
 }
 
 // pass splices the client to addr, replaying the ClientHello already read.
 func (g *Gate) pass(ctx context.Context, c net.Conn, hello []byte, p Policy, addr string, byName bool) {
-	up, err := g.dial(ctx, addr, byName)
+	up, err := g.dial(ctx, p, addr, byName)
 	if err != nil {
-		g.log("gate: %s → %s: %v", p.Key, addr, err)
+		g.log("gate: BLOCKED %s → %s: %v", p.Key, addr, err)
 		return
 	}
 	defer func() { _ = up.Close() }()
@@ -258,13 +375,14 @@ func closeWrite(c net.Conn) {
 
 // inject ends TLS for sni and proxies each request to the real host with the secret added.
 func (g *Gate) inject(ctx context.Context, c net.Conn, hello []byte, p Policy, sni string, dst netip.AddrPort) {
-	inj, err := g.Injections(ctx, p.Key)
-	if err != nil {
-		g.log("gate: %s: injections: %v", p.Key, err)
-		return
+	inj, failed := g.Injections(ctx, p.Key)
+	if failed != nil {
+		// Said to the silo too (K-076): TLS is ended as for any injection, and every request is
+		// answered with why there is no secret, instead of a connection closed with nothing said.
+		g.log("gate: BLOCKED %s → %s: the secret can't be injected: %v", p.Key, sni, failed)
 	}
 	in, ok := inj[sni]
-	if !ok { // the grant names it, but the secret isn't there (no value yet, or not allowed)
+	if failed == nil && !ok { // the grant names it, but the secret isn't there (no value yet, or not allowed)
 		g.log("gate: BLOCKED %s → %s: no secret to inject", p.Key, sni)
 		return
 	}
@@ -286,7 +404,7 @@ func (g *Gate) inject(ctx context.Context, c net.Conn, hello []byte, p Policy, s
 		target = net.JoinHostPort(sni, strconv.Itoa(int(dst.Port())))
 	}
 	transport := &http.Transport{
-		DialContext:       func(ctx context.Context, _, addr string) (net.Conn, error) { return g.dial(ctx, addr, true) },
+		DialContext:       func(ctx context.Context, _, addr string) (net.Conn, error) { return g.dial(ctx, p, addr, true) },
 		TLSClientConfig:   &tls.Config{RootCAs: g.Upstream, MinVersion: tls.VersionTLS12, ServerName: sni},
 		ForceAttemptHTTP2: true,
 	}
@@ -299,6 +417,11 @@ func (g *Gate) inject(ctx context.Context, c net.Conn, hello []byte, p Policy, s
 		},
 		Transport: transport,
 		ErrorLog:  nil,
+		// The silo is told why (a target refused, the host unreachable), never a bare 502.
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			g.log("gate: BLOCKED %s %s %s%s: %v", p.Key, r.Method, sni, r.URL.Path, err)
+			http.Error(w, "egress gate: "+err.Error(), http.StatusBadGateway)
+		},
 	}
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := strings.ToLower(r.Host)
@@ -308,6 +431,10 @@ func (g *Gate) inject(ctx context.Context, c net.Conn, hello []byte, p Policy, s
 		if host != sni { // domain fronting: the request is for another host than the TLS name
 			g.log("gate: BLOCKED %s: Host %q over TLS for %q", p.Key, r.Host, sni)
 			http.Error(w, "egress not allowed", http.StatusForbidden)
+			return
+		}
+		if failed != nil {
+			http.Error(w, "egress gate: the secret for "+sni+" can't be injected: "+failed.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		if in.Approval {

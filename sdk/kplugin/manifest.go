@@ -20,6 +20,11 @@ type Manifest struct {
 	Name       string `json:"name"`
 	Controller Needs  `json:"controller,omitempty"`
 	Node       Needs  `json:"node,omitempty"`
+	// DevicePrefixes are where the devices of its attached volumes are: every device it answers
+	// AttachVolume with starts with one (DevicePrefixProblem says which prefixes may be declared).
+	// kvoadm stores the manifest on the host and kevasod refuses any other device answer; a plugin
+	// with no prefix declared can't attach volumes (K-038).
+	DevicePrefixes []string `json:"devicePrefixes,omitempty"`
 }
 
 // Needs is what one side needs beyond the default.
@@ -177,6 +182,11 @@ func ParseManifest(b []byte) (Manifest, error) {
 	}
 	if err := m.Node.Check(m.Name, "node"); err != nil {
 		return Manifest{}, fmt.Errorf("plugin manifest: %w", err)
+	}
+	for _, p := range m.DevicePrefixes {
+		if err := DevicePrefixProblem(p); err != nil {
+			return Manifest{}, fmt.Errorf("plugin manifest: %w", err)
+		}
 	}
 	return m, nil
 }

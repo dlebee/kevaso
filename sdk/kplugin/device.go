@@ -38,3 +38,35 @@ func DevicePathProblem(dev string) error {
 	}
 	return nil
 }
+
+// ByID is where a declared device prefix must be: names that stay with the disk across reboots
+// and re-enumeration (a kernel name like /dev/sdb can name another disk tomorrow).
+const ByID = "/dev/disk/by-id/"
+
+// DevicePrefixProblem says why p can't be a plugin's declared device prefix, or nil: the start of
+// a name under /dev/disk/by-id/ (at least one character of it, no further folder), so that a
+// plugin's devices are names of its own, never the whole folder or a kernel name.
+func DevicePrefixProblem(p string) error {
+	rest, ok := strings.CutPrefix(p, ByID)
+	if !ok || rest == "" || strings.Contains(rest, "/") || !devicePart.MatchString(rest) {
+		return fmt.Errorf("device prefix %q: the start of a device's name under %s (e.g. %sscsi-0Linode_Volume_)", p, ByID, ByID)
+	}
+	return nil
+}
+
+// DeviceUnder says why dev isn't a device under one of the declared prefixes, or nil: a clean
+// device path (DevicePathProblem), one prefix followed by a name of its own, nothing more.
+func DeviceUnder(dev string, prefixes []string) error {
+	if err := DevicePathProblem(dev); err != nil {
+		return err
+	}
+	if len(prefixes) == 0 {
+		return fmt.Errorf("device %q: the plugin declares no device prefix (devicePrefixes in its %s, which kvoadm plugin install --manifest stores on the host): it may attach no volume", dev, ManifestFile)
+	}
+	for _, p := range prefixes {
+		if rest, ok := strings.CutPrefix(dev, p); ok && rest != "" && !strings.Contains(rest, "/") {
+			return nil
+		}
+	}
+	return fmt.Errorf("device %q: not under the plugin's declared prefix (%s)", dev, strings.Join(prefixes, ", "))
+}

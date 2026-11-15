@@ -11,14 +11,14 @@ import (
 	"kevaso.com/core/sdk/kplugin/kplugintest"
 )
 
-// A plugin's socket appearing registers it over gRPC; it going away drops it.
+// A plugin's socket appearing registers it over gRPC; it going away drops it, once the hold is over.
 func TestRegistryFindsSockets(t *testing.T) {
 	dir, _ := os.MkdirTemp("", "kpr")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	changes := make(chan struct{}, 8)
-	r := &Registry{Dir: dir, Every: 20 * time.Millisecond, OnChange: func() { changes <- struct{}{} }}
+	r := &Registry{Dir: dir, Every: 20 * time.Millisecond, Hold: 100 * time.Millisecond, OnChange: func() { changes <- struct{}{} }}
 	go r.Run(ctx)
 	pctx, stop := context.WithCancel(ctx)
 	sock := filepath.Join(dir, "fake", "plugin.sock")
