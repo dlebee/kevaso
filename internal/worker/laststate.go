@@ -22,7 +22,7 @@ import (
 const LastStateFile = "last-state.json"
 
 // saveLastState writes every given cache that has listed (never a seed: only what was seen) to
-// path atomically; nothing when one of them hasn't listed yet.
+// path atomically and durably; nothing when one of them hasn't listed yet.
 func saveLastState(path string, infs ...*informer.Informer) error {
 	if !informer.AllSynced(infs...) {
 		return nil
@@ -43,35 +43,88 @@ func saveLastState(path string, infs ...*informer.Informer) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	return writeDurably(path, b)
+}
+
+// writeDurably writes b to path: a temporary file, flushed to the disk, renamed over path, the
+// folder flushed too, so a power cut leaves the old file or the new one, never a short one.
+func writeDurably(path string, b []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	return d.Sync()
 }
 
-// seedLastState seeds the caches from path, kind by kind; false when there's no last state (a
-// first start: wait for the control plane).
-func seedLastState(path string, infs ...*informer.Informer) bool {
+// readLastState reads the last state at path for kinds: false when there is none, or when it
+// isn't whole (K-122): a kind missing or null (a file cut short by a power cut, {} , one from a
+// build that kept fewer kinds), or an object that doesn't decode. Such a file is no last state:
+// seeding a kind from it as empty would install a view that closes every running silo's ports.
+func readLastState(path string, kinds []string) (map[string][]meta.Object, bool) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return nil, false
 	}
 	var st map[string][]json.RawMessage
 	if json.Unmarshal(b, &st) != nil {
+		return nil, false
+	}
+	out := map[string][]meta.Object{}
+	for _, kind := range kinds {
+		raws, ok := st[kind]
+		if !ok || raws == nil {
+			return nil, false
+		}
+		objs := []meta.Object{}
+		for _, raw := range raws {
+			o, _, err := v1.Decode(raw)
+			if err != nil {
+				return nil, false
+			}
+			objs = append(objs, o)
+		}
+		out[kind] = objs
+	}
+	return out, true
+}
+
+// seedLastState seeds the caches from path, kind by kind; false, and nothing seeded, when there's
+// no whole last state (a first start: wait for the control plane).
+func seedLastState(path string, infs ...*informer.Informer) bool {
+	var kinds []string
+	for _, inf := range infs {
+		kinds = append(kinds, inf.Kind())
+	}
+	st, ok := readLastState(path, kinds)
+	if !ok {
 		return false
 	}
 	for _, inf := range infs {
-		var objs []meta.Object
-		for _, raw := range st[inf.Kind()] {
-			if o, _, err := v1.Decode(raw); err == nil {
-				objs = append(objs, o)
-			}
-		}
-		inf.Seed(objs)
+		inf.Seed(st[inf.Kind()])
 	}
 	return true
 }

@@ -8,17 +8,17 @@ import (
 	"kevaso.com/core/api/informer"
 )
 
-// Review claim D (network lane; host-code.md has the fix): a kept last state that is there but
+// K-122 (review claim D): a kept last state that is there but
 // says nothing of a kind the network caches ({} after a power cut, a file from a build that kept
 // fewer kinds) must not seed that kind as empty and ready: the first pass would install that
 // view, closing every running silo's ports at a start without the control plane. Such a file is
 // no last state: the worker waits for the control plane, as on a first start.
 func TestALastStateMissingAKindSeedsNothing(t *testing.T) {
-	t.Skip("review claim D, network lane: seedLastState accepts a file missing kinds (host-code.md, \"Claim D\")")
 	for name, body := range map[string]string{
-		"empty object":  `{}`,
-		"a kind absent": `{"Silo":[]}`,
-		"a kind null":   `{"Silo":[],"Service":null}`,
+		"empty object":                  `{}`,
+		"a kind absent":                 `{"Silo":[]}`,
+		"a kind null":                   `{"Silo":[],"Service":null}`,
+		"an object that doesn't decode": `{"Silo":[{"apiVersion":"kevaso/v1","kind":"NoSuchKind"}],"Service":[]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := filepath.Join(t.TempDir(), LastStateFile)
