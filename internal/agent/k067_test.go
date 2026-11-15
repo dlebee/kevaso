@@ -42,7 +42,7 @@ func TestArmedOnlyWhileAWatcherRuns(t *testing.T) {
 	}
 	dir := t.TempDir()
 	a := &Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": fake.New()}, Clock: clock.Real{}, LastContact: time.Now, FenceDir: dir}
-	go a.Run(ctx)
+	RunForTest(t, ctx, a)
 	get := func() *v1.Silo {
 		var cur v1.Silo
 		_ = c.Get(ctx, "Silo", "dev", "validator", &cur)
@@ -126,7 +126,7 @@ func TestAFailedKillIsTriedAgain(t *testing.T) {
 			stop, after := s.StopsOnControlPlaneLoss()
 			return stop, after / 30
 		}} // 30s → 1s
-	go a.Run(ctx)
+	RunForTest(t, ctx, a)
 	id := kri.ID{Namespace: "dev", Name: "single", UID: s.UID}
 	state := func() kri.State { st, _ := rt.Status(ctx, id); return st.State }
 	for deadline := time.Now().Add(10 * time.Second); state() != kri.Running; time.Sleep(20 * time.Millisecond) {

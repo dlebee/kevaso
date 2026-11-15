@@ -50,7 +50,7 @@ func TestASiloMissingFromTheAPIIsKeptUnlessItsDeleteWasSeen(t *testing.T) {
 		who := n
 		a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{},
 			Log: func(f string, args ...any) { t.Logf("agent %d: "+f, append([]any{who}, args...)...) }}
-		go a.Run(actx)
+		agent.RunForTest(t, actx, a)
 		return stop
 	}
 

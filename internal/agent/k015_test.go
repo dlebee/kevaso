@@ -59,7 +59,7 @@ func TestASiloIsNeverStartedFromACacheThatSaysItIsStillHere(t *testing.T) {
 	rt := fake.New()
 	a := &agent.Agent{Client: client.New(ts.URL), HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": rt}, Clock: clock.Real{}, Log: t.Logf,
 		Resync: 300 * time.Millisecond}
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "single", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
 			Availability: v1.Availability{OnControlPlaneLoss: v1.OnControlPlaneLossStop, OnHostLoss: v1.OnHostLossRecreate}}}
@@ -171,7 +171,7 @@ func TestAPlacementChangeAfterTheReadStopsTheStart(t *testing.T) {
 		}
 	}
 	a := &agent.Agent{Client: client.New(ts.URL), HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": rt}, Clock: clock.Real{}, Log: t.Logf}
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "single", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
 			Init: &v1.Init{Steps: []v1.InitStep{{Name: "slow", Run: "sleep 20"}}}}}

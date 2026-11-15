@@ -74,10 +74,7 @@ func TestFenceRecordCoversTheSiloWhileItCanRun(t *testing.T) {
 	rt := &recordingRuntime{Runtime: fake.New(), dir: dir}
 	a := &Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": rt}, Clock: clock.Real{},
 		LastContact: time.Now, FenceDir: dir}
-	runCtx, stop := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() { a.Run(runCtx); close(done) }()
-	defer func() { stop(); <-done }()
+	defer RunForTest(t, ctx, a)()
 	id := kri.ID{Namespace: "dev", Name: "web", UID: s.UID}
 	recorded := func() bool {
 		r, _ := fence.Read(dir)
@@ -144,10 +141,7 @@ func TestAgentReportsFenceFaults(t *testing.T) {
 	}
 	a := &Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": fake.New()}, Clock: clock.Real{},
 		LastContact: time.Now, FenceDir: dir}
-	runCtx, stop := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() { a.Run(runCtx); close(done) }()
-	defer func() { stop(); <-done }()
+	defer RunForTest(t, ctx, a)()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
 		var h v1.Host
 		_ = c.Get(ctx, "Host", "", "hv1", &h)

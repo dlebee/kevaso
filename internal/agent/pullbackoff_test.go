@@ -42,7 +42,7 @@ func TestAFailedPullWaitsBeforeTheNext(t *testing.T) {
 	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
 	rt := &badPuller{Runtime: fake.New()}
 	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": rt}, Clock: clock.Real{}}
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "missing", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "docker.io/library/nope:never"}, Resources: v1.Resources{CPU: 1, Memory: "64Mi"}}}
 	if err := c.Create(ctx, s); err != nil {

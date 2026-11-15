@@ -46,7 +46,7 @@ func TestAResetTakenBackDuringItsPullWipesNothing(t *testing.T) {
 	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
 	rt := &duringPull{Runtime: fake.New()}
 	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": rt}, Clock: clock.Real{}, Log: t.Logf}
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	e := &env{c: c, ctx: ctx}
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "db", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ghcr.io/acme/db:v1"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
