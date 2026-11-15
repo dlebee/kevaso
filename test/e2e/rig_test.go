@@ -18,6 +18,7 @@ import (
 	"time"
 
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/cli/kvo"
 	"kevaso.com/core/testbed"
 )
@@ -313,6 +314,16 @@ func execGo(r *rig, args ...string) *exec.Cmd {
 	c := exec.CommandContext(r.ctx, "go", args...)
 	c.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+r.arch, "CGO_ENABLED=0")
 	return c
+}
+
+// approve answers an approval with the request read just now (kvo approve --request ID, K-017).
+func (r *rig) approve(ns, name string) string {
+	r.t.Helper()
+	var a v1.Approval
+	if err := json.Unmarshal([]byte(r.must(kvo.Run, "", "get", "approval", name, "-n", ns, "-o", "json")), &a); err != nil {
+		r.t.Fatal(err)
+	}
+	return r.must(kvo.Run, "", "approve", name, "-n", ns, "--request", approvals.RequestID(&a))
 }
 
 // on is the rig reporting to a subtest.

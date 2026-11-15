@@ -53,20 +53,29 @@ type Agent struct {
 	// silos are neither made nor started: a microVM started before its runtime's storage is up
 	// fails, and a failed one stays failed.
 	RuntimeReady func(name string) bool
-	Clock        clock.Clock
-	Log          func(format string, args ...any)
-	// LastContact, if set, says when this host last reached the control plane. Past FenceAfter
-	// without contact, the agent fences: it stops the silos the control plane may recreate
-	// elsewhere (onHostLoss: Recreate) and starts nothing, so two copies never run.
+	// Bound is the worker's loaded bridge bindings (address → port), for the local endpoint
+	// (K-002): nil until the worker gives it.
+	Bound func(netip.Addr) (port string, ok bool)
+	Clock clock.Clock
+	Log   func(format string, args ...any)
+	// LastContact, if set, says when this host last reached the control plane. Without contact the
+	// agent changes nothing (§0.7), except for the silos that asked for it: each silo with
+	// onControlPlaneLoss: Stop is stopped once the contact is older than its after, and not
+	// started again until the contact is back.
 	LastContact func() time.Time
-	FenceAfter  time.Duration // default 30s, under the control plane's 40s host lease
+	// StopsOnLoss, if set, replaces (*v1.Silo).StopsOnControlPlaneLoss (tests shorten the times).
+	StopsOnLoss func(*v1.Silo) (stops bool, after time.Duration)
+	// WatermarkFile, if set, is where the agent keeps what it saw of its control plane (cluster,
+	// history, highest revision; watermark.go), across restarts and reboots. Answers are judged
+	// only where the client's ControlPlane hook is ObserveControlPlane (set by whoever makes the
+	// client, before it is used).
+	WatermarkFile string
 	// FenceDir, if set, is where the agent writes its fence record every second (internal/fence):
-	// its last contact and its silos' onHostLoss, for the fence watcher, which stops the movable
-	// ones when this agent can no longer vouch for them, running or not.
+	// its last contact and which of its silos stop on control-plane loss, for the fence watcher,
+	// which stops those when this agent can no longer vouch for them, running or not.
 	FenceDir string
-	// FenceApplies says whether this host needs fencing at all (fence.Applies: a second copy of
-	// its silos could be started elsewhere); known false: not decided yet (the last record's
-	// answer stands). Nil: always (a worker-only host).
+	// FenceApplies is no longer read: per §0.7 the fence acts where a silo asked for it (Stop),
+	// whoever else could start its silos. Left for the worker's wiring until that goes.
 	FenceApplies func() (applies, known bool)
 	// EgressCA is the host's egress CA: the agent puts it in the trust store of the VM silos whose
 	// grants inject (containers get the runtime's read-only bundle).
@@ -126,26 +135,42 @@ type Agent struct {
 	// heldBack: silo uid → struct{}: an old copy kept here, stopped, for its host-local volumes
 	// (removeEverywhere).
 	heldBack sync.Map
-	engine   *engine.Engine
+	// seenDeleted: silo uid → struct{}: a delete of that silo this agent saw on its own watch.
+	// Only such a delete removes a silo's disk and volumes (design §0.7): a silo that is merely
+	// missing from the API (a control plane restored from an older backup, a re-made cluster) is
+	// kept, running, with its data, and listed (kept, logged once).
+	seenDeleted sync.Map
+	keptNoted   sync.Map
+	engine      *engine.Engine
+	cp          *watermark // the control plane this worker trusts (watermark.go); via watermark()
+	cpOnce      sync.Once
 }
 
-// DefaultFenceAfter is under the host lease (40s), so a cut-off host has stopped its Recreate silos
-// before the control plane even considers it lost.
-const DefaultFenceAfter = fence.DefaultAfter
-
-func (a *Agent) fenceAfter() time.Duration {
-	if a.FenceAfter > 0 {
-		return a.FenceAfter
+func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
+	if a.StopsOnLoss != nil {
+		return a.StopsOnLoss(s)
 	}
-	return DefaultFenceAfter
+	return s.StopsOnControlPlaneLoss()
 }
 
-// cutOff reports whether the host has gone too long without reaching the control plane.
-func (a *Agent) cutOff() bool {
-	if a.LastContact == nil || !a.fenceApplies() || a.started.IsZero() {
-		return false
+// silence is how long the host has been without the control plane (zero before the agent runs).
+// It counts on a one-node cluster too: a silo that asked to stop without the control plane stops
+// whenever it's gone (§0.7 says not to ask for it there).
+func (a *Agent) silence() time.Duration {
+	if a.LastContact == nil || a.started.IsZero() {
+		return 0
 	}
-	return a.Clock.Now().Sub(a.lastContact()) > a.fenceAfter()
+	return a.Clock.Now().Sub(a.lastContact())
+}
+
+// inContact: the last contact is recent (well under the shortest after a silo may ask for).
+func (a *Agent) inContact() bool { return a.silence() <= fence.DefaultAfter }
+
+// mustStop reports whether s asked to be stopped on control-plane loss and the contact has been
+// gone longer than its after.
+func (a *Agent) mustStop(s *v1.Silo) bool {
+	stop, after := a.stopsOnLoss(s)
+	return stop && a.silence() > after
 }
 
 // lastContact is LastContact; with none yet in this run, what an earlier run recorded (a
@@ -162,22 +187,15 @@ func (a *Agent) lastContact() time.Time {
 	return a.started
 }
 
-// fenceApplies is FenceApplies, or what an earlier run recorded while it's undecided.
-func (a *Agent) fenceApplies() bool {
-	if a.FenceApplies == nil {
-		return true
-	}
-	if applies, known := a.FenceApplies(); known {
-		return applies
-	}
-	return a.fencePrev.Fence
-}
-
-// fence runs while the agent runs: on losing contact it stops Recreate silos; on getting it back
-// it looks at every silo again (the ones recreated elsewhere get removed).
+// fence runs while the agent runs. Without contact it changes nothing but this (§0.7): a silo
+// placed here that asked for it (onControlPlaneLoss: Stop) is killed once the contact is older
+// than its after. A silo the agent doesn't know, or knows only as an older copy, is left alone.
+// When the contact is back it looks at every silo again: the stopped ones start again, unless
+// a person moved them meanwhile (those are removed here).
 func (a *Agent) fence(ctx context.Context, e *engine.Engine) {
 	t := time.NewTicker(fence.CheckEvery)
 	defer t.Stop()
+	killed := map[string]bool{} // in this outage
 	for {
 		select {
 		case <-ctx.Done():
@@ -185,34 +203,39 @@ func (a *Agent) fence(ctx context.Context, e *engine.Engine) {
 		case <-t.C:
 		}
 		a.writeFenceRecord(ctx)
-		if !a.cutOff() {
+		if a.inContact() {
 			a.reportFenceFaults(ctx)
 		}
-		switch cut := a.cutOff(); {
-		case cut && !a.fenced.Load():
-			a.fenced.Store(true)
-			a.log("no contact with the control plane for over %s: fencing (stopping silos with onHostLoss: Recreate)", a.fenceAfter())
-			for _, rt := range a.Runtimes {
-				ids, err := rt.List(ctx)
-				if err != nil {
+		for _, rt := range a.Runtimes {
+			ids, err := rt.List(ctx)
+			if err != nil {
+				continue
+			}
+			for _, id := range ids {
+				o, ok := a.silos.Get(id.Namespace, id.Name)
+				if !ok || killed[id.UID] {
 					continue
 				}
-				for _, id := range ids {
-					o, ok := a.silos.Get(id.Namespace, id.Name)
-					if ok && o.(*v1.Silo).Policy() == v1.OnHostLossWait {
-						continue // Wait silos are never started elsewhere: keep them running
-					}
-					kctx, cancel := context.WithTimeout(ctx, fence.KillWithin)
-					// Killed, not stopped gracefully: another copy may start elsewhere soon.
-					if err := kri.Kill(kctx, rt, id); err != nil {
-						a.log("fence %s: %v", id, err)
-					}
-					cancel()
+				s := o.(*v1.Silo)
+				if s.UID != id.UID || !a.mustStop(s) {
+					continue
 				}
+				_, after := a.stopsOnLoss(s)
+				a.fenced.Store(true)
+				killed[id.UID] = true
+				a.log("no contact with the control plane for over %s: stopping %s (onControlPlaneLoss: Stop, after %s)", after, id, after)
+				kctx, cancel := context.WithTimeout(ctx, fence.KillWithin)
+				// Killed, not stopped gracefully: it asked not to run on without the control plane.
+				if err := kri.Kill(kctx, rt, id); err != nil {
+					a.log("fence %s: %v", id, err)
+				}
+				cancel()
 			}
-		case !cut && a.fenced.Load():
+		}
+		if a.fenced.Load() && a.inContact() {
 			a.fenced.Store(false)
-			a.log("contact with the control plane is back: unfencing")
+			clear(killed)
+			a.log("contact with the control plane is back: starting the silos stopped without it")
 			a.collectGarbage(ctx, e)
 			for _, o := range a.silos.List() {
 				s := o.(*v1.Silo)
@@ -238,11 +261,12 @@ func idOf(s *v1.Silo) kri.ID { return kri.ID{Namespace: s.Namespace, Name: s.Nam
 
 // Run runs the agent until ctx ends.
 func (a *Agent) Run(ctx context.Context) {
+	a.watermark() // read at start, before any answer is judged
 	a.silos = informer.New(a.Client, "Silo")
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
 	a.runCtx = ctx
 	a.started = a.Clock.Now()
-	a.endpoint = &Endpoint{Client: a.Client, HostName: a.HostName, Log: a.Log}
+	a.endpoint = &Endpoint{Client: a.Client, HostName: a.HostName, Log: a.Log, Bound: a.Bound}
 	if a.EndpointListen != "" {
 		go a.endpoint.ServeEndpoint(ctx, a.EndpointListen)
 	}
@@ -254,6 +278,7 @@ func (a *Agent) Run(ctx context.Context) {
 	e.Register(a, engine.Options{Workers: 4})
 	a.silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	go a.silos.Run(ctx)
+	go a.watchDeletes(ctx, e)
 	// Rotation fan-out: a secret or grant changing looks again at every silo here that receives
 	// it (its files and env vars are written again, its endpoint and policy follow its grants).
 	for kind, inf := range map[string]*informer.Informer{"Secret": a.secrets, "Grant": a.grants} {
@@ -268,6 +293,7 @@ func (a *Agent) Run(ctx context.Context) {
 		a.fencePrev, _ = fence.Read(a.FenceDir)
 	}
 	go a.fence(ctx, e)
+	go a.watchControlPlane(ctx)
 	go a.resync(ctx, e)
 	go func() { // after the first sync, look for runtime silos the API no longer knows
 		if a.silos.WaitSynced(ctx) {
@@ -297,10 +323,15 @@ func (a *Agent) resync(ctx context.Context, e *engine.Engine) {
 			return
 		case <-t.C:
 		}
-		for _, o := range a.silos.List() {
-			if s := o.(*v1.Silo); s.Status.Host == a.HostName {
-				e.Changed(engine.Key{Kind: "Silo", Namespace: s.Namespace, Name: s.Name})
-			}
+		a.resyncAll()
+	}
+}
+
+// resyncAll looks at every silo of this host again.
+func (a *Agent) resyncAll() {
+	for _, o := range a.silos.List() {
+		if s := o.(*v1.Silo); s.Status.Host == a.HostName {
+			a.engine.Changed(engine.Key{Kind: "Silo", Namespace: s.Namespace, Name: s.Name})
 		}
 	}
 }
@@ -322,6 +353,9 @@ func (a *Agent) collectGarbage(ctx context.Context, e *engine.Engine) {
 
 // Reconcile implements engine.Controller.
 func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
+	if a.ControlPlaneHeld() {
+		return engine.Result{RequeueAfter: 5 * time.Second}, nil // §0.7: everything stays as it is
+	}
 	o, ok := a.silos.Get(k.Namespace, k.Name)
 	var s *v1.Silo
 	if ok {
@@ -349,11 +383,14 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 			setCond(st, "Ready", meta.ConditionFalse, "Moving", "waiting for "+s.Status.MovingFrom+" to stop it and let go", s.Generation, a.now())
 		})
 	}
-	if a.fenced.Load() && s.Policy() != v1.OnHostLossWait {
-		return engine.Result{RequeueAfter: 5 * time.Second}, nil // cut off: start nothing that may run elsewhere
+	if a.mustStop(s) {
+		return engine.Result{RequeueAfter: 5 * time.Second}, nil // cut off past its after: it asked not to run
 	}
 	// An older silo with the same name (deleted and re-created) must not linger next to it.
 	if err := a.removeEverywhere(ctx, k, s); err != nil {
+		return engine.Result{}, err
+	}
+	if err := a.armFence(ctx, s); err != nil {
 		return engine.Result{}, err
 	}
 	rt, ok := a.Runtimes[s.Spec.Runtime]
@@ -875,6 +912,18 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {
 				continue
 			}
+			// Not in the API (or replaced by another of the same name) and no delete of it seen
+			// here: keep it, running, its disk and volumes untouched (design §0.7, K-004).
+			if s == nil || id.UID != s.UID {
+				if _, seen := a.seenDeleted.Load(id.UID); !seen {
+					if _, logged := a.keptNoted.LoadOrStore(id.UID, struct{}{}); !logged {
+						a.log("keeping %s on %s: the control plane doesn't know it and no delete of it was seen here; it keeps running with its disk and volumes (nothing is removed without a delete)",
+							id, rt.Info().Name)
+					}
+					continue
+				}
+				a.keptNoted.Delete(id.UID)
+			}
 			// The same silo, placed elsewhere but not deleted, with volumes on this host's disks:
 			// deleting the copy would delete them (every runtime removes a silo's local volumes on
 			// Delete). A volume is kept data (design §0.3): admission never lets such a silo be
@@ -1038,4 +1087,38 @@ func removeCondition(st *v1.SiloStatus, typ string) {
 func firstLineOf(s string) string {
 	l, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
 	return l
+}
+
+// watchDeletes records every silo delete the control plane announces while this agent is
+// watching (its UID), then looks at the silo again: only a delete seen here removes a silo's data.
+// A delete made while the watch was down is never seen, and that silo is kept (design §0.7).
+func (a *Agent) watchDeletes(ctx context.Context, e *engine.Engine) {
+	for ctx.Err() == nil {
+		// From now on only (a list's revision): a watch from nothing replays deletes made before
+		// this agent was watching, which it never saw.
+		var ch <-chan client.Event
+		l, err := a.Client.List(ctx, "Silo", "")
+		if err == nil {
+			ch, err = a.Client.Watch(ctx, "Silo", "", l.Metadata.ResourceVersion)
+		}
+		if err == nil {
+			for ev := range ch {
+				if ev.Type != "DELETED" || a.ControlPlaneHeld() {
+					continue // a delete from a control plane this worker doesn't trust removes nothing
+				}
+				o, _, err := v1.Decode(ev.Object)
+				if err != nil {
+					continue
+				}
+				m := o.GetObjectMeta()
+				a.seenDeleted.Store(m.UID, struct{}{})
+				e.Changed(engine.Key{Kind: "Silo", Namespace: m.Namespace, Name: m.Name})
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
 }

@@ -62,9 +62,18 @@ func inspection(rec *hostreset.Record, silos []string, pvs []string, lvs []strin
 	if rec != nil {
 		b.WriteString(strings.ReplaceAll(rec.Render(), "== ", "=== "))
 	}
-	b.WriteString("== installed\nkevasod=yes\nrunning=yes\n== silos\n" + strings.Join(silos, "\n") + "\n== pvs\n" + strings.Join(pvs, "\n") +
+	b.WriteString("== installed\nkevasod=yes\nrunning=yes\n== silos\n" + strings.Join(silos, "\n") + "\n== storagefile\n" + storageLine(pvs) + "== pvs\n" + strings.Join(pvs, "\n") +
 		"\n== lvs\n" + strings.Join(lvs, "\n") + "\n== state\n" + strings.ReplaceAll(now.Render(), "== ", "=== "))
 	return b.String()
+}
+
+func storageLine(pvs []string) string {
+	for _, p := range pvs {
+		if strings.HasSuffix(p, hostreset.StorageImage) {
+			return hostreset.StorageImage + " 60G\n"
+		}
+	}
+	return ""
 }
 
 func newResetHost(t *testing.T, rec *hostreset.Record, silos, pvs, lvs []string, f hostreset.Flags) *fakeResetHost {
@@ -282,5 +291,20 @@ func TestDrainHandsOff(t *testing.T) {
 	}
 	if s.Status.Host != "hv1" || len(s.Status.Conditions) != 0 {
 		t.Error("DrainStatus changed the silo it was given")
+	}
+}
+
+func TestStorageDeviceFlag(t *testing.T) {
+	o, err := parseTarget([]string{"ubuntu@h", "--storage-device", "/dev/nvme1n1"})
+	if err != nil || o.StorageDevice != "/dev/nvme1n1" {
+		t.Fatalf("%+v %v", o, err)
+	}
+	if args := strings.Join(workerArgs(o), " "); !strings.Contains(args, "--storage-device /dev/nvme1n1") || strings.Contains(args, "loop") {
+		t.Errorf("worker args: %s", args)
+	}
+	for _, bad := range [][]string{{"h", "--storage-device", "nvme1n1"}, {"h", "--storage-device", "/dev/x", "--loop-storage", "60G"}} {
+		if _, err := parseTarget(bad); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
 	}
 }

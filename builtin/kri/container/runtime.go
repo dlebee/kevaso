@@ -66,8 +66,11 @@ type state struct {
 	ID kri.ID `json:"id"`
 	// Engine is whose silo it is (docker | podman; empty: docker). Both engines' runtimes keep
 	// their silos' state in the same Dir, so each one only ever takes its own.
-	Engine  string       `json:"engine,omitempty"`
-	IP      string       `json:"ip"`
+	Engine string `json:"engine,omitempty"`
+	IP     string `json:"ip"`
+	// MAC is its veth peer's, fixed like a VM's (cloudhypervisor.MAC): the bridge binds its port
+	// to it (K-002). Empty in a state from before: a random one, as then.
+	MAC     string       `json:"mac,omitempty"`
 	Image   string       `json:"image"`
 	Command []string     `json:"command,omitempty"`
 	Volumes []kri.Volume `json:"volumes,omitempty"`
@@ -324,7 +327,7 @@ func (r *Runtime) wire(ctx context.Context, s state, pid int) error {
 	}
 	bits := strconv.Itoa(cloudhypervisor.Network.Bits())
 	steps := [][]string{
-		{"ip", "link", "add", n.Veth, "type", "veth", "peer", "name", n.Peer},
+		vethAdd(n, s.MAC),
 		{"ip", "link", "set", n.Peer, "netns", p},
 		{"nsenter", "-t", p, "-n", "ip", "link", "set", n.Peer, "name", "eth0"},
 		{"nsenter", "-t", p, "-n", "ip", "addr", "add", s.IP + "/" + bits, "dev", "eth0"},
@@ -354,7 +357,7 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		cloudhypervisor.IPMu.Lock()
 		ip, err := cloudhypervisor.AllocateIP(cloudhypervisor.UsedIPs(chHost{r.Host}))
 		if err == nil {
-			s = state{ID: spec.ID, IP: ip.String(), Image: spec.Image, Command: spec.Command, Volumes: spec.Volumes, CPU: spec.CPU, Memory: spec.Memory}
+			s = state{ID: spec.ID, IP: ip.String(), MAC: cloudhypervisor.MAC(spec.ID), Image: spec.Image, Command: spec.Command, Volumes: spec.Volumes, CPU: spec.CPU, Memory: spec.Memory}
 			err = r.save(s)
 		}
 		cloudhypervisor.IPMu.Unlock()
@@ -772,3 +775,12 @@ var (
 	_ kri.HostSecrets    = (*Runtime)(nil)
 	_ kri.EnvPath        = (*Runtime)(nil)
 )
+
+// vethAdd makes the silo's veth pair; its peer (the container's eth0) gets the silo's fixed MAC.
+func vethAdd(n Names, mac string) []string {
+	cmd := []string{"ip", "link", "add", n.Veth, "type", "veth", "peer", "name", n.Peer}
+	if mac != "" {
+		cmd = append(cmd, "address", mac)
+	}
+	return cmd
+}

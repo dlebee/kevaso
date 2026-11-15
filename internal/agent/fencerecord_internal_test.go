@@ -32,7 +32,7 @@ func (r *recordingRuntime) Start(ctx context.Context, id kri.ID) error {
 	rec, _ := fence.Read(r.dir)
 	v := int32(2)
 	for _, s := range rec.Silos {
-		if s.ID.UID == id.UID && s.OnHostLoss == v1.OnHostLossRecreate {
+		if s.ID.UID == id.UID && s.StopAfter > 0 {
 			v = 1
 		}
 	}
@@ -62,7 +62,7 @@ func TestFenceRecordCoversTheSiloWhileItCanRun(t *testing.T) {
 	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
-			Availability: v1.Availability{OnHostLoss: v1.OnHostLossRecreate}}}
+			Availability: v1.Availability{OnControlPlaneLoss: v1.OnControlPlaneLossStop}}}
 	if err := c.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}

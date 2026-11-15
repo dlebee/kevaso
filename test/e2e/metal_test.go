@@ -34,6 +34,7 @@ import (
 	"time"
 
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/cli/kvo"
 	"kevaso.com/core/internal/cli/kvoadm"
 	"kevaso.com/core/testbed"
@@ -734,3 +735,13 @@ func TestMetalCheck(t *testing.T) {
 }
 
 func jsonUnmarshal(s string, v any) error { return json.Unmarshal([]byte(s), v) }
+
+// approve answers an approval with the request read just now (kvo approve --request ID, K-017).
+func (c *mt) approve(ns, name string) string {
+	c.t.Helper()
+	var a v1.Approval
+	if err := json.Unmarshal([]byte(c.must("", "get", "approval", name, "-n", ns, "-o", "json")), &a); err != nil {
+		c.t.Fatal(err)
+	}
+	return c.must("", "approve", name, "-n", ns, "--request", approvals.RequestID(&a))
+}

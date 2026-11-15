@@ -136,7 +136,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		_, _ = fmt.Fprintln(stderr, `usage:
   kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL] [--store sqlite|etcd] [--restore BACKUP] [--internal-ip IP] [--external-ip IP]
   kvoadm backup [USER@]ADDRESS --output FILE [--ssh-key PATH]
-  kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime NAME]… [--loop-storage SIZE]
+  kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime NAME]… [--loop-storage SIZE | --storage-device /dev/DISK]
   kvoadm host reconnect [USER@]ADDRESS --ssh-key PATH [--server URL]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker [--runtime NAME]… [--internal-ip IP] [--external-ip IP]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install control-plane [--state-only] [--internal-ip IP] [--external-ip IP]
@@ -175,6 +175,7 @@ type InitOptions struct {
 	HostKeyFirstUse                                                                   bool   // trust the host key without asking (tests only)
 	Worker                                                                            bool   // also install the worker component (one-host cluster)
 	LoopStorage                                                                       string // development: back silo disks with a loop file of this size
+	StorageDevice                                                                     string // a whole, empty disk for the silos' volume group
 	// InternalIP and ExternalIP are the machine's addresses as the operator declares them (design
 	// §7.0): its address on its own network, and the one reachable from outside it. Neither
 	// given: the SSH address, as its internal IP (kvoadm can't know it's reachable from outside).
@@ -283,6 +284,8 @@ func parseTarget(args []string) (InitOptions, error) {
 			o.Worker = true
 		case "--loop-storage":
 			o.LoopStorage, err = next()
+		case "--storage-device":
+			o.StorageDevice, err = next()
 		case "--internal-ip":
 			o.InternalIP, err = next()
 		case "--external-ip":
@@ -310,6 +313,12 @@ func parseTarget(args []string) (InitOptions, error) {
 	}
 	if target == "" {
 		return o, errors.New("which machine? give [USER@]ADDRESS")
+	}
+	if o.LoopStorage != "" && o.StorageDevice != "" {
+		return o, errors.New("--loop-storage or --storage-device, not both")
+	}
+	if o.StorageDevice != "" && !strings.HasPrefix(o.StorageDevice, "/dev/") {
+		return o, fmt.Errorf("--storage-device %s: give the disk's /dev path (it must be whole and empty)", o.StorageDevice)
 	}
 	o.User, o.Address = splitTarget(target)
 	if o.Name == "" {
@@ -572,6 +581,13 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 			return fmt.Errorf("restore: %w", err)
 		}
 		say("backup restored into /var/lib/kevaso: store, cluster CA, and the master key rebuilt with the recovery key")
+	} else {
+		// Starting a cluster is always explicit (§0.7): the record that makes the next start create
+		// it. kevasod's unit never creates one, so a node that loses its data refuses to start.
+		if _, err := conn.Run(ctx, "kevasod admin create-cluster --cluster "+sshboot.Quote(o.Cluster)+" --data /var/lib/kevaso", nil); err != nil {
+			return fmt.Errorf("create cluster %s: %w", o.Cluster, err)
+		}
+		say("cluster %s created on this host (its record in /var/lib/kevaso)", o.Cluster)
 	}
 	if err := installUnits(ctx, conn, UnitsFor(Unit(o), o.Worker, o.Runtimes)); err != nil {
 		return err

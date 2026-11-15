@@ -10,7 +10,9 @@ import (
 
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/cli/kvoadm"
+	siloctl "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/fence"
+	"kevaso.com/core/internal/worker"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -185,12 +187,14 @@ func running(c *mt, uid string) bool {
 	return strings.TrimSpace(out) != ""
 }
 
-// TestMetal2Fence is the fence acting (design §0.4): machine 2 cut off from the system node (a
-// firewall rule on machine 2, never port 22) past the fence time stops only the silos the
-// control plane may start elsewhere (onHostLoss: Recreate), keeps the Wait ones running; the
-// control plane starts the Recreate one on machine 1; kvo move --confirm-fenced moves a Wait one
-// off the lost host; with the cut lifted, machine 2 has one copy of nothing that moved, and the
-// Wait silo that stayed never restarted.
+// TestMetal2Fence is a worker cut off from its control plane (§0.7; a firewall rule on machine 2,
+// never port 22): it changes nothing, except that the silos that asked for it (onControlPlaneLoss:
+// Stop) stop past their after. Only such a silo with onHostLoss: Recreate is started elsewhere by
+// the control plane, after its after plus the margin, counted on the control plane's own clock;
+// the Stop silo that waits stays assigned to machine 2, and nothing else moves by itself (a
+// Recreate silo that didn't opt in included). kvo move --confirm-fenced moves a silo off the lost
+// host. With the cut lifted, machine 2 starts the waiting Stop silo again, removes its copies of
+// what moved, and every other silo is the same copy, never restarted.
 //
 // Listens on nothing outside.
 func TestMetal2Fence(t *testing.T) {
@@ -201,53 +205,81 @@ func TestMetal2Fence(t *testing.T) {
 	c.namespace(ns)
 	t.Cleanup(p.uncut)
 	c.apply(boxEcho(ns, "stay", 8080) + on(metalHost2) + "---\n" +
-		boxEcho(ns, "moves", 8080) + "  availability: { onHostLoss: Recreate }\n" + "---\n" + boxEcho(ns, "rescue", 8080))
-	c.waitRunning(ns, 10*time.Minute, "stay", "moves", "rescue")
-	for _, n := range []string{"moves", "rescue"} { // both on machine 2 to start with
+		boxEcho(ns, "recreate", 8080) + on(metalHost2) + "  availability: { onHostLoss: Recreate }\n---\n" +
+		boxEcho(ns, "stops", 8080) + on(metalHost2) + "  availability: { onControlPlaneLoss: Stop, after: 30s }\n---\n" +
+		boxEcho(ns, "restarts", 8080) + "  availability: { onControlPlaneLoss: Stop, after: 30s, onHostLoss: Recreate }\n---\n" +
+		boxEcho(ns, "rescue", 8080))
+	c.waitRunning(ns, 10*time.Minute, "stay", "recreate", "stops", "restarts", "rescue")
+	for _, n := range []string{"restarts", "rescue"} {
 		if s := c.silo(ns, n); s.Status.Host != metalHost2 {
 			c.must("", "move", "silo", n, "-n", ns, "--to", metalHost2)
 		}
 	}
-	c.eventually("all three on "+metalHost2, 5*time.Minute, func() (bool, string) {
-		got := ""
-		for _, n := range []string{"stay", "moves", "rescue"} {
+	names := []string{"stay", "recreate", "stops", "restarts", "rescue"}
+	c.eventually("all five on "+metalHost2, 5*time.Minute, func() (bool, string) {
+		for _, n := range names {
 			s := c.silo(ns, n)
 			if s.Status.Host != metalHost2 || s.Status.Phase != "Running" {
 				return false, n + " " + s.Status.Host + " " + s.Status.Phase
 			}
-			got += n + " "
 		}
-		return true, got
+		return true, ""
 	})
 	uids := map[string]string{}
-	for _, n := range []string{"stay", "moves", "rescue"} {
+	for _, n := range names {
 		uids[n] = c.silo(ns, n).UID
 	}
-	stayStart := strings.TrimSpace(p.c2.mustSh("docker ps -q --filter label=kevaso.com/uid=" + uids["stay"] + " | xargs -r docker inspect -f '{{.State.StartedAt}}'"))
+	startedAt := func(n string) string {
+		return strings.TrimSpace(p.c2.mustSh("docker ps -q --filter label=kevaso.com/uid=" + uids[n] + " | xargs -r docker inspect -f '{{.State.StartedAt}}'"))
+	}
+	before := map[string]string{}
+	for _, n := range []string{"stay", "recreate"} {
+		before[n] = startedAt(n)
+	}
 	rec := p.c2.mustSh("cat " + fence.Dir + "/" + fence.RecordFile)
 	if !strings.Contains(rec, `"fence":true`) {
-		t.Errorf("machine 2's fence record doesn't say fence: true (its control plane is elsewhere): %s", rec)
+		t.Errorf("machine 2 runs a Stop silo and its fence record doesn't say fence: true: %s", rec)
 	}
 
 	p.cut()
+	cutAt := time.Now()
 	t.Log("machine 2 cut off from the system node")
-	c.eventually("the fence stops the Recreate silo on machine 2", fence.WorstStopped(fence.DefaultAfter)+30*time.Second, func() (bool, string) {
-		return !running(p.c2, uids["moves"]), "still running"
+	c.eventually("both Stop silos stop on machine 2", fence.WorstStopped(30*time.Second)+30*time.Second, func() (bool, string) {
+		return !running(p.c2, uids["stops"]) && !running(p.c2, uids["restarts"]), "still running"
 	})
-	if !running(p.c2, uids["stay"]) || !running(p.c2, uids["rescue"]) {
-		t.Error("the fence stopped a Wait silo")
-	} else {
-		t.Log("the Wait silos keep running on machine 2")
+	// The agent counts from the last heartbeat it sent: up to one period before the cut.
+	if d := time.Since(cutAt); d < 30*time.Second-worker.DefaultHeartbeat {
+		t.Errorf("the Stop silos stopped %s into the cut, before their after (30s, less a heartbeat)", d.Round(time.Second))
 	}
-	c.eventually("the control plane starts the Recreate silo on machine 1", 5*time.Minute, func() (bool, string) {
-		s := c.silo(ns, "moves")
+	c.eventually("the control plane starts the Stop + Recreate silo on machine 1", 5*time.Minute, func() (bool, string) {
+		s := c.silo(ns, "restarts")
 		return s.Status.Host == metalHost && s.Status.Phase == "Running", s.Status.Host + " " + s.Status.Phase
 	})
+	// The control plane counts from the last heartbeat it saw: up to one period before the cut.
+	if d := time.Since(cutAt); d < 30*time.Second+siloctl.StopMargin(30*time.Second)-worker.DefaultHeartbeat {
+		t.Errorf("restarted elsewhere %s into the cut, before after + margin", d.Round(time.Second))
+	} else {
+		t.Logf("restarted on machine 1 %s into the cut (after 30s + margin %s)", d.Round(time.Second), siloctl.StopMargin(30*time.Second))
+	}
+	// Well past the host lease: nothing else stops, and nothing else starts elsewhere.
+	for end := time.Now().Add(90 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Second) {
+		for _, n := range []string{"stay", "recreate", "rescue"} {
+			if !running(p.c2, uids[n]) {
+				t.Fatalf("the cut stopped %s on machine 2 (it didn't ask to stop)", n)
+			}
+		}
+		for _, n := range []string{"recreate", "stops"} {
+			if s := c.silo(ns, n); s.Status.Host != metalHost2 {
+				t.Fatalf("the control plane moved %s to %q by itself (it didn't opt in, or waits)", n, s.Status.Host)
+			}
+		}
+	}
+	t.Log("well into the cut: the rest keeps running on machine 2, and nothing else started elsewhere")
 	if out, code := c.kvo("", "move", "silo", "rescue", "-n", ns, "--to", metalHost); code == 0 {
 		t.Errorf("a move off a lost host without --confirm-fenced went ahead: %s", out)
 	}
-	// Machine 2 still runs rescue (Wait: never fenced). Confirming the fence is the operator's
-	// word that it doesn't: make it true first, as an operator would on a host they can reach.
+	// Machine 2 still runs rescue. Confirming the fence is the operator's word that it doesn't:
+	// make it true first, as an operator would on a host they can reach.
 	p.c2.mustSh("docker ps -q --filter label=kevaso.com/uid=" + uids["rescue"] + " | xargs -r docker stop -t 2 >/dev/null; true")
 	c.must("", "move", "silo", "rescue", "-n", ns, "--to", metalHost, "--confirm-fenced")
 	c.eventually("--confirm-fenced: rescue runs on machine 1", 5*time.Minute, func() (bool, string) {
@@ -258,22 +290,25 @@ func TestMetal2Fence(t *testing.T) {
 	p.uncut()
 	t.Log("the cut lifted")
 	c.eventually(metalHost2+" is Ready again", 5*time.Minute, func() (bool, string) {
-		h := c.hostNamed(metalHost2)
-		return meta(*h, "Ready"), fmt.Sprint(h.Status.Conditions)
+		return c.hostReady(metalHost2)
 	})
-	c.eventually("machine 2 keeps no copy of what moved", 5*time.Minute, func() (bool, string) {
-		return !running(p.c2, uids["moves"]) && !running(p.c2, uids["rescue"]), "a copy still runs"
+	c.eventually("machine 2 starts the waiting Stop silo again and keeps no copy of what moved", 5*time.Minute, func() (bool, string) {
+		return running(p.c2, uids["stops"]) && !running(p.c2, uids["rescue"]) && !running(p.c2, uids["restarts"]), "not yet"
 	})
-	if got := strings.TrimSpace(p.c2.mustSh("docker ps -q --filter label=kevaso.com/uid=" + uids["stay"] + " | xargs -r docker inspect -f '{{.State.StartedAt}}'")); got != stayStart {
-		t.Errorf("the Wait silo restarted: %q → %q", stayStart, got)
+	for n, v := range before {
+		if got := startedAt(n); got != v {
+			t.Errorf("%s restarted: %q → %q", n, v, got)
+		}
 	}
-	c.waitRunning(ns, 3*time.Minute, "stay", "moves", "rescue")
+	c.waitRunning(ns, 3*time.Minute, names...)
 }
 
-// TestMetal2HostLoss is a worker lost and back: machine 2 rebooted while it holds silos. While
-// it's down the control plane starts the Recreate silo on machine 1 and keeps the Wait ones
-// waiting; back up, the Wait ones (a container, and a microVM with its volume's data) run on
-// it again, and it keeps no copy of the one that moved.
+// TestMetal2HostLoss is a worker lost and back (§0.7): machine 2 rebooted while it holds silos.
+// While it's down the control plane starts none of them elsewhere, onHostLoss: Recreate or not;
+// back up, they all run on it again (a container, a Recreate one, and a microVM with its volume's
+// data).
+//
+// Needs the control plane's half of §0.7 (a lost host's silos wait).
 //
 // Listens on nothing outside.
 func TestMetal2HostLoss(t *testing.T) {
@@ -304,13 +339,14 @@ func TestMetal2HostLoss(t *testing.T) {
 
 	_, _ = p.c2.sh("nohup sh -c 'sleep 2; systemctl reboot' >/dev/null 2>&1 &")
 	_ = p.m2.d.Close()
-	c.eventually("the control plane starts the Recreate silo on machine 1", 5*time.Minute, func() (bool, string) {
-		s := c.silo(ns, "moves")
-		return s.Status.Host == metalHost && s.Status.Phase == "Running", s.Status.Host + " " + s.Status.Phase
-	})
-	if s := c.silo(ns, "stay"); s.Status.Host != metalHost2 {
-		t.Errorf("a Wait silo left its lost host: %s", s.Status.Host)
+	for end := time.Now().Add(3 * time.Minute); time.Now().Before(end); time.Sleep(10 * time.Second) {
+		for _, n := range []string{"stay", "vm", "moves"} {
+			if h := c.silo(ns, n).Status.Host; h != metalHost2 {
+				t.Fatalf("%s left its lost host for %q by itself", n, h)
+			}
+		}
 	}
+	t.Log("3 minutes with machine 2 down: every silo waits for it")
 	c.eventually("machine 2 is back (a new boot, the pinned host key)", 15*time.Minute, func() (bool, string) {
 		out, err := p.c2.sh("cat /proc/sys/kernel/random/boot_id")
 		if err != nil {
@@ -320,11 +356,10 @@ func TestMetal2HostLoss(t *testing.T) {
 		return strings.TrimSpace(out) != boot, out
 	})
 	c.eventually(metalHost2+" is Ready again", 10*time.Minute, func() (bool, string) {
-		h := c.hostNamed(metalHost2)
-		return meta(*h, "Ready"), fmt.Sprint(h.Status.Conditions)
+		return c.hostReady(metalHost2)
 	})
 	c.waitRunning(ns, 15*time.Minute, "stay", "vm", "moves")
-	for _, n := range []string{"stay", "vm"} {
+	for _, n := range []string{"stay", "vm", "moves"} {
 		if h := c.silo(ns, n).Status.Host; h != metalHost2 {
 			t.Errorf("%s runs on %s after the boot, want %s", n, h, metalHost2)
 		}
@@ -334,9 +369,10 @@ func TestMetal2HostLoss(t *testing.T) {
 		out, code := c.in(ns, "vm", "cat /data/marker")
 		return code == 0 && out == marker, out
 	})
-	c.eventually("machine 2 keeps no copy of the silo that moved", 5*time.Minute, func() (bool, string) {
-		out, _ := p.c2.sh("docker ps -aq --filter label=kevaso.com/uid=" + movesUID)
-		return strings.TrimSpace(out) == "", out
+	c.eventually("the Recreate silo runs on machine 2, one copy", 5*time.Minute, func() (bool, string) {
+		// Its own container (the pause container, which holds its network, is not a copy).
+		out, _ := p.c2.sh("docker ps -q --filter label=kevaso.com/uid=" + movesUID + " --filter label=kevaso.com/name")
+		return len(strings.Fields(out)) == 1, out
 	})
 }
 
@@ -467,4 +503,45 @@ func (p *pair) kvoadm(args ...string) {
 	} else {
 		p.t.Logf("kvoadm %v:\n%s", args, o.String())
 	}
+}
+
+// TestMetal2KeptWhenMissing is K-004 on real hosts: a silo deleted while its worker's kevasod is
+// down (so the worker never sees the delete, as after a restore from an older backup) is kept on
+// the worker, still running, with its disk and volume; only a delete the worker sees removes
+// data. The kept copy is left for the final reset.
+//
+// Listens on nothing outside.
+func TestMetal2KeptWhenMissing(t *testing.T) {
+	p := metal2(t)
+	c := p.c1
+	ns := "kept2"
+	c.namespace(ns)
+	place := ""
+	if p.m1Worker {
+		place = on(metalHost2)
+	}
+	c.apply(vmEcho(ns, "db", 8080) + place + "  volumes: [{ name: data, size: 1Gi, mountPath: /data }]\n")
+	c.waitRunning(ns, 20*time.Minute, "db")
+	s := c.silo(ns, "db")
+	n := cloudhypervisor.NamesFor(kri.ID{Namespace: s.Namespace, Name: s.Name, UID: s.UID})
+	lvs := func() string {
+		return strings.TrimSpace(p.c2.mustSh("lvs --noheadings -o lv_name kevaso | tr -d ' ' | grep '^" + n.LV + "' | sort"))
+	}
+	before := lvs()
+	if !strings.Contains(before, n.LV+"-") {
+		t.Fatalf("no volume LV for db: %q", before)
+	}
+	p.c2.mustSh("systemctl stop kevasod")
+	t.Cleanup(func() { _, _ = p.c2.sh("systemctl start kevasod") })
+	c.must("", "delete", "silo", "db", "-n", ns)
+	p.c2.mustSh("systemctl start kevasod")
+	c.eventually(metalHost2+" is Ready again", 5*time.Minute, func() (bool, string) {
+		return c.hostReady(metalHost2)
+	})
+	c.holds("the silo the worker never saw deleted keeps its disk and volume, and runs", 60*time.Second, func() (bool, string) {
+		active, _ := p.c2.sh("systemctl is-active " + n.Unit)
+		got := lvs()
+		return got == before && strings.TrimSpace(active) == "active", got + " " + active
+	})
+	c.expect("kevasod says it keeps it", p.c2.mustSh("journalctl -u kevasod --no-pager --since '-10min' | grep -c 'keeping "+ns+"/db' || true"), "1")
 }

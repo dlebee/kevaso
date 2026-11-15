@@ -20,11 +20,49 @@ var goneEvery = 10 * time.Second
 //
 //   - a silo is recorded before its runtime creates or starts it (recordForFence), never after;
 //   - every silo the API places here, or that is moving away from here, is recorded with its
-//     current policy;
+//     StopAfter (fenceEntry);
 //   - a recorded silo the API no longer places here stays, with its last policy, until no
 //     runtime here has it: a silo moved or deleted while its old copy still runs stays covered.
 //
 // What an earlier run of the agent recorded stands until this run knows better.
+
+// fenceEntry is how s is recorded for the fence watcher (record version 2): stopped without the
+// control plane only if it asked for it, after its own after (§0.7); its onHostLoss is kept for
+// people reading the record and means nothing to the fence.
+func fenceEntry(s *v1.Silo) fence.Silo {
+	e := fence.Silo{ID: idOf(s), Runtime: s.Spec.Runtime, OnHostLoss: s.Policy()}
+	if stop, after := s.StopsOnControlPlaneLoss(); stop {
+		e.StopAfter = after
+	}
+	return e
+}
+
+// armFence says on the silo whether this host's fence stops it (fence.ArmedCondition), only
+// once the record on disk holds that: the control plane restarts an opted-in silo elsewhere only
+// while it's armed. Without a fence record (no FenceDir) nothing here could stop it, so it is
+// never armed.
+func (a *Agent) armFence(ctx context.Context, s *v1.Silo) error {
+	stop, after := s.StopsOnControlPlaneLoss()
+	armed := meta.FindCondition(s.Status.Conditions, fence.ConditionArmed)
+	if !stop || a.FenceDir == "" {
+		if armed == nil || armed.Status != meta.ConditionTrue {
+			return nil
+		}
+		return a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			meta.SetCondition(&st.Conditions, meta.Condition{Type: fence.ConditionArmed, Status: meta.ConditionFalse, Reason: "NotStopped",
+				Message: a.HostName + " doesn't stop this silo without the control plane", ObservedGeneration: s.Generation}, a.now())
+		})
+	}
+	if fence.Armed(s) && s.Status.Host == a.HostName {
+		return nil
+	}
+	if err := a.recordForFence(s); err != nil { // on disk first
+		return err
+	}
+	return a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+		meta.SetCondition(&st.Conditions, fence.ArmedCondition(a.HostName, after, s.Generation), a.now())
+	})
+}
 
 // recordForFence records s (and writes the record) before its runtime starts it.
 func (a *Agent) recordForFence(s *v1.Silo) error {
@@ -34,7 +72,7 @@ func (a *Agent) recordForFence(s *v1.Silo) error {
 	a.fenceMu.Lock()
 	defer a.fenceMu.Unlock()
 	a.loadRecorded()
-	e := fence.Silo{ID: idOf(s), Runtime: s.Spec.Runtime, OnHostLoss: s.Policy()}
+	e := fenceEntry(s)
 	if a.recorded[s.UID] == e {
 		return nil
 	}
@@ -57,7 +95,8 @@ func (a *Agent) loadRecorded() {
 
 // buildRecord is the record from what's recorded now. Called with fenceMu held.
 func (a *Agent) buildRecord() fence.Record {
-	r := fence.Record{Written: a.now().UTC(), LastContact: a.fencePrev.LastContact, Fence: a.fenceApplies()}
+	// The fence is inert unless a silo here asked to stop without the control plane (§0.7).
+	r := fence.Record{Version: fence.RecordVersion, Written: a.now().UTC(), LastContact: a.fencePrev.LastContact}
 	if a.LastContact != nil {
 		last := a.LastContact()
 		if last.IsZero() && !a.started.IsZero() {
@@ -69,6 +108,7 @@ func (a *Agent) buildRecord() fence.Record {
 	}
 	for _, s := range a.recorded {
 		r.Silos = append(r.Silos, s)
+		r.Fence = r.Fence || s.StopAfter > 0
 	}
 	sort.Slice(r.Silos, func(i, j int) bool { return r.Silos[i].ID.UID < r.Silos[j].ID.UID })
 	return r
@@ -90,7 +130,7 @@ func (a *Agent) fenceRecord(ctx context.Context) fence.Record {
 			continue
 		}
 		here[s.UID] = true
-		a.recorded[s.UID] = fence.Silo{ID: idOf(s), Runtime: s.Spec.Runtime, OnHostLoss: s.Policy()}
+		a.recorded[s.UID] = fenceEntry(s)
 	}
 	var gone []string
 	for uid := range a.recorded {

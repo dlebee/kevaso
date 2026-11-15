@@ -153,7 +153,7 @@ cat /tmp/answer; [ "$code" = 200 ]`
 			case <-time.After(5 * time.Second):
 				t.Log("the call is held while the approval is pending")
 			}
-			c.must("", "approve", pending.Name, "-n", ns)
+			c.approve(ns, pending.Name)
 			select {
 			case r := <-done:
 				if r.code != 0 || !strings.Contains(r.out, ghToken) {

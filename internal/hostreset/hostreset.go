@@ -494,7 +494,9 @@ rm -f `+StorageImage)
 			add("remove Kevaso's daemon.json (only if it is still Kevaso's)", `[ -f `+DockerDaemonJSONPath+` ] && { `+strings.Join(cmp, " || ")+`; } && rm -f `+DockerDaemonJSONPath+restart+`; true`)
 		}
 	}
-	add("unmount what is mounted under Kevaso's paths", `awk '{print $2}' /proc/mounts | grep -E '`+mountPattern+`' | sort -r | while read m; do umount -l "$m"; done; true`)
+	add("unmount what is mounted under Kevaso's paths", `for m in $(awk '{print $2}' /proc/mounts | grep -E '`+mountPattern+`' | sort -r); do umount "$m" || umount -l "$m" || echo "can't unmount $m" >&2; done
+left=$(awk '{print $2}' /proc/mounts | grep -E '`+mountPattern+`')
+[ -z "$left" ] || { echo "still mounted, so nothing under Kevaso's paths is removed: $left" >&2; exit 1; }`)
 	files := slices.Clone(Paths)
 	if in.DockerOurs {
 		files = append(files, DockerPaths...)
@@ -502,7 +504,10 @@ rm -f `+StorageImage)
 	if in.PodmanOurs {
 		files = append(files, PodmanPaths...)
 	}
-	add("remove Kevaso's files", "rm -rf "+strings.Join(files, " ")+"\nsystemctl daemon-reload; systemctl reset-failed; true")
+	// Never into another file system (a volume still mounted there), and not at all while
+	// anything under these paths is mounted (K-022).
+	add("remove Kevaso's files", `if awk '{print $2}' /proc/mounts | grep -qE '`+mountPattern+`'; then echo "something is still mounted under Kevaso's paths: not removing them" >&2; exit 1; fi
+rm -rf --one-file-system `+strings.Join(files, " ")+"\nsystemctl daemon-reload; systemctl reset-failed; true")
 	add("remove the tests' /etc/hosts lines", `sed -i '/`+HostsMarker+`$/d' /etc/hosts`)
 	add("remove kevaso-* users", `for u in $(awk -F: '$1 ~ /^kevaso-/ {print $1}' /etc/passwd); do userdel "$u"; done
 for g in $(awk -F: '$1 ~ /^kevaso-/ {print $1}' /etc/group); do groupdel "$g"; done

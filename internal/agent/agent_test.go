@@ -165,8 +165,8 @@ func (boom) Error() string { return "disk full" }
 
 var errBoom = boom{}
 
-// Cut off from the control plane past FenceAfter, the agent stops what may be recreated elsewhere
-// (onHostLoss: Recreate) and keeps Wait silos running.
+// §0.7: a worker cut off from the control plane changes nothing, except for the silos that asked
+// for it (onControlPlaneLoss: Stop), each after its own after. onHostLoss means nothing here.
 func TestFencingWhenCutOff(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
@@ -179,26 +179,39 @@ func TestFencingWhenCutOff(t *testing.T) {
 	var mu sync.Mutex
 	last := time.Now()
 	contact := func() time.Time { mu.Lock(); defer mu.Unlock(); return last }
+	// The real durations are 30s and up: scaled to milliseconds (after 2m → 600ms, 10m → 3s).
+	scaled := func(s *v1.Silo) (bool, time.Duration) {
+		stop, after := s.StopsOnControlPlaneLoss()
+		return stop, after / 200
+	}
 	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{},
-		LastContact: contact, FenceAfter: 300 * time.Millisecond}
+		LastContact: contact, StopsOnLoss: scaled}
 	go a.Run(ctx)
 	e := &env{c: c, rt: rt, ctx: ctx}
-	for _, name := range []string{"stateless", "precious"} {
+	avail := map[string]v1.Availability{
+		"stops":    {OnControlPlaneLoss: v1.OnControlPlaneLossStop},               // after 2m
+		"later":    {OnControlPlaneLoss: v1.OnControlPlaneLossStop, After: "10m"}, // after 10m
+		"recreate": {OnHostLoss: v1.OnHostLossRecreate},                           // Continue
+		"continue": {OnControlPlaneLoss: v1.OnControlPlaneLossContinue},
+	}
+	for name := range avail {
 		e.place(t, name, "hv1", nil)
 	}
-	for { // the agent writes status meanwhile: retry on conflicts
-		var s v1.Silo
-		_ = c.Get(ctx, "Silo", "dev", "stateless", &s)
-		s.Spec.Availability.OnHostLoss = v1.OnHostLossRecreate
-		err := c.Update(ctx, &s)
-		if err == nil {
-			break
-		}
-		if !client.IsConflict(err) {
-			t.Fatal(err)
+	for name, av := range avail {
+		for { // the agent writes status meanwhile: retry on conflicts
+			var s v1.Silo
+			_ = c.Get(ctx, "Silo", "dev", name, &s)
+			s.Spec.Availability = av
+			err := c.Update(ctx, &s)
+			if err == nil {
+				break
+			}
+			if !client.IsConflict(err) {
+				t.Fatal(err)
+			}
 		}
 	}
-	for _, name := range []string{"stateless", "precious"} {
+	for name := range avail {
 		e.wait(t, name, func(s *v1.Silo) bool { return s.Status.Phase == "Running" })
 	}
 	state := func(name string) kri.State {
@@ -207,27 +220,44 @@ func TestFencingWhenCutOff(t *testing.T) {
 		st, _ := rt.Status(ctx, kri.ID{Namespace: "dev", Name: name, UID: s.UID})
 		return st.State
 	}
-	keepContact := func() {
-		mu.Lock()
-		last = time.Now()
-		mu.Unlock()
-	}
-	// Cut off.
-	deadline := time.Now().Add(5 * time.Second)
-	for state("stateless") != kri.Stopped {
-		if time.Now().After(deadline) {
-			t.Fatalf("the Recreate silo wasn't fenced: %s", state("stateless"))
+	stoppedAt := func(name string, within time.Duration) {
+		t.Helper()
+		start := time.Now()
+		for state(name) != kri.Stopped {
+			if time.Since(start) > within {
+				t.Fatalf("%s wasn't stopped: %s", name, state(name))
+			}
+			time.Sleep(20 * time.Millisecond)
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
-	time.Sleep(1500 * time.Millisecond) // and it stays stopped while cut off
-	if got := state("stateless"); got != kri.Stopped {
-		t.Fatalf("fenced silo restarted while cut off: %s", got)
+	// Cut off from now on (the last contact was at most a few seconds ago).
+	mu.Lock()
+	last = time.Now()
+	mu.Unlock()
+	cutAt := time.Now()
+	stoppedAt("stops", 5*time.Second)
+	if waited := time.Since(cutAt); waited < 600*time.Millisecond {
+		t.Fatalf("stopped %s after the last contact: before its after (2m scaled to 600ms)", waited)
 	}
-	if got := state("precious"); got != kri.Running {
-		t.Fatalf("a Wait silo was stopped: %s", got)
+	if got := state("later"); got != kri.Running {
+		t.Fatalf("the silo with after: 10m was stopped with the one of 2m: %s", got)
 	}
-	// Contact again: it runs again (it wasn't recreated elsewhere).
+	stoppedAt("later", 6*time.Second)
+	if waited := time.Since(cutAt); waited < 3*time.Second {
+		t.Fatalf("after: 10m stopped %s after the last contact", waited)
+	}
+	time.Sleep(1500 * time.Millisecond) // well past both: the rest is untouched, the stopped stay stopped
+	for _, name := range []string{"recreate", "continue"} {
+		if got := state(name); got != kri.Running {
+			t.Fatalf("%s (onControlPlaneLoss Continue) was touched while cut off: %s", name, got)
+		}
+	}
+	for _, name := range []string{"stops", "later"} {
+		if got := state(name); got != kri.Stopped {
+			t.Fatalf("%s started again while cut off: %s", name, got)
+		}
+	}
+	// Contact again: they run again (nothing started them elsewhere).
 	stop := make(chan struct{})
 	go func() {
 		for {
@@ -235,15 +265,17 @@ func TestFencingWhenCutOff(t *testing.T) {
 			case <-stop:
 				return
 			case <-time.After(50 * time.Millisecond):
-				keepContact()
+				mu.Lock()
+				last = time.Now()
+				mu.Unlock()
 			}
 		}
 	}()
 	defer close(stop)
-	deadline = time.Now().Add(10 * time.Second)
-	for state("stateless") != kri.Running {
+	deadline := time.Now().Add(10 * time.Second)
+	for state("stops") != kri.Running || state("later") != kri.Running {
 		if time.Now().After(deadline) {
-			t.Fatalf("not restarted after contact came back: %s", state("stateless"))
+			t.Fatalf("not started again after contact came back: %s %s", state("stops"), state("later"))
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

@@ -109,7 +109,7 @@ func TestMetalLeases(t *testing.T) {
 	if pending == "" {
 		return
 	}
-	c.must("", "approve", pending, "-n", ns)
+	c.approve(ns, pending)
 	c.eventually("approved: it opens", 30*time.Second, func() (bool, string) { return c.open(18121) })
 	c.must("", "close", "silo", "dbg", "-n", ns, "--port", "gated")
 	c.eventually("kvo close: closed again", 30*time.Second, func() (bool, string) { return c.closed(18121) })
@@ -205,20 +205,20 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.ThreadingHTTPServer(("", 7070), H).serve_forever()
 `
 
-// TestMetalFence is restarts and the fence on the one machine (design §0.4): a quick systemctl
-// restart kevasod stops no silo; kevasod stopped past the fence time stops only the silos that
-// could be started elsewhere — on a one-machine cluster (control plane and worker in one), none
-// can, so the fence record says fence: false and every silo, Wait or Recreate, keeps running. The
-// fence acting on a worker whose control plane is elsewhere is the Linode-backed test's
-// (metal_linode_test.go), and Lima's TestMoves.
+// TestMetalFence is restarts and the fence on the one machine (§0.7): a quick systemctl restart
+// kevasod stops no silo; kevasod stopped past a silo's after stops that silo only if it asked
+// for it (onControlPlaneLoss: Stop), on a one-machine cluster too, and every other silo, whatever
+// its onHostLoss, keeps running. kevasod back starts the stopped one again; the others are the
+// same copies, never restarted.
 //
 // Listens on nothing outside.
 func TestMetalFence(t *testing.T) {
 	c := metal(t)
 	ns := "fence"
 	c.namespace(ns)
-	c.apply(boxEcho(ns, "stay", 8080) + "---\n" + boxEcho(ns, "moves", 8080) + "  availability: { onHostLoss: Recreate }\n---\n" + vmEcho(ns, "vm", 8080))
-	c.waitRunning(ns, 20*time.Minute, "stay", "moves", "vm")
+	c.apply(boxEcho(ns, "stay", 8080) + "---\n" + boxEcho(ns, "moves", 8080) + "  availability: { onHostLoss: Recreate }\n---\n" +
+		boxEcho(ns, "stops", 8080) + "  availability: { onControlPlaneLoss: Stop, after: 30s }\n---\n" + vmEcho(ns, "vm", 8080))
+	c.waitRunning(ns, 20*time.Minute, "stay", "moves", "stops", "vm")
 	t.Cleanup(func() { _, _ = c.sh("systemctl start kevasod") })
 
 	// Each silo's start time, from the host only (SSH): containers by their label, the microVM by
@@ -228,12 +228,16 @@ func TestMetalFence(t *testing.T) {
 	for _, name := range []string{"stay", "moves"} {
 		uids[name] = c.silo(ns, name).UID
 	}
+	stopsUID := c.silo(ns, "stops").UID
 	vm := c.silo(ns, "vm")
 	unit := cloudhypervisor.NamesFor(kri.ID{Namespace: vm.Namespace, Name: vm.Name, UID: vm.UID}).Unit
+	startedAt := func(uid string) string {
+		return strings.TrimSpace(c.mustSh(`for id in $(docker ps -q --filter label=kevaso.com/uid=` + uid + `); do docker inspect -f '{{.Name}} {{.State.StartedAt}}' "$id"; done | sort`))
+	}
 	started := func() map[string]string {
 		got := map[string]string{}
 		for name, uid := range uids {
-			got[name] = strings.TrimSpace(c.mustSh(`for id in $(docker ps -q --filter label=kevaso.com/uid=` + uid + `); do docker inspect -f '{{.Name}} {{.State.StartedAt}}' "$id"; done | sort`))
+			got[name] = startedAt(uid)
 		}
 		got["vm"] = strings.TrimSpace(c.mustSh("systemctl show -p ActiveEnterTimestamp,ActiveState " + unit))
 		return got
@@ -249,7 +253,7 @@ func TestMetalFence(t *testing.T) {
 		if !strings.Contains(after["vm"], "ActiveState=active") {
 			t.Errorf("%s: the microVM isn't running: %s", what, after["vm"])
 		} else {
-			t.Logf("%s: every silo kept running", what)
+			t.Logf("%s: every silo that didn't ask to stop kept running", what)
 		}
 	}
 	waitAPI := func() {
@@ -259,33 +263,55 @@ func TestMetalFence(t *testing.T) {
 		})
 	}
 
-	before := started()
+	before, stopsBefore := started(), startedAt(stopsUID)
 	c.mustSh("systemctl restart kevasod")
 	waitAPI()
-	c.waitRunning(ns, 2*time.Minute, "stay", "moves", "vm")
+	c.waitRunning(ns, 2*time.Minute, "stay", "moves", "stops", "vm")
 	same("a quick restart", before)
+	if got := startedAt(stopsUID); got != stopsBefore {
+		t.Errorf("a quick restart (under its after) restarted the Stop silo: %q → %q", stopsBefore, got)
+	}
 
-	// Past the fence time with kevasod stopped.
+	// The record: the fence applies here, for the Stop silo alone.
 	rec := c.mustSh("cat " + fence.Dir + "/" + fence.RecordFile)
 	var r fence.Record
 	if err := json.Unmarshal([]byte(rec), &r); err != nil {
 		t.Fatalf("fence record: %v\n%s", err, rec)
 	}
-	if r.Fence {
-		t.Errorf("the fence record says fence: true on a one-machine cluster (nobody could start its silos elsewhere)")
+	stopping := []string{}
+	for _, s := range r.Silos {
+		if s.StopAfter > 0 {
+			stopping = append(stopping, s.ID.Name)
+		}
 	}
+	if !r.Fence || len(stopping) != 1 || stopping[0] != "stops" {
+		t.Errorf("the fence record: fence %v, stopping %v; want true and [stops]\n%s", r.Fence, stopping, rec)
+	}
+
+	// Past the after with kevasod stopped: the fence watcher acts for the Stop silo only.
 	c.mustSh("systemctl stop kevasod")
-	wait := fence.DefaultAfter + fence.CheckEvery + fence.KillWithin + 30*time.Second
-	t.Logf("kevasod stopped; waiting %s, past the fence time", wait)
+	wait := fence.WorstStopped(fence.DefaultAfter) + 30*time.Second
+	t.Logf("kevasod stopped; waiting %s, past the Stop silo's after", wait)
 	time.Sleep(wait)
 	if out, _ := c.sh("systemctl is-active kevaso-fence"); strings.TrimSpace(out) != "active" {
 		t.Errorf("the fence isn't running: %q", out)
 	}
-	same("kevasod stopped past the fence time (from the host)", before)
+	// Its own container (the pause container, which only holds its network, may stay).
+	if got := strings.TrimSpace(c.mustSh("docker ps -q --filter label=kevaso.com/uid=" + stopsUID + " --filter label=kevaso.com/name")); got != "" {
+		t.Errorf("the silo with onControlPlaneLoss: Stop still runs past its after: %s", got)
+	} else {
+		t.Log("the Stop silo was stopped")
+	}
+	same("kevasod stopped past the after (from the host)", before)
 	c.mustSh("systemctl start kevasod")
 	waitAPI()
-	c.waitRunning(ns, 3*time.Minute, "stay", "moves", "vm")
+	c.waitRunning(ns, 3*time.Minute, "stay", "moves", "stops", "vm")
 	same("kevasod back: the same copies, never restarted", before)
+	if got := startedAt(stopsUID); got == "" || got == stopsBefore {
+		t.Errorf("the Stop silo isn't a new start after kevasod came back: %q (before %q)", got, stopsBefore)
+	} else {
+		t.Log("the Stop silo runs again")
+	}
 }
 
 // TestMetalVolumes is a local volume on a microVM (design §0.3): data written to it survives the

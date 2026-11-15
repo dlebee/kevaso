@@ -190,7 +190,7 @@ func approvalFlow(t *testing.T, r *rig, silo, get string, ask func(name, query s
 	}
 	held("secret get gh-token", ch)
 	t.Logf("kvo get approvals:\n%s", r.must(kvo.Run, "", "get", "approvals", "-n", "ops"))
-	expect(t, "kvo approve", r.must(kvo.Run, "", "approve", a.Name, "-n", "ops"), "approved until")
+	expect(t, "kvo approve", r.approve("ops", a.Name), "approved until")
 	res := done("secret get gh-token", ch)
 	if res.code != 0 || !strings.Contains(res.out, ghToken) {
 		t.Errorf("after the yes: exit %d %q", res.code, res.out)
@@ -234,7 +234,7 @@ func approvalFlow(t *testing.T, r *rig, silo, get string, ask func(name, query s
 		t.Errorf("inject approval %s: destination %+v", in.Name, in.Spec.Destination)
 	}
 	held("the HTTPS request at the gate", ch)
-	r.must(kvo.Run, "", "approve", in.Name, "-n", "ops")
+	r.approve("ops", in.Name)
 	res = done("the HTTPS request", ch)
 	expect(t, "the held request goes out with the key", res.out, `"auth": "`+authHash("Bearer "+apiKey)+`"`)
 

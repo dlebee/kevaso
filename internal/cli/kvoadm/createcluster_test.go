@@ -20,7 +20,6 @@ import (
 // brings the record from the backup, and `kevasod admin restore` marks it). The test reads
 // initCluster's source, because initCluster talks to a real SSH connection.
 func TestK032InitCreatesTheClusterExplicitly(t *testing.T) {
-	t.Skip("K-032, host lane: kvoadm init must run kevasod admin create-cluster before installUnits (see the comment); remove this skip with that change")
 	src, err := os.ReadFile("kvoadm.go")
 	if err != nil {
 		t.Fatal(err)

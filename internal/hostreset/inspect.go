@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"kevaso.com/core/builtin/kri/cloudhypervisor"
 )
 
 // InspectScript prints what a reset needs to know about the host, in sections.
@@ -14,12 +16,22 @@ echo '== installed'
 { [ -e /usr/local/bin/kevasod ] || [ -e /etc/systemd/system/kevasod.service ]; } && echo kevasod=yes || echo kevasod=no
 systemctl is-active -q kevasod 2>/dev/null && echo running=yes || echo running=no
 echo '== silos'
-systemctl list-units --all --plain --no-legend 'kevaso-silo-*.service' 2>/dev/null | awk '$1 !~ /-fs-/ {print "vm " $1}'
+# microVMs by what is on disk (their units aren't loaded after a reboot): unit files and state.
+{ for f in /etc/systemd/system/kevaso-silo-*.service; do [ -e "$f" ] && basename "$f"; done
+  systemctl list-units --all --plain --no-legend 'kevaso-silo-*.service' 2>/dev/null | awk '{print $1}'
+  for d in ` + cloudhypervisor.SilosDir + `/*/; do [ -d "$d" ] && echo "kevaso-silo-$(basename "$d").service"; done
+} | grep -v -- '-fs-' | sort -u | sed 's/^/vm /'
 if command -v docker >/dev/null && systemctl is-active -q docker; then
   docker ps -a --filter label=kevaso.com/name --format 'container {{.Label "kevaso.com/namespace"}}/{{.Label "kevaso.com/name"}}' | sort -u
 fi
 if command -v podman >/dev/null; then
   podman ps -a --filter label=kevaso.com/name --format 'container {{index .Labels "kevaso.com/namespace"}}/{{index .Labels "kevaso.com/name"}} (podman)' | sort -u
+fi
+echo '== storagefile'
+if [ -f ` + StorageImage + ` ]; then
+  echo "` + StorageImage + ` $(du -h --apparent-size ` + StorageImage + ` | cut -f1)"
+  # Not attached (a reboot): attach it read-only so its volume group and volumes can be seen.
+  if [ -z "$(losetup -n -O NAME -j ` + StorageImage + `)" ]; then losetup -r -f ` + StorageImage + ` && pvscan --cache >/dev/null 2>&1; vgscan >/dev/null 2>&1; fi
 fi
 echo '== pvs'
 pvs --noheadings -o pv_name -S vg_name=` + VG + ` 2>/dev/null | tr -d ' ' | while read p; do
@@ -38,7 +50,9 @@ type Inspection struct {
 	Silos     []string // "vm UNIT" or "container NS/NAME"
 	PVs       []PV     // the volume group's physical volumes (none: no volume group)
 	Volumes   []string // its logical volumes but the thin pool, "NAME SIZE"
-	Now       State
+	// StorageFile is Kevaso's loop file when it exists ("PATH SIZE"), attached or not.
+	StorageFile string
+	Now         State
 }
 
 // PV is one physical volume of the volume group.
@@ -92,7 +106,7 @@ func ParseInspection(out string) (Inspection, error) {
 	if err != nil {
 		return Inspection{}, fmt.Errorf("inspection: %w", err)
 	}
-	for _, want := range []string{"record", "installed", "silos", "pvs", "lvs", "state"} {
+	for _, want := range []string{"record", "installed", "silos", "storagefile", "pvs", "lvs", "state"} {
 		if _, ok := sec[want]; !ok {
 			return Inspection{}, fmt.Errorf("inspection: no %q section", want)
 		}
@@ -109,6 +123,9 @@ func ParseInspection(out string) (Inspection, error) {
 		in.PVs = append(in.PVs, PV{Device: f[0], Backing: f[1]})
 	}
 	in.Volumes = sec["lvs"]
+	if f := sec["storagefile"]; len(f) > 0 {
+		in.StorageFile = f[0]
+	}
 	if in.Now, err = ParseState(stateText.String()); err != nil {
 		return Inspection{}, err
 	}
@@ -191,8 +208,13 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 
 	vgBefore := in.Record != nil && in.Record.VGBefore
 	switch {
+	case len(in.PVs) == 0 && in.StorageFile != "":
+		// A storage file whose volume group can't be seen (it didn't attach): never "stray".
+		d.Plan.Storage = StorageLoop
+		d.Lost = append(d.Lost, "the storage file "+in.StorageFile+" (its volume group couldn't be read: every microVM disk and volume in it)")
+		say("remove Kevaso's storage file %s: its volume group couldn't be read, so whatever disks and volumes are in it go with it", in.StorageFile)
 	case len(in.PVs) == 0:
-		d.Plan.Storage = StorageLoop // nothing to remove but a stray loop file
+		d.Plan.Storage = StorageLoop // no volume group, no storage file
 	case f.WipeStorage:
 		d.Plan.Storage = StorageWipe
 		d.Lost = append([]string(nil), in.Volumes...)
@@ -200,6 +222,9 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 	case in.OnLoopFile() && !vgBefore:
 		d.Plan.Storage = StorageLoop
 		d.Lost = append([]string(nil), in.Volumes...)
+		if in.StorageFile != "" {
+			d.Lost = append(d.Lost, "the storage file "+in.StorageFile)
+		}
 		say("remove the volume group %s on Kevaso's loop file %s, with its volumes: %s", VG, StorageImage, orNone(in.Volumes))
 	default:
 		d.Plan.Storage = StorageKeep

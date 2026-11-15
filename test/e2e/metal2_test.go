@@ -208,13 +208,9 @@ func setUpPair() (p *metalPair, skip string, err error) {
 	// Machine 2: a worker, joining over the external IPs.
 	storage := []string{"--loop-storage", metalLoop}
 	if cfg2.SpareDisk != "" {
-		// Its volume group on a real disk, the way Kevaso supports one: made by the operator
-		// (here the harness, only on the spare disk and only when it's empty); the runtime finds it.
-		if out, err := p.m2.d.Run(ctx, spareVG(cfg2.SpareDisk), nil); err != nil {
-			return nil, "", fmt.Errorf("the volume group on %s: %v\n%s", cfg2.SpareDisk, err, out)
-		}
-		storage = nil
-		say("volume group kevaso made on %s", cfg2.SpareDisk)
+		// Its volume group on a real disk (§0.8): kvoadm --storage-device makes it there, only on
+		// an empty disk, and refuses anything else.
+		storage = []string{"--storage-device", cfg2.SpareDisk}
 	}
 	if err := run(append(append(append([]string{"host", "add"}, ssh(cfg2)...), "--name", metalHost2, "--install", "worker",
 		"--runtime", "cloud-hypervisor", "--runtime", "docker", "--external-ip", cfg2.ExternalIP), storage...)...); err != nil {
@@ -255,7 +251,7 @@ func waitRuntimes(ctx context.Context, host string, runtimes ...string) error {
 					return fmt.Errorf("%s: runtime %s failed: %s", host, rt, st.Message)
 				}
 			}
-			if ready == len(runtimes) && meta(h, "Ready") {
+			if ready == len(runtimes) && hostIs(h, "Ready") {
 				return nil
 			}
 		}
@@ -266,7 +262,7 @@ func waitRuntimes(ctx context.Context, host string, runtimes ...string) error {
 	}
 }
 
-func meta(h v1.Host, cond string) bool {
+func hostIs(h v1.Host, cond string) bool {
 	for _, c := range h.Status.Conditions {
 		if c.Type == cond {
 			return c.Status == "True"
@@ -350,19 +346,6 @@ func resetPairAtEnd() int {
 	return code
 }
 
-// spareVG makes the kevaso volume group on the spare disk, only when the disk is whole, unmounted
-// and has nothing on it (no partitions, holders or signatures).
-func spareVG(disk string) string {
-	return `set -e; d=` + disk + `
-[ -b "$d" ] || { echo "$d: no such disk" >&2; exit 1; }
-[ "$(lsblk -nr -o NAME "$d" | wc -l)" = 1 ] || { echo "$d has partitions or holders" >&2; exit 1; }
-[ "$(lsblk -dnr -o TYPE "$d")" = disk ] || { echo "$d isn't a whole disk" >&2; exit 1; }
-! lsblk -nr -o MOUNTPOINT "$d" | grep -q . || { echo "$d is mounted" >&2; exit 1; }
-[ -z "$(wipefs -n "$d")" ] || { echo "$d isn't empty: $(wipefs -n "$d" | tr '\n' ' ')" >&2; exit 1; }
-command -v pvcreate >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq lvm2
-pvcreate -q "$d" && vgcreate -q kevaso "$d"`
-}
-
 // pinGoEnv fixes Go's cache directories before a test moves HOME, so later builds use the
 // usual caches.
 func pinGoEnv() {
@@ -392,6 +375,17 @@ func buildKevasod(ctx context.Context, arch string) (string, error) {
 }
 
 // hostNamed reads a Host.
+// hostReady says whether a host is Ready, for eventually: an API that doesn't answer this once
+// (a TLS handshake timing out over the internet) is a "not yet", not a failure.
+func (c *mt) hostReady(name string) (bool, string) {
+	out, code := c.kvo("", "get", "host", name, "-o", "json")
+	var h v1.Host
+	if code != 0 || json.Unmarshal([]byte(out), &h) != nil {
+		return false, out
+	}
+	return hostIs(h, "Ready"), fmt.Sprint(h.Status.Conditions)
+}
+
 func (c *mt) hostNamed(name string) *v1.Host {
 	c.t.Helper()
 	var h v1.Host

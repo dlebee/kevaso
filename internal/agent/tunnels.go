@@ -53,7 +53,7 @@ func (a *Agent) RunTunnels(ctx context.Context) {
 	}()
 	for {
 		want := a.tunnelTargets(ctx)
-		if want != nil {
+		if want != nil && !a.ControlPlaneHeld() {
 			keep := map[string]bool{}
 			for _, u := range want {
 				keep[u] = true
