@@ -130,9 +130,9 @@ func runReset(ctx context.Context, h hostRunner, o ResetOptions, in *bufio.Reade
 	if len(plan) > 0 && plan[0].Name == hostreset.StopStep {
 		if b, err := h.Run(ctx, plan[0].Script, nil); err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %s", plan[0].Name, strings.TrimSpace(firstNonEmpty(string(b), err.Error()))))
-			_, _ = fmt.Fprintf(out, "✗ %s\n", plan[0].Name)
+			markStep(out, false, plan[0].Name, nil)
 		} else {
-			_, _ = fmt.Fprintf(out, "✓ %s\n", plan[0].Name)
+			markStep(out, true, plan[0].Name, b)
 		}
 		plan = plan[1:]
 		if running, err := stillRunning(ctx, h); err != nil || running != "" {
@@ -152,7 +152,7 @@ func runReset(ctx context.Context, h hostRunner, o ResetOptions, in *bufio.Reade
 	}
 	for _, s := range plan {
 		if s.Name == hostreset.RecordStep && len(failed) > 0 {
-			_, _ = fmt.Fprintf(out, "- %s: kept, since a step failed: run kvoadm reset again once it is fixed\n", s.Name)
+			_, _ = fmt.Fprintf(out, "- %s: kept, since a step failed, so the next reset knows what to clean. Run kvoadm reset again once it is fixed\n", s.Name)
 			continue
 		}
 		// Right before each step that removes a silo's data: kevasod and its fence still don't
@@ -177,12 +177,13 @@ func runReset(ctx context.Context, h hostRunner, o ResetOptions, in *bufio.Reade
 				return fmt.Errorf("the reset stopped before %q: %s. That step and the ones after it weren't run (what they remove is still there): run kvoadm reset again to see what it would remove now", s.Name, why)
 			}
 		}
-		if b, err := h.Run(ctx, s.Script, nil); err != nil {
+		b, err := h.Run(ctx, s.Script, nil)
+		if err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %s", s.Name, strings.TrimSpace(firstNonEmpty(string(b), err.Error()))))
-			_, _ = fmt.Fprintf(out, "✗ %s\n", s.Name)
+			markStep(out, false, s.Name, nil)
 			continue
 		}
-		_, _ = fmt.Fprintf(out, "✓ %s\n", s.Name)
+		markStep(out, true, s.Name, b)
 	}
 
 	checks := hostreset.Checklist(d.Checks)
@@ -260,6 +261,24 @@ func lookAgain(ctx context.Context, h hostRunner, before hostreset.Inspection, s
 		}
 	}
 	return strings.Join(news, ", "), nil
+}
+
+// markStep prints a step's result. On success it also prints what the step wrote, one line
+// indented: a restart says which foreign containers it started again.
+func markStep(out io.Writer, ok bool, name string, b []byte) {
+	mark := "✓"
+	if !ok {
+		mark = "✗"
+	}
+	_, _ = fmt.Fprintf(out, "%s %s\n", mark, name)
+	if !ok {
+		return
+	}
+	for l := range strings.Lines(string(b)) {
+		if l = strings.TrimSpace(l); l != "" {
+			_, _ = fmt.Fprintf(out, "  %s\n", l)
+		}
+	}
 }
 
 func firstNonEmpty(a, b string) string {

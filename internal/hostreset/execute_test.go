@@ -38,12 +38,28 @@ case "$name $*" in
   "podman ps -aq")                    echo other-pc1 ;;
   "podman volume ls -q --filter"*)    echo kevaso-pv1 ;;
   "podman volume ls -q")              echo other-pv1 ;;
+  "docker ps -q"|"podman ps -q")
+    [ -n "$STUB_RUNNING" ] && printf '%s\n' $STUB_RUNNING ;;
+  "docker inspect"*|"podman inspect"*)
+    id= fmt= prev=
+    for a in "$@"; do
+      if [ "$prev" = "-f" ]; then fmt=$a; fi
+      prev=$a
+      id=$a
+    done
+    case "$fmt" in
+      *State.Running*) eval "printf '%s\n' \"\${STUB_UP_$id:-false}\"" ;;
+      *kevaso.com/uid*) eval "printf '%s\n' \"\${STUB_LABEL_$id}\"" ;;
+      *) eval "printf '%s\n' \"\${STUB_NAME_$id}\"" ;;
+    esac ;;
   "pvs "*)                            echo "$STUB_PV" ;;
   "losetup -n -O BACK-FILE"*)         echo "$STUB_BACKFILE" ;;
   "losetup -n -O NAME"*)              : ;;
   "systemctl list-units"*)            : ;;
   "vgs "*)                            exit "${STUB_VG_EXIT:-0}" ;;
 esac
+if [ "$name" = rm ] && [ -n "${STUB_RM_EXIT:-}" ]; then exit "$STUB_RM_EXIT"; fi
+if [ "$name" = systemctl ] && [ -n "${STUB_SYSTEMCTL_EXIT:-}" ]; then exit "$STUB_SYSTEMCTL_EXIT"; fi
 exit 0
 `
 
@@ -77,6 +93,14 @@ func runStep(t *testing.T, in PlanInput, name string, env ...string) (ran, error
 	if step == nil {
 		t.Fatalf("no step %q in the plan", name)
 	}
+	r, _, err := runStubbed(t, step.Script, env...)
+	return r, err
+}
+
+// runStubbed runs a reset script under the stubs and returns what they saw, the combined output,
+// and the script's exit error.
+func runStubbed(t *testing.T, script string, env ...string) (ran, string, error) {
+	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
 	if err := os.Mkdir(bin, 0o755); err != nil {
@@ -96,13 +120,13 @@ func runStep(t *testing.T, in PlanInput, name string, env ...string) (ran, error
 	if err := os.WriteFile(log, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", "-c", step.Script)
+	cmd := exec.Command("/bin/sh", "-c", script)
 	cmd.Env = append([]string{"PATH=" + bin, "STUBLOG=" + log, "HOME=" + dir}, env...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	b, _ := os.ReadFile(log)
-	t.Logf("step %q: %v\n%s", step.Name, err, out)
-	return ran{lines: strings.Split(strings.TrimSpace(string(b)), "\n")}, err
+	t.Logf("script: %v\n%s", err, out)
+	return ran{lines: strings.Split(strings.TrimSpace(string(b)), "\n")}, string(out), err
 }
 
 // Every step of every plan is a script sh accepts, whatever is in the input.
@@ -142,6 +166,51 @@ func TestADockerThatIsNotKevasosLosesOnlyKevasosContainersAndVolumes(t *testing.
 	}
 }
 
+// Restarting dockerd (to drop daemon.json) stops containers that were running. Those that are
+// not Kevaso's are started again; Kevaso's (label kevaso.com/uid, or a kv- name, including an
+// OpenShell sandbox name) are not. The same for podman, which the reset restarts the same way
+// when it restarts it.
+func TestARestartStartsForeignContainersAgain(t *testing.T) {
+	// Ids are hex, as an engine's are. foreign is not Kevaso's; the others are (a label, the kv-
+	// name prefix, an OpenShell sandbox name) or still running after the restart.
+	env := []string{
+		"STUB_RUNNING=aaa bbb ccc ddd eee",
+		"STUB_NAME_aaa=/kvt-foreign",
+		"STUB_NAME_bbb=/custom",
+		"STUB_LABEL_bbb=uid-1",
+		"STUB_NAME_ccc=/kv-0123456789abcdef",
+		"STUB_NAME_ddd=/openshell-kv-0123456789",
+		"STUB_NAME_eee=/nginx",
+		"STUB_UP_eee=true",
+	}
+	for _, eng := range []string{"docker", "podman"} {
+		t.Run(eng, func(t *testing.T) {
+			r, out, err := runStubbed(t, foreignRestart(eng), env...)
+			if err != nil {
+				t.Fatalf("restart script: %v\n%s\n%s", err, out, r.text())
+			}
+			if out != "started foreign container kvt-foreign again\n" {
+				t.Fatalf("output:\n%s", out)
+			}
+			var starts []string
+			for _, c := range r.calls(eng) {
+				if len(c) > 0 && c[0] == "start" {
+					starts = append(starts, strings.Join(c, " "))
+				}
+			}
+			if len(starts) != 1 || starts[0] != "start aaa" {
+				t.Fatalf("%s start calls: %v\n%s", eng, starts, r.text())
+			}
+			ps := strings.Index(r.text(), eng+" ps -q")
+			restart := strings.Index(r.text(), "systemctl try-restart "+eng)
+			start := strings.Index(r.text(), eng+" start aaa")
+			if ps < 0 || restart < 0 || start < 0 || !(ps < restart && restart < start) {
+				t.Fatalf("record, then restart, then start:\n%s", r.text())
+			}
+		})
+	}
+}
+
 func TestADockerThatIsKevasosLosesEveryContainerAndVolume(t *testing.T) {
 	r, _ := runStep(t, PlanInput{DockerOurs: true}, "remove containers, volumes and images")
 	if !strings.Contains(r.text(), "docker rm -f other-c1 other-c2") || !strings.Contains(r.text(), "docker volume rm -f other-v1") {
@@ -163,6 +232,36 @@ func TestAPodmanThatIsKevasosIsEmptiedAll(t *testing.T) {
 	r, _ := runStep(t, PlanInput{PodmanOurs: true}, "remove podman's containers")
 	if !strings.Contains(r.text(), "podman rm -af") {
 		t.Fatalf("Kevaso's own podman was not emptied (the control for the test above): %s", r.text())
+	}
+}
+
+// A failed rm must fail the step. A trailing "true" used to hide it, the step showed success,
+// and the reset then deleted the install record (K-114), so the next reset had nothing to undo.
+// daemon-reload and reset-failed still run, and their failure does not replace rm's status.
+func TestAFailedRemovalOfKevasosFilesFailsTheStep(t *testing.T) {
+	script := Plan(PlanInput{})[stepIndex(t, Plan(PlanInput{}), "remove Kevaso's files")].Script
+	if strings.Contains(script, "; true") {
+		t.Fatalf("the files step hides rm's status:\n%s", script)
+	}
+	r, err := runStep(t, PlanInput{}, "remove Kevaso's files", "STUB_RM_EXIT=1")
+	if err == nil {
+		t.Fatal("rm failed and the files step still succeeded, so the reset would delete the install record")
+	}
+	rmAt := strings.Index(r.text(), "\nrm ")
+	if rmAt < 0 {
+		rmAt = strings.Index(r.text(), "rm ")
+	}
+	reloadAt := strings.Index(r.text(), "systemctl daemon-reload")
+	resetAt := strings.Index(r.text(), "systemctl reset-failed")
+	if rmAt < 0 || reloadAt < rmAt || resetAt < reloadAt {
+		t.Fatalf("daemon-reload and reset-failed must still run after a failed rm:\n%s", r.text())
+	}
+	r, err = runStep(t, PlanInput{}, "remove Kevaso's files", "STUB_SYSTEMCTL_EXIT=1")
+	if err != nil {
+		t.Fatalf("systemctl failed after a successful rm and the step failed with it: %v\n%s", err, r.text())
+	}
+	if !strings.Contains(r.text(), "systemctl daemon-reload") || !strings.Contains(r.text(), "systemctl reset-failed") {
+		t.Fatalf("a failing systemctl was not run:\n%s", r.text())
 	}
 }
 
