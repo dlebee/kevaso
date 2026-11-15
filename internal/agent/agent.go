@@ -81,6 +81,9 @@ type Agent struct {
 	// its last contact and which of its silos stop on control-plane loss, for the fence watcher,
 	// which stops those when this agent can no longer vouch for them, running or not.
 	FenceDir string
+	// DeletesFile, if set, is where the agent keeps the silo deletes it saw whose copies here may
+	// not all be gone (deletes.go); by default SeenDeletesFile beside the watermark's file.
+	DeletesFile string
 	// FenceApplies is no longer read: per §0.7 the fence acts where a silo asked for it (Stop),
 	// whoever else could start its silos. Left for the worker's wiring until that goes.
 	FenceApplies func() (applies, known bool)
@@ -153,7 +156,8 @@ type Agent struct {
 	// missing from the API (a control plane restored from an older backup, a re-made cluster) is
 	// kept, running, with its data, and listed (kept, logged once).
 	seenDeleted   sync.Map
-	keptNoted     sync.Map // silo UID → what it is: kept, listed on the Host (ConditionKeptSilos)
+	deletes       deletesLog // the deletes seen whose copies may remain here, on disk (deletes.go)
+	keptNoted     sync.Map   // silo UID → what it is: kept, listed on the Host (ConditionKeptSilos)
 	engine        *engine.Engine
 	cp            *Watermark // the control plane this worker trusts (watermark.go); via watermark()
 	cpOnce        sync.Once
@@ -276,6 +280,7 @@ func idOf(s *v1.Silo) kri.ID { return kri.ID{Namespace: s.Namespace, Name: s.Nam
 // Run runs the agent until ctx ends.
 func (a *Agent) Run(ctx context.Context) {
 	a.watermark() // read at start, before any answer is judged
+	a.loadSeenDeletes()
 	a.silos = informer.New(a.Client, "Silo")
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
 	a.runCtx = ctx
@@ -290,7 +295,14 @@ func (a *Agent) Run(ctx context.Context) {
 		a.log("silo %s: %v (retry in %v)", k, err, retry)
 	}
 	e.Register(a, engine.Options{Workers: 4})
-	a.silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
+	a.silos.AddHandler(func(k informer.Key) {
+		if o, ok := a.silos.Get(k.Namespace, k.Name); ok {
+			if s := o.(*v1.Silo); s.DeletionTimestamp != nil {
+				a.endStart(s.UID) // being deleted: a start of it under way here ends now
+			}
+		}
+		e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name})
+	})
 	go a.silos.Run(ctx)
 	go a.watchDeletes(ctx, e)
 	// Rotation fan-out: a secret or grant changing looks again at every silo here that receives
@@ -356,6 +368,7 @@ func (a *Agent) resyncAll() {
 // collectGarbage enqueues every silo a runtime has, so ones deleted from the API while the agent
 // was down get removed.
 func (a *Agent) collectGarbage(ctx context.Context, e *engine.Engine) {
+	a.pruneDeletes(ctx)
 	for _, rt := range a.Runtimes {
 		ids, err := rt.List(ctx)
 		if err != nil {
@@ -1117,6 +1130,13 @@ func (a *Agent) createWait(s *v1.Silo) time.Duration {
 // doing for that silo; above all, it doesn't start it.
 var errPlacedElsewhere = errors.New("the control plane places this silo elsewhere now")
 
+// errReplaced: the store has another silo of that name (a new UID): this one was deleted.
+var errReplaced = fmt.Errorf("%w (deleted: the store has another silo of that name)", errPlacedElsewhere)
+
+// deletedNow says whether err, from a read or write of s during its start, shows s deleted: not
+// found, or another silo of that name. That is a delete this host saw (sawDelete).
+func deletedNow(err error) bool { return client.IsNotFound(err) || errors.Is(err, errReplaced) }
+
 // ConditionStartClaim is the silo condition a host writes just before it starts the silo (its
 // start claim, K-015): written against the exact version it read, so it applies only if nothing
 // changed the silo since, placement above all. The host starts it only if the write applied. The
@@ -1150,7 +1170,10 @@ func (a *Agent) writeClaim(ctx context.Context, s *v1.Silo) error {
 	if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
 		return err
 	}
-	if cur.UID != s.UID || cur.DeletionTimestamp != nil || cur.Generation != s.Generation || !moves.MayStart(&cur, a.HostName) {
+	if cur.UID != s.UID {
+		return errReplaced
+	}
+	if cur.DeletionTimestamp != nil || cur.Generation != s.Generation || !moves.MayStart(&cur, a.HostName) {
 		return errPlacedElsewhere
 	}
 	claim := startClaim(a.HostName, s.Generation, a.Clock.Now().UTC())
@@ -1175,6 +1198,11 @@ func startClaim(host string, gen int64, now time.Time) meta.Condition {
 // lostClaim is the end of a start this host didn't win: nothing is started; the init steps and
 // deliveries it made go with the copy when the cache shows the silo elsewhere.
 func (a *Agent) lostClaim(s *v1.Silo, err error) (engine.Result, error) {
+	if deletedNow(err) {
+		a.log("not starting %s/%s: it was deleted (%v): what of it is here is removed", s.Namespace, s.Name, err)
+		a.sawDelete(idOf(s), true)
+		return engine.Result{RequeueAfter: 2 * time.Second}, nil
+	}
 	if errors.Is(err, errPlacedElsewhere) {
 		a.log("not starting %s/%s: its start claim didn't apply (the control plane changed or placed it elsewhere since it was read here)", s.Namespace, s.Name)
 		return engine.Result{RequeueAfter: 2 * time.Second}, nil
@@ -1309,6 +1337,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			if err := a.unmountVolumes(ctx, id.UID, s); err != nil {
 				return err
 			}
+			a.forgetDelete(id.UID) // nothing of it left here
 		}
 	}
 	return nil
@@ -1491,7 +1520,8 @@ func (a *Agent) watchDeletes(ctx context.Context, e *engine.Engine) {
 					continue
 				}
 				m := o.GetObjectMeta()
-				a.seenDeleted.Store(m.UID, struct{}{})
+				s, _ := o.(*v1.Silo)
+				a.sawDelete(kri.ID{Namespace: m.Namespace, Name: m.Name, UID: m.UID}, s != nil && a.mayHaveHere(ctx, s))
 				e.Changed(engine.Key{Kind: "Silo", Namespace: m.Namespace, Name: m.Name})
 			}
 		}
