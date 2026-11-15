@@ -214,8 +214,10 @@ func TestMetal2ResetCutDuringConvert(t *testing.T) {
 	n := cloudhypervisor.NamesFor(kri.ID{Namespace: ns, Name: "vm", UID: s.UID})
 	since := strings.TrimSpace(host.mustSh("date -u '+%Y-%m-%d %H:%M:%S'"))
 	// On the host: wait for the convert, then kill kevasod at once (one command, no round trip).
-	host.mustSh("systemd-run --unit=kvt-resetcut sh -c 'for i in $(seq 1 3000); do if pgrep -f \"qemu-img convert.*" + n.LV + "\" >/dev/null; then cp /var/lib/kevaso-silos/" + n.Short + "/silo.json /run/kvt-resetcut.json; systemctl kill -s KILL kevasod; echo killed > /run/kvt-resetcut; exit; fi; sleep 0.05; done' >/dev/null")
-	t.Cleanup(func() { _, _ = host.sh("systemctl stop kvt-resetcut 2>/dev/null; rm -f /run/kvt-resetcut /run/kvt-resetcut.json; true") })
+	host.mustSh("systemd-run --unit=kvt-resetcut sh -c 'for i in $(seq 1 3000); do if pgrep -f \"[q]emu-img convert.*" + n.LV + "\" >/dev/null; then cp /var/lib/kevaso-silos/" + n.Short + "/silo.json /run/kvt-resetcut.json; systemctl kill -s KILL kevasod; echo killed > /run/kvt-resetcut; exit; fi; sleep 0.05; done' >/dev/null")
+	t.Cleanup(func() {
+		_, _ = host.sh("systemctl stop kvt-resetcut 2>/dev/null; rm -f /run/kvt-resetcut /run/kvt-resetcut.json; true")
+	})
 	c.must("", "reset", "silo", "vm", "-n", ns)
 	c.eventually("kevasod killed during the convert", 5*time.Minute, func() (bool, string) {
 		out, _ := host.sh("cat /run/kvt-resetcut 2>/dev/null")
