@@ -303,7 +303,7 @@ func TestSetVolumes(t *testing.T) {
 		t.Fatalf("running with others: %v %v (want restart)", restart, err)
 	}
 	for _, c := range h.commands()[before:] {
-		if strings.HasPrefix(c, "lvcreate") {
+		if strings.HasPrefix(hostCmd(c), "lvcreate") {
 			t.Fatalf("changed a running VM: %s", c)
 		}
 	}
@@ -373,7 +373,7 @@ func TestStartStopWithShares(t *testing.T) {
 
 func lastIndex(cmds []string, prefix string) int {
 	for i := len(cmds) - 1; i >= 0; i-- {
-		if strings.HasPrefix(cmds[i], prefix) {
+		if strings.HasPrefix(cmds[i], prefix) || strings.HasPrefix(hostCmd(cmds[i]), prefix) {
 			return i
 		}
 	}

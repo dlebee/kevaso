@@ -324,11 +324,11 @@ func (r *Runtime) setupStorage(ctx context.Context, o StorageOptions) error {
 	if r.poolReady(ctx) {
 		return nil
 	}
-	if err := r.run(ctx, "lvcreate", "-q", "--type", "thin-pool", "-l", "90%FREE", "-n", ThinPool, VG); err != nil {
+	if err := r.runPool(ctx, "lvcreate", "-q", "--type", "thin-pool", "-l", "90%FREE", "-n", ThinPool, VG); err != nil {
 		return err
 	}
 	// A full pool fails writes fast instead of hanging guests (E012).
-	return r.run(ctx, "lvchange", "-q", "--errorwhenfull", "y", VG+"/"+ThinPool)
+	return r.runPool(ctx, "lvchange", "-q", "--errorwhenfull", "y", VG+"/"+ThinPool)
 }
 
 // PoolSize is the thin pool's size and what the thin volumes in it promise already, in bytes:
