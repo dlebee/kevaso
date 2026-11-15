@@ -42,7 +42,7 @@ type metalPair struct {
 	// recoveryKey is what kvoadm init printed for the cluster (in memory only, never logged):
 	// TestMetal2RestoreKeepsWhatItDoesntKnow restores with it. Empty on a reused cluster.
 	recoveryKey string
-	mu       sync.Mutex
+	mu          sync.Mutex
 }
 
 var pairState struct {
@@ -219,6 +219,11 @@ func setUpPair() (p *metalPair, skip string, err error) {
 		// an empty disk, and refuses anything else.
 		storage = []string{"--storage-device", cfg2.SpareDisk}
 	}
+	// The stand-in internet on machine 2 (the injection tests), its CA trusted by the egress gate.
+	if out, err := p.m2.d.Run(ctx, metalInetSetup, nil); err != nil {
+		return nil, "", fmt.Errorf("the stand-in internet on %s: %v\n%s", metalHost2, err, out)
+	}
+	storage = append(storage, "--egress-extra-ca", "/etc/kevaso/test-internet-ca.pem")
 	if err := run(append(append(append([]string{"host", "add"}, ssh(cfg2)...), "--name", metalHost2, "--install", "worker",
 		"--runtime", "cloud-hypervisor", "--runtime", "docker", "--external-ip", cfg2.ExternalIP), storage...)...); err != nil {
 		return nil, "", err

@@ -51,6 +51,7 @@ spec:
   runtime: docker
   container: { image: ubuntu-24.04 }
   resources: { cpu: 1, memory: 256Mi }
+  availability: { onHostLoss: Recreate } # a container moves only as a fresh copy
 ---
 apiVersion: kevaso/v1
 kind: Silo
@@ -135,8 +136,8 @@ spec:
 	if mover.Status.Movable != "Anywhere" {
 		t.Errorf("mover's movable: %q, want Anywhere", mover.Status.Movable)
 	}
-	out := r.must(kvo.Run, "", "move", "silo", "mover", "-n", "mv", "--to", to)
-	expect(t, "kvo move silo", out, "moving to "+to+" with its data; "+from+" stops it first")
+	out := r.must(kvo.Run, "", "move", "silo", "mover", "-n", "mv", "--to", to, "--recreate")
+	expect(t, "kvo move silo", out, "moving to "+to+" as a fresh copy from its image; "+from+" stops it first")
 	if s := r.silo("mv", "mover"); s.Status.MovingFrom != from && s.Status.Phase != "Running" {
 		t.Errorf("right after the move: movingFrom %q, host %s", s.Status.MovingFrom, s.Status.Host)
 	}
@@ -171,7 +172,7 @@ spec:
 	// 3. A Recreate silo on w2 (moved there first if it isn't), and w2 is lost.
 	st := r.silo("mv", "stateless")
 	if st.Status.Host != "w2" {
-		r.must(kvo.Run, "", "move", "silo", "stateless", "-n", "mv", "--to", "w2")
+		r.must(kvo.Run, "", "move", "silo", "stateless", "-n", "mv", "--to", "w2", "--recreate")
 		watchHandoff("stateless to w2", mainOf(st), "w1", "w2", 3*time.Minute)
 		r.eventually("stateless is on w2", 2*time.Minute, func() (bool, string) {
 			s := r.silo("mv", "stateless")
@@ -239,7 +240,7 @@ NFT`, w1IP)); err != nil {
 	toW2 := func(what string) {
 		t.Helper()
 		w2Ready(what)
-		r.must(kvo.Run, "", "move", "silo", "stateless", "-n", "mv", "--to", "w2")
+		r.must(kvo.Run, "", "move", "silo", "stateless", "-n", "mv", "--to", "w2", "--recreate")
 		watchHandoff(what, name, "w1", "w2", 3*time.Minute)
 		r.eventually(what+": on w2", 2*time.Minute, func() (bool, string) {
 			s := r.silo("mv", "stateless")

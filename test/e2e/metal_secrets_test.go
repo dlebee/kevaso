@@ -48,6 +48,7 @@ func TestMetalSecrets(t *testing.T) {
 kind: Grant
 metadata: { name: app, namespace: ` + ns + ` }
 spec:
+  egress: [{ to: "` + metalInetAddr + `/32", ports: ["443"] }] # the stand-in is on loopback: K-057 refuses it by name alone
   secrets:
     - { name: db-password }
     - { name: tls-key, deliver: file, path: /run/secrets/tls.pem }
@@ -59,6 +60,7 @@ apiVersion: kevaso/v1
 kind: Grant
 metadata: { name: boxapp, namespace: ` + ns + ` }
 spec:
+  egress: [{ to: "` + metalInetAddr + `/32", ports: ["443"] }] # the stand-in is on loopback: K-057 refuses it by name alone
   secrets:
     - { name: db-password }
     - { name: api-key, deliver: inject, to: { host: ` + metalInetName + ` } }
