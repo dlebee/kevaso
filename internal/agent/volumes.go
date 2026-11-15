@@ -195,6 +195,11 @@ func (a *Agent) mayMountHere(ctx context.Context, s *v1.Silo, vs v1.VolumeStatus
 // mount mounts dev at dir, formatting it first only if it holds no filesystem at all: a volume
 // that comes back (another host, a restart) is never wiped.
 func (a *Agent) mount(ctx context.Context, dev, dir string) error {
+	// K-038: checked where it is used, as root: a device can reach a silo's status other than
+	// through the registry's check (K-037, K-045). Nothing runs for one that fails.
+	if err := kplugin.DevicePathProblem(dev); err != nil {
+		return fmt.Errorf("not mounting it: %w", err)
+	}
 	if _, code, _ := a.run(ctx, "mountpoint", "-q", dir); code == 0 {
 		return nil
 	}
