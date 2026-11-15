@@ -1,7 +1,7 @@
 MODULES := . api sdk
 export GOTOOLCHAIN := auto
 
-.PHONY: test test-short race vet vet-tags lint e2e e2e-ci where fuzz stress mutate workspace proto plugins
+.PHONY: test test-short race vet vet-tags lint e2e e2e-ci where fuzz stress contention mutate workspace proto plugins
 
 test:                       ## unit tests, every module
 	@for m in $(MODULES); do (cd $$m && go test ./...) || exit 1; done
@@ -44,6 +44,9 @@ fuzz:                       ## fuzz every fuzzer for FUZZTIME (default 60s) each
 
 stress:                     ## the property, stress, race and election tests, three times each, under the race detector (nightly)
 	go test -race -count=3 -timeout 40m -run 'Property|Stress|Race|Simulated|Survive|Join|Light|Lease' ./internal/store ./internal/controlplane ./internal/leader ./internal/rbac ./internal/moves ./internal/scheduler ./internal/names ./internal/apiserver ./builtin/kni
+
+contention:                 ## the suite under load: four copies of the integration and controller tests at once, GOMAXPROCS=2, -race (nightly)
+	hack/contention.sh
 
 mutate:                     ## prove the safety guards cannot be removed without a test failing (slow: about an hour; nightly). See hack/mutate/README.md
 	go run ./hack/mutate -j 3
