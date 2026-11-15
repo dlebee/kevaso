@@ -99,3 +99,30 @@ func TestAMainContainerWithoutItsPauseContainerIsRunning(t *testing.T) {
 		t.Fatalf("Status %s %v: its main container runs", st.State, err)
 	}
 }
+
+// Review claim 3: the agent's reset gate is asked inside Reset, right before the containers go;
+// a gate that refuses removes nothing.
+func TestResetAsksItsGateBeforeRemovingAnything(t *testing.T) {
+	ctx := context.Background()
+	f := newFake()
+	r := runtime(t, f)
+	if err := r.Create(ctx, kri.Spec{ID: silo, Image: "ubuntu-24.04"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(ctx, silo); err != nil {
+		t.Fatal(err)
+	}
+	refused := fmt.Errorf("taken back")
+	before := len(f.cmds)
+	if err := r.ResetGated(ctx, kri.Spec{ID: silo, Image: "ubuntu-24.04"}, func(context.Context) error { return refused }); err != refused {
+		t.Fatalf("ResetGated: %v, want the gate's error", err)
+	}
+	for _, c := range f.cmds[before:] {
+		if strings.Contains(c, " rm ") {
+			t.Fatalf("removed although the gate refused: %v", f.cmds[before:])
+		}
+	}
+	if _, ok := f.containers[NamesFor(silo).Main]; !ok {
+		t.Fatal("the main container is gone although the gate refused")
+	}
+}

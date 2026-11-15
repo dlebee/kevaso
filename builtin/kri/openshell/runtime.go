@@ -402,15 +402,28 @@ func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 // Reset implements kri.Resetter: the sandbox goes (its gateway and providers stay) and is made
 // again from spec's image on Start, with the policy applied afresh.
 func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
+	return r.ResetGated(ctx, spec, nil)
+}
+
+// ResetGated is Reset that asks gate (if set) right before the sandbox is deleted. An error from
+// gate ends the reset with nothing deleted, and is returned as is.
+func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(context.Context) error) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s, ok := r.load(spec.ID)
 	if !ok {
 		return fmt.Errorf("%s: %w", spec.ID, kri.ErrNotFound)
 	}
-	if _, exists, err := r.get(ctx, s); err != nil {
+	_, exists, err := r.get(ctx, s)
+	if err != nil {
 		return err
-	} else if exists {
+	}
+	if gate != nil {
+		if err := gate(ctx); err != nil {
+			return err
+		}
+	}
+	if exists {
 		if _, err := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "delete", SandboxName(spec.ID)); err != nil {
 			return err
 		}

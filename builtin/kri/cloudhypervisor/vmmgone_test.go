@@ -146,3 +146,37 @@ func TestResetNeverRemovesTheDiskUnderAVMMThatHasNotGone(t *testing.T) {
 		t.Fatalf("the root volume was removed under a VMM that may run: %v", h.commands()[before:])
 	}
 }
+
+// Review claim 3: the agent's reset gate is asked inside Reset, after the VM is stopped and gone
+// and right before its root volume is made afresh; a gate that refuses leaves the volume.
+func TestResetAsksItsGateRightBeforeTheDisk(t *testing.T) {
+	ctx := context.Background()
+	h := newFakeHost()
+	r := newRuntime(t, h)
+	sp := spec("web")
+	if err := r.Create(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	n := NamesFor(sp.ID)
+	refused := errors.New("taken back")
+	var at int
+	before := len(h.commands())
+	err := r.ResetGated(ctx, sp, func(context.Context) error { at = len(h.commands()); return refused })
+	if !errors.Is(err, refused) {
+		t.Fatalf("ResetGated: %v, want the gate's error", err)
+	}
+	cmds := h.commands()[before:]
+	if indexOf(cmds, "lvremove") >= 0 || !h.lvs[n.LV] {
+		t.Fatalf("the root volume was removed although the gate refused: %v", cmds)
+	}
+	if stop := indexOf(cmds, "systemctl stop "+n.Unit); stop < 0 || stop >= at-before {
+		t.Fatalf("the gate was asked before the VMM was stopped: %v (gate at %d)", cmds, at-before)
+	}
+	at = -1
+	if err := r.ResetGated(ctx, sp, func(context.Context) error { at = len(h.commands()); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if cmds := h.commands()[at:]; indexOf(cmds, "lvremove") < 0 {
+		t.Fatalf("with the gate open, the reset made no fresh disk after it: %v", cmds)
+	}
+}

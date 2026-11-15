@@ -846,8 +846,34 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 	if err != nil {
 		return true, err
 	}
-	if err := rr.Reset(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
-		Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath}); err != nil {
+	// The gate again, the last thing before the disk or container is made afresh (review claim
+	// 3): the stop took a while too (cloud-hypervisor waits up to 30s for the guest). A runtime
+	// that can (gatedResetter) asks it inside its Reset, right before it removes anything; for
+	// the others it is taken right before Reset. A request that changed meanwhile leaves the
+	// silo stopped with its disk, and it starts again as it is.
+	gate := func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second) // a runtime may hold its lock meanwhile
+		defer cancel()
+		ok, err := a.gateReset(ctx, s, image, due, func(st *v1.SiloStatus) {
+			setCond(st, "Ready", meta.ConditionFalse, "Updating", "stopped for "+what+": its disk is made afresh now (volumes kept)", s.Generation, a.now())
+		})
+		if err == nil && !ok {
+			err = errResetTakenBack
+		}
+		return err
+	}
+	spec := kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
+		Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath}
+	if g, ok := rr.(gatedResetter); ok {
+		err = g.ResetGated(ctx, spec, gate)
+	} else if err = gate(ctx); err == nil {
+		err = rr.Reset(ctx, spec)
+	}
+	if errors.Is(err, errResetTakenBack) {
+		a.log("silo %s/%s: its reset or image changed while it stopped: its disk is kept, looking again", s.Namespace, s.Name)
+		return true, nil
+	}
+	if err != nil {
 		_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 			setCond(st, "Updated", meta.ConditionFalse, failReason(err, "ResetFailed"), err.Error(), s.Generation, a.now())
 		})
@@ -862,6 +888,17 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		setCond(st, "Updated", meta.ConditionTrue, "Reset", "reset onto "+image+" (stop-first, volumes kept)", s.Generation, a.now())
 	})
 }
+
+// gatedResetter is a runtime whose Reset asks gate right before it removes or overwrites
+// anything of the silo (its root disk, its containers), after its own stop: an error from gate
+// ends the reset with nothing removed, and is returned as is.
+type gatedResetter interface {
+	ResetGated(ctx context.Context, spec kri.Spec, gate func(context.Context) error) error
+}
+
+// errResetTakenBack: the reset gate found the request changed (taken back, another image, the
+// silo changed or placed elsewhere): nothing is removed.
+var errResetTakenBack = errors.New("the reset or the image changed since it was asked for")
 
 // gateReset writes mutate onto the stored silo only if it is still s, at s's generation, placed
 // here, resolving to image, with the reset due (due), in one compare-and-swap: ok says it applied.

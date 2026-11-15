@@ -727,6 +727,13 @@ func (r *Runtime) image(ctx context.Context, image string) (string, error) {
 // Reset implements kri.Resetter: the VM is stopped, its disk is made afresh from spec's image and
 // its seed (with a new guest host key) rebuilt; its address, MAC and tap stay.
 func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
+	return r.ResetGated(ctx, spec, nil)
+}
+
+// ResetGated is Reset that asks gate (if set) once the VM is stopped and gone, right before its
+// root disk is made afresh: the last thing before lvremove. An error from gate ends the reset with
+// the disk as it was, and is returned as is.
+func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(context.Context) error) error {
 	img, err := r.image(ctx, spec.Image)
 	if err != nil {
 		return err
@@ -767,6 +774,12 @@ func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
 				_, _ = r.Host.Run(ctx, c[0], c[1:]...)
 			}
 			return r.gone(ctx, spec.ID, "a stop") // its disk is made afresh next: never under a VMM
+		},
+		func() error {
+			if gate != nil {
+				return gate(ctx)
+			}
+			return nil
 		},
 		func() error { return r.rootDisk(ctx, n, layout, img, disk, true) },
 		func() error {

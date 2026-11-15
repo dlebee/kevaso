@@ -674,11 +674,23 @@ func (r *Runtime) stop(ctx context.Context, id kri.ID, kill bool) error {
 // Reset implements kri.Resetter: the containers go, the volumes, address and pause container
 // stay, and the silo is Created again from spec's image (the main container comes with Start).
 func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
+	return r.ResetGated(ctx, spec, nil)
+}
+
+// ResetGated is Reset that asks gate (if set) right before the containers (their writable layers)
+// are removed. An error from gate ends the reset with nothing removed, and is returned as is.
+func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(context.Context) error) error {
 	r.mu.Lock()
 	s, ok := r.load(spec.ID)
 	if !ok {
 		r.mu.Unlock()
 		return fmt.Errorf("%s: %w", spec.ID, kri.ErrNotFound)
+	}
+	if gate != nil {
+		if err := gate(ctx); err != nil {
+			r.mu.Unlock()
+			return err
+		}
 	}
 	n := NamesFor(spec.ID)
 	for _, c := range []string{n.Main, n.Init} {
