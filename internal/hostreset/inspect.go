@@ -52,7 +52,7 @@ type Inspection struct {
 	Volumes   []string // its logical volumes but the thin pool, "NAME SIZE"
 	// StorageFile is Kevaso's loop file when it exists ("PATH SIZE"), attached or not.
 	StorageFile string
-	Now       State
+	Now         State
 }
 
 // PV is one physical volume of the volume group.
