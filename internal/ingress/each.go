@@ -332,14 +332,14 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 				continue
 			}
 			for _, r := range g.Routes {
-				claims[r.Host+" "+r.Path] = w
+				claims[claimKey(r.Host, r.Path)] = w
 			}
 			for _, c := range g.Certificates {
 				claims["certificate "+c.Name] = w
 			}
 		}
 		for _, r := range f.Routes {
-			if w, taken := claims[r.Host+" "+r.Path]; taken {
+			if w, taken := claims[claimKey(r.Host, r.Path)]; taken {
 				out.LeftOut[who] = why + "; its last good version isn't served instead: " + w + " now has " + r.Host + r.Path
 				return false
 			}

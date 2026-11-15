@@ -73,6 +73,13 @@ type Challenge struct {
 // ChallengePrefix is the path ACME HTTP-01 challenges are asked on.
 const ChallengePrefix = "/.well-known/acme-challenge/"
 
+// ChallengePath says whether a route's path would take the requests ACME challenges are asked on
+// (proxies may match paths without case).
+func ChallengePath(p string) bool {
+	p = strings.ToLower(p)
+	return p == strings.TrimSuffix(ChallengePrefix, "/") || strings.HasPrefix(p, ChallengePrefix)
+}
+
 // Plan is what a driver rendered: what to put where, how to check it, how to make it take effect.
 type Plan struct {
 	// Config is the proxy's main configuration. The agent writes it next to its path (Path+".next"),
@@ -227,6 +234,8 @@ func CheckState(s State) error {
 			return fmt.Errorf("ingress %s: host %q", r.Ingress, r.Host)
 		case !safePath.MatchString(r.Path):
 			return fmt.Errorf("ingress %s: path %q (letters, digits and ._~%%/- only)", r.Ingress, r.Path)
+		case ChallengePath(r.Path):
+			return fmt.Errorf("ingress %s: path %q: ACME challenges are answered there, for every host", r.Ingress, r.Path)
 		case !safeAddr.MatchString(r.Backend.Address) || r.Backend.Port <= 0 || r.Backend.Port > 65535:
 			return fmt.Errorf("ingress %s: backend %s:%d", r.Ingress, r.Backend.Address, r.Backend.Port)
 		}
