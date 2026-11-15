@@ -122,9 +122,16 @@ func (Driver) Render(s kic.State) (kic.Plan, error) {
 				StripPath: r.Annotations["strip-path"] == "true", PreserveHost: true, HTTPSRedirectStatusCode: redirect}},
 		})
 	}
+	// ACME answers: Kong ranks a route with hosts above one with paths only, so a host's own "/"
+	// route would answer its challenge (K-085). Each answer is also a route with every routed
+	// host (its longer path wins among those), besides the one for any other host.
+	hosts, _ := kic.Hosts(s.Routes)
 	for _, c := range s.Challenges {
-		d.Routes = append(d.Routes, route{Name: "acme." + c.Token, Paths: []string{kic.ChallengePrefix + c.Token}, Protocols: []string{"http"},
-			Plugins: []plugin{{Name: "request-termination", Config: map[string]any{"status_code": 200, "content_type": "text/plain", "body": c.KeyAuthorization}}}})
+		answer := []plugin{{Name: "request-termination", Config: map[string]any{"status_code": 200, "content_type": "text/plain", "body": c.KeyAuthorization}}}
+		d.Routes = append(d.Routes, route{Name: "acme." + c.Token, Paths: []string{kic.ChallengePrefix + c.Token}, Protocols: []string{"http"}, Plugins: answer})
+		if len(hosts) > 0 {
+			d.Routes = append(d.Routes, route{Name: "acme." + c.Token + ".hosts", Hosts: hosts, Paths: []string{kic.ChallengePrefix + c.Token}, Protocols: []string{"http"}, Plugins: answer})
+		}
 	}
 	for _, c := range s.Certificates {
 		cert := certificate{Cert: string(c.Chain), Key: string(c.Key)}
