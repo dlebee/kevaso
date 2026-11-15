@@ -27,6 +27,7 @@ func semantic(obj meta.Object) []string {
 			}
 		}
 		errs = append(errs, probes.Validate(o.Spec)...)
+		errs = append(errs, o.Spec.Availability.ControlPlaneLossProblems()...)
 	case *v1.Service:
 		for _, p := range o.Spec.Ports {
 			if t := p.TargetPort; t != "" && !label.MatchString(t) {

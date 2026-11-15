@@ -3,6 +3,7 @@
 package v1
 
 import (
+	"fmt"
 	"time"
 
 	"kevaso.com/core/api/meta"
@@ -314,6 +315,66 @@ type Availability struct {
 	// the image on another host; data on host-local disks is lost, by declaration), or Move (with its
 	// data; needs every disk on a movable storage class).
 	OnHostLoss string `json:"onHostLoss,omitempty"`
+	// OnControlPlaneLoss (design §0.7): Continue (default, also when empty: a worker that can't
+	// reach the control plane changes nothing) or Stop (the worker stops this silo once it has
+	// been cut off from the control plane for After). This is the ONLY thing that makes a worker
+	// stop a silo on its own: not onHostLoss, not exclusive, not a storage class.
+	OnControlPlaneLoss string `json:"onControlPlaneLoss,omitempty"`
+	// After is how long the worker waits (cut off) before stopping the silo: a duration, only
+	// with onControlPlaneLoss: Stop; default 2m, at least 30s, at most 24h.
+	After string `json:"after,omitempty"`
+}
+
+// OnControlPlaneLoss values.
+const (
+	OnControlPlaneLossContinue = "Continue"
+	OnControlPlaneLossStop     = "Stop"
+)
+
+// Bounds of availability.after, and its default with Stop.
+const (
+	DefaultStopAfter = 2 * time.Minute
+	MinStopAfter     = 30 * time.Second
+	MaxStopAfter     = 24 * time.Hour
+)
+
+// StopsOnControlPlaneLoss reports whether the silo asks to be stopped by its worker when the
+// host loses the control plane (onControlPlaneLoss: Stop), and after how long (After, or
+// DefaultStopAfter). With Continue or empty: false, 0. An unparsable After (admission refuses
+// it) gives the default.
+func (a Availability) StopsOnControlPlaneLoss() (bool, time.Duration) {
+	if a.OnControlPlaneLoss != OnControlPlaneLossStop {
+		return false, 0
+	}
+	if d, err := time.ParseDuration(a.After); err == nil && a.After != "" {
+		return true, d
+	}
+	return true, DefaultStopAfter
+}
+
+// StopsOnControlPlaneLoss is Availability.StopsOnControlPlaneLoss of the silo's spec.
+func (s *Silo) StopsOnControlPlaneLoss() (bool, time.Duration) {
+	return s.Spec.Availability.StopsOnControlPlaneLoss()
+}
+
+// ControlPlaneLossProblems lists what is wrong with the two fields (empty when fine).
+func (a Availability) ControlPlaneLossProblems() []string {
+	switch a.OnControlPlaneLoss {
+	case "", OnControlPlaneLossContinue:
+		if a.After != "" {
+			return []string{"availability.after goes with onControlPlaneLoss: Stop (Continue changes nothing, so there's nothing to wait for)"}
+		}
+	case OnControlPlaneLossStop:
+		if a.After != "" {
+			d, err := time.ParseDuration(a.After)
+			if err != nil || d < MinStopAfter || d > MaxStopAfter {
+				return []string{fmt.Sprintf("availability.after %q: want a duration from %s to %s (e.g. 2m)", a.After, MinStopAfter, MaxStopAfter)}
+			}
+		}
+	default:
+		return []string{"availability.onControlPlaneLoss must be Continue or Stop"}
+	}
+	return nil
 }
 
 // OnHostLoss policies.
