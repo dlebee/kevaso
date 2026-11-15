@@ -25,6 +25,7 @@ type fakeResetHost struct {
 	steps      map[string]string // script → step name
 	checks     map[string]string // script → check name
 	fail       string            // the step that fails
+	notes      map[string]string // step name → what a successful step prints
 }
 
 func (f *fakeResetHost) Run(_ context.Context, cmd string, _ []byte) ([]byte, error) {
@@ -43,7 +44,7 @@ func (f *fakeResetHost) Run(_ context.Context, cmd string, _ []byte) ([]byte, er
 		if f.steps[cmd] == f.fail {
 			return []byte("it failed"), errors.New("exit 1")
 		}
-		return nil, nil
+		return []byte(f.notes[f.steps[cmd]]), nil
 	}
 	f.ran = append(f.ran, "unknown")
 	return nil, nil
@@ -313,6 +314,21 @@ func TestStorageDeviceFlag(t *testing.T) {
 		if _, err := parseTarget(bad); err == nil {
 			t.Errorf("%v accepted", bad)
 		}
+	}
+}
+
+// A step's own lines are part of the reset's output: restarting Docker says which foreign
+// containers were started again.
+func TestResetShowsWhatAStepPrints(t *testing.T) {
+	rec := &hostreset.Record{State: baseState}
+	h := newResetHost(t, rec, nil, nil, nil, hostreset.Flags{})
+	h.notes = map[string]string{"delete nftables tables": "started foreign container kvt-foreign again\n"}
+	out, err := reset(h, ResetOptions{Yes: true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "✓ delete nftables tables\n  started foreign container kvt-foreign again\n") {
+		t.Fatalf("the reset hid what the step printed:\n%s", out)
 	}
 }
 

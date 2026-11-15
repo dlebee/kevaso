@@ -38,6 +38,20 @@ case "$name $*" in
   "podman ps -aq")                    echo other-pc1 ;;
   "podman volume ls -q --filter"*)    echo kevaso-pv1 ;;
   "podman volume ls -q")              echo other-pv1 ;;
+  "docker ps -q"|"podman ps -q")
+    [ -n "$STUB_RUNNING" ] && printf '%s\n' $STUB_RUNNING ;;
+  "docker inspect"*|"podman inspect"*)
+    id= fmt= prev=
+    for a in "$@"; do
+      if [ "$prev" = "-f" ]; then fmt=$a; fi
+      prev=$a
+      id=$a
+    done
+    case "$fmt" in
+      *State.Running*) eval "printf '%s\n' \"\${STUB_UP_$id:-false}\"" ;;
+      *kevaso.com/uid*) eval "printf '%s\n' \"\${STUB_LABEL_$id}\"" ;;
+      *) eval "printf '%s\n' \"\${STUB_NAME_$id}\"" ;;
+    esac ;;
   "pvs "*)                            echo "$STUB_PV" ;;
   "losetup -n -O BACK-FILE"*)         echo "$STUB_BACKFILE" ;;
   "losetup -n -O NAME"*)              : ;;
@@ -77,6 +91,14 @@ func runStep(t *testing.T, in PlanInput, name string, env ...string) (ran, error
 	if step == nil {
 		t.Fatalf("no step %q in the plan", name)
 	}
+	r, _, err := runStubbed(t, step.Script, env...)
+	return r, err
+}
+
+// runStubbed runs a reset script under the stubs and returns what they saw, the combined output,
+// and the script's exit error.
+func runStubbed(t *testing.T, script string, env ...string) (ran, string, error) {
+	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
 	if err := os.Mkdir(bin, 0o755); err != nil {
@@ -96,13 +118,13 @@ func runStep(t *testing.T, in PlanInput, name string, env ...string) (ran, error
 	if err := os.WriteFile(log, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/bin/sh", "-c", step.Script)
+	cmd := exec.Command("/bin/sh", "-c", script)
 	cmd.Env = append([]string{"PATH=" + bin, "STUBLOG=" + log, "HOME=" + dir}, env...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	b, _ := os.ReadFile(log)
-	t.Logf("step %q: %v\n%s", step.Name, err, out)
-	return ran{lines: strings.Split(strings.TrimSpace(string(b)), "\n")}, err
+	t.Logf("script: %v\n%s", err, out)
+	return ran{lines: strings.Split(strings.TrimSpace(string(b)), "\n")}, string(out), err
 }
 
 // Every step of every plan is a script sh accepts, whatever is in the input.
@@ -139,6 +161,51 @@ func TestADockerThatIsNotKevasosLosesOnlyKevasosContainersAndVolumes(t *testing.
 		if strings.Join(c, " ") == "system prune -af" || (len(c) > 0 && c[0] == "system") {
 			t.Fatalf("a Docker that is not Kevaso's was pruned: %v", c)
 		}
+	}
+}
+
+// Restarting dockerd (to drop daemon.json) stops containers that were running. Those that are
+// not Kevaso's are started again; Kevaso's (label kevaso.com/uid, or a kv- name, including an
+// OpenShell sandbox name) are not. The same for podman, which the reset restarts the same way
+// when it restarts it.
+func TestARestartStartsForeignContainersAgain(t *testing.T) {
+	// Ids are hex, as an engine's are. foreign is not Kevaso's; the others are (a label, the kv-
+	// name prefix, an OpenShell sandbox name) or still running after the restart.
+	env := []string{
+		"STUB_RUNNING=aaa bbb ccc ddd eee",
+		"STUB_NAME_aaa=/kvt-foreign",
+		"STUB_NAME_bbb=/custom",
+		"STUB_LABEL_bbb=uid-1",
+		"STUB_NAME_ccc=/kv-0123456789abcdef",
+		"STUB_NAME_ddd=/openshell-kv-0123456789",
+		"STUB_NAME_eee=/nginx",
+		"STUB_UP_eee=true",
+	}
+	for _, eng := range []string{"docker", "podman"} {
+		t.Run(eng, func(t *testing.T) {
+			r, out, err := runStubbed(t, foreignRestart(eng), env...)
+			if err != nil {
+				t.Fatalf("restart script: %v\n%s\n%s", err, out, r.text())
+			}
+			if out != "started foreign container kvt-foreign again\n" {
+				t.Fatalf("output:\n%s", out)
+			}
+			var starts []string
+			for _, c := range r.calls(eng) {
+				if len(c) > 0 && c[0] == "start" {
+					starts = append(starts, strings.Join(c, " "))
+				}
+			}
+			if len(starts) != 1 || starts[0] != "start aaa" {
+				t.Fatalf("%s start calls: %v\n%s", eng, starts, r.text())
+			}
+			ps := strings.Index(r.text(), eng+" ps -q")
+			restart := strings.Index(r.text(), "systemctl try-restart "+eng)
+			start := strings.Index(r.text(), eng+" start aaa")
+			if ps < 0 || restart < 0 || start < 0 || !(ps < restart && restart < start) {
+				t.Fatalf("record, then restart, then start:\n%s", r.text())
+			}
+		})
 	}
 }
 
