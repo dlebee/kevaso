@@ -20,14 +20,17 @@ func KillPlan(n Names, l Layout) [][]string {
 //
 // A VM whose state file can't be read is killed too (K-094), by its unit's name: its virtiofsd
 // daemons aren't known then, and are left (they serve files, they run nothing of the silo's).
+//
+// Done means the VMM is gone (vmm): a unit left deactivating, or failed with a process still in
+// it, is not killed yet, and the fence tries again.
 func (r *Runtime) Kill(ctx context.Context, id kri.ID) error {
 	st, ok, err := r.readState(id)
 	if err != nil {
 		n := NamesFor(id)
 		_, _ = r.Host.Run(ctx, "systemctl", "kill", "--signal=SIGKILL", "--kill-whom=all", n.Unit)
 		_, _ = r.Host.Run(ctx, "systemctl", "stop", n.Unit)
-		if r.active(ctx, n.Unit) == "active" {
-			return fmt.Errorf("%s: the VMM is still running after SIGKILL (%v)", id, err)
+		if gerr := r.gone(ctx, id, "SIGKILL"); gerr != nil {
+			return fmt.Errorf("%w (%v)", gerr, err)
 		}
 		return nil
 	}
@@ -37,8 +40,5 @@ func (r *Runtime) Kill(ctx context.Context, id kri.ID) error {
 	for _, c := range KillPlan(NamesFor(id), st.layout()) {
 		_, _ = r.Host.Run(ctx, c[0], c[1:]...) // each step is idempotent; one failing doesn't skip the rest
 	}
-	if r.active(ctx, NamesFor(id).Unit) == "active" {
-		return fmt.Errorf("%s: the VMM is still running after SIGKILL", id)
-	}
-	return nil
+	return r.gone(ctx, id, "SIGKILL")
 }

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"kevaso.com/core/api/client"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
@@ -43,61 +44,160 @@ type initRunner interface {
 	InitRunning(ctx context.Context, id kri.ID) (bool, error)
 }
 
-// keepClaim keeps this host's start claim of s fresh while its start takes long (its init steps):
-// written anew every ClaimRefreshEvery, each a new claim, so the control plane, which counts a
-// claim from when it first sees it, sees one standing for as long as anything of s runs here
-// before its main process. The context it returns ends when a renewal finds s placed elsewhere
-// (or changed, or deleted), or when the fence stops s here; whatever of s runs under it then
-// ends (a runtime stops an init step whose context ends). kept stops the renewals, waiting for one
-// in flight, and says why the context ended, if it did (nil: it didn't).
+// claimKeeper keeps this host's start claim of one silo fresh, across reconciles, for as long as
+// its start runs here: from just after its first claim applied (before any of its code runs or it
+// gets its secrets) until it is reported Running here, or its start ended and nothing of it runs
+// (review of K-088): the init containers, the runtime's Start however long it takes, and a VM's or
+// an OpenShell sandbox's init steps run through Exec. It writes the claim anew every
+// ClaimRefreshEvery, each a new claim, so the control plane, which counts a claim from when it
+// first sees it, sees one standing for as long as the start runs.
+//
+// Its context ends when a renewal finds s placed elsewhere (or changed, or deleted), or when the
+// fence stops s here; whatever of s's start runs under it then ends (a runtime stops an init step,
+// a Start, an Exec whose context ends).
 //
 // A renewal that fails for want of contact is only logged: the claim then lapses, and the control
 // plane counts the host's silence from its last sight of it; a silo that asked to stop without the
 // control plane is stopped here by the fence first (its Kill covers the init step), and no other
 // silo is restarted elsewhere (§0.7).
-func (a *Agent) keepClaim(ctx context.Context, s *v1.Silo) (context.Context, func() error) {
-	cctx, cancel := context.WithCancelCause(ctx)
-	var mu sync.Mutex // held while a renewal runs
-	stopped := false
-	var t clock.Timer
-	var tick func()
-	tick = func() {
-		mu.Lock()
-		defer mu.Unlock()
-		if stopped {
-			return
-		}
-		if a.mustStop(s) {
-			a.log("%s/%s: no contact with the control plane for over its after: ending its start here", s.Namespace, s.Name)
-			cancel(errFenced)
-			return
-		}
-		switch err := a.renewClaim(cctx, s); {
-		case errors.Is(err, errPlacedElsewhere):
-			a.log("%s/%s: renewing its start claim found it placed elsewhere or changed: ending its init steps here", s.Namespace, s.Name)
-			cancel(errPlacedElsewhere)
-			return
-		case err != nil && cctx.Err() == nil:
-			a.log("%s/%s: renewing its start claim: %v (trying again)", s.Namespace, s.Name, err)
-		}
-		t = a.Clock.AfterFunc(a.claimRefresh(), tick)
+type claimKeeper struct {
+	a       *Agent
+	s       *v1.Silo // as it was claimed (its UID and generation)
+	ctx     context.Context
+	cancel  context.CancelCauseFunc
+	mu      sync.Mutex // held while a renewal, or a claim through claimNow, runs
+	stopped bool
+	t       clock.Timer
+}
+
+// errClaimEnded: a keeper's renewals ended (the silo is reported Running, or its start ended).
+var errClaimEnded = errors.New("its start claim is no longer kept")
+
+// keepClaim starts keeping s's start claim fresh, just after a claim of it applied (claimStart).
+// A keeper s had already is replaced.
+func (a *Agent) keepClaim(s *v1.Silo) *claimKeeper {
+	base := a.runCtx
+	if base == nil {
+		base = context.Background()
 	}
-	mu.Lock()
-	t = a.Clock.AfterFunc(a.claimRefresh(), tick)
-	mu.Unlock()
+	a.reported.Delete(s.UID) // a start here again
+	k := &claimKeeper{a: a, s: s}
+	k.ctx, k.cancel = context.WithCancelCause(base)
+	k.mu.Lock()
+	k.t = a.Clock.AfterFunc(a.claimRefresh(), k.tick)
+	k.mu.Unlock()
+	if old, loaded := a.claims.Swap(s.UID, k); loaded {
+		old.(*claimKeeper).stop()
+	}
+	return k
+}
+
+// claimKept is the keeper of s's claim that still renews it (the same generation), or nil.
+func (a *Agent) claimKept(s *v1.Silo) *claimKeeper {
+	v, ok := a.claims.Load(s.UID)
+	if !ok {
+		return nil
+	}
+	k := v.(*claimKeeper)
+	if k.s.Generation != s.Generation || k.ctx.Err() != nil {
+		return nil
+	}
+	return k
+}
+
+// reportedRunning says whether this run reported s Running at its generation since its last start
+// here: a cache that still says otherwise is behind that write, and nothing starts again.
+func (a *Agent) reportedRunning(s *v1.Silo) bool {
+	g, ok := a.reported.Load(s.UID)
+	return ok && g.(int64) == s.Generation
+}
+
+// endClaim stops renewing s's claim (reported Running, or its start ended and nothing of it runs).
+func (a *Agent) endClaim(uid string) {
+	if v, ok := a.claims.LoadAndDelete(uid); ok {
+		v.(*claimKeeper).stop()
+	}
+}
+
+// settleClaim ends s's claim after a start that didn't get to Running in this reconcile, once
+// nothing of it runs here: one whose renewals ended (placed elsewhere, the fence), or one rt says
+// doesn't run. While something of it may run, the claim is kept fresh.
+func (a *Agent) settleClaim(ctx context.Context, rt kri.Runtime, s *v1.Silo) {
+	v, ok := a.claims.Load(s.UID)
+	if !ok {
+		return
+	}
+	if v.(*claimKeeper).ctx.Err() != nil {
+		a.endClaim(s.UID)
+		return
+	}
+	if st, err := rt.Status(ctx, idOf(s)); err == nil && st.State != kri.Running {
+		a.endClaim(s.UID)
+	}
+}
+
+func (k *claimKeeper) tick() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.stopped || k.ctx.Err() != nil {
+		return
+	}
+	a, s := k.a, k.s
+	if a.mustStop(s) {
+		a.log("%s/%s: no contact with the control plane for over its after: ending its start here", s.Namespace, s.Name)
+		k.cancel(errFenced)
+		return
+	}
+	switch err := a.renewClaim(k.ctx, s); {
+	case errors.Is(err, errPlacedElsewhere) || client.IsNotFound(err):
+		a.log("%s/%s: renewing its start claim found it placed elsewhere or changed: ending its start here", s.Namespace, s.Name)
+		k.cancel(errPlacedElsewhere)
+		return
+	case err != nil && k.ctx.Err() == nil:
+		a.log("%s/%s: renewing its start claim: %v (trying again)", s.Namespace, s.Name, err)
+	}
+	if k.ctx.Err() == nil {
+		k.t = a.Clock.AfterFunc(a.claimRefresh(), k.tick)
+	}
+}
+
+// stop ends the renewals, waiting for one in flight.
+func (k *claimKeeper) stop() {
+	k.mu.Lock()
+	k.stopped = true
+	k.t.Stop()
+	k.mu.Unlock()
+	k.cancel(errClaimEnded)
+}
+
+// claimNow claims s once more (claimStart), with no renewal in flight: right before its main
+// process starts, on what is stored at this moment. The next renewal is a refresh from now.
+func (k *claimKeeper) claimNow(ctx context.Context) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.ctx.Err() != nil {
+		return context.Cause(k.ctx)
+	}
+	err := k.a.claimStart(ctx, k.s)
+	if err == nil && !k.stopped {
+		k.t.Stop()
+		k.t = k.a.Clock.AfterFunc(k.a.claimRefresh(), k.tick)
+	}
+	return err
+}
+
+// within is ctx, ended too when the keeper's context ends. done detaches it and says why it
+// ended, if it did (nil: it didn't); it may be called more than once.
+func (k *claimKeeper) within(ctx context.Context) (context.Context, func() error) {
+	cctx, cancel := context.WithCancelCause(ctx)
+	detach := context.AfterFunc(k.ctx, func() { cancel(context.Cause(k.ctx)) })
 	var once sync.Once
 	var why error
 	return cctx, func() error {
 		once.Do(func() {
+			detach()
 			if cctx.Err() != nil {
 				why = context.Cause(cctx)
-			}
-			mu.Lock()
-			stopped = true
-			t.Stop()
-			mu.Unlock()
-			if why == nil && cctx.Err() != nil {
-				why = context.Cause(cctx) // ended while a renewal ran
 			}
 			cancel(nil)
 		})
