@@ -158,7 +158,7 @@ func TestMetal2StuckStopIsNotStopped(t *testing.T) {
 	host.mustSh("mkdir -p $(dirname " + dropin + ") && printf '[Service]\\nExecStop=/bin/sleep 120\\nTimeoutStopSec=180\\n' > " + dropin +
 		" && systemctl daemon-reload && systemctl stop --no-block " + n.Unit)
 	show := func() string {
-		return strings.Join(strings.Fields(host.mustSh("systemctl show -p ActiveState,SubState,MainPID " + n.Unit)), " ")
+		return strings.Join(strings.Fields(host.mustSh("systemctl show -p ActiveState,SubState,MainPID "+n.Unit)), " ")
 	}
 	c.eventually("its unit sits in deactivating, MainPID set", 30*time.Second, func() (bool, string) {
 		st := show()

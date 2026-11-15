@@ -80,7 +80,9 @@ spec:
 	// A step made to fail: a file under /var/lib/kevaso no one can remove (immutable). (A busy
 	// mount doesn't: the reset stops every kvt-* unit and unmounts what is under its paths.)
 	c.mustSh("touch /var/lib/kevaso/kvt-stuck && chattr +i /var/lib/kevaso/kvt-stuck")
-	t.Cleanup(func() { _, _ = c.sh("chattr -i /var/lib/kevaso/kvt-stuck 2>/dev/null; rm -f /var/lib/kevaso/kvt-stuck; true") })
+	t.Cleanup(func() {
+		_, _ = c.sh("chattr -i /var/lib/kevaso/kvt-stuck 2>/dev/null; rm -f /var/lib/kevaso/kvt-stuck; true")
+	})
 	cut, code := reset("--force", "--yes")
 	t.Logf("kvoadm reset with a step made to fail (exit %d):\n%s", code, cut)
 	if strings.Contains(cut, "still running") || strings.Contains(cut, "still runs") {
