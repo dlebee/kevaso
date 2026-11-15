@@ -78,16 +78,43 @@ func TestMetal2OpenShellExperiment(t *testing.T) {
 	unitStarted := func(b sb) string {
 		return strings.TrimSpace(p.c1.mustSh("systemctl show -p ActiveEnterTimestamp --value " + b.unit))
 	}
-	claimAfterStart := func(step string) {
-		c.waitRunning(ns, 10*time.Minute, "osvm", "osct")
+	// claimAfterStart follows kevasod's start every second: for each silo the first start claim
+	// seen and the latest (a claim is renewed every 10s), and when its gateway unit was first seen
+	// active. Nothing of OpenShell may run before a silo's claim has applied (openshell-2).
+	claimAfterStart := func(step string, strict bool) {
+		first, last, activeAt := map[string]string{}, map[string]string{}, map[string]time.Time{}
+		deadline := time.Now().Add(10 * time.Minute)
+		for {
+			done := true
+			for _, b := range boxes {
+				if _, ok := activeAt[b.name]; !ok {
+					if st := strings.TrimSpace(p.c1.mustSh("systemctl is-active " + b.unit + " || true")); st == "active" || st == "activating" {
+						activeAt[b.name] = time.Now().UTC()
+					}
+				}
+				s := c.silo(ns, b.name)
+				if at := claimTime(s); at != "" {
+					if first[b.name] == "" {
+						first[b.name] = at
+					}
+					last[b.name] = at
+				}
+				done = done && s.Status.Phase == "Running"
+			}
+			if done {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: never both running", step)
+			}
+			time.Sleep(time.Second)
+		}
 		for _, b := range boxes {
-			claim := claimTime(c.silo(ns, b.name))
-			started := unitStarted(b)
-			ct, err1 := time.Parse(time.RFC3339Nano, claim)
-			ut, err2 := time.Parse("Mon 2006-01-02 15:04:05 MST", started)
-			t.Logf("%s, %s: start claim at %s, gateway unit started %s", step, b.name, claim, started)
-			if err1 == nil && err2 == nil && ut.Add(time.Second).Before(ct) {
-				t.Errorf("%s, %s: the gateway started (%s) before the start claim (%s)", step, b.name, started, claim)
+			t.Logf("%s, %s: first claim %s, latest %s; gateway unit first seen active %s (it says it started %s)",
+				step, b.name, first[b.name], last[b.name], activeAt[b.name].Format(time.RFC3339Nano), unitStarted(b))
+			ct, err := time.Parse(time.RFC3339Nano, first[b.name])
+			if strict && err == nil && !activeAt[b.name].IsZero() && activeAt[b.name].Add(time.Second).Before(ct) {
+				t.Errorf("%s, %s: its gateway ran (%s) before its first claim (%s)", step, b.name, activeAt[b.name].Format(time.RFC3339Nano), first[b.name])
 			}
 		}
 	}
@@ -111,7 +138,7 @@ func TestMetal2OpenShellExperiment(t *testing.T) {
 		p.c1.mustSh("systemctl stop " + b.unit)
 	}
 	p.c1.mustSh("systemctl start kevasod")
-	claimAfterStart("A6")
+	claimAfterStart("A6", true)
 	look("A6 kevasod back")
 	// B: the sandbox left running, kevasod stopped, the gateway restarted.
 	p.c1.mustSh("systemctl stop kevasod")
@@ -122,7 +149,7 @@ func TestMetal2OpenShellExperiment(t *testing.T) {
 	time.Sleep(40 * time.Second)
 	look("B3 gateway restarted, kevasod down")
 	p.c1.mustSh("systemctl start kevasod")
-	claimAfterStart("B6")
+	claimAfterStart("B6", false)
 	look("B6 kevasod back")
 	// The CLI's own words, for exact handling.
 	b := boxes[0]
