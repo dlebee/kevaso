@@ -21,6 +21,19 @@ func TestMetal2InjectCutOff(t *testing.T) {
 	ns := "cutinject2"
 	c.namespace(ns, "secret/api-key")
 	key := randomValue(t, "sk-cut-")
+	// kvoadm host add takes --egress-extra-ca but doesn't put it in the worker's unit (reported):
+	// a drop-in gives machine 2's kevasod the stand-in's CA, as host add was asked to. Before any
+	// silo is made there: a restart mid-create would cut its disk's lvcreate (reported apart).
+	if !strings.Contains(p.c2.mustSh("systemctl cat kevasod"), "--egress-extra-ca") {
+		exec := strings.TrimSpace(p.c2.mustSh("systemctl show -p ExecStart --value kevasod | sed -n 's/.*argv\\[\\]=\\([^;]*\\) ;.*/\\1/p'"))
+		if exec == "" {
+			t.Fatal("machine 2's kevasod command line: not found")
+		}
+		d := "/run/systemd/system/kevasod.service.d"
+		t.Cleanup(func() { _, _ = p.c2.sh("rm -f " + d + "/kvt-ca.conf; systemctl daemon-reload; systemctl restart kevasod; true") })
+		p.c2.mustSh("mkdir -p " + d + " && printf '[Service]\\nExecStart=\\nExecStart=%s --egress-extra-ca /etc/kevaso/test-internet-ca.pem\\n' '" + exec + "' > " + d + "/kvt-ca.conf && systemctl daemon-reload && systemctl restart kevasod")
+		c.eventually("machine 2 back with the CA", 3*time.Minute, func() (bool, string) { return c.hostReady(metalHost2) })
+	}
 	c.must(key, "create", "secret", "api-key", "-n", ns, "--from-file", "-", "--allow", "inject", "--write-only")
 	c.apply(`apiVersion: kevaso/v1
 kind: Grant
@@ -31,19 +44,7 @@ spec:
     - { name: api-key, deliver: inject, to: { host: ` + metalInetName + ` } }
 ---
 ` + vmEcho(ns, "vm", 8080) + on(metalHost2) + "  grants: [api]\n")
-	// kvoadm host add takes --egress-extra-ca but doesn't put it in the worker's unit (reported):
-	// a drop-in gives machine 2's kevasod the stand-in's CA, as host add was asked to.
-	if !strings.Contains(p.c2.mustSh("systemctl cat kevasod"), "--egress-extra-ca") {
-		exec := strings.TrimSpace(p.c2.mustSh("systemctl show -p ExecStart --value kevasod | sed -n 's/.*argv\\[\\]=\\([^;]*\\) ;.*/\\1/p'"))
-		if exec == "" {
-			t.Fatal("machine 2's kevasod command line: not found")
-		}
-		d := "/run/systemd/system/kevasod.service.d"
-		t.Cleanup(func() { _, _ = p.c2.sh("rm -f " + d + "/kvt-ca.conf; systemctl daemon-reload; systemctl restart kevasod; true") })
-		p.c2.mustSh("mkdir -p " + d + " && printf '[Service]\\nExecStart=\\nExecStart=%s --egress-extra-ca /etc/kevaso/test-internet-ca.pem\\n' '" + exec + "' > " + d + "/kvt-ca.conf && systemctl daemon-reload && systemctl restart kevasod")
-		c.eventually("machine 2 back with the CA", 3*time.Minute, func() (bool, string) { return c.hostReady(metalHost2) })
-		c.waitRunning(ns, 10*time.Minute, "vm")
-	}
+	c.waitRunning(ns, 20*time.Minute, "vm")
 	call := func() string {
 		out, _ := c.in(ns, "vm", `ca=; [ -f /etc/ssl/certs/kevaso-ca-bundle.crt ] && ca="--cacert /etc/ssl/certs/kevaso-ca-bundle.crt"; `+
 			"curl -sS --max-time 20 $ca --resolve "+metalInetName+":443:203.0.113.9 https://"+metalInetName+"/v1/models 2>&1")
