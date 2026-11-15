@@ -160,7 +160,9 @@ func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Du
 				continue
 			}
 			if err == nil && contact != nil {
-				contact.Mark(clk.Now())
+				// When it was SENT, not when the answer came: the control plane's count starts at
+				// its arrival, so the agent's always ends first (§0.7, silo.StopMargin).
+				contact.Mark(now)
 			}
 			if err != nil && ctx.Err() == nil {
 				log("heartbeat: %v", err)
