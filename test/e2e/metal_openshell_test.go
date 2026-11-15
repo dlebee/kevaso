@@ -96,7 +96,11 @@ func TestMetalOpenShell(t *testing.T) {
 		}
 	}
 
-	// A silo of each, with a key by inject.
+	// A silo of each, with a key by inject. A sandbox resolves names through OpenShell's own DNS,
+	// not the host's /etc/hosts: the stand-in API gets a public name (sslip.io, for an address on
+	// the machine's loopback that only its gateway's proxy reaches), with a certificate from the
+	// stand-in internet's CA.
+	c.mustSh(osInetSetup)
 	apiKey := randomValue(t, "sk-os-")
 	c.must(apiKey, "create", "secret", "api-key", "-n", ns, "--from-file", "-", "--allow", "inject", "--write-only")
 	c.apply(`apiVersion: kevaso/v1
@@ -104,7 +108,7 @@ kind: Grant
 metadata: { name: api, namespace: ` + ns + ` }
 spec:
   secrets:
-    - { name: api-key, deliver: inject, env: API_KEY, to: { host: ` + metalInetName + ` } }
+    - { name: api-key, deliver: inject, env: API_KEY, to: { host: ` + osInetName + ` } }
 ` + osSilo("osvm", "openshell", "  grants: [api]\n") + osSilo("osct", "openshell-container", "  grants: [api]\n"))
 	c.waitRunning(ns, 35*time.Minute, "osvm", "osct")
 
@@ -137,7 +141,7 @@ spec:
 			if !strings.HasPrefix(env, "openshell:resolve:env:") || strings.Contains(env, apiKey) {
 				t.Fatalf("API_KEY in the silo is %q, want OpenShell's placeholder", env)
 			}
-			got, _ := c.in(ns, s, `/sandbox/hget https://`+metalInetName+`/v1/models "Authorization=Bearer $API_KEY"`)
+			got, _ := c.in(ns, s, `/sandbox/hget https://`+osInetName+`/v1/models "Authorization=Bearer $API_KEY"`)
 			c.expect("the placeholder became the key on the way out", got, `"auth": "`+metalHash("Bearer "+apiKey)+`"`)
 			if got, _ := c.in(ns, s, `/sandbox/hget https://example.com/`); strings.HasPrefix(got, "200") {
 				t.Errorf("a name no grant allows answered: %q", got)
@@ -184,6 +188,20 @@ spec:
 	})
 	t.Logf("on the host after the deletes:\n%s", c.mustSh(`systemctl list-units --plain --no-legend 'kevaso-openshell-*'; ls /var/lib/kevaso-openshell/gw 2>&1; docker images --format '{{.Repository}}:{{.Tag}}' | grep -iv python | head`))
 }
+
+// osInetName is the stand-in API for OpenShell's sandboxes: a public name for 127.0.0.78.
+const osInetName = "kvt-inject.127-0-0-78.sslip.io"
+
+// osInetSetup serves osInetName on 127.0.0.78:443 like metalInetSetup's server (the same CA,
+// which the egress gate trusts), as a transient unit the reset stops (kvt-inet-os).
+const osInetSetup = `set -e; cd /var/lib/kvt-inet
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout os.key -out os.csr -subj /CN=` + osInetName + ` 2>/dev/null
+printf 'subjectAltName=DNS:` + osInetName + `\n' > os.ext
+openssl x509 -req -in os.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -extfile os.ext -out os.pem 2>/dev/null
+sed -e 's#/var/lib/kvt-inet/leaf.pem#/var/lib/kvt-inet/os.pem#' -e 's#/var/lib/kvt-inet/leaf.key#/var/lib/kvt-inet/os.key#' -e 's#"127.0.0.77"#"127.0.0.78"#' server.py > os-server.py
+systemctl stop kvt-inet-os 2>/dev/null || true
+systemd-run --unit=kvt-inet-os python3 /var/lib/kvt-inet/os-server.py >/dev/null
+`
 
 // buildHget builds the tiny HTTP client for the sandboxes (OpenShell's image has no curl), gzipped.
 func buildHget(t *testing.T, arch string) []byte {
