@@ -1,7 +1,7 @@
 MODULES := . api sdk
 export GOTOOLCHAIN := auto
 
-.PHONY: test race vet lint e2e workspace proto plugins
+.PHONY: test test-short race vet vet-tags lint e2e e2e-ci where fuzz stress mutate workspace proto plugins
 
 test:                       ## unit tests, every module
 	@for m in $(MODULES); do (cd $$m && go test ./...) || exit 1; done
@@ -26,6 +26,27 @@ lint: $(GOLANGCI)           ## every module, for this OS and for Linux
 
 e2e:                        ## the test loop on real machines (Lima on macOS, this machine on Linux)
 	go test -tags e2e -count=1 -v -timeout 30m ./test/e2e/...
+
+e2e-ci:                     ## what CI's e2e job runs: e2e, and a failure when a test in test/e2e/ci-expected.txt skips
+	bash -o pipefail -c 'go test -tags e2e -count=1 -json -timeout 30m ./test/e2e/... | go run ./hack/skipbudget test/e2e/ci-expected.txt'
+
+test-short:                 ## the quick local loop: -short shrinks the property and soak tests
+	@for m in $(MODULES); do (cd $$m && go test -short ./...) || exit 1; done
+
+vet-tags:                   ## compile every build tag (e2e, metal) for linux and darwin, so tagged test code cannot rot
+	@for os in linux darwin; do for t in e2e metal; do echo "go vet -tags $$t (GOOS=$$os)"; GOOS=$$os go vet -tags $$t ./... || exit 1; done; done
+
+where:                      ## regenerate test/WHERE.md (which tests exist under each build tag, and where they run)
+	go run ./hack/where > test/WHERE.md
+
+fuzz:                       ## fuzz every fuzzer for FUZZTIME (default 60s) each; the seed corpus already runs in every `make test`
+	hack/fuzz.sh $(FUZZTIME)
+
+stress:                     ## the property, stress, race and election tests, three times each, under the race detector (nightly)
+	go test -race -count=3 -timeout 40m -run 'Property|Stress|Race|Simulated|Survive|Join|Light|Lease' ./internal/store ./internal/controlplane ./internal/leader ./internal/rbac ./internal/moves ./internal/scheduler ./internal/names ./internal/apiserver ./builtin/kni
+
+mutate:                     ## prove the safety guards cannot be removed without a test failing (slow: about an hour; nightly). See hack/mutate/README.md
+	go run ./hack/mutate -j 3
 
 workspace:                  ## write ../go.work for core and any sibling provider repos
 	hack/workspace.sh
