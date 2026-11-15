@@ -356,6 +356,13 @@ const (
 type Step struct {
 	Name   string
 	Script string
+	// Destructive: it removes a silo's data (containers and their volumes, the volume group,
+	// Kevaso's files). kvoadm reset runs one only once it has confirmed, right before it, that
+	// kevasod and its fence don't run (StillRunningScript); the storage only once it has looked at
+	// the host again, too.
+	Destructive bool
+	// Storage: it removes the volume group (and every volume on it).
+	Storage bool
 }
 
 // PlanInput is what the plan needs to know.
@@ -373,7 +380,10 @@ type PlanInput struct {
 // Plan is the reset, in order. Pure.
 func Plan(in PlanInput) []Step {
 	var steps []Step
-	add := func(name, script string) { steps = append(steps, Step{name, script}) }
+	add := func(name, script string) { steps = append(steps, Step{Name: name, Script: script}) }
+	destroys := func(name, script string) {
+		steps = append(steps, Step{Name: name, Script: script, Destructive: true})
+	}
 
 	// 1. Nothing restarts anything: kevasod and the fence first, then every silo, gateway and
 	// plugin unit, then the tests' transient units.
@@ -387,7 +397,7 @@ true`)
 
 	// 2. Containers: all of them when Docker is Kevaso's; otherwise only Kevaso's, by label.
 	if in.DockerOurs {
-		add("remove containers, volumes and images", `if command -v docker >/dev/null && systemctl is-active -q docker; then
+		destroys("remove containers, volumes and images", `if command -v docker >/dev/null && systemctl is-active -q docker; then
   ids=$(docker ps -aq); [ -z "$ids" ] || docker rm -f $ids >/dev/null
   vs=$(docker volume ls -q); [ -z "$vs" ] || docker volume rm -f $vs >/dev/null
   docker system prune -af --volumes >/dev/null
@@ -395,7 +405,7 @@ fi
 true`)
 		add("stop docker", `systemctl disable --now docker.socket docker.service containerd.service 2>/dev/null; true`)
 	} else {
-		add("remove Kevaso's containers and volumes (by label)", `if command -v docker >/dev/null && systemctl is-active -q docker; then
+		destroys("remove Kevaso's containers and volumes (by label)", `if command -v docker >/dev/null && systemctl is-active -q docker; then
   ids=$(docker ps -aq --filter label=kevaso.com/uid); [ -z "$ids" ] || docker rm -f $ids >/dev/null
   vs=$(docker volume ls -q --filter label=kevaso.com/uid); [ -z "$vs" ] || docker volume rm -f $vs >/dev/null
 fi
@@ -404,13 +414,13 @@ true`)
 
 	// Podman has no daemon: its containers are conmon processes, stopped here.
 	if in.PodmanOurs {
-		add("remove podman's containers, volumes and images", `if command -v podman >/dev/null; then
+		destroys("remove podman's containers, volumes and images", `if command -v podman >/dev/null; then
   podman rm -af -t 0 >/dev/null 2>&1; podman pod rm -af >/dev/null 2>&1; podman volume rm -af >/dev/null 2>&1
   podman system reset -f >/dev/null 2>&1
 fi
 true`)
 	} else {
-		add("remove Kevaso's podman containers and volumes (by label)", `if command -v podman >/dev/null; then
+		destroys("remove Kevaso's podman containers and volumes (by label)", `if command -v podman >/dev/null; then
   ids=$(podman ps -aq --filter label=kevaso.com/uid); [ -z "$ids" ] || podman rm -f -t 0 $ids >/dev/null
   vs=$(podman volume ls -q --filter label=kevaso.com/uid); [ -z "$vs" ] || podman volume rm -f $vs >/dev/null
 fi
@@ -439,9 +449,12 @@ true`)
 	}
 
 	// 4. Storage.
+	storage := func(name, script string) {
+		steps = append(steps, Step{Name: name, Script: script, Destructive: true, Storage: true})
+	}
 	switch in.Storage {
 	case StorageLoop:
-		add("remove volume group "+VG+" (on the loop file only)", `vg=`+VG+`
+		storage("remove volume group "+VG+" (on the loop file only)", `vg=`+VG+`
 if vgs "$vg" >/dev/null 2>&1; then
   pvs=$(pvs --noheadings -o pv_name -S vg_name="$vg" | tr -d ' ')
   for p in $pvs; do
@@ -457,7 +470,7 @@ fi
 for d in $(losetup -n -O NAME -j `+StorageImage+`); do losetup -d "$d"; done
 rm -f `+StorageImage)
 	case StorageWipe:
-		add("wipe volume group "+VG+" and every volume on it", `vg=`+VG+`
+		storage("wipe volume group "+VG+" and every volume on it", `vg=`+VG+`
 if vgs "$vg" >/dev/null 2>&1; then
   pvs=$(pvs --noheadings -o pv_name -S vg_name="$vg" | tr -d ' ')
   lvremove -qq -fy "$vg"; vgremove -qq -fy "$vg"
@@ -508,7 +521,7 @@ left=$(awk '{print $2}' /proc/mounts | grep -E '`+mountPattern+`')
 	}
 	// Never into another file system (a volume still mounted there), and not at all while
 	// anything under these paths is mounted (K-022).
-	add("remove Kevaso's files", `if awk '{print $2}' /proc/mounts | grep -qE '`+mountPattern+`'; then echo "something is still mounted under Kevaso's paths: not removing them" >&2; exit 1; fi
+	destroys("remove Kevaso's files", `if awk '{print $2}' /proc/mounts | grep -qE '`+mountPattern+`'; then echo "something is still mounted under Kevaso's paths: not removing them" >&2; exit 1; fi
 rm -rf --one-file-system `+strings.Join(files, " ")+"\nsystemctl daemon-reload; systemctl reset-failed; true")
 	add("remove the tests' /etc/hosts lines", `sed -i '/`+HostsMarker+`$/d' /etc/hosts`)
 	add("remove kevaso-* users", `for u in $(awk -F: '$1 ~ /^kevaso-/ {print $1}' /etc/passwd); do userdel "$u"; done
@@ -622,6 +635,19 @@ var ErrNotClean = errors.New("the host is not clean after the reset")
 // StopStep is the plan's first step: kevasod and the fence stopped, so nothing new is placed or
 // made on the host while the rest runs.
 const StopStep = "stop kevasod and the fence"
+
+// StillRunningScript prints what still runs of kevasod and its fence (nothing: neither runs): each
+// unit in any state but inactive or failed (activating, deactivating, reloading, active), each with
+// a main process, and every kevasod process (the fence watcher is one too), wherever it came
+// from. A stop step's exit says nothing: its script ends in true.
+const StillRunningScript = `for u in kevasod.service kevaso-fence.service; do
+  s=$(systemctl is-active "$u" 2>/dev/null)
+  case "$s" in inactive|failed) ;; "") echo "unit $u: systemd doesn't say" ;; *) echo "unit $u is $s" ;; esac
+  pid=$(systemctl show -p MainPID --value "$u" 2>/dev/null)
+  case "$pid" in ""|0) ;; *) echo "unit $u has its main process $pid" ;; esac
+done
+pgrep -a -x kevasod | sed 's/^/process /'
+true`
 
 // StartAgainScript starts kevasod and its fence again: a reset that stopped them and then found
 // the host changed since it was shown (a silo or volume placed meanwhile) undoes its first step.

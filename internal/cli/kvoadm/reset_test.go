@@ -32,6 +32,8 @@ func (f *fakeResetHost) Run(_ context.Context, cmd string, _ []byte) ([]byte, er
 		return []byte(f.inspection), nil
 	case cmd == hostreset.StateScript:
 		return []byte(f.after.Render()), nil
+	case cmd == hostreset.StillRunningScript:
+		return nil, nil // kevasod and its fence are stopped
 	case f.checks[cmd] != "":
 		f.ran = append(f.ran, "check:"+f.checks[cmd])
 		return []byte(f.leftovers[f.checks[cmd]]), nil
