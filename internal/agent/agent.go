@@ -176,6 +176,7 @@ type Agent struct {
 	claims        sync.Map // silo UID → *claimKeeper: its start claim, kept fresh while it starts here
 	reported      sync.Map // silo UID → generation: reported Running in this run since its last start here
 	createBackoff sync.Map // silo UID → createBackoff
+	startBackoff  sync.Map // silo UID → createBackoff: its failed starts (K-115)
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
@@ -633,6 +634,18 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 			}
 		}
 		ic, initContainers := rt.(kri.InitContainers)
+		// K-115: nothing is claimed for a start that can't go on now. A failed init step stays
+		// failed until the silo is reset or its spec changes (runSteps), and a start that failed
+		// waits out its backoff: the agent's own writes (the claim above all) come back as events,
+		// and each used to claim and try again at once.
+		if initContainers && initFailed(s) {
+			a.endClaim(s.UID)
+			return engine.Result{}, nil
+		}
+		if wait := a.backoffWait(&a.startBackoff, s); wait > 0 {
+			a.endClaim(s.UID)
+			return engine.Result{RequeueAfter: wait}, nil
+		}
 		if initContainers && rs.State == kri.Stopped && s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" && initDone(s) {
 			// Init containers run again at every boot: the steps start over (a status write only).
 			if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Init = nil }); err != nil {
@@ -698,8 +711,13 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 		}
 		if err != nil {
 			a.settleClaim(ctx, rt, s)
-			return engine.Result{}, err
+			wait := a.backoffFailed(&a.startBackoff, s)
+			a.log("silo %s/%s: start: %v (trying again in %s)", s.Namespace, s.Name, err, wait)
+			return engine.Result{RequeueAfter: wait}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+				setCond(st, "Ready", meta.ConditionFalse, failReason(err, "StartFailed"), err.Error()+" (trying again in "+wait.String()+")", s.Generation, a.now())
+			})
 		}
+		a.startBackoff.Delete(s.UID)
 		if _, ok := rt.(kri.InitContainers); !ok && s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" {
 			if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Init = nil }); err != nil {
 				return engine.Result{}, err
@@ -1203,30 +1221,59 @@ type createBackoff struct {
 }
 
 // createFailed records a failed create of s and says how long until the next.
-func (a *Agent) createFailed(s *v1.Silo) time.Duration {
+func (a *Agent) createFailed(s *v1.Silo) time.Duration { return a.backoffFailed(&a.createBackoff, s) }
+
+// createWait is how long s's next create must still wait (0: now).
+func (a *Agent) createWait(s *v1.Silo) time.Duration { return a.backoffWait(&a.createBackoff, s) }
+
+// backoffFailed records a failed try of s in m (createBackoff, startBackoff) and says how long
+// until the next.
+func (a *Agent) backoffFailed(m *sync.Map, s *v1.Silo) time.Duration {
 	b := createBackoff{generation: s.Generation, delay: 5 * time.Second}
-	if o, ok := a.createBackoff.Load(s.UID); ok {
+	if o, ok := m.Load(s.UID); ok {
 		if prev := o.(createBackoff); prev.generation == s.Generation {
 			b.delay = min(2*prev.delay, 5*time.Minute)
 		}
 	}
 	b.until = a.Clock.Now().Add(b.delay)
-	a.createBackoff.Store(s.UID, b)
+	m.Store(s.UID, b)
 	return b.delay
 }
 
-// createWait is how long s's next create must still wait (0: now).
-func (a *Agent) createWait(s *v1.Silo) time.Duration {
-	o, ok := a.createBackoff.Load(s.UID)
+// backoffWait is how long s's next try must still wait by m (0: now).
+func (a *Agent) backoffWait(m *sync.Map, s *v1.Silo) time.Duration {
+	o, ok := m.Load(s.UID)
 	if !ok {
 		return 0
 	}
 	b := o.(createBackoff)
 	if b.generation != s.Generation {
-		a.createBackoff.Delete(s.UID) // a new spec: try it now
+		m.Delete(s.UID) // a new spec: try it now
 		return 0
 	}
 	return max(b.until.Sub(a.Clock.Now()), 0)
+}
+
+// initFailed reports whether an init step of s is recorded failed: its start goes no further
+// until the silo is reset or its spec changes (runSteps).
+func initFailed(s *v1.Silo) bool {
+	if s.Spec.Init == nil {
+		return false
+	}
+	state := map[string]string{}
+	for _, st := range s.Status.Init {
+		state[st.Name] = st.State
+	}
+	for _, step := range s.Spec.Init.Steps {
+		switch state[step.Name] {
+		case "Done":
+			continue
+		case "Failed":
+			return true
+		}
+		return false // runSteps runs this one next
+	}
+	return false
 }
 
 // errPlacedElsewhere: a status write or a start claim found the silo placed on another host (or
