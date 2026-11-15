@@ -84,9 +84,11 @@ func TestMetal2StartClaimFreshThroughSlowInit(t *testing.T) {
 	}
 }
 
-// TestMetal2VMResetTakenBackDuringStop is claim 3 (19bf8a3): a microVM's kvo reset, taken back
-// while its guest powers off: its root disk is the same logical volume (same creation time) and a
-// file written before is there.
+// TestMetal2VMResetTakenBackDuringStop is claim 3 (19bf8a3), at its second gate: the guest ignores
+// the power button (HandlePowerKey=ignore), so the stop takes its full 30s with the unit active;
+// kvo reset, then taken back once Ready says "stopping for a reset" (the first gate passed) and
+// before "its disk is made afresh now" (the second): the root disk is the same logical volume,
+// the file written before is there, and the agent says the reset changed while it stopped.
 //
 // Listens on nothing outside.
 func TestMetal2VMResetTakenBackDuringStop(t *testing.T) {
@@ -96,8 +98,8 @@ func TestMetal2VMResetTakenBackDuringStop(t *testing.T) {
 	c.namespace(ns)
 	c.apply(vmEcho(ns, "vm", 8080))
 	c.waitRunning(ns, 20*time.Minute, "vm")
-	if out, code := c.in(ns, "vm", "echo kept > /root/marker && sync"); code != 0 {
-		t.Fatalf("write: %d %s", code, out)
+	if out, code := c.in(ns, "vm", "echo kept > /root/marker && sync && mkdir -p /etc/systemd/logind.conf.d && printf '[Login]\\nHandlePowerKey=ignore\\n' > /etc/systemd/logind.conf.d/kvt.conf && systemctl restart systemd-logind"); code != 0 {
+		t.Fatalf("setup in the guest: %d %s", code, out)
 	}
 	s := c.silo(ns, "vm")
 	host := map[string]*mt{metalHost: p.c1, metalHost2: p.c2}[s.Status.Host]
@@ -105,12 +107,19 @@ func TestMetal2VMResetTakenBackDuringStop(t *testing.T) {
 	lvTime := func() string { return strings.TrimSpace(host.mustSh("lvs --noheadings -o lv_time kevaso/" + n.LV)) }
 	before := lvTime()
 	old := s.Spec.Reset
+	since := strings.TrimSpace(host.mustSh("date -u '+%Y-%m-%d %H:%M:%S'"))
 	c.must("", "reset", "silo", "vm", "-n", ns)
-	// Taken back at once: the guest powers off (up to 30s) with its unit still active.
+	c.eventually("the first gate passed: stopping for a reset", 2*time.Minute, func() (bool, string) {
+		r := meta.FindCondition(c.silo(ns, "vm").Status.Conditions, "Ready")
+		return r != nil && strings.Contains(r.Message, "stopping for a reset"), fmt.Sprint(r)
+	})
 	for {
 		var cur v1.Silo
 		if err := json.Unmarshal([]byte(c.must("", "get", "silo", "vm", "-n", ns, "-o", "json")), &cur); err != nil {
 			t.Fatal(err)
+		}
+		if r := meta.FindCondition(cur.Status.Conditions, "Ready"); r != nil && strings.Contains(r.Message, "made afresh") {
+			t.Fatal("the second gate passed before the reset could be taken back: the window was missed")
 		}
 		cur.Spec.Reset = old
 		b, _ := json.Marshal(cur)
@@ -118,18 +127,20 @@ func TestMetal2VMResetTakenBackDuringStop(t *testing.T) {
 			break
 		}
 	}
-	t.Logf("the reset taken back while the guest powers off (unit %s)", strings.TrimSpace(host.mustSh("systemctl is-active "+n.Unit+" || true")))
+	t.Log("the reset taken back between the two gates (the guest still powering off)")
 	c.waitRunning(ns, 10*time.Minute, "vm")
 	if now := lvTime(); now != before {
 		t.Errorf("the root disk was made again: created %s, now %s", before, now)
 	}
 	got, _ := c.in(ns, "vm", "cat /root/marker 2>&1")
 	c.expect("its file is there", got, "kept")
+	c.expect("the agent says the reset changed while it stopped", host.mustSh("journalctl -u kevasod --no-pager --since '"+since+"' | grep -c 'its disk is kept' || true"), "1")
 }
 
-// TestMetal2StuckStopIsNotStopped is claim 1 (2a1adf0): a microVM whose unit sits in
-// deactivating (its VMM frozen, the stop's timeout long) isn't counted stopped: its status never
-// says so, and nothing starts another copy, until the process is gone.
+// TestMetal2StuckStopIsNotStopped is claim 1 (2a1adf0, 47758d7) by host-code-3's way 1: a drop-in
+// gives the microVM's unit an ExecStop of 120s, so after systemctl stop --no-block it sits in
+// deactivating (SubState stop) with its MainPID set and the VMM running. Meanwhile it's never
+// counted stopped and no second copy starts; afterwards it runs again.
 //
 // Listens on nothing outside.
 func TestMetal2StuckStopIsNotStopped(t *testing.T) {
@@ -142,26 +153,29 @@ func TestMetal2StuckStopIsNotStopped(t *testing.T) {
 	s := c.silo(ns, "vm")
 	host := map[string]*mt{metalHost: p.c1, metalHost2: p.c2}[s.Status.Host]
 	n := cloudhypervisor.NamesFor(kri.ID{Namespace: ns, Name: "vm", UID: s.UID})
-	t.Cleanup(func() {
-		_, _ = host.sh("kill -CONT $(systemctl show -p MainPID --value " + n.Unit + ") 2>/dev/null; rm -rf /run/systemd/system/" + n.Unit + ".d/kvt-slowstop.conf; systemctl daemon-reload; true")
+	dropin := "/run/systemd/system/" + n.Unit + ".d/kvt-slowstop.conf"
+	t.Cleanup(func() { _, _ = host.sh("rm -f " + dropin + "; systemctl daemon-reload; true") })
+	host.mustSh("mkdir -p $(dirname " + dropin + ") && printf '[Service]\\nExecStop=/bin/sleep 120\\nTimeoutStopSec=180\\n' > " + dropin +
+		" && systemctl daemon-reload && systemctl stop --no-block " + n.Unit)
+	show := func() string {
+		return strings.Join(strings.Fields(host.mustSh("systemctl show -p ActiveState,SubState,MainPID " + n.Unit)), " ")
+	}
+	c.eventually("its unit sits in deactivating, MainPID set", 30*time.Second, func() (bool, string) {
+		st := show()
+		return strings.Contains(st, "ActiveState=deactivating") && !strings.Contains(st, "MainPID=0"), st
 	})
-	host.mustSh("mkdir -p /run/systemd/system/" + n.Unit + ".d && printf '[Service]\\nTimeoutStopSec=120\\n' > /run/systemd/system/" + n.Unit + ".d/kvt-slowstop.conf && systemctl daemon-reload && " +
-		"kill -STOP $(systemctl show -p MainPID --value " + n.Unit + ") && systemctl stop --no-block " + n.Unit)
-	c.eventually("its unit sits in deactivating", 30*time.Second, func() (bool, string) {
-		st := strings.TrimSpace(host.mustSh("systemctl is-active " + n.Unit + " || true"))
-		return st == "deactivating", st
-	})
-	for end := time.Now().Add(60 * time.Second); time.Now().Before(end); time.Sleep(2 * time.Second) {
+	t.Logf("stuck: %s", show())
+	for end := time.Now().Add(90 * time.Second); time.Now().Before(end); time.Sleep(3 * time.Second) {
 		cur := c.silo(ns, "vm")
-		if r := meta.FindCondition(cur.Status.Conditions, "Ready"); r != nil && strings.Contains(r.Message, "Stopped") {
-			t.Fatalf("counted stopped while its process is still there: %s", r.Message)
+		if r := meta.FindCondition(cur.Status.Conditions, "Ready"); r != nil && (strings.Contains(r.Message, "Stopped") || strings.Contains(r.Message, "stopped")) {
+			t.Fatalf("counted stopped while its VMM runs (%s): %s", show(), r.Message)
 		}
 		if out := strings.TrimSpace(host.mustSh("pgrep -fc -- '[c]loud-hypervisor.*" + n.Socket + "' || true")); out != "1" {
-			t.Fatalf("%s VMMs of it while the stop is stuck", out)
+			t.Fatalf("%s VMMs of it while its stop is stuck", out)
 		}
 	}
-	t.Log("a minute in deactivating: never counted stopped, no second copy")
-	host.mustSh("kill -CONT $(systemctl show -p MainPID --value " + n.Unit + ") 2>/dev/null; true")
+	t.Log("90s in deactivating with its VMM: never counted stopped, no second copy")
+	host.mustSh("rm -f " + dropin + " && systemctl daemon-reload")
 	c.waitRunning(ns, 10*time.Minute, "vm")
 }
 
