@@ -60,6 +60,9 @@ func (c *Client) send(hc *http.Client, req *http.Request) (*http.Response, error
 			return resp, err
 		}
 		s, stamped := ParseControlPlane(resp.Header)
+		if resp.StatusCode == http.StatusSwitchingProtocols {
+			return c.judgeUpgrade(resp, sent, s, stamped)
+		}
 		v := Accept
 		if vj, ok := c.ControlPlane.(ControlPlaneVerdicts); ok {
 			v = vj.Judged(sent, s, stamped)
@@ -393,3 +396,30 @@ func (c *Client) Watch(ctx context.Context, kind, namespace, resourceVersion str
 func (c *Client) Call(ctx context.Context, method, path string, in, out any) error {
 	return c.do(ctx, method, path, in, out)
 }
+
+// judgeUpgrade judges an upgrade's answer (101: an agent's tunnel, an exec stream). It is a
+// transport, not state to apply: unstamped, it is handed over unjudged and nothing kept changes
+// (a control plane that loses the stamp on a hijacked answer must not cut every tunnel). Stamped,
+// it is judged like any answer, and a worker that is held, or an answer of another cluster,
+// opens no stream: no work comes through it until that ends (IsHeld).
+func (c *Client) judgeUpgrade(resp *http.Response, sent int64, s ControlPlaneSeen, stamped bool) (*http.Response, error) {
+	if !stamped {
+		return resp, nil
+	}
+	v := Accept
+	if vj, ok := c.ControlPlane.(ControlPlaneVerdicts); ok {
+		v = vj.Judged(sent, s, true)
+	} else {
+		c.ControlPlane.Answer(sent, s)
+	}
+	if v == Accept || v == NewHistory {
+		return resp, nil
+	}
+	_ = resp.Body.Close()
+	return nil, &Error{Code: http.StatusServiceUnavailable, Reason: "Held",
+		Message: fmt.Sprintf("%s %s: the control plane's answer is %s for this worker: no stream is opened through it", resp.Request.Method, resp.Request.URL.Path, v)}
+}
+
+// IsHeld reports an upgrade refused because the worker is held, or the answer was another
+// cluster's, or not yet usable (judgeUpgrade).
+func IsHeld(err error) bool { return reasonOf(err) == "Held" }
