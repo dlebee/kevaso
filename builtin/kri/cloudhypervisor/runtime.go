@@ -610,7 +610,7 @@ func (r *Runtime) deleteLocked(ctx context.Context, id kri.ID) error {
 	}
 	for _, lv := range lvs {
 		if out, err := r.Host.Run(ctx, "lvs", "--noheadings", VG+"/"+lv); err == nil && len(bytes.TrimSpace(out)) > 0 {
-			if err := r.run(ctx, "lvremove", "-q", "-y", VG+"/"+lv); err != nil {
+			if err := r.runPool(ctx, "lvremove", "-q", "-y", VG+"/"+lv); err != nil {
 				return err
 			}
 		}
@@ -627,14 +627,14 @@ func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, s
 			if !fresh {
 				return fmt.Errorf("root volume %s/%s is there already: only a reset makes it afresh", VG, n.LV)
 			}
-			if err := r.run(ctx, "lvremove", "-q", "-y", VG+"/"+n.LV); err != nil {
+			if err := r.runPool(ctx, "lvremove", "-q", "-y", VG+"/"+n.LV); err != nil {
 				if r.lvExists(ctx, n.LV) {
 					return fmt.Errorf("%w: %v", errRootKept, err)
 				}
 				return err
 			}
 		}
-		if err := r.run(ctx, "lvcreate", "-q", "-T", VG+"/"+ThinPool, "-V", strconv.FormatInt(size>>20, 10)+"m", "-n", n.LV); err != nil {
+		if err := r.runPool(ctx, "lvcreate", "-q", "-T", VG+"/"+ThinPool, "-V", strconv.FormatInt(size>>20, 10)+"m", "-n", n.LV); err != nil {
 			return err
 		}
 		return r.run(ctx, "qemu-img", "convert", "-n", "--target-is-zero", "-O", "raw", img, "/dev/"+VG+"/"+n.LV)

@@ -3,7 +3,6 @@ package cloudhypervisor
 import (
 	"context"
 	"errors"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -64,7 +63,7 @@ func storageRun(t *testing.T, m *loopMachine) ([]string, error) {
 }
 
 func has(cmds []string, prefix string) bool {
-	return slices.ContainsFunc(cmds, func(c string) bool { return strings.HasPrefix(c, prefix) })
+	return indexOf(cmds, prefix) >= 0
 }
 
 func TestStorageAfterARebootReattachesTheLoopFile(t *testing.T) {
@@ -106,7 +105,7 @@ func TestStorageFirstTimeMakesEverything(t *testing.T) {
 	order := []string{"truncate -s 60G", "losetup --find --show", "pvcreate -q /dev/loop7", "vgcreate -q kevaso /dev/loop7", "vgchange", "lvcreate", "lvchange"}
 	last := -1
 	for _, p := range order {
-		i := slices.IndexFunc(cmds, func(c string) bool { return strings.HasPrefix(c, p) })
+		i := indexOf(cmds, p)
 		if i <= last {
 			t.Fatalf("%q missing or out of order: %v", p, cmds)
 		}

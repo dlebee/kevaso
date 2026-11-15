@@ -43,7 +43,7 @@ func TestACreateNeverRemovesALocalVolumeItDidNotMake(t *testing.T) {
 			t.Fatalf("root on a mount class %v: Create over an earlier copy's data volume: %v, want a refusal naming %s", rootOnMount, err, dataLV)
 		}
 		for _, c := range h.commands() {
-			if strings.HasPrefix(c, "lvremove") {
+			if strings.HasPrefix(hostCmd(c), "lvremove") {
 				t.Fatalf("root on a mount class %v: %s", rootOnMount, c)
 			}
 		}
