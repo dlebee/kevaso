@@ -631,17 +631,20 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		}
 	}
 	if id, ok := IdentityFrom(ctx); ok && id.Type == "host" && id.Role == "worker" && t.kind.Kind == "Host" && t.status {
-		// K-037: status.provider is the provider-hosts controller's (from the plugin), not the worker's.
-		oh, nh := old.(*v1.Host).Status, obj.(*v1.Host).Status
-		if !reflect.DeepEqual(oh.Provider, nh.Provider) {
-			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s may not write status.provider of a host", id.Name)
+		// A host writes its Host's status from its own copy: a stale one is a conflict, to read
+		// again and retry, judged before anything else (a refusal there left a system node's
+		// worker never reporting its Host when the control plane wrote in between).
+		if cur.Revision != expected {
+			return store.Object{}, errf(http.StatusConflict, "Conflict", "%s: %v", t.key(), store.ErrConflict)
 		}
-		// Likewise the mesh addresses the host controller assigns (a host that rewrote them
-		// would claim another's addresses in its peers' AllowedIPs); the host's keys are its own.
-		on, nn := oh.Network, nh.Network
-		if on.Index != nn.Index || on.MeshIP != nn.MeshIP || on.SiloSubnet != nn.SiloSubnet || on.InnerIP != nn.InnerIP {
-			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s may not write the mesh addresses the control plane assigned it", id.Name)
-		}
+		// K-037: status.provider (the provider-hosts controller's, from the plugin) and the mesh
+		// addresses (the host controller's, from the index it assigned) are the control plane's:
+		// whatever a worker sends for them, they are kept as stored. Never refused, so a worker's
+		// write carrying them as it read them (or changed) still writes what is its own; the host's
+		// keys are its own.
+		oh, nh := old.(*v1.Host).Status, &obj.(*v1.Host).Status
+		nh.Provider = oh.Provider
+		nh.Network.Index, nh.Network.MeshIP, nh.Network.SiloSubnet, nh.Network.InnerIP = oh.Network.Index, oh.Network.MeshIP, oh.Network.SiloSubnet, oh.Network.InnerIP
 	}
 	if id, ok := IdentityFrom(ctx); ok && id.Type == "host" && id.Role == "worker" && t.kind.Kind == "IngressClass" {
 		if err := ingress.HostWrite(old.(*v1.IngressClass).Status, obj.(*v1.IngressClass).Status, id.Name); err != nil {

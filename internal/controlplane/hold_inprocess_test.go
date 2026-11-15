@@ -107,7 +107,9 @@ func TestASystemNodesWorkerRunsAsItsHost(t *testing.T) {
 		mu.Unlock()
 	}
 	r, err := Start(ctx, Config{ClusterName: "test", HostName: "cp-1", InternalIP: "127.0.0.1", DataDir: filepath.Join(dir, "d"),
-		Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 50 * time.Millisecond, Create: true, Log: logf,
+		// The node's own heartbeat writes the same Host: at 50 ms, under load, it could win every
+		// one of the worker's five tries in a row (the worker then waits for its next report).
+		Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 500 * time.Millisecond, Create: true, Log: logf,
 		Worker: &worker.Config{}})
 	if err != nil {
 		t.Fatal(err)
