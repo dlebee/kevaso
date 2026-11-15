@@ -93,8 +93,26 @@ func attempt(base http.RoundTripper, r *http.Request) (*http.Response, error) {
 		cancel()
 		return nil, err
 	}
+	if rw, ok := resp.Body.(io.ReadWriteCloser); ok {
+		// An upgraded stream (101: exec, terminal, port-forward, kvo cp): the raw connection,
+		// which must stay writable (Upgrade needs its Write); bounded by the dial and the headers
+		// only, never by AttemptTimeout.
+		resp.Body = &cancelOnCloseRW{ReadWriteCloser: rw, cancel: cancel}
+		return resp, nil
+	}
 	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
 	return resp, nil
+}
+
+type cancelOnCloseRW struct {
+	io.ReadWriteCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnCloseRW) Close() error {
+	err := c.ReadWriteCloser.Close()
+	c.cancel()
+	return err
 }
 
 type cancelOnClose struct {
