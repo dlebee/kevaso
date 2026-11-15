@@ -296,7 +296,8 @@ func TestMetalFence(t *testing.T) {
 	if out, _ := c.sh("systemctl is-active kevaso-fence"); strings.TrimSpace(out) != "active" {
 		t.Errorf("the fence isn't running: %q", out)
 	}
-	if got := startedAt(stopsUID); got != "" {
+	// Its own container (the pause container, which only holds its network, may stay).
+	if got := strings.TrimSpace(c.mustSh("docker ps -q --filter label=kevaso.com/uid=" + stopsUID + " --filter label=kevaso.com/name")); got != "" {
 		t.Errorf("the silo with onControlPlaneLoss: Stop still runs past its after: %s", got)
 	} else {
 		t.Log("the Stop silo was stopped")
