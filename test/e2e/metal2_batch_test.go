@@ -211,8 +211,9 @@ spec:
 	old := s.Spec.Reset
 	c.must("", "reset", "silo", "big", "-n", ns)
 	c.eventually("the image is being pulled again", 2*time.Minute, func() (bool, string) {
-		out, _ := host.sh("pgrep -fa 'docker pull " + image + "' | grep -v pgrep | head -1")
-		return strings.Contains(out, "docker pull"), out
+		// Any engine command with the image (a pull, or a run that pulls), while the image isn't there.
+		out, _ := host.sh("pgrep -fa 'docker .*" + image + "' | grep -v pgrep | head -1; docker image inspect " + image + " >/dev/null 2>&1 && echo present || echo absent")
+		return strings.Contains(out, image) && strings.Contains(out, "absent"), out
 	})
 	for {
 		var cur v1.Silo
@@ -365,7 +366,7 @@ systemd-run --unit=kvt-ib-loop sh -c 'while :; do for h in ` + strings.Join(host
 	} else {
 		t.Log("IB-1: no answer changed")
 	}
-	held, _ := c.kvo("", "get", "ingressclass", "ib", "-o", "yaml")
+	held, _ := c.kvo("", "get", "ingressclass", "ib", "-o", "json") // JSON: YAML writes the apostrophe twice
 	if !strings.Contains(held, "can't tell") {
 		t.Errorf("IB-1: the class doesn't say it can't tell what the proxy serves:\n%s", held)
 	}
