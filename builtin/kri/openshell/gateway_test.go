@@ -161,10 +161,11 @@ func TestAStartedGatewayStopsTheNeighboursItRestored(t *testing.T) {
 	}
 }
 
-// Item 1: the Docker driver's container outlives a crashed gateway, so the silo reads Running
-// (it is) and the agent starts nothing; but nothing reaches it without its gateway. Exec of a silo
-// Kevaso started brings its gateway back (Kevaso knows: the silo was claimed and should run).
-func TestExecBringsBackTheGatewayOfARunningDockerSilo(t *testing.T) {
+// The Docker driver's container outlives a crashed gateway, so the silo reads Running (it is).
+// An exec of it once brought the gateway back on the strength of the state file's Running flag,
+// which outlives a kevasod restart and is no claim (review-batch4 claim 4): it now answers "not
+// running" and starts nothing; only a claimed Start brings the gateway up.
+func TestExecNeverBringsBackAGateway(t *testing.T) {
 	ctx := context.Background()
 	f := newFake()
 	r := newRuntimeOn(f, DriverDocker)
@@ -174,17 +175,20 @@ func TestExecBringsBackTheGatewayOfARunningDockerSilo(t *testing.T) {
 	if st, err := r.Status(ctx, silo); err != nil || st.State != kri.Running {
 		t.Fatalf("its container runs on: %v %v", st.State, err)
 	}
-	if code, err := r.Exec(ctx, silo, kri.ExecRequest{Command: []string{"true"}}); err != nil || code != 0 {
-		t.Fatalf("exec with its gateway down: %d %v", code, err)
+	starts := f.ran("systemctl start " + g.Unit())
+	if _, err := r.Exec(ctx, silo, kri.ExecRequest{Command: []string{"true"}}); err == nil {
+		t.Fatal("exec with its gateway down succeeded")
 	}
-	if f.units[g.Unit()] != "active" || !f.Runs(SandboxName(silo)) {
-		t.Fatal("the gateway wasn't brought back")
+	if err := r.SetPolicy(ctx, silo, kri.Policy{Credentials: []kri.Credential{cred}}); err == nil {
+		t.Fatal("a policy change with its gateway down succeeded")
 	}
-	if err := r.Stop(ctx, silo); err != nil {
+	if f.ran("systemctl start "+g.Unit()) != starts || f.units[g.Unit()] == "active" {
+		t.Fatal("an exec or a policy change started the gateway")
+	}
+	if err := r.Start(ctx, silo); err != nil { // the claimed start
 		t.Fatal(err)
 	}
-	f.Crash(g.Name())
-	if _, err := r.Exec(ctx, silo, kri.ExecRequest{Command: []string{"true"}}); err == nil || f.units[g.Unit()] == "active" {
-		t.Fatal("exec of a stopped silo started its gateway")
+	if code, err := r.Exec(ctx, silo, kri.ExecRequest{Command: []string{"true"}}); err != nil || code != 0 {
+		t.Fatalf("exec after its claimed start: %d %v", code, err)
 	}
 }

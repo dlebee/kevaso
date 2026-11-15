@@ -221,7 +221,10 @@ func UnitFor(n Names, cpus int, memMiB int64, firmware, mac string, l Layout) st
 	args := []string{"--api-socket", n.Socket, "--firmware", firmware, "--cpus", "boot=" + fmt.Sprint(cpus)}
 	args = append(args, VMMArgs(n, l, memMiB)...)
 	args = append(args, "--net", "tap="+n.Tap+",mac="+mac, "--serial", "file="+n.Dir+"/serial.log", "--console", "off")
-	w("ExecStart=" + BinDir + "/cloud-hypervisor " + strings.Join(args, " "))
+	// Under the silo's lock for its whole life (flock --no-fork: the VMM itself holds it): a second
+	// VMM of this silo never starts while one runs, whatever systemd or a probe believes (waiting a
+	// few seconds for it: a probe takes it for an instant).
+	w("ExecStart=/usr/bin/flock --no-fork -w 5 -E " + fmt.Sprint(lockConflict) + " " + LockFile(n) + " " + BinDir + "/cloud-hypervisor " + strings.Join(args, " "))
 	w("Restart=no")
 	w("NoNewPrivileges=yes")
 	w("CapabilityBoundingSet=")

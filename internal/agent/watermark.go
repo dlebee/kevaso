@@ -323,9 +323,15 @@ func (a *Agent) ControlPlaneHeld() bool { return a.watermark().blocked() }
 // looked at again.
 func (a *Agent) watchControlPlane(ctx context.Context) {
 	ticks := a.tick(ctx, fence.CheckEvery)
-	reported := "" // the condition last written: status and reason
-	keptSaid := "" // the kept silos last listed
+	// What was last written, and to which control plane (its history count, Watermark.mark): a
+	// restore is another store, whose Host holds what the backup had, not what was written here
+	// since. Each is written again under a new history (the coordinator's finding on claim 1: a
+	// copy kept and listed under one history was never listed under the next).
+	const unwritten = "\x00"
+	reported := ""        // the condition last written: status and reason
+	keptSaid := unwritten // the kept silos last listed
 	wasBlocked := false
+	wroteTo := a.watermark().mark().histories
 	for {
 		select {
 		case <-ctx.Done():
@@ -333,6 +339,9 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 		case <-ticks:
 		}
 		a.watermark().ReadAgain() // an unreadable file is read again on every tick (claim 5)
+		if h := a.watermark().mark().histories; h != wroteTo {
+			wroteTo, reported, keptSaid = h, "", unwritten
+		}
 		blocked := a.watermark().blocked()
 		kept, seen, verdict := a.watermark().state()
 		if !blocked && wasBlocked {
@@ -415,6 +424,9 @@ func (a *Agent) reportKept(ctx context.Context, said string) string {
 	var h v1.Host
 	if err := a.Client.Get(ctx, "Host", "", a.HostName, &h); err != nil {
 		return said
+	}
+	if now == "" && meta.FindCondition(h.Status.Conditions, ConditionKeptSilos) == nil {
+		return now // nothing kept, nothing said: nothing to write
 	}
 	cond := meta.Condition{Type: ConditionKeptSilos, Status: meta.ConditionFalse, Reason: "None", Message: "no silo is kept that the control plane doesn't know"}
 	if now != "" {
