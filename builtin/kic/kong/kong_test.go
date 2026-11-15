@@ -78,3 +78,29 @@ func TestKongAcceptsIt(t *testing.T) {
 		t.Fatalf("kong config parse: %v\n%s", err, out)
 	}
 }
+
+// K-089: Kong's GET /status says which declarative config it runs; all zeros is none.
+func TestFingerprint(t *testing.T) {
+	d := Driver{}
+	p, _ := d.Render(kictest.Sample(good))
+	if c := d.Running(p); c.Method != "GET" || c.Path != "/status" || c.Port != p.Reload.Call.Port {
+		t.Fatalf("%+v", c)
+	}
+	for _, tc := range []struct {
+		status int
+		body   string
+		want   string
+		err    bool
+	}{
+		{200, `{"configuration_hash":"0e5b1c4a7d2f9e8b3a6c1d4f7e2b5a8c","server":{}}`, "0e5b1c4a7d2f9e8b3a6c1d4f7e2b5a8c", false},
+		{200, `{"configuration_hash":"00000000000000000000000000000000"}`, "", false},
+		{200, `{"server":{}}`, "", true}, // not DB-less: no hash, can't tell
+		{200, `not json`, "", true},
+		{500, `{}`, "", true},
+	} {
+		got, err := d.Fingerprint(tc.status, tc.body)
+		if got != tc.want || (err != nil) != tc.err {
+			t.Errorf("%d %s: %q %v", tc.status, tc.body, got, err)
+		}
+	}
+}

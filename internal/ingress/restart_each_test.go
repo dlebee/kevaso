@@ -275,8 +275,9 @@ func TestK063TheRecordIsCheckedAgainstTheRunningConfig(t *testing.T) {
 	}
 }
 
-// For an admin-API driver an apply under way when the agent stopped (RECORD.next left) means
-// what the proxy took is unknown.
+// For an admin-API driver an apply under way when the agent stopped (RECORD.next left) is
+// resolved by asking the proxy (K-089): it still runs what RECORD says, so that is served; it runs
+// something else (it took the apply, or another), so what it serves is unknown and the class held.
 func TestK063AnAdminAPIApplyUnderWayIsUnknown(t *testing.T) {
 	r := rigs(true)[2]
 	if r.name != "kong" {
@@ -286,6 +287,15 @@ func TestK063AnAdminAPIApplyUnderWayIsUnknown(t *testing.T) {
 	r.px.Files[recordPath(t, r)+".next"] = []byte(`{}`)
 	before := r.served()
 	res, _, _ := settle(t, r, want(many(3, 1)...), &ingress.Memory{}, nil, "", 1)
+	if res.Held != "" || r.served() != before || !strings.Contains(res.LeftOut["shop/i01"], "last good version is still served") {
+		t.Errorf("Kong runs what the record says, yet: %+v", res)
+	}
+	settle(t, r, want(many(3)...), &ingress.Memory{}, nil, "", 1)
+	r.px.Files[recordPath(t, r)+".next"] = []byte(`{}`)
+	r.live = append([]byte(nil), r.live...)
+	r.live = append(r.live, ' ') // Kong took something the record doesn't say
+	before = r.served()
+	res, _, _ = settle(t, r, want(many(3, 1)...), &ingress.Memory{}, nil, "", 1)
 	if res.Held == "" || r.served() != before {
 		t.Errorf("not held: %+v", res)
 	}
@@ -352,6 +362,9 @@ func okCall(r *rig) ingress.Caller {
 		return nil
 	}
 	return func(_ context.Context, c kic.Call) (int, string, error) {
+		if c.Method == "GET" && c.Path == "/status" {
+			return 200, kongStatus(r.live), nil
+		}
 		r.calls++
 		r.live = c.Body
 		return 201, "", nil
@@ -378,6 +391,9 @@ func TestK063AServedIngressIsNeverRemovedOnTheProxysWord(t *testing.T) {
 				r.px.Check = sick
 				if r.call != nil {
 					r.call = func(_ context.Context, c kic.Call) (int, string, error) {
+						if c.Method == "GET" && c.Path == "/status" {
+							return 200, kongStatus(r.live), nil
+						}
 						r.calls++
 						if strings.Contains(string(c.Body), "h01.example.com") {
 							return 400, "refused", nil

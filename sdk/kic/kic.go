@@ -348,6 +348,67 @@ const (
 	BlameEnd  = "# -"
 )
 
+// RenderedBy is in every config file a driver renders (in a comment), so a configuration Kevaso
+// wrote can be told from the image's own (K-089: an agent that has no record of what it applied
+// finds out from the proxy itself what is served).
+const RenderedBy = "Rendered by Kevaso"
+
+// Ours says whether data is a configuration Kevaso rendered: it names RenderedBy or marks an
+// Ingress's section.
+func Ours(data []byte) bool {
+	if strings.Contains(string(data), RenderedBy) {
+		return true
+	}
+	for _, l := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), BlameMark) {
+			return true
+		}
+	}
+	return false
+}
+
+// Sections splits a configuration rendered with blame markers into the text outside every marked
+// section and each Ingress's sections (marker lines included), in order. Two configurations whose
+// outside texts are equal differ only in what their Ingresses brought in.
+func Sections(data []byte) (outside string, by map[string][]string) {
+	by = map[string][]string{}
+	var out, cur strings.Builder
+	who := ""
+	for _, l := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(l)
+		if who == "" {
+			if ing, ok := strings.CutPrefix(t, BlameMark); ok {
+				who = ing
+				cur.Reset()
+				cur.WriteString(t + "\n")
+				continue
+			}
+			out.WriteString(l + "\n")
+			continue
+		}
+		cur.WriteString(t + "\n")
+		if t == BlameEnd {
+			by[who] = append(by[who], cur.String())
+			who = ""
+		}
+	}
+	if who != "" { // an unterminated section: it is part of the outside text, so nothing matches it
+		out.WriteString(cur.String())
+	}
+	return out.String(), by
+}
+
+// Reader is a driver whose proxy can be asked what configuration it runs: for a driver with no
+// config file to read back (an admin API), it is how the agent checks its record of what it
+// applied against the proxy (K-089, K-090).
+type Reader interface {
+	// Running is the call that asks (p is any plan of the class, for its options: the port).
+	Running(p Plan) Call
+	// Fingerprint reduces the proxy's answer to what identifies the configuration it runs: the
+	// same for the same configuration, "" when it runs none. An error: the answer can't be read.
+	Fingerprint(status int, body string) (string, error)
+}
+
 // MarkedBlame is the Ingress whose marked section holds line (1-based) of data, if any.
 func MarkedBlame(data []byte, line int) []string {
 	lines := strings.Split(string(data), "\n")

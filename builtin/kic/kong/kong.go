@@ -176,7 +176,41 @@ func (Driver) Blame(p kic.Plan, out string) []string {
 	return who
 }
 
+// Running implements kic.Reader: Kong's GET /status says which declarative configuration it runs
+// (configuration_hash, DB-less mode).
+func (Driver) Running(p kic.Plan) kic.Call {
+	port := 8001
+	if p.Reload.Call != nil {
+		port = p.Reload.Call.Port
+	}
+	return kic.Call{Port: port, Method: "GET", Path: "/status"}
+}
+
+// emptyHash is Kong's configuration_hash when it runs no declarative configuration.
+const emptyHash = "00000000000000000000000000000000"
+
+// Fingerprint implements kic.Reader: the configuration_hash of Kong's /status.
+func (Driver) Fingerprint(status int, body string) (string, error) {
+	if status < 200 || status > 299 {
+		return "", fmt.Errorf("GET /status: %d", status)
+	}
+	var st struct {
+		Hash *string `json:"configuration_hash"`
+	}
+	if err := json.Unmarshal([]byte(body), &st); err != nil {
+		return "", fmt.Errorf("GET /status: %w", err)
+	}
+	switch {
+	case st.Hash == nil:
+		return "", fmt.Errorf("GET /status has no configuration_hash (Kong in DB-less mode has one)")
+	case *st.Hash == emptyHash || *st.Hash == "":
+		return "", nil
+	}
+	return *st.Hash, nil
+}
+
 var (
 	_ kic.Driver = Driver{}
 	_ kic.Blamer = Driver{}
+	_ kic.Reader = Driver{}
 )

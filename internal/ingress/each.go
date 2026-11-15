@@ -66,6 +66,7 @@ type Memory struct {
 	Now func() time.Time
 
 	served   *kic.State        // what the proxy last accepted from this Memory's applies (nil: ask the record)
+	seen     string            // what the proxy was seen to run with served: its config's digest, or its fingerprint
 	recorded string            // the state the silo's record holds (hashOf), "" if not known
 	verdicts map[string]string // fragment key → why it was refused
 	want     string            // the desired state last handled
@@ -188,7 +189,7 @@ func ApplyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 	}
 	if err != nil {
 		// It may be half done: what the proxy serves is read back from the record next time.
-		m.want, m.served = "", nil
+		m.want, m.served, m.seen = "", nil, ""
 		return r, err
 	}
 	switch {
@@ -236,8 +237,10 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 	}
 	testable := len(p0.Check) > 0 && p0.Config.Path != ""
 
-	// What the proxy serves now.
+	// What the proxy serves now: what this Memory had it accept, else established from the proxy
+	// with the record's help (record.go). opaque: Ingresses it serves at a version not known.
 	unknown := ""
+	opaque := map[string]bool{}
 	if lastGood == nil {
 		lastGood = m.served
 	}
@@ -245,13 +248,19 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 		if exec == nil {
 			return out, fmt.Errorf("no way to read the controller silo's record")
 		}
-		lg, inRecord, why, err := readRecord(ctx, exec, d, p0)
+		sn, err := readRecord(ctx, exec, call, d, p0, want.State)
 		if err != nil {
-			return out, fmt.Errorf("the record of what was applied: %w", err)
+			return out, fmt.Errorf("what the proxy serves: %w", err)
 		}
-		lastGood, unknown, m.served = lg, why, lg
-		if inRecord {
-			m.recorded = hashOf(*lg)
+		lastGood, unknown = sn.served, sn.unknown
+		for _, w := range sn.opaque {
+			opaque[w] = true
+		}
+		if sn.exact { // remembered only when it is exactly what the proxy runs
+			m.served, m.seen = lastGood, sn.running
+		}
+		if sn.inRecord {
+			m.recorded = hashOf(*lastGood)
 		}
 	}
 	var before map[string]fragment
@@ -278,7 +287,7 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 	}
 	// running: who's version here is one the proxy serves now. Unknown: any may be.
 	running := func(who string) bool {
-		if unknown != "" {
+		if unknown != "" || opaque[who] {
 			return true
 		}
 		f, ok := before[who]
@@ -287,7 +296,7 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 	}
 	changed := func(who string) bool {
 		f, ok := before[who]
-		return lastGood == nil || !ok || hashOf(f) != hashOf(by[who])
+		return lastGood == nil || opaque[who] || !ok || hashOf(f) != hashOf(by[who])
 	}
 	// hold puts who's last good version back in place of its refused change, so only the change
 	// is held back and what it served keeps being served; false: it has none to go back to, or
@@ -369,7 +378,22 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 		if unknown != "" {
 			out.Held = "the proxy's configuration stays and nothing new is applied until every Ingress of the class can be: the agent can't tell what the proxy serves now (" + unknown + ")"
 		} else {
-			out.Held = "the proxy's configuration stays and nothing new is applied: the proxy refuses, or couldn't be asked about, Ingresses it serves now that didn't change: " + strings.Join(l, ", ")
+			var same, notKnown []string
+			for _, w := range l {
+				if opaque[w] {
+					notKnown = append(notKnown, w)
+				} else {
+					same = append(same, w)
+				}
+			}
+			var why []string
+			if len(same) > 0 {
+				why = append(why, "the proxy refuses, or couldn't be asked about, Ingresses it serves now that didn't change: "+strings.Join(same, ", "))
+			}
+			if len(notKnown) > 0 {
+				why = append(why, "Ingresses it serves at a version the agent can't tell (no record of what was applied matches the proxy) would be removed: "+strings.Join(notKnown, ", "))
+			}
+			out.Held = "the proxy's configuration stays and nothing new is applied: " + strings.Join(why, "; ")
 		}
 		return errHold
 	}
@@ -411,8 +435,12 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 	recPath := RecordPath(p0)
 	put := func(st kic.State, p kic.Plan) (Result, error) {
 		h, staged := hashOf(st), false
+		rec := record{Driver: d.Info().Name, State: st}
+		if p.Config.Path != "" {
+			rec.Config = digestOf(p.Config.Data)
+		}
 		if m.recorded != h {
-			b, _ := json.Marshal(record{Driver: d.Info().Name, State: st})
+			b, _ := json.Marshal(rec)
 			if code, o, err := exec(ctx, WriteCmd(recPath+".next", "0600"), b); err != nil || code != 0 {
 				out.RecordProblem = fmt.Sprintf("write %s.next: exit %d: %s %v", recPath, code, tail(o), err)
 			} else {
@@ -430,10 +458,36 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 			return r, nil
 		}
 		s := st
-		m.served = &s
+		m.served, m.seen = &s, rec.Config
+		if rd, ok := d.(kic.Reader); ok && p.Config.Path == "" && call != nil {
+			// The proxy's own word for what it runs now goes into the record: a restarted agent
+			// checks the record against it.
+			fp, why := "", ""
+			if status, body, err := call(ctx, rd.Running(p)); err != nil {
+				why = err.Error()
+			} else if fp, err = rd.Fingerprint(status, body); err != nil {
+				why = err.Error()
+			}
+			if why != "" {
+				out.RecordProblem = "the proxy can't say what it runs, so its record can't be checked after a restart: " + tail(why)
+				m.served = nil // established again on the next pass
+			}
+			rec.Proxy, m.seen = fp, fp
+		}
 		if staged {
-			if code, o, err := exec(ctx, MoveCmd(recPath+".next", recPath), nil); err != nil || code != 0 {
-				out.RecordProblem = fmt.Sprintf("move %s.next: exit %d: %s %v", recPath, code, tail(o), err)
+			var code int
+			var o string
+			var err error
+			if p.Config.Path == "" { // the record with the proxy's fingerprint, then the staged one goes
+				b, _ := json.Marshal(rec)
+				if code, o, err = exec(ctx, WriteCmd(recPath, "0600"), b); err == nil && code == 0 {
+					code, o, err = exec(ctx, RemoveCmd(recPath+".next"), nil)
+				}
+			} else {
+				code, o, err = exec(ctx, MoveCmd(recPath+".next", recPath), nil)
+			}
+			if err != nil || code != 0 {
+				out.RecordProblem = fmt.Sprintf("keep %s: exit %d: %s %v", recPath, code, tail(o), err)
 			} else {
 				m.recorded = h
 			}
