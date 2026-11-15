@@ -51,8 +51,10 @@ func expected() map[string]grants {
 			add([]string{"get", "list", "watch", "delete"}, "approvals", "panes", "leases").
 			add([]string{v1.VerbOpen, v1.VerbApprove}, v1.ResourceExposure).
 			add(append(slices.Clone(rw), v1.VerbUse), "ips"),
+		// K-077: no serviceaccounts/token: a token holds what its account holds, which an admin
+		// may have bound wider than the editor's own role.
 		"editor": grants{}.add(rw, workloadR...).
-			add([]string{"create"}, "silos/exec", "silos/move", "serviceaccounts/token", "silos/ssh").
+			add([]string{"create"}, "silos/exec", "silos/move", "silos/ssh").
 			add([]string{"get", "create"}, "silos/files").
 			add(slices.Concat(secretsMeta, secretsWrite, []string{v1.VerbUse}), "secrets").
 			add(ro, "approvals", "panes", "leases").
