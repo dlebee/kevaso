@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -24,6 +23,7 @@ import (
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/etcd"
 	"kevaso.com/core/internal/leader"
+	"kevaso.com/core/internal/testports"
 	"kevaso.com/core/internal/worker"
 	"kevaso.com/core/sdk/kri"
 	"kevaso.com/core/sdk/kri/fake"
@@ -53,15 +53,10 @@ type node struct {
 
 func (n *node) dataDir(*cluster) string { return n.data }
 
-func freePort(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = l.Close() }()
-	return l.Addr().String()
-}
+// freePort is a port for an etcd member's peer listener, which must be named before the member
+// starts (its URL is announced first): reserved, never one the OS may hand to anyone else
+// meanwhile (testports).
+func freePort(t *testing.T) string { return testports.Reserve(t) }
 
 func (c *cluster) log(name string) func(string, ...any) {
 	return func(f string, a ...any) {
@@ -86,7 +81,7 @@ func (c *cluster) config(name string, stateOnly bool) (Config, *node) {
 
 func (c *cluster) start(cfg Config, n *node) {
 	ctx, cancel := context.WithCancel(context.Background())
-	r, err := Start(ctx, cfg)
+	r, err := c.startWithin(ctx, cancel, cfg, n.name)
 	if err != nil {
 		cancel()
 		c.dump()
@@ -114,7 +109,7 @@ func newCluster(t *testing.T) *cluster {
 	cfg, n := c.config("cp-1", false)
 	cfg.Create = true
 	ctx, cancel := context.WithCancel(context.Background())
-	r, err := Start(ctx, cfg)
+	r, err := c.startWithin(ctx, cancel, cfg, n.name)
 	if err != nil {
 		cancel()
 		t.Fatal(err)
@@ -406,10 +401,12 @@ func TestWorkerSetUpBeforeTheOtherSystemNodesSurvivesLosingTheFirst(t *testing.T
 	for _, n := range []string{"cp-1", "cp-2", "cp-3"} {
 		c.waitHost(c.admin, n, voter)
 	}
+	// The worker learns them in memory first and keeps them on disk right after (KeepServers):
+	// both are waited for (reading the file at once lost that race under load).
 	deadline := time.Now().Add(20 * time.Second)
-	for len(wc.Endpoints()) < 3 {
+	for len(wc.Endpoints()) < 3 || len(worker.Servers(first, dir)) < 3 {
 		if time.Now().After(deadline) {
-			t.Fatalf("the worker's client knows %v", wc.Endpoints())
+			t.Fatalf("the worker's client knows %v; kept for the next start: %v", wc.Endpoints(), worker.Servers(first, dir))
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -546,3 +543,27 @@ func TestJoinRefusals(t *testing.T) {
 }
 
 func errorsAs(err error, target **client.Error) bool { return errors.As(err, target) }
+
+// startWithin is Start, failing the test (with every node's log) if it hasn't returned within
+// two minutes: a join that waits forever (a learner never promoted) is a failure to read, not a
+// hang that only the test binary's timeout ends, with the logs lost.
+func (c *cluster) startWithin(ctx context.Context, cancel context.CancelFunc, cfg Config, name string) (*Running, error) {
+	type started struct {
+		r   *Running
+		err error
+	}
+	done := make(chan started, 1)
+	go func() {
+		r, err := Start(ctx, cfg)
+		done <- started{r, err}
+	}()
+	select {
+	case s := <-done:
+		return s.r, s.err
+	case <-time.After(2 * time.Minute):
+		c.dump()
+		cancel()
+		c.t.Fatalf("start %s: not started after 2m (logs above)", name)
+		return nil, nil
+	}
+}
