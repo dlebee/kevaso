@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -97,6 +98,11 @@ func (a *Agent) mountVolumes(ctx context.Context, s *v1.Silo) (vols []kri.Volume
 			return nil, false, m, nil
 		}
 		dir := a.VolumePath(s.UID, v.Name)
+		if !a.mountedAt(ctx, dir) {
+			if ok, why, err := a.mayMountHere(ctx, s, vs); err != nil || !ok {
+				return nil, false, why, err
+			}
+		}
 		if err := a.mount(ctx, vs.Device, dir); err != nil {
 			if err == errNoDevice {
 				return nil, false, "waiting for " + vs.Device + " to appear", nil
@@ -135,6 +141,9 @@ func (a *Agent) mountByNode(ctx context.Context, s *v1.Silo, n kplugin.Node, vs 
 	}
 	m := a.nodeMount(s.UID, vs)
 	if done, _ := a.nodeMounts.Load(m.Path); done != m.Handle || !vs.Mounted || !a.mountedAt(ctx, m.Path) {
+		if ok, why, err := a.mayMountHere(ctx, s, vs); err != nil || !ok {
+			return "", false, why, err
+		}
 		err := n.MountVolume(ctx, m)
 		if errors.Is(err, kplugin.ErrInProgress) {
 			return "", false, "mounting volume " + vs.Name + ": " + err.Error(), nil
@@ -159,6 +168,29 @@ func (a *Agent) mountByNode(ctx context.Context, s *v1.Silo, n kplugin.Node, vs 
 }
 
 var errNoDevice = fmt.Errorf("device not there yet")
+
+// mayMountHere reads the stored silo before a volume of it is mounted here, and so maybe
+// formatted (review, check-then-act claim 2): only the same silo, placed here, free to start
+// here, not being deleted, with that volume attached here at the same device and handle, goes on.
+// A cache from before a move mounts nothing; why says what it waits for.
+func (a *Agent) mayMountHere(ctx context.Context, s *v1.Silo, vs v1.VolumeStatus) (ok bool, why string, err error) {
+	var cur v1.Silo
+	if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
+		return false, "", err
+	}
+	if cur.UID != s.UID || cur.DeletionTimestamp != nil || !moves.MayStart(&cur, a.HostName) {
+		return false, "not mounting volume " + vs.Name + ": the control plane places the silo on " + strconv.Quote(cur.Status.Host) + " now", nil
+	}
+	for _, st := range cur.Status.Volumes {
+		if st.Name == vs.Name {
+			if st.AttachedTo == a.HostName && st.Device == vs.Device && st.Handle == vs.Handle {
+				return true, "", nil
+			}
+			break
+		}
+	}
+	return false, "not mounting volume " + vs.Name + ": the control plane doesn't say it is attached here at " + vs.Device + " now", nil
+}
 
 // mount mounts dev at dir, formatting it first only if it holds no filesystem at all: a volume
 // that comes back (another host, a restart) is never wiped.
