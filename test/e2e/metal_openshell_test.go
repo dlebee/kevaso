@@ -42,7 +42,7 @@ import (
 func TestMetalOpenShell(t *testing.T) {
 	c := metal(t)
 	ns := "osh"
-	c.namespace(ns, "grant/api", "grant/files", "grant/vars", "grant/broker", "secret/api-key", "secret/plain", "secret/regcred")
+	c.namespace(ns, "grant/api", "grant/files", "grant/vars", "grant/broker", "grant/preload", "secret/api-key", "secret/plain", "secret/regcred")
 
 	// Side by side: a microVM and a docker silo, from before the runtimes are added.
 	c.apply(vmEcho(ns, "vmside", 8080) + "---\n" + boxEcho(ns, "ctside", 8080))
@@ -73,14 +73,16 @@ func TestMetalOpenShell(t *testing.T) {
 		return fmt.Sprintf("---\napiVersion: kevaso/v1\nkind: Grant\nmetadata: { name: %s, namespace: %s }\nspec:\n  secrets:\n    - %s\n", name, ns, secret)
 	}
 	c.apply(grant("files", "{ name: plain, deliver: file, path: /run/secrets/plain }") +
-		grant("vars", "{ name: plain, deliver: env, env: PLAIN }") + grant("broker", "{ name: plain, deliver: broker }"))
+		grant("vars", "{ name: plain, deliver: env, env: PLAIN }") + grant("broker", "{ name: plain, deliver: broker }") +
+		grant("preload", "{ name: plain, deliver: inject, env: LD_PRELOAD, to: { host: "+osInetName+" } }"))
 	for _, rt := range []string{"openshell", "openshell-container"} {
 		for what, c2 := range map[string]struct{ extra, want string }{
-			"a service (hostPort: [external])": {"  ports: [{ name: web, port: 18150 }]\n  service:\n    ports: [{ port: web, hostPort: [external] }]\n", "no network interface, so no service"},
-			"a file delivery":                  {"  grants: [files]\n", "can't put a file or a variable in an OpenShell sandbox"},
-			"an env delivery":                  {"  grants: [vars]\n", "can't put a file or a variable in an OpenShell sandbox"},
-			"the local endpoint (broker)":      {"  grants: [broker]\n", "can't reach the host's local endpoint"},
-			"a registry pull":                  {"", "OpenShell pulls images through its own gateway"},
+			"a service (hostPort: [external])":  {"  ports: [{ name: web, port: 18150 }]\n  service:\n    ports: [{ port: web, hostPort: [external] }]\n", "no network interface, so no service"},
+			"a file delivery":                   {"  grants: [files]\n", "can't put a file or a variable in an OpenShell sandbox"},
+			"an env delivery":                   {"  grants: [vars]\n", "can't put a file or a variable in an OpenShell sandbox"},
+			"the local endpoint (broker)":       {"  grants: [broker]\n", "can't reach the host's local endpoint"},
+			"a registry pull":                   {"", "OpenShell pulls images through its own gateway"},
+			"an inject into LD_PRELOAD (K-066)": {"  grants: [preload]\n", "LD_* variables steer"},
 		} {
 			m := osSilo("refused", rt, c2.extra)
 			if what == "a registry pull" {
