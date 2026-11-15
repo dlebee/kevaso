@@ -606,6 +606,14 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 			return store.Object{}, errf(http.StatusConflict, "Conflict", "%v", err)
 		}
 	}
+	if id, ok := IdentityFrom(ctx); s.auth != nil && (!ok || id.Type != "host" || id.Role != "worker") && t.kind.Kind == "Silo" && t.status {
+		// K-082: the start claim and the armed fence are the silo's own host's (moves.HostWrite
+		// judges it): from anyone else, they are kept as stored. (A server with no authentication,
+		// tests only, can't tell the host's writes apart.)
+		if kept := moves.KeepHostConditions(old.(*v1.Silo).Status, &obj.(*v1.Silo).Status); len(kept) > 0 {
+			warn(ctx, fmt.Sprintf("%s: conditions %s are written only by the silo's own host (%s): kept as stored", t.key(), strings.Join(kept, ", "), old.(*v1.Silo).Status.Host))
+		}
+	}
 	if t.kind.Kind == "Silo" && t.status && !t.planned {
 		// K-029: a status write that puts the silo on another host (an admin's, a tool's) takes
 		// the scheduler's claims of its node ports and host ports there first, at the version the

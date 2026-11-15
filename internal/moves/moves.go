@@ -21,6 +21,7 @@ import (
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/sdk/kplugin"
 )
@@ -371,7 +372,62 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 			return fmt.Errorf("%w: volume %s is attached to %s: only that host says whether it is mounted", ErrHostWrite, o.Name, to)
 		}
 	}
+	if err := armedWrite(old, next, host); err != nil {
+		return err
+	}
 	return claimWrite(old, next, host)
+}
+
+// armedWrite judges a host's write of a silo's FenceArmed condition (K-082): a new or changed one
+// must be in that host's own name (fence.ArmedCondition's message starts with the host). The
+// control plane restarts an opted-in silo elsewhere only while its host armed it; and a handoff
+// whose source is gone ends by itself only while the source's armed fence stands (K-119), so the
+// destination must not write one in the source's name.
+func armedWrite(old, next v1.SiloStatus, host string) error {
+	n := meta.FindCondition(next.Conditions, fence.ConditionArmed)
+	if n == nil || n.Status != meta.ConditionTrue {
+		return nil
+	}
+	if o := meta.FindCondition(old.Conditions, fence.ConditionArmed); o != nil && *o == *n {
+		return nil // as it stood: not this write's
+	}
+	if !strings.HasPrefix(n.Message, host+" stops this silo after ") {
+		return fmt.Errorf("%w: %s may arm its fence only in its own name (condition %s: %q)", ErrHostWrite, host, fence.ConditionArmed, n.Message)
+	}
+	return nil
+}
+
+// HostConditions are the silo conditions only the silo's own host writes (K-082): its start claim
+// and its armed fence. HostWrite judges that host's writes of them.
+var HostConditions = []string{CondStartClaim, fence.ConditionArmed}
+
+// KeepHostConditions puts back, in a status write by anyone but a host (a person, a tool, a
+// controller), the HostConditions as stored: they are never added, changed or removed that way. A
+// write that places the silo elsewhere (status.host changes) may drop them, as the old placement's;
+// still never add or change them. It returns the conditions it put back.
+func KeepHostConditions(old v1.SiloStatus, next *v1.SiloStatus) []string {
+	var kept []string
+	for _, typ := range HostConditions {
+		o, n := meta.FindCondition(old.Conditions, typ), meta.FindCondition(next.Conditions, typ)
+		switch {
+		case o == nil && n == nil, o != nil && n != nil && *o == *n:
+			continue
+		case n == nil && next.Host != old.Host:
+			continue // dropped with the old placement
+		}
+		conds := make([]meta.Condition, 0, len(next.Conditions)+1)
+		for _, c := range next.Conditions {
+			if c.Type != typ {
+				conds = append(conds, c)
+			}
+		}
+		if o != nil {
+			conds = append(conds, *o)
+		}
+		next.Conditions = conds
+		kept = append(kept, typ)
+	}
+	return kept
 }
 
 // sameButMounted reports whether two volume statuses differ at most in mounted.
