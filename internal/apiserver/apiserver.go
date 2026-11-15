@@ -538,11 +538,10 @@ func newUID() string {
 }
 
 func (s *Server) create(ctx context.Context, t target, obj meta.Object) (store.Object, error) {
+	var nsUID string
 	if t.kind.Scope == v1.Namespaced {
-		if _, err := s.store.Get(ctx, store.Key{Kind: "Namespace", Name: t.namespace}); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return store.Object{}, errf(http.StatusNotFound, "NotFound", "namespace %q doesn't exist", t.namespace)
-			}
+		var err error
+		if nsUID, err = s.openNamespace(ctx, t.namespace); err != nil {
 			return store.Object{}, err
 		}
 	}
@@ -556,6 +555,9 @@ func (s *Server) create(ctx context.Context, t target, obj meta.Object) (store.O
 	data, err := s.admitBuiltin(ctx, t, nil, obj)
 	if err != nil {
 		return store.Object{}, err
+	}
+	if t.kind.Scope == v1.Namespaced {
+		return s.commitInNamespace(ctx, t, nsUID, data)
 	}
 	return s.commitCreate(ctx, t.key(), data)
 }
@@ -743,7 +745,8 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		writeErr(w, err)
 		return
 	}
-	if err := s.checkDeleteNamespace(ctx, t); err != nil {
+	nsRev, err := s.checkDeleteNamespace(ctx, t, wantUID, wantRV)
+	if err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -767,7 +770,11 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			writeErr(w, errf(http.StatusConflict, "Conflict", "%s is another object now (uid %s, not %s): not deleted", t.key(), om.UID, wantUID))
 			return
 		}
-		if wantRV != "" && strconv.FormatInt(cur.Revision, 10) != wantRV {
+		if nsRev != 0 && cur.Revision != nsRev { // not the namespace as marked and found empty
+			writeErr(w, errf(http.StatusConflict, "Conflict", "namespace %s changed while it was being deleted: not deleted; try again", t.name))
+			return
+		}
+		if wantRV != "" && nsRev == 0 && strconv.FormatInt(cur.Revision, 10) != wantRV {
 			writeErr(w, errf(http.StatusConflict, "Conflict", "%s changed since it was read (at %d, not %s): not deleted", t.key(), cur.Revision, wantRV))
 			return
 		}
