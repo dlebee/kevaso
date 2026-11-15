@@ -86,7 +86,9 @@ spec:
 	// Kevaso's files" fails (286d1e4). (A kvt-* unit with KillMode=none doesn't: once its stop
 	// times out systemd counts it stopped.)
 	c.mustSh("touch /var/lib/kevaso/kvt-stuck && chattr +i /var/lib/kevaso/kvt-stuck")
-	t.Cleanup(func() { _, _ = c.sh("chattr -i /var/lib/kevaso/kvt-stuck 2>/dev/null; rm -f /var/lib/kevaso/kvt-stuck; true") })
+	t.Cleanup(func() {
+		_, _ = c.sh("chattr -i /var/lib/kevaso/kvt-stuck 2>/dev/null; rm -f /var/lib/kevaso/kvt-stuck; true")
+	})
 	t.Logf("the foreign container before the resets: %s", foreign())
 	cut, code := reset("--force", "--yes")
 	t.Logf("the foreign container after the cut reset: %s", foreign())
