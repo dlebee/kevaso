@@ -105,7 +105,7 @@ spec:
 	pkgs := func(plan string) string {
 		var l []string
 		for _, s := range strings.Split(plan, "\n") {
-			if strings.Contains(s, "purge") || strings.Contains(s, "left installed") {
+			if strings.Contains(s, "left installed") { // what was purged before the failed step is gone: "purge (none)" after
 				l = append(l, s)
 			}
 		}
