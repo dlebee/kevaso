@@ -43,12 +43,23 @@ func approve(ctx context.Context, c *client.Client, o opts, verb string, stdin i
 		}
 		cols := approvalColumns(&cur, time.Now())
 		_, _ = fmt.Fprintf(stdout, "approval/%s: silo %s asks to %s %s for %s: %s\napprove this request (%s)? [y/N] ",
-			cur.Name, cur.Spec.Silo, cur.Spec.Use, plain(cols[1], 80), cur.Spec.For, plain(cur.Spec.Summary, 200), approvals.RequestID(&cur))
+			cur.Name, cur.Spec.Silo, cur.Spec.Use, plain(cols[1], 80), cur.Spec.For, plain(cur.Spec.Summary, 200), approvals.ShortID(approvals.RequestID(&cur)))
 		line, _ := bufio.NewReader(stdin).ReadString('\n')
 		if a := strings.TrimSpace(strings.ToLower(line)); a != "y" && a != "yes" {
 			return errors.New("not approved")
 		}
 		request = approvals.RequestID(&cur)
+	}
+	if request != "" && len(request) != approvals.IDLen { // a prefix: completed from the request as it is now, for display's sake only
+		var cur v1.Approval
+		if err := c.Get(ctx, "Approval", ns, o.args[0], &cur); err != nil {
+			return err
+		}
+		full, err := approvals.ResolveRequest(request, &cur)
+		if err != nil {
+			return err
+		}
+		request = full // the full digest is what is sent, and what the server compares
 	}
 	path := "/apis/kevaso/v1/namespaces/" + url.PathEscape(ns) + "/approvals/" + url.PathEscape(o.args[0]) + "/" + verb
 	var a v1.Approval
@@ -89,5 +100,5 @@ func approvalColumns(a *v1.Approval, now time.Time) []string {
 	if a.Spec.Use == v1.ApprovalForExpose {
 		what = "port " + a.Spec.Port
 	}
-	return []string{a.Spec.Silo, what, a.Spec.Use, a.Spec.For, phase, when, dash(a.Status.AnsweredBy), approvals.RequestID(a)}
+	return []string{a.Spec.Silo, what, a.Spec.Use, a.Spec.For, phase, when, dash(a.Status.AnsweredBy), approvals.ShortID(approvals.RequestID(a))}
 }
