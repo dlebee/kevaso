@@ -19,12 +19,24 @@ var goneEvery = 10 * time.Second
 // The fence record's silos, as this agent keeps them:
 //
 //   - a silo is recorded before its runtime creates or starts it (recordForFence), never after;
-//   - every silo the API places here, or that is moving away from here, is recorded with its
-//     current policy;
+//   - every silo the API places here, or that is moving away from here, is recorded with whether
+//     it stops on control-plane loss (fenceEntry);
 //   - a recorded silo the API no longer places here stays, with its last policy, until no
 //     runtime here has it: a silo moved or deleted while its old copy still runs stays covered.
 //
 // What an earlier run of the agent recorded stands until this run knows better.
+
+// fenceEntry is how s is recorded for the fence watcher: stopped on control-plane loss only if it
+// asked for it (§0.7). The record's format is internal/fence's: until it carries the silo's own
+// after, a silo that stops is written as one the watcher stops (fence.Stops) and every other silo
+// as one it leaves alone, whatever its onHostLoss.
+func fenceEntry(s *v1.Silo) fence.Silo {
+	e := fence.Silo{ID: idOf(s), Runtime: s.Spec.Runtime, OnHostLoss: v1.OnHostLossWait}
+	if stop, _ := s.StopsOnControlPlaneLoss(); stop {
+		e.OnHostLoss = v1.OnHostLossRecreate
+	}
+	return e
+}
 
 // recordForFence records s (and writes the record) before its runtime starts it.
 func (a *Agent) recordForFence(s *v1.Silo) error {
@@ -34,7 +46,7 @@ func (a *Agent) recordForFence(s *v1.Silo) error {
 	a.fenceMu.Lock()
 	defer a.fenceMu.Unlock()
 	a.loadRecorded()
-	e := fence.Silo{ID: idOf(s), Runtime: s.Spec.Runtime, OnHostLoss: s.Policy()}
+	e := fenceEntry(s)
 	if a.recorded[s.UID] == e {
 		return nil
 	}
@@ -90,7 +102,7 @@ func (a *Agent) fenceRecord(ctx context.Context) fence.Record {
 			continue
 		}
 		here[s.UID] = true
-		a.recorded[s.UID] = fence.Silo{ID: idOf(s), Runtime: s.Spec.Runtime, OnHostLoss: s.Policy()}
+		a.recorded[s.UID] = fenceEntry(s)
 	}
 	var gone []string
 	for uid := range a.recorded {

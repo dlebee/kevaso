@@ -12,8 +12,6 @@ import (
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/clock"
-	hostctl "kevaso.com/core/internal/controllers/host"
-	siloctl "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/store"
 	"kevaso.com/core/internal/worker"
@@ -21,27 +19,12 @@ import (
 	"kevaso.com/core/sdk/kri/fake"
 )
 
-// The order that keeps two copies from running: the old host fences (its agent, or the fence
-// watcher when the agent is gone) before the control plane calls it lost, and the control plane
-// recreates only RecreateAfter later. The heartbeat period counts too: the record's last contact
-// can already be that old when the agent stops.
-//
-// Both sides count from the same moment, the last heartbeat that got through: the worst case of
-// "record goes stale → every silo killed" must stay under the earliest "host declared lost →
-// started elsewhere" by fence.MinMargin. If it doesn't, change the timings, not this test.
+// §0.7: only a silo that asked for it (onControlPlaneLoss: Stop) is stopped when the host loses the
+// control plane, and a healthy host never stops one: two heartbeats in a row may fail, plus a
+// fence tick, and that stays under the shortest after admission takes.
 func TestFenceTiming(t *testing.T) {
-	after, lease, recreate := agent.DefaultFenceAfter, hostctl.DefaultLease, siloctl.RecreateAfter
-	if after >= lease {
-		t.Fatalf("FenceAfter %s isn't under the host lease %s: the host is called lost before it fences", after, lease)
-	}
-	stopped := fence.WorstStopped(after)
-	elsewhere := lease + recreate - fence.MaxSkew
-	if margin := elsewhere - stopped; margin < fence.MinMargin {
-		t.Fatalf("every silo killed by %s, another copy as early as %s: margin %s < %s", stopped, elsewhere, margin, fence.MinMargin)
-	}
-	// A healthy host never fences: two heartbeats in a row may fail and it still doesn't.
-	if hb := worker.DefaultHeartbeat; 2*hb+fence.CheckEvery >= after {
-		t.Fatalf("heartbeat %s: two missed beats reach FenceAfter %s", hb, after)
+	if hb := worker.DefaultHeartbeat; 2*hb+fence.CheckEvery >= v1.MinStopAfter {
+		t.Fatalf("heartbeat %s: two missed beats reach the shortest after, %s", hb, v1.MinStopAfter)
 	}
 }
 
@@ -56,7 +39,7 @@ func TestWatcherKills(t *testing.T) {
 	now := time.Now()
 	_ = fence.Write(dir, fence.Record{LastContact: now.Add(-time.Minute), Fence: true,
 		Silos: []fence.Silo{{ID: id, Runtime: "docker", OnHostLoss: v1.OnHostLossRecreate}}})
-	w := &fence.Watcher{Dir: dir, Runtimes: map[string]kri.Runtime{"docker": rt}, FenceAfter: agent.DefaultFenceAfter}
+	w := &fence.Watcher{Dir: dir, Runtimes: map[string]kri.Runtime{"docker": rt}, FenceAfter: fence.DefaultAfter}
 	w.Check(ctx)
 	calls := rt.Calls
 	if len(calls) == 0 || calls[len(calls)-1] != "kill dev/web" {
@@ -75,10 +58,11 @@ func TestAgentWritesTheFenceRecord(t *testing.T) {
 	defer ts.Close()
 	c := client.New(ts.URL)
 	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
-	for name, policy := range map[string]string{"web": v1.OnHostLossRecreate, "db": ""} {
+	// web asked to stop; db is onHostLoss: Recreate, which says nothing about control-plane loss.
+	for name, av := range map[string]v1.Availability{"web": {OnControlPlaneLoss: v1.OnControlPlaneLossStop}, "db": {OnHostLoss: v1.OnHostLossRecreate}} {
 		s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev"},
 			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
-				Availability: v1.Availability{OnHostLoss: policy}}}
+				Availability: av}}
 		if err := c.Create(ctx, s); err != nil {
 			t.Fatal(err)
 		}
@@ -102,11 +86,11 @@ func TestAgentWritesTheFenceRecord(t *testing.T) {
 	}
 	stop()
 	<-done
-	policies := map[string]string{}
+	stops := map[string]bool{}
 	for _, s := range r.Silos {
-		policies[s.ID.Name] = s.OnHostLoss
+		stops[s.ID.Name] = fence.Stops(s.OnHostLoss)
 	}
-	if !r.LastContact.Equal(contact) || !r.Fence || policies["web"] != v1.OnHostLossRecreate || policies["db"] != v1.OnHostLossWait {
+	if !r.LastContact.Equal(contact) || !r.Fence || len(r.Silos) != 2 || !stops["web"] || stops["db"] {
 		t.Fatalf("record: %+v", r)
 	}
 
@@ -125,7 +109,7 @@ func TestAgentWritesTheFenceRecord(t *testing.T) {
 	if !again.LastContact.Equal(contact) || !again.Fence || len(again.Silos) != 2 || !again.Written.After(r.Written) {
 		t.Fatalf("after a restart while cut off: %+v (before: %+v)", again, r)
 	}
-	if got := fence.Decide(again, contact.Add(31*time.Second), agent.DefaultFenceAfter, nil); len(got) != 1 || got[0].ID.Name != "web" {
+	if got := fence.Decide(again, contact.Add(31*time.Second), fence.DefaultAfter, nil); len(got) != 1 || got[0].ID.Name != "web" {
 		t.Fatalf("the watcher would stop %+v", got)
 	}
 }
@@ -145,7 +129,7 @@ func TestNoFenceWhereNobodyRecreates(t *testing.T) {
 	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
-			Availability: v1.Availability{OnHostLoss: v1.OnHostLossRecreate}}}
+			Availability: v1.Availability{OnControlPlaneLoss: v1.OnControlPlaneLossStop, After: "30s"}}}
 	if err := c.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}
