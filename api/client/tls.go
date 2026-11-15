@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -12,17 +13,19 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
 // NewTLS returns a client that pins the cluster CA and presents a client certificate (both PEM).
 // With empty certPEM/keyPEM it connects without one (enough for Enroll).
 func NewTLS(baseURL string, caPEM, certPEM, keyPEM []byte) (*Client, error) {
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, errors.New("CA: no certificate in PEM")
+	pool, err := CertPool(caPEM)
+	if err != nil {
+		return nil, err
 	}
 	cfg := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: pool}
 	if len(certPEM) > 0 {
@@ -129,13 +132,107 @@ func (c *Client) IssueUserCert(ctx context.Context, name string) (Credentials, e
 	return c.requestCert(ctx, "/admin/certs", certRequest{Name: name})
 }
 
-// Fingerprint is how a CA is named for pinning: "sha256:" and the hex SHA-256 of its first
-// certificate's DER.
-func Fingerprint(caPEM []byte) (string, error) {
-	blk, _ := pem.Decode(caPEM)
-	if blk == nil || blk.Type != "CERTIFICATE" {
-		return "", errors.New("CA: no certificate in PEM")
+// ParseCAs reads a file of CA certificates strictly: only CERTIFICATE blocks (no headers) that
+// parse, and nothing else, not even before the first or after the last block. Whatever
+// pem.Decode or AppendCertsFromPEM would skip silently is an error here, so what was checked is
+// exactly what is trusted.
+func ParseCAs(caPEM []byte) ([]*x509.Certificate, error) {
+	var certs []*x509.Certificate
+	rest := caPEM
+	for {
+		p := bytes.TrimLeft(rest, " \t\r\n")
+		if len(p) == 0 {
+			break
+		}
+		if !bytes.HasPrefix(p, []byte("-----BEGIN ")) {
+			return nil, errors.New("CA: data outside a PEM block")
+		}
+		blk, r := pem.Decode(p)
+		if blk == nil {
+			return nil, errors.New("CA: malformed PEM block")
+		}
+		used := p[:len(p)-len(r)]
+		if bytes.Count(used, []byte("-----BEGIN ")) != 1 || bytes.Count(used, []byte("-----END ")) != 1 {
+			return nil, errors.New("CA: malformed PEM block")
+		}
+		if blk.Type != "CERTIFICATE" || len(blk.Headers) > 0 {
+			return nil, fmt.Errorf("CA: a %q block, only plain certificates are accepted", blk.Type)
+		}
+		c, err := x509.ParseCertificate(blk.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("CA: unreadable certificate: %w", err)
+		}
+		certs = append(certs, c)
+		rest = r
 	}
-	sum := sha256.Sum256(blk.Bytes)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	if len(certs) == 0 {
+		return nil, errors.New("CA: no certificate in PEM")
+	}
+	return certs, nil
+}
+
+// CertPool is the trust pool of exactly the certificates ParseCAs found.
+func CertPool(caPEM []byte) (*x509.CertPool, error) {
+	certs, err := ParseCAs(caPEM)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	for _, c := range certs {
+		pool.AddCert(c)
+	}
+	return pool, nil
+}
+
+func fingerprintOf(der []byte) string {
+	sum := sha256.Sum256(der)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// ParseFingerprint checks a pin is "sha256:" and 64 hex digits and returns it in lower case.
+func ParseFingerprint(fp string) (string, error) {
+	h, ok := strings.CutPrefix(strings.TrimSpace(fp), "sha256:")
+	if !ok || len(h) != 64 {
+		return "", errors.New("a CA fingerprint is sha256: followed by 64 hex digits")
+	}
+	if _, err := hex.DecodeString(h); err != nil {
+		return "", errors.New("a CA fingerprint is sha256: followed by 64 hex digits")
+	}
+	return "sha256:" + strings.ToLower(h), nil
+}
+
+// PinCA accepts caPEM only if every certificate in it has the pinned fingerprint (a file with a
+// second, different certificate is refused whole, wherever it sits). It returns the one pinned
+// certificate, re-encoded, which is the only thing to store and trust.
+func PinCA(caPEM []byte, fingerprint string) ([]byte, error) {
+	want, err := ParseFingerprint(fingerprint)
+	if err != nil {
+		return nil, err
+	}
+	certs, err := ParseCAs(caPEM)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range certs {
+		if got := fingerprintOf(c.Raw); got != want {
+			return nil, fmt.Errorf("the cluster's CA file holds a certificate %s, not the %s you were given: not trusting it", got, want)
+		}
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certs[0].Raw}), nil
+}
+
+// Fingerprint is how a CA is named for pinning: "sha256:" and the hex SHA-256 of its
+// certificate's DER. The PEM must hold exactly one certificate (copies of it are fine).
+func Fingerprint(caPEM []byte) (string, error) {
+	certs, err := ParseCAs(caPEM)
+	if err != nil {
+		return "", err
+	}
+	fp := fingerprintOf(certs[0].Raw)
+	for _, c := range certs[1:] {
+		if fingerprintOf(c.Raw) != fp {
+			return "", errors.New("CA: more than one certificate; a pin names exactly one")
+		}
+	}
+	return fp, nil
 }

@@ -10,10 +10,12 @@ package approvals
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"kevaso.com/core/api/meta"
@@ -205,14 +207,57 @@ func expire(a *v1.Approval) *v1.Approval {
 }
 
 // RequestID names what a request asks for: its silo, secret or port, use, grant, destination,
-// payload and the access wanted. A request asked again with anything different has another ID
-// (when it was asked, and until when it waits, are not part of it). A person's answer carries the
-// ID of the request they read, so a yes is for exactly that (K-017).
+// payload and the access wanted, as the full SHA-256 of all of it (64 hex digits). A request asked
+// again with anything different has another ID (when it was asked, and until when it waits, are
+// not part of it). A person's answer carries the ID of the request they read, so a yes is for
+// exactly that (K-017), and it is compared in full: never a prefix (K-059). ShortID is for people
+// to read.
 func RequestID(a *v1.Approval) string {
 	sp := a.Spec
 	b, _ := json.Marshal([]any{sp.Silo, sp.SiloUID, sp.Secret, sp.Port, sp.Use, sp.Grant, sp.Destination, sp.PayloadHash, sp.Summary, sp.For})
 	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:6])
+	return hex.EncodeToString(h[:])
+}
+
+// Lengths, in hex digits: a full RequestID, what is shown to people, and the least a person may
+// type for kvo to find the full one.
+const (
+	IDLen     = 64
+	ShortLen  = 32
+	MinPrefix = 32
+)
+
+// ShortID is the start of a RequestID, for display only. It is never what an answer is compared to.
+func ShortID(id string) string {
+	if len(id) > ShortLen {
+		return id[:ShortLen]
+	}
+	return id
+}
+
+// ResolveRequest turns what a person typed for --request into a full RequestID, for the pending
+// approval a (the one they named): a full ID is checked for form and returned; a prefix of at
+// least MinPrefix digits is completed from a's current ID, only if it is that one's. The full ID
+// is what gets sent and compared; this only saves typing.
+func ResolveRequest(typed string, a *v1.Approval) (string, error) {
+	typed = strings.ToLower(strings.TrimSpace(typed))
+	if _, err := hex.DecodeString(typed); err != nil || typed == "" {
+		return "", fmt.Errorf("request %q: not a request ID (hex digits, from kvo get approvals)", typed)
+	}
+	if len(typed) == IDLen {
+		return typed, nil
+	}
+	if len(typed) < MinPrefix {
+		return "", fmt.Errorf("request %q: too short, give at least %d digits of the REQUEST column", typed, MinPrefix)
+	}
+	if a.Status.Phase != v1.ApprovalPending && a.Status.Phase != "" {
+		return "", fmt.Errorf("approval %s: %w (%s)", a.Name, ErrAnswered, a.Status.Phase)
+	}
+	id := RequestID(a)
+	if !strings.HasPrefix(id, typed) {
+		return "", fmt.Errorf("approval %s: %w: no pending request starts with %s (it is %s now)", a.Name, ErrChanged, typed, ShortID(id))
+	}
+	return id, nil
 }
 
 // Answer errors.
@@ -233,8 +278,11 @@ func Answer(a *v1.Approval, approve bool, request, who, reason string, now time.
 	switch id := RequestID(a); {
 	case request == "" && approve:
 		return nil, fmt.Errorf("approval %s: %w (request %s: %s, for %s)", a.Name, ErrWhich, id, a.Spec.Summary, a.Spec.For)
-	case request != "" && request != id:
-		return nil, fmt.Errorf("approval %s: %w: it is request %s now (%s, for %s); read it again and answer that one", a.Name, ErrChanged, id, a.Spec.Summary, a.Spec.For)
+	case request != "" && len(request) != IDLen:
+		// Never a prefix: a short form can be made to match two different requests.
+		return nil, fmt.Errorf("approval %s: %w: the request is its full %d-digit ID, not %q", a.Name, ErrWhich, IDLen, request)
+	case request != "" && subtle.ConstantTimeCompare([]byte(strings.ToLower(request)), []byte(id)) != 1:
+		return nil, fmt.Errorf("approval %s: %w: it is request %s now (%s, for %s); read it again and answer that one", a.Name, ErrChanged, ShortID(id), a.Spec.Summary, a.Spec.For)
 	}
 	if !now.Before(a.Spec.ExpiresAt) {
 		return expire(a), fmt.Errorf("approval %s: %w", a.Name, ErrTooLate)

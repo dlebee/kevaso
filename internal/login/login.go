@@ -12,7 +12,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -49,12 +48,10 @@ func FetchCA(ctx context.Context, server, fingerprint string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	got, err := client.Fingerprint(pemBytes)
+	// What is checked is what is kept and trusted: the pinned certificate alone, re-encoded.
+	pemBytes, err = client.PinCA(pemBytes, fingerprint)
 	if err != nil {
 		return nil, err
-	}
-	if !strings.EqualFold(got, fingerprint) {
-		return nil, fmt.Errorf("the cluster's CA is %s, not the %s you were given: not trusting it", got, fingerprint)
 	}
 	// And the server really holds a certificate from that CA.
 	pinned, err := HTTPClient(pemBytes)
@@ -62,19 +59,19 @@ func FetchCA(ctx context.Context, server, fingerprint string) ([]byte, error) {
 		return nil, err
 	}
 	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(server, "/")+"/healthz", nil)
-	resp, err = pinned.Do(req)
+	check, err := pinned.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("server's certificate isn't from that CA: %w", err)
 	}
-	_ = resp.Body.Close()
+	_ = check.Body.Close()
 	return pemBytes, nil
 }
 
 // HTTPClient talks TLS 1.3 to a server whose certificate comes from caPEM.
 func HTTPClient(caPEM []byte) (*http.Client, error) {
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, errors.New("CA: no certificate in PEM")
+	pool, err := client.CertPool(caPEM)
+	if err != nil {
+		return nil, err
 	}
 	return &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}, ForceAttemptHTTP2: true,

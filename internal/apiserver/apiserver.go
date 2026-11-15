@@ -437,13 +437,17 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		writeErr(w, err)
 		return
 	}
+	sw := &secretWrite{value: value}
+	ctx = context.WithValue(ctx, secretWriteKey{}, sw)
 	o, err := fn(ctx, t, obj)
 	if err != nil {
 		clear(value)
 		writeErr(w, err)
 		return
 	}
-	if value != nil && o.Data != nil && !dryRun(ctx) {
+	if sw.sealed {
+		clear(value)
+	} else if value != nil && o.Data != nil && !dryRun(ctx) {
 		if o, err = s.storeSecretValue(ctx, o, value); err != nil {
 			writeErr(w, err)
 			return
@@ -619,6 +623,11 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 	data, err := s.admitBuiltin(ctx, t, old, next) // transition: a guard, after mutation policies
 	if err != nil {
 		return store.Object{}, err
+	}
+	if t.kind.Kind == "Secret" && !t.status {
+		if data, err = s.sealBeforeLoosening(ctx, old, data, cur.Revision, expected); err != nil {
+			return store.Object{}, err
+		}
 	}
 	return s.commitUpdate(ctx, t.key(), data, expected)
 }
