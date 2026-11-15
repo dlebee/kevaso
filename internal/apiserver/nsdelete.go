@@ -29,7 +29,7 @@ func (s *Server) checkDeleteNamespace(ctx context.Context, t target) error {
 		}
 		h := held{kind: kind}
 		for _, o := range objs {
-			h.names = append(h.names, o.Key.Name)
+			h.names = append(h.names, o.Name)
 		}
 		in = append(in, h)
 	}
