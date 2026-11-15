@@ -156,3 +156,51 @@ func TestTheBrokerHonoursWhatTheSecretAllowsNow(t *testing.T) {
 		t.Fatalf("the broker handed out a secret in a way it no longer allows: %+v", resp)
 	}
 }
+
+// A secret's type cannot be changed once it exists: an opaque secret that becomes a signing key
+// (or the other way round) would change how every grant of it is honoured.
+func TestASecretsTypeCannotChange(t *testing.T) {
+	c := newCluster(t)
+	_ = c.admin.Create(c.ctx, ns("web3"))
+	if err := c.admin.Create(c.ctx, secretObj("db-password", nil, "pw-1")); err != nil {
+		t.Fatal(err)
+	}
+	var cur v1.Secret
+	if err := c.admin.Get(c.ctx, "Secret", "web3", "db-password", &cur); err != nil {
+		t.Fatal(err)
+	}
+	cur.Spec.Value, cur.Spec.Type, cur.Spec.Generate = nil, v1.SecretEd25519, true
+	if err := c.admin.Update(c.ctx, &cur); status(err) != http.StatusUnprocessableEntity {
+		t.Fatalf("changing a secret's type: %v, want 422", err)
+	}
+}
+
+// Opening a silo to the outside needs create on services/expose-public, which an editor lacks,
+// also when the silo already exists: the only exemption is a write that leaves the exposure as it
+// was, so an editor can change anything else but not turn an unexposed silo into an exposed one.
+func TestAnEditorCannotExposeAnExistingSiloPublicly(t *testing.T) {
+	c := newCluster(t)
+	_ = c.admin.Create(c.ctx, ns("web3"))
+	s := silo("web", "web3")
+	if err := c.admin.Create(c.ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	c.bind(t, "eddie", "ClusterRole", "editor")
+	ed := c.as(t, "eddie")
+	var cur v1.Silo
+	if err := ed.Get(c.ctx, "Silo", "web3", "web", &cur); err != nil {
+		t.Fatal(err)
+	}
+	cur.Spec.Resources.Memory = "2Gi"
+	if err := ed.Update(c.ctx, &cur); err != nil {
+		t.Fatalf("the control: an editor changes something else about the silo: %v", err)
+	}
+	if err := ed.Get(c.ctx, "Silo", "web3", "web", &cur); err != nil {
+		t.Fatal(err)
+	}
+	cur.Spec.Ports = []v1.SiloPort{{Name: "web", Port: 8080}}
+	cur.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", HostPort: []string{v1.NetworkExternal}}}}
+	if err := ed.Update(c.ctx, &cur); status(err) != http.StatusForbidden {
+		t.Fatalf("an editor opened an existing silo to the outside: %v, want 403", err)
+	}
+}
