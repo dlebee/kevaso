@@ -9,7 +9,7 @@ import (
 	"kevaso.com/core/sdk/kri"
 )
 
-// For phase/metal (this file's start path is that branch's): proven here, skipped until fixed.
+// Found by the restart audit; fixed in the runtime (readState, created).
 
 // kevasod killed during Create, after silo.json was saved and before the unit was written (in
 // qemu-img convert, say: a restart's KillMode kills it): the next Create sees the state and
@@ -36,7 +36,6 @@ func TestACreateKilledHalfwayIsFinishedNextTime(t *testing.T) {
 // it as no silo at all, the agent called Create, and Create removed the existing root LV and
 // imaged a fresh one over it. A state file that's there but unreadable must be an error.
 func TestAnUnreadableStateIsNotAnAbsentSilo(t *testing.T) {
-	t.Skip("phase/metal: state() treats a silo.json that doesn't parse as absent (runtime.go state, Status)")
 	h := newFakeHost()
 	r := newRuntime(t, h)
 	sp := spec("web")

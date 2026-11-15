@@ -137,6 +137,25 @@ func (r *Runtime) state(id kri.ID) (State, bool) {
 	return s, true
 }
 
+// readState is a silo's state: absent (no file), or the error of a file that is there but can't be
+// read or parsed. Never "absent" for a file that exists: Create would image a new root disk over
+// the old one.
+func (r *Runtime) readState(id kri.ID) (State, bool, error) {
+	p := NamesFor(id).Dir + "/silo.json"
+	b, err := r.Host.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return State{}, false, nil
+	}
+	if err != nil {
+		return State{}, false, fmt.Errorf("%s: %w (not touching the silo)", p, err)
+	}
+	var s State
+	if err := json.Unmarshal(b, &s); err != nil || s.ID != id {
+		return State{}, false, fmt.Errorf("%s is unreadable (%v): not touching the silo, its disk and volumes are kept", p, err)
+	}
+	return s, true, nil
+}
+
 func (r *Runtime) saveState(s State) error {
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -147,8 +166,8 @@ func (r *Runtime) saveState(s State) error {
 
 // Create implements kri.Runtime: disk from the image, cloud-init seed, TAP, VMM unit. Not started.
 func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
-	if _, ok := r.state(spec.ID); ok {
-		return nil
+	if done, err := r.created(spec.ID); done || err != nil {
+		return err
 	}
 	img, err := r.image(ctx, spec.Image) // before the lock: a first fetch takes a while
 	if err != nil {
@@ -156,9 +175,10 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.state(spec.ID); ok {
-		return nil
+	if done, err := r.created(spec.ID); done || err != nil {
+		return err
 	}
+
 	n := NamesFor(spec.ID)
 	IPMu.Lock() // container silos share the bridge and its addresses: until the state is saved
 	ipLocked := true
@@ -226,6 +246,19 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		}
 	}
 	return nil
+}
+
+// created says whether a silo is there. A state that can't be read is an error.
+func (r *Runtime) created(id kri.ID) (bool, error) {
+	st, ok, err := r.readState(id)
+	switch {
+	case err != nil:
+		return false, err
+	case !ok:
+		return false, nil
+	}
+	_ = st
+	return true, nil
 }
 
 func newHostKey() (pub, privPEM string, err error) {
@@ -418,7 +451,10 @@ func RootFilePlan(img, tmp, file string, size int64) [][]string {
 
 // Status implements kri.Runtime.
 func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
-	st, ok := r.state(id)
+	st, ok, err := r.readState(id)
+	if err != nil {
+		return kri.Status{}, err
+	}
 	if !ok {
 		return kri.Status{State: kri.Absent}, nil
 	}
