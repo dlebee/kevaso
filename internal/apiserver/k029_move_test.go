@@ -109,8 +109,9 @@ func TestK029AMoveHoldsItsPortAndARefusedMoveChangesNothing(t *testing.T) {
 	mk := func(name, host string) *v1.Silo {
 		s := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "d"},
 			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-				Ports:   []v1.SiloPort{{Name: "http", Port: 80}},
-				Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", HostPort: []string{v1.NetworkInternal}}}}}}
+				Availability: v1.Availability{OnHostLoss: v1.OnHostLossRecreate}, // a container moves only as a fresh copy
+				Ports:        []v1.SiloPort{{Name: "http", Port: 80}},
+				Service:      &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", HostPort: []string{v1.NetworkInternal}}}}}}
 		must(c.Create(ctx, s))
 		if host != "" {
 			s.Status.Host, s.Status.Phase = host, "Running"
@@ -121,7 +122,7 @@ func TestK029AMoveHoldsItsPortAndARefusedMoveChangesNothing(t *testing.T) {
 	_, d, e := mk("c", "hv2"), mk("d", ""), mk("e", "hv1")
 	move := func(name, to string) error {
 		var out v1.Silo
-		return c.Call(ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/d/silos/"+name+"/move", moves.Request{To: to}, &out)
+		return c.Call(ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/d/silos/"+name+"/move", moves.Request{To: to, Recreate: true}, &out)
 	}
 	must(move("c", "hv3"))
 	if held, err := siloctl.ClaimPorts(ctx, &claims.Claims{Store: st}, d, v1.SiloStatus{Host: "hv3"}); err != nil || held == nil || len(held.HostPorts) == 0 {

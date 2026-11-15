@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,6 +54,11 @@ func Split(svc *v1.Service, silos []*v1.Silo) (routed, held []v1.ServiceEndpoint
 		if len(ep.Ports) == 0 {
 			continue
 		}
+		if why := unpublished(svc, s); why != "" {
+			ep.Reason = why
+			held = append(held, ep)
+			continue
+		}
 		if r := routing.Endpoint(svc, s); r.Routed {
 			routed = append(routed, ep)
 		} else {
@@ -63,6 +69,37 @@ func Split(svc *v1.Service, silos []*v1.Silo) (routed, held []v1.ServiceEndpoint
 	v1.SortEndpoints(routed)
 	v1.SortEndpoints(held)
 	return routed, held
+}
+
+// unpublished says why a LoadBalancer Service may not publish s's ports ("" when it may): each of
+// its ports must target one s opens itself (spec.service.ports) and not only on a lease (K-061).
+// Else anyone who may create a Service would open outside a port the silo keeps closed, or opens
+// only on an approved lease. A ClusterIP Service stays on the mesh: not judged here.
+func unpublished(svc *v1.Service, s *v1.Silo) string {
+	if svc.Spec.Type != v1.ServiceLoadBalancer {
+		return ""
+	}
+	var why []string
+	for _, p := range svc.Spec.Ports {
+		if v1.TargetPort(p, s) == 0 {
+			continue // not served by this silo at all
+		}
+		name := p.TargetPort
+		if name == "" {
+			name = p.Name
+		}
+		op, ok := s.Spec.OpenPort(name)
+		switch {
+		case !ok:
+			why = append(why, fmt.Sprintf("port %s isn't one silo %s opens (open it in its spec.service.ports)", name, s.Name))
+		case op.Lease != nil:
+			why = append(why, fmt.Sprintf("port %s of silo %s opens outside only on a lease (kvo open; a LoadBalancer Service can't publish it)", name, s.Name))
+		}
+	}
+	if len(why) == 0 {
+		return ""
+	}
+	return "a LoadBalancer Service publishes only ports the silo opens itself, not on a lease: " + strings.Join(why, "; ") + "; or leave that port out of Service " + svc.Name
 }
 
 // ClusterIP keeps svc's virtual IP, or gives it the lowest free one. Pure.

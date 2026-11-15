@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 )
 
@@ -128,4 +129,40 @@ func (c *Contacts) ForgetStartClaim(silo string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.claims, silo)
+}
+
+// ReasonWorkerHeld is the reason of the Ready condition a heartbeat sends while its worker is held
+// (§0.7: it judged its control plane older than what it saw, or can't judge it): this beat is not
+// its fence's contact (K-108). The worker says it in the beat itself, so the control plane counts
+// exactly the beats the worker didn't, and a worker that never says it is counted as before.
+const ReasonWorkerHeld = "WorkerHeld"
+
+// HeldBeat reports whether a heartbeat's Host status, as sent, says its worker is held (K-108):
+// its Ready condition's reason is ReasonWorkerHeld.
+func HeldBeat(st v1.HostStatus) bool {
+	r := meta.FindCondition(st.Conditions, "Ready")
+	return r != nil && r.Reason == ReasonWorkerHeld
+}
+
+// Beat makes next, a heartbeat's Host status over stored, what the control plane keeps, and says
+// whether it is a contact. A held worker's (HeldBeat) is none (K-108): its stamp and its Ready
+// condition stay as stored, so the host is counted silent and marked lost as one out of contact,
+// as its fence counts it. Any other is a contact, stamped by HeartbeatStamp.
+func Beat(stored v1.HostStatus, next *v1.HostStatus, now time.Time) bool {
+	if !HeldBeat(*next) {
+		next.LastHeartbeat = HeartbeatStamp(stored.LastHeartbeat, now)
+		return true
+	}
+	next.LastHeartbeat = stored.LastHeartbeat
+	conds := make([]meta.Condition, 0, len(next.Conditions))
+	for _, c := range next.Conditions {
+		if c.Type != "Ready" {
+			conds = append(conds, c)
+		}
+	}
+	if r := meta.FindCondition(stored.Conditions, "Ready"); r != nil {
+		conds = append(conds, *r)
+	}
+	next.Conditions = conds
+	return false
 }

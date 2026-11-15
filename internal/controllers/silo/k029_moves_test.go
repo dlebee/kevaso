@@ -77,6 +77,7 @@ func (x *k029) must(err error) {
 func (x *k029) silo(name, host string, hostPort bool) *v1.Silo {
 	s := newSilo(name)
 	s.Spec.Runtime, s.Spec.Container = "docker", &v1.ContainerSource{Image: "app"}
+	s.Spec.Availability.OnHostLoss = v1.OnHostLossRecreate // a container moves only as a fresh copy
 	s.Spec.Resources = v1.Resources{CPU: 1, Memory: "1Gi"}
 	s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 80}}
 	if hostPort {
@@ -120,11 +121,11 @@ func (x *k029) get(name string) *v1.Silo {
 	return &s
 }
 
-// move is kvo move: the API server's move handler, as a person calls it.
+// move is kvo move --recreate (a container): the API server's move handler, as a person calls it.
 func (x *k029) move(name, to string) {
 	x.t.Helper()
 	var s v1.Silo
-	x.must(x.c.Call(x.ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/dev/silos/"+name+"/move", moves.Request{To: to}, &s))
+	x.must(x.c.Call(x.ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/dev/silos/"+name+"/move", moves.Request{To: to, Recreate: true}, &s))
 }
 
 // unpin lets a silo pinned by its selector be moved elsewhere (a spec change the scheduler sees).

@@ -602,8 +602,22 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		// (the worker on a system node writes as its host, InProcessAs). Only a server with no
 		// authentication at all (tests) has no identities to tell the source apart, and takes a
 		// let-go that unmounted the source's volumes from anyone.
+		//
+		// K-119: the one other end is the silo controller's (Component) of a handoff whose source
+		// is lost or gone and armed its fence for the silo: checked here as far as the store shows
+		// it (siloctl.EndsLostHandoff); the silence it waited for is the leader's count.
 		if err := moves.Replaces(old.(*v1.Silo).Status, obj.(*v1.Silo).Status); err != nil && (s.auth != nil || !letGo(old.(*v1.Silo).Status, obj.(*v1.Silo).Status)) {
-			return store.Object{}, errf(http.StatusConflict, "Conflict", "%v", err)
+			if !ok || id != Component || !siloctl.EndsLostHandoff(old.(*v1.Silo), obj.(*v1.Silo).Status, s.hostGone(ctx, old.(*v1.Silo).Status.MovingFrom)) {
+				return store.Object{}, errf(http.StatusConflict, "Conflict", "%v", err)
+			}
+		}
+	}
+	if id, ok := IdentityFrom(ctx); s.auth != nil && (!ok || id.Type != "host" || id.Role != "worker") && t.kind.Kind == "Silo" && t.status {
+		// K-082: the start claim and the armed fence are the silo's own host's (moves.HostWrite
+		// judges it): from anyone else, they are kept as stored. (A server with no authentication,
+		// tests only, can't tell the host's writes apart.)
+		if kept := moves.KeepHostConditions(old.(*v1.Silo).Status, &obj.(*v1.Silo).Status); len(kept) > 0 {
+			warn(ctx, fmt.Sprintf("%s: conditions %s are written only by the silo's own host (%s): kept as stored", t.key(), strings.Join(kept, ", "), old.(*v1.Silo).Status.Host))
 		}
 	}
 	if t.kind.Kind == "Silo" && t.status && !t.planned {
@@ -726,6 +740,10 @@ func letGo(old, next v1.SiloStatus) bool {
 func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Request, t target) {
 	wantUID, wantRV := r.URL.Query().Get("uid"), r.URL.Query().Get("resourceVersion")
 	if err := s.checkDeleteDefinition(ctx, t); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := s.checkDeleteNamespace(ctx, t); err != nil {
 		writeErr(w, err)
 		return
 	}

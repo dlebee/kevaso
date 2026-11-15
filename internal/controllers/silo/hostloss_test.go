@@ -1,6 +1,7 @@
 package silo_test
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -123,6 +124,14 @@ func TestHostLossTruthTable(t *testing.T) {
 					t.Fatal("a move off a lost host without --confirm-fenced was accepted")
 				}
 				plan, err := moves.PlanMove(s, moves.Of(s, env.Classes), req, true, false, "")
+				if policy != v1.OnHostLossRecreate {
+					// A container never moves with its data (its own files aren't kept): only
+					// onHostLoss: Recreate and --recreate move it.
+					if !errors.Is(err, moves.ErrNotMovable) {
+						t.Fatalf("a plain confirmed move of a container: %v, want ErrNotMovable", err)
+					}
+					return
+				}
 				if err != nil {
 					t.Fatal(err)
 				}

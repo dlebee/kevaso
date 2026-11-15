@@ -165,9 +165,9 @@ subjects: [{ kind: ServiceAccount, name: deployer }]
 	if _, errs, code := run(c.ctx, kvoCmd, "", "get", "silos", "-n", "other"); code == 0 || !strings.Contains(errs, "Forbidden") {
 		t.Errorf("SA in another namespace: %d %s", code, errs)
 	}
-	// editor includes serviceaccounts/token (as in Kubernetes), only in its namespace.
-	if _, errs, code := run(c.ctx, kvoCmd, "", "create", "token", "deployer", "-n", "payments"); code != 0 {
-		t.Errorf("editor minting a token in its namespace: %s", errs)
+	// editor does not include serviceaccounts/token (K-077: namespace admins only).
+	if _, errs, code := run(c.ctx, kvoCmd, "", "create", "token", "deployer", "-n", "payments"); code == 0 || !strings.Contains(errs, "Forbidden") {
+		t.Errorf("editor minting a token in its namespace: %d %s, want Forbidden", code, errs)
 	}
 
 	// With --server and KVO_CA_FILE instead of a context.

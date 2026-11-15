@@ -57,7 +57,8 @@ var (
 )
 
 // BuiltinRoles are the roles of design §9.3: cluster-admin (everything), admin (a namespace, its
-// roles included, and exposing silos publicly), editor (workloads, exec; not public exposure),
+// roles included, service-account tokens, and exposing silos publicly), editor (workloads, exec;
+// not public exposure, not service-account tokens),
 // viewer (read workloads), runner (runs).
 func BuiltinRoles() []*v1.ClusterRole {
 	mk := func(name string, rules ...v1.PolicyRule) *v1.ClusterRole {
@@ -70,9 +71,11 @@ func BuiltinRoles() []*v1.ClusterRole {
 			v1.PolicyRule{Verbs: write, Resources: slices.Concat(workloads, []string{"roles", "rolebindings"})},
 			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "silos/move", "serviceaccounts/token", "services/expose-public", "ingresses/publish-public"}},
 			siloShell, siloFiles, secretsAdmin, approvalsAdmin, exposureAdmin, ipsAdmin),
+		// No serviceaccounts/token for editors (K-077): a token holds whatever its account holds,
+		// and an admin may have bound that account wider than the editor's own role.
 		mk("editor",
 			v1.PolicyRule{Verbs: write, Resources: workloads},
-			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "silos/move", "serviceaccounts/token"}},
+			v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"silos/exec", "silos/move"}},
 			siloShell, siloFiles, secretsEditor, approvalsRead, exposureEditor, ipsEditor),
 		mk("viewer", v1.PolicyRule{Verbs: read, Resources: workloads}, secretsViewer, approvalsRead, ipsViewer),
 		mk("runner", v1.PolicyRule{Verbs: []string{"get", "list", "watch", "create"}, Resources: []string{"runs"}}),

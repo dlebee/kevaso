@@ -70,6 +70,7 @@ func TestMoves(t *testing.T) {
 		return s
 	}
 	web := containerSilo("web", "web3", "docker")
+	web.Spec.Availability.OnHostLoss = v1.OnHostLossRecreate // a container moves only as a fresh copy
 	place(web, "hv1")
 	pinned := place(silo("pinned", "web3"), "hv1")
 	place(rec, "hv1") // no volume: Recreate is fine
@@ -89,7 +90,11 @@ func TestMoves(t *testing.T) {
 	if _, err := mv(ed, "pinned", moves.Request{To: "hv3"}); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "disk root uses local on hv1") {
 		t.Fatalf("pinned silo: %v", err)
 	}
-	if _, err := mv(ed, "web", moves.Request{To: "hv3"}); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "hv3 can't take it") {
+	// A plain move of a container is refused as a microVM's is: its own files are never kept.
+	if _, err := mv(ed, "web", moves.Request{To: "hv2"}); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "a fresh copy needs onHostLoss: Recreate and --recreate") {
+		t.Fatalf("a plain move of a container: %v", err)
+	}
+	if _, err := mv(ed, "web", moves.Request{To: "hv3", Recreate: true}); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "hv3 can't take it") {
 		t.Fatalf("target without docker: %v", err)
 	}
 	if _, err := mv(ed, "web", moves.Request{To: "nowhere"}); status(err) != http.StatusUnprocessableEntity {
@@ -108,11 +113,11 @@ func TestMoves(t *testing.T) {
 	}
 
 	// The move: placed on hv2, hv1 lets go first.
-	moved, err := mv(ed, "web", moves.Request{To: "hv2"})
+	moved, err := mv(ed, "web", moves.Request{To: "hv2", Recreate: true})
 	if err != nil || moved.Status.Host != "hv2" || moved.Status.MovingFrom != "hv1" || !meta.IsTrue(moved.Status.Conditions, "Moved") {
 		t.Fatalf("move: %+v %v", moved.Status, err)
 	}
-	if _, err := mv(ed, "web", moves.Request{To: "hv1"}); status(err) != http.StatusConflict {
+	if _, err := mv(ed, "web", moves.Request{To: "hv1", Recreate: true}); status(err) != http.StatusConflict {
 		t.Fatalf("a second move during the first: %v", err)
 	}
 	// hv2 (the new host) can't clear the handoff; hv1 can, and nothing else.
@@ -198,10 +203,10 @@ func TestMoves(t *testing.T) {
 	if err := c.admin.UpdateStatus(c.ctx, &h); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mv(ed, "web", moves.Request{To: "hv1"}); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "--confirm-fenced") {
+	if _, err := mv(ed, "web", moves.Request{To: "hv1", Recreate: true}); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "--confirm-fenced") {
 		t.Fatalf("from a lost host, unconfirmed: %v", err)
 	}
-	back, err := mv(ed, "web", moves.Request{To: "hv1", ConfirmFenced: true})
+	back, err := mv(ed, "web", moves.Request{To: "hv1", ConfirmFenced: true, Recreate: true})
 	if err != nil || back.Status.Host != "hv1" || back.Status.MovingFrom != "" {
 		t.Fatalf("confirmed: %+v %v", back.Status, err)
 	}
