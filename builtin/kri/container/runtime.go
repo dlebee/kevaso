@@ -803,6 +803,25 @@ func (r *Runtime) List(context.Context) ([]kri.ID, error) {
 	return ids, nil
 }
 
+// Unreadable names the state files List skips because they can't be read or parsed (K-105): the
+// silo behind one may still run (Status, Kill and Stop find it by its name), so the agent lists
+// them on the Host. Which engine's such a file is can't be told: every engine's runtime names it.
+func (r *Runtime) Unreadable(context.Context) []string {
+	paths, _ := r.Host.Glob(Dir + "/*/state.json")
+	var out []string
+	for _, p := range paths {
+		b, err := r.Host.ReadFile(p)
+		var s state
+		if err == nil {
+			err = json.Unmarshal(b, &s)
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // Exec implements kri.Runtime: `docker exec -i`, stdin, stdout, stderr and the exit code passed
 // through; with a terminal, `docker exec -it` on a pseudo-terminal of the agent's own, which the
 // engine's CLI resizes in the container. Killing the CLI doesn't stop the command in the container,

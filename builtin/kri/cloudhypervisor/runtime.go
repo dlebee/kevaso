@@ -694,6 +694,25 @@ func (r *Runtime) List(context.Context) ([]kri.ID, error) {
 	return ids, nil
 }
 
+// Unreadable names the state files List skips because they can't be read or parsed (K-105): the
+// VM behind one may still run (Status and Kill find its VMM by its unit), so the agent lists them
+// on the Host.
+func (r *Runtime) Unreadable(context.Context) []string {
+	paths, _ := r.Host.Glob(SilosDir + "/*/silo.json")
+	var out []string
+	for _, p := range paths {
+		b, err := r.Host.ReadFile(p)
+		var s State
+		if err == nil {
+			err = json.Unmarshal(b, &s)
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // Exec implements kri.Runtime: SSH to the guest over the bridge as root with the exec key (only
 // this host holds it), with the guest's host key pinned, then argv. It waits for the guest's SSH
 // to come up (first boot). No sudo: see UserData for who can still see a command line.

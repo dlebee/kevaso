@@ -17,6 +17,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/fence"
+	"kevaso.com/core/sdk/kri"
 )
 
 // ConditionKeptSilos is the Host condition that lists the silos this host keeps although the
@@ -420,6 +421,7 @@ func (a *Agent) reportKept(ctx context.Context, said string) string {
 		}
 		return true
 	})
+	kept = append(kept, a.unreadableKept(ctx)...) // K-105: what may run unlisted is named too
 	sort.Strings(kept)
 	now := strings.Join(kept, ", ")
 	if now == said {
@@ -467,6 +469,14 @@ func (a *Agent) pruneKept(ctx context.Context) {
 	}
 	a.keptNoted.Range(func(k, v any) bool {
 		c, _ := v.(keptCopy)
+		if rt := a.Runtimes[c.runtime]; c.unlisted && rt != nil {
+			// Not in its List (K-105): asked by name; only a clean Absent forgets it.
+			if st, err := rt.Status(ctx, c.id); err == nil && st.State == kri.Absent {
+				a.keptNoted.Delete(k)
+				a.log("%s is no longer on this host: no longer listed as kept", c.name)
+			}
+			return true
+		}
 		if uids, answered := held[c.runtime]; answered && !uids[k.(string)] {
 			a.keptNoted.Delete(k)
 			a.log("%s is no longer on this host: no longer listed as kept", c.name)

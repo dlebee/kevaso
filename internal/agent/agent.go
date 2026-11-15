@@ -159,6 +159,9 @@ type Agent struct {
 	// missing from the API (a control plane restored from an older backup, a re-made cluster) is
 	// kept, running, with its data, and listed (kept, logged once).
 	seenDeleted sync.Map // silo uid → the history (Watermark.history) its delete was seen under
+	// seenIDs: silo uid → kri.ID, the seen deletes of silos this host may hold (mayHaveHere): a
+	// copy its runtime doesn't list is looked for by name (stopUnlisted).
+	seenIDs sync.Map
 	// abandoned: silo uid → struct{}: a start ended because the store didn't know the silo, whose
 	// stop failed: tried again until it stops (stopAbandoned).
 	abandoned     sync.Map
@@ -1392,6 +1395,7 @@ func (a *Agent) releaseMove(ctx context.Context, s *v1.Silo) error {
 // removeEverywhere deletes the silo from every runtime that has it. For a silo still in the API
 // but no longer ours (or being deleted), only the runtime copy is removed.
 func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) error {
+	listed := map[string]bool{} // the UIDs of this name some runtime lists
 	for rtName, rt := range a.Runtimes {
 		ids, err := rt.List(ctx)
 		if err != nil {
@@ -1401,6 +1405,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			if id.Namespace != k.Namespace || id.Name != k.Name {
 				continue
 			}
+			listed[id.UID] = true
 			if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {
 				a.keptNoted.Delete(id.UID) // known and placed here (again): no longer a kept copy
 				continue
@@ -1482,14 +1487,19 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			a.forgetDelete(id.UID) // nothing of it left here
 		}
 	}
-	return nil
+	return a.stopUnlisted(ctx, k, s, listed)
 }
 
 const whyHandoff = "handed off from here"
 
 // keptCopy is a copy kept here that the control plane doesn't know (keptNoted): the runtime that
 // holds it (its key in Runtimes), and how it is listed.
-type keptCopy struct{ runtime, name string }
+type keptCopy struct {
+	runtime, name string
+	// unlisted: a copy its runtime doesn't list (its state can't be read, K-105), found by id.
+	unlisted bool
+	id       kri.ID
+}
 
 // keptName is how a kept copy is listed on the Host (KeptSilos): its name, the start of its UID
 // (two kept copies of one name, a silo deleted and made again, are told apart), and what.
