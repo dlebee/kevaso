@@ -38,14 +38,15 @@ type mutation struct {
 }
 
 type result struct {
-	m       mutation
-	status  string // killed | SURVIVED | invalid
-	failed  string // the first failing test, or the compile error
-	line    int
-	elapsed string
+	m      mutation
+	status string // killed | SURVIVED | invalid
+	failed string // the first failing test, or the compile error
+	line   int
 }
 
-func main() {
+func main() { os.Exit(run()) }
+
+func run() int {
 	ids := flag.String("id", "", "comma-separated mutation ids (default: all)")
 	jobs := flag.Int("j", 2, "mutations run at once")
 	file := flag.String("f", "hack/mutate/mutations.json", "the mutations")
@@ -54,11 +55,11 @@ func main() {
 	flag.Parse()
 	raw, err := os.ReadFile(*file)
 	if err != nil {
-		fatal(err)
+		return fatal(err)
 	}
 	var all []mutation
 	if err := json.Unmarshal(raw, &all); err != nil {
-		fatal(err)
+		return fatal(err)
 	}
 	want := map[string]bool{}
 	for _, id := range strings.Split(*ids, ",") {
@@ -69,9 +70,9 @@ func main() {
 	root, _ := os.Getwd()
 	tmp, err := os.MkdirTemp("", "kevaso-mutate-")
 	if err != nil {
-		fatal(err)
+		return fatal(err)
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 
 	var run []mutation
 	for _, m := range all {
@@ -105,8 +106,9 @@ func main() {
 	}
 	fmt.Printf("\n%d mutations, %d killed, %d not\n", len(results), len(results)-bad, bad)
 	if bad > 0 {
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func try(root, tmp string, m mutation, runPat, only string) result {
@@ -192,7 +194,7 @@ func verdict(b []byte) (string, string) {
 	return "SURVIVED", ""
 }
 
-func fatal(err error) {
+func fatal(err error) int {
 	fmt.Fprintln(os.Stderr, "mutate:", err)
-	os.Exit(2)
+	return 2
 }

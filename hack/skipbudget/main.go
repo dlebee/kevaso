@@ -18,33 +18,35 @@ import (
 	"kevaso.com/core/hack/skipbudget/budget"
 )
 
-func main() {
+func main() { os.Exit(run()) }
+
+func run() int {
 	if len(os.Args) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: skipbudget EXPECTED_FILE < go-test-json")
-		os.Exit(2)
+		return 2
 	}
 	f, err := os.Open(os.Args[1])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "skipbudget:", err)
-		os.Exit(2)
+		return 2
 	}
 	defer func() { _ = f.Close() }() // read-only
 	want, err := budget.Expected(f)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "skipbudget:", err)
-		os.Exit(2)
+		return 2
 	}
 	// Pass the stream through, so the job's log still has the test output.
 	problems := budget.Check(io.TeeReader(os.Stdin, os.Stdout), want)
 	if len(problems) == 0 {
 		fmt.Printf("skipbudget: all %d expected tests passed\n", len(want))
-		return
+		return 0
 	}
 	sort.Strings(problems)
 	w := bufio.NewWriter(os.Stderr)
 	for _, p := range problems {
-		fmt.Fprintln(w, "skipbudget:", p)
+		_, _ = fmt.Fprintln(w, "skipbudget:", p)
 	}
 	_ = w.Flush()
-	os.Exit(1)
+	return 1
 }

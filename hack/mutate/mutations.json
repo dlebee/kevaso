@@ -1518,5 +1518,199 @@
    "./test/snippets"
   ],
   "protects": "a destructive command runs only on the intended target"
+ },
+ {
+  "id": "G-160",
+  "guard": "endpoint: a request must come from the silo's own port (Bound)",
+  "file": "internal/agent/endpoint.go",
+  "find": "|| port != cloudhypervisor.NamesFor(id).Tap {",
+  "replace": "|| (port != cloudhypervisor.NamesFor(id).Tap && false) {",
+  "mutation": "port not compared",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-161",
+  "guard": "endpoint: every request needs the Kevaso header",
+  "file": "internal/agent/endpoint.go",
+  "find": "case r.Header.Get(v1.EndpointHeader) != \"1\":",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-162",
+  "guard": "endpoint: no requests from a browser",
+  "file": "internal/agent/endpoint.go",
+  "find": "case len(r.Header.Values(\"Origin\")) > 0 || hasSecFetch(r.Header):",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-163",
+  "guard": "endpoint: the Host header must be the endpoint's",
+  "file": "internal/agent/endpoint.go",
+  "find": "case !slices.Contains(hosts, r.Host):",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-164",
+  "guard": "endpoint: names are validated",
+  "file": "internal/agent/endpoint.go",
+  "find": "if !endpointName.MatchString(name) {\n\t\tendpointFail(w, http.StatusBadRequest, fmt.Sprintf(\"name",
+  "replace": "if false {\n\t\tendpointFail(w, http.StatusBadRequest, fmt.Sprintf(\"name",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-165",
+  "guard": "endpoint: no OPTIONS (no CORS)",
+  "file": "internal/agent/endpoint.go",
+  "find": "case r.Method == http.MethodOptions:",
+  "replace": "case false:",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-166",
+  "guard": "endpoint: a silo's requests in flight are limited",
+  "file": "internal/agent/endpoint.go",
+  "find": "if e.inFlight[uid] >= endpointMaxInFlight {",
+  "replace": "if false {",
+  "mutation": "limit removed",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-167",
+  "guard": "apiserver: a secret's value is taken out of the object before it is stored",
+  "file": "internal/apiserver/secrets.go",
+  "find": "\tvalue := sec.Spec.Value\n\tsec.Spec.Value = nil",
+  "replace": "\tvalue := sec.Spec.Value",
+  "mutation": "value stored in the clear",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-168",
+  "guard": "apiserver: a secret's type cannot change",
+  "file": "internal/apiserver/secrets.go",
+  "find": "if old != nil && old.Spec.Type != sec.Spec.Type {",
+  "replace": "if false && old != nil && old.Spec.Type != sec.Spec.Type {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-169",
+  "guard": "apiserver: a person needs use on every secret a grant names",
+  "file": "internal/apiserver/secrets.go",
+  "find": "\t\tif p != nil {\n\t\t\ta := rbac.Attributes{User: user, Groups: GroupsFrom(ctx), Verb: v1.VerbUse",
+  "replace": "\t\tif false && p != nil {\n\t\t\ta := rbac.Attributes{User: user, Groups: GroupsFrom(ctx), Verb: v1.VerbUse",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-170",
+  "guard": "apiserver: a new grant is checked for a person",
+  "file": "internal/apiserver/secrets.go",
+  "find": "if _, ok := person(ctx); !ok || s.auth == nil {\n\t\treturn nil\n\t}\n\tfor _, g := range grants {",
+  "replace": "if _, ok := person(ctx); !ok || s.auth == nil || true {\n\t\treturn nil\n\t}\n\tfor _, g := range grants {",
+  "mutation": "check removed",
+  "packages": [
+   "./internal/apiserver",
+   "./test/integration"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-180",
+  "guard": "worker: the agent's local endpoint takes the loaded rules' bindings (K-079)",
+  "file": "internal/worker/worker.go",
+  "find": "Bound: bindings.Port,",
+  "replace": "",
+  "mutation": "Bound not set on the agent",
+  "packages": [
+   "./internal/worker",
+   "./internal/agent"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-181",
+  "guard": "worker: the network loop is given the shared bindings (K-079)",
+  "file": "internal/worker/worker.go",
+  "find": "StateFile: stateFile, Bindings: bindings})",
+  "replace": "StateFile: stateFile})",
+  "mutation": "bindings not shared",
+  "packages": [
+   "./internal/worker",
+   "./internal/agent"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-182",
+  "guard": "network: loaded rules' bindings are published after a load (K-079)",
+  "file": "internal/worker/network.go",
+  "find": "loaded.set(kni.Bindings(view.Local))",
+  "replace": "_ = loaded",
+  "mutation": "bindings never set",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "a secret reaches only the silo, host and delivery it was granted for"
+ },
+ {
+  "id": "G-183",
+  "guard": "agent fence loop: only the cached silo of that uid is killed",
+  "file": "internal/agent/agent.go",
+  "find": "if s.UID != id.UID || !a.mustStop(s) {",
+  "replace": "if !a.mustStop(s) {",
+  "mutation": "uid not compared",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "a recreated silo of the same name is not killed for its predecessor"
  }
 ]
