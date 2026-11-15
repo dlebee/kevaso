@@ -124,3 +124,29 @@ func TestDNSListeners(t *testing.T) {
 		t.Fatalf("external asked, none: %v", got)
 	}
 }
+
+// A listener is only ever on one specific address: an unspecified one ("::", "0.0.0.0") would
+// answer on every address the host has, its global IPv6 one included, as whoever that network's
+// asker is. Host addresses can come from a plugin (status.provider.privateAddress), so none is
+// trusted to be specific. The mesh's address is IPv4 (the mesh is).
+func TestDNSListenersAreOnSpecificAddressesOnly(t *testing.T) {
+	for _, bad := range []string{"::", "0.0.0.0", "[::]", "ff02::1", "224.0.0.1", "not-an-ip", "10.0.0.5:53"} {
+		h := &v1.Host{Spec: v1.HostSpec{InternalIP: bad, ExternalIP: bad, Network: v1.HostNetwork{DNS: []string{v1.NetworkInternal, v1.NetworkExternal}}}}
+		h.Status.Network.MeshIP = bad
+		got := DNSListeners(h)
+		if len(got) != 1 {
+			t.Errorf("address %q: listeners %v, want the gateway only", bad, got)
+		}
+	}
+	h := &v1.Host{}
+	h.Status.Provider = &v1.HostProvider{PrivateAddress: "::"}
+	h.Spec.Network.DNS = []string{v1.NetworkInternal}
+	if got := DNSListeners(h); len(got) != 1 {
+		t.Errorf("a plugin's unspecified private address: %v", got)
+	}
+	h = &v1.Host{}
+	h.Status.Network.MeshIP = "fd00::1"
+	if got := DNSListeners(h); len(got) != 1 {
+		t.Errorf("an IPv6 mesh address: %v", got)
+	}
+}
