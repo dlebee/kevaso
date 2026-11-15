@@ -18,6 +18,7 @@ import (
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/plugins"
+	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/sdk/kplugin"
 )
 
@@ -355,16 +356,21 @@ func (c *Balancers) done(ctx context.Context, x *v1.IP, st *holderState, plugin,
 		if st.why == "-" {
 			return nil
 		}
-		return updateStatus(ctx, c.Client, st.silo, func(ss *v1.SiloStatus) {
+		return updateSiloStatus(ctx, c.Client, st.silo, func(cur *v1.Silo) {
+			ss := &cur.Status
 			cond := meta.Condition{Type: "LoadBalancer", Status: meta.ConditionTrue, Reason: "Ready",
 				Message: fmt.Sprintf("%s at %s (IP %s)", class, addr, x.Name), ObservedGeneration: st.silo.Generation}
 			if st.why != "" {
 				cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, st.reason, st.why
 			} else {
-				ss.Service.LoadBalancerIP, ss.Service.SourceRanges, ss.Service.Announce = x.Status.Address, ranges, announce
-				if res := addr; !strings.HasPrefix(res, "no address") {
-					ss.Service.LoadBalancerIP = res
+				in := x.Status.Address
+				if !strings.HasPrefix(addr, "no address") {
+					in = addr
 				}
+				// The ports' addresses with it, in the same write: the scheduler's next write
+				// would say them too, but a reader in between saw an address with no port on it.
+				scheduler.SetLoadBalancerIP(cur, &ss.Service, in)
+				ss.Service.SourceRanges, ss.Service.Announce = ranges, announce
 				if len(st.unenforced) > 0 {
 					cond.Status, cond.Reason = meta.ConditionFalse, "SourcesNotEnforced"
 					cond.Message = fmt.Sprintf("%s at %s without %s: class %s can't limit client sources (allowFrom), and its hosts only see the load balancer's; use an announced class or hostPort, or drop allowFrom",
@@ -422,9 +428,10 @@ func (c *Balancers) tellWaiting(ctx context.Context, x *v1.IP) {
 			if so, ok := c.Silos.Get(x.Namespace, strings.TrimPrefix(w.Holder, v1.HolderSiloPrefix)); ok {
 				s := so.(*v1.Silo)
 				cond.ObservedGeneration = s.Generation
-				_ = updateStatus(ctx, c.Client, s, func(ss *v1.SiloStatus) {
-					ss.Service.LoadBalancerIP, ss.Service.SourceRanges, ss.Service.Announce = "", nil, false
-					meta.SetCondition(&ss.Conditions, cond, c.now())
+				_ = updateSiloStatus(ctx, c.Client, s, func(cur *v1.Silo) {
+					scheduler.SetLoadBalancerIP(cur, &cur.Status.Service, "")
+					cur.Status.Service.SourceRanges, cur.Status.Service.Announce = nil, false
+					meta.SetCondition(&cur.Status.Conditions, cond, c.now())
 				})
 			}
 		case strings.HasPrefix(w.Holder, v1.HolderServicePrefix) && c.Services != nil:

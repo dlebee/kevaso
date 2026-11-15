@@ -189,6 +189,12 @@ func ipAddress(ctx context.Context, c *client.Client, ip *v1.IP, addr string, h 
 
 // updateStatus applies mutate to the latest copy of s's status (retrying conflicts).
 func updateStatus(ctx context.Context, c *client.Client, s *v1.Silo, mutate func(*v1.SiloStatus)) error {
+	return updateSiloStatus(ctx, c, s, func(cur *v1.Silo) { mutate(&cur.Status) })
+}
+
+// updateSiloStatus is updateStatus for a change that reads the latest copy's spec too; only its
+// status is written.
+func updateSiloStatus(ctx context.Context, c *client.Client, s *v1.Silo, mutate func(*v1.Silo)) error {
 	for attempt := 0; attempt < 5; attempt++ {
 		var cur v1.Silo
 		if err := c.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
@@ -198,7 +204,7 @@ func updateStatus(ctx context.Context, c *client.Client, s *v1.Silo, mutate func
 			return nil
 		}
 		before := statusKey(cur.Status)
-		mutate(&cur.Status)
+		mutate(&cur)
 		if statusKey(cur.Status) == before {
 			return nil
 		}

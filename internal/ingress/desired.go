@@ -296,6 +296,9 @@ func Refused(drivers kic.Registry, class *v1.IngressClass, ing *v1.Ingress) (rea
 	who := ing.Namespace + "/" + ing.Name
 	for _, e := range class.Status.Controllers {
 		if e.Rejected != "" && slices.Contains(e.Blamed, who) {
+			if strings.HasPrefix(e.Rejected, "held ") { // the whole class is held (K-063), not only this one
+				return "Rejected", fmt.Sprintf("controller %s holds the class at its last good configuration, partly for it: %s", e.Silo, segmentFor(e.Rejected, who))
+			}
 			return "Rejected", fmt.Sprintf("controller %s left it out (the class's other Ingresses are served): %s", e.Silo, segmentFor(e.Rejected, who))
 		}
 	}

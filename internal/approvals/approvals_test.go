@@ -2,6 +2,7 @@ package approvals
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -237,4 +238,69 @@ func TestK017AnswerIsBoundToTheRequest(t *testing.T) {
 	if a, err := Answer(second, true, RequestID(second), "alice", "", t0.Add(2*time.Second)); err != nil || a.Status.Phase != v1.ApprovalApproved {
 		t.Fatalf("a yes for the request as it is: %v", err)
 	}
+}
+
+// collidingAsks are two requests of one silo, "1 minute" and "12 hours", whose IDs agreed in their
+// first 48 bits (found by a birthday search over the payload hash: the old ID was that many bits).
+// The silo chooses the payload, so this is within its reach (K-059).
+func collidingAsks() (short, long Call) {
+	c := Call{Namespace: "dev", Silo: "s", SiloUID: "u1", Secret: "key", Use: v1.ApprovalForSign, Grant: "g", Summary: "sign 32 bytes"}
+	short, long = c, c
+	short.For, short.PayloadHash = "1m", fmt.Sprintf("%016x", 0x811429)
+	long.For, long.PayloadHash = "12h", fmt.Sprintf("%016x", 0x5ac42c)
+	return short, long
+}
+
+// K-059: the guard is the whole digest. A person read the short request; the silo asked again with
+// the long one, same short form; a yes carrying the short form, or the first request's ID, is not a
+// yes to the second.
+func TestK059CollidingShortIDsAreNotTheSameRequest(t *testing.T) {
+	cs, cl := collidingAsks()
+	first := Decide(cs, nil, Limits{}, t0).Store
+	second := Decide(cl, first, Limits{}, t0.Add(time.Second)).Store
+	if second.Name != first.Name || second.Spec.For == first.Spec.For {
+		t.Fatalf("the second ask must replace the first: names %s/%s, for %s/%s", first.Name, second.Name, first.Spec.For, second.Spec.For)
+	}
+	idFirst, idSecond := RequestID(first), RequestID(second)
+	if len(idFirst) != 64 || len(idSecond) != 64 {
+		t.Errorf("a request ID is the full SHA-256: %d and %d digits", len(idFirst), len(idSecond))
+	}
+	if idFirst == idSecond {
+		t.Fatal("two different requests have one ID")
+	}
+	// The scenario: these two agree in their first 48 bits (what the old ID was).
+	if idFirst[:12] != idSecond[:12] {
+		t.Fatalf("the test's pair no longer collides in 48 bits: %s %s", idFirst[:12], idSecond[:12])
+	}
+	for name, id := range map[string]string{
+		"the 48-bit form the person could have read": idFirst[:12],
+		"the first request's full ID":                idFirst,
+		"a prefix of the second's own ID":            cut(idSecond, 32),
+		"the second's ID cut by one digit":           cut(idSecond, 63),
+		"the second's ID with a digit added":         idSecond + "0",
+	} {
+		if a, err := Answer(second, true, id, "alice", "", t0.Add(2*time.Second)); err == nil {
+			t.Errorf("%s was accepted: %s approved for %s", name, a.Status.Phase, a.Spec.For)
+		}
+	}
+	if a, err := Answer(second, true, idSecond, "alice", "", t0.Add(2*time.Second)); err != nil || a.Status.Phase != v1.ApprovalApproved {
+		t.Fatalf("a yes with the full ID of the request as it is: %v", err)
+	}
+	if a, err := Answer(second, true, strings.ToUpper(idSecond), "alice", "", t0.Add(2*time.Second)); err != nil || a.Status.Phase != v1.ApprovalApproved {
+		t.Fatalf("the same ID in capitals: %v", err)
+	}
+	// A no may name no request, but one it names is held to the same rule.
+	if _, err := Answer(second, false, idFirst[:12], "alice", "", t0.Add(2*time.Second)); err == nil {
+		t.Error("a no naming a short form was accepted")
+	}
+	if _, err := Answer(second, false, "", "alice", "", t0.Add(2*time.Second)); err != nil {
+		t.Errorf("a no naming nothing: %v", err)
+	}
+}
+
+func cut(s string, n int) string {
+	if len(s) < n {
+		return s
+	}
+	return s[:n]
 }

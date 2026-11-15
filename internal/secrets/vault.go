@@ -37,10 +37,17 @@ const (
 // ErrNoValue: the secret has no value yet (or it belongs to an older secret of the same name).
 var ErrNoValue = errors.New("secret has no value")
 
+// ErrWriteOnly: the value was written while the secret was write-only; a person can't have it.
+var ErrWriteOnly = errors.New("secret value was written while the secret was write-only")
+
 type record struct {
 	UID     string     `json:"uid"`
 	Version int64      `json:"version"`
 	Sealed  kms.Sealed `json:"sealed"`
+	// WriteOnly: the value was written while the secret was write-only. No person is ever given
+	// it, whatever the secret's setting is later (K-060): it stays in the vault for silos' use
+	// until a write brings a value written readable.
+	WriteOnly bool `json:"writeOnly,omitempty"`
 }
 
 // Vault reads and writes sealed values.
@@ -56,7 +63,8 @@ func valueKey(ns, name string) store.Key {
 	return store.Key{Kind: KindValue, Namespace: ns, Name: name}
 }
 
-// Put seals value as the secret's new version and returns the status to record.
+// Put seals value as the secret's new version and returns the status to record. sec is the secret
+// as it is (or is about to be) stored: if it is write-only, so is the value, for good.
 func (v *Vault) Put(ctx context.Context, sec *v1.Secret, value []byte) (v1.SecretStatus, error) {
 	pub, err := PublicKey(sec.Spec.Type, value)
 	if err != nil {
@@ -68,7 +76,7 @@ func (v *Vault) Put(ctx context.Context, sec *v1.Secret, value []byte) (v1.Secre
 	}
 	k := valueKey(sec.Namespace, sec.Name)
 	for attempt := 0; attempt < 5; attempt++ {
-		r := record{UID: sec.UID, Version: 1, Sealed: sealed}
+		r := record{UID: sec.UID, Version: 1, Sealed: sealed, WriteOnly: !sec.Readable()}
 		cur, err := v.Store.Get(ctx, k)
 		var werr error
 		switch {
@@ -126,6 +134,20 @@ func (v *Vault) Value(ctx context.Context, sec *v1.Secret) ([]byte, int64, error
 	r, _, err := v.read(ctx, sec)
 	if err != nil {
 		return nil, 0, err
+	}
+	pt, err := kms.Open(ctx, v.KMS, r.Sealed, aad(sec.Namespace, sec.Name, sec.UID))
+	return pt, r.Version, err
+}
+
+// PersonValue is Value for a person reading it back: refused (ErrWriteOnly) for a value that was
+// written while the secret was write-only, even if the secret has become readable since.
+func (v *Vault) PersonValue(ctx context.Context, sec *v1.Secret) ([]byte, int64, error) {
+	r, _, err := v.read(ctx, sec)
+	if err != nil {
+		return nil, 0, err
+	}
+	if r.WriteOnly {
+		return nil, 0, ErrWriteOnly
 	}
 	pt, err := kms.Open(ctx, v.KMS, r.Sealed, aad(sec.Namespace, sec.Name, sec.UID))
 	return pt, r.Version, err
