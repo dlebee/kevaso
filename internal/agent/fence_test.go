@@ -12,6 +12,7 @@ import (
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/clock"
+	siloctl "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/store"
 	"kevaso.com/core/internal/worker"
@@ -21,10 +22,20 @@ import (
 
 // §0.7: only a silo that asked for it (onControlPlaneLoss: Stop) is stopped when the host loses the
 // control plane, and a healthy host never stops one: two heartbeats in a row may fail, plus a
-// fence tick, and that stays under the shortest after admission takes.
+// fence tick, and that stays under the shortest after admission takes. And the order that keeps
+// two copies from running: for every after, the fence has killed the silo (worst case) before the
+// control plane, counting from the same heartbeat on its own clock, may start it elsewhere
+// (after + silo.StopMargin), with the clocks' rates off by twice what NTP allows.
 func TestFenceTiming(t *testing.T) {
 	if hb := worker.DefaultHeartbeat; 2*hb+fence.CheckEvery >= v1.MinStopAfter {
 		t.Fatalf("heartbeat %s: two missed beats reach the shortest after, %s", hb, v1.MinStopAfter)
+	}
+	for _, after := range []time.Duration{v1.MinStopAfter, v1.DefaultStopAfter, time.Hour, v1.MaxStopAfter} {
+		stopped := fence.WorstStopped(after) + after/1000 // the agent's clock running slow by 1000 ppm
+		elsewhere := after + siloctl.StopMargin(after)
+		if stopped >= elsewhere {
+			t.Errorf("after %s: killed by %s at worst, started elsewhere from %s", after, stopped, elsewhere)
+		}
 	}
 }
 
@@ -88,7 +99,7 @@ func TestAgentWritesTheFenceRecord(t *testing.T) {
 	<-done
 	stops := map[string]bool{}
 	for _, s := range r.Silos {
-		stops[s.ID.Name] = fence.Stops(s.OnHostLoss)
+		stops[s.ID.Name] = s.StopAfter > 0
 	}
 	if !r.LastContact.Equal(contact) || !r.Fence || len(r.Silos) != 2 || !stops["web"] || stops["db"] {
 		t.Fatalf("record: %+v", r)
@@ -108,7 +119,7 @@ func TestAgentWritesTheFenceRecord(t *testing.T) {
 	if !again.LastContact.Equal(contact) || !again.Fence || len(again.Silos) != 2 || !again.Written.After(r.Written) {
 		t.Fatalf("after a restart while cut off: %+v (before: %+v)", again, r)
 	}
-	if got := fence.Decide(again, contact.Add(31*time.Second), fence.DefaultAfter, nil); len(got) != 1 || got[0].ID.Name != "web" {
+	if got := fence.Decide(again, contact.Add(v1.DefaultStopAfter+time.Second), fence.DefaultAfter, nil); len(got) != 1 || got[0].ID.Name != "web" {
 		t.Fatalf("the watcher would stop %+v", got)
 	}
 }

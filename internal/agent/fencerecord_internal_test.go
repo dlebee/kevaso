@@ -32,7 +32,7 @@ func (r *recordingRuntime) Start(ctx context.Context, id kri.ID) error {
 	rec, _ := fence.Read(r.dir)
 	v := int32(2)
 	for _, s := range rec.Silos {
-		if s.ID.UID == id.UID && fence.Stops(s.OnHostLoss) {
+		if s.ID.UID == id.UID && s.StopAfter > 0 {
 			v = 1
 		}
 	}

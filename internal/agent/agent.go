@@ -390,6 +390,9 @@ func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	if err := a.removeEverywhere(ctx, k, s); err != nil {
 		return engine.Result{}, err
 	}
+	if err := a.armFence(ctx, s); err != nil {
+		return engine.Result{}, err
+	}
 	rt, ok := a.Runtimes[s.Spec.Runtime]
 	if !ok {
 		return engine.Result{}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
