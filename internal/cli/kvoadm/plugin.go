@@ -479,6 +479,7 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 		}
 	}
 	unit := PluginUnitName(o.Name, o.side())
+	since, _ := conn.Run(ctx, "date +%s", nil) // kevasod's word on it is looked for from here on
 	if err := conn.InstallUnit(ctx, unit, []byte(unitText)); err != nil {
 		return err
 	}
@@ -486,12 +487,48 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 		logs, _ := conn.Run(ctx, "journalctl -u "+sshboot.Quote(unit)+" -n 20 --no-pager", nil)
 		return fmt.Errorf("%s didn't stay up:\n%s", unit, logs)
 	}
+	// kevasod refuses a plugin that claims a class or DNS name another plugin serves, or answers
+	// under another name (K-042): that refusal is this install's.
+	word, _ := conn.Run(ctx, RegistrationScript(o.Name, strings.TrimSpace(string(since)), 20), nil)
+	switch registered, line := Registration(o.Name, string(word)); {
+	case line == "":
+		say("kevasod on the host hasn't said yet whether it registered plugin %s (journalctl -u kevasod there)", o.Name)
+	case !registered:
+		_, _ = conn.Run(ctx, "systemctl disable --now "+sshboot.Quote(unit), nil)
+		return fmt.Errorf("kevasod refused plugin %s, so its unit %s is stopped: %s", o.Name, unit, line)
+	default:
+		say("kevasod: %s", line)
+	}
 	if o.side() == "controller" {
 		say("plugin %s running (%s); kevasod registers it from %s/%s/plugin.sock", o.Name, unit, kplugin.Dir, o.Name)
 	} else {
 		say("plugin %s node side running (%s)", o.Name, unit)
 	}
 	return nil
+}
+
+// RegistrationScript waits up to wait seconds on the host for kevasod's word on plugin name since
+// the host's time since (seconds since 1970), and prints that line: registered, answering again,
+// or refused (and why).
+func RegistrationScript(name, since string, wait int) string {
+	if !regexp.MustCompile(`^[0-9]+$`).MatchString(since) {
+		since = "0"
+	}
+	pat := sshboot.Quote(`plugin ` + name + ` ([^ ]+ registered \(|[^ ]+ at [^ ]+ refused: |answering again)`)
+	return fmt.Sprintf("i=0; while [ $i -lt %d ]; do l=$(journalctl -u kevasod.service --since @%s -o cat --no-pager 2>/dev/null | grep -E %s | tail -n 1); "+
+		"if [ -n \"$l\" ]; then printf '%%s\\n' \"$l\"; exit 0; fi; i=$((i+1)); sleep 1; done; exit 0", wait, since, pat)
+}
+
+// Registration reads RegistrationScript's output: whether kevasod registered plugin name, and
+// what it said ("": nothing yet).
+func Registration(name, out string) (registered bool, line string) {
+	l := strings.TrimSpace(out)
+	i := strings.Index(l, "plugin "+name+" ")
+	if i < 0 {
+		return false, ""
+	}
+	l = l[i:]
+	return !strings.Contains(l, " refused: "), l
 }
 
 func pluginRemove(ctx context.Context, o PluginOptions, stdin io.Reader, out io.Writer) error {

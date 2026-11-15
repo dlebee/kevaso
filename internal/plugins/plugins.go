@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,8 +75,82 @@ func (r *Registry) Add(ctx context.Context, c Conn) error {
 	if err != nil {
 		return err
 	}
+	if why := r.claimed(info, ""); why != "" {
+		return fmt.Errorf("plugin %s %s refused: %s", info.Name, info.Version, why)
+	}
 	r.put(&Plugin{Info: info, Conn: c}, "")
 	return nil
+}
+
+// claimed says why a plugin answering info at sock ("": in core's process) may not register, or
+// "" (K-042): a socket answers under the name of its folder, the name kvoadm installed it under;
+// and no class (load-balancer and storage classes share their names) or DNS provider is served
+// by two plugins. The one registered first keeps it.
+func (r *Registry) claimed(info kplugin.Info, sock string) string {
+	if sock != "" {
+		if folder := filepath.Base(filepath.Dir(sock)); info.Name != folder {
+			return fmt.Sprintf("it answers as plugin %s, but it is installed as %s (its socket's folder): a plugin answers under the name it was installed under (kvoadm plugin install --name %s)", info.Name, folder, info.Name)
+		}
+	}
+	type claim struct{ what, kind string }
+	mine := map[string]claim{}
+	for _, c := range info.LoadBalancers {
+		mine["class "+c.Name] = claim{"load-balancer class " + c.Name, "a load-balancer class"}
+	}
+	for _, c := range info.Storage {
+		mine["class "+c.Name] = claim{"storage class " + c.Name, "a storage class"}
+	}
+	for _, d := range info.DNS {
+		mine["dns "+d] = claim{"dns provider " + d, "a dns provider"}
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var why []string
+	for name, p := range r.plugins {
+		if same, ok := r.sockets[sock]; sock != "" && ok && same == name {
+			continue // itself, restarted
+		}
+		if name == info.Name {
+			why = append(why, fmt.Sprintf("plugin %s is registered already (%s)", name, r.socketOf(name)))
+			continue
+		}
+		theirs := map[string]string{}
+		for _, c := range p.Info.LoadBalancers {
+			theirs["class "+c.Name] = "a load-balancer class"
+		}
+		for _, c := range p.Info.Storage {
+			theirs["class "+c.Name] = "a storage class"
+		}
+		for _, d := range p.Info.DNS {
+			theirs["dns "+d] = "a dns provider"
+		}
+		for k, c := range mine {
+			kind, ok := theirs[k]
+			if !ok {
+				continue
+			}
+			w := fmt.Sprintf("%s: plugin %s serves it already", c.what, name)
+			if kind != c.kind {
+				w += " (" + kind + ")"
+			}
+			why = append(why, w+" ("+r.socketOf(name)+")")
+		}
+	}
+	if len(why) == 0 {
+		return ""
+	}
+	sort.Strings(why)
+	return strings.Join(why, "; ") + ": remove one of the two plugins (kvoadm plugin remove HOST --name NAME), or give the class another name in its config"
+}
+
+// socketOf is where plugin name was registered from (under r.mu).
+func (r *Registry) socketOf(name string) string {
+	for sock, n := range r.sockets {
+		if n == name {
+			return "at " + sock
+		}
+	}
+	return "in kevasod"
 }
 
 func (r *Registry) put(p *Plugin, socket string) {
@@ -213,6 +288,15 @@ func (r *Registry) scan(ctx context.Context, dir string) {
 			}
 			r.refuse(sock, fmt.Sprintf("plugin %s %s at %s refused: %s", info.Name, info.Version, sock, why))
 		case cur == nil || !reflect.DeepEqual(cur.Info, info): // new, or restarted as something else
+			if why := r.claimed(info, sock); why != "" {
+				if cur != nil {
+					r.drop(sock) // restarted claiming what another serves
+				} else {
+					closeConn(c)
+				}
+				r.refuse(sock, fmt.Sprintf("plugin %s %s at %s refused: %s", info.Name, info.Version, sock, why))
+				continue
+			}
 			r.refuse(sock, "")
 			r.put(&Plugin{Info: info, Conn: c}, sock)
 		}
