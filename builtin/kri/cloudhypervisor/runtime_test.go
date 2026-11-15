@@ -32,9 +32,10 @@ type fakeHost struct {
 	cmds   []string
 	files  map[string][]byte
 	answer func(cmd string) (string, error) // scripted outputs
+	lvs    map[string]bool                  // logical volumes in VG, as lvcreate and lvremove leave them
 }
 
-func newFakeHost() *fakeHost { return &fakeHost{files: map[string][]byte{}} }
+func newFakeHost() *fakeHost { return &fakeHost{files: map[string][]byte{}, lvs: map[string]bool{}} }
 
 // bigPool is a thin pool of 1 TiB with nothing promised (lvs, as PoolSize asks).
 const bigPool = "  silos 1099511627776 \n"
@@ -58,8 +59,34 @@ func (h *fakeHost) Run(_ context.Context, name string, args ...string) ([]byte, 
 	if strings.HasPrefix(cmd, "systemctl is-active") {
 		return []byte("inactive"), errors.New("exit 3")
 	}
-	if strings.HasPrefix(cmd, "lvs") {
-		return []byte("  kv-x kevaso Vwi-a-tz--"), nil
+	return h.lv(name, args)
+}
+
+// lv answers lvcreate, lvremove and lvs from the volumes made so far (lvs of one that isn't there
+// fails, as lvs does).
+func (h *fakeHost) lv(name string, args []string) ([]byte, error) {
+	switch name {
+	case "lvcreate":
+		for i, a := range args {
+			if a == "-n" && i+1 < len(args) {
+				h.lvs[args[i+1]] = true
+			}
+		}
+	case "lvremove":
+		delete(h.lvs, strings.TrimPrefix(args[len(args)-1], VG+"/"))
+	case "lvs":
+		last := args[len(args)-1]
+		if lv, ok := strings.CutPrefix(last, VG+"/"); ok {
+			if !h.lvs[lv] {
+				return nil, errors.New("Failed to find logical volume " + last)
+			}
+			return []byte("  " + lv + " " + VG + " Vwi-a-tz--"), nil
+		}
+		var out []string
+		for lv := range h.lvs {
+			out = append(out, "  "+lv)
+		}
+		return []byte(strings.Join(out, "\n")), nil
 	}
 	return nil, nil
 }
@@ -277,8 +304,9 @@ func TestCreateFailureCleansUp(t *testing.T) {
 		if strings.HasPrefix(cmd, "systemctl is-active") {
 			return "inactive", errors.New("exit 3")
 		}
-		if strings.HasPrefix(cmd, "lvs") {
-			return "  kv-x", nil
+		if f := strings.Fields(cmd); f[0] == "lvs" || f[0] == "lvcreate" || f[0] == "lvremove" {
+			out, err := h.lv(f[0], f[1:]) // the disk this Create made
+			return string(out), err
 		}
 		return "", nil
 	}

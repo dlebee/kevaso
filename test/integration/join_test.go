@@ -204,10 +204,28 @@ func TestLosingAHost(t *testing.T) {
 	if ids, _ := rt2.List(ctx); len(ids) != 0 {
 		t.Fatalf("w2 started %v by itself", ids)
 	}
-	// The person: w1 is off, recreate stateless on w2.
+	// The person: w1 is off, recreate stateless on w2, once w2 is Ready (joinWorker returns before
+	// w2's first heartbeat has made it so: on a slow runner the move found w2 not Ready).
+	for {
+		var h v1.Host
+		if err := admin.Get(ctx, "Host", "", "w2", &h); err == nil && meta.IsTrue(h.Status.Conditions, "Ready") {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("w2 never became Ready")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	var stale v1.Silo
+	if err := admin.Get(ctx, "Silo", "demo", "stateless", &stale); err != nil {
+		t.Fatal(err)
+	}
 	var moved v1.Silo
 	if err := admin.Call(ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/demo/silos/stateless/move",
-		moves.Request{To: "w2", Recreate: true, ConfirmFenced: true}, &moved); err != nil {
+		// w1 started it a moment before going dark: its start claim is fresh, so the move needs
+		// insist too (the person knows w1 is off: it was stopped).
+		moves.Request{To: "w2", Recreate: true, ConfirmFenced: true, Insist: true}, &moved); err != nil {
 		t.Fatal(err)
 	}
 	waitSilo(t, ctx, admin, "stateless", func(s *v1.Silo) bool { return s.Status.Phase == "Running" && s.Status.Host == "w2" })
@@ -218,16 +236,23 @@ func TestLosingAHost(t *testing.T) {
 		c := meta.FindCondition(s.Status.Conditions, "HostUnreachable")
 		return s.Status.Phase == "Running" && s.Status.Host == "w1" && c != nil && c.Status == meta.ConditionFalse
 	})
+	// The stale copy of stateless on w1 is stopped and kept with its disk, never deleted: a
+	// person's --confirm-fenced move is no delete, and no handoff from w1 (review claim A, K-004).
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		ids, _ := rt1.List(ctx)
-		if len(ids) == 1 && ids[0].Name == "precious" {
-			break // the stale copy of stateless is gone from w1
+		st, _ := rt1.Status(ctx, kri.ID{Namespace: "demo", Name: "stateless", UID: stale.UID})
+		if st.State == kri.Stopped || st.State == kri.Created {
+			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("w1 still has %v", ids)
+			t.Fatalf("w1's stale copy of stateless: %s, want stopped and kept", st.State)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	for _, c := range rt1.CallLog() {
+		if c == "delete demo/stateless" {
+			t.Fatalf("w1 deleted its copy (and its disk) on a confirmed-fenced move: %v", rt1.CallLog())
+		}
 	}
 }
 

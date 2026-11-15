@@ -181,7 +181,9 @@ func (a *Agent) fenceRecord(ctx context.Context) fence.Record {
 func (a *Agent) runtimeUIDs(ctx context.Context) (present map[string]bool, listed map[string]bool) {
 	present, listed = map[string]bool{}, map[string]bool{}
 	for name, rt := range a.Runtimes {
-		ids, err := rt.List(ctx)
+		lctx, cancel := context.WithTimeout(ctx, fence.KillWithin) // a hung engine never stalls the record (K-094)
+		ids, err := rt.List(lctx)
+		cancel()
 		if err != nil {
 			continue
 		}
@@ -241,3 +243,7 @@ func (a *Agent) reportFenceFaults(ctx context.Context) {
 		a.log("fence faults: %v", err)
 	}
 }
+
+// ConditionFenceUnconfirmed is the Host condition that names the silos this host's own fence
+// couldn't confirm stopped during its last outage (K-094).
+const ConditionFenceUnconfirmed = "FenceUnconfirmed"

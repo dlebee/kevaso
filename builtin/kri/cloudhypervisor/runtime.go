@@ -192,6 +192,15 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		}
 	}
 	n := NamesFor(spec.ID)
+	// A root volume that is there with no state of its own is a disk of an earlier copy of this
+	// silo (its state lost): data whose owner can't be proven from here. Never made over (review
+	// claim B): it is kept, and the silo isn't made until a person decides.
+	if spec.DiskHostPath == "" && r.lvExists(ctx, n.LV) {
+		if _, ok, _ := r.readState(spec.ID); !ok {
+			return fmt.Errorf("%s: root volume %s/%s is there with no state of this host's (%s/silo.json): not making the silo over it; "+
+				"keep it (restore silo.json) or remove it yourself (lvremove %s/%s) to start afresh", spec.ID, VG, n.LV, n.Dir, VG, n.LV)
+		}
+	}
 	IPMu.Lock() // container silos share the bridge and its addresses: until the state is saved
 	ipLocked := true
 	unlockIP := func() {
@@ -365,12 +374,50 @@ func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
 	for _, c := range StopPlan(n, st.layout()) {
 		_, _ = r.Host.Run(ctx, c[0], c[1:]...)
 	}
-	return nil
+	return r.gone(ctx, id, "a stop")
 }
 
 func (r *Runtime) active(ctx context.Context, unit string) string {
 	out, _ := r.Host.Run(ctx, "systemctl", "is-active", unit)
 	return strings.TrimSpace(string(out))
+}
+
+// vmm says what systemd says of the VMM's unit, and whether a process of it may still run. Only a
+// unit that is inactive or failed, with no main process and no process left in its cgroup, has
+// gone: every other state (activating, deactivating, reloading, one systemctl doesn't answer) may
+// still run the guest, and the fences take "not up" for stopped.
+func (r *Runtime) vmm(ctx context.Context, unit string) (state string, up bool) {
+	state = r.active(ctx, unit)
+	switch state {
+	case "inactive", "failed", "":
+	default:
+		return state, true
+	}
+	out, err := r.Host.Run(ctx, "systemctl", "show", "--property=MainPID,ControlGroup", unit)
+	if err != nil {
+		return state, true // can't say: not gone
+	}
+	for l := range strings.Lines(string(out)) {
+		k, v, _ := strings.Cut(strings.TrimSpace(l), "=")
+		switch {
+		case k == "MainPID" && v != "" && v != "0":
+			return state, true
+		case k == "ControlGroup" && v != "":
+			procs, err := r.Host.ReadFile("/sys/fs/cgroup" + v + "/cgroup.procs")
+			if (err != nil && !errors.Is(err, os.ErrNotExist)) || len(bytes.TrimSpace(procs)) > 0 {
+				return state, true
+			}
+		}
+	}
+	return state, false
+}
+
+// gone confirms the VMM is gone after a stop or a kill.
+func (r *Runtime) gone(ctx context.Context, id kri.ID, how string) error {
+	if state, up := r.vmm(ctx, NamesFor(id).Unit); up {
+		return fmt.Errorf("%s: the VMM may still run after %s (its unit is %q, or a process of it is left)", id, how, state)
+	}
+	return nil
 }
 
 // Delete implements kri.Runtime: everything the silo owns on the host.
@@ -429,6 +476,9 @@ func (r *Runtime) deleteLocked(ctx context.Context, id kri.ID) error {
 func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, size int64, fresh bool) error {
 	if l.RootFile == "" {
 		if r.lvExists(ctx, n.LV) {
+			if !fresh {
+				return fmt.Errorf("root volume %s/%s is there already: only a reset makes it afresh", VG, n.LV)
+			}
 			if err := r.run(ctx, "lvremove", "-q", "-y", VG+"/"+n.LV); err != nil {
 				return err
 			}
@@ -469,7 +519,12 @@ func RootFilePlan(img, tmp, file string, size int64) [][]string {
 func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 	st, ok, err := r.readState(id)
 	if err != nil {
-		return kri.Status{}, err
+		// Never "absent" (K-094: a fence would count it stopped), and never made again: Running
+		// while its VMM runs, else Failed, saying why.
+		if _, up := r.vmm(ctx, NamesFor(id).Unit); up {
+			return kri.Status{State: kri.Running, Message: err.Error()}, nil
+		}
+		return kri.Status{State: kri.Failed, Message: err.Error() + ": its VMM doesn't run; delete the silo, or restore the file, to go on"}, nil
 	}
 	if !ok {
 		return kri.Status{State: kri.Absent}, nil
@@ -479,10 +534,12 @@ func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 		// (Create redoes it); never started, so there's no disk of a running silo to keep.
 		return kri.Status{State: kri.Absent}, nil
 	}
-	switch r.active(ctx, NamesFor(id).Unit) {
-	case "active", "activating":
+	switch state, up := r.vmm(ctx, NamesFor(id).Unit); {
+	case up && state == "active":
 		return kri.Status{State: kri.Running, Address: st.IP}, nil
-	case "failed":
+	case up:
+		return kri.Status{State: kri.Running, Address: st.IP, Message: "its VMM's unit is " + strconv.Quote(state) + " and may still run"}, nil
+	case state == "failed":
 		out, _ := r.Host.Run(ctx, "journalctl", "-u", NamesFor(id).Unit, "-n", "3", "--no-pager", "-o", "cat")
 		return kri.Status{State: kri.Failed, Message: strings.TrimSpace(string(out))}, nil
 	}
@@ -670,6 +727,13 @@ func (r *Runtime) image(ctx context.Context, image string) (string, error) {
 // Reset implements kri.Resetter: the VM is stopped, its disk is made afresh from spec's image and
 // its seed (with a new guest host key) rebuilt; its address, MAC and tap stay.
 func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
+	return r.ResetGated(ctx, spec, nil)
+}
+
+// ResetGated is Reset that asks gate (if set) once the VM is stopped and gone, right before its
+// root disk is made afresh: the last thing before lvremove. An error from gate ends the reset with
+// the disk as it was, and is returned as is.
+func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(context.Context) error) error {
 	img, err := r.image(ctx, spec.Image)
 	if err != nil {
 		return err
@@ -708,6 +772,12 @@ func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
 		func() error {
 			for _, c := range StopPlan(n, old) {
 				_, _ = r.Host.Run(ctx, c[0], c[1:]...)
+			}
+			return r.gone(ctx, spec.ID, "a stop") // its disk is made afresh next: never under a VMM
+		},
+		func() error {
+			if gate != nil {
+				return gate(ctx)
 			}
 			return nil
 		},

@@ -20,6 +20,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/kvoconfig"
+	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/sshboot"
 )
 
@@ -343,7 +344,7 @@ func hostList(ctx context.Context, kctx string, out io.Writer) error {
 // hostCmd dispatches kvoadm host add|list|… .
 func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("host needs add, install, uninstall, remove, enable-worker, reconnect, list, drain, uncordon or addresses")
+		return errors.New("host needs add, install, uninstall, remove, enable-worker, reconnect, list, drain, uncordon, addresses or trust-control-plane")
 	}
 	switch args[0] {
 	case "add":
@@ -397,6 +398,8 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 		return hostRemoveSystemNode(ctx, args[1], kctx, true, out)
 	case "reconnect":
 		return hostReconnect(ctx, args[1:], stdin, out)
+	case "trust-control-plane":
+		return trustControlPlane(ctx, args[1:], stdin, out)
 	case "addresses":
 		return hostAddresses(ctx, args[1:], out)
 	case "list":
@@ -420,9 +423,13 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 
 // DrainPlan splits the silos on a host into the ones drain moves off (onHostLoss: Recreate: a
 // fresh instance elsewhere) and the ones that stay (Wait: pinned to it by their local disk). Pure.
+//
+// A silo in a handoff (moving here from another host that hasn't let go: moves.HandingOff) is in
+// neither (K-070): rewriting its movingFrom would lose the source, and the next host wouldn't wait
+// for it. DrainHandoffs lists them.
 func DrainPlan(host string, silos []*v1.Silo) (move, stay []*v1.Silo) {
 	for _, s := range silos {
-		if s.Status.Host != host || s.DeletionTimestamp != nil {
+		if s.Status.Host != host || s.DeletionTimestamp != nil || moves.HandingOff(s.Status) {
 			continue
 		}
 		if s.Policy() == v1.OnHostLossRecreate {
@@ -432,6 +439,18 @@ func DrainPlan(host string, silos []*v1.Silo) (move, stay []*v1.Silo) {
 		}
 	}
 	return move, stay
+}
+
+// DrainHandoffs are the silos on host that drain leaves alone because a handoff to it is under way
+// (K-070). Pure.
+func DrainHandoffs(host string, silos []*v1.Silo) []*v1.Silo {
+	var out []*v1.Silo
+	for _, s := range silos {
+		if s.Status.Host == host && s.DeletionTimestamp == nil && moves.HandingOff(s.Status) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // hostDrain cordons a host and moves off what can move. uncordon undoes the cordon.
@@ -488,9 +507,28 @@ func hostDrain(ctx context.Context, name, kctx string, uncordon bool, out io.Wri
 	}
 	move, stay := DrainPlan(name, silos)
 	now := time.Now().UTC().Truncate(time.Second)
+	later := func(s *v1.Silo, from string) {
+		say("%s/%s: a move from %s is under way: left as it is; drain again once it has landed", s.Namespace, s.Name, from)
+	}
+	for _, s := range DrainHandoffs(name, silos) {
+		later(s, s.Status.MovingFrom)
+	}
 	for _, s := range move {
-		s.Status = DrainStatus(s, name, now)
-		if err := c.UpdateStatus(ctx, s); err != nil {
+		// Read afresh and written at that version, refused while a handoff is under way (K-070):
+		// one that began after the list is left alone, never overwritten.
+		_, err := c.StartHandoff(ctx, s, func(cur *v1.Silo) (v1.SiloStatus, error) {
+			if cur.Status.Host != name {
+				return v1.SiloStatus{}, fmt.Errorf("placed on %q now, not on %s", cur.Status.Host, name)
+			}
+			return DrainStatus(cur, name, now), nil
+		})
+		if errors.Is(err, client.ErrHandoffUnderWay) {
+			var cur v1.Silo
+			_ = c.Get(ctx, "Silo", s.Namespace, s.Name, &cur)
+			later(s, cur.Status.MovingFrom)
+			continue
+		}
+		if err != nil {
 			return fmt.Errorf("move %s/%s: %w", s.Namespace, s.Name, err)
 		}
 		say("%s/%s: recreated elsewhere (onHostLoss: Recreate)", s.Namespace, s.Name)

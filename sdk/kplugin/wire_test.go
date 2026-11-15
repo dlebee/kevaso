@@ -44,7 +44,7 @@ func TestWireRoundTrip(t *testing.T) {
 	c := serve(t, f)
 
 	info, err := c.Info(ctx)
-	if err != nil || info.Name != "fake" || info.Protocol != kplugin.Protocol || len(info.LoadBalancers) != 3 || !info.LoadBalancers[1].FiltersSources {
+	if err != nil || info.Name != "fake" || info.Protocol != kplugin.Protocol || info.Revision != kplugin.Revision || len(info.LoadBalancers) != 3 || !info.LoadBalancers[1].FiltersSources {
 		t.Fatalf("info %+v %v", info, err)
 	}
 	hs, err := c.DescribeHosts(ctx, []kplugin.Host{{Name: "w1", ExternalIP: "203.0.113.5"}, {Name: "home", ExternalIP: "198.51.100.9"}})

@@ -8,6 +8,7 @@ package plugins
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -42,15 +43,18 @@ type Registry struct {
 	Every    time.Duration // how often to look (default 2s)
 	Log      func(string, ...any)
 	OnChange func() // after a plugin is added or removed
+	// Limits bound every call to a registered plugin (deadlines, calls in flight); zero: defaults.
+	Limits Limits
 
 	mu      sync.RWMutex
 	plugins map[string]*Plugin // by name
 	sockets map[string]string  // socket → name
+	refused map[string]string  // socket → why it isn't registered (said once)
 }
 
 // Add registers a plugin directly (built-in plugins, tests).
 func (r *Registry) Add(ctx context.Context, c Conn) error {
-	info, err := c.Info(ctx)
+	info, err := guard("(new)", c, r.Limits).Info(ctx)
 	if err != nil {
 		return err
 	}
@@ -59,6 +63,7 @@ func (r *Registry) Add(ctx context.Context, c Conn) error {
 }
 
 func (r *Registry) put(p *Plugin, socket string) {
+	p.Conn = guard(p.Info.Name, p.Conn, r.Limits)
 	r.mu.Lock()
 	if r.plugins == nil {
 		r.plugins, r.sockets = map[string]*Plugin{}, map[string]string{}
@@ -177,15 +182,29 @@ func (r *Registry) scan(ctx context.Context, dir string) {
 			r.drop(sock)
 		case err != nil:
 			closeConn(c) // not up yet
-		case info.Protocol != kplugin.Protocol:
-			if cur == nil {
-				r.logf("plugin at %s speaks %q, not %s: ignored", sock, info.Protocol, kplugin.Protocol)
+		case info.Protocol != kplugin.Protocol || skew(info) != "":
+			why := skew(info)
+			if info.Protocol != kplugin.Protocol {
+				why = fmt.Sprintf("speaks %q, not %s", info.Protocol, kplugin.Protocol)
+			}
+			if cur != nil {
+				r.drop(sock) // restarted as a build core doesn't serve
+			} else {
 				closeConn(c)
 			}
+			r.refuse(sock, fmt.Sprintf("plugin %s %s at %s refused: %s", info.Name, info.Version, sock, why))
 		case cur == nil || !reflect.DeepEqual(cur.Info, info): // new, or restarted as something else
+			r.refuse(sock, "")
 			r.put(&Plugin{Info: info, Conn: c}, sock)
 		}
 	}
+	r.mu.Lock()
+	for sock := range r.refused {
+		if !seen[sock] {
+			delete(r.refused, sock) // gone: say it again if it comes back refused
+		}
+	}
+	r.mu.Unlock()
 	r.mu.RLock()
 	var gone []string
 	for sock := range r.sockets {
@@ -196,6 +215,35 @@ func (r *Registry) scan(ctx context.Context, dir string) {
 	r.mu.RUnlock()
 	for _, sock := range gone {
 		r.drop(sock)
+	}
+}
+
+// skew says why core can't serve a plugin of info's sdk wire revision, or "".
+func skew(info kplugin.Info) string {
+	switch {
+	case info.Revision == 0:
+		return fmt.Sprintf("built against an sdk from before wire revisions; this kevasod serves revisions %d to %d: rebuild the plugin against this release's kevaso.com/core/sdk", kplugin.MinRevision, kplugin.Revision)
+	case info.Revision < kplugin.MinRevision || info.Revision > kplugin.Revision:
+		return fmt.Sprintf("built against sdk wire revision %d; this kevasod serves revisions %d to %d: rebuild the plugin against this release's kevaso.com/core/sdk (or upgrade kevasod)", info.Revision, kplugin.MinRevision, kplugin.Revision)
+	}
+	return ""
+}
+
+// refuse says why the plugin at sock isn't registered, once per reason ("" forgets it).
+func (r *Registry) refuse(sock, why string) {
+	r.mu.Lock()
+	if r.refused == nil {
+		r.refused = map[string]string{}
+	}
+	said := r.refused[sock] == why
+	if why == "" {
+		delete(r.refused, sock)
+	} else {
+		r.refused[sock] = why
+	}
+	r.mu.Unlock()
+	if why != "" && !said {
+		r.logf("%s", why)
 	}
 }
 

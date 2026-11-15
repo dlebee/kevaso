@@ -107,7 +107,7 @@ func TestALostNodeMountIsMountedAgain(t *testing.T) {
 // touch changes a silo's labels, so the agent reconciles it now.
 func touch(t *testing.T, ctx context.Context, c *client.Client, ns, name string) {
 	t.Helper()
-	for range 5 {
+	for range 50 { // the agent writes this silo's status too (probes, claims): read again on a conflict
 		var s v1.Silo
 		if err := c.Get(ctx, "Silo", ns, name, &s); err != nil {
 			t.Fatal(err)
@@ -123,6 +123,7 @@ func touch(t *testing.T, ctx context.Context, c *client.Client, ns, name string)
 			}
 			return
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("kept conflicting")
 }

@@ -3,6 +3,8 @@ package ingress_test
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -84,9 +86,13 @@ func rigs(blame bool) []*rig {
 				}
 				return ""
 			}
+			r.px.Reset(map[string][]byte{caddy.ConfigPath: []byte(ingresstest.CaddyImageConfig)})
 			r.served = func() string { f, _, _ := r.px.Snapshot(); return string(f[caddy.ConfigPath]) }
 		case "kong":
 			r.call = func(_ context.Context, c kic.Call) (int, string, error) {
+				if c.Method == "GET" && c.Path == "/status" { // what Kong runs (kic.Reader)
+					return 200, kongStatus(r.live), nil
+				}
 				r.calls++
 				if !bytes.Contains(c.Body, []byte(poison)) {
 					r.live = c.Body
@@ -120,6 +126,16 @@ func rigs(blame bool) []*rig {
 		out = append(out, r)
 	}
 	return out
+}
+
+// kongStatus is Kong's GET /status for the declarative config it runs (none: all zeros).
+func kongStatus(live []byte) string {
+	h := strings.Repeat("0", 32)
+	if len(live) > 0 {
+		sum := md5.Sum(live)
+		h = hex.EncodeToString(sum[:])
+	}
+	return `{"database":{"reachable":true},"server":{"connections_active":1},"configuration_hash":"` + h + `"}`
 }
 
 func route(ing, host string, port int) kic.Route {

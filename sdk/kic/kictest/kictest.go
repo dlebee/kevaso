@@ -233,6 +233,15 @@ func restart(t *testing.T, d kic.Driver, s kic.State) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// K-089: with no record, the agent tells its own config from the image's by kic.RenderedBy.
+	if empty, err := d.Render(kic.State{Class: s.Class}); err == nil && empty.Config.Path != "" && !kic.Ours(empty.Config.Data) {
+		t.Errorf("a config with no Ingress doesn't name %q: an agent with no record couldn't tell it from the image's own", kic.RenderedBy)
+	}
+	if p.Config.Path == "" {
+		if _, ok := d.(kic.Reader); !ok {
+			t.Log("no config file and no kic.Reader: an agent with no record can't tell what the proxy runs, and holds the class until every Ingress passes")
+		}
+	}
 	if p.Config.Path != "" && p.Dir != "" && strings.HasPrefix(path.Clean(p.Config.Path), path.Clean(p.Dir)+"/") {
 		t.Errorf("the config %s is inside Dir %s, which is swept after each apply", p.Config.Path, p.Dir)
 	}

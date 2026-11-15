@@ -97,7 +97,11 @@ func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
 			if !ok {
 				return fail("Error: No such object")
 			}
-			out(fmt.Sprintf("%s %d", st, f.pid))
+			pid := f.pid // an engine gives a process id only while the container has one
+			if st != "running" && st != "paused" && st != "restarting" {
+				pid = 0
+			}
+			out(fmt.Sprintf("%s %d", st, pid))
 		case "image":
 			if !f.images[a[len(a)-1]] && f.pid1[a[len(a)-1]] == "" {
 				return fail("No such image")
@@ -369,8 +373,8 @@ func TestKillHasNoGrace(t *testing.T) {
 	if err := kri.Kill(ctx, r, silo); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.last("docker kill"); got != "docker kill --signal KILL "+n.Main {
-		t.Fatalf("kill: %q", got)
+	if indexOf(f.cmds[before:], "docker kill --signal KILL "+n.Main) < 0 || indexOf(f.cmds[before:], "docker kill --signal KILL "+n.Pause) < 0 {
+		t.Fatalf("kill (the main container, then the pause container): %q", f.cmds[before:])
 	}
 	for _, c := range f.cmds[before:] {
 		if strings.HasPrefix(c, "docker stop") {

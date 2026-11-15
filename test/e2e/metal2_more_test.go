@@ -264,7 +264,12 @@ func TestMetal2Soak(t *testing.T) {
 		for i := 0; i < n; i++ {
 			name := fmt.Sprintf("s%02d", i)
 			names = append(names, name)
-			host := []string{metalHost, metalHost2}[i%2]
+			// By capacity: machine 1 (15 CPUs allocatable, the probe on it) takes one in three, so
+			// every silo fits; one silo is one CPU, and the scheduler counts what is asked.
+			host := metalHost2
+			if i%3 == 0 {
+				host = metalHost
+			}
 			doc := boxEcho(ns, name, 8080)
 			if i%5 == 0 {
 				doc = vmEcho(ns, name, 8080)

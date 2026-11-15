@@ -17,7 +17,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
+	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/sdk/kplugin"
@@ -143,6 +145,9 @@ type Request struct {
 	To            string `json:"to"`
 	Recreate      bool   `json:"recreate,omitempty"`      // a fresh copy from the image, not the data
 	ConfirmFenced bool   `json:"confirmFenced,omitempty"` // the old copy is provably stopped
+	// Insist: move although the host just claimed its start of the silo (CheckFenced), which says
+	// it is alive. Only for a person who knows better.
+	Insist bool `json:"insist,omitempty"`
 }
 
 // Plan is how a move goes.
@@ -231,6 +236,35 @@ func Apply(st v1.SiloStatus, p Plan) v1.SiloStatus {
 	return st
 }
 
+// HandingOff reports a handoff under way: the silo waits for another host than its own to let
+// go. (movingFrom naming its own host is no handoff: that host may start it, MayStart.)
+func HandingOff(st v1.SiloStatus) bool { return st.MovingFrom != "" && st.MovingFrom != st.Host }
+
+// Begin is the check before a handoff starts (kvo move, kvoadm host drain): not while one is
+// under way (K-070). Whoever starts one writes at the version it checked (client.StartHandoff),
+// so a handoff that begins in between makes the write conflict instead of being overwritten.
+func Begin(st v1.SiloStatus) error {
+	if HandingOff(st) {
+		return fmt.Errorf("%w (from %s, which hasn't let go)", ErrMoving, st.MovingFrom)
+	}
+	return nil
+}
+
+// Replaces judges a write of a silo's status by anyone but the host it is moving from (whose
+// writes HostWrite judges) and the move handler's confirmed-fenced end of a handoff (PlanMove):
+// while a handoff from S is under way, movingFrom stays S, unless the silo is back on S (nothing
+// to hand off). Dropping or replacing it would let another host start the silo while S still runs
+// it (K-070). nil: allowed.
+func Replaces(old, next v1.SiloStatus) error {
+	if !HandingOff(old) || next.MovingFrom == old.MovingFrom {
+		return nil
+	}
+	if next.MovingFrom == "" && next.Host == old.MovingFrom {
+		return nil
+	}
+	return fmt.Errorf("%w (from %s): only %s can say it has let go of this silo", ErrMoving, old.MovingFrom, old.MovingFrom)
+}
+
 // MayStart reports whether the silo's (new) host may start it: not while another host still
 // has to let go of it.
 func MayStart(s *v1.Silo, host string) bool {
@@ -317,6 +351,11 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 		switch {
 		case n.Name != o.Name || n.AttachedTo != o.AttachedTo:
 			return fmt.Errorf("%w: volume %s: where it is attached is the control plane's to write", ErrHostWrite, o.Name)
+		case !sameButMounted(o, n):
+			// K-037: the handle, class, region, device, size and message are the control plane's
+			// (its volumes controller acts on them: attach, detach, delete; the agent formats and
+			// mounts the device). A host that rewrote them would point those at another volume.
+			return fmt.Errorf("%w: volume %s: only whether it is mounted is the host's to write", ErrHostWrite, o.Name)
 		case n.Mounted != o.Mounted && o.AttachedTo != host:
 			to := o.AttachedTo
 			if to == "" {
@@ -325,5 +364,88 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 			return fmt.Errorf("%w: volume %s is attached to %s: only that host says whether it is mounted", ErrHostWrite, o.Name, to)
 		}
 	}
+	return claimWrite(old, next, host)
+}
+
+// sameButMounted reports whether two volume statuses differ at most in mounted.
+func sameButMounted(a, b v1.VolumeStatus) bool {
+	a.Mounted = b.Mounted
+	return a == b
+}
+
+// CondStartClaim is the silo condition a host writes right before it starts the silo, against
+// the version it read, and starts only if that write applied (K-015; internal/agent's
+// ConditionStartClaim). Its message names the host: "starting on HOST at TIME".
+const CondStartClaim = "StartClaim"
+
+// StartClaimHost is the host a start claim's message names (false: it names none).
+func StartClaimHost(message string) (string, bool) {
+	rest, found := strings.CutPrefix(message, "starting on ")
+	if !found {
+		return "", false
+	}
+	h, _, found := strings.Cut(rest, " at ")
+	return h, found && h != ""
+}
+
+// claimWrite judges a host's write of a silo's start claim: a new or changed claim must be in
+// that host's own name (the control plane counts a claim as a contact of the host it names).
+func claimWrite(old, next v1.SiloStatus, host string) error {
+	n := meta.FindCondition(next.Conditions, CondStartClaim)
+	if n == nil || n.Status != meta.ConditionTrue {
+		return nil
+	}
+	if o := meta.FindCondition(old.Conditions, CondStartClaim); o != nil && *o == *n {
+		return nil // as it stood: not this write's
+	}
+	if h, ok := StartClaimHost(n.Message); !ok || h != host {
+		return fmt.Errorf("%w: %s may claim a start only in its own name (condition %s: %q)", ErrHostWrite, host, CondStartClaim, n.Message)
+	}
 	return nil
+}
+
+// StartClaimFresh is how long a start claim stands as evidence that its host is alive and may be
+// starting the silo (internal/agent's StartClaimFresh; the silo controller's too).
+const StartClaimFresh = 30 * time.Second
+
+// ErrClaimStands: a confirm-fenced move while the host just claimed its start (CheckFenced).
+var ErrClaimStands = errors.New("its host just claimed its start of this silo")
+
+// StampClaim sets a new or changed start claim's time to now, when the API received it: the
+// claim's age is judged by the control plane's clock (CheckFenced), never the agent's. A claim
+// sent again as it stood keeps its time.
+func StampClaim(old v1.SiloStatus, next *v1.SiloStatus, now time.Time) {
+	n := meta.FindCondition(next.Conditions, CondStartClaim)
+	if n == nil {
+		return
+	}
+	if o := meta.FindCondition(old.Conditions, CondStartClaim); o != nil && o.Status == n.Status && o.Reason == n.Reason &&
+		o.Message == n.Message && o.ObservedGeneration == n.ObservedGeneration {
+		n.LastTransitionTime = o.LastTransitionTime
+		return
+	}
+	n.LastTransitionTime = now.UTC()
+}
+
+// CheckFenced judges a person's confirm-fenced move of a silo whose host is lost (by its stamps):
+// a start claim of that host received less than StartClaimFresh ago says the host is alive, and
+// may be inside Start (review of the start claim, item 1). Refused then, saying when, unless the
+// person insists. now: the API server's clock, the one StampClaim stamped with.
+func CheckFenced(s *v1.Silo, r Request, now time.Time) error {
+	if !r.ConfirmFenced || r.Insist {
+		return nil
+	}
+	c := meta.FindCondition(s.Status.Conditions, CondStartClaim)
+	if c == nil || c.Status != meta.ConditionTrue {
+		return nil
+	}
+	if h, ok := StartClaimHost(c.Message); !ok || h != s.Status.Host {
+		return nil // not this placement's
+	}
+	age := now.Sub(c.LastTransitionTime)
+	if age >= StartClaimFresh {
+		return nil
+	}
+	return fmt.Errorf("%w: %s claimed its start %s ago, so it answered then and may be starting it now: it is not provably stopped. Wait %s, or add --insist if you know the old copy is off",
+		ErrClaimStands, s.Status.Host, max(age, 0).Round(time.Second), (StartClaimFresh - age).Round(time.Second))
 }

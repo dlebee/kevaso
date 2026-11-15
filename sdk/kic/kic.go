@@ -73,6 +73,13 @@ type Challenge struct {
 // ChallengePrefix is the path ACME HTTP-01 challenges are asked on.
 const ChallengePrefix = "/.well-known/acme-challenge/"
 
+// ChallengePath says whether a route's path would take the requests ACME challenges are asked on
+// (proxies may match paths without case).
+func ChallengePath(p string) bool {
+	p = strings.ToLower(p)
+	return p == strings.TrimSuffix(ChallengePrefix, "/") || strings.HasPrefix(p, ChallengePrefix)
+}
+
 // Plan is what a driver rendered: what to put where, how to check it, how to make it take effect.
 type Plan struct {
 	// Config is the proxy's main configuration. The agent writes it next to its path (Path+".next"),
@@ -90,6 +97,9 @@ type Plan struct {
 	Check []string `json:"check,omitempty"`
 	// Reload makes the checked config take effect.
 	Reload Action `json:"reload"`
+	// Record, for a plan with no config file: where the agent keeps its record of what it applied
+	// in the silo, in a folder only the proxy's own user may write (empty: the agent's default).
+	Record string `json:"record,omitempty"`
 }
 
 // ConfigToken, in Check, is replaced by the staged config's path.
@@ -227,6 +237,8 @@ func CheckState(s State) error {
 			return fmt.Errorf("ingress %s: host %q", r.Ingress, r.Host)
 		case !safePath.MatchString(r.Path):
 			return fmt.Errorf("ingress %s: path %q (letters, digits and ._~%%/- only)", r.Ingress, r.Path)
+		case ChallengePath(r.Path):
+			return fmt.Errorf("ingress %s: path %q: ACME challenges are answered there, for every host", r.Ingress, r.Path)
 		case !safeAddr.MatchString(r.Backend.Address) || r.Backend.Port <= 0 || r.Backend.Port > 65535:
 			return fmt.Errorf("ingress %s: backend %s:%d", r.Ingress, r.Backend.Address, r.Backend.Port)
 		}
@@ -347,6 +359,67 @@ const (
 	BlameMark = "# ingress "
 	BlameEnd  = "# -"
 )
+
+// RenderedBy is in every config file a driver renders (in a comment), so a configuration Kevaso
+// wrote can be told from the image's own (K-089: an agent that has no record of what it applied
+// finds out from the proxy itself what is served).
+const RenderedBy = "Rendered by Kevaso"
+
+// Ours says whether data is a configuration Kevaso rendered: it names RenderedBy or marks an
+// Ingress's section.
+func Ours(data []byte) bool {
+	if strings.Contains(string(data), RenderedBy) {
+		return true
+	}
+	for _, l := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), BlameMark) {
+			return true
+		}
+	}
+	return false
+}
+
+// Sections splits a configuration rendered with blame markers into the text outside every marked
+// section and each Ingress's sections (marker lines included), in order. Two configurations whose
+// outside texts are equal differ only in what their Ingresses brought in.
+func Sections(data []byte) (outside string, by map[string][]string) {
+	by = map[string][]string{}
+	var out, cur strings.Builder
+	who := ""
+	for _, l := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(l)
+		if who == "" {
+			if ing, ok := strings.CutPrefix(t, BlameMark); ok {
+				who = ing
+				cur.Reset()
+				cur.WriteString(t + "\n")
+				continue
+			}
+			out.WriteString(l + "\n")
+			continue
+		}
+		cur.WriteString(t + "\n")
+		if t == BlameEnd {
+			by[who] = append(by[who], cur.String())
+			who = ""
+		}
+	}
+	if who != "" { // an unterminated section: it is part of the outside text, so nothing matches it
+		out.WriteString(cur.String())
+	}
+	return out.String(), by
+}
+
+// Reader is a driver whose proxy can be asked what configuration it runs: for a driver with no
+// config file to read back (an admin API), it is how the agent checks its record of what it
+// applied against the proxy (K-089, K-090).
+type Reader interface {
+	// Running is the call that asks (p is any plan of the class, for its options: the port).
+	Running(p Plan) Call
+	// Fingerprint reduces the proxy's answer to what identifies the configuration it runs: the
+	// same for the same configuration, "" when it runs none. An error: the answer can't be read.
+	Fingerprint(status int, body string) (string, error)
+}
 
 // MarkedBlame is the Ingress whose marked section holds line (1-based) of data, if any.
 func MarkedBlame(data []byte, line int) []string {
