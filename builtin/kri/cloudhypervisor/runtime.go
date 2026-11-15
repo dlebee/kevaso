@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -382,26 +383,35 @@ func (r *Runtime) active(ctx context.Context, unit string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// vmm says what systemd says of the VMM's unit, and whether a process of it may still run. Only a
-// unit that is inactive or failed, with no main process and no process left in its cgroup, has
-// gone: every other state (activating, deactivating, reloading, one systemctl doesn't answer) may
-// still run the guest, and the fences take "not up" for stopped.
-func (r *Runtime) vmm(ctx context.Context, unit string) (state string, up bool) {
-	state = r.active(ctx, unit)
-	switch state {
-	case "inactive", "failed", "":
-	default:
+// vmm says what systemd says of the VMM's unit, and whether a process of it may still run. An
+// active unit runs. In every other state it decides from the processes (review-batch3 D): the
+// unit's main process and its control group as systemd reports them, and the VMM itself, found
+// by its API socket on its command line (a cgroup.procs that isn't there may be a cgroup removed,
+// or cgroups mounted elsewhere on this host). Any of them there, or any of them that can't be
+// told (systemctl show failing or not naming the main process of a unit that isn't stopped, a
+// cgroup that can't be read, pgrep failing), and it may run: the fences take "not up" for
+// stopped. A unit wedged in another state (deactivating, activating, reloading, maintenance)
+// with none of them is cleaned up (SIGKILL to the unit's nothing, reset-failed), so the silo can
+// move on: stopped, reset, started again or deleted.
+func (r *Runtime) vmm(ctx context.Context, n Names) (state string, up bool) {
+	state = r.active(ctx, n.Unit)
+	stopped := state == "inactive" || state == "failed" || state == ""
+	if state == "active" {
 		return state, true
 	}
-	out, err := r.Host.Run(ctx, "systemctl", "show", "--property=MainPID,ControlGroup", unit)
+	out, err := r.Host.Run(ctx, "systemctl", "show", "--property=MainPID,ControlGroup", n.Unit)
 	if err != nil {
 		return state, true // can't say: not gone
 	}
+	named := false
 	for l := range strings.Lines(string(out)) {
 		k, v, _ := strings.Cut(strings.TrimSpace(l), "=")
 		switch {
-		case k == "MainPID" && v != "" && v != "0":
-			return state, true
+		case k == "MainPID":
+			named = true
+			if v != "" && v != "0" {
+				return state, true
+			}
 		case k == "ControlGroup" && v != "":
 			procs, err := r.Host.ReadFile("/sys/fs/cgroup" + v + "/cgroup.procs")
 			if (err != nil && !errors.Is(err, os.ErrNotExist)) || len(bytes.TrimSpace(procs)) > 0 {
@@ -409,12 +419,37 @@ func (r *Runtime) vmm(ctx context.Context, unit string) (state string, up bool) 
 			}
 		}
 	}
+	if !named && !stopped {
+		return state, true // a unit on its way somewhere, its main process not said: can't tell
+	}
+	if r.vmmProcess(ctx, n.Socket) {
+		return state, true
+	}
+	if !stopped {
+		// Wedged with nothing of it running: its stop job ends, the unit is put back to inactive.
+		_, _ = r.Host.Run(ctx, "systemctl", "kill", "--signal=SIGKILL", "--kill-whom=all", n.Unit)
+		_, _ = r.Host.Run(ctx, "systemctl", "reset-failed", n.Unit)
+	}
 	return state, false
+}
+
+// vmmProcess says whether a process runs with the VMM's API socket on its command line (the VMM,
+// or a call to it), or that can't be told.
+func (r *Runtime) vmmProcess(ctx context.Context, socket string) bool {
+	out, err := r.Host.Run(ctx, "pgrep", "-f", "--", "--api-socket "+socket)
+	if len(bytes.TrimSpace(out)) > 0 {
+		return true
+	}
+	var ee *exec.ExitError
+	if err == nil || errors.As(err, &ee) && ee.ExitCode() == 1 {
+		return false // pgrep: nothing matches
+	}
+	return true // pgrep didn't answer: can't say
 }
 
 // gone confirms the VMM is gone after a stop or a kill.
 func (r *Runtime) gone(ctx context.Context, id kri.ID, how string) error {
-	if state, up := r.vmm(ctx, NamesFor(id).Unit); up {
+	if state, up := r.vmm(ctx, NamesFor(id)); up {
 		return fmt.Errorf("%s: the VMM may still run after %s (its unit is %q, or a process of it is left)", id, how, state)
 	}
 	return nil
@@ -521,7 +556,7 @@ func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 	if err != nil {
 		// Never "absent" (K-094: a fence would count it stopped), and never made again: Running
 		// while its VMM runs, else Failed, saying why.
-		if _, up := r.vmm(ctx, NamesFor(id).Unit); up {
+		if _, up := r.vmm(ctx, NamesFor(id)); up {
 			return kri.Status{State: kri.Running, Message: err.Error()}, nil
 		}
 		return kri.Status{State: kri.Failed, Message: err.Error() + ": its VMM doesn't run; delete the silo, or restore the file, to go on"}, nil
@@ -534,7 +569,7 @@ func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 		// (Create redoes it); never started, so there's no disk of a running silo to keep.
 		return kri.Status{State: kri.Absent}, nil
 	}
-	switch state, up := r.vmm(ctx, NamesFor(id).Unit); {
+	switch state, up := r.vmm(ctx, NamesFor(id)); {
 	case up && state == "active":
 		return kri.Status{State: kri.Running, Address: st.IP}, nil
 	case up:

@@ -421,7 +421,7 @@ func (r *Runtime) SetVolumes(ctx context.Context, id kri.ID, vols []kri.Volume) 
 		return false, nil
 	}
 	n := NamesFor(id)
-	if _, up := r.vmm(ctx, n.Unit); up {
+	if _, up := r.vmm(ctx, n); up {
 		return true, nil
 	}
 	old := st.layout()
