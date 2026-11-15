@@ -68,6 +68,8 @@ type Controller struct {
 	assigned map[string]int // indexes written but maybe not in the cache yet (like an assume cache)
 	// Claims make each mesh index one host's, by the store (another leader's writes included).
 	Claims *claims.Claims
+	// Contacts, if set, learn of every heartbeat seen (the silo controller reads them).
+	Contacts *Contacts
 }
 
 // PoolMeshIndex is the claims pool of hosts' mesh indexes.
@@ -145,6 +147,7 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		return engine.Result{}, nil
 	}
 	h := o.(*v1.Host)
+	c.Contacts.Observe(h, c.Clock.Now())
 	c.mu.Lock()
 	wrote, err := c.assignIndex(ctx, h)
 	c.mu.Unlock()

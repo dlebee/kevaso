@@ -9,6 +9,7 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/controllers/silo"
+	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/sdk/kplugin"
@@ -36,7 +37,8 @@ func TestHostLossTruthTable(t *testing.T) {
 		s.Spec.Volumes = []v1.Volume{{Name: "data", Class: "juicefs", Size: "10Gi", MountPath: "/data"}}
 		s.Spec.Availability.OnHostLoss = policy
 		if opted {
-			s.Spec.Availability.OnControlPlaneLoss = v1.OnControlPlaneLossStop
+			s.Spec.Availability.OnControlPlaneLoss = v1.OnControlPlaneLossStop // after: 2m (the default)
+			s.Status.Conditions = []meta.Condition{fence.ArmedCondition("hv1", 2*time.Minute, s.Generation)}
 		}
 		s.Status.Host, s.Status.Phase, s.Status.SiloIP = "hv1", "Running", "10.64.1.2"
 		s.Status.Image = &v1.SiloImage{From: "app", Ref: "app:1", Running: "app:1"}
@@ -44,7 +46,8 @@ func TestHostLossTruthTable(t *testing.T) {
 		return s
 	}
 	lostAt := now
-	silences := []time.Duration{time.Second, 31 * time.Second, 2*time.Minute + time.Second, 10 * time.Minute, time.Hour, 48 * time.Hour}
+	silences := []time.Duration{time.Second, 31 * time.Second, 2*time.Minute + time.Second, 2*time.Minute + silo.StopMargin(2*time.Minute) - time.Second,
+		10 * time.Minute, time.Hour, 48 * time.Hour}
 
 	for _, opted := range []bool{false, true} {
 		for _, policy := range []string{v1.OnHostLossWait, v1.OnHostLossRecreate, v1.OnHostLossMove} {
@@ -52,13 +55,34 @@ func TestHostLossTruthTable(t *testing.T) {
 			t.Run(name+"/silent", func(t *testing.T) {
 				s := mk(policy, opted)
 				hosts := []*v1.Host{docker(lostHost("hv1", lostAt)), docker(readyHost("hv2"))}
+				// Only an opted-in silo whose onHostLoss starts it elsewhere, once the control
+				// plane itself has heard nothing from hv1 for after + margin.
+				restarts := opted && policy != v1.OnHostLossWait
+				earliest := 2*time.Minute + silo.StopMargin(2*time.Minute)
 				for _, d := range silences {
-					st, _, _, err := silo.DecideIn(s, hosts, nil, lostAt.Add(d), env)
+					e := env
+					e.Silence = func(string) time.Duration { return d }
+					st, _, again, err := silo.DecideIn(s, hosts, nil, lostAt.Add(d), e)
 					if err != nil {
 						t.Fatal(err)
 					}
-					// Above all: never started elsewhere without a confirmation (opted-in silos:
-					// item 4 of the control lane's work; until then they wait too).
+					if restarts && d >= earliest {
+						c := meta.FindCondition(st.Conditions, "HostUnreachable")
+						if st.Host != "hv2" || c == nil || c.Status != meta.ConditionFalse || !strings.Contains(c.Message, "onControlPlaneLoss: Stop") {
+							t.Fatalf("after %v of silence: on %q, %+v", d, st.Host, c)
+						}
+						if policy == v1.OnHostLossMove && (len(st.Volumes) != 1 || st.Image.Running != "app:1") {
+							t.Fatalf("Move: not with its data: %+v", st)
+						}
+						if policy == v1.OnHostLossRecreate && st.Image.Running != "" {
+							t.Fatalf("Recreate: not a fresh copy: %+v", st.Image)
+						}
+						return
+					}
+					if restarts && again != earliest-d {
+						t.Fatalf("after %v: look again in %v, want %v", d, again, earliest-d)
+					}
+					// Above all: never started elsewhere without a confirmation.
 					if st.Host != "hv1" || st.MovingFrom != "" {
 						t.Fatalf("after %v of silence: placed on %q (moving from %q): restarted elsewhere without a confirmation", d, st.Host, st.MovingFrom)
 					}
@@ -114,6 +138,62 @@ func TestHostLossTruthTable(t *testing.T) {
 					s.Status = st
 				}
 			})
+		}
+	}
+}
+
+// An onControlPlaneLoss: Stop silo is restarted elsewhere only when everything holds: its host's
+// fence said it stops this very spec (FenceArmed, this generation), and this control plane's own
+// silence count, not the agent's timestamp, reached after + margin.
+func TestAStopSiloRestartsOnlyWithItsFenceArmedAndOurOwnSilence(t *testing.T) {
+	env := scheduler.Env{Classes: map[string]scheduler.Class{"juicefs": {Plugin: "juicefs", Topology: kplugin.TopologyGlobal}}}
+	mk := func() *v1.Silo {
+		s := newSilo("one")
+		s.Generation = 3
+		s.Spec.Availability.OnHostLoss = v1.OnHostLossRecreate
+		s.Spec.Availability.OnControlPlaneLoss, s.Spec.Availability.After = v1.OnControlPlaneLossStop, "45s"
+		s.Status.Host, s.Status.Phase = "hv1", "Running"
+		s.Status.Conditions = []meta.Condition{fence.ArmedCondition("hv1", 45*time.Second, 3)}
+		return s
+	}
+	margin := silo.StopMargin(45 * time.Second)
+	if margin < 15*time.Second {
+		t.Fatalf("margin %v", margin)
+	}
+	long := func(string) time.Duration { return 45*time.Second + margin }
+	hosts := []*v1.Host{lostHost("hv1", now.Add(-time.Hour)), readyHost("hv2")}
+	for _, tc := range []struct {
+		name    string
+		mod     func(*v1.Silo)
+		silence func(string) time.Duration
+		moves   bool
+	}{
+		{"all there", func(*v1.Silo) {}, long, true},
+		{"one second short, by our clock (the agent's stamp says an hour)", func(*v1.Silo) {}, func(string) time.Duration { return 45*time.Second + margin - time.Second }, false},
+		{"no silence count at all", func(*v1.Silo) {}, nil, false},
+		{"fence never armed", func(s *v1.Silo) { s.Status.Conditions = nil }, long, false},
+		{"fence armed False", func(s *v1.Silo) { s.Status.Conditions[0].Status = meta.ConditionFalse }, long, false},
+		{"fence armed for an older spec", func(s *v1.Silo) { s.Status.Conditions[0].ObservedGeneration = 2 }, long, false},
+		{"fence armed by another host (before a move)", func(s *v1.Silo) { s.Status.Conditions[0] = fence.ArmedCondition("hv0", 45*time.Second, 3) }, long, false},
+		{"fence armed with another after", func(s *v1.Silo) { s.Spec.Availability.After = "2m" }, long, false},
+		{"not opted in", func(s *v1.Silo) { s.Spec.Availability.OnControlPlaneLoss, s.Spec.Availability.After = "", "" }, long, false},
+	} {
+		s := mk()
+		tc.mod(s)
+		e := env
+		e.Silence = tc.silence
+		st, _, _, err := silo.DecideIn(s, hosts, nil, now, e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if moved := st.Host == "hv2"; moved != tc.moves {
+			t.Errorf("%s: on %q", tc.name, st.Host)
+		}
+		if !tc.moves {
+			c := meta.FindCondition(st.Conditions, "HostUnreachable")
+			if c == nil || c.Status != meta.ConditionTrue {
+				t.Errorf("%s: %+v", tc.name, c)
+			}
 		}
 	}
 }
