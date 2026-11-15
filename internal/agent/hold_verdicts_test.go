@@ -14,7 +14,6 @@ import (
 // Today the watermark only has Answer: such an answer holds (JudgeAnswer), until a healthy answer
 // clears it.
 func TestTheWatermarkGivesTheClientItsVerdicts(t *testing.T) {
-	t.Skip("hold review item 1: host lane to fix (Watermark.Judged, see control-4.md)")
 	wm := agent.OpenWatermark("", nil)
 	vj, ok := any(wm).(client.ControlPlaneVerdicts)
 	if !ok {

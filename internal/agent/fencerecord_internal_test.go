@@ -101,11 +101,11 @@ func TestFenceRecordCoversTheSiloWhileItCanRun(t *testing.T) {
 		t.Fatal("the silo started before its policy was in the fence record")
 	}
 
-	// Placed elsewhere while its copy here can't be removed yet: still recorded.
+	// Handed off elsewhere while its copy here can't be removed yet: still recorded.
 	rt.holdDelete.Store(true)
 	for { // the agent writes this silo's status too: read again on a conflict
 		_ = c.Get(ctx, "Silo", "dev", "web", s)
-		s.Status.Host = "hv2"
+		s.Status.Host, s.Status.MovingFrom = "hv2", "hv1"
 		err := c.UpdateStatus(ctx, s)
 		if client.IsConflict(err) {
 			continue

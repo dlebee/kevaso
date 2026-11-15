@@ -26,9 +26,28 @@ type Proxy struct {
 	Check               func(config []byte, files map[string][]byte) string
 }
 
-// New is an empty proxy with nginx's check and reload.
+// NginxImageConfig stands for the stock nginx image's own /etc/nginx/nginx.conf: a silo of the
+// vendor's image always has one, and it is nothing of Kevaso's.
+const NginxImageConfig = "user  nginx;\nworker_processes  auto;\npid        /run/nginx.pid;\nevents {\n    worker_connections  1024;\n}\nhttp {\n    include /etc/nginx/conf.d/*.conf;\n}\n"
+
+// CaddyImageConfig stands for the stock caddy image's own /etc/caddy/Caddyfile.
+const CaddyImageConfig = ":80 {\n\troot * /usr/share/caddy\n\tfile_server\n}\n"
+
+// New is a fresh silo of the stock nginx image (its own nginx.conf, nothing of Kevaso's) with
+// nginx's check and reload.
 func New() *Proxy {
-	return &Proxy{Files: map[string][]byte{}, CheckCmd: []string{"nginx", "-t"}, ReloadCmd: []string{"nginx", "-s", "reload"}}
+	return &Proxy{Files: map[string][]byte{"/etc/nginx/nginx.conf": []byte(NginxImageConfig)},
+		CheckCmd: []string{"nginx", "-t"}, ReloadCmd: []string{"nginx", "-s", "reload"}}
+}
+
+// Reset puts the silo's files back to its image's (a recreated silo): files, nothing else.
+func (p *Proxy) Reset(files map[string][]byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Files = map[string][]byte{}
+	for k, v := range files {
+		p.Files[k] = append([]byte(nil), v...)
+	}
 }
 
 func prefix(argv, p []string) bool { return len(argv) >= len(p) && slices.Equal(argv[:len(p)], p) }

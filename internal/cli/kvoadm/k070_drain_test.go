@@ -15,7 +15,6 @@ import (
 // silo alone (and say so), and write every other silo through client.StartHandoff, which reads
 // afresh and refuses a handoff under way at the version it writes.
 func TestK070DrainLeavesAHandoffUnderWay(t *testing.T) {
-	t.Skip("K-070: host lane to fix (DrainPlan skips silos in a handoff; hostDrain writes with client.StartHandoff); see control-4.md")
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: "d", Name: "s", Generation: 1},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}, Availability: v1.Availability{OnHostLoss: v1.OnHostLossRecreate}}}
 	s.Status.Host, s.Status.MovingFrom, s.Status.Phase = "D", "S", "Scheduled"

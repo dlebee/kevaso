@@ -63,8 +63,8 @@ func Conformance(t *testing.T, s Suite) {
 		t.Fatalf("info: %v", err)
 	}
 	t.Run("info", func(t *testing.T) {
-		if info.Name == "" || info.Protocol != kplugin.Protocol {
-			t.Errorf("name %q, protocol %q", info.Name, info.Protocol)
+		if info.Name == "" || info.Protocol != kplugin.Protocol || info.Revision != kplugin.Revision {
+			t.Errorf("name %q, protocol %q, sdk wire revision %d (want %d)", info.Name, info.Protocol, info.Revision, kplugin.Revision)
 		}
 		seen := map[string]bool{}
 		for _, cl := range append(append([]kplugin.Class(nil), info.Storage...), info.LoadBalancers...) {
@@ -284,6 +284,9 @@ func Conformance(t *testing.T, s Suite) {
 				var at kplugin.AttachmentStatus
 				if err := again(func() (err error) { at, err = c.AttachVolume(ctx, a); return }); err != nil || at.Device == "" {
 					t.Fatalf("attach: %+v %v", at, err)
+				}
+				if err := kplugin.DevicePathProblem(at.Device); err != nil { // core refuses it (K-038)
+					t.Fatalf("attach: %v", err)
 				}
 				var at2 kplugin.AttachmentStatus
 				if err := again(func() (err error) { at2, err = c.AttachVolume(ctx, a); return }); err != nil || at2.Device != at.Device {

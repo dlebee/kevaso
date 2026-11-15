@@ -92,8 +92,8 @@ func TestRunsASiloAndItsInitStepsThenReady(t *testing.T) {
 		t.Fatalf("init %+v", s.Status.Init)
 	}
 	// The order the runtime saw: create, start, then nothing else needed.
-	if !slices.Contains(e.rt.Calls, "create dev/web") || !slices.Contains(e.rt.Calls, "start dev/web") {
-		t.Fatalf("runtime calls %v", e.rt.Calls)
+	if !slices.Contains(e.rt.CallLog(), "create dev/web") || !slices.Contains(e.rt.CallLog(), "start dev/web") {
+		t.Fatalf("runtime calls %v", e.rt.CallLog())
 	}
 }
 
@@ -124,7 +124,7 @@ func TestIgnoresSilosOnOtherHosts(t *testing.T) {
 	e.place(t, "elsewhere", "hv2", nil)
 	e.place(t, "mine", "hv1", nil)
 	e.wait(t, "mine", func(s *v1.Silo) bool { return meta.IsTrue(s.Status.Conditions, "Ready") })
-	if slices.Contains(e.rt.Calls, "create dev/elsewhere") {
+	if slices.Contains(e.rt.CallLog(), "create dev/elsewhere") {
 		t.Fatal("the agent created a silo placed on another host")
 	}
 }
@@ -323,7 +323,7 @@ func TestImageChangeAndResetAreStopFirst(t *testing.T) {
 	if len(s.Status.Init) != 1 || s.Status.Init[0].State != "Done" {
 		t.Fatalf("init steps didn't run again on the fresh disk: %+v", s.Status.Init)
 	}
-	calls := strings.Join(e.rt.Calls, ",")
+	calls := strings.Join(e.rt.CallLog(), ",")
 	if i, j := strings.LastIndex(calls, "stop dev/node"), strings.LastIndex(calls, "reset dev/node"); i < 0 || j < i {
 		t.Fatalf("not stop-first: %s", calls)
 	}
@@ -335,7 +335,7 @@ func TestImageChangeAndResetAreStopFirst(t *testing.T) {
 	e.wait(t, "node", func(s *v1.Silo) bool {
 		return s.Status.Image.Reset == "2026-11-12T10:00:00Z" && meta.IsTrue(s.Status.Conditions, "Ready")
 	})
-	if n := strings.Count(strings.Join(e.rt.Calls, ","), "reset dev/node"); n != 2 {
+	if n := strings.Count(strings.Join(e.rt.CallLog(), ","), "reset dev/node"); n != 2 {
 		t.Fatalf("%d resets, want 2", n)
 	}
 }
@@ -380,7 +380,9 @@ func TestReadiness(t *testing.T) {
 // another host removes that copy, and with it (every runtime does, on Delete) its local volumes.
 // Admission never lets a silo with a host-local volume be recreated elsewhere, so that copy should
 // never hold one; if it does anyway (here: its status moved by hand), the host stops the copy and
-// keeps it, volumes and all, until the silo is deleted. A copy without local volumes goes as before.
+// keeps it, volumes and all, until the silo is deleted. A copy without local volumes is stopped
+// and kept too, its disk with it: placed elsewhere with no handoff from this host is no proof it may
+// go (review claim A; rootdisk_test.go).
 func TestOldCopyWithLocalVolumesIsKept(t *testing.T) {
 	e := setup(t)
 	mk := func(name string, vols []v1.Volume) *v1.Silo {
@@ -408,7 +410,7 @@ func TestOldCopyWithLocalVolumesIsKept(t *testing.T) {
 		ids, _ := e.rt.List(e.ctx)
 		return slices.ContainsFunc(ids, func(id kri.ID) bool { return id.Name == name })
 	}
-	calls := func() []string { return slices.Clone(e.rt.Calls) }
+	calls := func() []string { return e.rt.CallLog() }
 	until := func(what string, ok func() bool) {
 		t.Helper()
 		for !ok() {
@@ -419,9 +421,12 @@ func TestOldCopyWithLocalVolumesIsKept(t *testing.T) {
 			}
 		}
 	}
-	until("plain removed", func() bool { return !has("plain") })
+	until("plain stopped", func() bool { return slices.Contains(calls(), "stop dev/plain") })
 	until("keep stopped", func() bool { return slices.Contains(calls(), "stop dev/keep") })
 	time.Sleep(200 * time.Millisecond) // more reconciles: still kept
+	if !has("plain") || slices.Contains(calls(), "delete dev/plain") {
+		t.Fatalf("the copy placed elsewhere with no handoff was removed: %v", calls())
+	}
 	if !has("keep") || slices.Contains(calls(), "delete dev/keep") {
 		t.Fatalf("the copy with a local volume was removed: %v", calls())
 	}

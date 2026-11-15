@@ -125,7 +125,7 @@ func Load(dir string) (*Package, error) {
 			return nil, fmt.Errorf("%s: %w", f, err)
 		}
 		for i, d := range docs {
-			obj, _, err := v1.Decode(d)
+			obj, _, err := v1.DecodeStrict(d) // a misspelled field is an error, never dropped (K-054)
 			if err != nil {
 				return nil, fmt.Errorf("%s, document %d: %w", f, i+1, err)
 			}
@@ -190,8 +190,9 @@ var (
 )
 
 // ValidName says whether a plugin name is good: lower-case letters, digits and -, starting with a
-// letter, at most 31 characters.
-func ValidName(n string) bool { return pluginNameRE.MatchString(n) }
+// letter, at most 31 characters, and not ending in -node (plugin X's node side is
+// kevaso-plugin-X-node on a host: K-047).
+func ValidName(n string) bool { return pluginNameRE.MatchString(n) && !strings.HasSuffix(n, "-node") }
 
 // forbidden are resources a plugin's roles can't reach: they would let it grant itself more
 // (RBAC, tokens), change what the API serves or admits, or touch other plugins.
@@ -203,6 +204,9 @@ var forbidden = []string{"roles", "rolebindings", "clusterroles", "clusterrolebi
 // resourceRE is a resource a plugin's role can name: a plain name (a built-in's plural or a
 // plugin kind's "plural.group"), and at most one subresource. No wildcard of any kind.
 var resourceRE = regexp.MustCompile(`^[a-z][a-z0-9.-]*(/[a-z][a-z0-9-]*)?$`)
+
+// verbRE is a verb: get, create, read-value, ...
+var verbRE = regexp.MustCompile(`^[a-z][a-z-]*$`)
 
 // forbiddenVerbs on a resource: secrets' values and every approval are people's.
 var forbiddenVerbs = map[string][]string{"secrets": {v1.VerbReadValue, v1.VerbApprove}, v1.ResourceExposure: {v1.VerbApprove}}
@@ -294,8 +298,13 @@ func RuleProblems(r v1.PolicyRule) []string {
 	if len(r.Verbs) == 0 || len(r.Resources) == 0 {
 		errs = append(errs, "needs verbs and resources")
 	}
-	if slices.Contains(r.Verbs, "*") {
-		errs = append(errs, "verbs: * isn't for plugins: name each verb")
+	for _, v := range r.Verbs {
+		switch {
+		case v == "*":
+			errs = append(errs, "verbs: * isn't for plugins: name each verb")
+		case !verbRE.MatchString(v):
+			errs = append(errs, fmt.Sprintf("verbs: %q isn't a verb (lower-case letters and -)", v))
+		}
 	}
 	for _, res := range r.Resources {
 		switch {

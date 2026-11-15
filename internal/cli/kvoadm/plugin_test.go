@@ -11,7 +11,7 @@ import (
 )
 
 func TestPluginUnit(t *testing.T) {
-	u := PluginUnit(PluginOptions{Name: "linode", Creds: map[string]string{"token": "/x"}, Config: "c.json"})
+	u := mustUnit(t, PluginOptions{Name: "linode", Creds: map[string]string{"token": "/x"}, Config: "c.json"})
 	for _, want := range []string{
 		"ExecStart=/usr/local/bin/kevaso-plugin-linode serve --socket /run/kevaso-plugins/linode/plugin.sock --config %d/config",
 		"DynamicUser=yes", "RuntimeDirectory=kevaso-plugins/linode\n", "RuntimeDirectoryPreserve=yes",
@@ -24,7 +24,7 @@ func TestPluginUnit(t *testing.T) {
 		}
 	}
 	// The node side gets its socket's folder too (node.sock), still unprivileged by default.
-	n := PluginUnit(PluginOptions{Name: "linode", Side: "node"})
+	n := mustUnit(t, PluginOptions{Name: "linode", Side: "node"})
 	for _, want := range []string{"ExecStart=/usr/local/bin/kevaso-plugin-linode node --socket /run/kevaso-plugins/linode/node.sock\n",
 		"RuntimeDirectory=kevaso-plugins/linode\n", "DynamicUser=yes", "ProtectSystem=strict"} {
 		if !strings.Contains(n, want) {
@@ -43,7 +43,7 @@ func TestPluginUnit(t *testing.T) {
 // what its unit grants, and nothing that would put its mounts in a namespace of its own.
 func TestPrivilegedPluginUnit(t *testing.T) {
 	node := kplugin.Needs{Root: true, Capabilities: []string{"CAP_SYS_ADMIN"}, Devices: []string{"/dev/fuse"}, HostMounts: true}
-	u := PluginUnit(PluginOptions{Name: "juicefs", Side: "node", Needs: node, Config: "c.json"})
+	u := mustUnit(t, PluginOptions{Name: "juicefs", Side: "node", Needs: node, Config: "c.json"})
 	for _, want := range []string{
 		"ExecStart=/usr/local/bin/kevaso-plugin-juicefs node --socket /run/kevaso-plugins/juicefs/node.sock --config %d/config",
 		"CapabilityBoundingSet=CAP_SYS_ADMIN\n", "AmbientCapabilities=\n", "NoNewPrivileges=yes",
@@ -64,7 +64,7 @@ func TestPrivilegedPluginUnit(t *testing.T) {
 	}
 	// A root side that mounts privately (the JuiceFS controller side) keeps its own namespace.
 	ctl := kplugin.Needs{Root: true, Capabilities: []string{"CAP_SYS_ADMIN"}, Devices: []string{"/dev/fuse"}, WritePaths: []string{"/var/lib/kevaso-provider-juicefs"}}
-	c := PluginUnit(PluginOptions{Name: "juicefs", Needs: ctl})
+	c := mustUnit(t, PluginOptions{Name: "juicefs", Needs: ctl})
 	// …and systemd makes its state folder before the namespace: a writable path that isn't there
 	// fails the unit (status 226/NAMESPACE, as on the first real install).
 	for _, want := range []string{"ProtectSystem=strict", "ReadWritePaths=/var/lib/kevaso-provider-juicefs\n", "DeviceAllow=/dev/fuse rw", "UMask=0077",
@@ -80,7 +80,7 @@ func TestPrivilegedPluginUnit(t *testing.T) {
 		}
 	}
 	// Capabilities without root: a dynamic user holding just those.
-	d := PluginUnit(PluginOptions{Name: "bgp", Side: "node", Needs: kplugin.Needs{Capabilities: []string{"CAP_NET_ADMIN"}}})
+	d := mustUnit(t, PluginOptions{Name: "bgp", Side: "node", Needs: kplugin.Needs{Capabilities: []string{"CAP_NET_ADMIN"}}})
 	if !strings.Contains(d, "DynamicUser=yes") || !strings.Contains(d, "AmbientCapabilities=CAP_NET_ADMIN\n") || !strings.Contains(d, "CapabilityBoundingSet=CAP_NET_ADMIN\n") {
 		t.Errorf("dynamic user with a capability:\n%s", d)
 	}
@@ -100,7 +100,7 @@ func TestPluginManifestGrant(t *testing.T) {
 		t.Fatalf("%+v %v", o.Needs, err)
 	}
 	var out bytes.Buffer
-	if err := grantNeeds(o, &out); err == nil || !strings.Contains(err.Error(), "--yes") {
+	if err := grantNeeds(o, nil, nil, &out); err == nil || !strings.Contains(err.Error(), "--yes") {
 		t.Fatalf("privileges without --yes: %v", err)
 	}
 	for _, want := range []string{"runs as root", "capabilities: CAP_SYS_ADMIN", "devices: /dev/fuse", "the host's mount namespace"} {
@@ -109,12 +109,12 @@ func TestPluginManifestGrant(t *testing.T) {
 		}
 	}
 	o.Yes = true
-	if err := grantNeeds(o, &out); err != nil {
+	if err := grantNeeds(o, nil, nil, &out); err != nil {
 		t.Fatal(err)
 	}
 	ctl := o
 	ctl.Side, ctl.Yes = "", false
-	if err := readManifest(&ctl); err != nil || ctl.Needs.Privileged() || grantNeeds(ctl, &out) != nil {
+	if err := readManifest(&ctl); err != nil || ctl.Needs.Privileged() || grantNeeds(ctl, nil, nil, &out) != nil {
 		t.Fatalf("the controller side asks for nothing: %+v %v", ctl.Needs, err)
 	}
 	other := o

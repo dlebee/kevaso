@@ -30,6 +30,9 @@ message PluginInfo {
   repeated Class load_balancers = 5;
   repeated Class storage = 6;
   repeated string dns = 7; // DNS provider names
+  // The wire revision of the sdk the plugin was built with (kplugin.Revision); 0: before there
+  // was one. Core refuses a plugin outside the revisions it serves.
+  uint32 revision = 8;
 }
 
 message Class {

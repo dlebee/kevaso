@@ -35,16 +35,18 @@ type Needs struct {
 	// needs one (read-only system, private /tmp): the price of mounting for others. Needs Root.
 	HostMounts bool `json:"hostMounts,omitempty"`
 	// WritePaths are folders it writes (its state, caches); the rest of the system is read-only to
-	// it. Not with HostMounts (nothing is read-only then).
+	// it. Not with HostMounts (nothing is read-only then). Only the plugin's own folders may be
+	// named (WritePathProblem), and the operator grants them like any other privilege.
 	WritePaths []string `json:"writePaths,omitempty"`
 	// Socket is the side's socket in Dir/NAME (default plugin.sock for the controller side,
 	// node.sock for the node side): kevasod only looks there.
 	Socket string `json:"socket,omitempty"`
 }
 
-// Privileged reports whether the side asks for more than the default.
+// Privileged reports whether the side asks for more than the default, i.e. what the operator must
+// grant: a folder to write is one of those (it is handed to the plugin's user).
 func (n Needs) Privileged() bool {
-	return n.Root || len(n.Capabilities) > 0 || len(n.Devices) > 0 || n.HostMounts
+	return n.Root || len(n.Capabilities) > 0 || len(n.Devices) > 0 || n.HostMounts || len(n.WritePaths) > 0
 }
 
 // Mounts reports whether the side may mount file systems (CAP_SYS_ADMIN).
@@ -76,7 +78,10 @@ func (n Needs) Summary() []string {
 	if n.HostMounts {
 		out = append(out, "the host's mount namespace: its mounts are the host's, and the host's files aren't read-only to it")
 	} else if len(n.WritePaths) > 0 {
-		out = append(out, "writes only "+strings.Join(n.WritePaths, " ")+"; the rest is read-only")
+		for _, p := range n.WritePaths {
+			out = append(out, "writes "+p+" (made for it if missing)")
+		}
+		out = append(out, "the rest is read-only")
 	}
 	return out
 }
@@ -86,8 +91,50 @@ var (
 	deviceName = regexp.MustCompile(`^/dev/[a-z0-9/_-]+$`)
 )
 
-// Check says what's wrong with a side's needs.
-func (n Needs) Check(side string) error {
+// WriteRoots are the folders plugin data lives in. A plugin NAME may write exactly
+// ROOT/kevaso-plugin-NAME or ROOT/kevaso-provider-NAME for the first three, and /srv/NAME: never a
+// folder deeper (the plugin owns the one above it and could make it a symlink before its next
+// start), never a system folder or Kevaso's own (/var/lib/kevaso, /etc/kevaso), never another
+// plugin's.
+var WriteRoots = []string{"/var/lib", "/var/cache", "/var/log", "/srv"}
+
+// WritePathProblem says why plugin name may not be given folder p to write, or nil.
+func WritePathProblem(name, p string) error {
+	if !strings.HasPrefix(p, "/") || path.Clean(p) != p || strings.ContainsAny(p, " \t\n\r\"'\\%$;") {
+		return fmt.Errorf("write path %q: a clean absolute folder", p)
+	}
+	dir, base := path.Split(p)
+	if dir != "" {
+		dir = strings.TrimSuffix(dir, "/")
+	}
+	for _, root := range WriteRoots {
+		if dir != root {
+			continue
+		}
+		mine := []string{"kevaso-plugin-" + name, "kevaso-provider-" + name}
+		if root == "/srv" {
+			mine = []string{name}
+		}
+		for _, m := range mine {
+			if base == m {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("write path %q: plugin %s may write only its own folder: %s", p, name, strings.Join(OwnWritePaths(name), ", "))
+}
+
+// OwnWritePaths are the folders plugin name may ask to write.
+func OwnWritePaths(name string) []string {
+	var out []string
+	for _, root := range WriteRoots[:3] {
+		out = append(out, root+"/kevaso-plugin-"+name, root+"/kevaso-provider-"+name)
+	}
+	return append(out, "/srv/"+name)
+}
+
+// Check says what's wrong with plugin name's needs on one side.
+func (n Needs) Check(name, side string) error {
 	for _, c := range n.Capabilities {
 		if !capName.MatchString(c) {
 			return fmt.Errorf("%s: capability %q (like CAP_SYS_ADMIN)", side, c)
@@ -99,8 +146,8 @@ func (n Needs) Check(side string) error {
 		}
 	}
 	for _, p := range n.WritePaths {
-		if !path.IsAbs(p) || path.Clean(p) != p || p == "/" || strings.ContainsAny(p, " \t\n\"'\\") {
-			return fmt.Errorf("%s: write path %q (an absolute folder)", side, p)
+		if err := WritePathProblem(name, p); err != nil {
+			return fmt.Errorf("%s: %w", side, err)
 		}
 	}
 	switch {
@@ -125,10 +172,10 @@ func ParseManifest(b []byte) (Manifest, error) {
 	if m.Name == "" {
 		return Manifest{}, errors.New("plugin manifest: no name")
 	}
-	if err := m.Controller.Check("controller"); err != nil {
+	if err := m.Controller.Check(m.Name, "controller"); err != nil {
 		return Manifest{}, fmt.Errorf("plugin manifest: %w", err)
 	}
-	if err := m.Node.Check("node"); err != nil {
+	if err := m.Node.Check(m.Name, "node"); err != nil {
 		return Manifest{}, fmt.Errorf("plugin manifest: %w", err)
 	}
 	return m, nil

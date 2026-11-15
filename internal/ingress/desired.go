@@ -127,7 +127,7 @@ func Desire(in Inputs) Desired {
 			}
 			for _, h := range ing.Spec.Hosts {
 				h = strings.ToLower(strings.TrimSuffix(h, "."))
-				key := h + " " + pathOf(r)
+				key := claimKey(h, pathOf(r))
 				if claimed[key] {
 					continue
 				}
@@ -175,6 +175,10 @@ func Desire(in Inputs) Desired {
 	}
 	return out
 }
+
+// claimKey is what one Ingress claims on a class: a host and a path, the path's case aside
+// (K-086: Caddy matches paths without case, so /Foo and /foo are one route there).
+func claimKey(host, path string) string { return host + " " + strings.ToLower(path) }
 
 // Backend is where a rule's service port is: a silo's own service, its silo IP and the declared
 // port it opens; a standalone Service, its cluster IP and that port of it (while it has an
