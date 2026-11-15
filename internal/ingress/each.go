@@ -86,6 +86,11 @@ type EachResult struct {
 	// serves without its Ingress having changed, or what the proxy serves is unknown and some
 	// Ingress would be left out.
 	Held string
+	// Unknown, when Held: the class is held because the agent can't tell what the proxy serves
+	// (why). Such a hold does not end by itself (K-120): only when every Ingress of the class can
+	// be applied, which takes a person fixing or removing the refused ones. The status should say
+	// so at once, apart from an ordinary refusal.
+	Unknown string
 	// Served is the state now in effect (what the next change is compared with), valid when
 	// Held is empty and Result.Rejected is empty.
 	Served kic.State
@@ -418,7 +423,14 @@ func applyEach(ctx context.Context, exec Exec, call Caller, d kic.Driver, want D
 	holdFor := func(l []string) error {
 		out.retry = true
 		if unknown != "" {
-			out.Held = "the proxy's configuration stays and nothing new is applied until every Ingress of the class can be: the agent can't tell what the proxy serves now (" + unknown + ")"
+			// K-120: said at once, and that it lasts until a person acts (the owner's decision).
+			out.Unknown = unknown
+			what, fix := "an Ingress of the class would be left out", "the Ingresses the class's status names"
+			if who := slices.Sorted(maps.Keys(out.LeftOut)); len(who) > 0 {
+				what, fix = "it would leave out "+strings.Join(who, ", "), strings.Join(who, ", ")
+			}
+			out.Held = "the proxy's configuration stays and nothing new is applied until every Ingress of the class can be: the agent can't tell what the proxy serves now (" + unknown + "), and " + what +
+				". This does not end by itself: fix or delete " + fix + "; once every Ingress of the class can be applied, it is, and what the proxy serves is known again"
 		} else {
 			var same, notKnown []string
 			for _, w := range l {
