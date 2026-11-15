@@ -590,6 +590,9 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		if err := moves.HostWrite(old.(*v1.Silo).Status, obj.(*v1.Silo).Status, id.Name); err != nil {
 			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%v", err)
 		}
+		if err := s.siloIPInSubnet(ctx, old.(*v1.Silo).Status, obj.(*v1.Silo).Status, id.Name); err != nil {
+			return store.Object{}, err
+		}
 	}
 	if id, ok := IdentityFrom(ctx); (!ok || id.Type != "host" || id.Role != "worker") && t.kind.Kind == "Silo" && t.status && !t.planned {
 		// K-070: whatever the caller does, a handoff under way is not replaced or dropped. The
@@ -645,6 +648,10 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		oh, nh := old.(*v1.Host).Status, &obj.(*v1.Host).Status
 		nh.Provider = oh.Provider
 		nh.Network.Index, nh.Network.MeshIP, nh.Network.SiloSubnet, nh.Network.InnerIP = oh.Network.Index, oh.Network.MeshIP, oh.Network.SiloSubnet, oh.Network.InnerIP
+		// The rest per field (review batch 3; the table is in hostwrite.go).
+		if err := boundHostWrite(oh, nh, id.Name, s.clock.Now()); err != nil {
+			return store.Object{}, err
+		}
 	}
 	if id, ok := IdentityFrom(ctx); ok && id.Type == "host" && id.Role == "worker" && t.kind.Kind == "IngressClass" {
 		if err := ingress.HostWrite(old.(*v1.IngressClass).Status, obj.(*v1.IngressClass).Status, id.Name); err != nil {
