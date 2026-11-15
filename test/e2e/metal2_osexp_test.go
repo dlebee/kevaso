@@ -112,9 +112,12 @@ func TestMetal2OpenShellExperiment(t *testing.T) {
 		for _, b := range boxes {
 			t.Logf("%s, %s: first claim %s, latest %s; gateway unit first seen active %s (it says it started %s)",
 				step, b.name, first[b.name], last[b.name], activeAt[b.name].Format(time.RFC3339Nano), unitStarted(b))
-			ct, err := time.Parse(time.RFC3339Nano, first[b.name])
-			if strict && err == nil && !activeAt[b.name].IsZero() && activeAt[b.name].Add(time.Second).Before(ct) {
-				t.Errorf("%s, %s: its gateway ran (%s) before its first claim (%s)", step, b.name, activeAt[b.name].Format(time.RFC3339Nano), first[b.name])
+			// Both on machine 1's clock: the claim's own time, and systemd's for the unit (stopped
+			// before kevasod started: its start is this one).
+			ct, err1 := time.Parse(time.RFC3339Nano, first[b.name])
+			ut, err2 := time.Parse("Mon 2006-01-02 15:04:05 MST", unitStarted(b))
+			if strict && err1 == nil && err2 == nil && ut.Add(time.Second).Before(ct) {
+				t.Errorf("%s, %s: its gateway started (%s) before its first claim (%s)", step, b.name, unitStarted(b), first[b.name])
 			}
 		}
 	}
