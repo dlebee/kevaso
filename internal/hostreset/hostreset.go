@@ -387,12 +387,18 @@ func Plan(in PlanInput) []Step {
 
 	// 1. Nothing restarts anything: kevasod and the fence first, then every silo, gateway and
 	// plugin unit, then the tests' transient units.
-	add(StopStep, `systemctl disable --now kevasod.service kevaso-fence.service 2>/dev/null; true`)
-	add("stop every kevaso-* and "+TestUnitPrefix+"* unit", `for u in $(systemctl list-units --all --plain --no-legend 'kevaso*' '`+TestUnitPrefix+`*' | awk '{print $1}'); do
-  systemctl disable --now "$u" 2>/dev/null; systemctl kill -s KILL "$u" 2>/dev/null
+	add(StopStep, StopUnitsScript("kevasod.service", "kevaso-fence.service"))
+	// Each unit by itself: disable (a transient unit has no file, and disable --now would then
+	// stop nothing), stop (a failure is printed and fails the step), then SIGKILL to whatever
+	// its stop left.
+	add("stop every kevaso-* and "+TestUnitPrefix+"* unit", `rc=0
+for u in $(systemctl list-units --all --plain --no-legend 'kevaso*' '`+TestUnitPrefix+`*' | awk '{print $1}'); do
+  systemctl disable "$u" >/dev/null 2>&1
+  systemctl stop "$u" || { echo "stopping $u failed"; rc=1; }
+  systemctl kill -s KILL "$u" 2>/dev/null
 done
 for f in /etc/systemd/system/kevaso*.service; do [ -e "$f" ] && systemctl disable "$(basename "$f")" 2>/dev/null; done
-true`)
+exit $rc`)
 	add("kill what is left", `for p in `+strings.Join(Processes, " ")+`; do pkill -KILL -x "$(printf %.15s "$p")"; done; sleep 1; true`)
 
 	// 2. Containers: all of them when Docker is Kevaso's; otherwise only Kevaso's, by label.
@@ -403,7 +409,7 @@ true`)
   docker system prune -af --volumes >/dev/null
 fi
 true`)
-		add("stop docker", `systemctl disable --now docker.socket docker.service containerd.service 2>/dev/null; true`)
+		add("stop docker", StopUnitsScript("docker.socket", "docker.service", "containerd.service"))
 	} else {
 		destroys("remove Kevaso's containers and volumes (by label)", `if command -v docker >/dev/null && systemctl is-active -q docker; then
   ids=$(docker ps -aq --filter label=kevaso.com/uid); [ -z "$ids" ] || docker rm -f $ids >/dev/null
@@ -652,7 +658,7 @@ const StopStep = "stop kevasod and the fence"
 // StillRunningScript prints what still runs of kevasod and its fence (nothing: neither runs): each
 // unit in any state but inactive or failed (activating, deactivating, reloading, active), each with
 // a main process, and every kevasod process (the fence watcher is one too), wherever it came
-// from. A stop step's exit says nothing: its script ends in true.
+// from. A stop step that succeeded may still leave a process (a unit left deactivating).
 const StillRunningScript = `for u in kevasod.service kevaso-fence.service; do
   s=$(systemctl is-active "$u" 2>/dev/null)
   case "$s" in inactive|failed) ;; "") echo "unit $u: systemd doesn't say" ;; *) echo "unit $u is $s" ;; esac
@@ -664,4 +670,26 @@ true`
 
 // StartAgainScript starts kevasod and its fence again: a reset that stopped them and then found
 // the host changed since it was shown (a silo or volume placed meanwhile) undoes its first step.
-const StartAgainScript = `systemctl enable --now kevaso-fence.service kevasod.service`
+// Each unit by itself, only those this host has (a control-plane-only node has no fence unit).
+const StartAgainScript = `rc=0
+for u in kevaso-fence.service kevasod.service; do
+  [ "$(systemctl show -p LoadState --value "$u" 2>/dev/null)" = not-found ] && continue
+  systemctl enable --now "$u" || { echo "starting $u failed"; rc=1; }
+done
+exit $rc`
+
+// StopUnitsScript disables and stops each of units by itself, and only those this host has or
+// that run: systemctl given several units refuses them all when one doesn't exist ("Unit file
+// kevaso-fence.service does not exist" on a control-plane-only node) and stops nothing. Each
+// failure is printed and fails the script; none is hidden.
+func StopUnitsScript(units ...string) string {
+	return `rc=0
+for u in ` + strings.Join(units, " ") + `; do
+  load=$(systemctl show -p LoadState --value "$u" 2>/dev/null)
+  state=$(systemctl is-active "$u" 2>/dev/null)
+  if [ "$load" = not-found ] && [ "$state" = inactive ]; then continue; fi # not on this host
+  if [ "$load" != not-found ]; then systemctl disable "$u" || { echo "disabling $u failed"; rc=1; }; fi
+  systemctl stop "$u" || { echo "stopping $u failed"; rc=1; }
+done
+exit $rc`
+}

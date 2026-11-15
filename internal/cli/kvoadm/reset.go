@@ -123,7 +123,7 @@ func runReset(ctx context.Context, h hostRunner, o ResetOptions, in *bufio.Reade
 	var failed []string
 	plan := hostreset.Plan(d.Plan)
 	// Stop kevasod first, so nothing new is placed or made here, confirm it is stopped (review
-	// claim 4: the stop step's exit says nothing, its script ends in true), then look again
+	// claim 4: a stop that said it was done may still leave a process), then look again
 	// (review, check-then-act claim 3): the host was shown before the prompt, which can wait for
 	// ever. kevasod or its fence still running, or a silo or volume that wasn't shown, stops the
 	// reset before anything is removed.
