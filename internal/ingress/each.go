@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"kevaso.com/core/sdk/kic"
 )
@@ -478,4 +479,22 @@ func segmentFor(msg, who string) string {
 		rest = rest[:j]
 	}
 	return rest
+}
+
+var (
+	memMu    sync.Mutex
+	memories = map[string]*Memory{}
+)
+
+// MemoryOf is the Memory kept for one controller silo (by its UID), for callers that keep none
+// of their own. A silo that stops being a controller leaves a few hashes behind.
+func MemoryOf(uid string) *Memory {
+	memMu.Lock()
+	defer memMu.Unlock()
+	m := memories[uid]
+	if m == nil {
+		m = &Memory{}
+		memories[uid] = m
+	}
+	return m
 }
