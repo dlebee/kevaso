@@ -84,9 +84,16 @@ func UsesMeshIndex(obj []byte, value string) bool {
 // assignIndex gives h its mesh index if it has none, reporting whether it wrote. Called with c.mu
 // held.
 func (c *Controller) assignIndex(ctx context.Context, h *v1.Host) (bool, error) {
-	if h.Status.Network.Index > 0 {
+	if n := &h.Status.Network; n.Index > 0 {
 		delete(c.assigned, h.Name)
-		return false, nil
+		// The addresses follow from the index (mesh.Addresses): one rewritten in the Host's status
+		// is put back, so it is never what peers keep (review of the control-plane fixes, item 2).
+		meshIP, subnet, inner := mesh.Addresses(n.Index)
+		if n.MeshIP == meshIP && n.SiloSubnet == subnet && n.InnerIP == inner {
+			return false, nil
+		}
+		n.MeshIP, n.SiloSubnet, n.InnerIP = meshIP, subnet, inner
+		return true, c.Client.UpdateStatus(ctx, h)
 	}
 	if c.assigned == nil {
 		c.assigned = map[string]int{}
