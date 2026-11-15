@@ -542,11 +542,21 @@ func storeHeartbeat(ctx context.Context, st store.Store, cfg Config, rep selfRep
 	}
 }
 
-// loadOrCreateCA loads the cluster CA (made on the first control plane's first start, or written by a join).
-func loadOrCreateCA(cfg Config) (*pki.CA, error) {
+// loadOrCreateCA loads the cluster CA: made only by the start that creates the cluster (its record
+// is "new"), or written by a join or a restore. A CA gone anywhere else is a loss, never replaced:
+// a new one would invalidate every certificate in the cluster without a word.
+func loadOrCreateCA(cfg Config, rec *ClusterRecord) (*pki.CA, error) {
 	pkiDir := filepath.Join(cfg.DataDir, "pki")
 	ca, err := pki.LoadCA(pkiDir)
 	if errors.Is(err, os.ErrNotExist) && cfg.Join == nil {
+		if rec == nil {
+			return nil, refuseStart("this node belongs to no cluster (no record %s, no cluster CA in %s): kvoadm init creates one, or %s",
+				recordPath(cfg.DataDir), pkiDir, howToRestore)
+		}
+		if rec.State != RecordNew {
+			return nil, refuseStart("this node belongs to cluster %q, but the cluster CA is missing from %s: not making a new one (every certificate would stop working). Put back %s from a backup, or %s",
+				rec.Cluster, pkiDir, pkiDir, howToRestore)
+		}
 		cfg.Log("creating the cluster CA in %s", pkiDir)
 		if ca, err = pki.NewCA(cfg.ClusterName, cfg.Clock.Now()); err == nil {
 			err = ca.Save(pkiDir)

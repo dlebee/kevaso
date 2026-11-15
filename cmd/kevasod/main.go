@@ -19,6 +19,15 @@
 //	    on a control-plane host, as root: sign a user's CSR through the admin socket; prints JSON
 //	    {certificate, ca}. kvoadm runs it over SSH, so the user's key never leaves their machine.
 //
+//	kevasod admin create-cluster --cluster NAME [--data /var/lib/kevaso]
+//	    the explicit create (kvoadm init runs it before installing the unit): the next start of
+//	    the control plane here makes cluster NAME. Without it, a control plane never creates a
+//	    cluster (brainstorm §0.7); on a node that already belongs to NAME it changes nothing
+//
+//	kevasod admin restore [--data /var/lib/kevaso] < {"backup":…,"recoveryKey":…}
+//	    puts a backup into a fresh data dir; its next start begins a new history of the cluster
+//	    (a new epoch), which workers accept as a deliberate restore
+//
 //	kevasod admin recovery-key
 //	    the recovery key for secrets, made once (kvoadm init prints it); refused after that
 //
@@ -86,6 +95,7 @@ func usage() {
   kevasod fence-watch [--runtime NAME]… [--fence-after 30s]
   kevasod admin sign-user --name NAME < csr.pem
   kevasod admin recovery-key | kms-rotate [--new-recovery-key] | backup
+  kevasod admin create-cluster --cluster NAME [--data /var/lib/kevaso]
   kevasod admin restore [--data /var/lib/kevaso] < {"backup":…,"recoveryKey":…}
   kevasod dev [--listen 127.0.0.1:8080] [--data PATH]`)
 	os.Exit(2)
@@ -135,6 +145,8 @@ func main() {
 			err = runAdminCall(ctx, "/admin/backup", nil, &client.Backup{})
 		case len(os.Args) >= 3 && os.Args[2] == "restore":
 			err = runRestore(ctx, os.Args[3:])
+		case len(os.Args) >= 3 && os.Args[2] == "create-cluster":
+			err = runCreateCluster(os.Args[3:])
 		default:
 			usage()
 		}
@@ -415,7 +427,34 @@ func runRestore(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The restored cluster's next start is a deliberate new history (brainstorm §0.7).
+	if err := controlplane.MarkRestored(*data); err != nil {
+		return err
+	}
 	return json.NewEncoder(os.Stdout).Encode(client.Restored{Cluster: m.Cluster, Host: m.Host, Created: m.Created.Format(time.RFC3339)})
+}
+
+// runCreateCluster writes the record that makes the next control-plane start here create the
+// cluster (controlplane.CreateCluster).
+func runCreateCluster(args []string) error {
+	fs := flag.NewFlagSet("create-cluster", flag.ExitOnError)
+	data := fs.String("data", "/var/lib/kevaso", "data directory")
+	name := fs.String("cluster", "", "the new cluster's name")
+	_ = fs.Parse(args)
+	if fs.NArg() > 0 || *name == "" {
+		return errors.New("create-cluster: --cluster NAME is required, and nothing else")
+	}
+	if err := os.MkdirAll(*data, 0o700); err != nil {
+		return err
+	}
+	if err := controlplane.CreateCluster(*data, *name, time.Now()); err != nil {
+		return err
+	}
+	rec, err := controlplane.ReadClusterRecord(*data)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(rec)
 }
 
 // runAdminCall POSTs to the admin socket (as root on a control-plane host) and prints the JSON

@@ -37,6 +37,9 @@ func (s *Server) guard(ctx context.Context, t target, old, obj meta.Object) erro
 			return err
 		}
 	}
+	if err := s.checkEscalation(ctx, t, old, obj); err != nil {
+		return err
+	}
 	for _, check := range []func(context.Context, target, meta.Object) error{
 		s.checkExposure,
 		s.checkPublishPublic,
@@ -47,6 +50,7 @@ func (s *Server) guard(ctx context.Context, t target, old, obj meta.Object) erro
 		func(_ context.Context, t target, obj meta.Object) error { return s.checkMovability(t, obj) },
 		func(_ context.Context, t target, obj meta.Object) error { return s.checkLease(t, obj) },
 		s.checkControlPlaneLoss,
+		s.checkVolumeLabels,
 		s.checkRouting,
 		s.checkServiceName,
 	} {

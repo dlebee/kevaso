@@ -84,7 +84,8 @@ func lostHost(name string, since time.Time) *v1.Host {
 	return h
 }
 
-// Losing a host: every policy, every moment.
+// Losing a host: every policy stays where it is, Unknown, with HostUnreachable saying since when
+// and what to do (brainstorm §0.7; the full table is TestHostLossTruthTable); no retry timer.
 func TestDecideOnHostLoss(t *testing.T) {
 	onHv1 := func(policy string) *v1.Silo {
 		s := newSilo("a")
@@ -93,37 +94,20 @@ func TestDecideOnHostLoss(t *testing.T) {
 		s.Status.Init = []v1.StepStatus{{Name: "x", State: "Done"}}
 		return s
 	}
-	lostAt := now.Add(-10 * time.Second)
-
-	// Wait (and the default): stays, Unknown, says why; no retry timer.
-	for _, policy := range []string{"", v1.OnHostLossWait} {
+	lostAt := now.Add(-time.Hour)
+	for _, policy := range []string{"", v1.OnHostLossWait, v1.OnHostLossRecreate} {
 		st, changed, again, _ := silo.Decide(onHv1(policy), []*v1.Host{lostHost("hv1", lostAt), readyHost("hv2")}, nil, now)
-		c := meta.FindCondition(st.Conditions, "HostLost")
-		if !changed || again != 0 || st.Host != "hv1" || st.Phase != silo.PhaseUnknown || c == nil || c.Reason != "Waiting" {
-			t.Fatalf("Wait %q: %+v again=%v", policy, st, again)
+		c := meta.FindCondition(st.Conditions, "HostUnreachable")
+		if !changed || again != 0 || st.Host != "hv1" || st.SiloIP == "" || st.Init == nil || st.Phase != silo.PhaseUnknown || c == nil || c.Reason != "Waiting" ||
+			!strings.Contains(c.Message, lostAt.Format(time.RFC3339)) {
+			t.Fatalf("%q: %+v again=%v", policy, st, again)
 		}
-	}
-	// Recreate, too soon: still fencing; look again when it's safe.
-	st, changed, again, _ := silo.Decide(onHv1(v1.OnHostLossRecreate), []*v1.Host{lostHost("hv1", lostAt), readyHost("hv2")}, nil, now)
-	if c := meta.FindCondition(st.Conditions, "HostLost"); !changed || st.Host != "hv1" || again != silo.RecreateAfter-10*time.Second || c.Reason != "Fencing" {
-		t.Fatalf("Recreate early: %+v again=%v", st, again)
-	}
-	// Recreate, after RecreateAfter: a fresh instance on another host, nothing carried over.
-	st, changed, _, _ = silo.Decide(onHv1(v1.OnHostLossRecreate), []*v1.Host{lostHost("hv1", now.Add(-time.Minute)), readyHost("hv2")}, nil, now)
-	if c := meta.FindCondition(st.Conditions, "HostLost"); !changed || st.Host != "hv2" || st.Phase != silo.PhaseScheduled ||
-		st.SiloIP != "" || st.Init != nil || c.Reason != "Recreated" {
-		t.Fatalf("Recreate: %+v", st)
-	}
-	// …and if nowhere fits, it waits Pending (not back on the lost host).
-	st, _, _, _ = silo.Decide(onHv1(v1.OnHostLossRecreate), []*v1.Host{lostHost("hv1", now.Add(-time.Minute))}, nil, now)
-	if st.Host != "" || st.Phase != silo.PhasePending {
-		t.Fatalf("Recreate with nowhere to go: %+v", st)
 	}
 	// The host comes back: the condition says so, and the agent takes over again.
 	back := onHv1(v1.OnHostLossWait)
-	back.Status.Conditions = []meta.Condition{{Type: "HostLost", Status: meta.ConditionTrue, Reason: "Waiting"}}
-	st, changed, _, _ = silo.Decide(back, []*v1.Host{readyHost("hv1")}, nil, now)
-	if c := meta.FindCondition(st.Conditions, "HostLost"); !changed || st.Host != "hv1" || c.Status != meta.ConditionFalse || c.Reason != "HostBack" {
+	back.Status.Conditions = []meta.Condition{{Type: "HostUnreachable", Status: meta.ConditionTrue, Reason: "Waiting"}}
+	st, changed, _, _ := silo.Decide(back, []*v1.Host{readyHost("hv1")}, nil, now)
+	if c := meta.FindCondition(st.Conditions, "HostUnreachable"); !changed || st.Host != "hv1" || c.Status != meta.ConditionFalse || c.Reason != "HostBack" {
 		t.Fatalf("host back: %+v", st)
 	}
 	back.Status = st
@@ -198,39 +182,15 @@ func waitFor(ctx context.Context, t *testing.T, c *client.Client, name string, o
 	}
 }
 
-// onHostLoss: Move (design §0.3): fenced first, like Recreate, then placed elsewhere with its data
-// (its image, its volumes) instead of a fresh copy; a silo whose storage stopped being movable waits.
+// onHostLoss: Move whose storage stopped being movable: the condition says it can't move.
 func TestDecideOnHostLossMove(t *testing.T) {
-	env := scheduler.Env{Classes: map[string]scheduler.Class{"juicefs": {Plugin: "juicefs", Topology: kplugin.TopologyGlobal}}}
-	moving := func() *v1.Silo {
-		s := newSilo("files")
-		s.Spec.Runtime = "docker"
-		s.Spec.Volumes = []v1.Volume{{Name: "data", Class: "juicefs", Size: "10Gi", MountPath: "/data"}}
-		s.Spec.Availability.OnHostLoss = v1.OnHostLossMove
-		s.Status.Host, s.Status.Phase, s.Status.SiloIP = "hv1", "Running", "10.64.1.2"
-		s.Status.Image = &v1.SiloImage{From: "app", Ref: "app:1", Running: "app:1"}
-		s.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "juicefs", Handle: "vol-1", AttachedTo: "hv1", Mounted: true}}
-		return s
-	}
-	docker := func(h *v1.Host) *v1.Host {
-		h.Spec.Components.Worker.Runtimes = []v1.RuntimeSpec{{Name: "docker"}}
-		h.Status.Runtimes = map[string]v1.RuntimeStatus{"docker": {State: "Ready"}}
-		return h
-	}
-	s := moving()
-	s.Spec.Container = &v1.ContainerSource{Image: "app"}
-	st, _, again, _ := silo.DecideIn(s, []*v1.Host{docker(lostHost("hv1", now.Add(-10*time.Second))), docker(readyHost("hv2"))}, nil, now, env)
-	if c := meta.FindCondition(st.Conditions, "HostLost"); st.Host != "hv1" || c.Reason != "Fencing" || !strings.Contains(c.Message, "with its data") || again == 0 {
-		t.Fatalf("Move early: %+v", st)
-	}
-	st, changed, _, _ := silo.DecideIn(s, []*v1.Host{docker(lostHost("hv1", now.Add(-time.Minute))), docker(readyHost("hv2"))}, nil, now, env)
-	c := meta.FindCondition(st.Conditions, "HostLost")
-	if !changed || st.Host != "hv2" || c.Reason != "Moved" || st.Image.Running != "app:1" || len(st.Volumes) != 1 || st.MovingFrom != "" || st.Movable != "Anywhere" {
-		t.Fatalf("Move: %+v", st)
-	}
-	// Its class lost its topology (the plugin changed): it waits instead.
-	st, _, _, _ = silo.DecideIn(moving(), []*v1.Host{docker(lostHost("hv1", now.Add(-time.Minute))), docker(readyHost("hv2"))}, nil, now, scheduler.Env{})
-	if c := meta.FindCondition(st.Conditions, "HostLost"); st.Host != "hv1" || c.Reason != "Waiting" || !strings.Contains(c.Message, "can't move") {
+	s := newSilo("files")
+	s.Spec.Runtime = "docker"
+	s.Spec.Volumes = []v1.Volume{{Name: "data", Class: "juicefs", Size: "10Gi", MountPath: "/data"}}
+	s.Spec.Availability.OnHostLoss = v1.OnHostLossMove
+	s.Status.Host, s.Status.Phase = "hv1", "Running"
+	st, _, _, _ := silo.DecideIn(s, []*v1.Host{lostHost("hv1", now.Add(-time.Minute)), readyHost("hv2")}, nil, now, scheduler.Env{})
+	if c := meta.FindCondition(st.Conditions, "HostUnreachable"); st.Host != "hv1" || c.Reason != "Waiting" || !strings.Contains(c.Message, "can't move") {
 		t.Fatalf("Move without a movable class: %+v", st)
 	}
 }
@@ -274,7 +234,7 @@ func TestControllerSeesItsOwnPlacementsHostLost(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(ctx, t, c, "web", func(s *v1.Silo) bool {
-		c := meta.FindCondition(s.Status.Conditions, "HostLost")
+		c := meta.FindCondition(s.Status.Conditions, "HostUnreachable")
 		return c != nil && c.Status == meta.ConditionTrue
 	})
 }

@@ -31,6 +31,11 @@ type Client struct {
 	// what it accepted but the user should know).
 	Warnings func(string)
 
+	// ControlPlane, if set, gets what each answer says about the control plane that gave it
+	// (cluster, history, epoch, store revision; controlplane.go), for answers that carry it. It is
+	// called before the answer is read, so a worker can judge (Judge) before acting on it.
+	ControlPlane func(ControlPlaneSeen)
+
 	kindsMu sync.Mutex
 	kinds   []v1.APIResource // what the server serves, once asked (kinds.go)
 }
@@ -44,7 +49,13 @@ func (c *Client) send(hc *http.Client, req *http.Request) (*http.Response, error
 		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
-	return hc.Do(req)
+	resp, err := hc.Do(req)
+	if err == nil && c.ControlPlane != nil {
+		if s, ok := ParseControlPlane(resp.Header); ok {
+			c.ControlPlane(s)
+		}
+	}
+	return resp, err
 }
 
 // New returns a client for the server at baseURL.

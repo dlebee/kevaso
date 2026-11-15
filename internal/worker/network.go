@@ -112,10 +112,25 @@ func PoolAddresses(hostName string, silos []*v1.Silo) []string {
 	var out []string
 	for _, s := range silos {
 		if s.Status.Host == hostName {
-			out = append(out, s.Status.Service.HostAddresses...)
+			for _, a := range s.Status.Service.HostAddresses {
+				if v, ok := hostV4(a); ok {
+					out = append(out, v)
+				}
+			}
 		}
 	}
 	return out
+}
+
+// hostV4 is a status address the host may put on an interface as a /32: one IPv4 unicast address,
+// written canonically (syncAddresses only knows IPv4: anything else would be added and never
+// taken off again).
+func hostV4(s string) (string, bool) {
+	a, ok := listenAddr(s)
+	if !ok || !a.Is4() || a.IsLinkLocalUnicast() {
+		return "", false
+	}
+	return a.String(), true
 }
 
 // AnnouncedAddresses are the shared addresses this host's silos are reached on (status.service
@@ -124,7 +139,9 @@ func AnnouncedAddresses(hostName string, silos []*v1.Silo) []string {
 	var out []string
 	for _, s := range silos {
 		if s.Status.Host == hostName && s.Status.Service.Announce && s.Status.Service.LoadBalancerIP != "" && s.DeletionTimestamp == nil {
-			out = append(out, s.Status.Service.LoadBalancerIP)
+			if v, ok := hostV4(s.Status.Service.LoadBalancerIP); ok {
+				out = append(out, v)
+			}
 		}
 	}
 	return out
@@ -224,7 +241,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 	endpointAddr := netip.MustParseAddr(v1.EndpointAddress) // the silos' local endpoint, on the bridge (ADR 0009)
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
-	last := ""
+	fw := &firewall{apply: func(ctx context.Context, text string) error { return applyRules(ctx, text) }}
 	for {
 		var all []*v1.Silo
 		for _, o := range silos.List() {
@@ -250,14 +267,17 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		now, ls := time.Now(), currentLeases()
 		view = WithLeases(view, all, ls, now)
 		leaseEnd, stopLeaseEnd := leaseTimer(ls, now)
-		rules := kni.Rules(view)
-		if rules != last {
-			if err := applyRules(ctx, rules); err != nil {
-				log("silo firewall: %v", err)
-			} else {
-				last = rules
-				loaded.set(kni.Bindings(view.Local))
-			}
+		rules, problems := kni.Generate(view)
+		if ok, err := fw.load(ctx, rules); err != nil {
+			log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
+		} else if ok {
+			loaded.set(kni.Bindings(view.Local))
+		}
+		reportHost(ctx, c, hostName, me, hostFirewallCondition(fw.err, problems), now)
+		reportPortRules(ctx, c, hostName, all, siloProblems(problems), now)
+		var retry <-chan time.Time
+		if fw.err != nil {
+			retry = time.After(fw.retryAfter())
 		}
 		dnsOn.keep(ctx, DNSListeners(me), func(addr string, from names.Asker) *DNS {
 			return &DNS{Listen: addr, From: from, View: nameView, Log: log,
@@ -281,8 +301,9 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		case <-changed:
 			time.Sleep(100 * time.Millisecond) // let a burst of changes settle
 		case <-leaseEnd: // a port's lease is up: its rule goes now, whether or not the API says so yet
+		case <-retry: // the last table was refused: try again, changed or not
 		case <-tick.C:
-			last = "" // reload anyway: someone may have flushed the ruleset
+			fw.last = "" // reload anyway: someone may have flushed the ruleset
 		}
 		stopLeaseEnd()
 	}
@@ -429,12 +450,13 @@ func DNSListeners(h *v1.Host) map[string]names.Asker {
 	if h == nil {
 		return out
 	}
-	if ip := h.Status.Network.MeshIP; ip != "" {
-		out[net.JoinHostPort(ip, "53")] = names.FromHost
+	if ip, ok := listenAddr(h.Status.Network.MeshIP); ok && ip.Is4() {
+		out[net.JoinHostPort(ip.String(), "53")] = names.FromHost
 	}
 	for _, n := range h.Spec.Network.DNS {
-		switch ip := h.IPOn(n); {
-		case ip == "":
+		a, ok := listenAddr(h.IPOn(n))
+		switch ip := a.String(); {
+		case !ok:
 		case n == v1.NetworkInternal:
 			out[net.JoinHostPort(ip, "53")] = names.FromNetwork
 		case n == v1.NetworkExternal:
@@ -442,6 +464,17 @@ func DNSListeners(h *v1.Host) map[string]names.Asker {
 		}
 	}
 	return out
+}
+
+// listenAddr is s as an address a listener may bind: one specific unicast address. An
+// unspecified one ("::", "0.0.0.0") would bind every address the host has, its global IPv6 one
+// included; host addresses may come from a plugin (status.provider), so none is taken on trust.
+func listenAddr(s string) (netip.Addr, bool) {
+	a, err := netip.ParseAddr(s)
+	if err != nil || a.Zone() != "" || a.IsUnspecified() || a.IsMulticast() || a.IsLoopback() {
+		return netip.Addr{}, false
+	}
+	return a.Unmap(), true
 }
 
 // dnsListeners runs one DNS server per wanted address, restarting none that stays the same.

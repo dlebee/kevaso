@@ -18,7 +18,7 @@ func start(t *testing.T, dataDir, sock string) (*Running, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	r, err := Start(ctx, Config{
 		ClusterName: "test", HostName: "cp-1", InternalIP: "127.0.0.1",
-		DataDir: dataDir, Listen: "127.0.0.1:0", AdminSocket: sock, Heartbeat: 50 * time.Millisecond,
+		DataDir: dataDir, Listen: "127.0.0.1:0", AdminSocket: sock, Heartbeat: 50 * time.Millisecond, Create: true,
 	})
 	if err != nil {
 		cancel()

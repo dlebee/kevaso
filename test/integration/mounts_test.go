@@ -38,7 +38,7 @@ func TestMountClassFollowsTheSilo(t *testing.T) {
 	if err := reg.Add(ctx, share); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controlplane.Start(ctx, controlplane.Config{ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
+	if _, err := controlplane.Start(ctx, controlplane.Config{Create: true, ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
 		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond,
 		Plugins: reg}); err != nil {
 		t.Fatal(err)
