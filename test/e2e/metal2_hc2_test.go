@@ -39,10 +39,14 @@ func TestMetal2StartClaimFreshThroughSlowInit(t *testing.T) {
 	ns := "claimfresh2"
 	c.namespace(ns)
 	slow := "  init: { steps: [{ name: slow, run: \"sleep 60\" }] }\n"
-	c.apply(vmEcho(ns, "vm", 8080) + slow + "---\n" + boxEcho(ns, "box", 8080) + slow)
 	for _, name := range []string{"vm", "box"} {
 		t.Run(name, func(t *testing.T) {
 			c := c.with(t)
+			if name == "vm" { // one at a time: each is watched from its start
+				c.apply(vmEcho(ns, "vm", 8080) + slow)
+			} else {
+				c.apply(boxEcho(ns, "box", 8080) + slow)
+			}
 			var times []string
 			changedAt := time.Time{}
 			longest := time.Duration(0)
@@ -102,13 +106,7 @@ func TestMetal2VMResetTakenBackDuringStop(t *testing.T) {
 	before := lvTime()
 	old := s.Spec.Reset
 	c.must("", "reset", "silo", "vm", "-n", ns)
-	caught := false
-	for end := time.Now().Add(60 * time.Second); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
-		if st := strings.TrimSpace(host.mustSh("systemctl is-active " + n.Unit + " || true")); st == "deactivating" || st == "inactive" {
-			caught = st == "deactivating"
-			break
-		}
-	}
+	// Taken back at once: the guest powers off (up to 30s) with its unit still active.
 	for {
 		var cur v1.Silo
 		if err := json.Unmarshal([]byte(c.must("", "get", "silo", "vm", "-n", ns, "-o", "json")), &cur); err != nil {
@@ -120,7 +118,7 @@ func TestMetal2VMResetTakenBackDuringStop(t *testing.T) {
 			break
 		}
 	}
-	t.Logf("the reset taken back while the guest powers off (caught it deactivating: %v)", caught)
+	t.Logf("the reset taken back while the guest powers off (unit %s)", strings.TrimSpace(host.mustSh("systemctl is-active "+n.Unit+" || true")))
 	c.waitRunning(ns, 10*time.Minute, "vm")
 	if now := lvTime(); now != before {
 		t.Errorf("the root disk was made again: created %s, now %s", before, now)
@@ -145,9 +143,10 @@ func TestMetal2StuckStopIsNotStopped(t *testing.T) {
 	host := map[string]*mt{metalHost: p.c1, metalHost2: p.c2}[s.Status.Host]
 	n := cloudhypervisor.NamesFor(kri.ID{Namespace: ns, Name: "vm", UID: s.UID})
 	t.Cleanup(func() {
-		_, _ = host.sh("kill -CONT $(systemctl show -p MainPID --value " + n.Unit + ") 2>/dev/null; systemctl set-property --runtime " + n.Unit + " TimeoutStopSec=30 2>/dev/null; true")
+		_, _ = host.sh("kill -CONT $(systemctl show -p MainPID --value " + n.Unit + ") 2>/dev/null; rm -rf /run/systemd/system/" + n.Unit + ".d/kvt-slowstop.conf; systemctl daemon-reload; true")
 	})
-	host.mustSh("systemctl set-property --runtime " + n.Unit + " TimeoutStopSec=120 && kill -STOP $(systemctl show -p MainPID --value " + n.Unit + ") && systemctl stop --no-block " + n.Unit)
+	host.mustSh("mkdir -p /run/systemd/system/" + n.Unit + ".d && printf '[Service]\\nTimeoutStopSec=120\\n' > /run/systemd/system/" + n.Unit + ".d/kvt-slowstop.conf && systemctl daemon-reload && " +
+		"kill -STOP $(systemctl show -p MainPID --value " + n.Unit + ") && systemctl stop --no-block " + n.Unit)
 	c.eventually("its unit sits in deactivating", 30*time.Second, func() (bool, string) {
 		st := strings.TrimSpace(host.mustSh("systemctl is-active " + n.Unit + " || true"))
 		return st == "deactivating", st
