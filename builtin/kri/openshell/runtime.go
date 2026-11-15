@@ -247,12 +247,19 @@ func (r *Runtime) up(ctx context.Context, g Gateway, self kri.ID) error {
 		return nil // up and registered
 	}
 	before := map[string]bool{} // what ran before the start (the Docker driver's containers)
-	if active, err := r.unitActive(ctx, g); err != nil {
+	active, err := r.unitActive(ctx, g)
+	if err != nil {
 		return err
-	} else if !active {
-		if before, err = r.runningContainers(ctx, g); err != nil {
-			return err
+	}
+	if active { // running: registered once more if need be, else silent (not waited for)
+		_, err := r.cli(ctx, g, nil, nil, "gateway", "add", g.Endpoint(), "--local", "--name", g.Name())
+		if err != nil && !strings.Contains(err.Error(), "already") || !r.answers(ctx, g) {
+			return fmt.Errorf("gateway %s: %w", g.Key, ErrGatewaySilent)
 		}
+		return nil
+	}
+	if before, err = r.runningContainers(ctx, g); err != nil {
+		return err
 	}
 	if err := r.run(ctx, "systemctl", "start", g.Unit()); err != nil {
 		return fmt.Errorf("gateway %s: %w", g.Key, err)
@@ -641,8 +648,10 @@ func (r *Runtime) stopContainers(ctx context.Context, s state) error {
 	return r.run(ctx, "docker", append([]string{"stop"}, names...)...)
 }
 
-// Delete implements kri.Runtime: the sandbox, its providers and profiles, its state; a gateway of
-// its own (scope silo) too.
+// Delete implements kri.Runtime: the sandbox, its providers and profiles, its state; with the
+// last sandbox of its gateway, the gateway too (unit, user, home with its registration and
+// credential store, port). Its gateway must answer (started for this if it is down): when it
+// can't, Delete returns the error and removes nothing it can't confirm (K-080).
 func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -650,23 +659,114 @@ func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 	if !ok {
 		return nil
 	}
-	if _, exists, err := r.get(ctx, s); err == nil && exists {
-		if _, err := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "delete", SandboxName(id)); err != nil {
+	s.Running = false
+	if err := r.save(s); err != nil {
+		return err
+	}
+	g := s.Gateway
+	if s.Created || len(s.Providers) > 0 {
+		if err := r.up(ctx, g, kri.ID{}); err != nil {
+			return fmt.Errorf("%s: delete: %w", id, err)
+		}
+		if s.Created {
+			_, exists, err := r.get(ctx, s)
+			if err != nil {
+				return err
+			}
+			if exists {
+				if err := r.removeSandbox(ctx, s); err != nil {
+					return err
+				}
+			}
+			s.Created = false
+			if err := r.save(s); err != nil {
+				return err
+			}
+		}
+		names := make([]string, 0, len(s.Providers))
+		for p := range s.Providers {
+			names = append(names, p)
+		}
+		sort.Strings(names)
+		if err := r.revoke(ctx, &s, names); err != nil {
 			return err
 		}
 	}
-	for p := range s.Providers {
-		_, _ = r.cli(ctx, s.Gateway, nil, nil, "provider", "delete", p)
-		_, _ = r.cli(ctx, s.Gateway, nil, nil, "profile", "delete", p)
-	}
-	if r.scope() == ScopeSilo {
-		_ = r.run(ctx, "systemctl", "disable", "--now", s.Gateway.Unit())
-		_ = r.Host.RemoveAll("/etc/systemd/system/" + s.Gateway.Unit())
-		_ = r.run(ctx, "userdel", s.Gateway.User())
-		_ = r.Host.RemoveAll(s.Gateway.Dir())
-	}
 	_ = r.Host.RemoveAll(policyPath(id))
-	return r.Host.RemoveAll(statePath(id))
+	if err := r.Host.RemoveAll(statePath(id)); err != nil {
+		return err
+	}
+	for _, o := range r.all() {
+		if o.Gateway.Key == g.Key {
+			return r.down(ctx, g, id) // a neighbour keeps it
+		}
+	}
+	return r.removeGateway(ctx, g)
+}
+
+// revoke takes providers names of s out of its gateway: detached from the sandbox, deleted with
+// their profiles, each forgotten only once its gateway confirmed it (K-080: a revoke that can't
+// be told is not done, and is tried again). A provider deleted whose profile isn't yet is kept
+// as version -1.
+func (r *Runtime) revoke(ctx context.Context, s *state, names []string) error {
+	g := s.Gateway
+	for _, name := range names {
+		if s.Providers[name] >= 0 {
+			if s.Created {
+				if _, err := r.cli(ctx, g, nil, nil, "sandbox", "provider", "detach", SandboxName(s.ID), name); err != nil {
+					return fmt.Errorf("%s: revoke %s: %w", s.ID, name, err)
+				}
+			}
+			if _, err := r.cli(ctx, g, nil, nil, "provider", "delete", name); err != nil {
+				return fmt.Errorf("%s: revoke %s: %w", s.ID, name, err)
+			}
+			s.Providers[name] = -1
+			if err := r.save(*s); err != nil {
+				return err
+			}
+		}
+		if _, err := r.cli(ctx, g, nil, nil, "profile", "delete", name); err != nil {
+			return fmt.Errorf("%s: revoke %s: %w", s.ID, name, err)
+		}
+		_ = r.Host.RemoveAll(StateDir + "/policies/" + name + ".profile.yaml")
+		delete(s.Providers, name)
+		if err := r.save(*s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeGateway takes gateway g off the host once its last sandbox is gone: its unit, user, home
+// (the CLI's registration and its credential store), and its port.
+func (r *Runtime) removeGateway(ctx context.Context, g Gateway) error {
+	if err := r.run(ctx, "systemctl", "stop", g.Unit()); err != nil {
+		return err
+	}
+	if active, err := r.unitActive(ctx, g); err != nil || active {
+		return fmt.Errorf("gateway %s: still active after its stop (%v)", g.Key, err)
+	}
+	if err := r.Host.RemoveAll(unitPath(g)); err != nil {
+		return err
+	}
+	if err := r.run(ctx, "systemctl", "daemon-reload"); err != nil {
+		return err
+	}
+	if r.run(ctx, "id", "-u", g.User()) == nil {
+		if err := r.run(ctx, "userdel", g.User()); err != nil {
+			return err
+		}
+	}
+	if err := r.Host.RemoveAll(g.Dir()); err != nil {
+		return err
+	}
+	gws := map[string]Gateway{}
+	if b, err := r.Host.ReadFile(gatewaysFile); err == nil {
+		_ = json.Unmarshal(b, &gws)
+	}
+	delete(gws, g.Key)
+	b, _ := json.MarshalIndent(gws, "", "  ")
+	return r.Host.WriteFile(gatewaysFile, b, 0o600)
 }
 
 // Reset implements kri.Resetter: the sandbox goes (its gateway and providers stay) and is made
@@ -677,16 +777,30 @@ func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
 
 // ResetGated is Reset that asks gate (if set) right before the sandbox is deleted. An error from
 // gate ends the reset with nothing deleted, and is returned as is.
-func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(context.Context) error) error {
+func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(context.Context) error) (err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s, ok := r.load(spec.ID)
 	if !ok {
 		return fmt.Errorf("%s: %w", spec.ID, kri.ErrNotFound)
 	}
-	_, exists, err := r.get(ctx, s)
-	if err != nil {
-		return err
+	exists := false
+	if s.Created {
+		// The silo is stopped, so its gateway may be down (item 1): started for this, it goes down
+		// again unless a neighbour should run.
+		if err := r.up(ctx, s.Gateway, kri.ID{}); err != nil {
+			return err
+		}
+		if !s.Running {
+			defer func() {
+				if derr := r.down(ctx, s.Gateway, spec.ID); err == nil {
+					err = derr
+				}
+			}()
+		}
+		if _, exists, err = r.get(ctx, s); err != nil {
+			return err
+		}
 	}
 	if gate != nil {
 		if err := gate(ctx); err != nil {
@@ -694,7 +808,7 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 		}
 	}
 	if exists {
-		if _, err := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "delete", SandboxName(spec.ID)); err != nil {
+		if err := r.removeSandbox(ctx, s); err != nil {
 			return err
 		}
 	}
@@ -851,6 +965,7 @@ func (r *Runtime) SetPolicy(ctx context.Context, id kri.ID, p kri.Policy) (err e
 	}
 	for name, c := range want {
 		ver, have := s.Providers[name]
+		have = have && ver >= 0 // -1: deleted, its profile not yet
 		if have && ver == c.Version {
 			continue
 		}
@@ -881,16 +996,15 @@ func (r *Runtime) SetPolicy(ctx context.Context, id kri.ID, p kri.Policy) (err e
 		}
 		s.Providers[name] = c.Version
 	}
+	var gone []string
 	for name := range s.Providers {
-		if _, ok := want[name]; ok {
-			continue
+		if _, ok := want[name]; !ok {
+			gone = append(gone, name)
 		}
-		if s.Created {
-			_, _ = r.cli(ctx, g, nil, nil, "sandbox", "provider", "detach", SandboxName(id), name)
-		}
-		_, _ = r.cli(ctx, g, nil, nil, "provider", "delete", name)
-		_, _ = r.cli(ctx, g, nil, nil, "profile", "delete", name)
-		delete(s.Providers, name)
+	}
+	sort.Strings(gone)
+	if err := r.revoke(ctx, &s, gone); err != nil {
+		return err
 	}
 	if err := r.Host.WriteFile(policyPath(id), []byte(PolicyYAML(p)), 0o600); err != nil {
 		return err

@@ -42,10 +42,12 @@ type fake struct {
 	execCode   int
 	execHook   func(context.Context, Cmd) (int, error) // sandbox exec, if set
 
-	restoresStopped bool // a gateway that starts brings its Stopped sandboxes back too
-	dockerAtBoot    bool // the Docker driver's containers start with dockerd at boot
-	listFails       bool // sandbox list doesn't answer either
-	stopLies        bool // sandbox stop says Stopped, and the Docker driver's container runs on
+	restoresStopped bool            // a gateway that starts brings its Stopped sandboxes back too
+	dockerAtBoot    bool            // the Docker driver's containers start with dockerd at boot
+	listFails       bool            // sandbox list doesn't answer either
+	stopLies        bool            // sandbox stop says Stopped, and the Docker driver's container runs on
+	failOn          string          // an openshell command containing this fails
+	providers       map[string]bool // provider name → in the gateway's credential store
 }
 
 // fsb is one sandbox as the gateway records it.
@@ -57,7 +59,7 @@ type fsb struct {
 func newFake() *fake {
 	return &fake{files: map[string][]byte{}, sandboxes: map[string]*fsb{}, users: map[string]bool{},
 		units: map[string]string{}, enabled: map[string]bool{}, hung: map[string]bool{}, registered: map[string]bool{},
-		containers: map[string]bool{}}
+		containers: map[string]bool{}, providers: map[string]bool{}}
 }
 
 func gatewayOf(env []string) string {
@@ -243,7 +245,20 @@ func (f *fake) Run(ctx context.Context, c Cmd) (int, error) {
 		if !f.answers(gw) {
 			return fail("connect error: transport error")
 		}
+		if f.failOn != "" && strings.Contains(line, f.failOn) {
+			return fail("internal error")
+		}
 		switch {
+		case a[0] == "provider" && a[1] == "create":
+			if f.providers[a[3]] {
+				return fail("provider already exists")
+			}
+			f.providers[a[3]] = true
+		case a[0] == "provider" && a[1] == "delete":
+			if !f.providers[a[2]] {
+				return fail("provider not found")
+			}
+			delete(f.providers, a[2])
 		case a[0] == "sandbox" && a[1] == "list":
 			if f.listFails {
 				return fail("connect error: transport error")

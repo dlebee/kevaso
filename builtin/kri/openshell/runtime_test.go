@@ -81,8 +81,8 @@ func TestLifecycle(t *testing.T) {
 	if st, _ := r.Status(ctx, silo); st.State != kri.Absent || len(f.sandboxes) != 0 {
 		t.Fatalf("after delete: %v %v", st.State, f.sandboxes)
 	}
-	if f.ran("userdel") != 0 {
-		t.Error("a namespace's gateway was removed with one silo")
+	if f.ran("userdel") != 1 {
+		t.Error("the namespace's gateway stayed after its last silo (item 4)")
 	}
 }
 
