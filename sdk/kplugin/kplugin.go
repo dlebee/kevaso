@@ -240,7 +240,7 @@ type Attachment struct {
 
 // AttachmentStatus is where the attached volume shows up on the host.
 type AttachmentStatus struct {
-	Device string `json:"device"` // a stable path, e.g. /dev/disk/by-id/scsi-0Linode_Volume_…
+	Device string `json:"device"` // a stable path, e.g. /dev/disk/by-id/scsi-0Linode_Volume_… (DevicePathProblem)
 }
 
 // VolumeRef names a volume to delete.

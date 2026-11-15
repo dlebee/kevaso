@@ -285,6 +285,9 @@ func Conformance(t *testing.T, s Suite) {
 				if err := again(func() (err error) { at, err = c.AttachVolume(ctx, a); return }); err != nil || at.Device == "" {
 					t.Fatalf("attach: %+v %v", at, err)
 				}
+				if err := kplugin.DevicePathProblem(at.Device); err != nil { // core refuses it (K-038)
+					t.Fatalf("attach: %v", err)
+				}
 				var at2 kplugin.AttachmentStatus
 				if err := again(func() (err error) { at2, err = c.AttachVolume(ctx, a); return }); err != nil || at2.Device != at.Device {
 					t.Fatalf("attach again: %+v %v", at2, err)
