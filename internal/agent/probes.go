@@ -262,5 +262,6 @@ func (a *Agent) restartForLiveness(ctx context.Context, rt kri.Runtime, s *v1.Si
 		return err
 	}
 	a.probed.Delete(s.UID)
+	a.stoppedByUs(s.UID)
 	return rt.Stop(ctx, idOf(s))
 }

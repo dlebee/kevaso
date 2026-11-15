@@ -172,12 +172,15 @@ type Agent struct {
 	engine        *engine.Engine
 	cp            *Watermark // the control plane this worker trusts (watermark.go); via watermark()
 	cpOnce        sync.Once
-	staleNoted    sync.Map   // silo UID → logged once that its cache was stale at a start
-	claims        sync.Map   // silo UID → *claimKeeper: its start claim, kept fresh while it starts here
-	reported      sync.Map   // silo UID → generation: reported Running in this run since its last start here
-	createBackoff sync.Map   // silo UID → createBackoff
-	startBackoff  sync.Map   // silo UID → createBackoff: its failed starts (K-115)
-	applied       appliedLog // the resets and images applied here (applied.go, K-110)
+	staleNoted    sync.Map // silo UID → logged once that its cache was stale at a start
+	claims        sync.Map // silo UID → *claimKeeper: its start claim, kept fresh while it starts here
+	reported      sync.Map // silo UID → generation: reported Running in this run since its last start here
+	createBackoff sync.Map // silo UID → createBackoff
+	startBackoff  sync.Map // silo UID → createBackoff: its failed starts (K-115)
+	// startedHere: silo UID → struct{}: this run started it, and hasn't stopped it since
+	// (stoppedByUs). Found stopped while it is there, it stopped by itself: a failed start (K-115).
+	startedHere sync.Map
+	applied     appliedLog // the resets and images applied here (applied.go, K-110)
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
@@ -648,6 +651,18 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 				s = &sc
 			}
 		}
+		if _, ours := a.startedHere.LoadAndDelete(s.UID); ours && rs.State == kri.Stopped {
+			// K-115, as the machines saw it: its Start succeeded and its main process ended by
+			// itself (a command that isn't there exits at once; a VMM that exits). A failed start:
+			// tried again after the backoff, with no claim meanwhile, as one whose Start failed.
+			wait := a.backoffFailed(&a.startBackoff, s)
+			a.log("silo %s/%s: it stopped by itself after its start (%s) (trying again in %s)", s.Namespace, s.Name, firstLineOf(rs.Message), wait)
+			a.endClaim(s.UID)
+			return engine.Result{RequeueAfter: wait}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+				st.Phase = PhaseFailed
+				setCond(st, "Ready", meta.ConditionFalse, "Exited", "it stopped by itself after it was started on "+a.HostName+" (trying again in "+wait.String()+")", s.Generation, a.now())
+			})
+		}
 		// K-115: nothing is claimed for a start that can't go on now. A failed init step stays
 		// failed until the silo is reset or its spec changes (runSteps), and a start that failed
 		// waits out its backoff: the agent's own writes (the claim above all) come back as events,
@@ -731,7 +746,7 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 				setCond(st, "Ready", meta.ConditionFalse, failReason(err, "StartFailed"), err.Error()+" (trying again in "+wait.String()+")", s.Generation, a.now())
 			})
 		}
-		a.startBackoff.Delete(s.UID)
+		a.startedHere.Store(s.UID, struct{}{})
 		if _, ok := rt.(kri.InitContainers); !ok && s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" {
 			if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Init = nil }); err != nil {
 				return engine.Result{}, err
@@ -995,6 +1010,7 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		return true, err
 	}
 	id := idOf(s)
+	a.stoppedByUs(s.UID)
 	if err := rt.Stop(ctx, id); err != nil {
 		return true, fmt.Errorf("stop for %s: %w", what, err)
 	}
@@ -1253,11 +1269,11 @@ func (a *Agent) createFailed(s *v1.Silo) time.Duration { return a.backoffFailed(
 func (a *Agent) createWait(s *v1.Silo) time.Duration { return a.backoffWait(&a.createBackoff, s) }
 
 // backoffFailed records a failed try of s in m (createBackoff, startBackoff) and says how long
-// until the next.
+// until the next: twice the last wait, unless the last failure is long past (it ran well since).
 func (a *Agent) backoffFailed(m *sync.Map, s *v1.Silo) time.Duration {
 	b := createBackoff{generation: s.Generation, delay: 5 * time.Second}
 	if o, ok := m.Load(s.UID); ok {
-		if prev := o.(createBackoff); prev.generation == s.Generation {
+		if prev := o.(createBackoff); prev.generation == s.Generation && a.Clock.Now().Sub(prev.until) < backoffForgetAfter {
 			b.delay = min(2*prev.delay, 5*time.Minute)
 		}
 	}
@@ -1265,6 +1281,9 @@ func (a *Agent) backoffFailed(m *sync.Map, s *v1.Silo) time.Duration {
 	m.Store(s.UID, b)
 	return b.delay
 }
+
+// backoffForgetAfter: a failure this long after the last try's wait ended starts the backoff over.
+const backoffForgetAfter = 10 * time.Minute
 
 // backoffWait is how long s's next try must still wait by m (0: now).
 func (a *Agent) backoffWait(m *sync.Map, s *v1.Silo) time.Duration {
@@ -1301,6 +1320,10 @@ func initFailed(s *v1.Silo) bool {
 	}
 	return false
 }
+
+// stoppedByUs: this agent stops silo uid itself now (an update, a liveness restart, new volumes,
+// an orphan init step, the fence): found stopped next, it didn't stop by itself.
+func (a *Agent) stoppedByUs(uid string) { a.startedHere.Delete(uid) }
 
 // errPlacedElsewhere: a status write or a start claim found the silo placed on another host (or
 // moved, deleted, re-made, or changed) since it was read here. Whoever gets it stops what it was

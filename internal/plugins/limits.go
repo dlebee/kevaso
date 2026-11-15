@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -72,6 +73,86 @@ type guarded struct {
 	pause     time.Duration // the next pause
 	lastStuck string        // the call that ran out its deadline
 	lastD     time.Duration // and that deadline
+	// awaySince: the registry hasn't had an answer from it since then (K-040); awayWhy, why; hold,
+	// how long it is kept so.
+	awaySince time.Time
+	awayWhy   string
+	hold      time.Duration
+	// manifest is the plugin's manifest on this host, whose device prefixes its AttachVolume
+	// answers must be under ("": a plugin in core's process, not checked against one).
+	manifest string
+}
+
+func (g *guarded) setManifest(path string) {
+	g.mu.Lock()
+	g.manifest = path
+	g.mu.Unlock()
+}
+
+// devicePrefixes are the device prefixes the plugin's manifest on this host declares; checked:
+// whether there is a manifest to check against at all.
+func (g *guarded) devicePrefixes() (prefixes []string, checked bool, err error) {
+	g.mu.Lock()
+	path := g.manifest
+	g.mu.Unlock()
+	if path == "" {
+		return nil, false, nil
+	}
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, true, nil // none declared: no device is the plugin's
+	}
+	if err != nil {
+		return nil, true, err
+	}
+	m, err := kplugin.ParseManifest(b)
+	if err != nil {
+		return nil, true, fmt.Errorf("%s: %w", path, err)
+	}
+	return m.DevicePrefixes, true, nil
+}
+
+// setAway marks the plugin away (since now, unless it already is); first: it wasn't.
+func (g *guarded) setAway(why string, hold time.Duration) (since time.Time, first bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.awayWhy, g.hold = why, hold
+	if g.awaySince.IsZero() {
+		g.awaySince = time.Now()
+		return g.awaySince, true
+	}
+	return g.awaySince, false
+}
+
+// clearAway: it answers again; was: it had been away since then.
+func (g *guarded) clearAway() (since time.Time, was bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	since, was = g.awaySince, !g.awaySince.IsZero()
+	g.awaySince, g.awayWhy = time.Time{}, ""
+	return since, was
+}
+
+func (g *guarded) away() (time.Time, string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.awaySince, g.awayWhy
+}
+
+// awayErr adds to a call's error that the plugin isn't answering the registry, and how long what
+// it serves is kept: what the object the call was for shows in its status.
+func (g *guarded) awayErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	g.mu.Lock()
+	since, why, hold := g.awaySince, g.awayWhy, g.hold
+	g.mu.Unlock()
+	if since.IsZero() {
+		return err
+	}
+	return fmt.Errorf("%w (plugin %s has not answered since %s: %s; what it serves is kept until %s, then dropped unless it answers)",
+		err, g.name, since.Format(time.RFC3339), why, since.Add(hold).Format(time.RFC3339))
 }
 
 func guard(name string, c Conn, l Limits) *guarded {
@@ -121,6 +202,14 @@ func (g *guarded) answered() {
 // do runs one call within the plugin's limits. quick: a question (its deadline is Quick); info:
 // the registry's own probe, which neither waits for a slot nor is paused.
 func do[T any](ctx context.Context, g *guarded, call string, quick, info bool, f func(context.Context) (T, error)) (T, error) {
+	v, err := call1(ctx, g, call, quick, info, f)
+	if !info {
+		err = g.awayErr(err)
+	}
+	return v, err
+}
+
+func call1[T any](ctx context.Context, g *guarded, call string, quick, info bool, f func(context.Context) (T, error)) (T, error) {
 	var zero T
 	d := g.limits.Work
 	if quick {
@@ -218,7 +307,20 @@ func (g *guarded) AttachVolume(ctx context.Context, a kplugin.Attachment) (kplug
 	if err != nil {
 		return st, err
 	}
-	if perr := kplugin.DevicePathProblem(st.Device); perr != nil {
+	perr := kplugin.DevicePathProblem(st.Device)
+	if perr == nil {
+		// K-038: and under the prefix its manifest on this host declares.
+		prefixes, checked, err := g.devicePrefixes()
+		switch {
+		case err != nil:
+			perr = fmt.Errorf("its manifest can't be read: %w", err)
+		case checked:
+			if perr = kplugin.DeviceUnder(st.Device, prefixes); perr != nil && len(prefixes) == 0 {
+				perr = fmt.Errorf("%w; reinstall it with kvoadm plugin install --manifest, its manifest declaring devicePrefixes", perr)
+			}
+		}
+	}
+	if perr != nil {
 		return kplugin.AttachmentStatus{}, fmt.Errorf("plugin %s: AttachVolume %s: refused its answer: %w: %w", g.name, a.Handle, perr, ErrBadAnswer)
 	}
 	return st, nil
