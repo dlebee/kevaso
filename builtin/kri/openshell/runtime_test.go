@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,131 +12,6 @@ import (
 
 	"kevaso.com/core/sdk/kri"
 )
-
-// fake is a host with an OpenShell CLI that keeps sandboxes in memory.
-type fake struct {
-	files     map[string][]byte
-	cmds      []string          // argv of every command, joined
-	envs      []string          // env of every command, joined
-	sandboxes map[string]string // name → phase
-	users     map[string]bool
-	gwUp      map[string]bool // gateway name → answering
-	execCode  int
-	execHook  func(context.Context, Cmd) (int, error) // sandbox exec, if set
-}
-
-func newFake() *fake {
-	return &fake{files: map[string][]byte{}, sandboxes: map[string]string{}, users: map[string]bool{}, gwUp: map[string]bool{}}
-}
-
-func gatewayOf(env []string) string {
-	for _, e := range env {
-		if v, ok := strings.CutPrefix(e, "OPENSHELL_GATEWAY="); ok {
-			return v
-		}
-	}
-	return ""
-}
-
-func (f *fake) Run(ctx context.Context, c Cmd) (int, error) {
-	line := c.Name + " " + strings.Join(c.Args, " ")
-	f.cmds = append(f.cmds, line)
-	f.envs = append(f.envs, strings.Join(c.Env, " "))
-	out := func(s string) {
-		if c.Stdout != nil {
-			_, _ = io.WriteString(c.Stdout, s)
-		}
-	}
-	fail := func(s string) (int, error) {
-		if c.Stderr != nil {
-			_, _ = io.WriteString(c.Stderr, s)
-		}
-		return 1, nil
-	}
-	a := c.Args
-	switch {
-	case c.Name == "id":
-		if !f.users[a[1]] {
-			return 1, nil
-		}
-	case c.Name == "useradd":
-		f.users[a[len(a)-1]] = true
-	case c.Name == "systemctl" && len(a) > 2 && a[0] == "enable":
-		f.gwUp["kv-"+strings.TrimSuffix(strings.TrimPrefix(a[2], unitStart), ".service")] = true
-	case c.Name == "openshell":
-		gw := gatewayOf(c.Env)
-		if !f.gwUp[gw] {
-			return fail("connect error: transport error")
-		}
-		switch {
-		case a[0] == "sandbox" && a[1] == "create":
-			f.sandboxes[a[3]] = "Ready"
-			out(`{"phase":"Ready"}`)
-		case a[0] == "sandbox" && a[1] == "get":
-			ph, ok := f.sandboxes[a[2]]
-			if !ok {
-				return fail("sandbox not found")
-			}
-			out(fmt.Sprintf(`{"name":%q,"phase":%q}`, a[2], ph))
-		case a[0] == "sandbox" && a[1] == "stop":
-			f.sandboxes[a[2]] = "Stopped"
-		case a[0] == "sandbox" && a[1] == "start":
-			if f.sandboxes[a[2]] == "Error" { // what the real one says (seen on machine 2)
-				return fail("code: 'The system is not in a state required for the operation's execution'")
-			}
-			f.sandboxes[a[2]] = "Ready"
-		case a[0] == "sandbox" && a[1] == "delete":
-			delete(f.sandboxes, a[2])
-		case a[0] == "sandbox" && a[1] == "exec" && f.execHook != nil:
-			return f.execHook(ctx, c)
-		case a[0] == "sandbox" && a[1] == "exec":
-			if c.Stdin != nil {
-				b, _ := io.ReadAll(c.Stdin)
-				out(string(b))
-			}
-			return f.execCode, nil
-		}
-	}
-	return 0, nil
-}
-
-func (f *fake) WriteFile(p string, d []byte, _ os.FileMode) error {
-	f.files[p] = append([]byte(nil), d...)
-	return nil
-}
-func (f *fake) ReadFile(p string) ([]byte, error) {
-	if b, ok := f.files[p]; ok {
-		return b, nil
-	}
-	return nil, os.ErrNotExist
-}
-func (f *fake) RemoveAll(p string) error {
-	for k := range f.files {
-		if k == p || strings.HasPrefix(k, p+"/") {
-			delete(f.files, k)
-		}
-	}
-	return nil
-}
-func (f *fake) Glob(pattern string) ([]string, error) {
-	var out []string
-	for k := range f.files {
-		if ok, _ := filepath.Match(pattern, k); ok {
-			out = append(out, k)
-		}
-	}
-	return out, nil
-}
-
-func (f *fake) ran(sub string) int {
-	n := 0
-	for _, c := range f.cmds {
-		if strings.Contains(c, sub) {
-			n++
-		}
-	}
-	return n
-}
 
 func newRuntime(f *fake, scope string) *Runtime {
 	return &Runtime{Host: f, Name: "openshell", Driver: DriverVM, Scope: scope, Arch: "aarch64", Wait: time.Second, Sleep: func(time.Duration) {}}
@@ -154,14 +27,17 @@ func TestLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := Gateway{Key: GatewayKey(DriverVM, ScopeNamespace, silo), Port: BasePort, Driver: DriverVM}
-	if f.ran("useradd --system --home-dir "+g.Dir()) != 1 || f.ran("systemctl enable --now "+g.Unit()) != 1 || f.ran("gateway add https://127.0.0.1:17700 --local --name "+g.Name()) != 1 {
-		t.Fatalf("gateway setup:\n%s", strings.Join(f.cmds, "\n"))
+	if f.ran("useradd --system --home-dir "+g.Dir()) != 1 || f.ran("systemctl start") != 0 || f.ran("systemctl enable") != 0 {
+		t.Fatalf("gateway setup (readied, not started):\n%s", strings.Join(f.cmds, "\n"))
 	}
 	if st, _ := r.Status(ctx, silo); st.State != kri.Created {
 		t.Fatalf("after create: %v", st.State)
 	}
 	if err := r.Start(ctx, silo); err != nil {
 		t.Fatal(err)
+	}
+	if f.ran("systemctl start "+g.Unit()) != 1 || f.ran("gateway add https://127.0.0.1:17700 --local --name "+g.Name()) != 1 {
+		t.Fatalf("gateway start:\n%s", strings.Join(f.cmds, "\n"))
 	}
 	create := f.cmds[len(f.cmds)-1]
 	for _, want := range []string{"sandbox create --name " + SandboxName(silo), "--detach", "--cpu 2", "--memory 1024Mi", "--label kevaso.com/uid=u1", "--policy " + policyPath(silo)} {
@@ -205,8 +81,8 @@ func TestLifecycle(t *testing.T) {
 	if st, _ := r.Status(ctx, silo); st.State != kri.Absent || len(f.sandboxes) != 0 {
 		t.Fatalf("after delete: %v %v", st.State, f.sandboxes)
 	}
-	if f.ran("userdel") != 0 {
-		t.Error("a namespace's gateway was removed with one silo")
+	if f.ran("userdel") != 1 {
+		t.Error("the namespace's gateway stayed after its last silo (item 4)")
 	}
 }
 
@@ -294,7 +170,8 @@ func TestGatewayScopes(t *testing.T) {
 	_ = r.Create(ctx, kri.Spec{ID: a})
 	_ = r.Create(ctx, kri.Spec{ID: c})
 	_ = r.Create(ctx, kri.Spec{ID: b})
-	if f.ran("useradd") != 2 || f.ran("gateway add https://127.0.0.1:17700") != 1 || f.ran("gateway add https://127.0.0.1:17701") != 1 {
+	if f.ran("useradd") != 2 || len(f.files[Gateway{Key: GatewayKey(DriverVM, ScopeNamespace, a), Port: 17700}.Dir()+"/.config/openshell/gateway.env"]) == 0 ||
+		!strings.Contains(string(f.files[Gateway{Key: GatewayKey(DriverVM, ScopeNamespace, c)}.Dir()+"/.config/openshell/gateway.env"]), "OPENSHELL_SERVER_PORT=17701") {
 		t.Fatalf("namespace gateways:\n%s", strings.Join(f.cmds, "\n"))
 	}
 }
@@ -388,7 +265,7 @@ func TestAStoppedGatewayIsStartedAgainWithTheSilo(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := Gateway{Key: GatewayKey(DriverVM, ScopeNamespace, silo), Port: BasePort, Driver: DriverVM}
-	f.gwUp[g.Name()] = false // systemctl stop, behind Kevaso's back
+	f.units[g.Unit()] = "inactive" // systemctl stop, behind Kevaso's back
 	st, err := r.Status(ctx, silo)
 	if err != nil || st.State != kri.Stopped || !strings.Contains(st.Message, g.Name()) {
 		t.Fatalf("its gateway down: %v %q %v, want Stopped, saying why", st.State, st.Message, err)
@@ -396,8 +273,8 @@ func TestAStoppedGatewayIsStartedAgainWithTheSilo(t *testing.T) {
 	if err := r.Start(ctx, silo); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := r.Status(ctx, silo); st.State != kri.Running || !f.gwUp[g.Name()] {
-		t.Fatalf("started again: %v, gateway up %v", st.State, f.gwUp[g.Name()])
+	if st, _ := r.Status(ctx, silo); st.State != kri.Running || !f.answers(g.Name()) {
+		t.Fatalf("started again: %v, gateway up %v", st.State, f.answers(g.Name()))
 	}
 }
 
@@ -450,7 +327,7 @@ func TestASandboxInErrorIsStoppedThenStarted(t *testing.T) {
 	if err := r.Start(ctx, silo); err != nil {
 		t.Fatal(err)
 	}
-	f.sandboxes[SandboxName(silo)] = "Error"
+	f.sandboxes[SandboxName(silo)].phase = "Error"
 	if st, _ := r.Status(ctx, silo); st.State != kri.Failed {
 		t.Fatalf("a sandbox in Error: %v", st.State)
 	}

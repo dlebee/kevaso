@@ -31,6 +31,7 @@ printf '\n' >> "$STUBLOG"
 case "$name $*" in
   "docker ps -aq --filter"*)          echo kevaso-c1 ;;
   "docker ps -aq")                    echo other-c1 other-c2 ;;
+  "docker ps -a --format"*)           printf 'osc1 openshell-kv-0123456789\nother1 other-kv-x\nother2 nginx\n' ;;
   "docker volume ls -q --filter"*)    echo kevaso-v1 ;;
   "docker volume ls -q")              echo other-v1 ;;
   "podman ps -aq --filter"*)          echo kevaso-pc1 ;;
