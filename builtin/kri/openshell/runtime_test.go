@@ -83,6 +83,9 @@ func (f *fake) Run(ctx context.Context, c Cmd) (int, error) {
 		case a[0] == "sandbox" && a[1] == "stop":
 			f.sandboxes[a[2]] = "Stopped"
 		case a[0] == "sandbox" && a[1] == "start":
+			if f.sandboxes[a[2]] == "Error" { // what the real one says (seen on machine 2)
+				return fail("code: 'The system is not in a state required for the operation's execution'")
+			}
 			f.sandboxes[a[2]] = "Ready"
 		case a[0] == "sandbox" && a[1] == "delete":
 			delete(f.sandboxes, a[2])
@@ -430,5 +433,31 @@ func TestACredentialIsCheckedWhereItIsUsed(t *testing.T) {
 	ok := kri.Credential{Name: "api-key", Env: "API_KEY", Host: "api.example.com", Header: "Authorization", Bearer: true, Value: []byte("v"), Version: 1}
 	if err := CheckCredential(ok); err != nil {
 		t.Fatalf("a good one refused: %v", err)
+	}
+}
+
+// Found on machine 2 (TestMetalOpenShell, the VM driver): a gateway stopped and started again
+// brings its sandbox's VM back by itself, then marks the sandbox Error ("Failed to start sandbox
+// during gateway startup: VM sandbox is already running"), and refuses sandbox start in that
+// state. A stop clears it: Start stops a sandbox in Error before it starts it.
+func TestASandboxInErrorIsStoppedThenStarted(t *testing.T) {
+	ctx := context.Background()
+	f := newFake()
+	r := newRuntime(f, "")
+	if err := r.Create(ctx, kri.Spec{ID: silo, Image: "ubuntu-24.04"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(ctx, silo); err != nil {
+		t.Fatal(err)
+	}
+	f.sandboxes[SandboxName(silo)] = "Error"
+	if st, _ := r.Status(ctx, silo); st.State != kri.Failed {
+		t.Fatalf("a sandbox in Error: %v", st.State)
+	}
+	if err := r.Start(ctx, silo); err != nil {
+		t.Fatalf("Start of a sandbox in Error: %v", err)
+	}
+	if st, _ := r.Status(ctx, silo); st.State != kri.Running || f.ran("sandbox stop "+SandboxName(silo)) != 1 {
+		t.Fatalf("after Start: %v (stops: %d)", st.State, f.ran("sandbox stop "+SandboxName(silo)))
 	}
 }

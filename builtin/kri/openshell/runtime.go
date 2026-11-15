@@ -306,11 +306,18 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 	if _, err := r.gateway(ctx, s.Gateway.Key); err != nil { // e.g. after a host reboot
 		return err
 	}
-	_, exists, err := r.get(ctx, s)
+	sb, exists, err := r.get(ctx, s)
 	if err != nil {
 		return err
 	}
 	if exists {
+		if Phase(sb.Phase) == kri.Failed {
+			// Seen on the VM driver: a gateway started again brings the sandbox's VM back itself,
+			// then marks it Error ("already running") and refuses start. A stop clears that.
+			if _, err := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "stop", SandboxName(id)); err != nil {
+				return err
+			}
+		}
 		_, err := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "start", SandboxName(id))
 		return err
 	}
