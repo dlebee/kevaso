@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -407,12 +408,15 @@ func (a *Agent) controlPlaneCondition(kept client.Watermark, seen client.Control
 }
 
 // reportKept lists on the Host the silos kept although the control plane doesn't know them, when
-// that changed since said; it returns what is said now.
+// that changed since said; it returns what is said now. The list is of the copies the runtimes
+// hold now (pruneKept): one removed since (by hand, or by this agent) leaves it, and with none
+// left the condition goes.
 func (a *Agent) reportKept(ctx context.Context, said string) string {
+	a.pruneKept(ctx)
 	var kept []string
 	a.keptNoted.Range(func(_, v any) bool {
-		if name, ok := v.(string); ok {
-			kept = append(kept, name)
+		if c, ok := v.(keptCopy); ok {
+			kept = append(kept, c.name)
 		}
 		return true
 	})
@@ -425,19 +429,50 @@ func (a *Agent) reportKept(ctx context.Context, said string) string {
 	if err := a.Client.Get(ctx, "Host", "", a.HostName, &h); err != nil {
 		return said
 	}
-	if now == "" && meta.FindCondition(h.Status.Conditions, ConditionKeptSilos) == nil {
-		return now // nothing kept, nothing said: nothing to write
+	if now == "" {
+		if meta.FindCondition(h.Status.Conditions, ConditionKeptSilos) == nil {
+			return now // nothing kept, nothing said: nothing to write
+		}
+		h.Status.Conditions = slices.DeleteFunc(h.Status.Conditions, func(c meta.Condition) bool { return c.Type == ConditionKeptSilos })
+	} else {
+		meta.SetCondition(&h.Status.Conditions, meta.Condition{Type: ConditionKeptSilos, Status: meta.ConditionTrue, Reason: "NoDeleteSeen",
+			Message: "kept running with their disks and volumes, though the control plane doesn't know them (no delete of them was seen here): " + now},
+			a.now().UTC().Truncate(time.Second))
 	}
-	cond := meta.Condition{Type: ConditionKeptSilos, Status: meta.ConditionFalse, Reason: "None", Message: "no silo is kept that the control plane doesn't know"}
-	if now != "" {
-		cond.Status, cond.Reason = meta.ConditionTrue, "NoDeleteSeen"
-		cond.Message = "kept running with their disks and volumes, though the control plane doesn't know them (no delete of them was seen here): " + now
-	}
-	meta.SetCondition(&h.Status.Conditions, cond, a.now().UTC().Truncate(time.Second))
 	if err := a.Client.UpdateStatus(ctx, &h); err != nil {
 		return said
 	}
 	return now
+}
+
+// pruneKept forgets the kept copies their runtime no longer holds (removed by hand, or by this
+// agent): what is listed as kept is what the runtimes hold now, never what was once noted. A
+// runtime whose list fails says nothing: its copies stay listed.
+func (a *Agent) pruneKept(ctx context.Context) {
+	noted := false
+	a.keptNoted.Range(func(_, _ any) bool { noted = true; return false })
+	if !noted {
+		return // nothing listed: no runtime is asked
+	}
+	held := map[string]map[string]bool{} // runtime → the UIDs it holds (only runtimes that answered)
+	for name, rt := range a.Runtimes {
+		ids, err := rt.List(ctx)
+		if err != nil {
+			continue
+		}
+		held[name] = map[string]bool{}
+		for _, id := range ids {
+			held[name][id.UID] = true
+		}
+	}
+	a.keptNoted.Range(func(k, v any) bool {
+		c, _ := v.(keptCopy)
+		if uids, answered := held[c.runtime]; answered && !uids[k.(string)] {
+			a.keptNoted.Delete(k)
+			a.log("%s is no longer on this host: no longer listed as kept", c.name)
+		}
+		return true
+	})
 }
 
 // Unreadable is why the watermark file can't be trusted ("" if it can): until a person decides

@@ -165,7 +165,7 @@ type Agent struct {
 	inFlight      sync.Map   // engine.Key → time.Time: a reconcile under way since then (awaitReconciles)
 	interrupts    sync.Map   // engine.Key → *interruptible: the work under way inside that silo (whileItRuns)
 	deletes       deletesLog // the deletes seen whose copies may remain here, on disk (deletes.go)
-	keptNoted     sync.Map   // silo UID → what it is: kept, listed on the Host (ConditionKeptSilos)
+	keptNoted     sync.Map   // silo UID → keptCopy: kept, listed on the Host (ConditionKeptSilos)
 	engine        *engine.Engine
 	cp            *Watermark // the control plane this worker trusts (watermark.go); via watermark()
 	cpOnce        sync.Once
@@ -1392,7 +1392,7 @@ func (a *Agent) releaseMove(ctx context.Context, s *v1.Silo) error {
 // removeEverywhere deletes the silo from every runtime that has it. For a silo still in the API
 // but no longer ours (or being deleted), only the runtime copy is removed.
 func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) error {
-	for _, rt := range a.Runtimes {
+	for rtName, rt := range a.Runtimes {
 		ids, err := rt.List(ctx)
 		if err != nil {
 			return err
@@ -1415,7 +1415,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 						}
 						a.abandoned.Delete(id.UID)
 					}
-					if _, logged := a.keptNoted.LoadOrStore(id.UID, keptName(id, rt.Info().Name)); !logged {
+					if _, logged := a.keptNoted.LoadOrStore(id.UID, keptCopy{runtime: rtName, name: keptName(id, rt.Info().Name)}); !logged {
 						a.log("keeping %s on %s: the control plane doesn't know it and no delete of it was seen here; it keeps running with its disk and volumes (nothing is removed without a delete)",
 							id, rt.Info().Name)
 					}
@@ -1440,7 +1440,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
 					return err
 				}
-				if _, logged := a.keptNoted.LoadOrStore(id.UID, keptName(id, rt.Info().Name+", stopped: "+why)); !logged {
+				if _, logged := a.keptNoted.LoadOrStore(id.UID, keptCopy{runtime: rtName, name: keptName(id, rt.Info().Name+", stopped: "+why)}); !logged {
 					a.log("keeping %s on %s, stopped, with its disk and volumes: %s (nothing is removed without a delete or a handoff from here)", id, rt.Info().Name, why)
 				}
 				continue
@@ -1486,6 +1486,10 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 }
 
 const whyHandoff = "handed off from here"
+
+// keptCopy is a copy kept here that the control plane doesn't know (keptNoted): the runtime that
+// holds it (its key in Runtimes), and how it is listed.
+type keptCopy struct{ runtime, name string }
 
 // keptName is how a kept copy is listed on the Host (KeptSilos): its name, the start of its UID
 // (two kept copies of one name, a silo deleted and made again, are told apart), and what.
