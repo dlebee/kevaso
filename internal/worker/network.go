@@ -224,7 +224,7 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 	endpointAddr := netip.MustParseAddr(v1.EndpointAddress) // the silos' local endpoint, on the bridge (ADR 0009)
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
-	last := ""
+	fw := &firewall{apply: func(ctx context.Context, text string) error { return applyRules(ctx, text) }}
 	for {
 		var all []*v1.Silo
 		for _, o := range silos.List() {
@@ -250,14 +250,17 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		now, ls := time.Now(), currentLeases()
 		view = WithLeases(view, all, ls, now)
 		leaseEnd, stopLeaseEnd := leaseTimer(ls, now)
-		rules := kni.Rules(view)
-		if rules != last {
-			if err := applyRules(ctx, rules); err != nil {
-				log("silo firewall: %v", err)
-			} else {
-				last = rules
-				loaded.set(kni.Bindings(view.Local))
-			}
+		rules, problems := kni.Generate(view)
+		if ok, err := fw.load(ctx, rules); err != nil {
+			log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
+		} else if ok {
+			loaded.set(kni.Bindings(view.Local))
+		}
+		reportHost(ctx, c, hostName, me, hostFirewallCondition(fw.err, problems), now)
+		reportPortRules(ctx, c, hostName, all, siloProblems(problems), now)
+		var retry <-chan time.Time
+		if fw.err != nil {
+			retry = time.After(fw.retryAfter())
 		}
 		dnsOn.keep(ctx, DNSListeners(me), func(addr string, from names.Asker) *DNS {
 			return &DNS{Listen: addr, From: from, View: nameView, Log: log,
@@ -281,8 +284,9 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		case <-changed:
 			time.Sleep(100 * time.Millisecond) // let a burst of changes settle
 		case <-leaseEnd: // a port's lease is up: its rule goes now, whether or not the API says so yet
+		case <-retry: // the last table was refused: try again, changed or not
 		case <-tick.C:
-			last = "" // reload anyway: someone may have flushed the ruleset
+			fw.last = "" // reload anyway: someone may have flushed the ruleset
 		}
 		stopLeaseEnd()
 	}

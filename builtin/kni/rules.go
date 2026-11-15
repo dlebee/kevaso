@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/netip"
 	"sort"
+	"strconv"
 	"strings"
 
 	v1 "kevaso.com/core/api/v1"
@@ -233,9 +234,124 @@ func cutRules(bridge string, ip netip.Addr, proto string, port int, orig string)
 	}
 }
 
+// Problem is an entry the rules can't express (K-009, K-036): left out, fail closed (it opens
+// nothing; a port whose every source is left out stays closed), and reported to its owner.
+type Problem struct {
+	Kind   string // Silo | Service | Host
+	Owner  string // NAMESPACE/NAME (Silo, Service), or the host's field
+	Port   string // the port it was on ("": the silo or service as a whole)
+	Entry  string // the entry, quoted (never raw: it goes into status messages)
+	Reason string
+}
+
+func (p Problem) String() string {
+	at := ""
+	if p.Port != "" {
+		at = "port " + p.Port + ": "
+	}
+	return at + p.Entry + ": " + p.Reason
+}
+
+// gen collects what Generate leaves out.
+type gen struct{ problems []Problem }
+
+func (g *gen) bad(kind, owner, port, entry, reason string) {
+	g.problems = append(g.problems, Problem{Kind: kind, Owner: owner, Port: port, Entry: strconv.Quote(entry), Reason: reason})
+}
+
+// v4Ranges parses a list of IPv4 addresses and prefixes, each written canonically (a prefix with
+// host bits set is the network it names). closed: the list had entries and none could be kept,
+// so whatever it limits must stay closed (an empty list would mean "from anywhere").
+func (g *gen) v4Ranges(kind, owner, port string, items []string) (out []string, closed bool) {
+	seen := map[string]bool{}
+	for _, it := range items {
+		v, why := v4Range(it)
+		if why != "" {
+			g.bad(kind, owner, port, it, why)
+			continue
+		}
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out, len(items) > 0 && len(out) == 0
+}
+
+func v4Range(it string) (string, string) {
+	if p, err := netip.ParsePrefix(it); err == nil {
+		if !p.Addr().Is4() {
+			return "", "an IPv6 range; these rules are IPv4 only"
+		}
+		return p.Masked().String(), ""
+	}
+	if a, err := netip.ParseAddr(it); err == nil {
+		if !a.Is4() {
+			return "", "an IPv6 address; these rules are IPv4 only"
+		}
+		return a.String(), ""
+	}
+	return "", "not an IPv4 address or prefix"
+}
+
+// v4Addr: a is an IPv4 address the rules can use for what; otherwise it's reported (when set at
+// all) and not used.
+func (g *gen) v4Addr(kind, owner, port, what string, a netip.Addr) bool {
+	if !a.IsValid() {
+		return false
+	}
+	if !a.Is4() {
+		g.bad(kind, owner, port, a.String(), what+" is not IPv4; these rules are IPv4 only")
+		return false
+	}
+	return true
+}
+
+func okPort(n int) bool { return n >= 1 && n <= 65535 }
+
+func okProto(p string) bool { return p == "tcp" || p == "udp" }
+
 // Rules is the host's whole silo ruleset, ready for `nft -f` (it replaces the previous one
 // atomically). Deterministic: the same input gives the same text, so unchanged means no reload.
 func Rules(h Host) string {
+	text, _ := Generate(h)
+	return text
+}
+
+// Generate is Rules, with what it left out. No rule is built from an unparsed string: every
+// address and range is parsed and written canonically where it enters, every port number and
+// protocol checked, every interface name whitelisted, so one bad entry (anything that reached the
+// store before admission tightened, a plugin's answer) never makes nft refuse the whole table.
+func Generate(h Host) (string, []Problem) {
+	g := &gen{}
+	if !g.v4Addr("Host", "internalIP", "", "the host's internal IP", h.InternalIP) {
+		h.InternalIP = netip.Addr{}
+	}
+	if !g.v4Addr("Host", "externalIP", "", "the host's external IP", h.ExternalIP) {
+		h.ExternalIP = netip.Addr{}
+	}
+	if !h.Endpoint.Is4() {
+		h.Endpoint = netip.Addr{}
+	}
+	if !okPort(h.GatePort) {
+		h.GatePort = 0
+	}
+	var all []Silo
+	for _, s := range h.All {
+		if s.IP.Is4() { // a caller with an address the rules can't write is "not running" to them
+			all = append(all, s)
+		}
+	}
+	h.All = all
+	var keep []Silo
+	for _, s := range h.Local {
+		if s.IP.IsValid() && !s.IP.Is4() {
+			g.bad("Silo", s.Key, "", s.IP.String(), "its silo address is not IPv4; its port on the bridge stays closed")
+			s.IP = netip.Addr{}
+		}
+		keep = append(keep, s)
+	}
+	h.Local = keep
 	local := append([]Silo(nil), h.Local...)
 	sort.Slice(local, func(i, j int) bool { return local[i].Key < local[j].Key })
 	byKey := map[string]Silo{}
@@ -255,6 +371,10 @@ func Rules(h Host) string {
 		// only its sources.
 		for _, p := range s.Spec.Open() {
 			var ips []string
+			if !okPort(p.Number) || !okPort(p.HostNumber()) || !okProto(lower(p.Protocol)) {
+				g.bad("Silo", s.Key, p.Name, fmt.Sprintf("%s %d as %d", p.Protocol, p.Number, p.HostNumber()), "not a port the rules can open")
+				continue
+			}
 			for _, n := range p.HostPort {
 				a := h.InternalIP
 				if n == v1.NetworkExternal {
@@ -264,7 +384,7 @@ func Rules(h Host) string {
 					ips = append(ips, a.String())
 				}
 			}
-			if p.LoadBalancer && s.LoadBalancerIP.IsValid() && !contains(ips, s.LoadBalancerIP.String()) {
+			if p.LoadBalancer && g.v4Addr("Silo", s.Key, p.Name, "its load-balancer address", s.LoadBalancerIP) && !contains(ips, s.LoadBalancerIP.String()) {
 				ips = append(ips, s.LoadBalancerIP.String())
 			}
 			if len(ips) == 0 {
@@ -282,25 +402,34 @@ func Rules(h Host) string {
 			if !open {
 				continue
 			}
+			sources, shut := g.v4Ranges("Silo", s.Key, p.Name, p.Sources)
+			if shut {
+				continue // every source left out: closed, not open to all
+			}
 			dnat = append(dnat, fmt.Sprintf("ip daddr %s %s dport %d dnat ip to %s:%d", set(ips), proto, at, s.IP, p.Number))
 			src := ""
-			if len(p.Sources) > 0 {
-				src = "ip saddr " + set(p.Sources) + " "
+			if len(sources) > 0 {
+				src = "ip saddr " + set(sources) + " "
 			}
 			fwd = append(fwd, fmt.Sprintf("oifname %q ip daddr %s %s%s dport %d %s ct status dnat accept", h.Bridge, s.IP, src, proto, p.Number, orig))
 		}
 		// From a plugin's load balancer: its node ports, from its addresses only.
-		if len(s.NodePorts) > 0 && len(s.SourceRanges) > 0 {
+		ranges, shut := g.v4Ranges("Silo", s.Key, nodePortNames(s.NodePorts), s.SourceRanges)
+		if len(s.NodePorts) > 0 && len(ranges) > 0 && !shut {
 			protos := map[string]string{}
 			for _, p := range s.Spec.Open() {
 				if p.LoadBalancer {
 					protos[p.Name] = lower(p.Protocol)
 				}
 			}
-			src := "ip saddr " + set(s.SourceRanges) + " "
+			src := "ip saddr " + set(ranges) + " "
 			for _, np := range s.NodePorts {
 				proto := protos[np.Name]
-				if proto == "" {
+				if !okProto(proto) {
+					continue
+				}
+				if !okPort(np.Port) || !okPort(np.NodePort) {
+					g.bad("Silo", s.Key, np.Name, fmt.Sprintf("%d from node port %d", np.Port, np.NodePort), "not a port the rules can open")
 					continue
 				}
 				open, closed := Outside(s, np.Name)
@@ -316,11 +445,16 @@ func Rules(h Host) string {
 			}
 		}
 		// To the egress gate: its TLS by host name, to outside the cluster.
-		if h.GatePort > 0 && len(s.GatePorts) > 0 {
-			ps := make([]string, len(s.GatePorts))
-			for i, p := range s.GatePorts {
-				ps[i] = p.String()
+		var gatePorts []string
+		for _, p := range s.GatePorts {
+			if !okPort(p.From) || !okPort(p.To) || p.From > p.To {
+				g.bad("Silo", s.Key, "", p.String(), "not a port range its egress gate rule can take")
+				continue
 			}
+			gatePorts = append(gatePorts, p.String())
+		}
+		if h.GatePort > 0 && len(gatePorts) > 0 {
+			ps := gatePorts
 			redirect = append(redirect, fmt.Sprintf("iifname %q ip saddr %s ip daddr != { %s, %s, 10.62.0.0/16, 10.63.0.0/16 } tcp dport %s redirect to :%d",
 				h.Bridge, s.IP, silosAll, servicesAll, set(ps), h.GatePort))
 		}
@@ -329,26 +463,44 @@ func Rules(h Host) string {
 			if !e.Prefix.IsValid() {
 				continue
 			}
-			for _, proto := range e.Protocols {
-				m := fmt.Sprintf("iifname %q ip saddr %s ip daddr %s ", h.Bridge, s.IP, e.Prefix)
-				if len(e.Ports) == 0 {
-					egress = append(egress, m+"meta l4proto "+proto+" accept")
+			if !e.Prefix.Addr().Is4() {
+				g.bad("Silo", s.Key, "", e.Prefix.String(), "a grant's IPv6 range; these rules are IPv4 only")
+				continue
+			}
+			var ps []string
+			for _, p := range e.Ports {
+				if !okPort(p.From) || !okPort(p.To) || p.From > p.To {
+					g.bad("Silo", s.Key, "", p.String(), "a grant's port range the rules can't take")
 					continue
 				}
-				ps := make([]string, len(e.Ports))
-				for i, p := range e.Ports {
-					ps[i] = p.String()
+				ps = append(ps, p.String())
+			}
+			if len(e.Ports) > 0 && len(ps) == 0 {
+				continue // every port left out: nothing, not every port
+			}
+			for _, proto := range e.Protocols {
+				if !okProto(proto) {
+					g.bad("Silo", s.Key, "", proto, "a grant's protocol the rules can't take")
+					continue
+				}
+				m := fmt.Sprintf("iifname %q ip saddr %s ip daddr %s ", h.Bridge, s.IP, e.Prefix.Masked())
+				if len(ps) == 0 {
+					egress = append(egress, m+"meta l4proto "+proto+" accept")
+					continue
 				}
 				egress = append(egress, m+proto+" dport "+set(ps)+" accept")
 			}
 		}
 		// Outbound source.
-		if s.EgressIP.IsValid() {
+		if g.v4Addr("Silo", s.Key, "", "its egress address", s.EgressIP) {
 			snat = append(snat, fmt.Sprintf("ip saddr %s ip daddr != { %s, 10.62.0.0/16, 10.63.0.0/16 } oifname != %q snat ip to %s", s.IP, silosAll, h.Bridge, s.EgressIP))
 		}
 		// allowFrom: other silos, by their current address, to the port that names them.
 		ns := strings.SplitN(s.Key, "/", 2)[0]
 		for _, p := range s.Spec.Open() {
+			if !okPort(p.Number) || !okProto(lower(p.Protocol)) {
+				continue // reported with its outside rules
+			}
 			callers := append(append([]string(nil), p.AllowFrom...), s.Paths[p.Name]...)
 			seen := map[string]bool{}
 			for _, key := range callers {
@@ -377,23 +529,37 @@ func Rules(h Host) string {
 	svcs := append([]Service(nil), h.Services...)
 	sort.Slice(svcs, func(i, j int) bool { return svcs[i].Key < svcs[j].Key })
 	for _, sv := range svcs {
+		ranges, shut := g.v4Ranges("Service", sv.Key, "", sv.SourceRanges)
+		clusterIP := g.v4Addr("Service", sv.Key, "", "its cluster IP", sv.ClusterIP)
 		for _, p := range sv.Ports {
-			if len(p.Targets) == 0 {
+			if !okPort(p.Port) || !okProto(p.Proto) || (p.NodePort != 0 && !okPort(p.NodePort)) {
+				g.bad("Service", sv.Key, strconv.Itoa(p.Port), fmt.Sprintf("%s %d node port %d", p.Proto, p.Port, p.NodePort), "not a port the rules can open")
 				continue
 			}
-			if sv.ClusterIP.IsValid() {
-				dnat = append(dnat, fmt.Sprintf("iifname %q ip daddr %s %s dport %d %s", h.Bridge, sv.ClusterIP, p.Proto, p.Port, pick(p.Targets)))
+			var targets []Target
+			for _, t := range p.Targets {
+				if !t.IP.Is4() || !okPort(t.Port) {
+					g.bad("Service", sv.Key, strconv.Itoa(p.Port), netip.AddrPortFrom(t.IP, uint16(max(0, min(t.Port, 65535)))).String(), "an endpoint the rules can't send to (IPv4 only)")
+					continue
+				}
+				targets = append(targets, t)
+			}
+			if len(targets) == 0 {
+				continue
+			}
+			if clusterIP {
+				dnat = append(dnat, fmt.Sprintf("iifname %q ip daddr %s %s dport %d %s", h.Bridge, sv.ClusterIP, p.Proto, p.Port, pick(targets)))
 			}
 			var local []Target
-			for _, t := range p.Targets {
+			for _, t := range targets {
 				if t.Local {
 					local = append(local, t)
 				}
 			}
-			if p.NodePort == 0 || len(local) == 0 || len(sv.SourceRanges) == 0 {
+			if p.NodePort == 0 || len(local) == 0 || len(ranges) == 0 || shut {
 				continue
 			}
-			src := "ip saddr " + set(sv.SourceRanges) + " "
+			src := "ip saddr " + set(ranges) + " "
 			dnat = append(dnat, fmt.Sprintf("%s%s dport %d %s", src, p.Proto, p.NodePort, pick(local)))
 			for _, t := range local {
 				fwd = append(fwd, fmt.Sprintf("oifname %q ip daddr %s %s%s dport %d ct status dnat accept", h.Bridge, t.IP, src, p.Proto, t.Port))
@@ -509,5 +675,17 @@ func Rules(h Host) string {
 		w("table %s", old)
 		w("delete table %s", old)
 	}
-	return b.String()
+	return b.String(), g.problems
+}
+
+// nodePortNames is the port the node-port rules belong to, for a report ("" when several).
+func nodePortNames(nps []v1.NodePort) string {
+	if len(nps) == 1 {
+		return nps[0].Name
+	}
+	var names []string
+	for _, np := range nps {
+		names = append(names, np.Name)
+	}
+	return strings.Join(names, ",")
 }
