@@ -30,6 +30,79 @@ import (
 // maxSecretValue is the largest value a secret can hold.
 const maxSecretValue = 64 << 10
 
+// secretWrite is what a write to a Secret carries from prepareSecret to the guards and the commit:
+// the value taken out of the object, and whether it has been sealed already.
+type secretWrite struct {
+	value  []byte
+	sealed bool // sealed before the object was committed (a loosening write): nothing left to do after
+}
+
+type secretWriteKey struct{}
+
+func secretWriteFrom(ctx context.Context) *secretWrite {
+	sw, _ := ctx.Value(secretWriteKey{}).(*secretWrite)
+	return sw
+}
+
+// checkLoosening is the K-018 rule, run on the object as it will be stored (after mutation
+// policies, so a policy can't flip a setting past it): a secret may become readable, or allow a
+// delivery mode it didn't, only in a write that brings a new value.
+func checkLoosening(ctx context.Context, old, obj meta.Object) error {
+	next, ok := obj.(*v1.Secret)
+	prev, _ := old.(*v1.Secret)
+	if !ok || prev == nil {
+		return nil
+	}
+	if kind(prev) != kind(next) { // also here, so a policy can't turn a signing key into a readable secret
+		return errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.type can't change (delete and re-create it)", next.Name)
+	}
+	if !loosens(prev, next) {
+		return nil
+	}
+	if sw := secretWriteFrom(ctx); sw != nil && sw.value != nil {
+		return nil
+	}
+	return errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.valueReadable and spec.allowedDelivery can't be loosened without a new spec.value in the same write (a value made write-only, or kept to some deliveries, stays so)", next.Name)
+}
+
+func kind(s *v1.Secret) string {
+	if s.Spec.Type == "" {
+		return v1.SecretOpaque
+	}
+	return s.Spec.Type
+}
+
+// sealBeforeLoosening: a write that loosens a secret, with its new value, replaces the value before
+// the object is committed, so there is never a moment when the looser object is stored and the old
+// value is still in the vault. It returns the object to commit, with the new version in its status.
+// The vault write is skipped on a dry run, and when the write is stale (the commit would refuse it).
+func (s *Server) sealBeforeLoosening(ctx context.Context, old meta.Object, data []byte, current, expected int64) ([]byte, error) {
+	sw := secretWriteFrom(ctx)
+	prev, _ := old.(*v1.Secret)
+	if sw == nil || sw.value == nil || prev == nil || s.vault == nil || dryRun(ctx) {
+		return data, nil
+	}
+	obj, _, err := v1.Decode(data)
+	if err != nil {
+		return nil, err
+	}
+	next, ok := obj.(*v1.Secret)
+	if !ok || !loosens(prev, next) {
+		return data, nil
+	}
+	if current != expected {
+		return nil, store.ErrConflict
+	}
+	st, err := s.vault.Put(ctx, next, sw.value)
+	if err != nil {
+		return nil, err
+	}
+	sw.sealed = true
+	next.Status = st
+	_, data, err = toMap(next)
+	return data, err
+}
+
 // prepareSecret takes the value out of a Secret being written and returns it (or a generated one)
 // to seal once the object is stored. nil means the value doesn't change.
 func (s *Server) prepareSecret(ctx context.Context, t target, obj meta.Object) ([]byte, error) {
@@ -50,9 +123,6 @@ func (s *Server) prepareSecret(ctx context.Context, t target, obj meta.Object) (
 	}
 	if old != nil && old.Spec.Type != sec.Spec.Type {
 		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.type can't change (delete and re-create it)", sec.Name)
-	}
-	if old != nil && value == nil && loosens(old, sec) {
-		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.valueReadable and spec.allowedDelivery can't be loosened without a new spec.value in the same write (a value made write-only, or kept to some deliveries, stays so)", sec.Name)
 	}
 	if value == nil && sec.Spec.Generate && (old == nil || s.vault == nil || !s.vault.Has(ctx, old)) {
 		v, err := secrets.Generate(sec.Spec.Type)
@@ -143,7 +213,11 @@ func (s *Server) secretValue(ctx context.Context, w http.ResponseWriter, t targe
 		writeErr(w, errf(http.StatusServiceUnavailable, "Unavailable", "this server has no KMS"))
 		return
 	}
-	value, ver, err := s.vault.Value(ctx, sec)
+	value, ver, err := s.vault.PersonValue(ctx, sec)
+	if errors.Is(err, secrets.ErrWriteOnly) {
+		writeErr(w, errf(http.StatusForbidden, "Forbidden", "secret %s/%s: this value was written while it was write-only, so nobody can read it back; write a new value to make it readable", sec.Namespace, sec.Name))
+		return
+	}
 	if errors.Is(err, secrets.ErrNoValue) {
 		writeErr(w, errf(http.StatusNotFound, "NotFound", "secret %s/%s has no value yet", sec.Namespace, sec.Name))
 		return

@@ -40,6 +40,9 @@ func (s *Server) guard(ctx context.Context, t target, old, obj meta.Object) erro
 	if err := s.checkEscalation(ctx, t, old, obj); err != nil {
 		return err
 	}
+	if err := checkLoosening(ctx, old, obj); err != nil {
+		return err
+	}
 	for _, check := range []func(context.Context, target, meta.Object) error{
 		s.checkExposure,
 		s.checkPublishPublic,
