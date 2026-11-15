@@ -23,6 +23,10 @@
 //	        [--default-pull]                    a registry credential, write-only; the password on stdin
 //	kvo secret set NAME --from-file F|-        rotate: every silo using it follows
 //	kvo get secret NAME --reveal               the value (read-value; never a write-only secret)
+//	kvo create clustersecret NAME [--description D] --from-file F|-
+//	kvo set clustersecret NAME --from-file F|-   rotate the value
+//	kvo get clustersecret [NAME] [--reveal]     spec and status; --reveal is the value
+//	kvo delete clustersecret NAME
 //	kvo get approvals | kvo watch approvals    silos waiting for a person's yes to use a secret
 //	kvo pane watch SILO                        follow a silo's panes (plain text; one way)
 //	kvo pane bundle PANE -o FILE               save an HTML pane's bundle (for the panes app)
@@ -74,6 +78,7 @@ type opts struct {
 	request                                  string // kvo approve: the request read
 	all, noBrowser                           bool
 	secret                                   secretOpts
+	cluster                                  clusterOpts
 	sets                                     setOpts
 	term                                     termOpts  // exec -it, cp, ui (terminal.go, copy.go)
 	lease                                    leaseOpts // kvo open / close (leases.go)
@@ -198,6 +203,8 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.ip.class, err = val()
 		case "--host":
 			o.ip.host, err = val()
+		case "--description":
+			o.cluster.description, err = val()
 		case "--region":
 			o.ip.region, err = val()
 		case "--address":
@@ -220,7 +227,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|pane|create|secret|ip|approve|deny|open|close|login|logout|ctx|ns|auth …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|pane|create|secret|set|ip|approve|deny|open|close|login|logout|ctx|ns|auth …")
 		return 2
 	}
 	if code, ok := pluginDispatch(ctx, args, stdin, stdout, stderr); ok { // kvo plugin …, kvo NAME (plugins.go)
@@ -267,6 +274,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		switch what {
 		case "secret":
 			err = createSecret(ctx, c, o, stdin, stdout)
+		case "clustersecret":
+			err = createClusterSecret(ctx, c, o, stdin, stdout)
 		case "ip":
 			err = createIP(ctx, c, o, stdout)
 		default:
@@ -274,6 +283,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 	case "secret":
 		err = secretCommand(ctx, c, o, stdin, stdout)
+	case "set":
+		err = setClusterSecret(ctx, c, o, stdin, stdout)
 	case "ip":
 		err = ipCommand(ctx, c, o, stdout)
 	case "move":
@@ -529,6 +540,12 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 		ns = defaultNS(o)
 	}
 	if o.secret.reveal {
+		if k.Kind == "ClusterSecret" {
+			if len(o.args) != 2 {
+				return errors.New("--reveal works with one clustersecret: kvo get clustersecret NAME --reveal")
+			}
+			return revealValue(ctx, c, "ClusterSecret", "", o.args[1], stdout)
+		}
 		if k.Kind != "Secret" || len(o.args) != 2 {
 			return errors.New("--reveal works with one secret: kvo get secret NAME --reveal")
 		}
@@ -719,6 +736,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 		head = append(head, "STATUS")
 	case "Secret":
 		head = append(head, "TYPE", "VERSION", "UPDATED", "READABLE")
+	case "ClusterSecret":
+		head = append(head, "DESCRIPTION", "VERSION", "CHANGED")
 	case "Grant":
 		head = append(head, "EGRESS", "SECRETS")
 	case "Ingress":
@@ -800,6 +819,16 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 				ver = fmt.Sprint(o.Status.Version)
 			}
 			row = append(row, typ, ver, updated, readable)
+		case *v1.ClusterSecret:
+			changed := "-"
+			if o.Status.ChangedAt != nil {
+				changed = since(*o.Status.ChangedAt)
+			}
+			ver := "no value"
+			if o.Status.Version > 0 {
+				ver = fmt.Sprint(o.Status.Version)
+			}
+			row = append(row, dash(o.Spec.Description), ver, changed)
 		case *v1.Grant:
 			var eg, secs []string
 			for _, e := range o.Spec.Egress {

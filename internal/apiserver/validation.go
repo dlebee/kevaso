@@ -186,7 +186,12 @@ var builtinRules = map[string][]Rule{
 		{`has(self.spec.hosts) && self.spec.hosts.size() > 0`, "spec.hosts needs at least one host name"},
 		{`self.spec.issuer != '' && self.spec.secretName != ''`, "spec.issuer and spec.secretName are required"},
 	},
-	"Role":               rbacRuleRules,
+	// A namespaced Role never reaches a cluster secret. Copy the shared rules, then add this one,
+	// so the extra rule doesn't land on ClusterRole (they would share the backing array).
+	"Role": append(append([]Rule{}, rbacRuleRules...), Rule{
+		`!has(self.rules) || self.rules.all(r, !has(r.resources) || r.resources.all(res, res != 'clustersecrets' && res != 'clustersecrets/value'))`,
+		"a Role can't grant clustersecrets or clustersecrets/value: use a ClusterRole",
+	}),
 	"ClusterRole":        rbacRuleRules,
 	"RoleBinding":        append([]Rule{{`self.roleRef.kind in ['Role', 'ClusterRole']`, "roleRef.kind must be Role or ClusterRole"}}, bindingRules...),
 	"ClusterRoleBinding": append([]Rule{{`self.roleRef.kind == 'ClusterRole'`, "a ClusterRoleBinding can only grant a ClusterRole"}}, bindingRules...),

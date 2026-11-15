@@ -70,13 +70,35 @@ func (v *Vault) Put(ctx context.Context, sec *v1.Secret, value []byte) (v1.Secre
 	if err != nil {
 		return v1.SecretStatus{}, err
 	}
-	sealed, err := kms.Seal(ctx, v.KMS, value, aad(sec.Namespace, sec.Name, sec.UID))
+	r, err := v.putRecord(ctx, sec.Namespace, sec.Name, sec.UID, value, !sec.Readable())
 	if err != nil {
 		return v1.SecretStatus{}, err
 	}
-	k := valueKey(sec.Namespace, sec.Name)
+	now := v.Now().UTC().Truncate(time.Second)
+	return v1.SecretStatus{Version: r.Version, UpdatedAt: &now, Size: len(value), PublicKey: pub}, nil
+}
+
+// PutCluster seals value as the cluster secret's new version. The value is readable again (a
+// cluster-admin's --reveal, or a ClusterRole pinned to the name): it is not write-only in the vault.
+// The version is what the caller records; the clock that stamps changedAt is the server's.
+func (v *Vault) PutCluster(ctx context.Context, cs *v1.ClusterSecret, value []byte) (int64, error) {
+	r, err := v.putRecord(ctx, "", cs.Name, cs.UID, value, false)
+	if err != nil {
+		return 0, err
+	}
+	return r.Version, nil
+}
+
+// putRecord seals value under namespace/name, bound to uid. A new uid starts at version 1; the
+// same uid bumps the version. writeOnly sticks to the value (K-060).
+func (v *Vault) putRecord(ctx context.Context, ns, name, uid string, value []byte, writeOnly bool) (record, error) {
+	sealed, err := kms.Seal(ctx, v.KMS, value, aad(ns, name, uid))
+	if err != nil {
+		return record{}, err
+	}
+	k := valueKey(ns, name)
 	for attempt := 0; attempt < 5; attempt++ {
-		r := record{UID: sec.UID, Version: 1, Sealed: sealed, WriteOnly: !sec.Readable()}
+		r := record{UID: uid, Version: 1, Sealed: sealed, WriteOnly: writeOnly}
 		cur, err := v.Store.Get(ctx, k)
 		var werr error
 		switch {
@@ -84,10 +106,10 @@ func (v *Vault) Put(ctx context.Context, sec *v1.Secret, value []byte) (v1.Secre
 			b, _ := json.Marshal(r)
 			_, werr = v.Store.Create(ctx, k, b)
 		case err != nil:
-			return v1.SecretStatus{}, err
+			return record{}, err
 		default:
 			var old record
-			if json.Unmarshal(cur.Data, &old) == nil && old.UID == sec.UID {
+			if json.Unmarshal(cur.Data, &old) == nil && old.UID == uid {
 				r.Version = old.Version + 1
 			}
 			b, _ := json.Marshal(r)
@@ -97,12 +119,11 @@ func (v *Vault) Put(ctx context.Context, sec *v1.Secret, value []byte) (v1.Secre
 			continue
 		}
 		if werr != nil {
-			return v1.SecretStatus{}, werr
+			return record{}, werr
 		}
-		now := v.Now().UTC().Truncate(time.Second)
-		return v1.SecretStatus{Version: r.Version, UpdatedAt: &now, Size: len(value), PublicKey: pub}, nil
+		return r, nil
 	}
-	return v1.SecretStatus{}, errors.New("secret value keeps changing; try again")
+	return record{}, errors.New("secret value keeps changing; try again")
 }
 
 // Has reports whether the secret has a value.
@@ -112,7 +133,11 @@ func (v *Vault) Has(ctx context.Context, sec *v1.Secret) bool {
 }
 
 func (v *Vault) read(ctx context.Context, sec *v1.Secret) (record, int64, error) {
-	o, err := v.Store.Get(ctx, valueKey(sec.Namespace, sec.Name))
+	return v.readAt(ctx, sec.Namespace, sec.Name, sec.UID)
+}
+
+func (v *Vault) readAt(ctx context.Context, ns, name, uid string) (record, int64, error) {
+	o, err := v.Store.Get(ctx, valueKey(ns, name))
 	if errors.Is(err, store.ErrNotFound) {
 		return record{}, 0, ErrNoValue
 	}
@@ -123,10 +148,20 @@ func (v *Vault) read(ctx context.Context, sec *v1.Secret) (record, int64, error)
 	if err := json.Unmarshal(o.Data, &r); err != nil {
 		return record{}, 0, err
 	}
-	if r.UID != sec.UID {
+	if r.UID != uid {
 		return record{}, 0, ErrNoValue
 	}
 	return r, o.Revision, nil
+}
+
+// ClusterValue opens a cluster secret's current value. Callers decide who may have it.
+func (v *Vault) ClusterValue(ctx context.Context, cs *v1.ClusterSecret) ([]byte, int64, error) {
+	r, _, err := v.readAt(ctx, "", cs.Name, cs.UID)
+	if err != nil {
+		return nil, 0, err
+	}
+	pt, err := kms.Open(ctx, v.KMS, r.Sealed, aad("", cs.Name, cs.UID))
+	return pt, r.Version, err
 }
 
 // Value opens the secret's current value. Callers decide who may have it; the vault doesn't.

@@ -278,6 +278,10 @@ ClusterRole rules=[{"verbs":["sudo"],"resources":["silos"]}]
   ClusterRole r: verbs must be *, get, list, watch, create, update, patch, delete, or for secrets use, read-value, write and approve, for ips use, or for silos/exposure open and approve
 Role rules=[{"verbs":["get"],"resources":["silos"],"selector":{"a":"b"}}]
   Role r: a rule's selector (by label) only works on secrets and silos/exposure
+Role rules=[{"verbs":["get"],"resources":["clustersecrets"]}]
+  Role r: a Role can't grant clustersecrets or clustersecrets/value: use a ClusterRole
+Role rules=[{"verbs":["get"],"resources":["clustersecrets/value"]}]
+  Role r: a Role can't grant clustersecrets or clustersecrets/value: use a ClusterRole
 ClusterRole rules=[{"verbs":["get"]}]
   ClusterRole r: every rule needs verbs and resources (no such overload: size)
 Role rules=[{"verbs":["sudo"],"resources":["silos"]}]

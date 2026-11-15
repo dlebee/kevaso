@@ -113,6 +113,9 @@ func checkMutatedSecretValue(obj meta.Object) error {
 	if sec, ok := obj.(*v1.Secret); ok && sec.Spec.Value != nil {
 		return errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: a mutation policy set spec.value: values are never set by policies", sec.Name)
 	}
+	if cs, ok := obj.(*v1.ClusterSecret); ok && cs.Spec.Value != nil {
+		return errf(http.StatusUnprocessableEntity, "Invalid", "ClusterSecret %s: a mutation policy set spec.value: values are never set by policies", cs.Name)
+	}
 	return nil
 }
 

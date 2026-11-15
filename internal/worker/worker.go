@@ -67,6 +67,9 @@ type Config struct {
 	// PluginsDir is where the plugins' node sides put their sockets, DIR/NAME/node.sock (default
 	// kplugin.Dir): they mount the volumes of mount-reach storage classes (juicefs).
 	PluginsDir string
+	// PluginsEtc is where kvoadm records cluster-secret names (DIR/PLUGIN/cluster-secrets.json).
+	// Empty: the agent delivers none. kevasod sets plugins.DefaultManifests.
+	PluginsEtc string
 }
 
 // Installer is a runtime that needs setting up on the host first.
@@ -298,7 +301,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	for name, rt := range rts {
 		runtimes[name] = rt
 	}
-	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes, Watermark: cfg.Watermark, Bound: bindings.Port,
+	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes, Watermark: cfg.Watermark, PluginsEtc: cfg.PluginsEtc, Bound: bindings.Port,
 		RuntimeReady: func(name string) bool {
 			mu.Lock()
 			defer mu.Unlock()

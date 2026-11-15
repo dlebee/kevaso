@@ -107,6 +107,16 @@ type Agent struct {
 	// Nodes are the plugins' node sides on this host (NAME/node.sock), which mount the volumes of
 	// mount-reach storage classes (juicefs) and hold their credentials; nil: none.
 	Nodes *plugins.Registry
+	// PluginsEtc is where kvoadm records cluster-secret names for plugins installed here
+	// (DIR/PLUGIN/cluster-secrets.json, and cluster-secrets-node.json for a node side).
+	// Empty: this agent delivers none.
+	PluginsEtc string
+	// RestartUnit restarts a plugin unit after its cluster secret was written or removed.
+	// Nil: systemctl restart, with a fixed environment and only the unit name on the command
+	// line. Tests set it.
+	RestartUnit func(ctx context.Context, unit string) error
+	// ClusterSecretEvery is how often a failed cluster-secret fetch is tried again (default 5s).
+	ClusterSecretEvery time.Duration
 	// Probe looks at a mount-reach volume's folder; it's not answering while it hasn't returned
 	// (default: a lookup in it). Tests replace it.
 	Probe func(dir string) error
@@ -200,6 +210,11 @@ type Agent struct {
 	removeConfirmed sync.Map
 	keptWritten     atomic.Value // string: KeptFile as last written
 	applied         appliedLog   // the resets and images applied here (applied.go, K-110)
+	csInf           *informer.Informer
+	csWake          chan struct{}
+	csMu            sync.Mutex
+	csHave          map[string]csDelivered // plugin\x00name → the version written and restarted for
+	csSeen          map[string]csSeenDel   // cluster-secret name → the delete seen, and of which revision
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
@@ -367,6 +382,7 @@ func (a *Agent) Run(ctx context.Context) {
 	})
 	go a.silos.Run(ctx)
 	go a.watchDeletes(ctx, e)
+	go a.runClusterSecrets(ctx)
 	// Rotation fan-out: a secret or grant changing looks again at every silo here that receives
 	// it (its files and env vars are written again, its endpoint and policy follow its grants).
 	for kind, inf := range map[string]*informer.Informer{"Secret": a.secrets, "Grant": a.grants} {

@@ -28,7 +28,11 @@ import (
 //   - the local admin socket: everything, whatever RBAC says (bootstrap and break-glass);
 //   - people and service accounts: what RBAC grants them (see internal/rbac). User certificates
 //     minted by kvoadm are in the cluster-admins group;
-//   - hosts with role control-plane: everything (they run the controllers);
+//   - namespace kevaso-system is reserved (reservedNamespace): a person or a service account may
+//     create, update or delete an object there, or delete the namespace, only as a cluster-admin.
+//     A role or a binding does not change that. Reads stay with RBAC;
+//   - hosts with role control-plane: everything (they run the controllers), except a mutation in
+//     that reserved namespace, which is a cluster-admin's;
 //   - hosts with role worker: read everything, write only their own Host's status and the status
 //     of silos placed on them (they can't move a silo elsewhere), and of the ingress controllers
 //     among them in their IngressClass;
@@ -143,6 +147,8 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 		a.Verb, a.Resource = v1.VerbOpen, v1.ResourceExposure // open and close
 	case t.token:
 		a.Verb, a.Resource = "create", t.kind.Plural+"/token"
+	case t.value && t.kind.Kind == "ClusterSecret":
+		a.Verb, a.Resource = "get", rbac.ClusterSecretValue // pinned: resourceNames, never an empty list
 	case t.value:
 		a.Verb = "read-value"
 	case t.answer != "":
@@ -178,6 +184,21 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 // authorizeRequest decides an API request. For people it asks RBAC; a person who may not list
 // namespaces still gets the list, cut down to the ones they have a role in.
 func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups []string, r *http.Request, t target) (allowed, filterNS bool, reason string, err error) {
+	if t.kind.Kind == "ClusterSecret" && id != LocalAdmin {
+		return s.authorizeClusterSecret(ctx, id, groups, r, t)
+	}
+	if reason, reserved := reservedNamespace(r, t); reserved {
+		admin, err := s.clusterAdmin(ctx, id, groups)
+		if err != nil {
+			return false, false, "", err
+		}
+		// kevasod's controllers place the ingress silos that live here, and a worker writes
+		// those silos' status. Neither is a role someone can bind. A control-plane host
+		// certificate is not that: it does not get to mint a token or write an object here.
+		if !admin && !reservedMachine(id, r, t) {
+			return false, false, reason, nil
+		}
+	}
 	if id == LocalAdmin {
 		return true, false, "local admin socket", nil
 	}
@@ -210,6 +231,98 @@ func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups [
 		return true, true, "secrets your roles name or select", nil
 	}
 	return d.Allowed, false, d.Reason, nil
+}
+
+// authorizeClusterSecret (hack/design/clustersecret.md, "Who can do what"):
+//   - manage (create, update, delete, and reveal) is a cluster-admin's. No role grants these,
+//     whatever it says, on the clustersecrets resource;
+//   - get, list and watch of the objects (never a value) is a cluster-admin's, or what a
+//     ClusterRole grants on clustersecrets;
+//   - one value is a cluster-admin's, or get on clustersecrets/value pinned to that name
+//     (rbac.namesGrant: an empty resourceNames grants nothing);
+//   - a host certificate reads a value only with ?for=PLUGIN, and only when the service
+//     account plugin-PLUGIN in kevaso-system would be allowed the same read. A host has no
+//     access of its own, so a binding that happens to name the host is not consulted.
+func (s *Server) authorizeClusterSecret(ctx context.Context, id pki.Identity, groups []string, r *http.Request, t target) (bool, bool, string, error) {
+	admin, err := s.clusterAdmin(ctx, id, groups)
+	if err != nil {
+		return false, false, "", err
+	}
+	if admin {
+		return true, false, "cluster-admin", nil
+	}
+	if id.Type == "host" || id.Type == "component" || id == Component {
+		if t.value && hostCertificate(id) {
+			ok, reason, err := s.hostForPlugin(ctx, r, t.name)
+			return ok, false, reason, err
+		}
+		return false, false, "a host has no clustersecret access of its own", nil
+	}
+	a := attributes(id, groups, r, t)
+	switch {
+	case t.value, a.Verb == "get", a.Verb == "list", a.Verb == "watch":
+		p, err := s.policy.Policy(ctx)
+		if err != nil {
+			return false, false, "", err
+		}
+		d := p.Authorize(a)
+		if !d.Allowed && t.value {
+			d.Reason = "reading a clustersecret's value needs a ClusterRole pinned to its name (clustersecrets/value, get, resourceNames)"
+		}
+		return d.Allowed, false, d.Reason, nil
+	default:
+		return false, false, "creating, updating and deleting clustersecrets is for a cluster-admin", nil
+	}
+}
+
+// clusterAdmin reports whether id holds cluster-admin: the admin socket, or rbac.Policy.ClusterAdmin
+// (the built-in cluster-admin role, or a role that grants as much). Hosts and kevasod itself don't.
+func (s *Server) clusterAdmin(ctx context.Context, id pki.Identity, groups []string) (bool, error) {
+	if id == LocalAdmin {
+		return true, nil
+	}
+	if id.Type == "host" || id.Type == "component" || id == Component {
+		return false, nil
+	}
+	p, err := s.policy.Policy(ctx)
+	if err != nil {
+		return false, err
+	}
+	return p.ClusterAdmin(id.Name, groups), nil
+}
+
+// reservedNamespace is a create, update or delete of any object in v1.PluginNamespace
+// (kevaso-system), including a service account's token, or a delete of that namespace itself.
+// get, list and watch are not: RBAC already decides those.
+//
+// A RoleBinding elsewhere cannot grant the mutation. Authorize applies a RoleBinding only when
+// its namespace is the request's (internal/rbac: b.Namespace != a.Namespace is skipped), so a
+// binding in another namespace never reaches this one. A binding in kevaso-system, and a
+// ClusterRoleBinding, do reach it; neither overrides this.
+func reservedNamespace(r *http.Request, t target) (string, bool) {
+	if t.namespace == v1.PluginNamespace && requestMutates(r) {
+		return fmt.Sprintf("namespace %s is reserved: only a cluster-admin may create, update or delete objects in it, whatever a role or binding says", v1.PluginNamespace), true
+	}
+	if t.kind.Kind == "Namespace" && t.name == v1.PluginNamespace && r.Method == http.MethodDelete {
+		return fmt.Sprintf("namespace %s is reserved: only a cluster-admin may delete it", v1.PluginNamespace), true
+	}
+	return "", false
+}
+
+// requestMutates is any method but a read. Watch and a secret's value are GET.
+func requestMutates(r *http.Request) bool {
+	return r.Method != http.MethodGet && r.Method != http.MethodHead
+}
+
+// reservedMachine is a writer of the reserved namespace that is not a person or a service
+// account. kevasod's controllers (Component) place silos here and write their status. A worker
+// writes the status hostAuthorize already allows (a silo placed on it). A control-plane host
+// certificate is neither of those.
+func reservedMachine(id pki.Identity, r *http.Request, t target) bool {
+	if id == Component {
+		return true
+	}
+	return id.Type == "host" && id.Role == "worker" && hostAuthorize(id, r, t)
 }
 
 func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
@@ -315,9 +428,11 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			}
 			s.record(r, id, groups, attributes(id, groups, r, t), ok, reason)
 			if !ok {
-				if t.token {
+				if t.token && t.namespace != v1.PluginNamespace {
 					// K-077: a token holds whatever its account holds, so minting one is the
 					// namespace admins' (the built-in editor role no longer has it).
+					// kevaso-system is reserved (reservedNamespace): a namespace admin cannot
+					// mint one there, so this hint would point at the wrong person.
 					reason += fmt.Sprintf("; minting a service account's token is for the admins of namespace %s (ClusterRole admin bound there): ask one of them to run kvo create token %s -n %s", t.namespace, t.name, t.namespace)
 				}
 				writeErr(w, errf(http.StatusForbidden, "Forbidden", "%s: %s", id, reason))

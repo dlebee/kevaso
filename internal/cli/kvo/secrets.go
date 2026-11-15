@@ -133,7 +133,11 @@ func secretCommand(ctx context.Context, c *client.Client, o opts, stdin io.Reade
 }
 
 func revealSecret(ctx context.Context, c *client.Client, ns, name string, stdout io.Writer) error {
-	p, err := client.Path("Secret", ns, name)
+	return revealValue(ctx, c, "Secret", ns, name, stdout)
+}
+
+func revealValue(ctx context.Context, c *client.Client, kind, ns, name string, stdout io.Writer) error {
+	p, err := client.Path(kind, ns, name)
 	if err != nil {
 		return err
 	}

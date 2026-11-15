@@ -417,6 +417,13 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			}
 			kv(0, "Expires", note)
 		}
+	case *v1.ClusterSecret:
+		kv(0, "Description", dash(o.Spec.Description))
+		if o.Status.Version == 0 || o.Status.ChangedAt == nil {
+			kv(0, "Value", "none yet")
+		} else {
+			kv(0, "Value", fmt.Sprintf("version %d, changed %s ago (kvo get clustersecret %s --reveal)", o.Status.Version, since(*o.Status.ChangedAt), o.Name))
+		}
 	case *v1.Grant:
 		for i, e := range o.Spec.Egress {
 			label := ""
