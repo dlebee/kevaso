@@ -84,11 +84,9 @@ func TestAgentWritesTheFenceRecord(t *testing.T) {
 	}
 	dir := t.TempDir()
 	contact := time.Now().Add(-5 * time.Second).UTC().Truncate(time.Second)
-	runCtx, stop := context.WithCancel(ctx)
 	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": fake.New()}, Clock: clock.Real{},
 		LastContact: func() time.Time { return contact }, FenceDir: dir}
-	done := make(chan struct{})
-	go func() { a.Run(runCtx); close(done) }()
+	stop := agent.RunForTest(t, ctx, a)
 	var r fence.Record
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 		if r, _ = fence.Read(dir); len(r.Silos) == 2 {
@@ -96,7 +94,6 @@ func TestAgentWritesTheFenceRecord(t *testing.T) {
 		}
 	}
 	stop()
-	<-done
 	stops := map[string]bool{}
 	for _, s := range r.Silos {
 		stops[s.ID.Name] = s.StopAfter > 0
@@ -107,14 +104,11 @@ func TestAgentWritesTheFenceRecord(t *testing.T) {
 
 	// Again, cut off: no contact in this run, and an API that doesn't answer.
 	ts.Close()
-	runCtx, stop = context.WithCancel(ctx)
 	b := &agent.Agent{Client: client.New(ts.URL), HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": fake.New()}, Clock: clock.Real{},
 		LastContact: func() time.Time { return time.Time{} }, FenceDir: dir}
-	done = make(chan struct{})
-	go func() { b.Run(runCtx); close(done) }()
+	stop = agent.RunForTest(t, ctx, b)
 	time.Sleep(2500 * time.Millisecond)
 	stop()
-	<-done
 	again, _ := fence.Read(dir)
 	if !again.LastContact.Equal(contact) || len(again.Silos) != 2 || !again.Written.After(r.Written) {
 		t.Fatalf("after a restart while cut off: %+v (before: %+v)", again, r)
@@ -158,7 +152,7 @@ func TestTheFenceIsInertWithoutAStopSilo(t *testing.T) {
 			stop, after := s.StopsOnControlPlaneLoss()
 			return stop, after / 30
 		}} // 30s → 1s
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	state := func(id kri.ID) kri.State { st, _ := rt.Status(ctx, id); return st.State }
 	var r fence.Record
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {

@@ -43,7 +43,7 @@ func TestNodeSideMountsAVolume(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		go a.Run(ctx)
+		agent.RunForTest(t, ctx, a)
 
 		vs, _ := share.EnsureVolume(ctx, kplugintestVolume())
 		s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "pad", Namespace: "dev"},
@@ -145,7 +145,7 @@ func TestVolumeNotAnsweringIsSaid(t *testing.T) {
 	if err := a.Nodes.Add(ctx, share.Node("hv1")); err != nil {
 		t.Fatal(err)
 	}
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	vs, _ := share.EnsureVolume(ctx, kplugintestVolume())
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "pad", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "busybox"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},

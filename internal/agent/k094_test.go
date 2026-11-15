@@ -39,7 +39,7 @@ func (k *k088) running() bool {
 // runtime that brings it back by itself) is killed again.
 func TestTheFenceLooksAgainOnEveryPass(t *testing.T) {
 	k, cut := fenced(t)
-	go k.a.Run(k.ctx)
+	agent.RunForTest(t, k.ctx, k.a)
 	k.place()
 	k.waitFor("the silo runs", k.running)
 	cut.Store(true)
@@ -59,7 +59,7 @@ func TestAKillThatIsNeverConfirmedIsReported(t *testing.T) {
 		Spec: v1.HostSpec{InternalIP: "10.0.0.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}); err != nil {
 		t.Fatal(err)
 	}
-	go k.a.Run(k.ctx)
+	agent.RunForTest(t, k.ctx, k.a)
 	k.place()
 	k.waitFor("the silo runs", k.running)
 	k.rt.RefuseKill(fake.ErrKillRefused)
@@ -89,7 +89,7 @@ func TestAHungEngineStallsNoOtherFence(t *testing.T) {
 	k, cut := fenced(t)
 	other := fake.NewStrict("hv1", k.w)
 	k.a.Runtimes["podman"] = other
-	go k.a.Run(k.ctx)
+	agent.RunForTest(t, k.ctx, k.a)
 	k.place()
 	s2 := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "second", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "podman", Container: &v1.ContainerSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"}}}
@@ -123,7 +123,7 @@ func TestAKillStatusCantConfirmIsReported(t *testing.T) {
 		Spec: v1.HostSpec{InternalIP: "10.0.0.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}); err != nil {
 		t.Fatal(err)
 	}
-	go k.a.Run(k.ctx)
+	agent.RunForTest(t, k.ctx, k.a)
 	k.place()
 	k.waitFor("the silo runs", k.running)
 	k.rt.FailStatus(errors.New("the engine can't say"))

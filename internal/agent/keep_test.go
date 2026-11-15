@@ -66,7 +66,7 @@ func TestAgentKeepsDaemonsAndUpkeep(t *testing.T) {
 		return "", 0
 	}
 	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}}
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "agent", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
@@ -143,7 +143,7 @@ func TestAgentDoesntStartADaemonTwiceOnAnOddProbe(t *testing.T) {
 	}
 	var logs safeLog
 	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}, Log: logs.printf}
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "agent", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Daemons: []v1.Daemon{{Name: "ticker", Run: "while true; do sleep 1; done"}}}}

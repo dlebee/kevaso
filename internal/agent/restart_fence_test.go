@@ -49,7 +49,7 @@ func TestARunWithNoContactYetStillFences(t *testing.T) {
 			stop, after := s.StopsOnControlPlaneLoss()
 			return stop, after / 20
 		}} // 30s → 1.5s
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	state := func() kri.State {
 		ids, _ := rt.List(ctx)
 		if len(ids) == 0 {

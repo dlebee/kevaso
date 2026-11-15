@@ -162,7 +162,7 @@ func TestNoCodeOfASiloRunsBeforeItsHostsStartClaim(t *testing.T) {
 			mu.Unlock()
 		}
 	}
-	go k.a.Run(k.ctx)
+	agent.RunForTest(t, k.ctx, k.a)
 	k.place(v1.InitStep{Name: "migrate", Run: "true"}, v1.InitStep{Name: "seed", Run: "true"})
 	k.waitFor("the silo ran", func() bool {
 		st, _ := k.rt.Status(k.ctx, k.id)
@@ -185,7 +185,7 @@ func TestAPlacementJustBeforeTheClaimRunsNoInitStep(t *testing.T) {
 	hook := &claimHook{}
 	k := newK088(t, hook)
 	hook.onClaim = func() { k.moveTo("hv2") }
-	go k.a.Run(k.ctx)
+	agent.RunForTest(t, k.ctx, k.a)
 	k.place(v1.InitStep{Name: "migrate", Run: "sleep 5"})
 	k.waitFor("the claim was sent", func() bool { return hook.claims.Load() > 0 })
 	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
@@ -211,7 +211,7 @@ func TestASlowInitStepKeepsItsStartClaimFresh(t *testing.T) {
 	k.a.ClaimRefresh = refresh
 	release := make(chan struct{})
 	k.rt.HoldInit = func(kri.ID, kri.InitStep) <-chan struct{} { return release }
-	go k.a.Run(k.ctx)
+	agent.RunForTest(t, k.ctx, k.a)
 	k.place(v1.InitStep{Name: "slow", Run: "sleep 600"})
 	k.waitFor("the init step runs", func() bool { return k.rt.RunningInit(k.id) == "slow" })
 	seen := map[string]bool{}
@@ -247,7 +247,7 @@ func TestAPlacementElsewhereDuringAnInitStepEndsIt(t *testing.T) {
 	k := newK088(t, nil)
 	k.a.ClaimRefresh = refresh
 	k.rt.HoldInit = func(kri.ID, kri.InitStep) <-chan struct{} { return make(chan struct{}) } // never ends by itself
-	go k.a.Run(k.ctx)
+	agent.RunForTest(t, k.ctx, k.a)
 	k.place(v1.InitStep{Name: "slow", Run: "sleep 600"})
 	k.waitFor("the init step runs", func() bool { return k.rt.RunningInit(k.id) == "slow" })
 	k.moveTo("hv2") // a person's --confirm-fenced move: the claim is a host's, not the control plane's restart
@@ -291,7 +291,7 @@ func TestTheFenceStopsAnInitStepAndItRunsAgainOnContact(t *testing.T) {
 		}
 		return release
 	}
-	go k.a.Run(k.ctx)
+	agent.RunForTest(t, k.ctx, k.a)
 	k.place(v1.InitStep{Name: "slow", Run: "sleep 600"})
 	k.waitFor("the init step runs", func() bool { return k.rt.RunningInit(k.id) == "slow" })
 	cut.Store(true)
@@ -340,7 +340,7 @@ func TestAnInitStepNobodyWaitsForIsStopped(t *testing.T) {
 	defer ocancel()
 	go func() { _, _ = k.rt.RunInit(octx, k.id, kri.InitStep{Name: "slow", Run: "sleep 600"}, io.Discard) }()
 	k.waitFor("the orphan runs", func() bool { return k.rt.RunningInit(k.id) == "slow" })
-	go k.a.Run(k.ctx)
+	agent.RunForTest(t, k.ctx, k.a)
 	k.waitFor("the silo runs, its steps done", func() bool {
 		st, _ := k.rt.Status(k.ctx, k.id)
 		s := k.get()

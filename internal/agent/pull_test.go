@@ -62,7 +62,7 @@ func TestDigestRecordedAndPullFailures(t *testing.T) {
 	const img = "ghcr.io/acme/api:v1"
 	rt := &puller{Runtime: fake.New(), digests: map[string]string{img: d1}}
 	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": rt}, Clock: clock.Real{}}
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	e := &env{c: c, ctx: ctx}
 
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "dev"},
