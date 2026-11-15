@@ -190,8 +190,9 @@ var (
 )
 
 // ValidName says whether a plugin name is good: lower-case letters, digits and -, starting with a
-// letter, at most 31 characters.
-func ValidName(n string) bool { return pluginNameRE.MatchString(n) }
+// letter, at most 31 characters, and not ending in -node (plugin X's node side is
+// kevaso-plugin-X-node on a host: K-047).
+func ValidName(n string) bool { return pluginNameRE.MatchString(n) && !strings.HasSuffix(n, "-node") }
 
 // forbidden are resources a plugin's roles can't reach: they would let it grant itself more
 // (RBAC, tokens), change what the API serves or admits, or touch other plugins.

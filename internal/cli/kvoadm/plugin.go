@@ -348,6 +348,8 @@ func parsePlugin(args []string, needBinary bool) (PluginOptions, error) {
 		return o, errors.New("which host? kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH")
 	case !pluginName.MatchString(o.Name):
 		return o, errors.New("--name: lower-case letters, digits and -, starting with a letter (e.g. linode)")
+	case strings.HasSuffix(o.Name, "-node"):
+		return o, fmt.Errorf("--name %s: a name can't end in -node (that is plugin %s's node side)", o.Name, strings.TrimSuffix(o.Name, "-node"))
 	case needBinary && o.Binary == "":
 		return o, errors.New("--binary: the plugin's program, built for the host (e.g. bin/kevaso-provider-linode-linux-amd64)")
 	case o.Side != "" && o.Side != "controller" && o.Side != "node":
