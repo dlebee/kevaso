@@ -1340,7 +1340,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			// here: keep it, running, its disk and volumes untouched (design §0.7, K-004).
 			if s == nil || id.UID != s.UID {
 				if _, seen := a.seenDeleted.Load(id.UID); !seen {
-					if _, logged := a.keptNoted.LoadOrStore(id.UID, id.String()+" ("+rt.Info().Name+")"); !logged {
+					if _, logged := a.keptNoted.LoadOrStore(id.UID, keptName(id, rt.Info().Name)); !logged {
 						a.log("keeping %s on %s: the control plane doesn't know it and no delete of it was seen here; it keeps running with its disk and volumes (nothing is removed without a delete)",
 							id, rt.Info().Name)
 					}
@@ -1364,7 +1364,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 				if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
 					return err
 				}
-				if _, logged := a.keptNoted.LoadOrStore(id.UID, id.String()+" ("+rt.Info().Name+", stopped: "+why+")"); !logged {
+				if _, logged := a.keptNoted.LoadOrStore(id.UID, keptName(id, rt.Info().Name+", stopped: "+why)); !logged {
 					a.log("keeping %s on %s, stopped, with its disk and volumes: %s (nothing is removed without a delete or a handoff from here)", id, rt.Info().Name, why)
 				}
 				continue
@@ -1410,6 +1410,16 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 }
 
 const whyHandoff = "handed off from here"
+
+// keptName is how a kept copy is listed on the Host (KeptSilos): its name, the start of its UID
+// (two kept copies of one name, a silo deleted and made again, are told apart), and what.
+func keptName(id kri.ID, what string) string {
+	uid := id.UID
+	if len(uid) > 8 {
+		uid = uid[:8]
+	}
+	return id.String() + " uid " + uid + " (" + what + ")"
+}
 
 // mayRemove decides, on the stored silo read now, whether this host may remove its copy id (its
 // disk with it): yes for a delete the store holds or this host saw, or a handoff from this host
