@@ -28,6 +28,12 @@ func (s *Server) can(ctx context.Context, id pki.Identity, groups []string, a rb
 		// Who may sign in, and what may join as a host, are people's to give, however a role reads.
 		return rbac.Decision{Reason: "a service account may not create invites or join tokens"}, nil
 	}
+	if a.Resource == "invites" && !p.ClusterAdmin(id.Name, groups) {
+		// K-058: an invite names the user and the groups it signs in with (cluster-admins among
+		// them, or an existing user's name): a cluster-admin's to give by definition.
+		return rbac.Decision{Reason: "only a cluster-admin may create invites (an invite names any user and any groups, kevaso:cluster-admins among them): " +
+			"ask a cluster-admin to run kvoadm users invite NAME"}, nil
+	}
 	a.User, a.Groups = id.Name, groups
 	return p.Authorize(a), nil
 }
