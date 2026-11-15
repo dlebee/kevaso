@@ -205,6 +205,10 @@ func TestLosingAHost(t *testing.T) {
 		t.Fatalf("w2 started %v by itself", ids)
 	}
 	// The person: w1 is off, recreate stateless on w2.
+	var stale v1.Silo
+	if err := admin.Get(ctx, "Silo", "demo", "stateless", &stale); err != nil {
+		t.Fatal(err)
+	}
 	var moved v1.Silo
 	if err := admin.Call(ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/demo/silos/stateless/move",
 		moves.Request{To: "w2", Recreate: true, ConfirmFenced: true}, &moved); err != nil {
@@ -218,16 +222,23 @@ func TestLosingAHost(t *testing.T) {
 		c := meta.FindCondition(s.Status.Conditions, "HostUnreachable")
 		return s.Status.Phase == "Running" && s.Status.Host == "w1" && c != nil && c.Status == meta.ConditionFalse
 	})
+	// The stale copy of stateless on w1 is stopped and kept with its disk, never deleted: a
+	// person's --confirm-fenced move is no delete, and no handoff from w1 (review claim A, K-004).
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		ids, _ := rt1.List(ctx)
-		if len(ids) == 1 && ids[0].Name == "precious" {
-			break // the stale copy of stateless is gone from w1
+		st, _ := rt1.Status(ctx, kri.ID{Namespace: "demo", Name: "stateless", UID: stale.UID})
+		if st.State == kri.Stopped || st.State == kri.Created {
+			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("w1 still has %v", ids)
+			t.Fatalf("w1's stale copy of stateless: %s, want stopped and kept", st.State)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	for _, c := range rt1.CallLog() {
+		if c == "delete demo/stateless" {
+			t.Fatalf("w1 deleted its copy (and its disk) on a confirmed-fenced move: %v", rt1.CallLog())
+		}
 	}
 }
 
