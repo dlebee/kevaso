@@ -23,6 +23,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kcc/acme"
 	kicdrivers "kevaso.com/core/builtin/kic"
+	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/approvals"
 	"kevaso.com/core/internal/audit"
@@ -283,8 +284,8 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	apiSrv := srv.HTTPServer(false)
 	apiSrv.TLSConfig = srv.TLSConfig(serverCert)
 	adminSrv := srv.HTTPServer(true)
-	apiSrv.Handler = withControlPlane(apiSrv.Handler, st, ident)
-	adminSrv.Handler = withControlPlane(adminSrv.Handler, st, ident)
+	apiSrv.Handler = withControlPlane(apiSrv.Handler, st)
+	adminSrv.Handler = withControlPlane(adminSrv.Handler, st)
 
 	r := &Running{APIAddr: apiL.Addr().String(), CA: ca, Tokens: tokens, Cluster: ident, done: make(chan struct{})}
 	var wg sync.WaitGroup
@@ -328,7 +329,17 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 			closeInProcess()
 			return nil, err
 		}
-		go worker.Run(hbCtx, admin, wc, rts)
+		// This host's worker judges its answers as a worker-only host does (§0.7): its own client,
+		// stamped, with the watermark kept in its data directory.
+		if wc.Watermark == nil {
+			wc.Watermark = agent.OpenWatermark(filepath.Join(wc.DataDir, "control-plane-watermark.json"), cfg.Log)
+		}
+		wcl, closeWorker := workerClient(srv, st, wc.Watermark)
+		go func() {
+			<-hbCtx.Done()
+			closeWorker()
+		}()
+		go worker.Run(hbCtx, wcl, wc, rts)
 	}
 
 	go func() {
