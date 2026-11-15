@@ -165,7 +165,9 @@ func main() {
 	stop()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "kevasod:", err)
-		os.Exit(1)
+		// A start refused because of what this node is (its data gone, another cluster's store)
+		// exits controlplane.ExitRefused, which its unit doesn't restart on; anything else 1.
+		os.Exit(controlplane.ExitCode(err))
 	}
 }
 

@@ -26,15 +26,17 @@ import (
 )
 
 type mutation struct {
-	ID        string   `json:"id"`
-	Guard     string   `json:"guard"`
-	File      string   `json:"file"`
-	Find      string   `json:"find"`    // the exact text to change; must occur once in File
-	Replace   string   `json:"replace"` // what it becomes
-	Mutation  string   `json:"mutation"`
-	Packages  []string `json:"packages"`
-	Protects  string   `json:"protects"` // the safety property
-	SkipTests string   `json:"skip,omitempty"`
+	ID       string   `json:"id"`
+	Guard    string   `json:"guard"`
+	File     string   `json:"file"`
+	Find     string   `json:"find"`    // the exact text to change; must occur once in File
+	Replace  string   `json:"replace"` // what it becomes
+	Mutation string   `json:"mutation"`
+	Packages []string `json:"packages"`
+	Protects string   `json:"protects"` // the safety property
+	// Known: why a survivor is accepted (another layer repeats the guard so the behaviour is the
+	// same, or a product seam is missing). A survivor with no reason is a failure.
+	Known string `json:"known,omitempty"`
 }
 
 type result struct {
@@ -99,7 +101,9 @@ func run() int {
 	fmt.Println("| id | guard | file:line | mutation | result | first failing test |")
 	fmt.Println("|---|---|---|---|---|---|")
 	for _, r := range results {
-		if r.status != "killed" {
+		if r.status == "SURVIVED" && r.m.Known != "" {
+			r.status = "known: " + r.m.Known
+		} else if r.status != "killed" {
 			bad++
 		}
 		fmt.Printf("| %s | %s | %s:%d | %s | %s | %s |\n", r.m.ID, r.m.Guard, r.m.File, r.line, r.m.Mutation, r.status, r.failed)

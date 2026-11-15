@@ -92,7 +92,10 @@ type Gateway struct {
 }
 
 // User is the gateway's own system user.
-func (g Gateway) User() string { return "kvos-" + hash(g.Key)[:8] }
+func (g Gateway) User() string { return UserPrefix + hash(g.Key)[:8] }
+
+// UserPrefix starts every gateway user's name (a reset removes them all).
+const UserPrefix = "kvos-"
 
 // Dir is its home: config, state, sandbox disks.
 func (g Gateway) Dir() string { return StateDir + "/gw/" + g.Key }
@@ -132,6 +135,13 @@ func (g Gateway) TOML(extraCA string) string {
 
 // Unit is the gateway's locked-down systemd unit (E028): its own user, no capabilities, a system
 // call filter, only /dev/kvm (VM driver) or the Docker socket (container driver).
+//
+// Only kevasod starts and stops it (K-080, K-087): a gateway that starts brings back the sandboxes
+// its record says ran, so anything else that starts it would run a silo's code with no start
+// claim and without Kevaso knowing. It has no [Install] section (nothing enables it: after a
+// reboot it waits for kevasod) and Restart=no: a crash is seen by Kevaso (the VM driver's silo
+// reads Stopped, since the unit's stop takes the whole cgroup) and recovered through the agent's
+// start, after its claim, instead of by systemd behind its back.
 func (g Gateway) UnitFile() string {
 	d := g.Dir()
 	devices := "PrivateDevices=yes\nBindPaths=/dev/kvm\nDevicePolicy=closed\nDeviceAllow=/dev/kvm rw\n"
@@ -160,8 +170,8 @@ EnvironmentFile=` + d + `/.config/openshell/gateway.env
 ExecStartPre=/usr/bin/openshell-gateway config preflight
 ExecStartPre=/usr/bin/openshell-gateway generate-certs --output-dir ${OPENSHELL_LOCAL_TLS_DIR} --server-san host.openshell.internal
 ExecStart=/usr/bin/openshell-gateway
-Restart=on-failure
-RestartSec=5
+Restart=no
+KillMode=control-group
 UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -183,9 +193,6 @@ AmbientCapabilities=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
-
-[Install]
-WantedBy=multi-user.target
 `
 }
 

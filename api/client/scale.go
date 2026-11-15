@@ -24,5 +24,8 @@ func (c *Client) UpdateScale(ctx context.Context, kind string, sc *v1.Scale) err
 	if err != nil {
 		return err
 	}
+	if sc.ResourceVersion != "" {
+		ctx = conditional(ctx) // applied only at that version: a second send conflicts
+	}
 	return c.do(ctx, http.MethodPut, p+"/scale", sc, sc)
 }

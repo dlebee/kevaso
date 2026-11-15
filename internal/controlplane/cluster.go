@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"kevaso.com/core/internal/store"
@@ -192,10 +193,45 @@ func prepareRecord(cfg Config) (*ClusterRecord, error) {
 	return ReadClusterRecord(cfg.DataDir)
 }
 
-const (
-	howToRestore = "restore a backup onto a fresh machine (kvoadm init --restore BACKUP)"
-	howToCreate  = "or make a new cluster on purpose (kvoadm reset, then kvoadm init)"
-)
+const howToRestore = "restore a backup onto this machine (kvoadm init --restore BACKUP)"
+
+// ExitRefused is kevasod's exit status for a start refused because of what this node is (a
+// ClusterError: its data is gone, or another cluster's): starting it again changes nothing, so
+// its unit doesn't restart on it (RestartPreventExitStatus, rendered by kvoadm). Any other failure
+// exits 1, which the unit restarts.
+const ExitRefused = 78 // EX_CONFIG
+
+// ExitCode is the exit status for err from Start (0 for nil).
+func ExitCode(err error) int {
+	var ce *ClusterError
+	switch {
+	case err == nil:
+		return 0
+	case errors.As(err, &ce):
+		return ExitRefused
+	}
+	return 1
+}
+
+// mayHavePeers: this node is set up as a system node with peers (its unit's flags: store etcd with
+// a peer listener), so it may be one of several, and the cluster may run on without it.
+func mayHavePeers(cfg Config) bool { return cfg.Store == StoreEtcd && cfg.Etcd.PeerListen != "" }
+
+// howToRecover is the fix for a node that refuses to start because its data is gone, from what is
+// left on it: its unit's flags and whether it has a cluster record. A node that may be one of
+// several system nodes is told to be taken out and added again (kvoadm init there would make a
+// second cluster); only a single system node is told about a restore; making a new cluster is
+// offered only to a node with no record of one.
+func howToRecover(cfg Config, hasRecord bool) string {
+	if mayHavePeers(cfg) {
+		return fmt.Sprintf("if the cluster's other system nodes still run, take this one out and add it again: kvoadm host remove %s (from a machine with kvoadm), kvoadm reset (on this machine), then kvoadm host add %s --install control-plane (with the options it was added with). Only if it was the cluster's only system node, %s. Don't run kvoadm init here: it would make a second cluster",
+			cfg.HostName, cfg.HostName, howToRestore)
+	}
+	if hasRecord {
+		return howToRestore
+	}
+	return howToRestore + ", or make a new cluster on purpose (kvoadm reset, then kvoadm init)"
+}
 
 // storeOnDisk says whether the configured store has data on this node, before it is opened (an
 // open would make an empty one). A joining etcd member gets its data from its peers.
@@ -218,11 +254,11 @@ func checkBeforeOpen(cfg Config, rec *ClusterRecord) error {
 	}
 	switch {
 	case rec == nil && cfg.Join == nil:
-		return refuseStart("this node belongs to no cluster (no %s, no store in %s): kvoadm init creates one, or %s",
-			recordPath(cfg.DataDir), cfg.DataDir, howToRestore)
+		return refuseStart("this node belongs to no cluster (no %s, no store in %s): %s",
+			recordPath(cfg.DataDir), cfg.DataDir, howToRecover(cfg, false))
 	case rec != nil && rec.State != RecordNew:
-		return refuseStart("this node belongs to cluster %q (%s), but its store is gone from %s: not starting an empty cluster. Either %s, %s",
-			rec.Cluster, recordPath(cfg.DataDir), cfg.DataDir, howToRestore, howToCreate)
+		return refuseStart("this node belongs to cluster %q (%s), but its store is gone from %s: not starting an empty cluster. %s",
+			rec.Cluster, recordPath(cfg.DataDir), cfg.DataDir, capital(howToRecover(cfg, true)))
 	}
 	return nil
 }
@@ -250,8 +286,8 @@ func settleIdentity(ctx context.Context, st store.Store, cfg Config, rec *Cluste
 		return cur, err
 	}
 	other := func() error {
-		return refuseStart("this node belongs to cluster %q (id %s, %s), but its store is another cluster's (%q, id %s): not starting. Either %s, %s",
-			rec.Cluster, rec.ID, recordPath(cfg.DataDir), cur.Name, cur.ID, howToRestore, howToCreate)
+		return refuseStart("this node belongs to cluster %q (id %s, %s), but its store is another cluster's (%q, id %s): not starting. %s",
+			rec.Cluster, rec.ID, recordPath(cfg.DataDir), cur.Name, cur.ID, capital(howToRecover(cfg, true)))
 	}
 	done := func(r ClusterRecord) (ClusterIdentity, error) {
 		r.State = RecordInitialized
@@ -259,8 +295,8 @@ func settleIdentity(ctx context.Context, st store.Store, cfg Config, rec *Cluste
 	}
 	if rec == nil {
 		if !found {
-			return cur, refuseStart("this node has no cluster record (%s) and its store holds no cluster: not starting one. kvoadm init creates a cluster, or %s",
-				recordPath(cfg.DataDir), howToRestore)
+			return cur, refuseStart("this node has no cluster record (%s) and its store holds no cluster: not starting one. %s",
+				recordPath(cfg.DataDir), capital(howToRecover(cfg, false)))
 		}
 		cfg.Log("cluster %q (id %s): writing this node's record %s", cur.Name, cur.ID, recordPath(cfg.DataDir))
 		return done(ClusterRecord{Cluster: cur.Name, ID: cur.ID, Created: cur.Created})
@@ -292,9 +328,16 @@ func settleIdentity(ctx context.Context, st store.Store, cfg Config, rec *Cluste
 		return done(*rec)
 	default: // RecordInitialized
 		if !found {
-			return cur, refuseStart("this node belongs to cluster %q (%s), but its store holds no cluster: not starting an empty one. Either %s, %s",
-				rec.Cluster, recordPath(cfg.DataDir), howToRestore, howToCreate)
+			return cur, refuseStart("this node belongs to cluster %q (%s), but its store holds no cluster: not starting an empty one. %s",
+				rec.Cluster, recordPath(cfg.DataDir), capital(howToRecover(cfg, true)))
 		}
 		return cur, nil
 	}
+}
+
+func capital(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }

@@ -76,7 +76,7 @@ var AllowedRoots = []string{"/usr/local/bin/kevaso", "/usr/local/lib/kevaso", "/
 const mountPattern = `^/(var/lib/kevaso|run/kevaso|var/lib/docker|var/lib/containerd|var/lib/containers|opt/kevaso)`
 
 // Processes that must not outlive a reset (pgrep -x names; the kernel keeps 15 characters).
-var Processes = []string{"kevasod", "cloud-hypervisor", "ch-remote", "virtiofsd"}
+var Processes = []string{"kevasod", "cloud-hypervisor", "ch-remote", "virtiofsd", "openshell-gateway"}
 
 // DockerProcesses must not outlive a reset that removed Docker.
 var DockerProcesses = []string{"dockerd", "containerd", "containerd-shim-runc-v2"}
@@ -412,6 +412,16 @@ fi
 true`)
 	}
 
+	// OpenShell's Docker driver: its sandboxes' containers carry no Kevaso label (with Docker
+	// Kevaso's, they went above with everything else).
+	if !in.DockerOurs {
+		destroys("remove OpenShell's sandbox containers (by name)", `if command -v docker >/dev/null && systemctl is-active -q docker; then
+  ids=$(docker ps -a --format '{{.ID}} {{.Names}}' | grep -E ' (.*[^a-z0-9])?kv-[0-9a-f]{10}([^0-9a-f].*)?$' | cut -d' ' -f1)
+  [ -z "$ids" ] || docker rm -f $ids >/dev/null
+fi
+true`)
+	}
+
 	// Podman has no daemon: its containers are conmon processes, stopped here.
 	if in.PodmanOurs {
 		destroys("remove podman's containers, volumes and images", `if command -v podman >/dev/null; then
@@ -524,8 +534,9 @@ left=$(awk '{print $2}' /proc/mounts | grep -E '`+mountPattern+`')
 	destroys("remove Kevaso's files", `if awk '{print $2}' /proc/mounts | grep -qE '`+mountPattern+`'; then echo "something is still mounted under Kevaso's paths: not removing them" >&2; exit 1; fi
 rm -rf --one-file-system `+strings.Join(files, " ")+"\nsystemctl daemon-reload; systemctl reset-failed; true")
 	add("remove the tests' /etc/hosts lines", `sed -i '/`+HostsMarker+`$/d' /etc/hosts`)
-	add("remove kevaso-* users", `for u in $(awk -F: '$1 ~ /^kevaso-/ {print $1}' /etc/passwd); do userdel "$u"; done
-for g in $(awk -F: '$1 ~ /^kevaso-/ {print $1}' /etc/group); do groupdel "$g"; done
+	// OpenShell's gateway users (kvos-*) leave docker or kvm with userdel; their own groups go too.
+	add("remove kevaso-* users, and OpenShell's "+openshell.UserPrefix+"* users", `for u in $(awk -F: '$1 ~ /^(kevaso-|`+openshell.UserPrefix+`)/ {print $1}' /etc/passwd); do userdel "$u"; done
+for g in $(awk -F: '$1 ~ /^(kevaso-|`+openshell.UserPrefix+`)/ {print $1}' /etc/group); do groupdel "$g"; done
 true`)
 	return steps
 }
@@ -592,7 +603,9 @@ func Checklist(o CheckOptions) []Check {
 		{"no Kevaso container", `command -v docker >/dev/null && systemctl is-active -q docker && docker ps -aq --filter label=kevaso.com/uid
 command -v podman >/dev/null && podman ps -aq --filter label=kevaso.com/uid; true`},
 		{"no loop device on " + StorageImage, `losetup -n -O NAME -j ` + StorageImage + ` 2>/dev/null`},
-		{"no kevaso-* user or group", `awk -F: '$1 ~ /^kevaso-/ {print "user " $1}' /etc/passwd; awk -F: '$1 ~ /^kevaso-/ {print "group " $1}' /etc/group`},
+		{"no kevaso-* or " + openshell.UserPrefix + "* user or group", `awk -F: '$1 ~ /^(kevaso-|` + openshell.UserPrefix + `)/ {print "user " $1}' /etc/passwd; awk -F: '$1 ~ /^(kevaso-|` + openshell.UserPrefix + `)/ {print "group " $1}' /etc/group`},
+		{"no " + openshell.UserPrefix + "* member of docker or kvm", `awk -F: '($1 == "docker" || $1 == "kvm") && $4 ~ /(^|,)` + openshell.UserPrefix + `/ {print $1 ": " $4}' /etc/group`},
+		{"no OpenShell sandbox container (kv-[0-9a-f]{10})", `command -v docker >/dev/null && systemctl is-active -q docker && docker ps -a --format '{{.ID}} {{.Names}}' | grep -E ' (.*[^a-z0-9])?kv-[0-9a-f]{10}([^0-9a-f].*)?$'; true`},
 		{"no test line in /etc/hosts", `grep -F -e '` + HostsMarker + `' /etc/hosts; true`},
 		{"nothing listens on Kevaso's ports", `ss -Htlnu | awk '{print $5}' | while read a; do p=${a##*:}; h=${a%:*}
   case "$h" in 127.*|\[::1\]) continue;; esac
