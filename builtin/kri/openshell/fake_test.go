@@ -56,8 +56,10 @@ type fsb struct {
 	phase string
 }
 
+const bootIDFile = "/proc/sys/kernel/random/boot_id"
+
 func newFake() *fake {
-	return &fake{files: map[string][]byte{}, sandboxes: map[string]*fsb{}, users: map[string]bool{},
+	return &fake{files: map[string][]byte{bootIDFile: []byte("boot-1\n")}, sandboxes: map[string]*fsb{}, users: map[string]bool{},
 		units: map[string]string{}, enabled: map[string]bool{}, hung: map[string]bool{}, registered: map[string]bool{},
 		containers: map[string]bool{}, providers: map[string]bool{}}
 }
@@ -140,6 +142,7 @@ func (f *fake) Crash(gw string) {
 // Reboot: every unit stops, every container stops; enabled units start again, and so do
 // containers if Docker restarts them.
 func (f *fake) Reboot() {
+	f.files[bootIDFile] = []byte(string(f.files[bootIDFile][:len(f.files[bootIDFile])-1]) + "+\n")
 	for u := range f.units {
 		f.units[u] = "inactive"
 	}
@@ -213,15 +216,20 @@ func (f *fake) Run(ctx context.Context, c Cmd) (int, error) {
 			}
 		}
 	case c.Name == "docker" && len(a) > 0 && a[0] == "ps":
+		all := len(a) > 1 && a[1] == "-a"
 		var names []string
 		for n, on := range f.containers {
-			if on {
+			if on || all {
 				names = append(names, n)
 			}
 		}
 		sort.Strings(names)
 		for _, n := range names {
 			out("openshell-" + n + "\n")
+		}
+	case c.Name == "docker" && len(a) > 2 && a[0] == "rm" && a[1] == "-f":
+		for _, n := range a[2:] {
+			delete(f.containers, strings.TrimPrefix(n, "openshell-"))
 		}
 	case c.Name == "docker" && len(a) > 1 && a[0] == "stop":
 		for _, n := range a[1:] {
@@ -287,7 +295,7 @@ func (f *fake) Run(ctx context.Context, c Cmd) (int, error) {
 		case a[0] == "sandbox" && a[1] == "stop":
 			if sb, ok := f.sandboxes[a[2]]; ok {
 				sb.phase = "Stopped"
-				if !f.stopLies {
+				if !f.stopLies && f.driver(gw) == DriverDocker {
 					f.containers[a[2]] = false
 				}
 			}
@@ -347,6 +355,9 @@ func (f *fake) Glob(pattern string) ([]string, error) {
 	sort.Strings(out)
 	return out, nil
 }
+
+// Glob0 is Glob without its error.
+func (f *fake) Glob0(pattern string) []string { m, _ := f.Glob(pattern); return m }
 
 func (f *fake) ran(sub string) int {
 	n := 0
