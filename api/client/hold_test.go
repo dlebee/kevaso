@@ -11,21 +11,21 @@ import (
 	"testing"
 )
 
-// A hold that was entered clears by itself once an answer at or above what was kept arrives: a
-// node that served an older store was failed over from, or caught up (K-071, K-097). Until then
-// every lower answer keeps it.
-func TestAHoldClearsWhenAHealthyAnswerArrives(t *testing.T) {
-	kept := Watermark{ClusterID: "c", History: "h", Epoch: 1, Revision: 26, Held: true}
+// A hold is entered by an answer below what was kept, whenever it was sent (K-071, K-097); once
+// entered, it stays (K-107: TestK107ASameHistoryHoldNeverEndsByItself).
+func TestAHoldIsEnteredBelowWhatWasKept(t *testing.T) {
+	kept := Watermark{ClusterID: "c", History: "h", Epoch: 1, Revision: 26}
 	if w, v := JudgeAnswer(kept, 26, ControlPlaneSeen{ClusterID: "c", History: "h", Epoch: 1, Revision: 25}); v != Hold || !w.Held {
 		t.Fatalf("below what was kept: %v %+v, want Hold", v, w)
 	}
-	// Sent before anything was kept in this history (keptAtSend 0), still below: held.
-	if w, v := JudgeAnswer(kept, 0, ControlPlaneSeen{ClusterID: "c", History: "h", Epoch: 1, Revision: 25}); v != Hold || !w.Held {
-		t.Fatalf("below what was kept, sent early: %v %+v, want Hold", v, w)
+	// Sent before anything was kept in this history (keptAtSend 0), lower than kept now: a slow
+	// answer, not an older control plane (K-071).
+	if w, v := JudgeAnswer(kept, 0, ControlPlaneSeen{ClusterID: "c", History: "h", Epoch: 1, Revision: 25}); v != Accept || w.Held || w.Revision != 26 {
+		t.Fatalf("below what was kept, sent early: %v %+v, want Accept, keeping 26", v, w)
 	}
 	w, v := JudgeAnswer(kept, 26, ControlPlaneSeen{ClusterID: "c", History: "h", Epoch: 1, Revision: 26})
 	if v != Accept || w.Held || w.Revision != 26 {
-		t.Fatalf("at what was kept: %v %+v, want Accept and the hold gone", v, w)
+		t.Fatalf("at what was kept: %v %+v, want Accept", v, w)
 	}
 	if w, v = JudgeAnswer(w, 26, ControlPlaneSeen{ClusterID: "c", History: "h", Epoch: 1, Revision: 30}); v != Accept || w.Held || w.Revision != 30 {
 		t.Fatalf("above: %v %+v", v, w)
@@ -46,13 +46,14 @@ func TestALaggingNodeIsNotYetNeverAHold(t *testing.T) {
 	if w, v = JudgeStamp(kept, 10, ControlPlaneSeen{ClusterID: "c", History: "h2", Epoch: 2, Revision: 11}, true); v != Accept || w.Held {
 		t.Fatalf("caught up: %v %+v", v, w)
 	}
-	// A judge from before NotYet (JudgeAnswer) holds on it, and the hold clears by itself.
+	// A judge from before NotYet (JudgeAnswer) holds on it, and, like any hold, keeps holding
+	// until a new history or a person ends it (K-107).
 	w, v = JudgeAnswer(kept, 10, lagging)
 	if v != Hold || !w.Held {
 		t.Fatalf("JudgeAnswer on a lagging node: %v %+v", v, w)
 	}
-	if w, v = JudgeAnswer(w, 10, ControlPlaneSeen{ClusterID: "c", History: "h2", Epoch: 2, Revision: 10}); v != Accept || w.Held {
-		t.Fatalf("a healthy answer after it: %v %+v, want the hold gone", v, w)
+	if w, v = JudgeAnswer(w, 10, ControlPlaneSeen{ClusterID: "c", History: "h2", Epoch: 2, Revision: 10}); v != Hold || !w.Held {
+		t.Fatalf("an answer of the kept history after it: %v %+v, want still held", v, w)
 	}
 }
 
