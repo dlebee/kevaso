@@ -1409,8 +1409,8 @@
   "id": "G-150",
   "guard": "hostreset: never into another file system",
   "file": "internal/hostreset/hostreset.go",
-  "find": "rm -rf --one-file-system ",
-  "replace": "rm -rf ",
+  "find": "rm -rf --one-file-system \"$@\"",
+  "replace": "rm -rf \"$@\"",
   "mutation": "flag removed",
   "packages": [
    "./internal/hostreset",
