@@ -60,6 +60,11 @@ type Endpoint struct {
 	// address is bound to that silo's own port. Nil: the address alone, as before the worker
 	// gives it (its loaded bindings).
 	Bound func(netip.Addr) (port string, ok bool)
+	// Held, if set, says whether this worker is held (its control plane older than what it saw,
+	// §0.7; the agent's ControlPlaneHeld). K-097: while held nothing is asked of the control plane
+	// for a silo: its answers (a secret, a signature, a port lease) could be of a state from before
+	// a grant was revoked.
+	Held func() bool
 
 	mu       sync.Mutex
 	byAddr   map[netip.Addr]kri.ID
@@ -187,6 +192,10 @@ func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !endpointName.MatchString(name) {
 		endpointFail(w, http.StatusBadRequest, fmt.Sprintf("name %q: lower-case letters, digits, - and .", name))
+		return
+	}
+	if e.Held != nil && e.Held() {
+		endpointFail(w, http.StatusServiceUnavailable, "this host is held (its control plane is older than what it saw): nothing is asked of it until that ends")
 		return
 	}
 	if !e.enter(id.UID) {

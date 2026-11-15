@@ -339,7 +339,7 @@ func (a *Agent) Run(ctx context.Context) {
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
 	a.runCtx = ctx
 	a.started, a.startedBoot = a.Clock.Now(), boottime.Now()
-	a.endpoint = &Endpoint{Client: a.Client, HostName: a.HostName, Log: a.Log, Bound: a.Bound}
+	a.endpoint = &Endpoint{Client: a.Client, HostName: a.HostName, Log: a.Log, Bound: a.Bound, Held: a.ControlPlaneHeld}
 	if a.EndpointListen != "" {
 		go a.endpoint.ServeEndpoint(ctx, a.EndpointListen)
 	}
