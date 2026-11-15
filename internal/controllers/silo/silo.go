@@ -496,6 +496,21 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	}
 	now := c.Clock.Now().UTC().Truncate(time.Second)
 	st, changed, again, err := DecideIn(s, hosts, silos, now, env)
+	// A placement change is decided from the host cache, and its write is conditional on the
+	// silo's version only: the hosts it depends on are read fresh first (review of check-then-act,
+	// item 4). A host cordoned or lost since, or an old host heartbeating in the store though not
+	// in the cache, makes it decide again on the fresh copies.
+	for attempt := 0; err == nil && changed && st.Host != s.Status.Host && attempt < 3; attempt++ {
+		fresh, differs, ferr := c.freshHosts(ctx, hosts, s.Status.Host, st.Host)
+		if ferr != nil {
+			return engine.Result{}, ferr
+		}
+		if !differs {
+			break
+		}
+		hosts, env.Hosts = fresh, fresh
+		st, changed, again, err = DecideIn(s, hosts, silos, now, env)
+	}
 	// The node ports and host ports it would have, claimed in the store before they are written
 	// (K-029): one another silo holds there is avoided, and it is decided again. A silo already
 	// on its host claims what it has there too, the first time this controller sees it there:
@@ -528,6 +543,12 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	}
 	if err != nil || !changed {
 		return engine.Result{RequeueAfter: again}, err
+	}
+	if st.Host != s.Status.Host {
+		// The claims may have moved it to another host: that one fresh too.
+		if _, differs, ferr := c.freshHosts(ctx, hosts, s.Status.Host, st.Host); ferr != nil || differs {
+			return engine.Result{RequeueAfter: time.Second}, ferr
+		}
 	}
 	prevHost := s.Status.Host
 	s.Status = st
@@ -702,3 +723,45 @@ var (
 	_ engine.Controller = (*Controller)(nil)
 	_ engine.Mapper     = (*Controller)(nil)
 )
+
+// freshHosts reads the hosts named (the silo's old host and its new one) fresh, and returns the
+// hosts with those fresh copies in, and whether any differs from the cached one in what a
+// placement depends on: whether it takes silos (cordoned, Ready, lost), and for the old host, a
+// heartbeat the cache hasn't shown, which is counted as a contact (Contacts) first.
+func (c *Controller) freshHosts(ctx context.Context, hosts []*v1.Host, names ...string) ([]*v1.Host, bool, error) {
+	out := append([]*v1.Host(nil), hosts...)
+	differs := false
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		var fresh v1.Host
+		err := c.Client.Get(ctx, "Host", "", name, &fresh)
+		i := slices.IndexFunc(out, func(h *v1.Host) bool { return h.Name == name })
+		if client.IsNotFound(err) {
+			if i >= 0 {
+				out, differs = slices.Delete(out, i, i+1), true
+			}
+			continue
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		if c.Contacts != nil {
+			c.Contacts.Observe(&fresh, c.Clock.Now())
+		}
+		if i < 0 {
+			out, differs = append(out, &fresh), true
+			continue
+		}
+		cached := out[i]
+		freshLost, _ := hostctl.Lost(&fresh)
+		cachedLost, _ := hostctl.Lost(cached)
+		beatSince := fresh.Status.LastHeartbeat != nil && (cached.Status.LastHeartbeat == nil || fresh.Status.LastHeartbeat.After(*cached.Status.LastHeartbeat))
+		if fresh.Spec.Unschedulable != cached.Spec.Unschedulable || freshLost != cachedLost ||
+			meta.IsTrue(fresh.Status.Conditions, "Ready") != meta.IsTrue(cached.Status.Conditions, "Ready") || beatSince {
+			out[i], differs = &fresh, true
+		}
+	}
+	return out, differs, nil
+}
