@@ -24,6 +24,7 @@ type fakeResetHost struct {
 	ran        []string          // step and check names, in order
 	steps      map[string]string // script → step name
 	checks     map[string]string // script → check name
+	fail       string            // the step that fails
 }
 
 func (f *fakeResetHost) Run(_ context.Context, cmd string, _ []byte) ([]byte, error) {
@@ -39,6 +40,9 @@ func (f *fakeResetHost) Run(_ context.Context, cmd string, _ []byte) ([]byte, er
 		return []byte(f.leftovers[f.checks[cmd]]), nil
 	case f.steps[cmd] != "":
 		f.ran = append(f.ran, "step:"+f.steps[cmd])
+		if f.steps[cmd] == f.fail {
+			return []byte("it failed"), errors.New("exit 1")
+		}
 		return nil, nil
 	}
 	f.ran = append(f.ran, "unknown")
@@ -309,5 +313,28 @@ func TestStorageDeviceFlag(t *testing.T) {
 		if _, err := parseTarget(bad); err == nil {
 			t.Errorf("%v accepted", bad)
 		}
+	}
+}
+
+// K-114: the install record goes last, and only when every step before it succeeded: a reset cut
+// short can be run again, with what the record says.
+func TestAResetCutShortKeepsItsInstallRecord(t *testing.T) {
+	rec := &hostreset.Record{State: baseState}
+	h := newResetHost(t, rec, nil, nil, nil, hostreset.Flags{})
+	if _, err := reset(h, ResetOptions{Yes: true}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(h.ran, "step:"+hostreset.RecordStep) {
+		t.Fatalf("a reset that went well kept the install record: %v", h.ran)
+	}
+	steps := slices.DeleteFunc(slices.Clone(h.ran), func(s string) bool { return !strings.HasPrefix(s, "step:") })
+	if steps[len(steps)-1] != "step:"+hostreset.RecordStep {
+		t.Fatalf("the install record went before the end: %v", steps)
+	}
+	h = newResetHost(t, rec, nil, nil, nil, hostreset.Flags{})
+	h.fail = "delete nftables tables"
+	out, _ := reset(h, ResetOptions{Yes: true}, "")
+	if slices.Contains(h.ran, "step:"+hostreset.RecordStep) || !strings.Contains(out, "kept, since a step failed") {
+		t.Fatalf("a reset cut short removed its install record: %v\n%s", h.ran, out)
 	}
 }

@@ -33,7 +33,8 @@ import (
 
 // Paths on the host.
 const (
-	// RecordDir holds the install record. It is under /var/lib/kevaso-*, so the reset removes it
+	// RecordDir holds the install record. It is under /var/lib/kevaso-*; the reset removes it
+	// last of all (RecordStep).
 	// with the rest, after reading it.
 	RecordDir  = "/var/lib/kevaso-install"
 	RecordFile = RecordDir + "/record"
@@ -546,15 +547,26 @@ left=$(awk '{print $2}' /proc/mounts | grep -E '`+mountPattern+`')
 	}
 	// Never into another file system (a volume still mounted there), and not at all while
 	// anything under these paths is mounted (K-022).
+	// The install record (RecordDir) is not among them: it goes last (RecordStep), so a reset cut
+	// short can be run again with it (K-114).
 	destroys("remove Kevaso's files", `if awk '{print $2}' /proc/mounts | grep -qE '`+mountPattern+`'; then echo "something is still mounted under Kevaso's paths: not removing them" >&2; exit 1; fi
-rm -rf --one-file-system `+strings.Join(files, " ")+"\nsystemctl daemon-reload; systemctl reset-failed; true")
+set --
+for f in `+strings.Join(files, " ")+`; do [ "$f" = `+RecordDir+` ] || set -- "$@" "$f"; done
+rm -rf --one-file-system "$@"
+systemctl daemon-reload; systemctl reset-failed; true`)
 	add("remove the tests' /etc/hosts lines", `sed -i '/`+HostsMarker+`$/d' /etc/hosts`)
 	// OpenShell's gateway users (kvos-*) leave docker or kvm with userdel; their own groups go too.
 	add("remove kevaso-* users, and OpenShell's "+openshell.UserPrefix+"* users", `for u in $(awk -F: '$1 ~ /^(kevaso-|`+openshell.UserPrefix+`)/ {print $1}' /etc/passwd); do userdel "$u"; done
 for g in $(awk -F: '$1 ~ /^(kevaso-|`+openshell.UserPrefix+`)/ {print $1}' /etc/group); do groupdel "$g"; done
 true`)
+	add(RecordStep, `rm -rf --one-file-system `+RecordDir)
 	return steps
 }
+
+// RecordStep is the plan's last step: the install record goes. kvoadm reset runs it only when
+// every step before it succeeded: a reset cut short keeps it, and run again it does the rest
+// with what the record says (K-114: with the record gone, a second run found nothing to undo).
+const RecordStep = "remove the install record"
 
 func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
