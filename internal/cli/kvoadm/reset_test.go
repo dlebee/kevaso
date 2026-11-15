@@ -64,6 +64,7 @@ func inspection(rec *hostreset.Record, silos []string, pvs []string, lvs []strin
 	if rec != nil {
 		b.WriteString(strings.ReplaceAll(rec.Render(), "== ", "=== "))
 	}
+	b.WriteString("== kevaso-installed\ndocker.io\nqemu-utils\n") // what Kevaso's runtimes recorded installing
 	b.WriteString("== installed\nkevasod=yes\nrunning=yes\n== silos\n" + strings.Join(silos, "\n") + "\n== storagefile\n" + storageLine(pvs) + "== pvs\n" + strings.Join(pvs, "\n") +
 		"\n== lvs\n" + strings.Join(lvs, "\n") + "\n== state\n" + strings.ReplaceAll(now.Render(), "== ", "=== "))
 	return b.String()

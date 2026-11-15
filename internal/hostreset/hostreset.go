@@ -27,6 +27,7 @@ import (
 
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/builtin/kri/container"
+	"kevaso.com/core/builtin/kri/hostpkg"
 	"kevaso.com/core/builtin/kri/openshell"
 )
 
@@ -36,6 +37,8 @@ const (
 	// with the rest, after reading it.
 	RecordDir  = "/var/lib/kevaso-install"
 	RecordFile = RecordDir + "/record"
+	// KevasoInstalledFile lists the packages Kevaso's runtimes installed (hostpkg.Recording).
+	KevasoInstalledFile = hostpkg.InstalledFile
 	// SavedDockerJSON is Docker's daemon.json as it was before Kevaso wrote its own.
 	SavedDockerJSON = RecordDir + "/docker-daemon.json"
 	// StorageImage is the loop file --loop-storage backs the volume group with.
@@ -307,10 +310,16 @@ func KevasoTables(now State) []string {
 
 // Leftovers compares the host with base: watched packages added, tables added, packages base had
 // that are gone (a purge took too much), IP forwarding changed.
-func Leftovers(base, now State) []string {
+func Leftovers(base, now State) []string { return LeftoversExcept(base, now, nil) }
+
+// LeftoversExcept is Leftovers but for the packages the plan left on purpose (Decision.NotOurs:
+// installed since the record, not by Kevaso).
+func LeftoversExcept(base, now State, notOurs []string) []string {
 	var out []string
 	for _, p := range Purgeable(base, now) {
-		out = append(out, "package still installed: "+p)
+		if !slices.Contains(notOurs, p) {
+			out = append(out, "package still installed: "+p)
+		}
 	}
 	for _, t := range ExtraTables(base, now) {
 		out = append(out, "nftables table still there: "+t)

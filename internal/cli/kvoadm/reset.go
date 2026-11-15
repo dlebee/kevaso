@@ -195,7 +195,7 @@ func runReset(ctx context.Context, h hostRunner, o ResetOptions, in *bufio.Reade
 	if insp.Record != nil {
 		if b, err := h.Run(ctx, hostreset.StateScript, nil); err == nil {
 			if now, err := hostreset.ParseState(string(b)); err == nil {
-				left = hostreset.Leftovers(insp.Record.State, now)
+				left = hostreset.LeftoversExcept(insp.Record.State, now, d.NotOurs) // left on purpose: not Kevaso's (K-113)
 			}
 		}
 	}
