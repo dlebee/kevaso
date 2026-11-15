@@ -16,7 +16,6 @@ import (
 // returns at once, Status says Created, and Start fails on the missing unit (or boots a half-made
 // disk) on every retry. The silo never comes up.
 func TestACreateKilledHalfwayIsFinishedNextTime(t *testing.T) {
-	t.Skip("phase/metal: Create returns early on any saved state (runtime.go Create); a half-made silo is never finished or redone")
 	h := newFakeHost()
 	r := newRuntime(t, h)
 	ctx := context.Background()

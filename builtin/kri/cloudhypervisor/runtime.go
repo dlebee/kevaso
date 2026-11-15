@@ -156,6 +156,12 @@ func (r *Runtime) readState(id kri.ID) (State, bool, error) {
 	return s, true, nil
 }
 
+// made says whether Create finished for a silo: its unit file is written last of all.
+func (r *Runtime) made(id kri.ID) bool {
+	_, err := r.Host.ReadFile("/etc/systemd/system/" + NamesFor(id).Unit)
+	return err == nil
+}
+
 func (r *Runtime) saveState(s State) error {
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -178,7 +184,13 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	if done, err := r.created(spec.ID); done || err != nil {
 		return err
 	}
-
+	// A Create killed halfway (its state saved, its unit never written) made a silo that never
+	// ran: nothing in it is anyone's data. Take it apart and make it afresh.
+	if st, ok, _ := r.readState(spec.ID); ok && !st.Started {
+		if err := r.deleteLocked(ctx, spec.ID); err != nil {
+			return fmt.Errorf("redo a half-made %s: %w", spec.ID, err)
+		}
+	}
 	n := NamesFor(spec.ID)
 	IPMu.Lock() // container silos share the bridge and its addresses: until the state is saved
 	ipLocked := true
@@ -248,7 +260,8 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	return nil
 }
 
-// created says whether a silo is there. A state that can't be read is an error.
+// created says whether a silo is there and finished. A state that can't be read is an error, and
+// so is a silo that ran but has no unit (nothing is redone over a disk that held data).
 func (r *Runtime) created(id kri.ID) (bool, error) {
 	st, ok, err := r.readState(id)
 	switch {
@@ -256,9 +269,12 @@ func (r *Runtime) created(id kri.ID) (bool, error) {
 		return false, err
 	case !ok:
 		return false, nil
+	case r.made(id):
+		return true, nil
+	case st.Started:
+		return false, fmt.Errorf("%s ran but its unit is gone: not making it again over its disk (delete the silo to start over)", id)
 	}
-	_ = st
-	return true, nil
+	return false, nil // half-made: Create redoes it
 }
 
 func newHostKey() (pub, privPEM string, err error) {
