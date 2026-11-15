@@ -74,6 +74,9 @@ type Agent struct {
 	// only where the client's ControlPlane is ControlPlaneJudge (set by whoever makes the client,
 	// before it is used).
 	WatermarkFile string
+	// Watermark, if set, is the one kevasod made (OpenWatermark), shared with the client and the
+	// worker's network; WatermarkFile is then not read.
+	Watermark *Watermark
 	// FenceDir, if set, is where the agent writes its fence record every second (internal/fence):
 	// its last contact and which of its silos stop on control-plane loss, for the fence watcher,
 	// which stops those when this agent can no longer vouch for them, running or not.
@@ -145,9 +148,9 @@ type Agent struct {
 	// missing from the API (a control plane restored from an older backup, a re-made cluster) is
 	// kept, running, with its data, and listed (kept, logged once).
 	seenDeleted   sync.Map
-	keptNoted     sync.Map
+	keptNoted     sync.Map // silo UID → what it is: kept, listed on the Host (ConditionKeptSilos)
 	engine        *engine.Engine
-	cp            *watermark // the control plane this worker trusts (watermark.go); via watermark()
+	cp            *Watermark // the control plane this worker trusts (watermark.go); via watermark()
 	cpOnce        sync.Once
 	staleNoted    sync.Map // silo UID → logged once that its cache was stale at a start
 	createBackoff sync.Map // silo UID → createBackoff
@@ -1041,7 +1044,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			// here: keep it, running, its disk and volumes untouched (design §0.7, K-004).
 			if s == nil || id.UID != s.UID {
 				if _, seen := a.seenDeleted.Load(id.UID); !seen {
-					if _, logged := a.keptNoted.LoadOrStore(id.UID, struct{}{}); !logged {
+					if _, logged := a.keptNoted.LoadOrStore(id.UID, id.String()+" ("+rt.Info().Name+")"); !logged {
 						a.log("keeping %s on %s: the control plane doesn't know it and no delete of it was seen here; it keeps running with its disk and volumes (nothing is removed without a delete)",
 							id, rt.Info().Name)
 					}

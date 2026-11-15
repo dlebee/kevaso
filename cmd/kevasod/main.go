@@ -65,6 +65,7 @@ import (
 	kccexec "kevaso.com/core/builtin/kcc/exec"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/builtin/kri/container/ocienv"
+	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/apiserver"
 	"kevaso.com/core/internal/backup"
 	"kevaso.com/core/internal/clock"
@@ -334,10 +335,14 @@ func runWorker(ctx context.Context, args []string) error {
 		}
 	}
 	logger.Printf("joined %s as host %s", jc.Server, jc.HostName)
+	// What this worker trusts of its control plane (§0.7), kept on disk: the judge of every answer,
+	// set before anything else uses the client.
+	wm := agent.OpenWatermark(filepath.Join(jc.DataDir, "control-plane-watermark.json"), logger.Printf)
+	c.ControlPlane = wm
 	contact := &worker.Contact{}
 	contact.SetFence(true) // a worker only: the control plane is elsewhere and carries on without it
 	wc := worker.Config{HostName: jc.HostName, Runtimes: runtimes, DataDir: jc.DataDir, Clock: clock.Real{}, Log: logger.Printf,
-		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize, Device: *device}, Contact: contact, MeshSubnet: *withMesh, EgressExtraCA: *egressCA, GatewayScope: *gwScope}
+		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize, Device: *device}, Contact: contact, MeshSubnet: *withMesh, EgressExtraCA: *egressCA, GatewayScope: *gwScope, Watermark: wm}
 	rts, err := worker.NewRuntimes(wc)
 	if err != nil {
 		return err

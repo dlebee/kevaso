@@ -152,6 +152,13 @@ func AnnouncedAddresses(hostName string, silos []*v1.Silo) []string {
 // (atomically: nft -f replaces the tables in one transaction). With an egress CA it also runs the
 // egress gate.
 func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate.CA, upstream *x509.CertPool, log func(string, ...any)) {
+	RunNetworkHeld(ctx, c, hostName, ca, upstream, log, nil)
+}
+
+// RunNetworkHeld is RunNetwork that changes nothing on the host while held says so (§0.7: the
+// control plane is older than what this worker saw, or another cluster's): the rules, the pool
+// and announced addresses stay as they are, and the DNS listeners answer from what they have.
+func RunNetworkHeld(ctx context.Context, c *client.Client, hostName string, ca *gate.CA, upstream *x509.CertPool, log func(string, ...any), held func() bool) {
 	silos, hosts, grantsInf := informer.New(c, "Silo"), informer.New(c, "Host"), informer.New(c, "Grant")
 	secretsInf := informer.New(c, "Secret")
 	ingInf, classInf := informer.New(c, "Ingress"), informer.New(c, "IngressClass")
@@ -268,31 +275,29 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 		view = WithLeases(view, all, ls, now)
 		leaseEnd, stopLeaseEnd := leaseTimer(ls, now)
 		rules, problems := kni.Generate(view)
-		if ok, err := fw.load(ctx, rules); err != nil {
-			log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
-		} else if ok {
-			loaded.set(kni.Bindings(view.Local))
-		}
-		reportHost(ctx, c, hostName, me, hostFirewallCondition(fw.err, problems), now)
-		reportPortRules(ctx, c, hostName, all, siloProblems(problems), now)
+		// Held: nothing from a control plane this worker doesn't trust (looked at again shortly).
+		isHeld := held != nil && held()
 		var retry <-chan time.Time
-		if fw.err != nil {
-			retry = time.After(fw.retryAfter())
+		if isHeld {
+			retry = time.After(2 * time.Second)
+		} else {
+			if ok, err := fw.load(ctx, rules); err != nil {
+				log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
+			} else if ok {
+				loaded.set(kni.Bindings(view.Local))
+			}
+			reportHost(ctx, c, hostName, me, hostFirewallCondition(fw.err, problems), now)
+			reportPortRules(ctx, c, hostName, all, siloProblems(problems), now)
+			if fw.err != nil {
+				retry = time.After(fw.retryAfter())
+			}
 		}
 		dnsOn.keep(ctx, DNSListeners(me), func(addr string, from names.Asker) *DNS {
 			return &DNS{Listen: addr, From: from, View: nameView, Log: log,
 				SiloNamespace: func(a netip.Addr) (string, bool) { return boundNamespace(hostName, current(), loaded, a) }}
 		})
-		if me != nil {
-			if err := syncPoolAddresses(ctx, me.Reach(), PoolAddresses(hostName, all)); err != nil {
-				log("pool addresses: %v", err)
-			}
-		}
-		if err := syncAddresses(ctx, "lo", "lo:kv", AnnouncedAddresses(hostName, all)); err != nil {
-			log("announced addresses: %v", err)
-		}
-		if err := syncAddresses(ctx, cloudhypervisor.Bridge, cloudhypervisor.Bridge+":kv", []string{v1.EndpointAddress}); err != nil {
-			log("the local endpoint's address: %v", err)
+		if !isHeld { // no address added or removed either
+			syncHostAddresses(ctx, hostName, me, all, log)
 		}
 		select {
 		case <-ctx.Done():
@@ -306,6 +311,21 @@ func RunNetwork(ctx context.Context, c *client.Client, hostName string, ca *gate
 			fw.last = "" // reload anyway: someone may have flushed the ruleset
 		}
 		stopLeaseEnd()
+	}
+}
+
+// syncHostAddresses keeps the host's pool, announced and local endpoint addresses as the silos say.
+func syncHostAddresses(ctx context.Context, hostName string, me *v1.Host, all []*v1.Silo, log func(string, ...any)) {
+	if me != nil {
+		if err := syncPoolAddresses(ctx, me.Reach(), PoolAddresses(hostName, all)); err != nil {
+			log("pool addresses: %v", err)
+		}
+	}
+	if err := syncAddresses(ctx, "lo", "lo:kv", AnnouncedAddresses(hostName, all)); err != nil {
+		log("announced addresses: %v", err)
+	}
+	if err := syncAddresses(ctx, cloudhypervisor.Bridge, cloudhypervisor.Bridge+":kv", []string{v1.EndpointAddress}); err != nil {
+		log("the local endpoint's address: %v", err)
 	}
 }
 

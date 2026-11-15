@@ -60,6 +60,10 @@ type Config struct {
 	// GatewayScope is how many OpenShell gateways run (host | namespace | silo; default namespace):
 	// sandboxes of one gateway share its user (design §3.1).
 	GatewayScope string
+	// Watermark, if set, is what this worker trusts of its control plane (agent.OpenWatermark),
+	// already the judge of the client's answers: while it holds, the agent and the network change
+	// nothing (§0.7). Nil: nothing is judged (a system node's own worker: it is the control plane).
+	Watermark *agent.Watermark
 	// PluginsDir is where the plugins' node sides put their sockets, DIR/NAME/node.sock (default
 	// kplugin.Dir): they mount the volumes of mount-reach storage classes (juicefs).
 	PluginsDir string
@@ -215,6 +219,10 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 		}
 	}
 	var networkOnce sync.Once
+	var held func() bool // nil: never held
+	if cfg.Watermark != nil {
+		held = cfg.Watermark.Held
+	}
 	for name, rt := range rts {
 		go func(name string, rt Installer) {
 			// A failed install (a download cut short, a mirror down) is tried again every minute.
@@ -235,7 +243,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 					st.EnvOutsideEngine = rt.Info().Capabilities.EnvOutsideEngine
 					cfg.Log("runtime %s ready", name)
 					if usesBridge(rt) { // the bridge is there now: keep its firewall current (once)
-						networkOnce.Do(func() { go RunNetwork(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log) })
+						networkOnce.Do(func() { go RunNetworkHeld(ctx, c, cfg.HostName, egressCA, upstream, cfg.Log, held) })
 					}
 				}
 				mu.Lock()
@@ -269,7 +277,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	for name, rt := range rts {
 		runtimes[name] = rt
 	}
-	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes,
+	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes, Watermark: cfg.Watermark,
 		RuntimeReady: func(name string) bool {
 			mu.Lock()
 			defer mu.Unlock()
