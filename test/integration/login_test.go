@@ -46,6 +46,12 @@ type cluster struct {
 // newCluster runs an API server with TLS from a private CA, the issuer, and the admin socket.
 func newCluster(t *testing.T) *cluster {
 	t.Helper()
+	return newClusterOn(t, store.NewMemory(0))
+}
+
+// newClusterOn is newCluster over st (a test can wrap the store to see or time what reaches it).
+func newClusterOn(t *testing.T, st store.Store) *cluster {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	now := time.Now()
@@ -53,7 +59,6 @@ func newCluster(t *testing.T) *cluster {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := store.NewMemory(0)
 	ts := httptestTLS(t)
 	iss, err := issuer.New(ctx, st, clock.Real{}, ts.url)
 	if err != nil {

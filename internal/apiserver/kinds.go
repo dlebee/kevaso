@@ -304,11 +304,10 @@ func (t target) part() schema.Part {
 }
 
 func (s *Server) createDefined(ctx context.Context, t target, u *v1.Unstructured) (store.Object, error) {
+	var nsUID string
 	if t.kind.Scope == v1.Namespaced {
-		if _, err := s.store.Get(ctx, store.Key{Kind: "Namespace", Name: t.namespace}); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return store.Object{}, errf(http.StatusNotFound, "NotFound", "namespace %q doesn't exist", t.namespace)
-			}
+		var err error
+		if nsUID, err = s.openNamespace(ctx, t.namespace); err != nil {
 			return store.Object{}, err
 		}
 	}
@@ -324,6 +323,9 @@ func (s *Server) createDefined(ctx context.Context, t target, u *v1.Unstructured
 	data, err := s.admitDefined(ctx, t, nil, u)
 	if err != nil {
 		return store.Object{}, err
+	}
+	if t.kind.Scope == v1.Namespaced {
+		return s.commitInNamespace(ctx, t, nsUID, data)
 	}
 	return s.commitCreate(ctx, t.key(), data)
 }
