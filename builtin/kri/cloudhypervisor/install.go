@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"kevaso.com/core/builtin/kni"
+	"kevaso.com/core/builtin/kri/hostexec"
 	"kevaso.com/core/builtin/kri/hostpkg"
 )
 
@@ -469,8 +470,13 @@ type Local struct{}
 // Run implements Host.
 func (Local) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = hostexec.WaitDelay // a process it leaves with the output open doesn't hold the caller
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
-	return cmd.CombinedOutput()
+	out, err := cmd.CombinedOutput()
+	if errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		err = nil // it exited 0; what it left behind holds its output (that output is cut)
+	}
+	return out, err
 }
 
 // WriteFile implements Host: atomically (a temporary file, synced, renamed over it), so a kill or

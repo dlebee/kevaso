@@ -69,7 +69,7 @@ func TestALostNodeMountIsMountedAgain(t *testing.T) {
 	}
 	vs, _ := share.EnsureVolume(ctx, kplugin.Volume{Class: kplugintest.ClassShare, ID: "u/home"})
 	handle = vs.Handle
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "pad", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "busybox"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Volumes: []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"}}}}

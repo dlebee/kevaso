@@ -50,7 +50,7 @@ func TestAWatermarkUnreadableOnlyAtStartIsReadAgain(t *testing.T) {
 	if !a.ControlPlaneHeld() {
 		t.Fatal("not held although the watermark couldn't be read")
 	}
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	e := &env{c: c, ctx: ctx}
 	e.place(t, "web", "hv1", nil)
 

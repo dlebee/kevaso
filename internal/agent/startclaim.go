@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"kevaso.com/core/api/client"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
@@ -112,6 +111,14 @@ func (a *Agent) reportedRunning(s *v1.Silo) bool {
 	return ok && g.(int64) == s.Generation
 }
 
+// endStart ends a start of the silo uid under way here (its init step, its Start): its claim's
+// context ends as when a renewal finds it placed elsewhere.
+func (a *Agent) endStart(uid string) {
+	if v, ok := a.claims.Load(uid); ok {
+		v.(*claimKeeper).cancel(errPlacedElsewhere)
+	}
+}
+
 // endClaim stops renewing s's claim (reported Running, or its start ended and nothing of it runs).
 func (a *Agent) endClaim(uid string) {
 	if v, ok := a.claims.LoadAndDelete(uid); ok {
@@ -149,7 +156,14 @@ func (k *claimKeeper) tick() {
 		return
 	}
 	switch err := a.renewClaim(k.ctx, s); {
-	case errors.Is(err, errPlacedElsewhere) || client.IsNotFound(err):
+	case deletedNow(err):
+		// The store no longer has it (or has another of that name): its delete, seen here. Kept
+		// on disk before anything acts on it, so a restart removes the copy too.
+		a.log("%s/%s: renewing its start claim found it deleted (%v): ending its start here; what of it is here is removed", s.Namespace, s.Name, err)
+		a.sawDelete(idOf(s), true)
+		k.cancel(errPlacedElsewhere)
+		return
+	case errors.Is(err, errPlacedElsewhere):
 		a.log("%s/%s: renewing its start claim found it placed elsewhere or changed: ending its start here", s.Namespace, s.Name)
 		k.cancel(errPlacedElsewhere)
 		return

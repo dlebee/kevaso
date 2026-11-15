@@ -135,7 +135,7 @@ func (r *claimRig) renewedWhile(what string) {
 func TestASlowStartKeepsItsStartClaimFresh(t *testing.T) {
 	rt := newSlowStart()
 	r := newClaimRig(t, rt)
-	go r.a.Run(r.ctx)
+	agent.RunForTest(t, r.ctx, r.a)
 	r.place()
 	r.waitIn("the start begins", rt.entered)
 	r.renewedWhile("a Start runs")
@@ -147,7 +147,7 @@ func TestASlowStartKeepsItsStartClaimFresh(t *testing.T) {
 func TestAPlacementElsewhereDuringASlowStartEndsIt(t *testing.T) {
 	rt := newSlowStart()
 	r := newClaimRig(t, rt)
-	go r.a.Run(r.ctx)
+	agent.RunForTest(t, r.ctx, r.a)
 	r.place()
 	r.waitIn("the start begins", rt.entered)
 	for {
@@ -196,7 +196,7 @@ func TestASlowGuestInitStepKeepsItsStartClaimFresh(t *testing.T) {
 		}
 	}
 	r := newClaimRig(t, rt)
-	go r.a.Run(r.ctx)
+	agent.RunForTest(t, r.ctx, r.a)
 	r.place(v1.InitStep{Name: "slow", Run: "sleep 600"})
 	r.waitIn("the guest's init step runs", inStep)
 	r.renewedWhile("a guest init step runs")

@@ -79,7 +79,7 @@ func TestTheFenceIsArmedOnlyOnceTheRecordHoldsTheSilo(t *testing.T) {
 	dir := t.TempDir()
 	a := &Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": fake.New()}, Clock: clock.Real{},
 		LastContact: time.Now, FenceDir: dir}
-	go a.Run(ctx)
+	RunForTest(t, ctx, a)
 	go stampLikeAWatcher(ctx, dir) // armed means a watcher runs (K-067)
 	get := func() *v1.Silo {
 		var cur v1.Silo

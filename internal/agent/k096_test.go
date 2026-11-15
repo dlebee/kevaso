@@ -109,7 +109,7 @@ func TestAnUnreadableWatermarkIsReportedOnTheHost(t *testing.T) {
 	cl := client.New(ts.URL)
 	a := &agent.Agent{Client: cl, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}, WatermarkFile: file, Log: t.Logf}
 	cl.ControlPlane = a.ControlPlaneJudge()
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	e := &env{c: c, ctx: ctx}
 	e.place(t, "web", "hv1", nil)
 	for {

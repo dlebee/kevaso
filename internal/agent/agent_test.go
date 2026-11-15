@@ -43,7 +43,7 @@ func setup(t *testing.T) *env {
 		return "", 0
 	}
 	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}}
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	return &env{c: c, rt: rt, ctx: ctx}
 }
 
@@ -58,6 +58,26 @@ func (e *env) place(t *testing.T, name, host string, init *v1.Init) {
 	s.Status.Host, s.Status.Phase = host, "Scheduled"
 	if err := e.c.UpdateStatus(e.ctx, s); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// edit is a person's change of the silo's spec: on what is stored now, read again on a conflict
+// (the agent writes the silo's status meanwhile).
+func (e *env) edit(t *testing.T, name string, f func(*v1.Silo)) {
+	t.Helper()
+	for attempt := 0; ; attempt++ {
+		var cur v1.Silo
+		if err := e.c.Get(e.ctx, "Silo", "dev", name, &cur); err != nil {
+			t.Fatal(err)
+		}
+		f(&cur)
+		err := e.c.Update(e.ctx, &cur)
+		if err == nil {
+			return
+		}
+		if !client.IsConflict(err) || attempt > 20 {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -186,7 +206,7 @@ func TestFencingWhenCutOff(t *testing.T) {
 	}
 	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{},
 		LastContact: contact, StopsOnLoss: scaled}
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	e := &env{c: c, rt: rt, ctx: ctx}
 	avail := map[string]v1.Availability{
 		"stops":    {OnControlPlaneLoss: v1.OnControlPlaneLossStop},               // after 2m
@@ -298,10 +318,7 @@ func TestImageChangeAndResetAreStopFirst(t *testing.T) {
 	})
 	id := kri.ID{Namespace: "dev", Name: "node", UID: s.UID}
 	// The user moves it to geth:v2, which the control plane resolves.
-	s.Spec.VM = &v1.VMSource{Image: "geth:v2"}
-	if err := e.c.Update(e.ctx, s); err != nil {
-		t.Fatal(err)
-	}
+	e.edit(t, "node", func(s *v1.Silo) { s.Spec.VM = &v1.VMSource{Image: "geth:v2"} })
 	for attempt := 0; ; attempt++ { // the agent writes the silo's status too (it saw the new spec)
 		_ = e.c.Get(e.ctx, "Silo", "dev", "node", s)
 		s.Status.Image = &v1.SiloImage{From: "geth:v2", Ref: "docker.io/ethereum/client-go:v1.15.0", Running: "ubuntu-24.04"}
@@ -328,10 +345,7 @@ func TestImageChangeAndResetAreStopFirst(t *testing.T) {
 		t.Fatalf("not stop-first: %s", calls)
 	}
 	// kvo reset: same image, a fresh copy.
-	s.Spec.Reset = "2026-11-12T10:00:00Z"
-	if err := e.c.Update(e.ctx, s); err != nil {
-		t.Fatal(err)
-	}
+	e.edit(t, "node", func(s *v1.Silo) { s.Spec.Reset = "2026-11-12T10:00:00Z" })
 	e.wait(t, "node", func(s *v1.Silo) bool {
 		return s.Status.Image.Reset == "2026-11-12T10:00:00Z" && meta.IsTrue(s.Status.Conditions, "Ready")
 	})
@@ -454,7 +468,7 @@ func TestNothingStartsBeforeItsRuntimeIsReady(t *testing.T) {
 	var ready atomic.Bool
 	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{},
 		RuntimeReady: func(name string) bool { return name == "cloud-hypervisor" && ready.Load() }}
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	e := &env{c: c, rt: rt, ctx: ctx}
 	e.place(t, "web", "hv1", nil)
 	time.Sleep(500 * time.Millisecond)
@@ -503,7 +517,7 @@ func TestAFailedSiloIsStartedAgainWithBackoff(t *testing.T) {
 	_ = c.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
 	rt := &failing{Runtime: fake.New()}
 	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}}
-	go a.Run(ctx)
+	agent.RunForTest(t, ctx, a)
 	e := &env{c: c, rt: rt.Runtime, ctx: ctx}
 	e.place(t, "web", "hv1", nil)
 	e.wait(t, "web", func(s *v1.Silo) bool { return meta.IsTrue(s.Status.Conditions, "Ready") })
@@ -550,7 +564,7 @@ func TestAfterARebootTheStatusSaysWhatIsTrue(t *testing.T) {
 	rt := fake.New()
 	actx, stop := context.WithCancel(ctx)
 	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}}
-	go a.Run(actx)
+	agent.RunForTest(t, actx, a)
 	e := &env{c: c, rt: rt, ctx: ctx}
 	e.place(t, "web", "hv1", nil)
 	e.wait(t, "web", func(s *v1.Silo) bool { return s.Status.Phase == agent.PhaseRunning })
@@ -561,7 +575,7 @@ func TestAfterARebootTheStatusSaysWhatIsTrue(t *testing.T) {
 	var ready atomic.Bool
 	b := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": down}, Clock: clock.Real{},
 		RuntimeReady: func(string) bool { return ready.Load() }}
-	go b.Run(ctx)
+	agent.RunForTest(t, ctx, b)
 	s := e.wait(t, "web", func(s *v1.Silo) bool { return s.Status.Phase == agent.PhaseStarting })
 	if cd := meta.FindCondition(s.Status.Conditions, "Ready"); cd == nil || cd.Reason != "NotRunning" || !strings.Contains(cd.Message, "runtime cloud-hypervisor is installed") {
 		t.Fatalf("the reason: %+v", cd)
