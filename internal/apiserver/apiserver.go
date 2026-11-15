@@ -593,6 +593,10 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%v", err)
 		}
 	}
+	if t.kind.Kind == "Silo" && t.status {
+		// A start claim's time is when the API received it, never the agent's clock (moves.CheckFenced).
+		moves.StampClaim(old.(*v1.Silo).Status, &obj.(*v1.Silo).Status, s.clock.Now())
+	}
 	var next meta.Object
 	if t.status {
 		// /status: everything from the stored object except status.

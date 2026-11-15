@@ -84,7 +84,7 @@ const CondStartClaim = moves.CondStartClaim
 // control plane's silence count says (internal/agent's StartClaimFresh). It is counted from when
 // this control plane first saw the claim, on its own clock (Env.StartClaimAge), never from the
 // claim's timestamp, which is the agent's clock.
-const StartClaimFresh = 30 * time.Second
+const StartClaimFresh = moves.StartClaimFresh
 
 // StartClaimOf returns the start claim s carries: the host that wrote it ("" when its message
 // doesn't say) and the claim as written, as an id (any change to the claim is another id). ok
