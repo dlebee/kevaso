@@ -33,7 +33,6 @@ const module = "kevaso.com/core/"
 // Dynamic ones (the script is built at run time) say how they're covered.
 var sites = map[string]string{
 	"builtin/kri/cloudhypervisor/volumes.go MountGuestVolumes": "dynamic: GuestMountScript (rendered below)",
-	"builtin/kri/container/install.go Install":                 "apt-get update and install of the engine",
 	"builtin/kri/container/runtime.go RunInit":                 "dynamic: a silo's own init step (spec.init), the user's script",
 	"builtin/kri/hostexec/sweep.go Held":                       "holdScript: holds a sandbox's processes",
 	"builtin/kri/openshell/install.go Install":                 "docker check, apt-get install of docker and the gateway",
