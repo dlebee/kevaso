@@ -3,12 +3,14 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/cli/kvoadm"
 	siloctl "kevaso.com/core/internal/controllers/silo"
@@ -549,7 +551,9 @@ func TestMetal2KeptWhenMissing(t *testing.T) {
 
 // TestMetal2NeverTwice is K-015 on the machines: an opted-in silo (onControlPlaneLoss: Stop,
 // onHostLoss: Recreate) on machine 2, machine 2 cut off, the silo stopped there and started on
-// machine 1 by the control plane, the cut lifted, and minutes after. Both hosts are asked
+// machine 1 by the control plane, the cut lifted the moment that restart is committed, and
+// minutes after. Its init step (every boot) sleeps, so a start on machine 2 has a long gap
+// between its read and its start, where the restart elsewhere lands. Both hosts are asked
 // every half second, from themselves, throughout: at no moment do both run it.
 //
 // Listens on nothing outside.
@@ -561,7 +565,8 @@ func TestMetal2NeverTwice(t *testing.T) {
 	c.namespace(ns)
 	t.Cleanup(p.uncut)
 	// Not pinned (on() would leave it nowhere else to go): moved to machine 2.
-	c.apply(boxEcho(ns, "single", 8080) + "  availability: { onControlPlaneLoss: Stop, after: 30s, onHostLoss: Recreate }\n")
+	c.apply(boxEcho(ns, "single", 8080) + "  availability: { onControlPlaneLoss: Stop, after: 30s, onHostLoss: Recreate }\n" +
+		"  init: { when: everyBoot, steps: [{ name: slow, run: \"sleep 15\" }] }\n")
 	c.waitRunning(ns, 10*time.Minute, "single")
 	if c.silo(ns, "single").Status.Host != metalHost2 {
 		c.must("", "move", "silo", "single", "-n", ns, "--to", metalHost2)
@@ -600,13 +605,24 @@ func TestMetal2NeverTwice(t *testing.T) {
 	}()
 	p.cut()
 	t.Log("machine 2 cut off from the system node")
-	c.eventually("the control plane starts it on machine 1", 5*time.Minute, func() (bool, string) {
+	// The cut lifted the moment the restart elsewhere is committed (the placement written).
+	for deadline := time.Now().Add(5 * time.Minute); ; time.Sleep(200 * time.Millisecond) {
+		out, code := c.kvo("", "get", "silo", "single", "-n", ns, "-o", "json")
+		var s v1.Silo
+		if code == 0 && json.Unmarshal([]byte(out), &s) == nil && s.Status.Host != metalHost2 {
+			p.uncut()
+			t.Logf("the restart elsewhere committed (host %q): the cut lifted at once", s.Status.Host)
+			break
+		}
+		if time.Now().After(deadline) {
+			p.uncut()
+			t.Fatal("the control plane never restarted it elsewhere")
+		}
+	}
+	c.eventually("it runs on machine 1", 5*time.Minute, func() (bool, string) {
 		s := c.silo(ns, "single")
 		return s.Status.Host == metalHost && s.Status.Phase == "Running", s.Status.Host + " " + s.Status.Phase
 	})
-	time.Sleep(20 * time.Second)
-	p.uncut()
-	t.Log("the cut lifted: machine 2's contact comes back before its cache does")
 	c.eventually(metalHost2+" is Ready again", 5*time.Minute, func() (bool, string) { return c.hostReady(metalHost2) })
 	time.Sleep(3 * time.Minute)
 	close(stop)
