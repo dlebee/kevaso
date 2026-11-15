@@ -369,3 +369,31 @@ func TestLocalRunDoesNotWaitForStdin(t *testing.T) {
 		t.Fatal("Run waited for stdin after the command exited")
 	}
 }
+
+// Found on the machine (TestMetalOpenShell): a gateway stopped behind Kevaso's back. Status
+// failed on every look ("connect error"), so the agent never got to Start, which is what sets the
+// gateway up again: the silo never came back. A gateway that doesn't answer is a stopped silo,
+// started again with its gateway.
+func TestAStoppedGatewayIsStartedAgainWithTheSilo(t *testing.T) {
+	ctx := context.Background()
+	f := newFake()
+	r := newRuntime(f, "")
+	if err := r.Create(ctx, kri.Spec{ID: silo, Image: "ubuntu-24.04"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(ctx, silo); err != nil {
+		t.Fatal(err)
+	}
+	g := Gateway{Key: GatewayKey(DriverVM, ScopeNamespace, silo), Port: BasePort, Driver: DriverVM}
+	f.gwUp[g.Name()] = false // systemctl stop, behind Kevaso's back
+	st, err := r.Status(ctx, silo)
+	if err != nil || st.State != kri.Stopped || !strings.Contains(st.Message, g.Name()) {
+		t.Fatalf("its gateway down: %v %q %v, want Stopped, saying why", st.State, st.Message, err)
+	}
+	if err := r.Start(ctx, silo); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := r.Status(ctx, silo); st.State != kri.Running || !f.gwUp[g.Name()] {
+		t.Fatalf("started again: %v, gateway up %v", st.State, f.gwUp[g.Name()])
+	}
+}
