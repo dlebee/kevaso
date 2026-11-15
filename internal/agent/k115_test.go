@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -47,7 +48,7 @@ func (r *alwaysFails) RunInit(ctx context.Context, id kri.ID, step kri.InitStep,
 
 // newK115 is an agent on hv1 on a fake clock, its API served through a hook counting start
 // claims, with one container silo placed on it (steps as given).
-func newK115(t *testing.T, rt *alwaysFails, steps ...v1.InitStep) (*claimHook, *clock.Fake, func() *v1.Silo) {
+func newK115(t *testing.T, rt kri.Runtime, steps ...v1.InitStep) (*claimHook, *clock.Fake, func() *v1.Silo) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	srv, _ := apiserver.New(store.NewMemory(0), clock.Real{})
@@ -141,5 +142,71 @@ func TestAFailedInitStepWritesNoMoreClaims(t *testing.T) {
 	}
 	if n := rt.starts.Load(); n != 0 {
 		t.Fatalf("the main process was started %d times after a failed init step", n)
+	}
+}
+
+// exitsAtOnce is the strict fake as an engine whose Start succeeds and whose main process then
+// ends at once (a command that isn't there: docker run -d returns, the container exits 127, and
+// the silo reads Stopped): what the machines saw (TestMetal2StartBackoffNoClaim).
+type exitsAtOnce struct {
+	*fake.Strict
+	starts atomic.Int32
+}
+
+func (r *exitsAtOnce) Start(ctx context.Context, id kri.ID) error {
+	r.starts.Add(1)
+	if err := r.Strict.Start(ctx, id); err != nil {
+		return err
+	}
+	return r.Stop(ctx, id) // it exited by itself
+}
+
+// exitsAtOnceVM is exitsAtOnce as a VM runtime (no init containers): a VMM that exits right
+// after it started.
+type exitsAtOnceVM struct{ r *exitsAtOnce }
+
+func (v exitsAtOnceVM) Info() kri.Info                                  { return v.r.Info() }
+func (v exitsAtOnceVM) Create(ctx context.Context, spec kri.Spec) error { return v.r.Create(ctx, spec) }
+func (v exitsAtOnceVM) Start(ctx context.Context, id kri.ID) error      { return v.r.Start(ctx, id) }
+func (v exitsAtOnceVM) Stop(ctx context.Context, id kri.ID) error       { return v.r.Stop(ctx, id) }
+func (v exitsAtOnceVM) Delete(ctx context.Context, id kri.ID) error     { return v.r.Delete(ctx, id) }
+func (v exitsAtOnceVM) List(ctx context.Context) ([]kri.ID, error)      { return v.r.List(ctx) }
+func (v exitsAtOnceVM) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
+	return v.r.Status(ctx, id)
+}
+func (v exitsAtOnceVM) Exec(ctx context.Context, id kri.ID, req kri.ExecRequest) (int, error) {
+	return v.r.Exec(ctx, id, req)
+}
+
+// K-115 as the machines saw it: a start that succeeds and whose silo stops by itself at once is
+// a failed start too. It is tried again only after the backoff, with no claim meanwhile.
+func TestASiloThatExitsRightAfterItsStartWaitsOutItsBackoffWithNoClaim(t *testing.T) {
+	for _, vm := range []bool{false, true} {
+		t.Run(map[bool]string{true: "vm", false: "container"}[vm], func(t *testing.T) {
+			r := &exitsAtOnce{Strict: fake.NewStrict("hv1", nil)}
+			var rt kri.Runtime = r
+			if vm {
+				rt = exitsAtOnceVM{r}
+			}
+			hook, clk, get := newK115(t, rt)
+			waitReal(t, "a start is tried", func() bool { return r.starts.Load() > 0 })
+			time.Sleep(50 * time.Millisecond)
+			c0, s0 := hook.claims.Load(), r.starts.Load()
+			time.Sleep(500 * time.Millisecond) // the agent's clock doesn't move
+			if c, s := hook.claims.Load()-c0, r.starts.Load()-s0; c > 0 || s > 0 {
+				t.Fatalf("with no time gone by on the agent's clock, %d start claims were written and %d starts tried", c, s)
+			}
+			if ready := meta.FindCondition(get().Status.Conditions, "Ready"); ready == nil || !strings.Contains(ready.Message, "trying again in") {
+				t.Fatalf("Ready doesn't say it waits: %+v", ready)
+			}
+			for range 600 {
+				clk.Step(time.Second)
+				time.Sleep(2 * time.Millisecond)
+			}
+			time.Sleep(50 * time.Millisecond)
+			if n := r.starts.Load() - s0; n < 2 || n > 10 {
+				t.Fatalf("%d starts tried in ten minutes of the agent's clock: want a few, spaced by a backoff", n)
+			}
+		})
 	}
 }

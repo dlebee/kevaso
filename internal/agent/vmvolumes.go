@@ -55,6 +55,7 @@ func (a *Agent) setVolumes(ctx context.Context, rt kri.Runtime, s *v1.Silo, stat
 		return true, err
 	}
 	a.log("silo %s/%s: volumes changed, restarting it", s.Namespace, s.Name)
+	a.stoppedByUs(s.UID)
 	if err := rt.Stop(ctx, idOf(s)); err != nil {
 		return true, fmt.Errorf("stop for new volumes: %w", err)
 	}
