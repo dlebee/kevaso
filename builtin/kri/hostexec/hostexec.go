@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"kevaso.com/core/sdk/kri"
 )
@@ -39,9 +40,16 @@ type Runner interface {
 // Local runs on this machine (kevasod is root).
 type Local struct{}
 
+// WaitDelay bounds how long Run waits, once the command exited or its context ended, for its
+// output to close: a process it started that keeps the output open (a daemon it forked, a
+// grandchild a kill missed) otherwise holds Run, and the agent's reconcile, until that process
+// ends; kevasod's stop then waits for it too.
+const WaitDelay = 5 * time.Second
+
 // Run implements Runner.
 func (Local) Run(ctx context.Context, c Cmd) (int, error) {
 	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
+	cmd.WaitDelay = WaitDelay
 	cmd.Env = append([]string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"}, c.Env...)
 	if c.TTY != nil {
 		return runTTY(cmd, c)
@@ -66,6 +74,12 @@ func (Local) Run(ctx context.Context, c Cmd) (int, error) {
 		}()
 	}
 	err := cmd.Wait()
+	if errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil && cmd.ProcessState != nil {
+		err = nil // it exited; a process it left holds its output (that output is cut)
+		if code := cmd.ProcessState.ExitCode(); code != 0 {
+			return code, nil
+		}
+	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		return ee.ExitCode(), nil

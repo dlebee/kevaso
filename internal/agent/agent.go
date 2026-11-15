@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -117,6 +118,8 @@ type Agent struct {
 	Resync time.Duration
 	// ClaimRefresh, if set, replaces ClaimRefreshEvery (tests).
 	ClaimRefresh time.Duration
+	// ShutdownWait, if set, replaces ShutdownWait (tests).
+	ShutdownWait time.Duration
 	// OnEndpoints, if set, hears the control planes the agent's client may use whenever it learns
 	// more from the system nodes (the worker keeps them for its next start).
 	OnEndpoints func([]string)
@@ -156,6 +159,7 @@ type Agent struct {
 	// missing from the API (a control plane restored from an older backup, a re-made cluster) is
 	// kept, running, with its data, and listed (kept, logged once).
 	seenDeleted   sync.Map
+	inFlight      sync.Map   // engine.Key → time.Time: a reconcile under way since then (awaitReconciles)
 	deletes       deletesLog // the deletes seen whose copies may remain here, on disk (deletes.go)
 	keptNoted     sync.Map   // silo UID → what it is: kept, listed on the Host (ConditionKeptSilos)
 	engine        *engine.Engine
@@ -333,7 +337,59 @@ func (a *Agent) Run(ctx context.Context) {
 	if !a.grants.WaitSynced(ctx) || !a.secrets.WaitSynced(ctx) {
 		return
 	}
-	e.Run(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.Run(ctx)
+	}()
+	<-ctx.Done()
+	a.awaitReconciles(done)
+}
+
+// ShutdownWait is how long a stopping agent waits for the reconciles under way to end (each ends
+// at its next step: every runtime call takes the run's context). It is well inside systemd's
+// stop timeout (90s), so kevasod exits by itself, saying what it left, rather than being killed.
+// Nothing of a silo is stopped by the agent stopping: what was left is looked at again by the
+// next run (a start's claim lapses, an init step left running is stopped and runs again).
+const ShutdownWait = 30 * time.Second
+
+// awaitReconciles waits for the engine's workers (done) once the run's context ended: at most
+// ShutdownWait (Agent.ShutdownWait in tests), naming every 5s, and at the end, the reconciles
+// still under way and for how long.
+func (a *Agent) awaitReconciles(done <-chan struct{}) {
+	wait := ShutdownWait
+	if a.ShutdownWait > 0 {
+		wait = a.ShutdownWait
+	}
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	every := time.NewTicker(5 * time.Second)
+	defer every.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-every.C:
+			a.log("stopping: waiting for %s", a.underWay())
+		case <-deadline.C:
+			a.log("stopping after %s with reconciles under way (looked at again by the next run): %s", wait, a.underWay())
+			return
+		}
+	}
+}
+
+// underWay lists the reconciles in progress and how long each has run.
+func (a *Agent) underWay() string {
+	var list []string
+	a.inFlight.Range(func(k, v any) bool {
+		list = append(list, fmt.Sprintf("%s (%s)", k.(engine.Key), time.Since(v.(time.Time)).Round(time.Second)))
+		return true
+	})
+	sort.Strings(list)
+	if len(list) == 0 {
+		return "nothing (the engine's workers are ending)"
+	}
+	return strings.Join(list, ", ")
 }
 
 // ResyncEvery is how often the agent looks at every silo of its host again, events or not: a VM
@@ -383,6 +439,8 @@ func (a *Agent) collectGarbage(ctx context.Context, e *engine.Engine) {
 
 // Reconcile implements engine.Controller.
 func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
+	a.inFlight.Store(k, time.Now())
+	defer a.inFlight.Delete(k)
 	res, err := a.reconcile(ctx, k)
 	if errors.Is(err, errPlacedElsewhere) {
 		// The store places it on another host since this host's cache was filled: whatever was
