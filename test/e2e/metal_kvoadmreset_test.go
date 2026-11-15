@@ -19,7 +19,8 @@ const MetalForeignDocker = `set -e
 DEBIAN_FRONTEND=noninteractive apt-get install -y -q docker.io >/dev/null
 systemctl enable --now docker >/dev/null 2>&1
 docker volume create kvt-foreign-vol >/dev/null
-docker run -d -q --name kvt-foreign --restart unless-stopped -v kvt-foreign-vol:/data docker.io/library/busybox:1.36 sleep infinity >/dev/null`
+docker run -d -q --name kvt-foreign --restart unless-stopped -v kvt-foreign-vol:/data docker.io/library/busybox:1.36 sleep 2147483647 >/dev/null
+sleep 3; [ "$(docker inspect -f '{{.State.Running}}' kvt-foreign)" = true ]`
 
 // TestMetalKvoadmResetLeavesForeign is K-113 and K-114 (81f17a4, 16fcd62, e31b964) on one machine
 // installed with this build, Docker installed before Kevaso (KEVASO_METAL_PREINSTALL=
@@ -36,6 +37,10 @@ func TestMetalKvoadmResetLeavesForeign(t *testing.T) {
 		t.Skip("needs KEVASO_METAL_PREINSTALL=MetalForeignDocker's script")
 	}
 	c := metal(t)
+	foreign := func() string {
+		return strings.TrimSpace(c.mustSh("docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}} started={{.State.StartedAt}} finished={{.State.FinishedAt}} restarts={{.RestartCount}}' kvt-foreign 2>&1"))
+	}
+	t.Logf("the foreign container after kvoadm init: %s", foreign())
 	ns := "resetforeign"
 	c.namespace(ns)
 	c.apply(`apiVersion: kevaso/v1
@@ -83,7 +88,9 @@ spec:
 	t.Cleanup(func() {
 		_, _ = c.sh("chattr -i /var/lib/kevaso/kvt-stuck 2>/dev/null; rm -f /var/lib/kevaso/kvt-stuck; true")
 	})
+	t.Logf("the foreign container before the resets: %s", foreign())
 	cut, code := reset("--force", "--yes")
+	t.Logf("the foreign container after the cut reset: %s", foreign())
 	t.Logf("kvoadm reset with a step made to fail (exit %d):\n%s", code, cut)
 	if strings.Contains(cut, "still running") || strings.Contains(cut, "still runs") {
 		t.Errorf("refused for a silo's process named kevasod")
@@ -114,6 +121,7 @@ spec:
 		t.Errorf("kvoadm reset: exit %d", code)
 	}
 	c.expect("Docker stays", c.mustSh("dpkg-query -W -f '${Status}' docker.io 2>/dev/null | grep -c 'install ok installed' || true"), "1")
+	t.Logf("the foreign container after the reset: %s; dockerd since %s", foreign(), strings.TrimSpace(c.mustSh("systemctl show -p ActiveEnterTimestamp --value docker")))
 	c.expect("its foreign container runs", c.mustSh("docker inspect -f '{{.State.Running}}' kvt-foreign 2>&1"), "true")
 	c.expect("its foreign volume stays", c.mustSh("docker volume ls -q | grep -c '^kvt-foreign-vol$' || true"), "1")
 	c.expect("no container of Kevaso's", c.mustSh("docker ps -aq --filter label=kevaso.com/uid | wc -l; true"), "0")
