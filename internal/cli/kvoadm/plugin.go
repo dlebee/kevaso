@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/term"
 
+	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/sshboot"
 	"kevaso.com/core/sdk/kplugin"
 )
@@ -26,9 +27,12 @@ type PluginOptions struct {
 	InitOptions
 	Name   string
 	Binary string
-	Side   string            // controller (default: on a control plane, serving the API) | node (on a worker)
-	Creds  map[string]string // credential name → local file
-	Config string            // a local file: the plugin's settings (not secret)
+	Side   string // controller (default: on a control plane, serving the API) | node (on a worker)
+	// ClusterSecrets are ClusterSecret names this side's unit loads (LoadCredential=NAME).
+	// Install records the names and copies no value: kevasod writes each one, root only, at
+	// the path the unit already names. Repeatable.
+	ClusterSecrets []string
+	Config         string // a local file: the plugin's settings (not secret)
 	// Manifest is the plugin's kevaso-plugin.json (a local file): what each side needs from the
 	// host. Without one, a side gets nothing beyond the default (PluginUnit). Needs is this side's.
 	Manifest string
@@ -43,8 +47,8 @@ type PluginOptions struct {
 var pluginName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
 
 // PluginUnit is the systemd unit a plugin side runs as. By default: its own dynamic user, no
-// capabilities, read-only system, only the network and its own socket folder; its credentials (a
-// cloud token) through systemd's LoadCredential, readable by it alone. A side whose manifest asks
+// capabilities, read-only system, only the network and its own socket folder; its cluster
+// secrets through systemd's LoadCredential, readable by it alone. A side whose manifest asks
 // for more (o.Needs: root, capabilities, devices, the host's mount namespace, folders to write)
 // gets exactly that and keeps every other restriction that still applies. The needs are checked
 // again here, where they are granted, whatever produced them (K-039).
@@ -77,10 +81,7 @@ func PluginUnit(o PluginOptions) (string, error) {
 	w("RuntimeDirectory=%s/%s", strings.TrimPrefix(kplugin.Dir, "/run/"), o.Name)
 	w("RuntimeDirectoryMode=0750")
 	w("RuntimeDirectoryPreserve=yes")
-	names := make([]string, 0, len(o.Creds))
-	for n := range o.Creds {
-		names = append(names, n)
-	}
+	names := append([]string(nil), o.ClusterSecrets...)
 	sort.Strings(names)
 	for _, n := range names {
 		w("LoadCredential=%s:%s/%s", n, pluginEtc(o.Name), n)
@@ -296,7 +297,7 @@ func (o PluginOptions) side() string {
 func pluginEtc(name string) string { return "/etc/kevaso/plugins/" + name }
 
 func parsePlugin(args []string, needBinary bool) (PluginOptions, error) {
-	o := PluginOptions{InitOptions: InitOptions{SSHPort: 22}, Creds: map[string]string{}}
+	o := PluginOptions{InitOptions: InitOptions{SSHPort: 22}}
 	var target string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -322,13 +323,16 @@ func parsePlugin(args []string, needBinary bool) (PluginOptions, error) {
 		case "--yes":
 			o.Yes = true
 		case "--credential":
+			return o, errors.New("--credential was removed: pass --cluster-secret NAME (repeatable); kevasod fetches the value, and the plugin still reads it from its credential directory")
+		case "--cluster-secret":
 			var v string
 			if v, err = next(); err == nil {
-				n, f, ok := strings.Cut(v, "=")
-				if !ok || !regexp.MustCompile(`^[a-z][a-z0-9_-]*$`).MatchString(n) || f == "" {
-					return o, fmt.Errorf("--credential %q: want NAME=FILE (the value is read from FILE, never given on the command line)", v)
+				if !plugins.ValidClusterSecretName(v) {
+					return o, fmt.Errorf("--cluster-secret %q: a lower-case name (letters, digits, - and _), not a file and not config", v)
 				}
-				o.Creds[n] = f
+				if !slices.Contains(o.ClusterSecrets, v) {
+					o.ClusterSecrets = append(o.ClusterSecrets, v)
+				}
 			}
 		case "--ssh-key":
 			o.SSHKey, err = next()
@@ -380,7 +384,7 @@ func parsePlugin(args []string, needBinary bool) (PluginOptions, error) {
 // pluginCmd: kvoadm plugin install | remove.
 func pluginCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	usage := errors.New(`usage:
-  kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--credential NAME=FILE]… [--config FILE] [--side controller|node] [--manifest kevaso-plugin.json [--yes]]
+  kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--cluster-secret NAME]… [--config FILE] [--side controller|node] [--manifest kevaso-plugin.json [--yes]]
   kvoadm plugin remove [USER@]ADDRESS --name NAME [--side controller|node]
   kvoadm plugin install [USER@]ADDRESS --package DIR [--binary PATH] [--api-server URL] [--adopt] [--yes]
   kvoadm plugin uninstall NAME [--force]
@@ -428,13 +432,9 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 	if err != nil {
 		return err
 	}
-	creds := map[string][]byte{}
-	for n, f := range o.Creds {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			return fmt.Errorf("--credential %s: %w", n, err)
-		}
-		creds[n] = []byte(strings.TrimSpace(string(b)))
+	secretPath, secretRec, secretMode, err := clusterSecretUpload(o)
+	if err != nil {
+		return err
 	}
 	var cfg []byte
 	if o.Config != "" {
@@ -470,16 +470,11 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 			}
 		}
 	}
-	names := make([]string, 0, len(creds))
-	for n := range creds {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		if err := conn.Upload(ctx, pluginEtc(o.Name)+"/"+n, creds[n], 0o600); err != nil {
+	if secretRec != nil {
+		if err := conn.Upload(ctx, secretPath, secretRec, uint32(secretMode)); err != nil {
 			return err
 		}
-		say("credential %s stored on the host (root only; the plugin reads it through systemd)", n)
+		say("cluster secrets %s recorded (kevasod writes each value, root only; the plugin reads it through systemd)", strings.Join(o.ClusterSecrets, ", "))
 	}
 	if cfg != nil {
 		if err := conn.Upload(ctx, pluginEtc(o.Name)+"/config.json", cfg, 0o644); err != nil {
@@ -493,6 +488,18 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 	}
 	unit := PluginUnitName(o.Name, o.side())
 	since, _ := conn.Run(ctx, "date +%s", nil) // kevasod's word on it is looked for from here on
+	// A unit whose LoadCredential file is not there yet cannot start. kevasod writes the
+	// value and restarts the unit; enable it now and don't wait for it to be active.
+	if secretRec != nil {
+		if err := conn.Upload(ctx, "/etc/systemd/system/"+unit, []byte(unitText), 0o644); err != nil {
+			return err
+		}
+		if _, err := conn.Run(ctx, "systemctl daemon-reload && systemctl enable "+sshboot.Quote(unit), nil); err != nil {
+			return err
+		}
+		say("plugin %s recorded; kevasod writes its cluster secrets and starts %s", o.Name, unit)
+		return nil
+	}
 	if err := conn.InstallUnit(ctx, unit, []byte(unitText)); err != nil {
 		return err
 	}
@@ -565,7 +572,28 @@ func PluginRemoveScript(name, side string) string {
 		other = "controller"
 	}
 	unit := sshboot.Quote(PluginUnitName(name, side))
-	return "systemctl disable --now " + unit + " 2>/dev/null; rm -f /etc/systemd/system/" + unit + "; systemctl daemon-reload; " +
+	rec := plugins.ClusterSecretsFile
+	if side == "node" {
+		rec = plugins.ClusterSecretsNodeFile
+	}
+	return "systemctl disable --now " + unit + " 2>/dev/null; rm -f /etc/systemd/system/" + unit + " " +
+		sshboot.Quote(pluginEtc(name)+"/"+rec) + "; systemctl daemon-reload; " +
 		"if [ ! -e /etc/systemd/system/" + sshboot.Quote(PluginUnitName(name, other)) + " ]; then rm -f " +
 		sshboot.InstallDir + "/" + sshboot.Quote("kevaso-plugin-"+name) + "; rm -rf " + sshboot.Quote(pluginEtc(name)) + "; fi"
+}
+
+// clusterSecretUpload is the root-only record of this side's cluster-secret names, beside
+// the credential files the unit's LoadCredential lines name. kevasod reads it. The record
+// holds names only.
+func clusterSecretUpload(o PluginOptions) (path string, data []byte, mode os.FileMode, err error) {
+	if len(o.ClusterSecrets) == 0 {
+		return "", nil, 0, nil
+	}
+	names := append([]string(nil), o.ClusterSecrets...)
+	sort.Strings(names)
+	data, err = plugins.EncodeClusterSecrets(names)
+	if err != nil {
+		return "", nil, 0, err
+	}
+	return plugins.ClusterSecretsPath(plugins.DefaultManifests, o.Name, o.side()), data, 0o600, nil
 }

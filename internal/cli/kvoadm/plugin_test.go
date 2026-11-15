@@ -2,16 +2,18 @@ package kvoadm
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/sdk/kplugin"
 )
 
 func TestPluginUnit(t *testing.T) {
-	u := mustUnit(t, PluginOptions{Name: "linode", Creds: map[string]string{"token": "/x"}, Config: "c.json"})
+	u := mustUnit(t, PluginOptions{Name: "linode", ClusterSecrets: []string{"token"}, Config: "c.json"})
 	for _, want := range []string{
 		"ExecStart=/usr/local/bin/kevaso-plugin-linode serve --socket /run/kevaso-plugins/linode/plugin.sock --config %d/config",
 		"DynamicUser=yes", "RuntimeDirectory=kevaso-plugins/linode\n", "RuntimeDirectoryPreserve=yes",
@@ -34,8 +36,70 @@ func TestPluginUnit(t *testing.T) {
 	if strings.Contains(n, "LoadCredential") || strings.Contains(n, "KillMode") {
 		t.Errorf("node side unit:\n%s", n)
 	}
-	if _, err := parsePlugin([]string{"root@h", "--name", "linode", "--binary", "b", "--credential", "token"}, true); err == nil {
-		t.Error("a credential without a file")
+	if _, err := parsePlugin([]string{"root@h", "--name", "linode", "--binary", "b", "--credential", "token=/tmp/token"}, true); err == nil {
+		t.Error("--credential is still accepted")
+	}
+}
+
+// --credential is refused, and --cluster-secret records the names the unit loads. The record
+// is names only, at the path kevasod reads, mode 0600.
+func TestPluginInstallRecordsClusterSecrets(t *testing.T) {
+	if _, err := parsePlugin([]string{"root@h", "--name", "linode", "--binary", "b", "--credential", "token=/tmp/token"}, true); err == nil || !strings.Contains(err.Error(), "--cluster-secret") {
+		t.Fatalf("--credential: %v", err)
+	}
+	for _, bad := range []string{"Token", "token=/tmp/token", "config", "../x", ""} {
+		args := []string{"root@h", "--name", "linode", "--binary", "b", "--cluster-secret", bad}
+		if bad == "" {
+			args = []string{"root@h", "--name", "linode", "--binary", "b", "--cluster-secret"}
+		}
+		if _, err := parsePlugin(args, true); err == nil {
+			t.Errorf("--cluster-secret %q accepted", bad)
+		}
+	}
+	o, err := parsePlugin([]string{"root@h", "--name", "linode", "--binary", "b", "--cluster-secret", "metering", "--cluster-secret", "token", "--cluster-secret", "token"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(o.ClusterSecrets, ",") != "metering,token" {
+		t.Fatalf("recorded names %v", o.ClusterSecrets)
+	}
+	u := mustUnit(t, o)
+	for _, want := range []string{
+		"LoadCredential=metering:/etc/kevaso/plugins/linode/metering",
+		"LoadCredential=token:/etc/kevaso/plugins/linode/token",
+	} {
+		if !strings.Contains(u, want) {
+			t.Errorf("unit lacks %q:\n%s", want, u)
+		}
+	}
+	path, data, mode, err := clusterSecretUpload(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "/etc/kevaso/plugins/linode/cluster-secrets.json" || mode != 0o600 {
+		t.Fatalf("record %s mode %o", path, mode)
+	}
+	var rec struct {
+		Names []string `json:"names"`
+	}
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(rec.Names, ",") != "metering,token" {
+		t.Fatalf("record names %v", rec.Names)
+	}
+	if bytes.Contains(data, []byte("/tmp")) || bytes.Contains(data, []byte("value")) {
+		t.Fatalf("the record holds more than names: %s", data)
+	}
+	node := o
+	node.Side = "node"
+	npath, _, _, err := clusterSecretUpload(node)
+	if err != nil || npath != "/etc/kevaso/plugins/linode/"+plugins.ClusterSecretsNodeFile {
+		t.Fatalf("node record %s %v", npath, err)
+	}
+	rm := PluginRemoveScript("linode", "node")
+	if !strings.Contains(rm, "rm -f /etc/systemd/system/'kevaso-plugin-linode-node.service' '/etc/kevaso/plugins/linode/cluster-secrets-node.json'") {
+		t.Fatalf("removing the node side leaves its cluster-secret names: %s", rm)
 	}
 }
 
