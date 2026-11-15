@@ -66,10 +66,7 @@ func TestPortLeaseOnPluginLoadBalancer(t *testing.T) {
 	if err := admin.Create(ctx, h); err != nil {
 		t.Fatal(err)
 	}
-	ready(h)
-	if err := admin.UpdateStatus(ctx, h); err != nil {
-		t.Fatal(err)
-	}
+	writeHostStatus(ctx, t, admin, h, ready)
 	go func() { // the worker's heartbeat
 		for ctx.Err() == nil {
 			var h v1.Host
@@ -170,10 +167,7 @@ func TestLeaseSourcesOnPluginLoadBalancer(t *testing.T) {
 	if err := admin.Create(ctx, h); err != nil {
 		t.Fatal(err)
 	}
-	ready(h)
-	if err := admin.UpdateStatus(ctx, h); err != nil {
-		t.Fatal(err)
-	}
+	writeHostStatus(ctx, t, admin, h, ready)
 	go func() {
 		for ctx.Err() == nil {
 			var h v1.Host

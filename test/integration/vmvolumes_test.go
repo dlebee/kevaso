@@ -73,10 +73,7 @@ func TestVMVolumesFollowTheSilo(t *testing.T) {
 		if err := admin.Create(ctx, h); err != nil {
 			t.Fatal(err)
 		}
-		heartbeat(h)
-		if err := admin.UpdateStatus(ctx, h); err != nil {
-			t.Fatal(err)
-		}
+		writeHostStatus(ctx, t, admin, h, heartbeat)
 		rt := fake.NewVM()
 		runtimes[name] = rt
 		a := &agent.Agent{Client: admin, HostName: name, Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{},
