@@ -553,13 +553,18 @@ left=$(awk '{print $2}' /proc/mounts | grep -E '`+mountPattern+`')
 	}
 	// Never into another file system (a volume still mounted there), and not at all while
 	// anything under these paths is mounted (K-022).
-	// The install record (RecordDir) is not among them: it goes last (RecordStep), so a reset cut
-	// short can be run again with it (K-114).
+	// The install record (RecordDir, including hostpkg's installed list) is not among them: it
+	// goes last (RecordStep), and only when every earlier step succeeded. rm's own status is the
+	// step's: daemon-reload and reset-failed still run, and neither may hide a failed removal
+	// (K-114: with the record gone, the next reset finds nothing to undo).
 	destroys("remove Kevaso's files", `if awk '{print $2}' /proc/mounts | grep -qE '`+mountPattern+`'; then echo "something is still mounted under Kevaso's paths: not removing them" >&2; exit 1; fi
 set --
 for f in `+strings.Join(files, " ")+`; do [ "$f" = `+RecordDir+` ] || set -- "$@" "$f"; done
 rm -rf --one-file-system "$@"
-systemctl daemon-reload; systemctl reset-failed; true`)
+rc=$?
+systemctl daemon-reload || true
+systemctl reset-failed || true
+exit $rc`)
 	add("remove the tests' /etc/hosts lines", `sed -i '/`+HostsMarker+`$/d' /etc/hosts`)
 	// OpenShell's gateway users (kvos-*) leave docker or kvm with userdel; their own groups go too.
 	add("remove kevaso-* users, and OpenShell's "+openshell.UserPrefix+"* users", `for u in $(awk -F: '$1 ~ /^(kevaso-|`+openshell.UserPrefix+`)/ {print $1}' /etc/passwd); do userdel "$u"; done

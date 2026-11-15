@@ -152,7 +152,7 @@ func runReset(ctx context.Context, h hostRunner, o ResetOptions, in *bufio.Reade
 	}
 	for _, s := range plan {
 		if s.Name == hostreset.RecordStep && len(failed) > 0 {
-			_, _ = fmt.Fprintf(out, "- %s: kept, since a step failed: run kvoadm reset again once it is fixed\n", s.Name)
+			_, _ = fmt.Fprintf(out, "- %s: kept, since a step failed, so the next reset knows what to clean. Run kvoadm reset again once it is fixed\n", s.Name)
 			continue
 		}
 		// Right before each step that removes a silo's data: kevasod and its fence still don't

@@ -58,6 +58,8 @@ case "$name $*" in
   "systemctl list-units"*)            : ;;
   "vgs "*)                            exit "${STUB_VG_EXIT:-0}" ;;
 esac
+if [ "$name" = rm ] && [ -n "${STUB_RM_EXIT:-}" ]; then exit "$STUB_RM_EXIT"; fi
+if [ "$name" = systemctl ] && [ -n "${STUB_SYSTEMCTL_EXIT:-}" ]; then exit "$STUB_SYSTEMCTL_EXIT"; fi
 exit 0
 `
 
@@ -230,6 +232,36 @@ func TestAPodmanThatIsKevasosIsEmptiedAll(t *testing.T) {
 	r, _ := runStep(t, PlanInput{PodmanOurs: true}, "remove podman's containers")
 	if !strings.Contains(r.text(), "podman rm -af") {
 		t.Fatalf("Kevaso's own podman was not emptied (the control for the test above): %s", r.text())
+	}
+}
+
+// A failed rm must fail the step. A trailing "true" used to hide it, the step showed success,
+// and the reset then deleted the install record (K-114), so the next reset had nothing to undo.
+// daemon-reload and reset-failed still run, and their failure does not replace rm's status.
+func TestAFailedRemovalOfKevasosFilesFailsTheStep(t *testing.T) {
+	script := Plan(PlanInput{})[stepIndex(t, Plan(PlanInput{}), "remove Kevaso's files")].Script
+	if strings.Contains(script, "; true") {
+		t.Fatalf("the files step hides rm's status:\n%s", script)
+	}
+	r, err := runStep(t, PlanInput{}, "remove Kevaso's files", "STUB_RM_EXIT=1")
+	if err == nil {
+		t.Fatal("rm failed and the files step still succeeded, so the reset would delete the install record")
+	}
+	rmAt := strings.Index(r.text(), "\nrm ")
+	if rmAt < 0 {
+		rmAt = strings.Index(r.text(), "rm ")
+	}
+	reloadAt := strings.Index(r.text(), "systemctl daemon-reload")
+	resetAt := strings.Index(r.text(), "systemctl reset-failed")
+	if rmAt < 0 || reloadAt < rmAt || resetAt < reloadAt {
+		t.Fatalf("daemon-reload and reset-failed must still run after a failed rm:\n%s", r.text())
+	}
+	r, err = runStep(t, PlanInput{}, "remove Kevaso's files", "STUB_SYSTEMCTL_EXIT=1")
+	if err != nil {
+		t.Fatalf("systemctl failed after a successful rm and the step failed with it: %v\n%s", err, r.text())
+	}
+	if !strings.Contains(r.text(), "systemctl daemon-reload") || !strings.Contains(r.text(), "systemctl reset-failed") {
+		t.Fatalf("a failing systemctl was not run:\n%s", r.text())
 	}
 }
 
