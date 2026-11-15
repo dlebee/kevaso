@@ -54,6 +54,14 @@ func workerArgs(o InitOptions) []string {
 	for _, r := range rts {
 		args = append(args, "--runtime", r)
 	}
+	return append(args, workerHostArgs(o)...)
+}
+
+// workerHostArgs are the worker settings init writes for a system node and host add writes for a
+// worker-only host: storage, the egress CA, and the OpenShell gateway scope. One list, so the two
+// units can't drift.
+func workerHostArgs(o InitOptions) []string {
+	var args []string
 	if o.LoopStorage != "" {
 		args = append(args, "--loop-storage", "/var/lib/kevaso-storage.img", "--loop-size", o.LoopStorage)
 	}

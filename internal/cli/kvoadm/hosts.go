@@ -118,12 +118,7 @@ func WorkerUnit(o HostAddOptions, server string) string {
 	if len(o.Runtimes) == 0 {
 		args = append(args, "--runtime", "none")
 	}
-	if o.LoopStorage != "" {
-		args = append(args, "--loop-storage", "/var/lib/kevaso-storage.img", "--loop-size", o.LoopStorage)
-	}
-	if o.StorageDevice != "" {
-		args = append(args, "--storage-device", o.StorageDevice)
-	}
+	args = append(args, workerHostArgs(o.InitOptions)...)
 	return `[Unit]
 Description=Kevaso worker (kevasod)
 After=network-online.target
