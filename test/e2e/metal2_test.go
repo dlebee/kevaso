@@ -375,6 +375,17 @@ func buildKevasod(ctx context.Context, arch string) (string, error) {
 }
 
 // hostNamed reads a Host.
+// hostReady says whether a host is Ready, for eventually: an API that doesn't answer this once
+// (a TLS handshake timing out over the internet) is a "not yet", not a failure.
+func (c *mt) hostReady(name string) (bool, string) {
+	out, code := c.kvo("", "get", "host", name, "-o", "json")
+	var h v1.Host
+	if code != 0 || json.Unmarshal([]byte(out), &h) != nil {
+		return false, out
+	}
+	return hostIs(h, "Ready"), fmt.Sprint(h.Status.Conditions)
+}
+
 func (c *mt) hostNamed(name string) *v1.Host {
 	c.t.Helper()
 	var h v1.Host

@@ -247,8 +247,9 @@ func TestMetal2Fence(t *testing.T) {
 	c.eventually("both Stop silos stop on machine 2", fence.WorstStopped(30*time.Second)+30*time.Second, func() (bool, string) {
 		return !running(p.c2, uids["stops"]) && !running(p.c2, uids["restarts"]), "still running"
 	})
-	if d := time.Since(cutAt); d < 30*time.Second {
-		t.Errorf("the Stop silos stopped %s into the cut, before their after (30s)", d.Round(time.Second))
+	// The agent counts from the last heartbeat it sent: up to one period before the cut.
+	if d := time.Since(cutAt); d < 30*time.Second-worker.DefaultHeartbeat {
+		t.Errorf("the Stop silos stopped %s into the cut, before their after (30s, less a heartbeat)", d.Round(time.Second))
 	}
 	c.eventually("the control plane starts the Stop + Recreate silo on machine 1", 5*time.Minute, func() (bool, string) {
 		s := c.silo(ns, "restarts")
@@ -289,8 +290,7 @@ func TestMetal2Fence(t *testing.T) {
 	p.uncut()
 	t.Log("the cut lifted")
 	c.eventually(metalHost2+" is Ready again", 5*time.Minute, func() (bool, string) {
-		h := c.hostNamed(metalHost2)
-		return hostIs(*h, "Ready"), fmt.Sprint(h.Status.Conditions)
+		return c.hostReady(metalHost2)
 	})
 	c.eventually("machine 2 starts the waiting Stop silo again and keeps no copy of what moved", 5*time.Minute, func() (bool, string) {
 		return running(p.c2, uids["stops"]) && !running(p.c2, uids["rescue"]) && !running(p.c2, uids["restarts"]), "not yet"
@@ -356,8 +356,7 @@ func TestMetal2HostLoss(t *testing.T) {
 		return strings.TrimSpace(out) != boot, out
 	})
 	c.eventually(metalHost2+" is Ready again", 10*time.Minute, func() (bool, string) {
-		h := c.hostNamed(metalHost2)
-		return hostIs(*h, "Ready"), fmt.Sprint(h.Status.Conditions)
+		return c.hostReady(metalHost2)
 	})
 	c.waitRunning(ns, 15*time.Minute, "stay", "vm", "moves")
 	for _, n := range []string{"stay", "vm", "moves"} {
@@ -371,7 +370,8 @@ func TestMetal2HostLoss(t *testing.T) {
 		return code == 0 && out == marker, out
 	})
 	c.eventually("the Recreate silo runs on machine 2, one copy", 5*time.Minute, func() (bool, string) {
-		out, _ := p.c2.sh("docker ps -q --filter label=kevaso.com/uid=" + movesUID)
+		// Its own container (the pause container, which holds its network, is not a copy).
+		out, _ := p.c2.sh("docker ps -q --filter label=kevaso.com/uid=" + movesUID + " --filter label=kevaso.com/name")
 		return len(strings.Fields(out)) == 1, out
 	})
 }
@@ -536,8 +536,7 @@ func TestMetal2KeptWhenMissing(t *testing.T) {
 	c.must("", "delete", "silo", "db", "-n", ns)
 	p.c2.mustSh("systemctl start kevasod")
 	c.eventually(metalHost2+" is Ready again", 5*time.Minute, func() (bool, string) {
-		h := c.hostNamed(metalHost2)
-		return hostIs(*h, "Ready"), fmt.Sprint(h.Status.Conditions)
+		return c.hostReady(metalHost2)
 	})
 	c.holds("the silo the worker never saw deleted keeps its disk and volume, and runs", 60*time.Second, func() (bool, string) {
 		active, _ := p.c2.sh("systemctl is-active " + n.Unit)
