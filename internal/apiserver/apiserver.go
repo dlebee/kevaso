@@ -729,6 +729,10 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		writeErr(w, err)
 		return
 	}
+	if err := s.checkDeleteNamespace(ctx, t); err != nil {
+		writeErr(w, err)
+		return
+	}
 	for attempt := 0; attempt < 5; attempt++ {
 		cur, err := s.store.Get(ctx, t.key())
 		if err != nil {
