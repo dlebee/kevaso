@@ -14,7 +14,9 @@ import (
 // on it (RestartPreventExitStatus); on the Linodes a wiped system node was restarted every 2 s for
 // ever (43 restarts in 90 s). Any other exit stays restarted (Restart=always).
 func TestControlPlaneUnitsDontRestartARefusedStart(t *testing.T) {
-	t.Skip("host lane to fix: add RestartPreventExitStatus=" + strconv.Itoa(controlplane.ExitRefused) + " to Unit and SystemNodeUnit; see control-4.md")
+	if exitRefused != controlplane.ExitRefused {
+		t.Fatalf("kvoadm's exitRefused %d isn't kevasod's controlplane.ExitRefused %d", exitRefused, controlplane.ExitRefused)
+	}
 	want := "RestartPreventExitStatus=" + strconv.Itoa(controlplane.ExitRefused)
 	units := map[string]string{
 		"kvoadm init": Unit(InitOptions{Name: "cp-1", Address: "10.0.0.1", InternalIP: "10.0.0.1", Cluster: "c"}),
