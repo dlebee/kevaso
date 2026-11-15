@@ -484,3 +484,186 @@ func TestClusterSecretIsNotANamespacedSecret(t *testing.T) {
 		t.Fatalf("grant resolved something other than the namespaced signing key: %v", err)
 	}
 }
+
+func wantReserved(t *testing.T, err error, what string) {
+	t.Helper()
+	if status(err) != http.StatusForbidden || !strings.Contains(err.Error(), "is reserved") || !strings.Contains(err.Error(), "cluster-admin") {
+		t.Fatalf("%s: want 403 reserved for a cluster-admin, got %v", what, err)
+	}
+	if strings.Contains(err.Error(), "ask one of them") {
+		t.Fatalf("%s: the refusal points at a namespace admin: %v", what, err)
+	}
+}
+
+func roleBind(ns, name, role, user string) *v1.RoleBinding {
+	return &v1.RoleBinding{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "RoleBinding"},
+		ObjectMeta: meta.ObjectMeta{Name: name, Namespace: ns},
+		RoleRef:    v1.RoleRef{Kind: "ClusterRole", Name: role},
+		Subjects:   []v1.Subject{{Kind: "User", Name: user}}}
+}
+
+// kevaso-system is reserved. A namespace admin bound there by a cluster-admin still cannot mint
+// a token for plugin-juicefs or create a RoleBinding (or a Secret, or change the account), and
+// someone RBAC allows to delete namespaces still cannot delete it. A cluster-admin can. A host's
+// ?for= read keeps working. A RoleBinding in another namespace does not reach this one: get is
+// still RBAC, and that binding only applies in its own namespace.
+//
+// Without the reservation, the admin's token and RoleBinding succeed (the built-in admin role
+// grants both), a cluster-wide binding that is not cluster-admin mints the token, a control-plane
+// host certificate mints it, and deleting the namespace is not this 403.
+func TestKevasoSystemReservedForClusterAdmin(t *testing.T) {
+	c := newCluster(t)
+	sys := v1.PluginNamespace
+	juice := operators.ServiceAccountName("juicefs")
+	if err := c.admin.Create(c.ctx, ns(sys)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, ns("web3")); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, &v1.ServiceAccount{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ServiceAccount"},
+		ObjectMeta: meta.ObjectMeta{Name: juice, Namespace: sys}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, &v1.ServiceAccount{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ServiceAccount"},
+		ObjectMeta: meta.ObjectMeta{Name: "helper", Namespace: "web3"}}); err != nil {
+		t.Fatal(err)
+	}
+	// The namespace admin, bound in kevaso-system by the admin socket. The same role in web3
+	// must not reach kevaso-system.
+	if err := c.admin.Create(c.ctx, roleBind(sys, "ada", "admin", "ada")); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, roleBind("web3", "bob", "admin", "bob")); err != nil {
+		t.Fatal(err)
+	}
+	// Not a cluster-admin: create on the token and on role bindings, in every namespace.
+	if err := c.admin.Create(c.ctx, clusterRole("sys-tokens",
+		v1.PolicyRule{Verbs: []string{"get"}, Resources: []string{"serviceaccounts"}},
+		v1.PolicyRule{Verbs: []string{"create"}, Resources: []string{"serviceaccounts/token", "rolebindings"}},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, clusterBind("erin-tokens", "sys-tokens", v1.Subject{Kind: "User", Name: "erin"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, clusterRole("ns-delete", v1.PolicyRule{Verbs: []string{"get", "delete"}, Resources: []string{"namespaces"}})); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, clusterBind("cara-ns", "ns-delete", v1.Subject{Kind: "User", Name: "cara"})); err != nil {
+		t.Fatal(err)
+	}
+	// A cluster-admin by Policy.ClusterAdmin: the role, bound cluster-wide, not a certificate
+	// whose role field says cluster-admin, and not the admin socket.
+	if err := c.admin.Create(c.ctx, clusterBind("ops-admin", "cluster-admin", v1.Subject{Kind: "User", Name: "ops"})); err != nil {
+		t.Fatal(err)
+	}
+
+	ada, doneAda := c.asUser(t, "ada")
+	defer doneAda()
+	bob, doneBob := c.asUser(t, "bob")
+	defer doneBob()
+	erin, doneErin := c.asUser(t, "erin")
+	defer doneErin()
+	cara, doneCara := c.asUser(t, "cara")
+	defer doneCara()
+	ops, doneOps := c.asUser(t, "ops")
+	defer doneOps()
+
+	tokPath, err := client.Path("ServiceAccount", sys, juice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokPath += "/token"
+	mint := func(cl *client.Client) (client.TokenResponse, error) {
+		var tok client.TokenResponse
+		err := cl.Call(c.ctx, http.MethodPost, tokPath, client.TokenRequest{}, &tok)
+		return tok, err
+	}
+
+	// Reads stay with RBAC, and this get is what shows the binding is real: without it the
+	// refusals below would be "no role", which they already are today.
+	if err := ada.Get(c.ctx, "ServiceAccount", sys, juice, &v1.ServiceAccount{}); err != nil {
+		t.Fatalf("namespace admin get: %v", err)
+	}
+	if err := bob.Get(c.ctx, "ServiceAccount", "web3", "helper", &v1.ServiceAccount{}); err != nil {
+		t.Fatalf("admin of web3 get in web3: %v", err)
+	}
+	if err := bob.Get(c.ctx, "ServiceAccount", sys, juice, &v1.ServiceAccount{}); status(err) != http.StatusForbidden || strings.Contains(err.Error(), "is reserved") {
+		t.Fatalf("RoleBinding in web3 get in %s: want RBAC 403, got %v", sys, err)
+	}
+	if _, err := mint(bob); status(err) != http.StatusForbidden {
+		t.Fatalf("RoleBinding in web3 minting a token in %s: want 403, got %v", sys, err)
+	}
+
+	if tok, err := mint(ada); status(err) != http.StatusForbidden || tok.Token != "" {
+		t.Fatalf("namespace admin minting %s: want 403 and no token, got %v %q", juice, err, tok.Token)
+	} else {
+		wantReserved(t, err, "namespace admin minting a token")
+	}
+	wantReserved(t, ada.Create(c.ctx, roleBind(sys, "more-admins", "admin", "mallory")), "namespace admin RoleBinding")
+	sec := secretObj("note", nil, "not-for-ada")
+	sec.Namespace = sys
+	wantReserved(t, ada.Create(c.ctx, sec), "namespace admin Secret")
+	var got v1.ServiceAccount
+	if err := ada.Get(c.ctx, "ServiceAccount", sys, juice, &got); err != nil {
+		t.Fatal(err)
+	}
+	got.Labels = map[string]string{"try": "change"}
+	wantReserved(t, ada.Update(c.ctx, &got), "namespace admin update")
+
+	if err := erin.Get(c.ctx, "ServiceAccount", sys, juice, &v1.ServiceAccount{}); err != nil {
+		t.Fatalf("cluster-wide get: %v", err)
+	}
+	if tok, err := mint(erin); status(err) != http.StatusForbidden || tok.Token != "" {
+		t.Fatalf("cluster-wide token grant: want 403 and no token, got %v %q", err, tok.Token)
+	} else {
+		wantReserved(t, err, "cluster-wide token grant")
+	}
+
+	cp, doneCP := c.asHost(t, "cp-reserve", "control-plane")
+	defer doneCP()
+	if tok, err := mint(cp); status(err) != http.StatusForbidden || tok.Token != "" {
+		t.Fatalf("control-plane host minting a token: want 403 and no token, got %v %q", err, tok.Token)
+	} else {
+		wantReserved(t, err, "control-plane host")
+	}
+
+	if err := c.admin.Create(c.ctx, ns("scratch")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cara.Delete(c.ctx, "Namespace", "", "scratch"); err != nil {
+		t.Fatalf("deleting an ordinary namespace: %v", err)
+	}
+	wantReserved(t, cara.Delete(c.ctx, "Namespace", "", sys), "deleting "+sys)
+	if err := c.admin.Get(c.ctx, "Namespace", "", sys, &v1.Namespace{}); err != nil {
+		t.Fatalf("namespace gone: %v", err)
+	}
+
+	if tok, err := mint(ops); err != nil || tok.Token == "" {
+		t.Fatalf("cluster-admin token: %v %q", err, tok.Token)
+	}
+	if err := ops.Create(c.ctx, roleBind(sys, "from-ops", "viewer", "mallory")); err != nil {
+		t.Fatalf("cluster-admin RoleBinding: %v", err)
+	}
+	if tok, err := mint(c.admin); err != nil || tok.Token == "" {
+		t.Fatalf("admin socket token: %v %q", err, tok.Token)
+	}
+
+	if err := c.admin.Create(c.ctx, clusterSecret("bucket", "bucket-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, clusterRole("juicefs-secrets", v1.PolicyRule{
+		Verbs: []string{"get"}, Resources: []string{"clustersecrets/value"}, ResourceNames: []string{"bucket"},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, clusterBind("juicefs-secrets", "juicefs-secrets", saSubject(sys, juice))); err != nil {
+		t.Fatal(err)
+	}
+	hv := c.workerCert(t, "hv-reserve")
+	v, err := c.readClusterValue(t, hv, "bucket", "for=juicefs")
+	if err != nil || string(v.Value) != "bucket-bytes" {
+		t.Fatalf("host ?for=juicefs: %q %v", v.Value, err)
+	}
+}

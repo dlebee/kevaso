@@ -39,6 +39,12 @@ status:
   `GET .../clustersecrets/NAME/value?for=PLUGIN` with a host certificate (worker or system node). PLUGIN is a DNS
   label. Allowed only if the service account `plugin-PLUGIN` in namespace `kevaso-system` would itself be allowed to
   read NAME by the rule above. There is no Plugin object in this check. The host has no ClusterSecret access of its own.
+- **Namespace `kevaso-system` is reserved.** A person or a service account may create, update or delete any object
+  in it — service accounts, roles, role bindings, secrets, `serviceaccounts/token`, and everything else — or delete
+  the namespace, only as a cluster-admin (`rbac.Policy.ClusterAdmin`, or the admin socket). Anyone else gets 403,
+  whatever their roles or bindings say. A RoleBinding in another namespace does not apply: a namespaced binding
+  reaches only its own namespace. get and list stay with RBAC. kevasod's own controllers, and a worker writing a
+  status it may already write, are not these callers.
 - No namespaced object may reference a ClusterSecret (grants' secrets, container pull secretRef).
 
 ## Delivery to plugins on a host
