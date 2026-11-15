@@ -207,7 +207,9 @@ func TestLosingAHost(t *testing.T) {
 	// The person: w1 is off, recreate stateless on w2.
 	var moved v1.Silo
 	if err := admin.Call(ctx, http.MethodPost, "/apis/kevaso/v1/namespaces/demo/silos/stateless/move",
-		moves.Request{To: "w2", Recreate: true, ConfirmFenced: true}, &moved); err != nil {
+		// w1 started it a moment before going dark: its start claim is fresh, so the move needs
+		// insist too (the person knows w1 is off: it was stopped).
+		moves.Request{To: "w2", Recreate: true, ConfirmFenced: true, Insist: true}, &moved); err != nil {
 		t.Fatal(err)
 	}
 	waitSilo(t, ctx, admin, "stateless", func(s *v1.Silo) bool { return s.Status.Phase == "Running" && s.Status.Host == "w2" })
