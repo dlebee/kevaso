@@ -192,6 +192,15 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		}
 	}
 	n := NamesFor(spec.ID)
+	// A root volume that is there with no state of its own is a disk of an earlier copy of this
+	// silo (its state lost): data whose owner can't be proven from here. Never made over (review
+	// claim B): it is kept, and the silo isn't made until a person decides.
+	if spec.DiskHostPath == "" && r.lvExists(ctx, n.LV) {
+		if _, ok, _ := r.readState(spec.ID); !ok {
+			return fmt.Errorf("%s: root volume %s/%s is there with no state of this host's (%s/silo.json): not making the silo over it; "+
+				"keep it (restore silo.json) or remove it yourself (lvremove %s/%s) to start afresh", spec.ID, VG, n.LV, n.Dir, VG, n.LV)
+		}
+	}
 	IPMu.Lock() // container silos share the bridge and its addresses: until the state is saved
 	ipLocked := true
 	unlockIP := func() {
@@ -429,6 +438,9 @@ func (r *Runtime) deleteLocked(ctx context.Context, id kri.ID) error {
 func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, size int64, fresh bool) error {
 	if l.RootFile == "" {
 		if r.lvExists(ctx, n.LV) {
+			if !fresh {
+				return fmt.Errorf("root volume %s/%s is there already: only a reset makes it afresh", VG, n.LV)
+			}
 			if err := r.run(ctx, "lvremove", "-q", "-y", VG+"/"+n.LV); err != nil {
 				return err
 			}
