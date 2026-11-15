@@ -417,6 +417,19 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			}
 			kv(0, "Expires", note)
 		}
+	case *v1.ClusterSecret:
+		kv(0, "Description", dash(o.Spec.Description))
+		kv(0, "Plugins", dash(strings.Join(o.Spec.Plugins, ", ")))
+		hosts := "every host that runs one of those plugins"
+		if len(o.Spec.Hosts) > 0 {
+			hosts = strings.Join(o.Spec.Hosts, ", ")
+		}
+		kv(0, "Hosts", hosts)
+		if o.Status.Version == 0 || o.Status.ChangedAt == nil {
+			kv(0, "Value", "none yet")
+		} else {
+			kv(0, "Value", fmt.Sprintf("version %d, changed %s ago (kvo get clustersecret %s --reveal)", o.Status.Version, since(*o.Status.ChangedAt), o.Name))
+		}
 	case *v1.Grant:
 		for i, e := range o.Spec.Egress {
 			label := ""
