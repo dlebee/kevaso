@@ -3,10 +3,10 @@
 // are stateful, so moving one is never a side effect. The host's agent takes it from Scheduled to
 // Running.
 //
-// When its host is lost (design §0.3), the silo's onHostLoss policy decides: Wait keeps it there
-// (Unknown until the host is back); Recreate starts a fresh instance elsewhere, but only after
-// RecreateAfter, by which time the lost host's agent has fenced it (stopped it, if it's alive but
-// cut off), so two copies never run.
+// When its host is silent (brainstorm §0.7), the silo stays there, Unknown, with a HostUnreachable
+// condition saying since when: the control plane never starts another copy by itself, since a
+// cut-off host still runs it. A person's `kvo move … --confirm-fenced` moves it once the old copy
+// is known to be off, and onHostLoss says how (Move: with its data; Recreate: a fresh copy).
 package silo
 
 import (
@@ -40,9 +40,33 @@ const (
 	PhaseUnknown   = "Unknown"   // its host is lost
 )
 
-// RecreateAfter is how long after its host is lost a Recreate silo is started elsewhere. The lost
-// host's agent fences well before (agent.FenceAfter < host lease), so this is the safety margin.
+// RecreateAfter no longer starts anything: the control plane never restarts a silent host's
+// silos by itself (brainstorm §0.7). It stays only for internal/agent's TestFenceTiming (host
+// lane), until that test moves to the onControlPlaneLoss: Stop timing. Nothing in the control
+// plane reads it.
 var RecreateAfter = 30 * time.Second
+
+// CondHostUnreachable is the silo condition saying its host is silent, since when, and what a
+// person can do (brainstorm §0.7).
+const CondHostUnreachable = "HostUnreachable"
+
+// UnreachableMessage is HostUnreachable's message: since when, that nothing is started elsewhere,
+// and what onHostLoss makes of a confirmed move.
+func UnreachableMessage(s *v1.Silo, since time.Time, m moves.Movability) string {
+	host := s.Status.Host
+	msg := fmt.Sprintf("%s unreachable since %s. It may still be running there, so Kevaso starts no other copy. ", host, since.UTC().Format(time.RFC3339))
+	move := fmt.Sprintf("kvo move silo %s -n %s --to HOST --confirm-fenced", s.Name, s.Namespace)
+	switch {
+	case s.Policy() == v1.OnHostLossRecreate:
+		return msg + "Once the old copy is known to be off (the host powered off, or force-stopped through its provider), " +
+			move + " --recreate starts a fresh copy from its image (onHostLoss: Recreate; data on its own disk is lost)"
+	case m.WithData:
+		return msg + "Once the old copy is known to be off (the host powered off, or force-stopped through its provider), " +
+			move + " moves it with its data (onHostLoss: " + s.Policy() + "), or wait for " + host + " to come back"
+	default:
+		return msg + "Waiting for " + host + " to come back (onHostLoss: " + s.Policy() + "; it can't move: " + m.Pinned + "; a fresh copy needs onHostLoss: Recreate and kvo move … --confirm-fenced --recreate)"
+	}
+}
 
 // Decide returns the status the silo should have, whether it differs from the current one, and
 // when to look again (0: only on changes). Pure.
@@ -107,9 +131,8 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 		if h != nil {
 			lost, since = hostctl.Lost(h)
 		}
-		cond := meta.Condition{Type: "HostLost", ObservedGeneration: s.Generation}
-		switch {
-		case !lost:
+		cond := meta.Condition{Type: CondHostUnreachable, ObservedGeneration: s.Generation}
+		if !lost {
 			// Placed, and its host is fine: the agent owns it. Only the service's addresses may need
 			// saying (its exposure changed, or it was placed before it had them).
 			changed := false
@@ -118,59 +141,29 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 					st.Service, changed = svc, true
 				}
 			}
-			if c := meta.FindCondition(st.Conditions, "HostLost"); c != nil && c.Status == meta.ConditionTrue {
+			if c := meta.FindCondition(st.Conditions, CondHostUnreachable); c != nil && c.Status == meta.ConditionTrue {
 				cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "HostBack", st.Host+" is back"
 				changed = meta.SetCondition(&st.Conditions, cond, now) || changed
 			}
 			return st, changed || imageChanged || movableChanged, 0, nil
-		case (s.Policy() == v1.OnHostLossRecreate || s.Policy() == v1.OnHostLossMove) && now.Sub(since) < RecreateAfter:
-			again = RecreateAfter - now.Sub(since)
-			cond.Status, cond.Reason = meta.ConditionTrue, "Fencing"
-			what := "recreating"
-			if s.Policy() == v1.OnHostLossMove {
-				what = "moving it with its data"
-			}
-			cond.Message = st.Host + " lost; " + what + " elsewhere once its agent has surely stopped it (onHostLoss: " + s.Policy() + ")"
-			st.Phase = PhaseUnknown
-			changed := meta.SetCondition(&st.Conditions, cond, now)
-			return st, changed || imageChanged || s.Status.Phase != st.Phase, again, nil
-		case s.Policy() == v1.OnHostLossMove && !moves.Of(s, env.Classes).WithData:
-			// Admission refuses this; a class that stopped being movable since lands here: wait.
-			cond.Status, cond.Reason = meta.ConditionTrue, "Waiting"
-			cond.Message = st.Host + " lost; can't move it: " + moves.Of(s, env.Classes).Pinned
-			st.Phase = PhaseUnknown
-			changed := meta.SetCondition(&st.Conditions, cond, now)
-			return st, changed || imageChanged || s.Status.Phase != st.Phase, 0, nil
-		case s.Policy() == v1.OnHostLossMove:
-			// Fenced: its agent stopped it (and the volumes are force-detached from the lost host).
-			cond.Status, cond.Reason = meta.ConditionFalse, "Moved"
-			cond.Message = st.Host + " was lost: moved with its data (onHostLoss: Move)"
+		}
+		if st.MovingFrom != "" && st.MovingFrom != st.Host {
+			// The silent host is the destination of a handoff its source hasn't finished: it never
+			// started the silo (moves.MayStart: not before the source lets go), so no copy runs
+			// there and another destination is safe. The handoff stays: the next host waits for
+			// the source as the silent one did (K-005).
+			cond.Status, cond.Reason = meta.ConditionFalse, "NewDestination"
+			cond.Message = fmt.Sprintf("%s, where it was moving, is unreachable; it never started there (%s hasn't let go): placing it elsewhere", st.Host, st.MovingFrom)
 			meta.SetCondition(&st.Conditions, cond, now)
-			meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Moving",
-				Message: "moving after losing " + st.Host, ObservedGeneration: s.Generation}, now)
-			// A handoff still under way stays: the host it was moving from has not let go, and
-			// the next host waits for it as the lost one did (K-005). Only a handoff from the lost
-			// host itself is over: that host is fenced.
-			if st.MovingFrom == st.Host {
-				st.MovingFrom = ""
-			}
 			st.Host, st.SiloIP = "", ""
-			// …and it's scheduled right away, below (its volumes keep it in their region).
-		case s.Policy() == v1.OnHostLossRecreate:
-			// Not lost any more (it's being placed afresh); the condition keeps what happened.
-			cond.Status, cond.Reason = meta.ConditionFalse, "Recreated"
-			cond.Message = st.Host + " was lost: a fresh instance from the image went elsewhere (data on its local disk is lost, by onHostLoss: Recreate)"
-			meta.SetCondition(&st.Conditions, cond, now)
-			meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Recreating",
-				Message: "recreating after losing " + st.Host, ObservedGeneration: s.Generation}, now)
-			st.Host, st.SiloIP, st.Init = "", "", nil
-			if st.Image != nil { // a fresh instance from the image
-				st.Image.Running, st.Image.Reset = "", ""
-			}
 			// …and it's scheduled right away, below.
-		default: // Wait
+		} else {
+			// Its host is silent (brainstorm §0.7). Kevaso can't tell a dead host from a cut-off
+			// one, and a cut-off host still runs the silo: so nothing is started elsewhere. A
+			// person who knows the old copy is off moves it (kvo move … --confirm-fenced);
+			// onHostLoss says how.
 			cond.Status, cond.Reason = meta.ConditionTrue, "Waiting"
-			cond.Message = st.Host + " lost; waiting for it to come back (onHostLoss: Wait)"
+			cond.Message = UnreachableMessage(s, since, moves.Of(s, env.Classes))
 			st.Phase = PhaseUnknown
 			changed := meta.SetCondition(&st.Conditions, cond, now)
 			return st, changed || imageChanged || s.Status.Phase != st.Phase, 0, nil
