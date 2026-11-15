@@ -469,7 +469,13 @@ func RootFilePlan(img, tmp, file string, size int64) [][]string {
 func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 	st, ok, err := r.readState(id)
 	if err != nil {
-		return kri.Status{}, err
+		// Never "absent" (K-094: a fence would count it stopped), and never made again: Running
+		// while its VMM runs, else Failed, saying why.
+		switch r.active(ctx, NamesFor(id).Unit) {
+		case "active", "activating", "deactivating":
+			return kri.Status{State: kri.Running, Message: err.Error()}, nil
+		}
+		return kri.Status{State: kri.Failed, Message: err.Error() + ": its VMM doesn't run; delete the silo, or restore the file, to go on"}, nil
 	}
 	if !ok {
 		return kri.Status{State: kri.Absent}, nil
