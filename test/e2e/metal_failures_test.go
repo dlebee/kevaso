@@ -130,3 +130,38 @@ func TestMetalBadImages(t *testing.T) {
 		}
 	}
 }
+
+// TestMetalUnreadableState is the restart audit's re-imaging case on a real host: a microVM's
+// silo.json cut short while kevasod is down. kevasod comes back and touches nothing (no new root
+// disk over the old, the VM still running); with the file put back the silo is as it was, the
+// data on its root disk included.
+//
+// Listens on nothing outside.
+func TestMetalUnreadableState(t *testing.T) {
+	c := metal(t)
+	ns := "torn"
+	c.namespace(ns)
+	c.apply(vmEcho(ns, "vm", 8080))
+	c.waitRunning(ns, 20*time.Minute, "vm")
+	marker := randomValue(t, "root-")
+	if out, code := c.in(ns, "vm", "echo "+marker+" > /root/marker && sync"); code != 0 {
+		t.Fatalf("write: %d %s", code, out)
+	}
+	s := c.silo(ns, "vm")
+	n := cloudhypervisor.NamesFor(kri.ID{Namespace: s.Namespace, Name: s.Name, UID: s.UID})
+	lv := strings.TrimSpace(c.mustSh("lvs --noheadings -o lv_name,lv_time kevaso/" + n.LV))
+	started := strings.TrimSpace(c.mustSh("systemctl show -p ActiveEnterTimestamp " + n.Unit))
+	t.Cleanup(func() { _, _ = c.sh("systemctl start kevasod") })
+	c.mustSh("systemctl stop kevasod && cp " + n.Dir + "/silo.json /root/kvt-silo.json && truncate -s 20 " + n.Dir + "/silo.json && systemctl start kevasod")
+	c.eventually("the API answers", 3*time.Minute, func() (bool, string) { out, code := c.kvo("", "get", "hosts"); return code == 0, out })
+	c.holds("kevasod touches nothing of a silo whose state it can't read", 60*time.Second, func() (bool, string) {
+		got := strings.TrimSpace(c.mustSh("lvs --noheadings -o lv_name,lv_time kevaso/" + n.LV + " 2>&1"))
+		now := strings.TrimSpace(c.mustSh("systemctl show -p ActiveEnterTimestamp " + n.Unit))
+		return got == lv && now == started, got + " / " + now
+	})
+	c.mustSh("cp /root/kvt-silo.json " + n.Dir + "/silo.json && rm -f /root/kvt-silo.json")
+	c.eventually("with its state back, its root disk still has the data", 5*time.Minute, func() (bool, string) {
+		out, code := c.in(ns, "vm", "cat /root/marker")
+		return code == 0 && out == marker, out
+	})
+}

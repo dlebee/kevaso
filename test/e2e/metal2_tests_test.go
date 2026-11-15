@@ -468,3 +468,45 @@ func (p *pair) kvoadm(args ...string) {
 		p.t.Logf("kvoadm %v:\n%s", args, o.String())
 	}
 }
+
+// TestMetal2KeptWhenMissing is K-004 on real hosts: a silo deleted while its worker's kevasod is
+// down (so the worker never sees the delete, as after a restore from an older backup) is kept on
+// the worker, still running, with its disk and volume; only a delete the worker sees removes
+// data. The kept copy is left for the final reset.
+//
+// Listens on nothing outside.
+func TestMetal2KeptWhenMissing(t *testing.T) {
+	p := metal2(t)
+	c := p.c1
+	ns := "kept2"
+	c.namespace(ns)
+	place := ""
+	if p.m1Worker {
+		place = on(metalHost2)
+	}
+	c.apply(vmEcho(ns, "db", 8080) + place + "  volumes: [{ name: data, size: 1Gi, mountPath: /data }]\n")
+	c.waitRunning(ns, 20*time.Minute, "db")
+	s := c.silo(ns, "db")
+	n := cloudhypervisor.NamesFor(kri.ID{Namespace: s.Namespace, Name: s.Name, UID: s.UID})
+	lvs := func() string {
+		return strings.TrimSpace(p.c2.mustSh("lvs --noheadings -o lv_name kevaso | tr -d ' ' | grep '^" + n.LV + "' | sort"))
+	}
+	before := lvs()
+	if !strings.Contains(before, n.LV+"-") {
+		t.Fatalf("no volume LV for db: %q", before)
+	}
+	p.c2.mustSh("systemctl stop kevasod")
+	t.Cleanup(func() { _, _ = p.c2.sh("systemctl start kevasod") })
+	c.must("", "delete", "silo", "db", "-n", ns)
+	p.c2.mustSh("systemctl start kevasod")
+	c.eventually(metalHost2+" is Ready again", 5*time.Minute, func() (bool, string) {
+		h := c.hostNamed(metalHost2)
+		return hostIs(*h, "Ready"), fmt.Sprint(h.Status.Conditions)
+	})
+	c.holds("the silo the worker never saw deleted keeps its disk and volume, and runs", 60*time.Second, func() (bool, string) {
+		active, _ := p.c2.sh("systemctl is-active " + n.Unit)
+		got := lvs()
+		return got == before && strings.TrimSpace(active) == "active", got + " " + active
+	})
+	c.expect("kevasod says it keeps it", p.c2.mustSh("journalctl -u kevasod --no-pager --since '-10min' | grep -c 'keeping "+ns+"/db' || true"), "1")
+}
