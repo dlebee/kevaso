@@ -369,8 +369,8 @@ func TestKillHasNoGrace(t *testing.T) {
 	if err := kri.Kill(ctx, r, silo); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.last("docker kill"); got != "docker kill --signal KILL "+n.Main {
-		t.Fatalf("kill: %q", got)
+	if indexOf(f.cmds[before:], "docker kill --signal KILL "+n.Main) < 0 || indexOf(f.cmds[before:], "docker kill --signal KILL "+n.Pause) < 0 {
+		t.Fatalf("kill (the main container, then the pause container): %q", f.cmds[before:])
 	}
 	for _, c := range f.cmds[before:] {
 		if strings.HasPrefix(c, "docker stop") {
