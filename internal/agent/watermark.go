@@ -58,6 +58,41 @@ type Watermark struct {
 	// judgeFrom: answers to requests sent under an earlier count of histories than this were
 	// sent while the file couldn't be read (ReadAgain): judged NotYet, never against nothing.
 	judgeFrom int64
+	// refusals counts the answers judged Hold or Foreign in this run (acceptedSince).
+	refusals int64
+}
+
+// answerMark is what the watermark had judged when a request was sent (mark): an answer is one
+// this worker accepted, of the history it trusts now, only if nothing was refused and no other
+// history accepted since (acceptedSince).
+type answerMark struct{ histories, refusals int64 }
+
+func (w *Watermark) mark() answerMark {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return answerMark{w.histories, w.refusals}
+}
+
+// acceptedSince says whether an answer to a request sent at m may be acted on as proof (a delete,
+// a DeletionTimestamp): the worker isn't held, no answer was judged Hold or Foreign since m (the
+// client hands such an answer over, and can't say which request it was), and the history is
+// still the one accepted when the request was sent. Anything else: not proof of anything.
+func (w *Watermark) acceptedSince(m answerMark) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	held := w.kept.Held || w.last == client.Foreign || w.unreadable != "" || w.saveErr != nil
+	return !held && w.histories == m.histories && w.refusals == m.refusals
+}
+
+// history names the history this worker trusts now (cluster and history; "" before any): a seen
+// delete is recorded under it and honoured only under it.
+func (w *Watermark) history() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.kept.ClusterID == "" {
+		return ""
+	}
+	return w.kept.ClusterID + "/" + w.kept.History
 }
 
 // OpenWatermark reads the watermark kept at path ("": kept in memory only). kevasod makes it once
@@ -149,6 +184,7 @@ func (w *Watermark) Judged(sentAt int64, seen client.ControlPlaneSeen, stamped b
 	defer w.mu.Unlock()
 	if w.unreadable != "" {
 		w.seen = seen // shown on the Host; nothing is judged against a file that can't be read
+		w.refusals++
 		return client.Hold
 	}
 	if sentAt>>48 < w.judgeFrom {
@@ -174,6 +210,7 @@ func (w *Watermark) Judged(sentAt int64, seen client.ControlPlaneSeen, stamped b
 				w.log("CONTROL-PLANE WATERMARK NOT SAVED: %v: holding (nothing is applied) until it can be", err)
 			}
 			w.saveErr = err
+			w.refusals++
 			return client.Hold
 		}
 		if w.saveErr != nil {
@@ -183,6 +220,9 @@ func (w *Watermark) Judged(sentAt int64, seen client.ControlPlaneSeen, stamped b
 	}
 	if next.History != w.kept.History || next.ClusterID != w.kept.ClusterID {
 		w.histories++
+	}
+	if v == client.Hold || v == client.Foreign {
+		w.refusals++
 	}
 	if v != w.last {
 		switch v {
