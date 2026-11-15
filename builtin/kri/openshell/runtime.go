@@ -246,7 +246,6 @@ func (r *Runtime) up(ctx context.Context, g Gateway, self kri.ID) error {
 	if r.answers(ctx, g) {
 		return nil // up and registered
 	}
-	before := map[string]bool{} // what ran before the start (the Docker driver's containers)
 	active, err := r.unitActive(ctx, g)
 	if err != nil {
 		return err
@@ -258,7 +257,8 @@ func (r *Runtime) up(ctx context.Context, g Gateway, self kri.ID) error {
 		}
 		return nil
 	}
-	if before, err = r.runningContainers(ctx, g); err != nil {
+	before, err := r.runningContainers(ctx, g) // what ran before the start (the Docker driver's containers)
+	if err != nil {
 		return err
 	}
 	if err := r.run(ctx, "systemctl", "start", g.Unit()); err != nil {
