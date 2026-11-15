@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"kevaso.com/core/internal/hostreset"
@@ -120,7 +121,27 @@ func runReset(ctx context.Context, h hostRunner, o ResetOptions, in *bufio.Reade
 
 	_, _ = fmt.Fprintln(out)
 	var failed []string
-	for _, s := range hostreset.Plan(d.Plan) {
+	plan := hostreset.Plan(d.Plan)
+	// Stop kevasod first, so nothing new is placed or made here, then look again (review,
+	// check-then-act claim 3): the host was shown before the prompt, which can wait for ever. A silo
+	// or volume that wasn't shown stops the reset before anything is removed.
+	if len(plan) > 0 && plan[0].Name == hostreset.StopStep {
+		if b, err := h.Run(ctx, plan[0].Script, nil); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %s", plan[0].Name, strings.TrimSpace(firstNonEmpty(string(b), err.Error()))))
+			_, _ = fmt.Fprintf(out, "✗ %s\n", plan[0].Name)
+		} else {
+			_, _ = fmt.Fprintf(out, "✓ %s\n", plan[0].Name)
+		}
+		plan = plan[1:]
+		if changed, err := lookAgain(ctx, h, insp, d, o); err != nil || changed != "" {
+			_, _ = h.Run(ctx, hostreset.StartAgainScript, nil)
+			if err != nil {
+				return fmt.Errorf("looking at the host again before removing anything: %w (kevasod is started again; nothing was removed)", err)
+			}
+			return fmt.Errorf("the host changed since it was shown: %s. Nothing was removed and kevasod is started again: run kvoadm reset again to see what it would remove now", changed)
+		}
+	}
+	for _, s := range plan {
 		if b, err := h.Run(ctx, s.Script, nil); err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %s", s.Name, strings.TrimSpace(firstNonEmpty(string(b), err.Error()))))
 			_, _ = fmt.Fprintf(out, "✗ %s\n", s.Name)
@@ -159,6 +180,35 @@ func runReset(ctx context.Context, h hostRunner, o ResetOptions, in *bufio.Reade
 	}
 	_, _ = fmt.Fprintf(out, "\n→ %s is clean: every checklist item passed. kvoadm init or host add can set it up again.\n", o.Address)
 	return nil
+}
+
+// lookAgain inspects the host once more and says what it has now that wasn't shown ("" if
+// nothing): a silo, or a volume whose data would be lost.
+func lookAgain(ctx context.Context, h hostRunner, before hostreset.Inspection, shown hostreset.Decision, o ResetOptions) (string, error) {
+	raw, err := h.Run(ctx, hostreset.InspectScript, nil)
+	if err != nil {
+		return "", err
+	}
+	now, err := hostreset.ParseInspection(string(raw))
+	if err != nil {
+		return "", err
+	}
+	var news []string
+	for _, s := range now.Silos {
+		if !slices.Contains(before.Silos, s) {
+			news = append(news, "silo "+s)
+		}
+	}
+	d, derr := hostreset.Decide(now, hostreset.Flags{Force: true, WipeStorage: o.WipeStorage})
+	if derr != nil {
+		return "", derr
+	}
+	for _, v := range d.Lost {
+		if !slices.Contains(shown.Lost, v) {
+			news = append(news, "volume "+v)
+		}
+	}
+	return strings.Join(news, ", "), nil
 }
 
 func firstNonEmpty(a, b string) string {
