@@ -118,7 +118,8 @@ func setup(t *testing.T, cidrPort string) *env {
 	e.silo.AppendCertsFromPEM(ca.PEM)
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "claude-1"}, Spec: v1.SiloSpec{Grants: []string{"g"}}}
 	g := &v1.Grant{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "g"}, Spec: v1.GrantSpec{
-		Egress:  []v1.EgressRule{{To: "pass.test"}, {To: "127.0.0.0/8", Ports: []string{cidrPort}}},
+		// Every name resolves to the upstream on 127.0.0.1, which a grant has to name (K-057).
+		Egress:  []v1.EgressRule{{To: "pass.test"}, {To: "127.0.0.0/8", Ports: []string{cidrPort}}, {To: "127.0.0.1/32", Ports: []string{"443"}}},
 		Secrets: []v1.GrantSecret{{Name: "key", Deliver: v1.DeliverInject, To: &v1.InjectTarget{Host: "api.allowed.test"}}},
 	}}
 	pol := PolicyFor(s, []*v1.Grant{g})

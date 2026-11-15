@@ -261,7 +261,8 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 	defer dnsOn.stop()
 	gatePort := 0
 	if ca != nil {
-		eg := &egress{c: c, hostName: hostName, ca: ca, upstream: upstream, log: log, silos: current, grants: currentGrants, bound: loaded}
+		eg := &egress{c: c, hostName: hostName, ca: ca, upstream: upstream, log: log, silos: current, grants: currentGrants, bound: loaded,
+			hosts: currentHosts, services: currentServices}
 		secretsInf.AddHandler(func(informer.Key) { eg.invalidate() })
 		grantsInf.AddHandler(func(informer.Key) { eg.invalidate() })
 		go eg.run(ctx)

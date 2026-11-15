@@ -33,6 +33,8 @@ type egress struct {
 	mu       sync.Mutex
 	silos    func() []*v1.Silo
 	grants   func() []*v1.Grant
+	hosts    func() []*v1.Host           // nil: none known
+	services func() []*v1.Service        // nil: none known
 	injected map[string]cachedInjections // by silo namespace/name
 }
 
@@ -60,6 +62,70 @@ func upstreamRoots(extraCA string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("%s: no certificate", extraCA)
 	}
 	return pool, nil
+}
+
+// ClusterAddresses are the addresses of this host and its cluster that a granted name must not
+// lead to (K-057, K-092), beyond the private, loopback and link-local ranges the gate refuses
+// anyway: every address this host has (ifaces), every Host's internal, external and mesh
+// address, and the silos' and Services' load-balancer, egress and pool addresses. Pure.
+func ClusterAddresses(ifaces []netip.Addr, hosts []*v1.Host, silos []*v1.Silo, svcs []*v1.Service) []netip.Prefix {
+	var out []netip.Prefix
+	seen := map[netip.Addr]bool{}
+	add := func(a netip.Addr) {
+		a = a.Unmap().WithZone("")
+		if a.IsValid() && !a.IsUnspecified() && !seen[a] {
+			seen[a] = true
+			out = append(out, netip.PrefixFrom(a, a.BitLen()))
+		}
+	}
+	parse := func(ss ...string) {
+		for _, s := range ss {
+			if a, err := netip.ParseAddr(s); err == nil {
+				add(a)
+			}
+		}
+	}
+	for _, a := range ifaces {
+		add(a)
+	}
+	for _, h := range hosts {
+		parse(h.Internal(), h.External(), h.Status.Network.MeshIP)
+	}
+	for _, s := range silos {
+		parse(s.Status.SiloIP, s.Status.Service.LoadBalancerIP, s.Status.Service.EgressIP)
+		parse(s.Status.Service.HostAddresses...)
+	}
+	for _, sv := range svcs {
+		parse(sv.Status.ClusterIP, sv.Status.LoadBalancerIP)
+	}
+	return out
+}
+
+// interfaceAddrs are this host's own addresses, every interface's.
+func interfaceAddrs() []netip.Addr {
+	as, _ := net.InterfaceAddrs()
+	var out []netip.Addr
+	for _, a := range as {
+		if n, ok := a.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(n.IP); ok {
+				out = append(out, ip)
+			}
+		}
+	}
+	return out
+}
+
+// internal is ClusterAddresses now.
+func (e *egress) internal() []netip.Prefix {
+	var hosts []*v1.Host
+	var svcs []*v1.Service
+	if e.hosts != nil {
+		hosts = e.hosts()
+	}
+	if e.services != nil {
+		svcs = e.services()
+	}
+	return ClusterAddresses(interfaceAddrs(), hosts, e.silos(), svcs)
 }
 
 // local finds the silo on this host a connection from ip came from: the one whose port the
@@ -193,6 +259,7 @@ func (e *egress) run(ctx context.Context) {
 			}
 			return gate.PolicyFor(s, e.grants()), true
 		},
+		Internal:   e.internal,
 		Injections: e.injections,
 		Ask:        e.ask,
 		OrigDst:    gate.OriginalDst,
