@@ -397,3 +397,38 @@ func TestAStoppedGatewayIsStartedAgainWithTheSilo(t *testing.T) {
 		t.Fatalf("started again: %v, gateway up %v", st.State, f.gwUp[g.Name()])
 	}
 }
+
+// K-066: a credential's env name, header and host reach a root command's environment, its
+// arguments and a profile's text: checked where they're used, whatever admission said. LD_PRELOAD
+// or HOME would steer the CLI that kevasod runs as root; a newline would write keys of its own
+// into the profile.
+func TestACredentialIsCheckedWhereItIsUsed(t *testing.T) {
+	ctx := context.Background()
+	for _, bad := range []kri.Credential{
+		{Name: "k", Env: "LD_PRELOAD", Host: "api.example.com", Header: "Authorization"},
+		{Name: "k", Env: "HOME", Host: "api.example.com", Header: "Authorization"},
+		{Name: "k", Env: "OPENSHELL_GATEWAY_ENDPOINT", Host: "api.example.com", Header: "Authorization"},
+		{Name: "k", Env: "KEY\nendpoints:", Host: "api.example.com", Header: "Authorization"},
+		{Name: "k", Env: "lower", Host: "api.example.com", Header: "Authorization"},
+		{Name: "k", Env: "KEY", Host: "api.example.com\n  - host: evil", Header: "Authorization"},
+		{Name: "k", Env: "KEY", Host: "api.example.com", Header: "X-Key\nfoo: bar"},
+		{Name: "k\nx", Env: "KEY", Host: "api.example.com", Header: "Authorization"},
+	} {
+		f := newFake()
+		r := newRuntime(f, "")
+		if err := r.Create(ctx, kri.Spec{ID: silo, Image: "ubuntu-24.04"}); err != nil {
+			t.Fatal(err)
+		}
+		bad.Value, bad.Version = []byte("v"), 1
+		if err := r.SetPolicy(ctx, silo, kri.Policy{Credentials: []kri.Credential{bad}}); err == nil {
+			t.Errorf("%q accepted", fmt.Sprintf("%+v", bad))
+		}
+		if f.ran("provider create") != 0 || f.ran("profile import") != 0 {
+			t.Errorf("%+v: the CLI ran with it", bad)
+		}
+	}
+	ok := kri.Credential{Name: "api-key", Env: "API_KEY", Host: "api.example.com", Header: "Authorization", Bearer: true, Value: []byte("v"), Version: 1}
+	if err := CheckCredential(ok); err != nil {
+		t.Fatalf("a good one refused: %v", err)
+	}
+}

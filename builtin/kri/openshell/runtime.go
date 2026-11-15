@@ -534,6 +534,9 @@ func (r *Runtime) SetPolicy(ctx context.Context, id kri.ID, p kri.Policy) error 
 	g := s.Gateway
 	want := map[string]kri.Credential{}
 	for _, c := range p.Credentials {
+		if err := CheckCredential(c); err != nil { // before anything is written or run (K-066)
+			return fmt.Errorf("%s: %w", id, err)
+		}
 		want[ProfileID(id, c)] = c
 	}
 	for name, c := range want {

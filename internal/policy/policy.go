@@ -9,6 +9,7 @@ import (
 
 	"kevaso.com/core/api/client"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/builtin/kri/openshell"
 	"kevaso.com/core/sdk/kri"
 )
 
@@ -93,6 +94,10 @@ func For(s *v1.Silo, grants []*v1.Grant, injections []client.Injection) (kri.Pol
 			problems = append(problems, fmt.Sprintf("secret %s: format %q: %s injects \"Bearer {{value}}\" or \"{{value}}\" only", in.Secret, in.Format, s.Spec.Runtime))
 			continue
 		}
+		if err := openshell.CheckCredential(c); err != nil { // K-066: it reaches a root command and a profile
+			problems = append(problems, err.Error())
+			continue
+		}
 		p.Credentials = append(p.Credentials, c)
 		add(kri.Endpoint{Host: in.Host, Port: 443})
 	}
@@ -142,7 +147,7 @@ func Check(s *v1.Silo, grants []*v1.Grant) []string {
 			if format == "" {
 				format = "Bearer {{value}}"
 			}
-			inj = append(inj, client.Injection{Host: sec.To.Host, Header: header, Format: format, Secret: sec.Name, Approval: sec.NeedsApproval()})
+			inj = append(inj, client.Injection{Host: sec.To.Host, Header: header, Format: format, Secret: sec.Name, Env: sec.Env, Approval: sec.NeedsApproval()})
 		}
 	}
 	_, problems := For(s, grants, inj)
