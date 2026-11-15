@@ -198,7 +198,8 @@ type Agent struct {
 	// removeConfirmed: silo UID → kri.ID: a kept copy a person confirmed the removal of (K-068,
 	// keptcmd.go).
 	removeConfirmed sync.Map
-	applied         appliedLog // the resets and images applied here (applied.go, K-110)
+	keptWritten     atomic.Value // string: KeptFile as last written
+	applied         appliedLog   // the resets and images applied here (applied.go, K-110)
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {

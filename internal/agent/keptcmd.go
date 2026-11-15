@@ -52,10 +52,15 @@ func (a *Agent) writeKeptFile() {
 	})
 	sort.Slice(list, func(i, j int) bool { return list[i].UID < list[j].UID })
 	b, _ := json.MarshalIndent(list, "", "  ")
+	if prev, _ := a.keptWritten.Load().(string); prev == string(b) {
+		return // as written already
+	}
 	d := deletesLog{path: filepath.Join(dir, KeptFile)}
 	if err := d.writeBytes(b); err != nil {
 		a.log("kept silos %s: %v", d.path, err)
+		return
 	}
+	a.keptWritten.Store(string(b))
 }
 
 // takeKeptRemovals reads the removals a person asked for: each names a kept copy by its UID. One
