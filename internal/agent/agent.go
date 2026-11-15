@@ -109,6 +109,11 @@ type Agent struct {
 	ProbeDial func(ctx context.Context, network, addr string) (net.Conn, error)
 	// IngressEvery is how often it looks at its ingress controller silos again (ingress.go).
 	IngressEvery time.Duration
+	// Resync, if set, replaces ResyncEvery for this agent (tests: never the global, which other
+	// tests' agents still read).
+	Resync time.Duration
+	// ClaimRefresh, if set, replaces ClaimRefreshEvery (tests).
+	ClaimRefresh time.Duration
 	// OnEndpoints, if set, hears the control planes the agent's client may use whenever it learns
 	// more from the system nodes (the worker keeps them for its next start).
 	OnEndpoints func([]string)
@@ -355,7 +360,11 @@ func (a *Agent) Run(ctx context.Context) {
 var ResyncEvery = 30 * time.Second
 
 func (a *Agent) resync(ctx context.Context, e *engine.Engine) {
-	t := time.NewTicker(ResyncEvery)
+	every := ResyncEvery
+	if a.Resync > 0 {
+		every = a.Resync
+	}
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {
@@ -488,6 +497,9 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 	if err != nil {
 		return engine.Result{}, err
 	}
+	if stopped, err := a.stopOrphanInit(ctx, rt, s, rs); err != nil || stopped {
+		return engine.Result{RequeueAfter: time.Millisecond}, err
+	}
 	if restart, err := a.setVolumes(ctx, rt, s, rs.State, vols); err != nil || restart {
 		return engine.Result{RequeueAfter: time.Millisecond}, err
 	}
@@ -554,31 +566,41 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 				return engine.Result{}, err
 			}
 		}
+		ic, initContainers := rt.(kri.InitContainers)
+		if initContainers && rs.State == kri.Stopped && s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" && initDone(s) {
+			// Init containers run again at every boot: the steps start over (a status write only).
+			if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Init = nil }); err != nil {
+				return engine.Result{}, err
+			}
+			return engine.Result{RequeueAfter: time.Millisecond}, nil
+		}
+		// Its policy is in the fence record before anything of it runs, never after: a fence must know it.
+		if err := a.recordForFence(s); err != nil {
+			return engine.Result{}, err
+		}
+		// K-088: the start claim before anything of the silo runs here or gets its secrets: an
+		// init container is the silo's code, with its image, volumes and secrets. Kept fresh while
+		// the steps run; a renewal that finds it placed elsewhere, or the fence, ends them.
+		if err := a.claimStart(ctx, s); err != nil {
+			return a.lostClaim(s, err)
+		}
+		sctx, claimKept := a.keepClaim(ctx, s)
+		defer func() { _ = claimKept() }() // renewals end with this reconcile, whatever its outcome
 		hs, hostSecrets := rt.(kri.HostSecrets)
 		if hostSecrets {
 			// Its file and env secrets are there before anything of it starts (init containers too).
-			if err := a.deliverFromHost(ctx, hs, s, true); err != nil {
-				return engine.Result{}, err
+			if err := a.deliverFromHost(sctx, hs, s, true); err != nil {
+				return a.startEnded(s, claimKept(), err)
 			}
 		}
-		if ic, ok := rt.(kri.InitContainers); ok {
+		if initContainers {
 			// Init containers: the steps run before the main process, each in its own container.
-			if rs.State == kri.Stopped && s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" && initDone(s) {
-				if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Init = nil }); err != nil {
-					return engine.Result{}, err
-				}
-				return engine.Result{RequeueAfter: time.Millisecond}, nil
-			}
-			done, err := a.runSteps(ctx, s, func(ctx context.Context, step v1.InitStep, out io.Writer) (int, error) {
+			done, err := a.runSteps(sctx, s, func(ctx context.Context, step v1.InitStep, out io.Writer) (int, error) {
 				return ic.RunInit(ctx, id, kri.InitStep{Name: step.Name, Shell: step.Shell, Run: step.Run}, out)
 			})
 			if err != nil || !done {
-				return engine.Result{}, err
+				return a.startEnded(s, claimKept(), err)
 			}
-		}
-		// Its policy is in the fence record before it runs, never after: a fence must know it.
-		if err := a.recordForFence(s); err != nil {
-			return engine.Result{}, err
 		}
 		if !hostSecrets {
 			a.delivered.Delete(s.UID) // a fresh boot: an empty /run, its secrets are written again
@@ -586,8 +608,13 @@ func (a *Agent) reconcile(ctx context.Context, k engine.Key) (engine.Result, err
 		// Every start begins its probes afresh: startup's deadline counts from this boot.
 		a.probed.Delete(s.UID)
 		if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) { st.Probes, st.StartedAt = nil, nil }); err != nil {
-			return engine.Result{}, err
+			return a.startEnded(s, claimKept(), err)
 		}
+		if ended := claimKept(); ended != nil {
+			return a.startEnded(s, ended, nil)
+		}
+		// Claimed once more right before the start: no renewal runs now, and the start follows
+		// a claim that applied on what is stored at this moment.
 		if err := a.claimStart(ctx, s); err != nil {
 			return a.lostClaim(s, err)
 		}
@@ -863,6 +890,11 @@ func (a *Agent) runSteps(ctx context.Context, s *v1.Silo, run func(context.Conte
 		start := a.now()
 		var out bytes.Buffer
 		code, err := run(ctx, step, &out)
+		if ctx.Err() != nil || a.mustStop(s) {
+			// Stopped, not failed (K-088): its start ended (placed elsewhere, the fence killed
+			// it). Nothing is recorded; it runs again with the next start.
+			return false, fmt.Errorf("init step %s stopped: %w", step.Name, errors.Join(context.Cause(ctx), err))
+		}
 		if err != nil {
 			return false, fmt.Errorf("init step %s: %w", step.Name, err)
 		}
@@ -1011,11 +1043,25 @@ const ConditionStartClaim = "StartClaim"
 // StartClaimFresh is how long a start claim stands.
 const StartClaimFresh = 30 * time.Second
 
+// ClaimRefreshEvery is how often a host writes its start claim anew while it starts a silo that
+// takes long (its init steps): well inside StartClaimFresh, so the control plane always sees a
+// standing claim while anything of the silo runs here before its main process (K-088).
+const ClaimRefreshEvery = StartClaimFresh / 3
+
 // claimStart wins the right to start s here, now: a compare-and-swap on the stored silo of the
 // version this host reads, requiring it to be the same silo, at the same generation, placed here,
 // free to start here, and not being deleted. Any other outcome, a conflict included, is
 // errPlacedElsewhere: the start is abandoned.
 func (a *Agent) claimStart(ctx context.Context, s *v1.Silo) error {
+	err := a.writeClaim(ctx, s)
+	if errors.Is(err, errClaimConflict) {
+		return errPlacedElsewhere
+	}
+	return err
+}
+
+// writeClaim is one claim: a read, the checks, a compare-and-swap (errClaimConflict if it lost).
+func (a *Agent) writeClaim(ctx context.Context, s *v1.Silo) error {
 	var cur v1.Silo
 	if err := a.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
 		return err
@@ -1029,7 +1075,7 @@ func (a *Agent) claimStart(ctx context.Context, s *v1.Silo) error {
 	cur.Status.Routing = routing.Silo(cur.Spec, cur.Status)
 	err := a.Client.UpdateStatus(ctx, &cur) // against cur's resourceVersion: applies only if nothing changed it
 	if client.IsConflict(err) {
-		return errPlacedElsewhere
+		return errClaimConflict
 	}
 	return err
 }
