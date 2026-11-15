@@ -45,6 +45,7 @@ type fake struct {
 	restoresStopped bool // a gateway that starts brings its Stopped sandboxes back too
 	dockerAtBoot    bool // the Docker driver's containers start with dockerd at boot
 	listFails       bool // sandbox list doesn't answer either
+	stopLies        bool // sandbox stop says Stopped, and the Docker driver's container runs on
 }
 
 // fsb is one sandbox as the gateway records it.
@@ -271,7 +272,9 @@ func (f *fake) Run(ctx context.Context, c Cmd) (int, error) {
 		case a[0] == "sandbox" && a[1] == "stop":
 			if sb, ok := f.sandboxes[a[2]]; ok {
 				sb.phase = "Stopped"
-				f.containers[a[2]] = false
+				if !f.stopLies {
+					f.containers[a[2]] = false
+				}
 			}
 		case a[0] == "sandbox" && a[1] == "start":
 			sb, ok := f.sandboxes[a[2]]

@@ -36,6 +36,10 @@ type Runtime struct {
 	Wait time.Duration
 	// Sleep pauses between polls (tests: no-op).
 	Sleep func(time.Duration)
+	// StopRemoves: Stop removes the sandbox (its files go) and keeps Kevaso's state, so Start makes
+	// it again. Needed where a gateway that starts brings back its Stopped sandboxes too (the
+	// experiment of item 5 decides); the capabilities then say PersistenceUntilStop.
+	StopRemoves bool
 
 	mu sync.Mutex
 }
@@ -147,8 +151,12 @@ func (r *Runtime) Info() kri.Info {
 	if r.Driver == DriverDocker {
 		iso = "container"
 	}
+	persistence := PersistenceWorkspace
+	if r.StopRemoves {
+		persistence = PersistenceUntilStop
+	}
 	return kri.Info{Name: r.Name, Version: Version, Capabilities: kri.Capabilities{
-		Isolation: iso, Network: "proxy", UDP: false, InboundServices: false, Persistence: "workspace", Injection: true, Exec: true,
+		Isolation: iso, Network: "proxy", UDP: false, InboundServices: false, Persistence: persistence, Injection: true, Exec: true,
 	}}
 }
 
@@ -235,7 +243,7 @@ func (r *Runtime) up(ctx context.Context, g Gateway, self kri.ID) error {
 	if _, err := r.prepare(ctx, g.Key); err != nil {
 		return err
 	}
-	if _, err := r.cli(ctx, g, nil, nil, "sandbox", "list", "-o", "json"); err == nil {
+	if r.answers(ctx, g) {
 		return nil // up and registered
 	}
 	before := map[string]bool{} // what ran before the start (the Docker driver's containers)
@@ -466,8 +474,11 @@ func imageRef(image string) string {
 	return image
 }
 
-// Stop implements kri.Runtime. The last sandbox of its gateway that should run takes the gateway
-// down with it (item 1): nothing of OpenShell runs for a host whose silos are all stopped.
+// Stop implements kri.Runtime: after it returns, nothing of the sandbox runs, by looking (the VM
+// driver's unit down, or the gateway's phase while a neighbour keeps it up; the Docker driver's
+// containers), not by the gateway's word. The last sandbox of its gateway that should run takes
+// the gateway down with it (item 1), so nothing of OpenShell runs for a host whose silos are all
+// stopped, and nothing starts it again but kevasod. With StopRemoves the sandbox goes too.
 func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -479,20 +490,124 @@ func (r *Runtime) Stop(ctx context.Context, id kri.ID) error {
 	if err := r.save(s); err != nil {
 		return err
 	}
+	g := s.Gateway
 	if s.Created {
-		if _, err := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "list", "-o", "json"); err == nil {
+		answers := r.answers(ctx, g)
+		if !answers && r.StopRemoves {
+			if err := r.up(ctx, g, kri.ID{}); err != nil { // it must be told: it would bring the sandbox back
+				return err
+			}
+			answers = true
+		}
+		if !answers {
+			active, err := r.unitActive(ctx, g)
+			if err != nil {
+				return err
+			}
+			if active {
+				return fmt.Errorf("%s: stop: %w", id, ErrGatewaySilent)
+			}
+		} else {
 			sb, exists, err := r.get(ctx, s)
 			if err != nil {
 				return err
 			}
 			if exists && Phase(sb.Phase) != kri.Stopped {
-				if _, err := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "stop", SandboxName(id)); err != nil {
+				if _, err := r.cli(ctx, g, nil, nil, "sandbox", "stop", SandboxName(id)); err != nil {
+					return err
+				}
+			}
+			if exists && r.StopRemoves {
+				if err := r.removeSandbox(ctx, s); err != nil {
+					return err
+				}
+				s.Created = false
+				if err := r.save(s); err != nil {
 					return err
 				}
 			}
 		}
 	}
-	return r.down(ctx, s.Gateway, id)
+	if err := r.down(ctx, g, id); err != nil {
+		return err
+	}
+	return r.stopped(ctx, s)
+}
+
+// answers: gateway g answers the CLI.
+func (r *Runtime) answers(ctx context.Context, g Gateway) bool {
+	_, err := r.cli(ctx, g, nil, nil, "sandbox", "list", "-o", "json")
+	return err == nil
+}
+
+// removeSandbox deletes s's sandbox and confirms it is gone.
+func (r *Runtime) removeSandbox(ctx context.Context, s state) error {
+	if _, err := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "delete", SandboxName(s.ID)); err != nil {
+		return err
+	}
+	_, exists, err := r.get(ctx, s)
+	if err == nil && exists {
+		err = fmt.Errorf("%s: still in OpenShell after its delete", SandboxName(s.ID))
+	}
+	return err
+}
+
+// stopped checks by looking that nothing of s's sandbox runs. A Docker-driver container still up
+// (its gateway down, or a gateway that said Stopped) is stopped here, by name.
+func (r *Runtime) stopped(ctx context.Context, s state) error {
+	runs, err := r.runs(ctx, s)
+	if err != nil || !runs {
+		return err
+	}
+	if s.Gateway.Driver == DriverDocker {
+		if err := r.stopContainers(ctx, s); err != nil {
+			return err
+		}
+		if runs, err = r.runs(ctx, s); err != nil || !runs {
+			return err
+		}
+	}
+	return fmt.Errorf("%s: still runs after its stop", s.ID)
+}
+
+// runs looks whether anything of s's sandbox runs: the Docker driver's containers; for the VM
+// driver, its unit (down: nothing of it runs), else the gateway's phase (what a neighbour's
+// running gateway leaves to look at).
+func (r *Runtime) runs(ctx context.Context, s state) (bool, error) {
+	if s.Gateway.Driver == DriverDocker {
+		c, err := r.runningContainers(ctx, s.Gateway)
+		return c[SandboxName(s.ID)], err
+	}
+	active, err := r.unitActive(ctx, s.Gateway)
+	if err != nil || !active {
+		return false, err
+	}
+	if !s.Created {
+		return false, nil
+	}
+	sb, exists, err := r.get(ctx, s)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w (%v)", s.ID, ErrGatewaySilent, err)
+	}
+	return exists && Phase(sb.Phase) != kri.Stopped, nil
+}
+
+// stopContainers stops the Docker driver's running containers of s's sandbox, by name.
+func (r *Runtime) stopContainers(ctx context.Context, s state) error {
+	var b bytes.Buffer
+	if _, err := r.Host.Run(ctx, Cmd{Name: "docker", Args: []string{"ps", "--format", "{{.Names}}"}, Stdout: &b, Stderr: io.Discard}); err != nil {
+		return err
+	}
+	var names []string
+	for _, n := range strings.Fields(b.String()) {
+		if strings.Contains(n, SandboxName(s.ID)) {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return r.run(ctx, "docker", append([]string{"stop"}, names...)...)
 }
 
 // Delete implements kri.Runtime: the sandbox, its providers and profiles, its state; a gateway of
@@ -757,3 +872,13 @@ var (
 
 // ErrNoKVM: the VM driver needs /dev/kvm.
 var ErrNoKVM = errors.New("openshell: the VM driver needs /dev/kvm (use openshell-container on hosts without KVM)")
+
+// ErrGatewaySilent: the silo's gateway runs (its unit is up) and doesn't answer, so nothing can
+// say whether its sandbox runs, or stop it through the gateway. Status returns it for "unknown".
+var ErrGatewaySilent = errors.New("its OpenShell gateway runs and doesn't answer: whether the sandbox runs is unknown")
+
+// Persistence values of the capabilities.
+const (
+	PersistenceWorkspace = "workspace"  // the sandbox's files are kept across a stop
+	PersistenceUntilStop = "until-stop" // a stop removes the sandbox and its files (StopRemoves)
+)
