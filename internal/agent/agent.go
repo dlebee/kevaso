@@ -780,8 +780,13 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 		}
 		r := probes.Restarted(s.Status.Restarts, now)
 		a.log("silo %s/%s failed (%s): starting it again (restart %d)", s.Namespace, s.Name, firstLineOf(rs.Message), r.Count)
+		// K-117: steps that run at every boot run after a crash restart too (they started over).
+		everyBoot := s.Spec.Init != nil && s.Spec.Init.When == "everyBoot" && len(s.Spec.Init.Steps) > 0
 		if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 			st.Restarts, st.Phase, st.StartedAt, st.Probes = r, PhaseStarting, nil, nil
+			if everyBoot {
+				st.Init = nil
+			}
 			setCond(st, "Ready", meta.ConditionFalse, "RuntimeFailed", rs.Message+" (starting it again: restart "+strconv.Itoa(r.Count)+")", s.Generation, now)
 		}); err != nil {
 			return engine.Result{}, err
@@ -790,7 +795,21 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 		if err := a.claimStart(ctx, s); err != nil {
 			return a.lostClaim(s, err)
 		}
-		stctx, startKept := a.keepClaim(s).within(ctx) // kept fresh until it is reported Running
+		kp := a.keepClaim(s) // kept fresh until it is reported Running
+		if ic, ok := rt.(kri.InitContainers); ok && everyBoot {
+			// Init containers run before the main process, as at any start.
+			fresh := *s
+			fresh.Status.Init = nil
+			ictx, initKept := kp.within(ctx)
+			done, err := a.runSteps(ictx, &fresh, func(ctx context.Context, step v1.InitStep, out io.Writer) (int, error) {
+				return ic.RunInit(ctx, id, kri.InitStep{Name: step.Name, Shell: step.Shell, Run: step.Run}, out)
+			})
+			if why := initKept(); why != nil || err != nil || !done {
+				a.settleClaim(ctx, rt, s)
+				return a.startEnded(s, why, err)
+			}
+		}
+		stctx, startKept := kp.within(ctx)
 		err := rt.Start(stctx, id)
 		if why := startKept(); why != nil {
 			a.settleClaim(ctx, rt, s)
