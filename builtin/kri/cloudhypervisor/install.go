@@ -13,8 +13,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"kevaso.com/core/builtin/kni"
 	"kevaso.com/core/builtin/kri/hostexec"
@@ -183,15 +185,30 @@ func NFT() string {
 
 func (r *Runtime) setupNetwork(ctx context.Context) error { return SetupNetwork(ctx, r.Host) }
 
+// bridgeMu serializes SetupNetwork in this process. Cloud-hypervisor and the container runtime both
+// set up kvbr0 at boot; a second process still races in the kernel, and that path is below.
+var bridgeMu sync.Mutex
+
 // SetupNetwork makes the silo bridge with the host's gateway address, turns on forwarding and loads
 // the baseline firewall. Every runtime on the bridge (VMs, containers) needs it; it's idempotent.
+// The second ip link add answers "File exists" when the other runtime created kvbr0 first. Setup
+// continues when that link is a bridge. A device of some other kind is left alone and reported.
 func SetupNetwork(ctx context.Context, h Host) error {
+	bridgeMu.Lock()
+	defer bridgeMu.Unlock()
 	r := &Runtime{Host: h}
 	if _, err := r.Host.Run(ctx, "ip", "link", "show", Bridge); err != nil {
 		if err := r.run(ctx, "ip", "link", "add", Bridge, "type", "bridge"); err != nil {
-			return err
+			if !fileExists(err) {
+				return err
+			}
+			// The other runtime won the create. Use the link only once it is a bridge.
+			if err := confirmBridge(ctx, r); err != nil {
+				return err
+			}
 		}
-		if err := r.run(ctx, "ip", "addr", "add", Gateway.String()+"/24", "dev", Bridge); err != nil {
+		// The address add races the same way: the winner may have added the gateway already.
+		if err := r.run(ctx, "ip", "addr", "add", Gateway.String()+"/24", "dev", Bridge); err != nil && !fileExists(err) {
 			return err
 		}
 	}
@@ -212,6 +229,25 @@ func SetupNetwork(ctx context.Context, h Host) error {
 		return err
 	}
 	return r.run(ctx, "nft", "-f", "/etc/kevaso-silos.nft")
+}
+
+// fileExists reports ip(8)'s "RTNETLINK answers: File exists": the link or address is already there.
+func fileExists(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "File exists")
+}
+
+// confirmBridge checks the link ip link add refused to create. ip -d link show names a bridge
+// device with a "bridge" detail field ("bridge_slave" is a port of one, and is not). Anything else
+// keeps the name and fails setup.
+func confirmBridge(ctx context.Context, r *Runtime) error {
+	out, err := r.Host.Run(ctx, "ip", "-d", "link", "show", Bridge)
+	if err != nil {
+		return fmt.Errorf("ip -d link show %s: %w: %s", Bridge, err, strings.TrimSpace(string(out)))
+	}
+	if !slices.Contains(strings.Fields(string(out)), "bridge") {
+		return fmt.Errorf("%s exists but is not a bridge", Bridge)
+	}
+	return nil
 }
 
 func (r *Runtime) setupStorage(ctx context.Context, o StorageOptions) error {
