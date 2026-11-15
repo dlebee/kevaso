@@ -112,9 +112,10 @@ func TestMetal2KevasodStopsQuickly(t *testing.T) {
 	}
 }
 
-// TestMetal2BackoffHoldsNoClaim is item F: a microVM whose VMM is killed right after each start,
-// twice: while it waits out its restart backoff (Ready says it starts again in …), its start
-// claim isn't renewed.
+// TestMetal2BackoffHoldsNoClaim is item F: a microVM's VMM killed by systemd right after each
+// start, twice (systemctl kill --kill-whom=main: no PID read and killed later): while it waits
+// out its restart backoff (Ready says it starts again in …), its start claim isn't renewed. Each
+// restart is timed; the kernel's log is read for an OOM kill.
 //
 // Listens on nothing outside.
 func TestMetal2BackoffHoldsNoClaim(t *testing.T) {
@@ -127,16 +128,24 @@ func TestMetal2BackoffHoldsNoClaim(t *testing.T) {
 	s := c.silo(ns, "vm")
 	host := map[string]*mt{metalHost: p.c1, metalHost2: p.c2}[s.Status.Host]
 	n := cloudhypervisor.NamesFor(kri.ID{Namespace: ns, Name: "vm", UID: s.UID})
-	mainPID := func() string { return strings.TrimSpace(host.mustSh("systemctl show -p MainPID --value " + n.Unit)) }
-	// Never kill 0 (that would be this shell's own group).
-	kill := func(pid string) { host.mustSh("[ '" + pid + "' -gt 0 ] 2>/dev/null && kill -KILL " + pid + "; true") }
-	first := mainPID()
-	kill(first)
-	c.eventually("started again once (another VMM)", 5*time.Minute, func() (bool, string) {
-		pid := mainPID()
-		return pid != "0" && pid != first, pid
+	since := strings.TrimSpace(host.mustSh("date -u '+%Y-%m-%d %H:%M:%S'"))
+	enter := func() string {
+		return strings.TrimSpace(host.mustSh("systemctl show -p ActiveEnterTimestampMonotonic --value " + n.Unit))
+	}
+	kill := func() string {
+		at := enter()
+		host.mustSh("systemctl kill -s KILL --kill-whom=main " + n.Unit)
+		return at
+	}
+	was := kill()
+	killed := time.Now()
+	c.eventually("started again once (a new start of its unit)", 10*time.Minute, func() (bool, string) {
+		now := enter()
+		active := strings.TrimSpace(host.mustSh("systemctl is-active " + n.Unit + " || true"))
+		return now != was && now != "0" && active == "active", now + " " + active
 	})
-	kill(mainPID())
+	t.Logf("the first restart took %s", time.Since(killed).Round(time.Second))
+	kill()
 	c.eventually("waiting out its backoff", 3*time.Minute, func() (bool, string) {
 		r := meta.FindCondition(c.silo(ns, "vm").Status.Conditions, "Ready")
 		return r != nil && strings.Contains(r.Message, "starting it again in"), fmt.Sprint(r)
@@ -154,6 +163,76 @@ func TestMetal2BackoffHoldsNoClaim(t *testing.T) {
 	}
 	t.Logf("during the backoff the claim stayed %q", held)
 	c.waitRunning(ns, 10*time.Minute, "vm")
+	t.Logf("the kernel's log since: %s", host.mustSh("journalctl -k --no-pager --since '"+since+"' | grep -iE 'oom|killed process' | tail -3; true"))
+	t.Logf("the agent's log for it:\n%s", host.mustSh("journalctl -u kevasod --no-pager --since '"+since+"' | grep "+ns+"/vm | grep -v 'retry in 1' | tail -12"))
+}
+
+// TestMetal2VMMLock is host-code-4's claim 3 (f251e18): a microVM started after the upgrade runs
+// its VMM under a lock it holds itself (flock --no-fork): its unit's MainPID is cloud-hypervisor
+// with this silo's socket, the lock is held while it runs, by the VMM, and a second taker waits
+// and gives up (75).
+//
+// Listens on nothing outside.
+func TestMetal2VMMLock(t *testing.T) {
+	p := metal2(t)
+	c := p.c1
+	ns := "vmmlock2"
+	c.namespace(ns)
+	c.apply(vmEcho(ns, "vm", 8080))
+	c.waitRunning(ns, 20*time.Minute, "vm")
+	s := c.silo(ns, "vm")
+	host := map[string]*mt{metalHost: p.c1, metalHost2: p.c2}[s.Status.Host]
+	n := cloudhypervisor.NamesFor(kri.ID{Namespace: ns, Name: "vm", UID: s.UID})
+	lock := n.Dir + "/vmm.lock"
+	pid := strings.TrimSpace(host.mustSh("systemctl show -p MainPID --value " + n.Unit))
+	cmd := host.mustSh("tr '\\0' ' ' < /proc/" + pid + "/cmdline")
+	if !strings.Contains(cmd, "cloud-hypervisor") || !strings.Contains(cmd, n.Socket) || strings.HasPrefix(strings.TrimSpace(cmd), "/usr/bin/flock") {
+		t.Errorf("its MainPID %s is %q, want cloud-hypervisor with its socket", pid, cmd)
+	}
+	c.expect("the lock is held while it runs", host.mustSh("flock -n -E 75 "+lock+" true; echo $?"), "75")
+	c.expect("held by the VMM itself", host.mustSh("ls -l /proc/"+pid+"/fd | grep -c vmm.lock || true"), "1")
+	start := time.Now()
+	c.expect("a second taker waits and gives up", host.mustSh("sudo -u "+cloudhypervisor.VMMUser+" flock --no-fork -w 5 -E 75 "+lock+" true; echo $?"), "75")
+	t.Logf("it gave up after %s", time.Since(start).Round(time.Second))
+}
+
+// TestMetal2ResetCutDuringConvert is host-code-4's claim 2a (b477cb6): kvo reset of a microVM,
+// kevasod killed (SIGKILL) while qemu-img converts the image onto its new root disk: the mark is
+// saved, kevasod comes back (Restart), the convert runs again before the unit starts, the guest
+// boots, and the mark is gone.
+//
+// Listens on nothing outside.
+func TestMetal2ResetCutDuringConvert(t *testing.T) {
+	p := metal2(t)
+	c := p.c1
+	ns := "resetcut2"
+	c.namespace(ns)
+	c.apply(vmEcho(ns, "vm", 8080))
+	c.waitRunning(ns, 20*time.Minute, "vm")
+	s := c.silo(ns, "vm")
+	host := map[string]*mt{metalHost: p.c1, metalHost2: p.c2}[s.Status.Host]
+	n := cloudhypervisor.NamesFor(kri.ID{Namespace: ns, Name: "vm", UID: s.UID})
+	since := strings.TrimSpace(host.mustSh("date -u '+%Y-%m-%d %H:%M:%S'"))
+	// On the host: wait for the convert, then kill kevasod at once (one command, no round trip).
+	host.mustSh("systemd-run --unit=kvt-resetcut sh -c 'for i in $(seq 1 3000); do if pgrep -f \"qemu-img convert.*" + n.LV + "\" >/dev/null; then cp /var/lib/kevaso-silos/" + n.Short + "/silo.json /run/kvt-resetcut.json; systemctl kill -s KILL kevasod; echo killed > /run/kvt-resetcut; exit; fi; sleep 0.05; done' >/dev/null")
+	t.Cleanup(func() { _, _ = host.sh("systemctl stop kvt-resetcut 2>/dev/null; rm -f /run/kvt-resetcut /run/kvt-resetcut.json; true") })
+	c.must("", "reset", "silo", "vm", "-n", ns)
+	c.eventually("kevasod killed during the convert", 5*time.Minute, func() (bool, string) {
+		out, _ := host.sh("cat /run/kvt-resetcut 2>/dev/null")
+		return strings.TrimSpace(out) == "killed", out
+	})
+	c.expect("the mark was saved before", host.mustSh("grep -c '\"remake\"' /run/kvt-resetcut.json || true"), "1")
+	c.eventually("the API back", 3*time.Minute, func() (bool, string) { out, code := c.kvo("", "get", "hosts"); return code == 0, out })
+	c.waitRunning(ns, 15*time.Minute, "vm")
+	got, code := c.in(ns, "vm", "echo booted")
+	if code != 0 || got != "booted" {
+		t.Errorf("the guest doesn't answer after the remake: %d %q", code, got)
+	}
+	if out := strings.TrimSpace(host.mustSh("grep -c '\"remake\"' /var/lib/kevaso-silos/" + n.Short + "/silo.json || true")); out != "0" {
+		t.Errorf("the mark is still there: %s", out)
+	}
+	j := host.mustSh("journalctl --no-pager --since '" + since + "' | grep -E 'qemu-img|Started .*" + n.Unit + "|remake' | tail -8")
+	t.Logf("journal:\n%s", j)
 }
 
 // TestMetal2VolumeDroppedFromSpec is host-code's second batch: a microVM with a local volume, the
