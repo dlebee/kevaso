@@ -375,13 +375,14 @@ func closeWrite(c net.Conn) {
 
 // inject ends TLS for sni and proxies each request to the real host with the secret added.
 func (g *Gate) inject(ctx context.Context, c net.Conn, hello []byte, p Policy, sni string, dst netip.AddrPort) {
-	inj, err := g.Injections(ctx, p.Key)
-	if err != nil {
-		g.log("gate: %s: injections: %v", p.Key, err)
-		return
+	inj, failed := g.Injections(ctx, p.Key)
+	if failed != nil {
+		// Said to the silo too (K-076): TLS is ended as for any injection, and every request is
+		// answered with why there is no secret, instead of a connection closed with nothing said.
+		g.log("gate: BLOCKED %s → %s: the secret can't be injected: %v", p.Key, sni, failed)
 	}
 	in, ok := inj[sni]
-	if !ok { // the grant names it, but the secret isn't there (no value yet, or not allowed)
+	if failed == nil && !ok { // the grant names it, but the secret isn't there (no value yet, or not allowed)
 		g.log("gate: BLOCKED %s → %s: no secret to inject", p.Key, sni)
 		return
 	}
@@ -430,6 +431,10 @@ func (g *Gate) inject(ctx context.Context, c net.Conn, hello []byte, p Policy, s
 		if host != sni { // domain fronting: the request is for another host than the TLS name
 			g.log("gate: BLOCKED %s: Host %q over TLS for %q", p.Key, r.Host, sni)
 			http.Error(w, "egress not allowed", http.StatusForbidden)
+			return
+		}
+		if failed != nil {
+			http.Error(w, "egress gate: the secret for "+sni+" can't be injected: "+failed.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		if in.Approval {

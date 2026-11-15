@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -33,6 +34,7 @@ type egress struct {
 	mu       sync.Mutex
 	silos    func() []*v1.Silo
 	grants   func() []*v1.Grant
+	now      func() time.Time            // nil: time.Now
 	hosts    func() []*v1.Host           // nil: none known
 	services func() []*v1.Service        // nil: none known
 	injected map[string]cachedInjections // by silo namespace/name
@@ -40,8 +42,25 @@ type egress struct {
 
 type cachedInjections struct {
 	uid    string
-	at     time.Time
+	at     time.Time // when the control plane gave them
 	byHost map[string]gate.Injection
+	said   bool // the log has said they are injected without the control plane
+}
+
+// InjectWithoutContact is how long a host that can't reach its control plane keeps injecting a
+// secret it was given (K-076): the grant's own lifetime, an hour when the grant sets none. Grants
+// have no lifetime of their own yet, so it is always this. After it, every injection is refused
+// until the control plane answers again.
+const InjectWithoutContact = time.Hour
+
+// cutOff says whether err means the control plane didn't answer (the host is cut off from it),
+// rather than answered with a refusal.
+func cutOff(err error) bool {
+	var ae *client.Error
+	if errors.As(err, &ae) {
+		return ae.Code >= 500
+	}
+	return true
 }
 
 // upstreamRoots is the system roots plus extraCA (a PEM file: a company proxy's CA, or a test's
@@ -161,8 +180,14 @@ func (e *egress) injections(ctx context.Context, key string) (map[string]gate.In
 	if silo == nil {
 		return nil, fmt.Errorf("%s isn't on this host", key)
 	}
+	now := time.Now
+	if e.now != nil {
+		now = e.now
+	}
 	e.mu.Lock()
-	if c, ok := e.injected[key]; ok && c.uid == silo.UID && time.Since(c.at) < time.Minute {
+	c, cached := e.injected[key]
+	cached = cached && c.uid == silo.UID
+	if cached && now().Sub(c.at) < time.Minute {
 		e.mu.Unlock()
 		return c.byHost, nil
 	}
@@ -171,10 +196,27 @@ func (e *egress) injections(ctx context.Context, key string) (map[string]gate.In
 	err := e.c.Call(ctx, http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{
 		Namespace: silo.Namespace, Name: silo.Name, UID: silo.UID, Host: e.hostName,
 		Request: client.BrokerRequest{Op: client.OpInjections}}, &resp)
-	if err != nil {
-		return nil, err
+	if err != nil && cutOff(err) && cached {
+		// Cut off (K-076): what the control plane last gave, until InjectWithoutContact.
+		if age := now().Sub(c.at); age >= InjectWithoutContact {
+			return nil, fmt.Errorf("the control plane hasn't answered for %s (%v): a secret is injected for at most %s without it, and again once it answers", age.Round(time.Second), err, InjectWithoutContact)
+		}
+		e.mu.Lock()
+		if cur, ok := e.injected[key]; ok && cur.at.Equal(c.at) && !cur.said {
+			cur.said = true
+			e.injected[key] = cur
+			e.log("egress gate: %s: the control plane can't be reached (%v): injecting what it gave %s ago, for at most %s", key, err, now().Sub(c.at).Round(time.Second), InjectWithoutContact)
+		}
+		e.mu.Unlock()
+		return c.byHost, nil
 	}
-	if resp.Error != "" {
+	if err != nil || resp.Error != "" { // refused: what was given before doesn't cover it
+		e.mu.Lock()
+		delete(e.injected, key)
+		e.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("%s", resp.Error)
 	}
 	byHost := map[string]gate.Injection{}
@@ -185,7 +227,7 @@ func (e *egress) injections(ctx context.Context, key string) (map[string]gate.In
 	if e.injected == nil {
 		e.injected = map[string]cachedInjections{}
 	}
-	e.injected[key] = cachedInjections{uid: silo.UID, at: time.Now(), byHost: byHost}
+	e.injected[key] = cachedInjections{uid: silo.UID, at: now(), byHost: byHost}
 	e.mu.Unlock()
 	return byHost, nil
 }

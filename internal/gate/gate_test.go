@@ -106,6 +106,8 @@ type env struct {
 	// approval makes the injection need a person's yes; ask answers for it.
 	approval bool
 	ask      func(secret, host, method, path string) error
+	// injErr: what Injections answers instead of the secret.
+	injErr error
 }
 
 func setup(t *testing.T, cidrPort string) *env {
@@ -132,6 +134,9 @@ func setup(t *testing.T, cidrPort string) *env {
 		Injections: func(context.Context, string) (map[string]Injection, error) {
 			e.dstMu.Lock()
 			defer e.dstMu.Unlock()
+			if e.injErr != nil {
+				return nil, e.injErr
+			}
 			return map[string]Injection{"api.allowed.test": {Header: "Authorization", Value: "Bearer sk-test-123", Approval: e.approval, Secret: "key"}}, nil
 		},
 		Ask: func(_ context.Context, key, secret, host, method, path string) error {
