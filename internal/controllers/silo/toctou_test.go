@@ -105,6 +105,7 @@ func TestARestartElsewhereReadsTheOldHostFresh(t *testing.T) {
 	e.get("Silo", "dev", "validator", s)
 	s.Status.Host, s.Status.Phase = "hv1", "Running"
 	s.Status.Conditions = []meta.Condition{fence.ArmedCondition("hv1", 45*time.Second, s.Generation)}
+	confirmStopped(s, "hv1") // all a restart elsewhere needs, but for the fresh read of hv1
 	if err := e.c.UpdateStatus(e.ctx, s); err != nil {
 		t.Fatal(err)
 	}

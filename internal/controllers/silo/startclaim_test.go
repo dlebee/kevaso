@@ -37,6 +37,7 @@ func TestAFreshStartClaimKeepsTheSiloOnItsHost(t *testing.T) {
 			s.Status.Conditions = append(s.Status.Conditions, meta.Condition{Type: "StartClaim", Status: meta.ConditionTrue, Reason: "Starting",
 				Message: claimedBy + stamp.Format(time.RFC3339Nano), ObservedGeneration: 3, LastTransitionTime: stamp})
 		}
+		confirmStopped(s, "hv1") // hv1 reported its fence stopped it, under that claim: only the claim decides
 		return s
 	}
 	const hv1 = "starting on hv1 at " // the agent's message, before its time

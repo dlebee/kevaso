@@ -16,16 +16,17 @@ import (
 
 // K-119: a handoff waits for its source to let go. With the source gone (lost, or its Host
 // removed), the handoff ends by itself only for a silo whose source armed its fence for it
-// (onControlPlaneLoss: Stop, this generation), once this control plane has heard nothing from the
-// source for its `after` plus StopMargin, on its own count (Env.Silence): by then the source's
-// fence has stopped it. Otherwise it waits, and the SourceUnreachable condition says so and names
+// (onControlPlaneLoss: Stop, this generation) and that reported its fence stopped it (FenceStopped,
+// for its standing start claim), once this control plane has heard nothing from the source for its
+// `after` plus StopMargin, on its own count (Env.Silence). Silence alone never ends it: a fence
+// whose kill failed can't say so. Otherwise it waits, and the SourceUnreachable condition says so and names
 // the command that ends it (kvo move … --confirm-fenced), and, for an armed silo, when it ends by
 // itself.
 func TestK119AHandoffFromAGoneSourceEndsOnlyForAnArmedStopSilo(t *testing.T) {
 	const after = 2 * time.Minute
 	classes := map[string]scheduler.Class{"juicefs": {Plugin: "juicefs", Topology: kplugin.TopologyGlobal}}
 	wait := after + silo.StopMargin(after)
-	mk := func(opted bool, armedBy string) *v1.Silo {
+	mk := func(opted bool, armedBy, stoppedBy string) *v1.Silo {
 		s := newSilo("db")
 		s.Spec.Disk.Class = "juicefs" // it moves with its data: ended with --confirm-fenced alone
 		if opted {
@@ -34,6 +35,9 @@ func TestK119AHandoffFromAGoneSourceEndsOnlyForAnArmedStopSilo(t *testing.T) {
 		s.Status.Host, s.Status.MovingFrom, s.Status.Phase = "D", "S", "Scheduled"
 		if armedBy != "" {
 			s.Status.Conditions = []meta.Condition{fence.ArmedCondition(armedBy, after, s.Generation)}
+		}
+		if stoppedBy != "" {
+			confirmStopped(s, stoppedBy)
 		}
 		return s
 	}
@@ -50,7 +54,7 @@ func TestK119AHandoffFromAGoneSourceEndsOnlyForAnArmedStopSilo(t *testing.T) {
 	}
 	command := "kvo move silo db -n dev --to D --confirm-fenced"
 	// The command named ends it: the move handler's plan for it.
-	if p, err := moves.PlanMove(mk(false, ""), moves.Of(mk(false, ""), classes), moves.Request{To: "D", ConfirmFenced: true}, false, true, ""); err != nil || p.From != "S" || p.To != "D" {
+	if p, err := moves.PlanMove(mk(false, "", ""), moves.Of(mk(false, "", ""), classes), moves.Request{To: "D", ConfirmFenced: true}, false, true, ""); err != nil || p.From != "S" || p.To != "D" {
 		t.Fatalf("the command named: %+v, %v", p, err)
 	}
 	sourceSets := map[string][]*v1.Host{
@@ -59,7 +63,7 @@ func TestK119AHandoffFromAGoneSourceEndsOnlyForAnArmedStopSilo(t *testing.T) {
 	}
 	for name, hosts := range sourceSets {
 		// Armed by S, opted in: waits for after + margin of S's silence, then ends by itself.
-		s := mk(true, "S")
+		s := mk(true, "S", "S")
 		st, changed, again, err := silo.DecideIn(s, hosts, nil, now, env(wait-time.Second))
 		if err != nil {
 			t.Fatal(err)
@@ -80,15 +84,17 @@ func TestK119AHandoffFromAGoneSourceEndsOnlyForAnArmedStopSilo(t *testing.T) {
 		}
 
 		for what, x := range map[string]*v1.Silo{
-			"not opted in":                     mk(false, "S"),
-			"opted in, never armed":            mk(true, ""),
-			"armed by the destination, not S":  mk(true, "D"),
-			"armed for an older generation":    func() *v1.Silo { s := mk(true, "S"); s.Generation = 2; return s }(),
+			"not opted in":                     mk(false, "S", "S"),
+			"opted in, never armed":            mk(true, "", ""),
+			"armed by the destination, not S":  mk(true, "D", "D"),
+			"armed for an older generation":    func() *v1.Silo { s := mk(true, "S", "S"); s.Generation = 2; return s }(),
+			"armed, its stop never reported":   mk(true, "S", ""),
+			"armed, the stop reported by D":    mk(true, "S", "D"),
 			"armed, but no count of S silence": nil,
 		} {
 			e := env(48 * time.Hour)
 			if x == nil {
-				x, e = mk(true, "S"), scheduler.Env{Classes: classes}
+				x, e = mk(true, "S", "S"), scheduler.Env{Classes: classes}
 			}
 			st, _, _, err := silo.DecideIn(x, hosts, nil, now, e)
 			if err != nil {
@@ -101,7 +107,7 @@ func TestK119AHandoffFromAGoneSourceEndsOnlyForAnArmedStopSilo(t *testing.T) {
 		}
 	}
 	// S back: the condition says so; the handoff goes on as usual (S lets go).
-	s := mk(true, "S")
+	s := mk(true, "S", "S")
 	st, _, _, _ := silo.DecideIn(s, sourceSets["S lost"], nil, now, env(time.Second))
 	s.Status = st
 	st, changed, _, _ := silo.DecideIn(s, []*v1.Host{readyHost("S"), readyHost("D")}, nil, now.Add(time.Minute), env(0))
@@ -109,7 +115,7 @@ func TestK119AHandoffFromAGoneSourceEndsOnlyForAnArmedStopSilo(t *testing.T) {
 		t.Fatalf("S back: changed %v, movingFrom %q, %+v", changed, st.MovingFrom, c)
 	}
 	// A handoff from a live source says nothing.
-	if st, _, _, _ := silo.DecideIn(mk(true, "S"), []*v1.Host{readyHost("S"), readyHost("D")}, nil, now, env(0)); cond(st) != nil {
+	if st, _, _, _ := silo.DecideIn(mk(true, "S", "S"), []*v1.Host{readyHost("S"), readyHost("D")}, nil, now, env(0)); cond(st) != nil {
 		t.Fatalf("a live source: %+v", cond(st))
 	}
 }

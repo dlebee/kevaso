@@ -24,13 +24,24 @@ import (
 //     stalls only its own silos (a call that ignores its context is left to finish, and its silo
 //     isn't tried again until it does);
 //   - a silo it couldn't confirm stopped is logged loudly on every try and named on the Host
-//     (ConditionFenceUnconfirmed) once contact is back: two copies may have run.
+//     (ConditionFenceUnconfirmed) once contact is back, and never reported stopped on the silo;
+//   - a silo it confirmed stopped is reported on the silo (fence.ConditionStopped) once contact is
+//     back, for the start claim it stopped: the control plane restarts an opted-in silo elsewhere
+//     only on that report, never on this host's silence alone (Rule 1).
 type fencing struct {
 	a           *Agent
 	mu          sync.Mutex
-	inflight    map[string]time.Time // silo UID → since when its kill or check runs (a hung engine)
-	unconfirmed map[string]string    // silo UID → what it is and why, in this outage
-	confirmed   map[string]bool      // silo UID → confirmed stopped in this outage (logged once)
+	inflight    map[string]time.Time   // silo UID → since when its kill or check runs (a hung engine)
+	unconfirmed map[string]string      // silo UID → what it is and why, in this outage
+	confirmed   map[string]bool        // silo UID → confirmed stopped in this outage (logged once)
+	stopped     map[string]stoppedSilo // silo UID → what was confirmed stopped, to report
+}
+
+// stoppedSilo is a silo the fence confirmed stopped, and the start claim it stopped (as the cache
+// had it then; nil: none stood).
+type stoppedSilo struct {
+	t     fenceTarget
+	claim *meta.Condition
 }
 
 type fenceTarget struct {
@@ -168,6 +179,10 @@ func (f *fencing) stop(ctx context.Context, t fenceTarget) {
 	}
 	f.confirmed[t.id.UID] = true
 	delete(f.unconfirmed, t.id.UID)
+	if f.stopped == nil {
+		f.stopped = map[string]stoppedSilo{}
+	}
+	f.stopped[t.id.UID] = stoppedSilo{t: t, claim: f.a.cachedClaim(t.id)}
 	f.mu.Unlock()
 	if _, was := f.a.fenceFaulted.LoadAndDelete(t.id.UID); was {
 		f.a.log("fence: %s confirmed stopped by a kill here: armed again", t.id)
@@ -176,17 +191,19 @@ func (f *fencing) stop(ctx context.Context, t fenceTarget) {
 }
 
 func (f *fencing) unconfirm(t fenceTarget, why string) {
-	f.a.log("FENCE FAULT: %s (%s) must stop and isn't confirmed stopped: %s. Trying again every %s; if the control plane restarts it elsewhere, two copies run",
+	f.a.log("FENCE FAULT: %s (%s) must stop and isn't confirmed stopped: %s. Trying again every %s; it isn't reported stopped, so the control plane doesn't start it elsewhere by itself (a person's move --confirm-fenced would run a second copy)",
 		t.id, t.runtime, why, fence.CheckEvery)
 	f.mu.Lock()
 	f.unconfirmed[t.id.UID] = t.id.String() + " (" + t.runtime + "): " + why
 	delete(f.confirmed, t.id.UID)
+	delete(f.stopped, t.id.UID)
 	f.mu.Unlock()
 	f.a.fenceFaulted.Store(t.id.UID, why) // disarmed once contact is back (armFence)
 }
 
-// endOutage forgets this outage and returns what it couldn't confirm stopped, by silo.
-func (f *fencing) endOutage() []string {
+// endOutage forgets this outage and returns what it couldn't confirm stopped, by silo, and what
+// it did.
+func (f *fencing) endOutage() ([]string, []stoppedSilo) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []string
@@ -194,8 +211,74 @@ func (f *fencing) endOutage() []string {
 		out = append(out, v)
 	}
 	sort.Strings(out)
-	f.unconfirmed, f.confirmed = map[string]string{}, map[string]bool{}
-	return out
+	var stopped []stoppedSilo
+	for _, v := range f.stopped {
+		stopped = append(stopped, v)
+	}
+	sort.Slice(stopped, func(i, j int) bool { return stopped[i].t.id.UID < stopped[j].t.id.UID })
+	f.unconfirmed, f.confirmed, f.stopped = map[string]string{}, map[string]bool{}, map[string]stoppedSilo{}
+	return out, stopped
+}
+
+// cachedClaim is the start claim the cache has for the silo id (nil: none stands, or the cache
+// doesn't have that silo).
+func (a *Agent) cachedClaim(id kri.ID) *meta.Condition {
+	o, ok := a.silos.Get(id.Namespace, id.Name)
+	if !ok || o.(*v1.Silo).UID != id.UID {
+		return nil
+	}
+	return standingClaim(o.(*v1.Silo).Status)
+}
+
+// standingClaim is the start claim st carries, if one stands (a copy).
+func standingClaim(st v1.SiloStatus) *meta.Condition {
+	c := meta.FindCondition(st.Conditions, ConditionStartClaim)
+	if c == nil || c.Status != meta.ConditionTrue {
+		return nil
+	}
+	cp := *c
+	return &cp
+}
+
+// sameClaim: both stand for the same start (or neither stands).
+func sameClaim(x, y *meta.Condition) bool {
+	if x == nil || y == nil {
+		return x == nil && y == nil
+	}
+	return x.Message == y.Message && x.ObservedGeneration == y.ObservedGeneration
+}
+
+// reportStopped says on each silo this outage's fence confirmed stopped that it did
+// (fence.StoppedCondition), once contact is back and before anything here starts it again. Only
+// while the silo is still placed here, its runtime still says nothing of it runs, and its stored
+// start claim is the one the fence stopped: a start since (a new claim) makes the report of no
+// use, and a write that raced one conflicts and is read again. A report not written is the safe
+// side: nothing is restarted elsewhere without it.
+func (a *Agent) reportStopped(ctx context.Context, stopped []stoppedSilo) {
+	for _, x := range stopped {
+		o, ok := a.silos.Get(x.t.id.Namespace, x.t.id.Name)
+		if !ok || o.(*v1.Silo).UID != x.t.id.UID {
+			continue
+		}
+		s := o.(*v1.Silo)
+		sctx, cancel := context.WithTimeout(ctx, fence.KillWithin)
+		st, err := x.t.rt.Status(sctx, x.t.id)
+		cancel()
+		if err != nil || st.State == kri.Running {
+			a.log("fence: %s isn't reported stopped: it runs again, or its runtime can't say (%v)", x.t.id, err)
+			continue
+		}
+		err = a.setStatus(ctx, s, func(cur *v1.SiloStatus) {
+			claim := standingClaim(*cur)
+			if !sameClaim(claim, x.claim) {
+				return // started again since (or the cache was behind): not this report's
+			}
+			meta.SetCondition(&cur.Conditions, fence.StoppedCondition(a.HostName, claim, s.Generation), a.now())
+		})
+		if err != nil {
+			a.log("fence: reporting %s stopped: %v (the control plane restarts it elsewhere only on that report)", x.t.id, err)
+		}
+	}
 }
 
 // reportUnconfirmed says on the Host, when an outage ends, which silos this host's fence couldn't
@@ -206,7 +289,7 @@ func (a *Agent) reportUnconfirmed(ctx context.Context, unconfirmed []string) {
 	if len(unconfirmed) > 0 {
 		cond.Status, cond.Reason = meta.ConditionTrue, "NotConfirmed"
 		cond.Message = "during the last outage this host's fence couldn't confirm these silos stopped: " + strings.Join(unconfirmed, "; ") +
-			". If the control plane restarted them elsewhere, two copies may have run: check each one's other host and its data. " +
+			". None was reported stopped, so the control plane didn't start them elsewhere by itself; if a person moved one meanwhile (--confirm-fenced), two copies may have run: check its other host and its data. " +
 			"Each is disarmed (FenceArmed False, KillFailed) until a kill of it here is confirmed; the host is not rebooted for it."
 		a.log("FENCE FAULT reported: %s", cond.Message)
 	}

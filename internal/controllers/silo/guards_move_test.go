@@ -33,6 +33,7 @@ func TestAMoveSiloWithAHostLocalDiskIsNeverRestartedElsewhere(t *testing.T) {
 		s.Spec.Availability.OnControlPlaneLoss, s.Spec.Availability.After = v1.OnControlPlaneLossStop, "45s"
 		s.Status.Host, s.Status.Phase = "hv1", "Running"
 		s.Status.Conditions = []meta.Condition{fence.ArmedCondition("hv1", 45*time.Second, 3)}
+		confirmStopped(s, "hv1")
 		st, _, _, err := silo.DecideIn(s, hosts, nil, now, env)
 		if err != nil {
 			t.Fatal(err)
