@@ -92,7 +92,10 @@ type Gateway struct {
 }
 
 // User is the gateway's own system user.
-func (g Gateway) User() string { return "kvos-" + hash(g.Key)[:8] }
+func (g Gateway) User() string { return UserPrefix + hash(g.Key)[:8] }
+
+// UserPrefix starts every gateway user's name (a reset removes them all).
+const UserPrefix = "kvos-"
 
 // Dir is its home: config, state, sandbox disks.
 func (g Gateway) Dir() string { return StateDir + "/gw/" + g.Key }

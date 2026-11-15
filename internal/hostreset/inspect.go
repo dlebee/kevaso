@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
+	"kevaso.com/core/builtin/kri/openshell"
 )
 
 // InspectScript prints what a reset needs to know about the host, in sections.
@@ -26,6 +27,7 @@ if command -v docker >/dev/null && systemctl is-active -q docker; then
 else
 ` + containerStateLines + `
 fi
+` + openShellSiloLines(openshell.StateDir) + `
 if command -v podman >/dev/null; then
   podman ps -a --filter label=kevaso.com/name --format 'container {{index .Labels "kevaso.com/namespace"}}/{{index .Labels "kevaso.com/name"}} (podman)' | sort -u
 fi
@@ -50,6 +52,16 @@ if [ -n "$attached" ]; then vgchange -an ` + VG + ` >/dev/null 2>&1; losetup -d 
 echo '== state'
 ` + strings.ReplaceAll(StateScript, "echo '== ", "echo '=== ")
 
+// openShellSiloLines lists OpenShell silos from the runtime's state in dir (their gateways may be
+// down, so OpenShell itself can't be asked).
+func openShellSiloLines(dir string) string {
+	return `for f in ` + dir + `/silos/*.json; do
+  [ -f "$f" ] || continue
+  ns=$(sed -n 's/.*"Namespace": *"\([^"]*\)".*/\1/p' "$f" | head -1); n=$(sed -n 's/.*"Name": *"\([^"]*\)".*/\1/p' "$f" | head -1)
+  echo "openshell $ns/$n"
+done`
+}
+
 // containerStateLines lists container silos from the container runtime's state on disk, for
 // when their engine isn't running (K-078): its containers can't be listed, and would go with
 // its directories.
@@ -64,7 +76,7 @@ type Inspection struct {
 	Record    *Record  // nil: no install record (an older install, or never installed)
 	Installed bool     // kevasod's binary or unit is there
 	Running   bool     // kevasod is active
-	Silos     []string // "vm UNIT" or "container NS/NAME"
+	Silos     []string // "vm UNIT", "container NS/NAME" or "openshell NS/NAME"
 	PVs       []PV     // the volume group's physical volumes (none: no volume group)
 	Volumes   []string // its logical volumes but the thin pool, "NAME SIZE"
 	// StorageFile is Kevaso's loop file when it exists ("PATH SIZE"), attached or not.
