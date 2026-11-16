@@ -1990,5 +1990,17 @@
    "./internal/apiserver"
   ],
   "protects": "a deleted secret's sealed value is removed"
+ },
+ {
+  "id": "G-342",
+  "guard": "a volume is mounted only under its plugin's device prefix",
+  "file": "internal/agent/volumes.go",
+  "find": "if err := kplugin.DeviceUnder(dev, prefixes); err != nil {\n\t\treturn fmt.Errorf(\"not mounting %s: %w\", dev, err)\n\t}",
+  "replace": "if false {\n\t\treturn fmt.Errorf(\"not mounting %s: %w\", dev, err)\n\t}",
+  "mutation": "plugin prefix not checked",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a host disk is never mounted as a volume"
  }
 ]
