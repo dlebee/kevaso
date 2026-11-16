@@ -85,6 +85,14 @@ func prepareJoin(ctx context.Context, cfg *Config) error {
 			return fmt.Errorf("%s: %w", statePath, err)
 		}
 	} else {
+		// No member data and no saved join. The one-time token is removed once a join succeeds, so
+		// a missing token is a node that already joined and then lost its data (the unit still has
+		// --join). Refusing with ExitRefused logs the fix once; exit 1 would make Restart=always
+		// loop and flood the journal (Linode e2e: 42 restarts, only "joining needs the one-time
+		// join token" left in the tail). A first join still has the token file.
+		if err := refuseSpentJoin(cfg); err != nil {
+			return err
+		}
 		r, err := askToJoin(ctx, cfg)
 		if err != nil {
 			return err
@@ -112,6 +120,22 @@ func prepareJoin(ctx context.Context, cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+// refuseSpentJoin refuses a joining node whose one-time token is gone. prepareJoin calls it only
+// when there is no store and no saved join, which is a wiped system node (or a token never
+// written). A token that is present, or a read error other than "not there", is left to askToJoin.
+func refuseSpentJoin(cfg *Config) error {
+	if cfg.Join == nil || cfg.Join.Token != "" {
+		return nil
+	}
+	if _, err := os.Stat(cfg.Join.TokenFile); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("joining needs the one-time join token: %w", err)
+	}
+	return refuseStart("this node's data is gone from %s (no store, and its one-time join token %s is gone): not starting. %s",
+		cfg.DataDir, cfg.Join.TokenFile, capital(howToRecover(*cfg, false)))
 }
 
 // askToJoin presents the token and a fresh key's public half, and writes the identity it gets back.
