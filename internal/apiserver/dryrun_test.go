@@ -119,7 +119,7 @@ func dryDelete(ctx context.Context, c *client.Client, kind, namespace, name stri
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
 		e := &client.Error{Code: resp.StatusCode}
