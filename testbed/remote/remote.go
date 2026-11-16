@@ -49,6 +49,10 @@ type Config struct {
 	// SpareDisk is a whole disk the tests may give Kevaso and the reset may wipe (PREFIX_SPARE_DISK,
 	// e.g. /dev/nvme1n1). No other disk is ever touched.
 	SpareDisk string
+	// ListenOK are exact addresses (IP:PORT) the machine's own setup listens on, on a port the
+	// checklist keeps for Kevaso (PREFIX_LISTEN_OK, space-separated; e.g. a lab's libvirt
+	// dnsmasq on 192.168.122.1:53). Only those addresses pass.
+	ListenOK []string
 }
 
 // ErrNotConfigured: the environment doesn't name a machine (tests skip on it).
@@ -87,7 +91,7 @@ func FromEnvPrefix(getenv func(string) string, prefix string) (Config, error) {
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("%w: set %s (see test/e2e/METAL.md)", ErrNotConfigured, strings.Join(missing, ", "))
 	}
-	c := Config{KeyFile: key, HostKey: hk, ExternalIP: ext, InternalIP: get("INTERNAL_IP"), Hostname: get("HOSTNAME"), SpareDisk: get("SPARE_DISK")}
+	c := Config{KeyFile: key, HostKey: hk, ExternalIP: ext, InternalIP: get("INTERNAL_IP"), Hostname: get("HOSTNAME"), SpareDisk: get("SPARE_DISK"), ListenOK: strings.Fields(get("LISTEN_OK"))}
 	var err error
 	if c.User, c.Address, c.Port, err = ParseTarget(host); err != nil {
 		return Config{}, fmt.Errorf("%s_HOST: %w", prefix, err)
@@ -140,6 +144,11 @@ func (c Config) Validate() error {
 	}
 	if c.SpareDisk != "" && (!strings.HasPrefix(c.SpareDisk, "/dev/") || strings.ContainsAny(c.SpareDisk, " '\"$;&|")) {
 		errs = append(errs, fmt.Errorf("SPARE_DISK %q: want a /dev path", c.SpareDisk))
+	}
+	for _, a := range c.ListenOK {
+		if h, p, err := net.SplitHostPort(a); err != nil || net.ParseIP(h) == nil || p == "" || strings.ContainsAny(a, " '\"$;&|") {
+			errs = append(errs, fmt.Errorf("LISTEN_OK %q: want IP:PORT", a))
+		}
 	}
 	if c.KeyFile == "" {
 		errs = append(errs, fmt.Errorf("%s: required", EnvKey))

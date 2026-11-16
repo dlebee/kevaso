@@ -794,6 +794,25 @@ func TestMetalReset(t *testing.T) {
 	t.Log("the machine is clean: every checklist item passed")
 }
 
+// TestMetalRebaseline (KEVASO_METAL_REBASELINE set to why) records the machine's state now as
+// its baseline, keeping the old one beside it: for a machine that has gained a setup of its own
+// the harness reset must keep. The machine must pass the checklist first. It makes no cluster.
+func TestMetalRebaseline(t *testing.T) {
+	why := os.Getenv("KEVASO_METAL_REBASELINE")
+	if why == "" {
+		t.Skip("KEVASO_METAL_REBASELINE (why) is not set")
+	}
+	d := metalDriver(t)
+	defer func() { _ = d.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	added, err := d.Rebaseline(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("re-baselined (%s); the new baseline adds:\n  %s", why, strings.Join(added, "\n  "))
+}
+
 // TestMetalCheck only runs the checklist and the baseline comparison, changing nothing: is the
 // machine clean now (after kvoadm reset, say)?
 func TestMetalCheck(t *testing.T) {

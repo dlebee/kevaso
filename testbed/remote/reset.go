@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
@@ -63,8 +64,21 @@ var TestPaths = []string{"/var/lib/kvt-inet", "/var/lib/kvt-registry", "/root/.k
 
 // Checklist is the test machine's checklist: everything gone, Docker and the tests' files
 // included, and the spare disk (if it has one) empty.
-func Checklist(spare string) []hostreset.Check {
-	cs := append(hostreset.Checklist(hostreset.CheckOptions{Ports: Ports, DockerGone: true, PodmanGone: true}),
+func Checklist(spare string, listenOK ...string) []hostreset.Check {
+	base := hostreset.Checklist(hostreset.CheckOptions{Ports: Ports, DockerGone: true, PodmanGone: true})
+	if len(listenOK) > 0 {
+		for i, c := range base {
+			if c.Name == "nothing listens on Kevaso's ports" {
+				var ex []string
+				for _, a := range listenOK {
+					ex = append(ex, "-e '"+a+"'")
+				}
+				base[i].Script = "{ " + c.Script + "\n} | grep -vxF " + strings.Join(ex, " ") + "; true"
+				base[i].Name += " (but the machine's own " + strings.Join(listenOK, ", ") + ")"
+			}
+		}
+	}
+	cs := append(base,
 		hostreset.Check{Name: "no file of the tests is left", Script: `for f in ` + strings.Join(TestPaths, " ") + `; do [ -e "$f" ] && echo "$f"; done; true`})
 	if spare != "" {
 		cs = append(cs, hostreset.Check{Name: "the spare disk " + spare + " is empty",
@@ -159,9 +173,42 @@ func (d *Driver) RecordBaseline(ctx context.Context) (State, error) {
 	return s, nil
 }
 
+// Rebaseline records the machine's state now as its baseline in place of the old one, for a
+// machine that has gained something of its own a reset must keep (a lab's packages and tables,
+// say). Like RecordBaseline it needs the checklist to pass first: nothing of Kevaso's or Docker
+// gets in. The old baseline is kept beside it (state.before-TIME). It returns the packages and
+// tables the new baseline adds.
+func (d *Driver) Rebaseline(ctx context.Context) (added []string, err error) {
+	old, err := d.Baseline(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := d.Check(ctx, nil); err != nil {
+		return nil, fmt.Errorf("not re-baselining a machine that isn't clean (reset it first): %w", err)
+	}
+	s, err := d.State(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range s.Packages {
+		if !slices.Contains(old.Packages, p) {
+			added = append(added, "package "+p)
+		}
+	}
+	for _, t := range s.Tables {
+		if !slices.Contains(old.Tables, t) {
+			added = append(added, "table "+t)
+		}
+	}
+	if _, err := d.Run(ctx, "umask 077 && cp -p "+BaselineFile+" "+BaselineFile+".before-$(date -u +%Y%m%dT%H%M%SZ) && cat > "+BaselineFile+".new && mv "+BaselineFile+".new "+BaselineFile, []byte(s.Render())); err != nil {
+		return nil, err
+	}
+	return added, nil
+}
+
 // Check runs the checklist (and, with a baseline, the comparison with it).
 func (d *Driver) Check(ctx context.Context, base *State) error {
-	checks := Checklist(d.Config.SpareDisk)
+	checks := Checklist(d.Config.SpareDisk, d.Config.ListenOK...)
 	outputs := map[string]string{}
 	var errs []error
 	for _, c := range checks {
