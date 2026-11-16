@@ -23,15 +23,16 @@ func TestMoves(t *testing.T) {
 		t.Helper()
 		h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: name},
 			Spec: v1.HostSpec{ExternalIP: "203.0.113.1", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}
-		h.Status.Runtimes = map[string]v1.RuntimeStatus{}
+		rts := map[string]v1.RuntimeStatus{}
 		for _, r := range runtimes {
 			h.Spec.Components.Worker.Runtimes = append(h.Spec.Components.Worker.Runtimes, v1.RuntimeSpec{Name: r})
-			h.Status.Runtimes[r] = v1.RuntimeStatus{State: "Ready"}
+			rts[r] = v1.RuntimeStatus{State: "Ready"}
 		}
 		if err := c.admin.Create(c.ctx, h); err != nil {
 			t.Fatal(err)
 		}
 		now := time.Now()
+		h.Status.Runtimes = rts
 		h.Status.Conditions = []meta.Condition{{Type: "Ready", Status: meta.ConditionTrue, Reason: "Heartbeat", LastTransitionTime: now}}
 		h.Status.LastHeartbeat = &now
 		h.Status.Allocatable = v1.Resources{CPU: 8, Memory: "16Gi"}
