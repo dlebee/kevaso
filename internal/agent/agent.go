@@ -681,6 +681,7 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 			return engine.Result{RequeueAfter: wait}, nil
 		}
 		a.createBackoff.Delete(s.UID)
+		a.recordApplied(s.UID, s.Spec.Reset, image) // a create satisfied this reset and image (K-127)
 		return engine.Result{RequeueAfter: time.Millisecond}, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 			st.Image = running(st.Image, s, image)
 			st.Image.Digest = digest
@@ -1051,7 +1052,20 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 	if cur.Running != image {
 		what = "image " + image
 	}
-	if a.alreadyApplied(s.UID, s.Spec.Reset, image) {
+	applied, err := a.alreadyApplied(s.UID, s.Spec.Reset, image)
+	if err != nil {
+		// K-127: the record of what this host applied can't be read. It is not empty: a request
+		// the store says is due (a restored status) is not applied again while that's so.
+		msg := "the record of resets applied here can't be read (" + err.Error() + "): a reset is not applied again, its disk is kept"
+		a.log("silo %s/%s: %s is not applied: %s", s.Namespace, s.Name, what, msg)
+		if werr := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			setCond(st, "Updated", meta.ConditionFalse, "AppliedRecordUnreadable", msg, s.Generation, a.now())
+		}); werr != nil {
+			return true, werr
+		}
+		return true, errors.New(msg)
+	}
+	if applied {
 		// K-110: this host made the disk afresh for this very request already; the store's status
 		// is from before (a control plane restored from a backup taken while it was due). Nothing
 		// is wiped again: the status is brought up to what was done.

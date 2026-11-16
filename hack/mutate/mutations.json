@@ -1868,5 +1868,31 @@
    "./test/integration"
   ],
   "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-195",
+  "guard": "a reset or image a create satisfied is recorded as applied here (K-127)",
+  "file": "internal/agent/agent.go",
+  "find": "\t\ta.recordApplied(s.UID, s.Spec.Reset, image) // a create satisfied this reset and image (K-127)\n",
+  "replace": "",
+  "mutation": "create does not record the request",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-196",
+  "guard": "an unreadable applied-resets record is not empty: a replayed reset is refused (K-127)",
+  "file": "internal/agent/applied.go",
+  "find": "if l.unreadable != nil {\n\t\treturn false, l.unreadable\n\t}",
+  "replace": "if l.unreadable != nil && false {\n\t\treturn false, l.unreadable\n\t}",
+  "mutation": "unreadable record counts as empty",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
  }
 ]
