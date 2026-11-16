@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,8 +12,11 @@ import (
 	"time"
 
 	"kevaso.com/core/api/meta"
+	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/cli/kvoadm"
+	"kevaso.com/core/internal/sshboot"
+	"kevaso.com/core/sdk/kri"
 )
 
 // TestMetal2HeldServesLastState is network-3's N3-4 (K-097, K-122): machine 1's store copied
@@ -38,7 +42,8 @@ spec:
 ---
 ` + vmEcho(ns, "vm", 8080) + on(metalHost2) + "  grants: [g]\n  ports: [{ name: http, port: 8080 }]\n  service:\n    ports: [{ port: http }]\n")
 	c.waitRunning(ns, 20*time.Minute, "vm")
-	logger := `systemd-run -q --unit kvtlog sh -c 'while true; do echo "$(date +%s) $(curl -sk -o /dev/null -w %{http_code} -m 4 --resolve example.com:443:203.0.113.9 https://example.com/ 2>/dev/null) $(getent hosts vm.` + ns + `.kevaso | cut -d" " -f1)" >> /root/egress.log; sleep 5; done'`
+	// The time on a line is when the try finished. date runs after curl, which waits up to 4s.
+	logger := `systemd-run -q --unit kvtlog sh -c 'while true; do code=$(curl -sk -o /dev/null -w %{http_code} -m 4 --resolve example.com:443:203.0.113.9 https://example.com/ 2>/dev/null); dns=$(getent hosts vm.` + ns + `.kevaso | cut -d" " -f1); echo "$(date +%s) $code $dns" >> /root/egress.log; sleep 5; done'`
 	if out, code := c.in(ns, "vm", logger); code != 0 {
 		t.Fatalf("the guest's logger: %d %s", code, out)
 	}
@@ -115,13 +120,24 @@ spec:
 	c.eventually("restarted held: the same rules", time.Minute, func() (bool, string) { r := rules(); return r == before, r })
 	t.Logf("the rules back %s after the restart", time.Since(restarted).Round(time.Second))
 	time.Sleep(30 * time.Second)
-	// A try writes the time it started, then curls for up to 4s. trust-control-plane serves the
-	// older store, which still has G, so a try in flight at the end would be counted in the hold
-	// and answered 200 once that store is served. Stop the logger first: a line that was written
-	// finished while the worker was still held.
-	if out, code := c.in(ns, "vm", "systemctl stop kvtlog"); code != 0 {
-		t.Fatalf("stopping the guest's logger: %d %s", code, out)
+	// trust-control-plane serves the older store, which still has G, so a try in flight then
+	// would finish in the hold's window and answer 200. A held worker has no agent, so kvo exec
+	// is HostNotConnected: stop the logger over SSH from machine 2, by the unit the guest runs
+	// it as. A line already written finished while the worker was still held.
+	vm := c.silo(ns, "vm")
+	var guest struct {
+		IP      string `json:"ip"`
+		HostKey string `json:"hostKey"`
 	}
+	raw := p.c2.mustSh("cat " + cloudhypervisor.NamesFor(kri.ID{Namespace: vm.Namespace, Name: vm.Name, UID: vm.UID}).Dir + "/silo.json")
+	if err := json.Unmarshal([]byte(raw), &guest); err != nil || guest.IP == "" || guest.HostKey == "" {
+		t.Fatalf("the silo on machine 2: %v\n%s", err, raw)
+	}
+	p.c2.mustSh(fmt.Sprintf(`kh=$(mktemp)
+trap 'rm -f "$kh"' EXIT
+printf '%%s %%s\n' %s %s > "$kh"
+ssh -i /var/lib/kevaso/ssh/silo-exec_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$kh" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=15 root@%s systemctl stop kvtlog
+`, sshboot.Quote(guest.IP), sshboot.Quote(guest.HostKey), guest.IP))
 	heldTo := now()
 
 	trust()
@@ -134,6 +150,8 @@ spec:
 	for _, r := range readLog() {
 		var ts int64
 		fmt.Sscan(r[0], &ts)
+		// r[0] is when the try finished. heldTo is after the logger stopped and before the hold
+		// ends, so a later line is a try that did not finish while the worker was held.
 		if ts < heldFrom || ts > heldTo {
 			continue
 		}
