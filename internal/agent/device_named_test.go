@@ -57,7 +57,9 @@ func TestMountRefusesAHostDiskNamedUnderByID(t *testing.T) {
 	reg := &plugins.Registry{Dir: filepath.Join(dir, "run"), Manifests: etc, Every: time.Hour}
 	runCtx, runCancel := context.WithCancel(context.Background())
 	defer runCancel()
-	go reg.Run(runCtx)
+	go func() {
+		reg.Run(runCtx)
+	}()
 	deadline = time.Now().Add(2 * time.Second)
 	for {
 		if _, _, ok := reg.Storage(kplugintest.ClassBlock); ok || time.Now().After(deadline) {
