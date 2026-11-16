@@ -191,7 +191,7 @@ func TestK125CreateStoresNoCallerStatus(t *testing.T) {
 		t.Fatalf("after the refused placement: %+v %v", gotSilo.Status, err)
 	}
 	var wIP v1.IP
-	if err := worker.Get(e.ctx, "IP", "dev", "pub", &wIP); err != nil {
+	if err := e.admin.Get(e.ctx, "IP", "dev", "pub", &wIP); err != nil {
 		t.Fatal(err)
 	}
 	wIP.Status.Address = "198.51.100.9"

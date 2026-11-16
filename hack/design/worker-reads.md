@@ -72,3 +72,33 @@ Pane documents are not read. The agent asks the silo for its panes and POSTs the
 the control plane writes the Pane. Approval objects are not read. The broker's answer carries a
 pending approval's name. Volumes are not a kind: they are fields of the Silo. A lease is the Lease
 kind above; the silo asks for one through the broker.
+
+## The rule
+
+A host certificate with role `worker` may read the following on GET, list and watch. Role
+`control-plane` is unchanged: a system node uses it, and it is not a worker certificate. Writes are
+unchanged: a worker's own Host status, the status of silos placed on it (including a volume it is
+letting go of), and an IngressClass's status for controller silos on it.
+
+A silo is on the worker when `status.host` is that host or `status.movingFrom` is that host. The
+second one is the move: the host the silo is leaving and the host it is going to both still run it,
+so both read what it needs. The server decides this from the stored Silo objects (the same records
+placement writes). There is no separate index.
+
+| Kind | Scope | Why this wide, and no wider |
+| --- | --- | --- |
+| Host | Cluster-wide | The mesh builds peers from every host's keys and endpoints. Tunnels dial every system node's API address. DNS answers host names. The egress denylist is every host address. |
+| Silo | Cluster-wide | Three callers need silos that are not placed here, and the API returns a whole object, so the kind is cluster-wide. `allowFrom` names a caller on another host and needs its address. DNS answers every silo's name, and a service's host port is answered from the silo. The egress denylist is every silo's addresses: a hole there would let a grant reach another silo. `mayRemove` reads a silo that has moved away, to tell a handoff (the disk may go) from "placed on X with no handoff" (the disk stays). The server cannot see which copies a runtime still has, so it cannot narrow this to "silos you still hold". |
+| Service | Cluster-wide | Every worker DNATs to every service's endpoints, answers service names, and treats every service address as cluster-internal. |
+| IngressClass | Cluster-wide | A class does not change when a silo is placed, so a watch filtered to "classes whose controller is here" would hide a class that already existed. A class is the driver, its options, and which silo runs it. Certificate keys are not on it; they come from GET `/agent/ingress`. |
+| Grant | On this host | Named by `spec.grants` of a silo on this host, in that silo's namespace. |
+| Secret | On this host | Metadata only. A value stays refused (403 on `…/value`); the broker delivers values for silos on this host. The secret is named by a grant of a silo on this host (`Grant.SecretNames`, which includes a signing key), or it is that silo's `container.pull.secretRef`. A namespace's default pull secret is not included: the worker never reads that object; the broker resolves it when the silo pulls. An Ingress's TLS secret is not included: it arrives through GET `/agent/ingress`. |
+| Lease | On this host | `spec.silo` and `spec.siloUID` are a silo on this host, in that silo's namespace. |
+| Ingress | On this host | A rule's backend is a silo on this host: the silo's own service, or a Service that selects it (`ingress.Targets`). An ingress that only targets silos elsewhere is not returned. The controller's certificate material is not on the Ingress. |
+| Anything else | Never | Namespace, Role, RoleBinding, ClusterRole, ClusterRoleBinding, IP, Issuer, Certificate, VMImage, SiloSet, Approval, Pane, KindDefinition, ValidationPolicy, MutationPolicy, Plugin, ServiceAccount, ClusterSecret, and any kind defined at runtime. List and watch of these are refused, not returned empty. ClusterSecret is the rule it already had: a host has no clustersecret access of its own; GET `…/value?for=PLUGIN` is unchanged. |
+
+Subresources that are not an object read stay refused, as they were: a secret's value, exec, token, move, ssh, files, opening or closing a lease, answering an approval, a pane's bundle.
+
+List and watch of a related kind return 200 and only the objects the rule allows. An empty page is an empty list, not a 403, so a worker's informer still starts in a namespace where nothing is placed. GET of one object that exists and is outside the rule is 403. GET of one that does not exist is 404.
+
+A watch does not replay an object's earlier revisions from before it was on this host. When the relationship appears, the current object is sent once. When it ends, the watch says the object was deleted and does not send a later state the host is no longer allowed to see. History from before the link is not sent. A client that listed first and watches from that revision is not sent the objects it already has.

@@ -157,7 +157,7 @@ func TestEnrollmentWithJoinToken(t *testing.T) {
 	}
 
 	worker := e.tlsClient(t, &cred)
-	// A worker reads everything...
+	// A worker reads hosts (cluster-wide; hack/design/worker-reads.md).
 	if _, err := worker.List(e.ctx, "Host", ""); err != nil {
 		t.Fatalf("worker list: %v", err)
 	}
@@ -269,8 +269,8 @@ func TestWorkerWritesOnlyItsOwnSilosStatus(t *testing.T) {
 	if moving.Status.MovingFrom != "" || moving.Status.Volumes[0].Mounted {
 		t.Fatalf("after the release: %+v", moving.Status)
 	}
-	// Hosts read everything but a secret's value: values reach a host only through the broker,
-	// for silos placed on it.
+	// A secret's value stays refused: values reach a host only through the broker, for silos
+	// placed on it.
 	if err := worker.Call(e.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/dev/secrets/x/value", nil, nil); code(err) != http.StatusForbidden {
 		t.Fatalf("worker reading a secret value: want 403, got %v", err)
 	}
