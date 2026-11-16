@@ -33,9 +33,12 @@ func MetaData(name, role string) string {
 	return "instance-id: " + vm + "\nlocal-hostname: " + vm + "\n"
 }
 
-// NetworkXML is the libvirt NAT network for one lab. wildcard adds a dnsmasq address rule so
-// any name under NAME.lab.test answers with the system node (ingress). The three node names are
-// always there; the caller drops the wildcard and defines again when this libvirt rejects it.
+// NetworkXML is the libvirt network for one lab. Forward mode is open, not nat: nat mode
+// installs a rule that rejects new connections into the bridge, and that drops the ports this
+// lab publishes on the host. Open mode adds no firewall rules. The guests' own traffic is
+// masqueraded by ForwardScript, in Table. wildcard adds a dnsmasq address rule so any name
+// under NAME.lab.test answers with the system node (ingress). The three node names are always
+// there; the caller drops the wildcard and defines again when this libvirt rejects it.
 func NetworkXML(name string, slot int, wildcard bool) (string, error) {
 	if err := ValidName(name); err != nil {
 		return "", err
@@ -55,7 +58,7 @@ func NetworkXML(name string, slot int, wildcard bool) (string, error) {
 	}
 	return `<network xmlns:dnsmasq='http://libvirt.org/schemas/network/dnsmasq/1.0'>
   <name>` + NetworkName(name) + `</name>
-  <forward mode='nat'/>
+  <forward mode='open'/>
   <bridge name='` + Bridge(slot) + `' stp='on' delay='0'/>
   <domain name='` + DNSDomain + `' localOnly='yes'/>
   <dns enable='yes'>
@@ -130,8 +133,10 @@ func DomainXML(name string, slot int, n Node) (string, error) {
 }
 
 // ForwardScript is the nftables rules for one lab, in Table only. DNAT is on the host interface
-// that holds the public address, at a priority just before the iptables dstnat hook, and
-// masquerade applies only to connections that rule already rewrote, as they leave the lab bridge.
+// that holds the public address, at a priority just before the iptables dstnat hook. Connections
+// that rule rewrote are masqueraded as they leave the lab bridge, so the guest answers the
+// gateway. The guests' own traffic is masqueraded as it leaves the public interface, because the
+// network is open and libvirt does not masquerade it.
 func ForwardScript(name string, slot int, iface string) (string, error) {
 	if err := ValidName(name); err != nil {
 		return "", err
@@ -161,6 +166,8 @@ func ForwardScript(name string, slot int, iface string) (string, error) {
 		Table, q(pre), q(iface), p.API, IP(slot, 10))
 	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 oifname %s ct status dnat masquerade\n",
 		Table, q(post), q(Bridge(slot)))
+	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 ip saddr %s oifname %s masquerade\n",
+		Table, q(post), CIDR(slot), q(iface))
 	return b.String(), nil
 }
 

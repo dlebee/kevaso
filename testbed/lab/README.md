@@ -24,9 +24,12 @@ of the host's ED25519 key). Without `LAB_HOSTKEY`, kvlab uses the ed25519 key al
 1. Refuses if `kevasod` is active on the lab host. Kevaso manages its own firewall tables, and a
    lab's table is `inet kvl`.
 2. Takes a free slot 1..6 (recorded in `/root/kvl/NAME/slot`) and a `/24`, `10.77.N.0/24`.
-3. Defines libvirt network `kvl-NAME` (NAT, bridge `kvlbrN`, DHCP reservations .10 sys, .11 w1,
-   .12 w2). DNS domain `lab.test` has `sys.NAME.lab.test`, `w1.NAME.lab.test`, `w2.NAME.lab.test`,
-   and a dnsmasq rule so any name under `NAME.lab.test` answers with the system node.
+3. Defines libvirt network `kvl-NAME` (forward mode open, bridge `kvlbrN`, DHCP reservations
+   .10 sys, .11 w1, .12 w2). Open mode adds no firewall rules: nat mode would reject new
+   connections into the bridge, including the published ports. Guest traffic to the internet is
+   masqueraded in `inet kvl`. DNS domain `lab.test` has `sys.NAME.lab.test`, `w1.NAME.lab.test`,
+   `w2.NAME.lab.test`, and a dnsmasq rule so any name under `NAME.lab.test` answers with the
+   system node.
 4. Creates thin qcow2 overlays of `/var/lib/libvirt/images/e046-base-noble.img`. The system node
    is 2 vCPU, 4 GiB, 20 GiB; each worker is 4 vCPU, 8 GiB, 40 GiB. CPU is host-passthrough with
    migration off, so `/dev/kvm` inside the guest works. cloud-init creates `ubuntu` with

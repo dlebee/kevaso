@@ -114,7 +114,7 @@ func TestNetworkAndDomain(t *testing.T) {
 	}
 	for _, want := range []string{
 		"<name>kvl-smoke</name>",
-		"<forward mode='nat'/>",
+		"<forward mode='open'/>",
 		"<bridge name='kvlbr1'",
 		"<domain name='lab.test'",
 		"<hostname>sys.smoke.lab.test</hostname>",
@@ -195,6 +195,7 @@ func TestCloudInitAndForwardAndDestroy(t *testing.T) {
 		"tcp dport 21124 dnat ip to 10.77.1.12:22",
 		"tcp dport 21143 dnat ip to 10.77.1.10:6443",
 		"oifname 'kvlbr1' ct status dnat masquerade",
+		"ip saddr 10.77.1.0/24 oifname 'enp5s0f0' masquerade",
 	} {
 		if !strings.Contains(fw, want) {
 			t.Errorf("nft rules lack %q\n%s", want, fw)
