@@ -1966,5 +1966,17 @@
    "./internal/apiserver"
   ],
   "protects": "a namespace is deleted only when nothing outside it names it"
+ },
+ {
+  "id": "G-340",
+  "guard": "a dry-run delete stores nothing",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "ctx = withDryRun(ctx, r) // a dry-run delete stores nothing",
+  "replace": "ctx = ctx // a dry-run delete stores nothing",
+  "mutation": "dry-run flag ignored on delete",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a dry-run delete changes nothing"
  }
 ]

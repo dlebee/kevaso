@@ -823,6 +823,7 @@ func letGo(old, next v1.SiloStatus) bool {
 // the caller decided on: another one under the name, or the same one changed since, is not
 // deleted (409), so a delete decided from a stale view can't remove what now has the name.
 func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Request, t target) {
+	ctx = withDryRun(ctx, r) // a dry-run delete stores nothing
 	wantUID, wantRV := r.URL.Query().Get("uid"), r.URL.Query().Get("resourceVersion")
 	if err := s.checkDeleteDefinition(ctx, t); err != nil {
 		writeErr(w, err)
@@ -862,13 +863,13 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			return
 		}
 		if len(om.Finalizers) == 0 {
-			if _, err := s.store.Delete(ctx, t.key(), cur.Revision); errors.Is(err, store.ErrConflict) {
+			if _, err := s.commitDelete(ctx, t.key(), cur.Revision); errors.Is(err, store.ErrConflict) {
 				continue
 			} else if err != nil {
 				writeErr(w, err)
 				return
 			}
-			if s.vault != nil && (t.kind.Kind == "Secret" || t.kind.Kind == "ClusterSecret") {
+			if !dryRun(ctx) && s.vault != nil && (t.kind.Kind == "Secret" || t.kind.Kind == "ClusterSecret") {
 				s.vault.Forget(ctx, t.namespace, t.name)
 			}
 			writeJSON(w, http.StatusOK, Status{Code: http.StatusOK, Reason: "Deleted", Message: t.key().String() + " deleted"})
@@ -882,7 +883,7 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 				writeErr(w, err)
 				return
 			}
-			o, err := s.store.Update(ctx, t.key(), data, cur.Revision)
+			o, err := s.commitUpdate(ctx, t.key(), data, cur.Revision)
 			if errors.Is(err, store.ErrConflict) {
 				continue
 			} else if err != nil {
