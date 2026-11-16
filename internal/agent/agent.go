@@ -208,7 +208,10 @@ type Agent struct {
 	// fenceFaulted: silo UID → why: its fence kill here failed, or wasn't confirmed (K-094). Not
 	// armed (the control plane doesn't restart it elsewhere on the strength of this host's
 	// fence) until a later kill of it here is confirmed. The host is never rebooted for it.
-	fenceFaulted sync.Map
+	// The silo's FenceArmed KillFailed condition is the same mark across a restart, when this
+	// map is empty (keepsKillFailed). killConfirmed: a kill this process has confirmed since.
+	fenceFaulted  sync.Map
+	killConfirmed sync.Map
 	// removeConfirmed: silo UID → kri.ID: a kept copy a person confirmed the removal of (K-068,
 	// keptcmd.go).
 	removeConfirmed sync.Map
@@ -864,6 +867,12 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 				a.settleClaim(ctx, rt, s)
 				return a.startEnded(s, why, err)
 			}
+		}
+		// Claimed once more right before the main process, as at a first start. Every-boot init
+		// can outlast a renewal; the start follows a claim that applied on what is stored now.
+		if err := kp.claimNow(ctx); err != nil {
+			a.settleClaim(ctx, rt, s)
+			return a.lostClaim(s, err)
 		}
 		stctx, startKept := kp.within(ctx)
 		err := rt.Start(stctx, id)

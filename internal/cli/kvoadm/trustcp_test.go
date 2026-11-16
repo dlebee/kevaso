@@ -73,3 +73,20 @@ func TestTrustControlPlaneSetsAsideOnlyAnUnreadableRecord(t *testing.T) {
 		t.Fatalf("no record: %v", err)
 	}
 }
+
+// A rolled-back control plane can leave more than one worker holding. The prompt says to trust
+// the host the silo is placed on now before this one, so a silo is not started here while it
+// still runs on a worker that holds.
+func TestTrustControlPlaneSaysToTrustTheSilosHostFirst(t *testing.T) {
+	h := &trustHost{file: `{"clusterID":"c1","history":"h1","epoch":1,"revision":10,"held":true}`}
+	var out strings.Builder
+	o := TrustOptions{Data: "/var/lib/kevaso"}
+	o.Address = "203.0.113.20"
+	err := runTrust(context.Background(), h, o, bufio.NewReader(strings.NewReader("no\n")), &out)
+	if err == nil || h.setAside() {
+		t.Fatalf("not confirmed: %v, set aside %v", err, h.setAside())
+	}
+	if !strings.Contains(out.String(), "trust the host the silo is placed on now before this one") {
+		t.Fatalf("the prompt doesn't say to trust the silo's host first:\n%s", out.String())
+	}
+}
