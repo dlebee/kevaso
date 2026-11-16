@@ -115,6 +115,13 @@ spec:
 	c.eventually("restarted held: the same rules", time.Minute, func() (bool, string) { r := rules(); return r == before, r })
 	t.Logf("the rules back %s after the restart", time.Since(restarted).Round(time.Second))
 	time.Sleep(30 * time.Second)
+	// A try writes the time it started, then curls for up to 4s. trust-control-plane serves the
+	// older store, which still has G, so a try in flight at the end would be counted in the hold
+	// and answered 200 once that store is served. Stop the logger first: a line that was written
+	// finished while the worker was still held.
+	if out, code := c.in(ns, "vm", "systemctl stop kvtlog"); code != 0 {
+		t.Fatalf("stopping the guest's logger: %d %s", code, out)
+	}
 	heldTo := now()
 
 	trust()
