@@ -103,7 +103,7 @@ func (a *Agent) mountVolumes(ctx context.Context, s *v1.Silo) (vols []kri.Volume
 				return nil, false, why, err
 			}
 		}
-		if err := a.mount(ctx, vs.Device, dir); err != nil {
+		if err := a.mount(ctx, v.Class, vs.Device, dir); err != nil {
 			if err == errNoDevice {
 				return nil, false, "waiting for " + vs.Device + " to appear", nil
 			}
@@ -193,8 +193,9 @@ func (a *Agent) mayMountHere(ctx context.Context, s *v1.Silo, vs v1.VolumeStatus
 }
 
 // mount mounts dev at dir, formatting it first only if it holds no filesystem at all: a volume
-// that comes back (another host, a restart) is never wiped.
-func (a *Agent) mount(ctx context.Context, dev, dir string) error {
+// that comes back (another host, a restart) is never wiped. class is the volume's storage class:
+// when this host has that plugin's manifest, the device must be under one of its prefixes.
+func (a *Agent) mount(ctx context.Context, class, dev, dir string) error {
 	// K-038: checked where it is used, as root: a device can reach a silo's status other than
 	// through the registry's check (K-037, K-045). Nothing runs for one that fails.
 	if err := kplugin.DevicePathProblem(dev); err != nil {
@@ -204,6 +205,9 @@ func (a *Agent) mount(ctx context.Context, dev, dir string) error {
 	// a name that stays with its disk): never the host's own disk by its kernel name.
 	if !strings.HasPrefix(dev, kplugin.ByID) || len(dev) == len(kplugin.ByID) {
 		return fmt.Errorf("not mounting %s: a volume's device is under %s", dev, kplugin.ByID)
+	}
+	if err := a.deviceUnderPlugin(class, dev); err != nil {
+		return err
 	}
 	if _, code, _ := a.run(ctx, "mountpoint", "-q", dir); code == 0 {
 		return nil
@@ -228,6 +232,26 @@ func (a *Agent) mount(ctx context.Context, dev, dir string) error {
 	}
 	_, _, err = a.run(ctx, "mount", "-o", "noatime", dev, dir)
 	return err
+}
+
+// deviceUnderPlugin refuses a device the volume's plugin does not name. A path under
+// /dev/disk/by-id/ is not enough: the host's own disks are named there too. With no plugin
+// manifest on this host there is nothing further to check.
+func (a *Agent) deviceUnderPlugin(class, dev string) error {
+	if a.Nodes == nil || class == "" {
+		return nil
+	}
+	prefixes, checked, err := a.Nodes.VolumeDevicePrefixes(class)
+	if err != nil {
+		return fmt.Errorf("not mounting %s: %w", dev, err)
+	}
+	if !checked {
+		return nil
+	}
+	if err := kplugin.DeviceUnder(dev, prefixes); err != nil {
+		return fmt.Errorf("not mounting %s: %w", dev, err)
+	}
+	return nil
 }
 
 // unmountVolumes unmounts what this host mounted for a silo (by UID), and says so on the silo if

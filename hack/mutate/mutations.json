@@ -2086,5 +2086,65 @@
    "./builtin/kri/openshell"
   ],
   "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-340",
+  "guard": "a dry-run delete stores nothing",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "ctx = withDryRun(ctx, r) // a dry-run delete stores nothing",
+  "replace": "ctx = ctx // a dry-run delete stores nothing",
+  "mutation": "dry-run flag ignored on delete",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a dry-run delete changes nothing"
+ },
+ {
+  "id": "G-341",
+  "guard": "a secret deleted by its last finalizer drops the sealed value",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if err == nil && !dryRun(ctx) && s.vault != nil && (t.kind.Kind == \"Secret\" || t.kind.Kind == \"ClusterSecret\") {\n\t\t\t\t\ts.vault.Forget(ctx, t.namespace, t.name) // the sealed value goes with the object\n\t\t\t\t}",
+  "replace": "if false {\n\t\t\t\t\ts.vault.Forget(ctx, t.namespace, t.name) // the sealed value goes with the object\n\t\t\t\t}",
+  "mutation": "sealed value kept",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a deleted secret's sealed value is removed"
+ },
+ {
+  "id": "G-342",
+  "guard": "a volume is mounted only under its plugin's device prefix",
+  "file": "internal/agent/volumes.go",
+  "find": "if err := kplugin.DeviceUnder(dev, prefixes); err != nil {\n\t\treturn fmt.Errorf(\"not mounting %s: %w\", dev, err)\n\t}",
+  "replace": "if false {\n\t\treturn fmt.Errorf(\"not mounting %s: %w\", dev, err)\n\t}",
+  "mutation": "plugin prefix not checked",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a host disk is never mounted as a volume"
+ },
+ {
+  "id": "G-343",
+  "guard": "a namespace is deleted only at the revision it was marked and found empty",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if nsRev != 0 && cur.Revision != nsRev { // not the namespace as marked and found empty",
+  "replace": "if false && cur.Revision != nsRev { // not the namespace as marked and found empty",
+  "mutation": "revision check removed",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a namespace is deleted only as it was when it was found empty"
+ },
+ {
+  "id": "G-344",
+  "guard": "nothing new is made in a namespace that is being deleted",
+  "file": "internal/apiserver/nsdelete.go",
+  "find": "if ns == \"\" {\n\t\treturn nil\n\t}\n\t_, err := s.openNamespace(ctx, ns)\n\treturn err",
+  "replace": "if ns == \"\" || ctx == nil {\n\t\treturn nil\n\t}\n\treturn nil",
+  "mutation": "terminating namespace accepts creates",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a namespace being deleted takes nothing new"
  }
 ]

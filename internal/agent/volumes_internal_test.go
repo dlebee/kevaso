@@ -56,7 +56,7 @@ func TestMountFormatsOnlyAnEmptyVolume(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &fakeHost{codes: map[string]int{"mountpoint": 1, "blkid": tc.blkidCode}, out: map[string]string{"blkid": tc.blkidOut}}
 			a := &Agent{Host: h}
-			err := a.mount(context.Background(), dev, dir)
+			err := a.mount(context.Background(), "", dev, dir)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("err %v, want %q", err, tc.wantErr)
@@ -74,11 +74,11 @@ func TestMountFormatsOnlyAnEmptyVolume(t *testing.T) {
 	}
 	// Already mounted: nothing else happens. Not there yet: wait.
 	h := &fakeHost{codes: map[string]int{"mountpoint": 0}}
-	if err := (&Agent{Host: h}).mount(context.Background(), dev, dir); err != nil || len(h.ran) != 1 {
+	if err := (&Agent{Host: h}).mount(context.Background(), "", dev, dir); err != nil || len(h.ran) != 1 {
 		t.Fatalf("already mounted: %v %v", err, h.ran)
 	}
 	h = &fakeHost{codes: map[string]int{"mountpoint": 1, "test": 1}}
-	if err := (&Agent{Host: h}).mount(context.Background(), dev, dir); err != errNoDevice {
+	if err := (&Agent{Host: h}).mount(context.Background(), "", dev, dir); err != errNoDevice {
 		t.Fatalf("no device yet: %v", err)
 	}
 }

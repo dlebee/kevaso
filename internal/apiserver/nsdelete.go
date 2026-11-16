@@ -84,6 +84,16 @@ func (s *Server) markNamespace(ctx context.Context, name, phase, wantUID, wantRV
 	return 0, errf(http.StatusConflict, "Conflict", "namespace %s keeps changing: not deleted; try again", name)
 }
 
+// creatingIn refuses a new object in a namespace that is being deleted. An update of one that is
+// already there still goes through, so a sweep can finish.
+func (s *Server) creatingIn(ctx context.Context, ns string) error {
+	if ns == "" {
+		return nil
+	}
+	_, err := s.openNamespace(ctx, ns)
+	return err
+}
+
 // openNamespace is the UID of the namespace that a create in it writes into: 404 when there is
 // none, 409 while it is being deleted.
 func (s *Server) openNamespace(ctx context.Context, name string) (string, error) {
