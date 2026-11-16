@@ -92,10 +92,10 @@ func cmdList(args []string) error {
 			continue
 		}
 		if kinds[name] == "pair" {
-			// SYS and W1 are m1 and m2's SSH ports. W2 is unused. API is 6443, the port the
-			// tests dial, which is also forwarded (the slot's high port forwards it too).
+			// SYS and W1 are m1 and m2's SSH ports. W2 is unused. API is the slot port the
+			// tests dial (KEVASO_METAL_API_PORT); it forwards to m1's 6443.
 			fmt.Printf("%-12s %-4d %-16s %-8d %-8d %-8s %-8d %s\n",
-				name, slot, lab.CIDR(slot), p.SSH("m1"), p.SSH("m2"), "-", 6443,
+				name, slot, lab.CIDR(slot), p.SSH("m1"), p.SSH("m2"), "-", p.API,
 				"pair "+vmStates(name, facts["vm"], []string{"m1", "m2"}))
 			continue
 		}

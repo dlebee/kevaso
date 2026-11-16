@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,7 +41,10 @@ type metalPair struct {
 	// recoveryKey is what kvoadm init printed for the cluster (in memory only, never logged):
 	// TestMetal2RestoreKeepsWhatItDoesntKnow restores with it. Empty on a reused cluster.
 	recoveryKey string
-	mu          sync.Mutex
+	// apiPort is the port the Mac and the tests dial for machine 1's API. A pair lab sets
+	// KEVASO_METAL_API_PORT to its slot port; a real pair leaves it unset and listens on 6443.
+	apiPort string
+	mu      sync.Mutex
 }
 
 var pairState struct {
@@ -122,7 +124,11 @@ func setUpPair() (p *metalPair, skip string, err error) {
 	defer cancel()
 	pinGoEnv()
 	say := func(f string, a ...any) { fmt.Printf("metal2: "+f+"\n", a...) }
-	p = &metalPair{}
+	apiPort, err := metalAPIPort()
+	if err != nil {
+		return nil, "", err
+	}
+	p = &metalPair{apiPort: apiPort}
 	reuse := os.Getenv("KEVASO_METAL_REUSE") != ""
 	if reuse { // the cluster kept from an earlier run, if it answers (no reset, no init)
 		base, err := os.UserHomeDir()
@@ -207,7 +213,7 @@ func setUpPair() (p *metalPair, skip string, err error) {
 	}
 	// Machine 1: the system node, no worker.
 	if err := run(append(append([]string{"init"}, ssh(cfg1)...), "--name", metalHost, "--cluster", "metal2",
-		"--api-server", "https://"+net.JoinHostPort(cfg1.ExternalIP, "6443"), "--external-ip", cfg1.ExternalIP)...); err != nil {
+		"--api-server", metalAPIServer(cfg1.ExternalIP, p.apiPort), "--external-ip", cfg1.ExternalIP)...); err != nil {
 		return nil, "", err
 	}
 	p.recoveryKey = regexp.MustCompile(`KVR1-[A-Z0-9-]+`).FindString(lastOut)

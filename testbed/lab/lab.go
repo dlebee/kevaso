@@ -105,18 +105,19 @@ func AllNodes() []Node {
 
 // PairDial is a TCP port the two-machine tests open from the Mac on a machine's external
 // address. The host forwards that same port: the tests dial EXTERNAL_IP:PORT, not a remapped
-// high port. SSH is not here; KEVASO_METAL_HOST carries the forwarded SSH port.
+// high port. SSH is not here; KEVASO_METAL_HOST carries the forwarded SSH port. The API is
+// not here either: each lab publishes it on its own slot port (Ports.API), and the tests
+// dial that (KEVASO_METAL_API_PORT). Two pair labs would otherwise both claim public 6443.
 type PairDial struct {
 	Role string
 	Port int
 }
 
-// PairDials is that list. 6443 is m1's API (kvoadm init --api-server, then kvo). 80 and 443
-// are TestMetal2Ingress, and 443 again the long soak's certificate check. 18160 is the long
-// soak's lease, on machine 1. 18200 and 18201 are TestMetal2Worker; 18210 is TestMetal2Mesh.
+// PairDials is that list. 80 and 443 are TestMetal2Ingress, and 443 again the long soak's
+// certificate check. 18160 is the long soak's lease, on machine 1. 18200 and 18201 are
+// TestMetal2Worker; 18210 is TestMetal2Mesh.
 func PairDials() []PairDial {
 	return []PairDial{
-		{Role: "m1", Port: 6443},
 		{Role: "m1", Port: 80},
 		{Role: "m1", Port: 443},
 		{Role: "m1", Port: 18160},

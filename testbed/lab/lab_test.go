@@ -366,8 +366,8 @@ func TestPair(t *testing.T) {
 	for _, want := range []string{
 		"iifname 'enp5s0f0' tcp dport 21322 dnat ip to 10.77.3.10:22",
 		"tcp dport 21323 dnat ip to 10.77.3.11:22",
-		"tcp dport 21343 dnat ip to 10.77.3.10:6443",
-		"iifname 'enp5s0f0' tcp dport 6443 dnat ip to 10.77.3.10:6443",
+		"iifname 'enp5s0f0' tcp dport 21343 dnat ip to 10.77.3.10:6443",
+		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 21343 dnat ip to 10.77.3.10:6443",
 		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 6443 dnat ip to 10.77.3.10:6443",
 		"tcp dport 80 dnat ip to 10.77.3.10:80",
 		"tcp dport 443 dnat ip to 10.77.3.10:443",
@@ -378,12 +378,22 @@ func TestPair(t *testing.T) {
 		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 18210 dnat ip to 10.77.3.11:18210",
 		"oifname 'kvlbr3' ct status dnat masquerade",
 		"ip saddr 10.77.3.0/24 oifname 'enp5s0f0' masquerade",
-		"port 6443 is already forwarded",
-		"port 6443 is in use on the lab host",
+		"port 80 is already forwarded",
+		"port 80 is in use on the lab host",
 	} {
 		if !strings.Contains(fw, want) {
 			t.Errorf("pair nft lacks %q\n%s", want, fw)
 		}
+	}
+	if strings.Contains(fw, "iifname 'enp5s0f0' tcp dport 6443 ") || strings.Contains(fw, "port 6443 is already forwarded") {
+		t.Errorf("a pair lab publishes public port 6443:\n%s", fw)
+	}
+	other, err := PairForwardScript("pr", 1, "enp5s0f0", "203.0.113.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(other, "tcp dport 21143 dnat ip to 10.77.1.10:6443") || strings.Contains(other, "dport 21343 ") {
+		t.Errorf("slot 1 does not use its own API port:\n%s", other)
 	}
 	for _, absent := range []string{"10.77.3.12", "dport 21324", "iptables", "e046", "default"} {
 		if strings.Contains(fw, absent) {
@@ -406,7 +416,7 @@ func TestPair(t *testing.T) {
 	env, err := PairEnvFile(PairEnv{
 		Name: "pr", Host: "ubuntu@203.0.113.10", M1SSH: 21322, M2SSH: 21323,
 		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, ExternalIP: "203.0.113.10",
-		M1Internal: "10.77.3.10", M2Internal: "10.77.3.11", SpareDisk: SpareByID,
+		M1Internal: "10.77.3.10", M2Internal: "10.77.3.11", SpareDisk: SpareByID, APIPort: 21343,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -432,7 +442,7 @@ func TestPair(t *testing.T) {
 		c2.ExternalIP != "203.0.113.10" || c2.InternalIP != "10.77.3.11" || c2.SpareDisk != SpareByID {
 		t.Fatalf("m2 from the env file: %+v", c2)
 	}
-	if got["LAB_NAME"] != "pr" || got["LAB_PAIR"] != "1" {
+	if got["LAB_NAME"] != "pr" || got["LAB_PAIR"] != "1" || got["KEVASO_METAL_API_PORT"] != "21343" {
 		t.Fatalf("lab vars: %v", got)
 	}
 	if _, err := PairEnvFile(PairEnv{Name: "pr"}); err == nil {
@@ -441,7 +451,7 @@ func TestPair(t *testing.T) {
 	same := PairEnv{
 		Name: "pr", Host: "ubuntu@203.0.113.10", M1SSH: 21322, M2SSH: 21323,
 		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, ExternalIP: "203.0.113.10",
-		M1Internal: "10.77.3.10", M2Internal: "10.77.3.10", SpareDisk: SpareByID,
+		M1Internal: "10.77.3.10", M2Internal: "10.77.3.10", SpareDisk: SpareByID, APIPort: 21343,
 	}
 	if _, err := PairEnvFile(same); err == nil {
 		t.Fatal("m1 and m2 sharing an internal address was accepted")

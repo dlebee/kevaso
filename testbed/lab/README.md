@@ -79,16 +79,29 @@ The two-machine tests reset against that and install Kevaso themselves with `kvo
 | `KEVASO_METAL_EXTERNAL_IP` | the lab host's public address, for both machines |
 | `KEVASO_METAL_INTERNAL_IP` | m1's `10.77.N.10` (`KEVASO_METAL2_INTERNAL_IP` is m2's `.11`) |
 | `KEVASO_METAL2_SPARE_DISK` | `/dev/disk/by-id/virtio-kvlspare` |
+| `KEVASO_METAL_API_PORT` | the slot's API port (`21000 + slot*100 + 43`), forwarded to m1's 6443 |
 
 There is no `KVO_CONFIG`. The file unsets it.
 
-SSH is forwarded as for a node lab: m1 at offset 22, m2 at offset 23. The API's high port
-(offset 43) also goes to m1's 6443. The ports the tests dial on the external address are
-forwarded at that same number, and again from the lab bridge so m2 can dial m1 there:
+SSH is forwarded as for a node lab: m1 at offset 22, m2 at offset 23. The API is the same
+slot port as a node lab, offset 43 (`21000 + slot*100 + 43`), forwarded to m1's 6443. The
+guest still listens on 6443. `env.sh` sets `KEVASO_METAL_API_PORT` to that port; the
+two-machine tests pass it to `kvoadm --api-server`. Unset, those tests use 6443, which is
+what a real pair listens on. The certificate names the machine's addresses, not the port.
+kvoadm already takes the URL on `--api-server` (init) and `--server` (host add; it defaults
+to the context init wrote). There is no kvoadm flag for the port kevasod listens on, so the
+control plane still advertises `https://<external>:6443`, and `kvoadm init --restore`
+points workers at that. The lab bridge hairpins both the slot port and 6443 to m1, so m2
+can dial either URL at the public address. 6443 is not published on the lab host's public
+interface: each lab's bridge is its own, and a second pair lab no longer stops on
+"port 6443 is already forwarded".
+
+The other ports the tests dial on the external address are forwarded at that same number,
+and again from the lab bridge:
 
 | Port | Machine | Who dials it from the Mac |
 |---|---|---|
-| 6443 | m1 | `kvoadm` and `kvo` (`--api-server`) |
+| slot API (offset 43) | m1's 6443 | `kvoadm` and `kvo` (`--api-server`) |
 | 80, 443 | m1 | TestMetal2Ingress (443 also the long soak) |
 | 18160 | m1 | TestMetal2LongSoakCheck |
 | 18200, 18201 | m2 | TestMetal2Worker |
@@ -96,8 +109,9 @@ forwarded at that same number, and again from the lab bridge so m2 can dial m1 t
 
 Both external addresses are the one public address, so a port answers for both variables.
 A test that requires the other machine's address to stay closed on that port needs two
-public addresses. `lab-up` refuses a dialled port that the host is already listening on, or
-that another lab already forwards.
+public addresses. `lab-up` refuses one of those dialled ports that the host is already
+listening on, or that another lab already forwards. 80, 443 and the three high ports are
+still one per host, so a second pair lab stops on port 80 until those are free.
 
 ```bash
 source testbed/lab/.labs/pr/env.sh

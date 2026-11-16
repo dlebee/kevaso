@@ -212,11 +212,13 @@ func ForwardScript(name string, slot int, iface string) (string, error) {
 }
 
 // PairForwardScript publishes a pair lab. SSH uses the slot block, the same offsets as the
-// system node and the first worker, and so does the API's high port (guest 6443). Each port
-// in PairDials is also forwarded at that same number, because the tests dial the external
-// address there, and again from the lab bridge (hairpin) so m2 can dial m1's API at that
-// address. A port already taken on the host, or already forwarded by another lab, refuses
-// the script: two pair labs cannot share 6443.
+// system node and the first worker. The API uses that block too (Ports.API, guest 6443): the
+// public interface and the lab bridge (hairpin), so the Mac and m2 both dial the external
+// address on the slot port. The guest still listens on 6443. The bridge also hairpins 6443,
+// because that is the URL the control plane advertises (its listen port) and kvoadm init
+// --restore points workers at; it is not on the public interface, so two labs do not share
+// one host port. Each other port in PairDials is forwarded at that same number. A port
+// already taken on the host, or already forwarded by another lab, refuses the script.
 func PairForwardScript(name string, slot int, iface, public string) (string, error) {
 	if err := ValidName(name); err != nil {
 		return "", err
@@ -252,8 +254,19 @@ func PairForwardScript(name string, slot int, iface, public string) (string, err
 		fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s tcp dport %d dnat ip to %s:22\n",
 			Table, q(pre), q(iface), p.SSH(n.Role), IP(slot, n.Octet))
 	}
+	m1 := IP(slot, PairNodes()[0].Octet)
+	// The slot's API port, on the public interface and from the lab bridge. The guest listens
+	// on 6443; the Mac and m2 dial the external address on this port (KEVASO_METAL_API_PORT).
 	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s tcp dport %d dnat ip to %s:6443\n",
-		Table, q(pre), q(iface), p.API, IP(slot, PairNodes()[0].Octet))
+		Table, q(pre), q(iface), p.API, m1)
+	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s ip daddr %s tcp dport %d dnat ip to %s:6443\n",
+		Table, q(pre), q(Bridge(slot)), pub, p.API, m1)
+	// The control plane advertises https://<external>:6443 (the listen port). kvoadm has no
+	// flag to change that, and init --restore points workers there. Hairpin it on this lab's
+	// bridge only: a second lab's bridge is a different interface, and 6443 is not published
+	// on the lab host's public address.
+	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s ip daddr %s tcp dport 6443 dnat ip to %s:6443\n",
+		Table, q(pre), q(Bridge(slot)), pub, m1)
 	for _, d := range PairDials() {
 		oct, err := pairOctet(d.Role)
 		if err != nil {
@@ -384,8 +397,9 @@ func EnvFile(e Env) (string, error) {
 
 // PairEnv is the file the two-machine metal tests source. KEVASO_METAL_* is m1 and
 // KEVASO_METAL2_* is m2, the same names a metalenv file uses for a real pair. Both external
-// addresses are the lab host's public address, where the forwarded ports land. There is no
-// KVO_CONFIG: Kevaso is not installed, and the tests run kvoadm themselves.
+// addresses are the lab host's public address, where the forwarded ports land. APIPort is
+// that address's port for m1's API (the slot port); the tests read it as KEVASO_METAL_API_PORT.
+// There is no KVO_CONFIG: Kevaso is not installed, and the tests run kvoadm themselves.
 type PairEnv struct {
 	Name       string
 	Host       string // ubuntu@public-ip, no port
@@ -398,6 +412,7 @@ type PairEnv struct {
 	M1Internal string
 	M2Internal string
 	SpareDisk  string
+	APIPort    int // the lab host port that forwards to m1's 6443 (Ports.API)
 }
 
 // PairEnvFile renders PairEnv as a shell script.
@@ -405,9 +420,9 @@ func PairEnvFile(e PairEnv) (string, error) {
 	if err := ValidName(e.Name); err != nil {
 		return "", err
 	}
-	if e.M1SSH < 1 || e.M2SSH < 1 || e.M1SSH == e.M2SSH || e.Host == "" || e.KeyPath == "" ||
-		e.M1HostKey == "" || e.M2HostKey == "" || e.ExternalIP == "" || e.M1Internal == "" ||
-		e.M2Internal == "" || e.SpareDisk == "" {
+	if e.M1SSH < 1 || e.M2SSH < 1 || e.M1SSH == e.M2SSH || e.APIPort < 1 || e.APIPort > 65535 ||
+		e.Host == "" || e.KeyPath == "" || e.M1HostKey == "" || e.M2HostKey == "" ||
+		e.ExternalIP == "" || e.M1Internal == "" || e.M2Internal == "" || e.SpareDisk == "" {
 		return "", fmt.Errorf("pair env for %s: incomplete", e.Name)
 	}
 	if e.M1Internal == e.M2Internal {
@@ -424,6 +439,7 @@ func PairEnvFile(e PairEnv) (string, error) {
 	fmt.Fprintf(&b, "export KEVASO_METAL_HOSTKEY=%s\n", q(e.M1HostKey))
 	fmt.Fprintf(&b, "export KEVASO_METAL_EXTERNAL_IP=%s\n", q(e.ExternalIP))
 	fmt.Fprintf(&b, "export KEVASO_METAL_INTERNAL_IP=%s\n", q(e.M1Internal))
+	fmt.Fprintf(&b, "export KEVASO_METAL_API_PORT=%s\n", q(strconv.Itoa(e.APIPort)))
 	fmt.Fprintf(&b, "export KEVASO_METAL2_HOST=%s\n", q(e.Host+":"+strconv.Itoa(e.M2SSH)))
 	fmt.Fprintf(&b, "export KEVASO_METAL2_KEY=%s\n", q(e.KeyPath))
 	fmt.Fprintf(&b, "export KEVASO_METAL2_HOSTKEY=%s\n", q(e.M2HostKey))

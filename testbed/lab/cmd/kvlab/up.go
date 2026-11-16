@@ -176,6 +176,7 @@ func cmdUp(args []string) error {
 			M1SSH: ports.SSH("m1"), M2SSH: ports.SSH("m2"), KeyPath: keyPath,
 			M1HostKey: pins["m1"], M2HostKey: pins["m2"], ExternalIP: h.cfg.ExternalIP,
 			M1Internal: lab.IP(slot, 10), M2Internal: lab.IP(slot, 11), SpareDisk: lab.SpareByID,
+			APIPort: ports.API,
 		})
 	} else {
 		seedPath := lab.StateDir(name) + "/seed.sh"
@@ -223,7 +224,7 @@ func cmdUp(args []string) error {
 		fmt.Printf("\nlab %s is up (slot %d, %s, pair)\n", name, slot, lab.CIDR(slot))
 		fmt.Printf("  m1   ssh %s:%d   %s\n", h.cfg.ExternalIP, ports.SSH("m1"), lab.IP(slot, 10))
 		fmt.Printf("  m2   ssh %s:%d   %s   spare %s\n", h.cfg.ExternalIP, ports.SSH("m2"), lab.IP(slot, 11), lab.SpareByID)
-		fmt.Printf("  api  https://%s\n", net.JoinHostPort(h.cfg.ExternalIP, "6443"))
+		fmt.Printf("  api  https://%s\n", net.JoinHostPort(h.cfg.ExternalIP, strconv.Itoa(ports.API)))
 	} else {
 		fmt.Printf("\nlab %s is up (slot %d, %s)\n", name, slot, lab.CIDR(slot))
 		fmt.Printf("  sys  ssh %s:%d   %s\n", h.cfg.ExternalIP, ports.SysSSH, lab.IP(slot, 10))
