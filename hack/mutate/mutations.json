@@ -1930,5 +1930,41 @@
    "./test/integration"
   ],
   "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-200",
+  "guard": "namespace delete refuses while something outside it names it",
+  "file": "internal/apiserver/nsdelete.go",
+  "find": "if len(named) > 0 {",
+  "replace": "if false {",
+  "mutation": "outside names ignored",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a namespace is deleted only when nothing outside it names it"
+ },
+ {
+  "id": "G-201",
+  "guard": "a write that newly names a namespace being deleted is refused before it is stored",
+  "file": "internal/apiserver/nsdelete.go",
+  "find": "if n.Status.Phase == \"Terminating\" {\n\t\t\treturn nil, errf(http.StatusConflict, \"Conflict\", \"namespace %s is being deleted: nothing new can name it\", ns)",
+  "replace": "if false {\n\t\t\treturn nil, errf(http.StatusConflict, \"Conflict\", \"namespace %s is being deleted: nothing new can name it\", ns)",
+  "mutation": "phase not checked",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a namespace is deleted only when nothing outside it names it"
+ },
+ {
+  "id": "G-202",
+  "guard": "a write that named a namespace is taken back if that namespace was deleted during the write",
+  "file": "internal/apiserver/nsdelete.go",
+  "find": "if err != nil || now != w.uid {",
+  "replace": "if (err != nil || now != w.uid) && false {",
+  "mutation": "second look removed",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a namespace is deleted only when nothing outside it names it"
  }
 ]
