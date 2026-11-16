@@ -12,7 +12,7 @@ for linux and darwin (`make vet-tags`), so tagged code cannot rot, but compiling
 |---|---|---|---|
 | `e2e` | Lima VMs on macOS, or a Linux machine with SSH access to its test machines | 20 | 1 |
 | `metal` | two bare-metal machines (test/e2e/METAL.md) | 46 | 0 |
-| `metal` | one bare-metal machine (test/e2e/METAL.md) | 26 | 0 |
+| `metal` | one bare-metal machine (test/e2e/METAL.md) | 27 | 0 |
 | `metal` | bare metal (test/e2e/METAL.md) | 1 | 0 |
 
 CI's `e2e` job (ubuntu-latest, KVM, no SSH to itself) runs the tests in `test/e2e/ci-expected.txt`, and
@@ -116,6 +116,7 @@ fails when any of them reports SKIP (`hack/skipbudget`). Every other tagged test
 | TestMetalKvoStreams | test/e2e/metal_streams_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMain | test/e2e/metal_test.go | bare metal (test/e2e/METAL.md) | skips |
 | TestMetalCheck | test/e2e/metal_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
+| TestMetalRebaseline | test/e2e/metal_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMetalReset | test/e2e/metal_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMetalOpenShellReboot | test/e2e/metal_zlast_osreboot_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMetalPodman | test/e2e/metal_zlast_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
