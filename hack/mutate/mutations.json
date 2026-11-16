@@ -2002,5 +2002,17 @@
    "./internal/agent"
   ],
   "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-323",
+  "guard": "a kept volume group keeps the loop file that still backs it",
+  "file": "internal/hostreset/hostreset.go",
+  "find": "if in.Storage == StorageKeep {\n\t\tskipImage = `[ \"$f\" = ` + StorageImage + ` ] && continue; `\n\t}",
+  "replace": "if false {\n\t\tskipImage = `[ \"$f\" = ` + StorageImage + ` ] && continue; `\n\t}",
+  "mutation": "loop file removed with the other files",
+  "packages": [
+   "./internal/hostreset"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
  }
 ]

@@ -197,6 +197,44 @@ func TestInspectScriptPrintsEverySection(t *testing.T) {
 	}
 }
 
+// A volume group extended onto a real disk is kept, and so is the loop file that is still one of
+// its physical volumes. The files step's /var/lib/kevaso-* would otherwise delete that file.
+func TestAVolumeGroupExtendedOntoADiskKeepsItsLoopFile(t *testing.T) {
+	rec := Record{State: fresh}
+	in := Inspection{Record: &rec, PVs: []PV{{"/dev/loop0", StorageImage}, {"/dev/nvme1n1", "disk"}}, Volumes: []string{"kv-01 10.00g"}, StorageFile: StorageImage + " 60G", Now: afterInstall}
+	d, err := Decide(in, Flags{})
+	if err != nil || d.Plan.Storage != StorageKeep || !d.Checks.KeepVG {
+		t.Fatalf("extended onto a real disk: %+v checks %+v %v", d.Plan, d.Checks, err)
+	}
+	if !strings.Contains(strings.Join(d.Summary, "\n"), "KEEP the volume group") {
+		t.Fatalf("summary: %v", d.Summary)
+	}
+	var files string
+	for _, s := range Plan(d.Plan) {
+		if strings.Contains(s.Script, "lvremove") || strings.Contains(s.Script, "vgremove") || strings.Contains(s.Script, "rm -f "+StorageImage) {
+			t.Fatalf("step %q removes the kept volume group", s.Name)
+		}
+		if strings.Contains(s.Name, "remove Kevaso's files") {
+			files = s.Script
+		}
+	}
+	if !strings.Contains(files, `[ "$f" = `+StorageImage+` ] && continue`) {
+		t.Fatal("the files step removes the loop file that still backs the kept volume group")
+	}
+	var loopLeft bool
+	for _, c := range Checklist(d.Checks) {
+		if strings.Contains(c.Name, "loop device") {
+			loopLeft = true
+		}
+		if strings.Contains(c.Name, "no Kevaso file") && !strings.Contains(c.Script, `[ "$f" = `+StorageImage+` ] && continue`) {
+			t.Fatal("the checklist reports the kept loop file as leftover")
+		}
+	}
+	if loopLeft {
+		t.Fatal("a kept volume group is reported because its loop device is still attached")
+	}
+}
+
 // K-007: after a reboot the loop file isn't attached, no volume group is seen, and the reset
 // deleted the file (every microVM disk and volume in it) without a word.
 func TestAStorageFileIsNeverStray(t *testing.T) {
