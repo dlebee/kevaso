@@ -5,10 +5,11 @@ export GOTOOLCHAIN := auto
 
 # A worktree lab on the EPYC. LAB is the name. PAIR=1 is two machine VMs for the
 # two-machine metal tests (Kevaso is not installed; the tests install it).
+# VCPU=n is each pair-lab machine's vCPUs (default 8; see testbed/lab).
 # LAB_HOST, LAB_SSH_KEY and LAB_HOSTKEY override the host (see testbed/lab/README.md).
-lab-up: ## fresh lab (LAB=name, PAIR=1 for two machines, RECREATE=1 to replace one)
-	@test -n "$(LAB)" || { echo "usage: make lab-up LAB=name [PAIR=1] [RECREATE=1]" >&2; exit 2; }
-	GOPROXY=off go run ./testbed/lab/cmd/kvlab up --name "$(LAB)" $(if $(filter 1,$(PAIR)),--pair,) $(if $(RECREATE),--recreate,)
+lab-up: ## fresh lab (LAB=name, PAIR=1 for two machines, VCPU=n, RECREATE=1 to replace one)
+	@test -n "$(LAB)" || { echo "usage: make lab-up LAB=name [PAIR=1] [VCPU=n] [RECREATE=1]" >&2; exit 2; }
+	GOPROXY=off go run ./testbed/lab/cmd/kvlab up --name "$(LAB)" $(if $(filter 1,$(PAIR)),--pair,) $(if $(VCPU),--vcpu $(VCPU),) $(if $(RECREATE),--recreate,)
 
 lab-down: ## remove lab LAB and nothing else
 	@test -n "$(LAB)" || { echo "usage: make lab-down LAB=name" >&2; exit 2; }

@@ -26,13 +26,27 @@ func cmdUp(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	recreate := fs.Bool("recreate", false, "replace an existing lab of this name")
 	pair := fs.Bool("pair", false, "two machine VMs (m1, m2), Kevaso not installed, for the two-machine metal tests")
+	vcpu := fs.Int("vcpu", lab.PairVCPU, fmt.Sprintf("vCPUs for each machine of a pair lab (%d to %d)", lab.PairVCPUMin, lab.PairVCPUMax))
 	name := nameFlag(args, fs)
 	if err := lab.ValidName(name); err != nil {
 		return err
 	}
+	askedVCPU := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "vcpu" {
+			askedVCPU = true
+		}
+	})
+	if askedVCPU && !*pair {
+		return errors.New("--vcpu sets the machine size of a pair lab: pass --pair")
+	}
 	nodes := lab.Nodes()
 	if *pair {
-		nodes = lab.PairNodes()
+		var err error
+		nodes, err = lab.PairNodesWith(*vcpu)
+		if err != nil {
+			return err
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()

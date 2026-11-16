@@ -62,8 +62,14 @@ hold for a nested node: that address is DNATed on the lab host, not assigned ins
 ## Pair labs
 
 `make lab-up LAB=name PAIR=1` (`kvlab up --pair`) is the same network, the same slot and the
-same port block, with two machine VMs instead of the cluster. `m1` and `m2` are each 4 vCPU,
-8 GiB and 40 GiB. `m2` has a second empty virtio disk, serial `kvlspare`, which the guest
+same port block, with two machine VMs instead of the cluster. `m1` and `m2` are each 8 vCPU,
+8 GiB and 40 GiB. `VCPU=n` (`kvlab up --pair --vcpu n`) sets that count, from 6 to 16. The
+host keeps one CPU, so a machine has one fewer for silos: 4 vCPU left 3, and the two-machine
+tests place five one-CPU silos on one machine, which needs 6. 16 on each machine is the
+EPYC's 32 threads. Six pair labs at the default of 8 is 96 vCPUs on those 32 threads; pass
+a smaller `VCPU` when several pair labs run at once.
+
+`m2` has a second empty virtio disk, serial `kvlspare`, which the guest
 names `/dev/disk/by-id/virtio-kvlspare`. LVM reports that disk by its kernel name; the reset treats the by-id path and that name as the same disk, and still refuses any other. Kevaso is not installed. On each fresh VM kvlab runs
 the harness baseline (`testbed/remote` `RecordBaseline`): the checklist has to pass, then the
 VM's packages, nftables tables and IP forwarding are written to `/var/lib/kvt-baseline/state`.

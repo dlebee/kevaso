@@ -314,9 +314,30 @@ func TestEnvFile(t *testing.T) {
 	}
 }
 
+func TestPairVCPU(t *testing.T) {
+	if MaxLabs*2*PairVCPU != 96 || HostThreads != 32 || PairVCPUMax != 16 || PairVCPUMin != 6 {
+		t.Fatalf("six pair labs at %d vCPU are %d vCPUs on %d threads; min %d max %d", PairVCPU, MaxLabs*2*PairVCPU, HostThreads, PairVCPUMin, PairVCPUMax)
+	}
+	for _, n := range []int{PairVCPUMin, PairVCPU, PairVCPUMax} {
+		nodes, err := PairNodesWith(n)
+		if err != nil || len(nodes) != 2 || nodes[0].VCPU != n || nodes[1].VCPU != n || nodes[1].SpareSerial != SpareSerial {
+			t.Fatalf("%d: %v %+v", n, err, nodes)
+		}
+		dom, err := DomainXML("pr", 3, nodes[0])
+		if err != nil || !strings.Contains(dom, "<vcpu placement='static'>"+strconv.Itoa(n)+"</vcpu>") {
+			t.Fatalf("%d domain: %v\n%s", n, err, dom)
+		}
+	}
+	for _, n := range []int{0, 4, 5, 17, -1} {
+		if _, err := PairNodesWith(n); err == nil {
+			t.Fatalf("%d accepted", n)
+		}
+	}
+}
+
 func TestPair(t *testing.T) {
 	m1, m2 := PairNodes()[0], PairNodes()[1]
-	if m1.Role != "m1" || m2.Role != "m2" || m1.VCPU != 4 || m2.VCPU != 4 || m1.MemoryMiB != 8192 || m2.MemoryMiB != 8192 || m1.DiskGiB != 40 || m2.DiskGiB != 40 {
+	if m1.Role != "m1" || m2.Role != "m2" || m1.VCPU != PairVCPU || m2.VCPU != PairVCPU || m1.MemoryMiB != 8192 || m2.MemoryMiB != 8192 || m1.DiskGiB != 40 || m2.DiskGiB != 40 {
 		t.Fatalf("sizes: %+v %+v", m1, m2)
 	}
 	if m1.SpareSerial != "" || m2.SpareSerial != SpareSerial || SpareDiskGiB != 20 {
@@ -359,7 +380,7 @@ func TestPair(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(d1, "<name>kvl-pr-m1</name>") || !strings.Contains(d1, "<vcpu placement='static'>4</vcpu>") || !strings.Contains(d1, "<memory unit='MiB'>8192</memory>") {
+	if !strings.Contains(d1, "<name>kvl-pr-m1</name>") || !strings.Contains(d1, "<vcpu placement='static'>"+strconv.Itoa(m1.VCPU)+"</vcpu>") || !strings.Contains(d1, "<memory unit='MiB'>8192</memory>") {
 		t.Fatalf("m1 domain:\n%s", d1)
 	}
 	if strings.Contains(d1, "vdb") || strings.Contains(d1, SpareSerial) || strings.Contains(d1, "spare") {

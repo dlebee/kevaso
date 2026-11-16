@@ -20,6 +20,8 @@ import (
 const (
 	// MaxLabs is how many labs fit on the host at once (one /24 and one port block each).
 	MaxLabs = 6
+	// HostThreads is the lab host's hardware threads (the EPYC from E046). The labs share them.
+	HostThreads = 32
 	// MaxName is the longest lab name. It is one DNS label, so the VM names stay short.
 	MaxName = 12
 	// PortBase is the start of the forwarded-port space. Slot N uses 21000+N*100.
@@ -88,12 +90,44 @@ func Nodes() []Node {
 	}
 }
 
-// PairNodes is a pair lab: two machines, sized like the workers. m2 has the spare disk.
+// PairVCPU is the vCPU count of each machine in a pair lab. The real machines have 16 and 32
+// threads. A guest keeps one CPU for the host, so 4 vCPU leaves 3 for silos, and the two-machine
+// tests place five one-CPU silos on one machine. 8 leaves 7.
+//
+// PairVCPUMin is 6: those five silos, plus the CPU the host keeps. PairVCPUMax is half of
+// HostThreads, so the two machines of one lab use the whole EPYC and no more. Six pair labs at
+// the default is 96 vCPUs on 32 threads; a smaller count is for when several labs run at once.
+const (
+	PairVCPU    = 8
+	PairVCPUMin = 6
+	PairVCPUMax = HostThreads / 2
+)
+
+// ValidPairVCPU reports whether n may be the vCPU count of each pair-lab machine.
+func ValidPairVCPU(n int) error {
+	if n < PairVCPUMin || n > PairVCPUMax {
+		return fmt.Errorf("pair vcpu %d: want %d to %d (a machine keeps one CPU for itself, and the two-machine tests place five one-CPU silos on one machine; %d on each of two machines is the EPYC's %d threads)",
+			n, PairVCPUMin, PairVCPUMax, PairVCPUMax, HostThreads)
+	}
+	return nil
+}
+
+// PairNodes is a pair lab: two machines at PairVCPU. m2 has the spare disk.
 // Kevaso is not installed on either; the metal tests install it themselves.
-func PairNodes() []Node {
+func PairNodes() []Node { return pairNodes(PairVCPU) }
+
+// PairNodesWith is PairNodes with vcpu on each machine.
+func PairNodesWith(vcpu int) ([]Node, error) {
+	if err := ValidPairVCPU(vcpu); err != nil {
+		return nil, err
+	}
+	return pairNodes(vcpu), nil
+}
+
+func pairNodes(vcpu int) []Node {
 	return []Node{
-		{Role: "m1", VCPU: 4, MemoryMiB: 8192, DiskGiB: 40, Octet: 10, SSHOff: 22},
-		{Role: "m2", VCPU: 4, MemoryMiB: 8192, DiskGiB: 40, Octet: 11, SSHOff: 23, SpareSerial: SpareSerial},
+		{Role: "m1", VCPU: vcpu, MemoryMiB: 8192, DiskGiB: 40, Octet: 10, SSHOff: 22},
+		{Role: "m2", VCPU: vcpu, MemoryMiB: 8192, DiskGiB: 40, Octet: 11, SSHOff: 23, SpareSerial: SpareSerial},
 	}
 }
 
