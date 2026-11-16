@@ -66,17 +66,21 @@ var TestPaths = []string{"/var/lib/kvt-inet", "/var/lib/kvt-registry", "/root/.k
 // included, and the spare disk (if it has one) empty.
 func Checklist(spare string, listenOK ...string) []hostreset.Check {
 	base := hostreset.Checklist(hostreset.CheckOptions{Ports: Ports, DockerGone: true, PodmanGone: true})
-	if len(listenOK) > 0 {
-		for i, c := range base {
-			if c.Name == "nothing listens on Kevaso's ports" {
-				var ex []string
-				for _, a := range listenOK {
-					ex = append(ex, "-e '"+a+"'")
-				}
-				base[i].Script = "{ " + c.Script + "\n} | grep -vxF " + strings.Join(ex, " ") + "; true"
-				base[i].Name += " (but the machine's own " + strings.Join(listenOK, ", ") + ")"
-			}
+	for i, c := range base {
+		if c.Name != "nothing listens on Kevaso's ports" {
+			continue
 		}
+		// A worktree lab's dnsmasq listens on its gateway. That is the lab's, not Kevaso's.
+		script := "{ " + c.Script + "\n} | grep -vE '" + labDNSListen + "'"
+		if len(listenOK) > 0 {
+			var ex []string
+			for _, a := range listenOK {
+				ex = append(ex, "-e '"+a+"'")
+			}
+			script += " | grep -vxF " + strings.Join(ex, " ")
+			base[i].Name += " (but the machine's own " + strings.Join(listenOK, ", ") + ")"
+		}
+		base[i].Script = script + "; true"
 	}
 	cs := append(base,
 		hostreset.Check{Name: "no file of the tests is left", Script: `for f in ` + strings.Join(TestPaths, " ") + `; do [ -e "$f" ] && echo "$f"; done; true`})
@@ -87,11 +91,60 @@ func Checklist(spare string, listenOK ...string) []hostreset.Check {
 	return cs
 }
 
+// A worktree lab (testbed/lab) lives on this same machine: libvirt domains, networks and disks
+// named kvl-*, state under /root/kvl, and one nftables table, inet kvl. None of that is Kevaso's.
+// kvlab is the only thing that removes it. The reset never grew a step that deletes those
+// domains, networks, disks or /root/kvl; the table and the kvl* links are the parts the reset
+// would otherwise take, because the table isn't in the baseline and a link named kvl* sits next
+// to the kv* links Kevaso uses. Both stay.
+const LabTable = "inet kvl"
+
+// labLinkSkip is the case arm that keeps a lab bridge. The surrounding arm is hostreset's.
+const labLinkSkip = "kvl*) ;; # worktree lab (testbed/lab): only kvlab deletes these\n  "
+
+// withoutLabTable drops the lab table from the tables a reset would delete.
+func withoutLabTable(tables []string) []string {
+	var out []string
+	for _, t := range tables {
+		if t != LabTable {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// withoutLabLeftover drops the lab table from the baseline comparison, so a reset that left it
+// (on purpose) is not reported as dirty for that.
+func withoutLabLeftover(left []string) []string {
+	var out []string
+	for _, l := range left {
+		if l == "nftables table still there: "+LabTable {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// keepLabLinks makes the link step skip kvl* (a lab bridge such as kvlbr1).
+func keepLabLinks(steps []hostreset.Step) []hostreset.Step {
+	const old = "case \"$l\" in kvbr*|kvt*|kevaso*) ip link del \"$l\";; esac"
+	const neu = "case \"$l\" in\n  " + labLinkSkip + "kvbr*|kvt*|kevaso*) ip link del \"$l\";;\nesac"
+	for i := range steps {
+		steps[i].Script = strings.ReplaceAll(steps[i].Script, old, neu)
+	}
+	return steps
+}
+
+// labDNSListen is dnsmasq on a lab network's gateway (10.77.N.1:53, N in 1..6). The checklist
+// keeps Kevaso's port 53 clear and must not treat the lab's own DNS as Kevaso listening.
+const labDNSListen = `^10\.77\.[1-6]\.1(%[^:]*)?:53$`
+
 // Plan is the test machine's reset plan, from its baseline and its state now: kvoadm reset's,
 // then the tests' own files. With a spare disk, the volume group may be on it (and only on it):
-// it's wiped, and the disk left with nothing on it.
+// it's wiped, and the disk left with nothing on it. A worktree lab is left in place (LabTable).
 func Plan(base, now State, spare string) []hostreset.Step {
-	steps := hostreset.Plan(hostreset.PlanInput{Purge: hostreset.Purgeable(base, now), Tables: hostreset.ExtraTables(base, now),
+	steps := hostreset.Plan(hostreset.PlanInput{Purge: hostreset.Purgeable(base, now), Tables: withoutLabTable(hostreset.ExtraTables(base, now)),
 		IPForward: base.IPForward, DockerOurs: true, PodmanOurs: true, Storage: hostreset.StorageLoop})
 	if spare != "" {
 		for i, st := range steps {
@@ -100,7 +153,8 @@ func Plan(base, now State, spare string) []hostreset.Step {
 			}
 		}
 	}
-	return append(steps, hostreset.Step{Name: "remove the tests' files", Script: "rm -rf " + strings.Join(TestPaths, " ")})
+	steps = append(steps, hostreset.Step{Name: "remove the tests' files", Script: "rm -rf " + strings.Join(TestPaths, " ")})
+	return keepLabLinks(steps)
 }
 
 // spareScript removes the volume group when every physical volume of it is the spare disk or
@@ -225,7 +279,7 @@ func (d *Driver) Check(ctx context.Context, base *State) error {
 		if err != nil {
 			errs = append(errs, err)
 		} else {
-			left = hostreset.Leftovers(*base, now)
+			left = withoutLabLeftover(hostreset.Leftovers(*base, now))
 		}
 	}
 	if err := hostreset.Report(checks, outputs, left); err != nil {

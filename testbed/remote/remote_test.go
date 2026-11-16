@@ -523,3 +523,51 @@ func TestRecordBaselineOnlyOnAFreshMachine(t *testing.T) {
 		t.Fatalf("second call: %+v %v", b, err)
 	}
 }
+
+// A worktree lab on this machine is not Kevaso's. The reset must not delete its nftables table,
+// and it has no step that destroys kvl-* libvirt domains, networks, disks or /root/kvl.
+func TestResetLeavesLabs(t *testing.T) {
+	now := fresh
+	now.Tables = append(slices.Clone(fresh.Tables), LabTable, "inet kevaso")
+	var all strings.Builder
+	var sawSkip bool
+	for _, s := range Plan(fresh, now, "") {
+		all.WriteString(s.Script)
+		all.WriteByte('\n')
+		if strings.Contains(s.Script, labLinkSkip) {
+			sawSkip = true
+		}
+	}
+	script := all.String()
+	if strings.Contains(script, "nft delete table inet kvl") {
+		t.Error("the reset deletes the lab's nftables table")
+	}
+	if !strings.Contains(script, "nft delete table inet kevaso") {
+		t.Error("keeping the lab table also kept Kevaso's")
+	}
+	if !sawSkip {
+		t.Error("the link step does not skip kvl* links")
+	}
+	for _, bad := range []string{"virsh", "/root/kvl", "/var/lib/libvirt"} {
+		if strings.Contains(script, bad) {
+			t.Errorf("the reset mentions %q; a lab's domains, networks, disks and /root/kvl must stay", bad)
+		}
+	}
+	left := withoutLabLeftover(hostreset.Leftovers(fresh, now))
+	joined := strings.Join(left, "\n")
+	if strings.Contains(joined, LabTable) {
+		t.Errorf("the lab table is reported as a leftover: %s", joined)
+	}
+	if !strings.Contains(joined, "inet kevaso") {
+		t.Errorf("Kevaso's table is no longer a leftover: %s", joined)
+	}
+	var port string
+	for _, c := range Checklist("") {
+		if c.Name == "nothing listens on Kevaso's ports" {
+			port = c.Script
+		}
+	}
+	if !strings.Contains(port, labDNSListen) {
+		t.Errorf("the port check doesn't ignore a lab's DNS on 10.77.N.1:53:\n%s", port)
+	}
+}
