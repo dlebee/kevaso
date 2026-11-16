@@ -281,6 +281,14 @@ The checklist fails, naming each leftover, when any of these is still there:
 The reset never touches sshd, the machine's own firewall tables, its disks, or packages that
 aren't Kevaso's. A kernel that unattended-upgrades installed is left alone.
 
+**A machine that gains a setup of its own** (a lab's QEMU/libvirt, say) is re-baselined, so the reset
+keeps it. First the checklist must pass (nothing of Kevaso's, no Docker), then run
+`KEVASO_METAL_REBASELINE="why" go test -tags metal -run '^TestMetalRebaseline$' ./test/e2e/`. The old
+baseline stays beside the new one (`state.before-TIME`). A package that both the setup and Kevaso use
+(qemu-utils, say) then stays installed after a reset. If the setup listens on one of Kevaso's ports
+(libvirt's dnsmasq on 53), name that exact address in `KEVASO_METAL_LISTEN_OK` (`KEVASO_METAL2_LISTEN_OK`
+for machine 2 of a pair), for example `192.168.122.1:53`.
+
 ### The same, as a Kevaso command: `kvoadm reset`
 
 The product way to return the box to clean is `kvoadm reset`. It is the same plan. It works
