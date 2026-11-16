@@ -31,6 +31,7 @@ func TestMetal2RestoreKeepsWhatItDoesntKnow(t *testing.T) {
 	if p.recoveryKey == "" {
 		t.Skip("needs the cluster this run made (its recovery key): not with KEVASO_METAL_REUSE")
 	}
+	p.ensureTwoWorkers()
 	c := p.c1
 	ns := "restore2"
 	c.namespace(ns)

@@ -80,6 +80,7 @@ func (r *restorer) restore() {
 func TestMetal2RestoreDuringStart(t *testing.T) {
 	p := metal2(t)
 	r := newRestorer(t, p)
+	p.ensureTwoWorkers()
 	c := p.c1
 	ns := "restorestart2"
 	c.namespace(ns)
@@ -137,6 +138,7 @@ func TestMetal2RestoreDuringStart(t *testing.T) {
 func TestMetal2ResetBackupRestoreWipesOnce(t *testing.T) {
 	p := metal2(t)
 	r := newRestorer(t, p)
+	p.ensureTwoWorkers()
 	c := p.c1
 	ns := "resetonce2"
 	c.namespace(ns)
