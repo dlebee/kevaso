@@ -1879,5 +1879,17 @@
    "./internal/apiserver"
   ],
   "protects": "the egress gate never opens cluster, loopback or link-local addresses"
+ },
+ {
+  "id": "G-195",
+  "guard": "create stores no caller status (K-125)",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "dropCallerStatus(obj) // K-125: a create stores no status; only /status sets it",
+  "replace": "_ = obj // K-125: a create stores no status; only /status sets it",
+  "mutation": "caller status kept",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a created object starts with empty status"
  }
 ]
