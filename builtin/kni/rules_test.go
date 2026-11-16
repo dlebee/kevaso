@@ -356,3 +356,22 @@ func TestLocalEndpoint(t *testing.T) {
 		t.Error("an endpoint rule on a host without the endpoint")
 	}
 }
+
+// The firewall's silo, service and mesh ranges are the network model's (KevasoRanges).
+func TestFirewallRangesMatchTheNetworkModel(t *testing.T) {
+	got := []string{"10.62.0.0/16", "10.63.0.0/16", silosAll, servicesAll}
+	if len(got) != len(v1.KevasoRanges) {
+		t.Fatalf("firewall %v, network model %v", got, v1.KevasoRanges)
+	}
+	for i := range got {
+		if got[i] != v1.KevasoRanges[i] {
+			t.Errorf("firewall %s, network model %s", got[i], v1.KevasoRanges[i])
+		}
+	}
+	if meshHosts != "{ "+v1.KevasoRanges[0]+", "+v1.KevasoRanges[1]+" }" {
+		t.Fatalf("mesh hosts %s", meshHosts)
+	}
+	if servicesAll != v1.ServiceCIDR {
+		t.Fatalf("services %s, ServiceCIDR %s", servicesAll, v1.ServiceCIDR)
+	}
+}

@@ -9,9 +9,10 @@
 //   - a host a grant allows by name: the TLS stream is passed through untouched, to the name the
 //     client asked for (resolved here, so an address can't be smuggled in);
 //   - a name is never followed to an address the outside can't reach from the internet (private,
-//     loopback, link-local, the mesh, silos, services, the host's own: Special), unless a grant of
-//     the silo names that address itself (K-057, K-092). Every address is checked when it is
-//     dialled, so a name that changes its answer (DNS rebinding) gets no further;
+//     the host's own: Special), unless a grant of the silo names that address itself (K-057,
+//     K-092). The cluster's own ranges (silos, services, the mesh), loopback and link-local are
+//     never opened, whatever a grant says (K-124). Every address is checked when it is dialled,
+//     so a name that changes its answer (DNS rebinding) gets no further;
 //   - an address a grant allows by CIDR: passed through to where the client dialled;
 //   - anything else, including no SNI: refused.
 //
@@ -265,11 +266,16 @@ func (g *Gate) atConnect(p Policy) func(network, address string, c syscall.RawCo
 	}
 }
 
-// refused says why a name may not lead to a on port (nil: it may). An address Special refuses,
-// or one in Internal, is opened only by a CIDR rule of the silo's grants that names it: inside
-// the refused range, for that port, over TCP (a wider rule, 0.0.0.0/0, doesn't name it).
+// refused says why a name may not lead to a on port (nil: it may). The cluster's own ranges,
+// loopback and link-local are never opened, whatever a grant says (K-124). Any other address
+// Special refuses, or one in Internal, is opened only by a CIDR rule of the silo's grants that
+// names it: inside the refused range, for that port, over TCP (a wider rule, 0.0.0.0/0, doesn't
+// name it).
 func (g *Gate) refused(p Policy, resolved netip.Addr, port uint16) error {
 	a := resolved.Unmap().WithZone("") // a zone would make every range miss it
+	if _, why := neverOpened(a); why != "" {
+		return fmt.Errorf("it resolves to %s (%s), which a grant never opens", resolved, why)
+	}
 	r, why := Special(a)
 	if why == "" && g.Internal != nil {
 		for _, pr := range g.Internal() {
@@ -317,23 +323,42 @@ var special = []struct {
 	{netip.MustParsePrefix("ff00::/8"), "multicast"},
 }
 
+// carriedIPv4 is the IPv4 address inside a NAT64 (64:ff9b::/96) or 6to4 (2002::/16) address.
+func carriedIPv4(a netip.Addr) (netip.Addr, bool) {
+	if !a.Is6() {
+		return netip.Addr{}, false
+	}
+	b := a.As16()
+	switch {
+	case netip.MustParsePrefix("64:ff9b::/96").Contains(a): // the IPv4 address in its last 32 bits
+		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), true
+	case netip.MustParsePrefix("2002::/16").Contains(a): // the IPv4 address after 2002:
+		return netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}), true
+	default:
+		return netip.Addr{}, false
+	}
+}
+
+// neverOpened reports the range a grant never opens when a is inside one (K-124): the cluster's
+// own ranges, loopback or link-local, including an IPv4 address carried in NAT64 or 6to4. why is
+// "" when a grant may still name it (an ordinary private address, the host's own public address).
+func neverOpened(a netip.Addr) (netip.Prefix, string) {
+	a = a.Unmap().WithZone("")
+	if v4, ok := carriedIPv4(a); ok {
+		if _, why := v1.ClosedRange(netip.PrefixFrom(v4, v4.BitLen())); why != "" {
+			return netip.PrefixFrom(a, a.BitLen()), why + " (as " + v4.String() + ")"
+		}
+	}
+	return v1.ClosedRange(netip.PrefixFrom(a, a.BitLen()))
+}
+
 // Special says whether a host name may never lead to a, and why: the smallest range of the
 // refused ones holding it, else "" (an ordinary internet address). Pure.
 func Special(a netip.Addr) (netip.Prefix, string) {
 	a = a.Unmap().WithZone("")
-	if a.Is6() {
-		b := a.As16()
-		var v4 netip.Addr
-		switch {
-		case netip.MustParsePrefix("64:ff9b::/96").Contains(a): // NAT64: the IPv4 address in its last 32 bits
-			v4 = netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
-		case netip.MustParsePrefix("2002::/16").Contains(a): // 6to4: the IPv4 address after 2002:
-			v4 = netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]})
-		}
-		if v4.IsValid() {
-			if _, why := Special(v4); why != "" {
-				return netip.PrefixFrom(a, 128), why + " (as " + v4.String() + ")"
-			}
+	if v4, ok := carriedIPv4(a); ok {
+		if _, why := Special(v4); why != "" {
+			return netip.PrefixFrom(a, 128), why + " (as " + v4.String() + ")"
 		}
 	}
 	best, why := netip.Prefix{}, ""

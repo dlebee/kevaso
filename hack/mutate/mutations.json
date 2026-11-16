@@ -27,7 +27,7 @@
  },
  {
   "id": "G-003",
-  "guard": "agent holds everything while the control plane is held (\u00a70.7 watermark)",
+  "guard": "agent holds everything while the control plane is held (§0.7 watermark)",
   "file": "internal/agent/agent.go",
   "find": "if a.ControlPlaneHeld() {",
   "replace": "if false {",
@@ -1071,8 +1071,8 @@
   "id": "G-107",
   "guard": "kni: a tap speaks only with its silo's MAC",
   "file": "builtin/kni/rules.go",
-  "find": "b.Tap, e, b.IP) // no silo speaks for another\u2026",
-  "replace": "b.Tap, \"\", b.IP) // no silo speaks for another\u2026",
+  "find": "b.Tap, e, b.IP) // no silo speaks for another…",
+  "replace": "b.Tap, \"\", b.IP) // no silo speaks for another…",
   "mutation": "MAC not bound",
   "packages": [
    "./builtin/kni",
@@ -1855,5 +1855,116 @@
    "./test/integration"
   ],
   "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-194",
+  "guard": "egress gate: a grant never opens cluster, loopback or link-local addresses (K-124)",
+  "file": "internal/gate/gate.go",
+  "find": "if _, why := neverOpened(a); why != \"\" {",
+  "replace": "if _, why := neverOpened(a); why != \"\" && false {",
+  "mutation": "closed ranges opened when a grant names them",
+  "packages": [
+   "./internal/gate"
+  ],
+  "protects": "the egress gate never opens cluster, loopback or link-local addresses"
+ },
+ {
+  "id": "G-195",
+  "guard": "admission: a grant naming cluster, loopback or link-local is refused (K-124)",
+  "file": "internal/apiserver/semantic.go",
+  "find": "if pfx, why := v1.ClosedRange(e.Prefix); why != \"\" {",
+  "replace": "if pfx, why := v1.ClosedRange(e.Prefix); why != \"\" && false {",
+  "mutation": "closed ranges admitted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "the egress gate never opens cluster, loopback or link-local addresses"
+ },
+ {
+  "id": "G-197",
+  "guard": "create stores no caller status (K-125)",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "dropCallerStatus(obj) // K-125: a create stores no status; only /status sets it",
+  "replace": "_ = obj // K-125: a create stores no status; only /status sets it",
+  "mutation": "caller status kept",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a created object starts with empty status"
+ },
+ {
+  "id": "G-198",
+  "guard": "a handoff uses the history the copy was placed here under, kept across a restart (K-126)",
+  "file": "internal/agent/agent.go",
+  "find": "if v, ok := a.placedUnder.Load(uid); ok {\n\t\treturn v.(string)\n\t}",
+  "replace": "if _, ok := a.placedUnder.Load(uid); ok {\n\t\treturn a.historyAtStart\n\t}",
+  "mutation": "recorded history ignored",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-199",
+  "guard": "a reset or image a create satisfied is recorded as applied here (K-127)",
+  "file": "internal/agent/agent.go",
+  "find": "\t\ta.recordApplied(s.UID, s.Spec.Reset, image) // a create satisfied this reset and image (K-127)\n",
+  "replace": "",
+  "mutation": "create does not record the request",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-196",
+  "guard": "an unreadable applied-resets record is not empty: a replayed reset is refused (K-127)",
+  "file": "internal/agent/applied.go",
+  "find": "if l.unreadable != nil {\n\t\treturn false, l.unreadable\n\t}",
+  "replace": "if l.unreadable != nil && false {\n\t\treturn false, l.unreadable\n\t}",
+  "mutation": "unreadable record counts as empty",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-200",
+  "guard": "namespace delete refuses while something outside it names it",
+  "file": "internal/apiserver/nsdelete.go",
+  "find": "if len(named) > 0 {",
+  "replace": "if false {",
+  "mutation": "outside names ignored",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a namespace is deleted only when nothing outside it names it"
+ },
+ {
+  "id": "G-201",
+  "guard": "a write that newly names a namespace being deleted is refused before it is stored",
+  "file": "internal/apiserver/nsdelete.go",
+  "find": "if n.Status.Phase == \"Terminating\" {\n\t\t\treturn nil, errf(http.StatusConflict, \"Conflict\", \"namespace %s is being deleted: nothing new can name it\", ns)",
+  "replace": "if false {\n\t\t\treturn nil, errf(http.StatusConflict, \"Conflict\", \"namespace %s is being deleted: nothing new can name it\", ns)",
+  "mutation": "phase not checked",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a namespace is deleted only when nothing outside it names it"
+ },
+ {
+  "id": "G-202",
+  "guard": "a write that named a namespace is taken back if that namespace was deleted during the write",
+  "file": "internal/apiserver/nsdelete.go",
+  "find": "if err != nil || now != w.uid {",
+  "replace": "if (err != nil || now != w.uid) && false {",
+  "mutation": "second look removed",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a namespace is deleted only when nothing outside it names it"
  }
 ]

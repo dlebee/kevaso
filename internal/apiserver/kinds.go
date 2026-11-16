@@ -314,7 +314,7 @@ func (s *Server) createDefined(ctx context.Context, t target, u *v1.Unstructured
 	now := s.clock.Now().UTC().Truncate(time.Second)
 	om := &u.ObjectMeta
 	om.UID, om.CreationTimestamp, om.DeletionTimestamp, om.Generation = newUID(), &now, nil, 1
-	if t.def.res.Status { // controllers write status, through /status
+	if t.def.res.Status { // K-125: a create stores no status; controllers write it through /status
 		delete(u.Fields, "status")
 	}
 	if err := s.prepareDefined(ctx, t, nil, u); err != nil {

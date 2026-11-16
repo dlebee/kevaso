@@ -504,17 +504,29 @@ func apply(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdou
 		case err != nil:
 			return fmt.Errorf("%s: %w", what, err)
 		default:
-			m.ResourceVersion = cur.GetObjectMeta().ResourceVersion
-			same, err := wouldStore(ctx, c, obj, cur) // apply.go
+			unchanged := false
+			err := retryUpdate(func() error {
+				if err := c.Get(ctx, k.Kind, m.Namespace, m.Name, cur); err != nil {
+					return err
+				}
+				m.ResourceVersion = cur.GetObjectMeta().ResourceVersion
+				same, err := wouldStore(ctx, c, obj, cur) // apply.go
+				if err != nil {
+					return err
+				}
+				if same {
+					unchanged = true
+					return nil
+				}
+				unchanged = false
+				return c.Update(ctx, obj)
+			})
 			if err != nil {
 				return fmt.Errorf("%s: %w", what, err)
 			}
-			if same {
+			if unchanged {
 				_, _ = fmt.Fprintln(stdout, what, "unchanged")
 				continue
-			}
-			if err := c.Update(ctx, obj); err != nil {
-				return fmt.Errorf("%s: %w", what, err)
 			}
 			_, _ = fmt.Fprintln(stdout, what, "configured")
 		}
@@ -920,6 +932,7 @@ func del(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	}
 	// By name, whatever has it; with --uid (and --resource-version), only the object the person
 	// looked at (K-031): another one under the name, or that one changed since, is not deleted.
+	// A conflict here is that refusal. It is not a race to retry.
 	if err := c.Delete(ctx, k.Kind, ns, o.args[1], client.Precondition{UID: o.uid, ResourceVersion: o.resourceVersion}); err != nil {
 		return err
 	}

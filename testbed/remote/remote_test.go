@@ -266,7 +266,7 @@ func TestSparePlan(t *testing.T) {
 			vg = s.Script
 		}
 	}
-	for _, want := range []string{"d=/dev/nvme1n1", `"$d") ;;`, "refusing: volume group $vg is on $p, not the spare disk", "has partitions or holders", "is mounted", `wipefs -a -q "$d"`} {
+	for _, want := range []string{"d=/dev/nvme1n1", `"$d") ;;`, `readlink -f "$p"`, `readlink -f "$d"`, `[ "$pd" = "$dd" ]`, "refusing: volume group $vg is on $p, not the spare disk", "has partitions or holders", "is mounted", `wipefs -a -q "$d"`} {
 		if !strings.Contains(vg, want) {
 			t.Errorf("the spare-disk step lacks %q:\n%s", want, vg)
 		}

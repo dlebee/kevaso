@@ -555,6 +555,17 @@ func newUID() string {
 	return hex.EncodeToString(b)
 }
 
+// dropCallerStatus clears status on a built-in object. A create stores none of what the caller
+// sent there; the status subresource is what sets it (plugin-defined kinds do the same in
+// createDefined). A kind with no status field is unchanged. The server's own initial status, such
+// as a namespace's phase, is set after this.
+func dropCallerStatus(obj meta.Object) {
+	v := reflect.ValueOf(obj).Elem().FieldByName("Status")
+	if v.IsValid() && v.CanSet() {
+		v.Set(reflect.Zero(v.Type()))
+	}
+}
+
 func (s *Server) create(ctx context.Context, t target, obj meta.Object) (store.Object, error) {
 	var nsUID string
 	if t.kind.Scope == v1.Namespaced {
@@ -567,6 +578,7 @@ func (s *Server) create(ctx context.Context, t target, obj meta.Object) (store.O
 	now := s.clock.Now().UTC().Truncate(time.Second)
 	om.UID, om.CreationTimestamp, om.DeletionTimestamp = newUID(), &now, nil
 	om.Generation = 1
+	dropCallerStatus(obj) // K-125: a create stores no status; only /status sets it
 	if t.kind.Kind == "Namespace" {
 		obj.(*v1.Namespace).Status.Phase = "Active"
 	}
@@ -579,10 +591,30 @@ func (s *Server) create(ctx context.Context, t target, obj meta.Object) (store.O
 			return store.Object{}, err
 		}
 	}
-	if t.kind.Scope == v1.Namespaced {
-		return s.commitInNamespace(ctx, t, nsUID, data)
+	admitted, _, err := v1.Decode(data)
+	if err != nil {
+		return store.Object{}, err
 	}
-	return s.commitCreate(ctx, t.key(), data)
+	seen, err := s.guardNewNames(ctx, nil, admitted)
+	if err != nil {
+		return store.Object{}, err
+	}
+	var o store.Object
+	if t.kind.Scope == v1.Namespaced {
+		o, err = s.commitInNamespace(ctx, t, nsUID, data)
+	} else {
+		o, err = s.commitCreate(ctx, t.key(), data)
+	}
+	if err != nil || dryRun(ctx) {
+		return o, err
+	}
+	if err := s.recheckNewNames(ctx, seen); err != nil {
+		if _, derr := s.store.Delete(ctx, t.key(), o.Revision); derr != nil && !errors.Is(derr, store.ErrNotFound) {
+			return store.Object{}, fmt.Errorf("%s names a namespace being deleted, and taking it back out failed: %w", t.key(), derr)
+		}
+		return store.Object{}, err
+	}
+	return o, nil
 }
 
 // update replaces an object (or only its status, for /status). It needs the resourceVersion the
@@ -746,7 +778,26 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 			return store.Object{}, err
 		}
 	}
-	return s.commitUpdate(ctx, t.key(), data, expected)
+	admitted, _, err := v1.Decode(data)
+	if err != nil {
+		return store.Object{}, err
+	}
+	seen, err := s.guardNewNames(ctx, old, admitted)
+	if err != nil {
+		return store.Object{}, err
+	}
+	prev := bytes.Clone(cur.Data)
+	o, err := s.commitUpdate(ctx, t.key(), data, expected)
+	if err != nil || dryRun(ctx) {
+		return o, err
+	}
+	if err := s.recheckNewNames(ctx, seen); err != nil {
+		if _, rerr := s.store.Update(ctx, t.key(), prev, o.Revision); rerr != nil && !errors.Is(rerr, store.ErrNotFound) {
+			return store.Object{}, fmt.Errorf("%s names a namespace being deleted, and restoring it failed: %w", t.key(), rerr)
+		}
+		return store.Object{}, err
+	}
+	return o, nil
 }
 
 // letGo reports whether next is the end of a handoff by the host it is moving from having let go:

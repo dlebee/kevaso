@@ -5,7 +5,6 @@ package e2e
 import (
 	"bytes"
 	"fmt"
-	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -32,6 +31,7 @@ func TestMetal2RestoreKeepsWhatItDoesntKnow(t *testing.T) {
 	if p.recoveryKey == "" {
 		t.Skip("needs the cluster this run made (its recovery key): not with KEVASO_METAL_REUSE")
 	}
+	p.ensureTwoWorkers()
 	c := p.c1
 	ns := "restore2"
 	c.namespace(ns)
@@ -63,7 +63,7 @@ func TestMetal2RestoreKeepsWhatItDoesntKnow(t *testing.T) {
 	_ = p.m1.d.Close()
 	t.Log(kvoadmRun("", append(append([]string{"reset"}, sshArgs...), "--force", "--yes", "--wipe-storage")...))
 	out := kvoadmRun(p.recoveryKey+"\n", append(append([]string{"init"}, sshArgs...), "--kevasod", p.bin, "--no-extra-hardening", "--restore", file,
-		"--api-server", "https://"+net.JoinHostPort(cfg1.ExternalIP, "6443"), "--external-ip", cfg1.ExternalIP)...)
+		"--api-server", metalAPIServer(cfg1.ExternalIP, p.apiPort), "--external-ip", cfg1.ExternalIP)...)
 	t.Logf("kvoadm init --restore:\n%s", out)
 	p.mu.Lock()
 	p.m1Worker = false // restored as the system node only

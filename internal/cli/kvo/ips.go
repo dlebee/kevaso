@@ -68,7 +68,7 @@ func ipCommand(ctx context.Context, c *client.Client, o opts, stdout io.Writer) 
 		return errors.New("usage: kvo ip keep|release NAME")
 	}
 	ns, name := defaultNS(o), o.args[1]
-	for attempt := 0; attempt < 5; attempt++ {
+	err := retryUpdate(func() error {
 		var x v1.IP
 		if err := c.Get(ctx, "IP", ns, name, &x); err != nil {
 			return err
@@ -83,10 +83,8 @@ func ipCommand(ctx context.Context, c *client.Client, o opts, stdout io.Writer) 
 			msg = fmt.Sprintf("ip/%s kept: %s stays until you delete the IP", name, dash(x.Status.Address))
 		} else {
 			if len(x.Status.BoundTo) == 0 {
-				if err := c.Delete(ctx, "IP", ns, name, client.Seen(&x)); client.IsConflict(err) {
-					continue // bound or replaced since it was read: look again
-				} else if err != nil {
-					return err
+				if err := c.Delete(ctx, "IP", ns, name, client.Seen(&x)); err != nil {
+					return err // a conflict: bound or replaced since it was read
 				}
 				_, _ = fmt.Fprintf(stdout, "ip/%s released: nothing held it, so it's deleted and %s goes back\n", name, dash(x.Status.Address))
 				return nil
@@ -94,17 +92,16 @@ func ipCommand(ctx context.Context, c *client.Client, o opts, stdout io.Writer) 
 			x.Spec.Reclaim = v1.ReclaimDelete
 			msg = fmt.Sprintf("ip/%s released: it goes when %s let go of it", name, x.Status.Holders())
 		}
-		err := c.Update(ctx, &x)
-		if client.IsConflict(err) {
-			continue
-		}
-		if err != nil {
+		if err := c.Update(ctx, &x); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintln(stdout, msg)
 		return nil
+	})
+	if client.IsConflict(err) {
+		return errors.New("the IP kept changing; try again")
 	}
-	return errors.New("the IP kept changing; try again")
+	return err
 }
 
 // describeIP: the address, where it comes from, who holds it, whether it's kept, and whether its

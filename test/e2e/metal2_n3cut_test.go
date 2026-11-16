@@ -9,8 +9,9 @@ import (
 )
 
 // TestMetal2InjectCutOff is network-3's N3-3 (K-076, a35d179) on machine 2 (a worker): a microVM
-// with an injected key; machine 2's traffic to machine 1's API dropped (nft, output to its 6443)
-// for 2m30s. The key is still injected all through (past the one-minute refetch), and the journal
+// with an injected key; machine 2's traffic to machine 1's API dropped (nft, output to the
+// port the tests dial, and to 6443, the port the control plane advertises) for 2m30s.
+// The key is still injected all through (past the one-minute refetch), and the journal
 // says "injecting what it gave" once. The hour's end isn't waited for.
 //
 // Listens on nothing outside.
@@ -63,7 +64,11 @@ spec:
 	since := strings.TrimSpace(p.c2.mustSh("date -u '+%Y-%m-%d %H:%M:%S'"))
 	from := strings.TrimSpace(p.c2.mustSh("date +%s"))
 	t.Cleanup(func() { _, _ = p.c2.sh("nft delete table inet kvtest 2>/dev/null; true") })
-	p.c2.mustSh("nft add table inet kvtest; nft add chain inet kvtest o '{ type filter hook output priority 0; }'; nft add rule inet kvtest o ip daddr " + p.c1.cfg.ExternalIP + " tcp dport 6443 drop")
+	drop := "nft add table inet kvtest; nft add chain inet kvtest o '{ type filter hook output priority 0; }'"
+	for _, port := range metalAPIDropPorts(p.apiPort) {
+		drop += "; nft add rule inet kvtest o ip daddr " + p.c1.cfg.ExternalIP + " tcp dport " + port + " drop"
+	}
+	p.c2.mustSh(drop)
 	time.Sleep(150 * time.Second)
 	to := strings.TrimSpace(p.c2.mustSh("date +%s"))
 	p.c2.mustSh("nft delete table inet kvtest")
