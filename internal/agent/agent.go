@@ -868,6 +868,12 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 				return a.startEnded(s, why, err)
 			}
 		}
+		// Claimed once more right before the main process, as at a first start. Every-boot init
+		// can outlast a renewal; the start follows a claim that applied on what is stored now.
+		if err := kp.claimNow(ctx); err != nil {
+			a.settleClaim(ctx, rt, s)
+			return a.lostClaim(s, err)
+		}
 		stctx, startKept := kp.within(ctx)
 		err := rt.Start(stctx, id)
 		if why := startKept(); why != nil {
