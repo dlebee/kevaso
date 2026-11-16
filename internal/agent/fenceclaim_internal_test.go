@@ -87,7 +87,8 @@ func TestAKillInFlightWhenContactReturnsDoesNotVouchForTheNewStart(t *testing.T)
 		}
 	}
 	newer := startClaim("hv1", cur.Generation, time.Now().UTC())
-	cur.Status.Conditions = append(conds, newer)
+	conds = append(conds, newer)
+	cur.Status.Conditions = conds
 	if err := g.c.UpdateStatus(g.ctx, cur); err != nil {
 		t.Fatal(err)
 	}
