@@ -36,10 +36,12 @@ type csSeenDel struct {
 // clusterSecretRetry is how often a fetch that failed is tried again.
 const clusterSecretRetry = 5 * time.Second
 
-// runClusterSecrets fetches each plugin's recorded cluster secrets and keeps the files the
+// RunClusterSecrets fetches each plugin's recorded cluster secrets and keeps the files the
 // unit's LoadCredential lines name. PluginsEtc empty: nothing to deliver (tests that don't
-// set it, and an agent that isn't kevasod's).
-func (a *Agent) runClusterSecrets(ctx context.Context) {
+// set it, and an agent that isn't kevasod's). The worker's agent runs it from Run. A system
+// node with no worker runs it on its own: the plugin's controller side is installed there,
+// and nothing else on that host would write the credential file.
+func (a *Agent) RunClusterSecrets(ctx context.Context) {
 	if a.PluginsEtc == "" || a.Client == nil {
 		return
 	}

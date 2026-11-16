@@ -382,7 +382,7 @@ func (a *Agent) Run(ctx context.Context) {
 	})
 	go a.silos.Run(ctx)
 	go a.watchDeletes(ctx, e)
-	go a.runClusterSecrets(ctx)
+	go a.RunClusterSecrets(ctx)
 	// Rotation fan-out: a secret or grant changing looks again at every silo here that receives
 	// it (its files and env vars are written again, its endpoint and policy follow its grants).
 	for kind, inf := range map[string]*informer.Informer{"Secret": a.secrets, "Grant": a.grants} {

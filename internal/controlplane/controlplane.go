@@ -79,6 +79,12 @@ type Config struct {
 	Clock       clock.Clock
 	// Worker, when set, also runs the worker component on this host (one-host clusters).
 	Worker *worker.Config
+	// PluginsEtc is where kvoadm records cluster-secret names for plugins installed on this
+	// host (DIR/PLUGIN/cluster-secrets.json, and cluster-secrets-node.json for a node side).
+	// kevasod sets plugins.DefaultManifests. Empty: this node delivers none (tests). A system
+	// node that also runs a worker delivers through that worker's agent, which reads the same
+	// directory; this field is what a system node with no worker delivers from.
+	PluginsEtc string
 	// CertControllers are cert-controllers registered on this host beyond the built-in ones
 	// (acme, internal-ca), and DNSProviders the DNS providers acme's dns01 solvers may name.
 	CertControllers kcc.Registry
@@ -352,6 +358,23 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 			closeWorker()
 		}()
 		go worker.Run(hbCtx, wcl, wc, rts)
+	} else if cfg.PluginsEtc != "" {
+		// The controller side of a plugin is installed on the system node. That node usually
+		// runs no worker, and the delivery loop otherwise starts only inside the worker's
+		// agent, so the credential file was never written and the unit never started.
+		// This host talks to its own API: in contact while the process runs (a fetch that
+		// fails because the store doesn't answer leaves the file). Held is the watermark,
+		// the same rule as a worker.
+		cswm := agent.OpenWatermark(filepath.Join(cfg.DataDir, "control-plane-watermark.json"), cfg.Log)
+		ccl, closeCS := inProcessHost(srv, st, cswm, cfg.HostName, "control-plane")
+		go func() {
+			<-hbCtx.Done()
+			closeCS()
+		}()
+		go (&agent.Agent{
+			Client: ccl, HostName: cfg.HostName, Clock: cfg.Clock, Log: cfg.Log,
+			PluginsEtc: cfg.PluginsEtc, Watermark: cswm,
+		}).RunClusterSecrets(hbCtx)
 	}
 
 	go func() {

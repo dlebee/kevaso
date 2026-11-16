@@ -268,6 +268,9 @@ func runControlPlane(ctx context.Context, args []string) error {
 		}
 		cfg.DNSProviders[n] = &kccexec.DNSProvider{Program: p}
 	}
+	// Every host delivers the cluster secrets of the plugins installed on it. A system node
+	// with no --worker has no agent otherwise, and a plugin's controller side is installed there.
+	cfg.PluginsEtc = plugins.DefaultManifests
 	if *withWorker {
 		if len(runtimes) == 0 {
 			runtimes = multi{"cloud-hypervisor"}
