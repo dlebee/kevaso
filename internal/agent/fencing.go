@@ -155,6 +155,9 @@ func (f *fencing) stop(ctx context.Context, t fenceTarget) {
 	if f.a.silence() <= t.after {
 		return // contact came back meanwhile: it may run again
 	}
+	// The claim this kill is aimed at, read before it runs. A start that claims while the kill
+	// is in flight is another start: reporting that claim would stand for a silo that may run here.
+	aimed := f.a.cachedClaim(t.id)
 	kctx, cancel := context.WithTimeout(ctx, fence.KillWithin)
 	// Killed, not stopped gracefully: it asked not to run on without the control plane.
 	f.a.stoppedByUs(t.id.UID)
@@ -173,6 +176,11 @@ func (f *fencing) stop(ctx context.Context, t fenceTarget) {
 		f.unconfirm(t, err.Error())
 		return
 	}
+	if f.a.silence() <= t.after || !sameClaim(aimed, f.a.cachedClaim(t.id)) {
+		// Contact returned, or a newer claim was stored, while the kill ran. The runtime can
+		// still say nothing runs (that start has claimed and not reached Running). Not recorded.
+		return
+	}
 	f.mu.Lock()
 	if f.confirmed == nil {
 		f.confirmed = map[string]bool{}
@@ -182,7 +190,7 @@ func (f *fencing) stop(ctx context.Context, t fenceTarget) {
 	if f.stopped == nil {
 		f.stopped = map[string]stoppedSilo{}
 	}
-	f.stopped[t.id.UID] = stoppedSilo{t: t, claim: f.a.cachedClaim(t.id)}
+	f.stopped[t.id.UID] = stoppedSilo{t: t, claim: aimed}
 	f.mu.Unlock()
 	if _, was := f.a.fenceFaulted.LoadAndDelete(t.id.UID); was {
 		f.a.log("fence: %s confirmed stopped by a kill here: armed again", t.id)

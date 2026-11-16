@@ -1966,5 +1966,17 @@
    "./internal/apiserver"
   ],
   "protects": "a namespace is deleted only when nothing outside it names it"
+ },
+ {
+  "id": "G-300",
+  "guard": "a fence kill in flight reports only the claim it was aimed at, and only while contact is still lost",
+  "file": "internal/agent/fencing.go",
+  "find": "// The claim this kill is aimed at, read before it runs. A start that claims while the kill\n\t// is in flight is another start: reporting that claim would stand for a silo that may run here.\n\taimed := f.a.cachedClaim(t.id)\n\tkctx, cancel := context.WithTimeout(ctx, fence.KillWithin)\n\t// Killed, not stopped gracefully: it asked not to run on without the control plane.\n\tf.a.stoppedByUs(t.id.UID)\n\terr := kri.Kill(kctx, t.rt, t.id)\n\tcancel()\n\tif errors.Is(err, kri.ErrNotFound) {\n\t\terr = nil // not on this host: Status says whether anything of it runs\n\t}\n\tif err == nil {\n\t\tvar r bool\n\t\tif r, err = runs(); err == nil && r {\n\t\t\terr = errors.New(\"it still runs after the kill\")\n\t\t}\n\t}\n\tif err != nil {\n\t\tf.unconfirm(t, err.Error())\n\t\treturn\n\t}\n\tif f.a.silence() <= t.after || !sameClaim(aimed, f.a.cachedClaim(t.id)) {\n\t\t// Contact returned, or a newer claim was stored, while the kill ran. The runtime can\n\t\t// still say nothing runs (that start has claimed and not reached Running). Not recorded.\n\t\treturn\n\t}\n\tf.mu.Lock()\n\tif f.confirmed == nil {\n\t\tf.confirmed = map[string]bool{}\n\t}\n\tf.confirmed[t.id.UID] = true\n\tdelete(f.unconfirmed, t.id.UID)\n\tif f.stopped == nil {\n\t\tf.stopped = map[string]stoppedSilo{}\n\t}\n\tf.stopped[t.id.UID] = stoppedSilo{t: t, claim: aimed}",
+  "replace": "kctx, cancel := context.WithTimeout(ctx, fence.KillWithin)\n\t// Killed, not stopped gracefully: it asked not to run on without the control plane.\n\tf.a.stoppedByUs(t.id.UID)\n\terr := kri.Kill(kctx, t.rt, t.id)\n\tcancel()\n\tif errors.Is(err, kri.ErrNotFound) {\n\t\terr = nil // not on this host: Status says whether anything of it runs\n\t}\n\tif err == nil {\n\t\tvar r bool\n\t\tif r, err = runs(); err == nil && r {\n\t\t\terr = errors.New(\"it still runs after the kill\")\n\t\t}\n\t}\n\tif err != nil {\n\t\tf.unconfirm(t, err.Error())\n\t\treturn\n\t}\n\tf.mu.Lock()\n\tif f.confirmed == nil {\n\t\tf.confirmed = map[string]bool{}\n\t}\n\tf.confirmed[t.id.UID] = true\n\tdelete(f.unconfirmed, t.id.UID)\n\tif f.stopped == nil {\n\t\tf.stopped = map[string]stoppedSilo{}\n\t}\n\tf.stopped[t.id.UID] = stoppedSilo{t: t, claim: f.a.cachedClaim(t.id)}",
+  "mutation": "the claim is read after the kill",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a silo never runs on two hosts"
  }
 ]
