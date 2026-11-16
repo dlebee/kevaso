@@ -62,8 +62,13 @@ func scale(ctx context.Context, c *client.Client, o opts, stdout io.Writer) erro
 				set.Name, o.sets.instances, strings.Join(gone, ", "))
 		}
 	}
-	set.Spec.Instances = o.sets.instances
-	if err := c.Update(ctx, &set); err != nil {
+	if err := retryUpdate(func() error {
+		if err := c.Get(ctx, "SiloSet", ns, o.args[1], &set); err != nil {
+			return err
+		}
+		set.Spec.Instances = o.sets.instances
+		return c.Update(ctx, &set)
+	}); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "siloset/%s scaled to %d\n", set.Name, o.sets.instances)
@@ -86,25 +91,27 @@ func reset(ctx context.Context, c *client.Client, o opts, stdout io.Writer) erro
 	switch k.Kind {
 	case "Silo":
 		var s v1.Silo
-		if err := c.Get(ctx, "Silo", ns, name, &s); err != nil {
-			return err
-		}
-		if setName := ownerSet(&s); setName != "" {
-			var set v1.SiloSet
-			if err := c.Get(ctx, "SiloSet", ns, setName, &set); err == nil {
-				i := v1.InstanceIndex(set.Name, s.Name)
-				want := set.Instance(i, s.Labels[v1.LabelStandby] == "true")
-				s.Spec = want.Spec
-				for k, v := range want.Labels {
-					if s.Labels == nil {
-						s.Labels = map[string]string{}
+		if err := retryUpdate(func() error {
+			if err := c.Get(ctx, "Silo", ns, name, &s); err != nil {
+				return err
+			}
+			if setName := ownerSet(&s); setName != "" {
+				var set v1.SiloSet
+				if err := c.Get(ctx, "SiloSet", ns, setName, &set); err == nil {
+					i := v1.InstanceIndex(set.Name, s.Name)
+					want := set.Instance(i, s.Labels[v1.LabelStandby] == "true")
+					s.Spec = want.Spec
+					for k, v := range want.Labels {
+						if s.Labels == nil {
+							s.Labels = map[string]string{}
+						}
+						s.Labels[k] = v
 					}
-					s.Labels[k] = v
 				}
 			}
-		}
-		s.Spec.Reset = stamp
-		if err := c.Update(ctx, &s); err != nil {
+			s.Spec.Reset = stamp
+			return c.Update(ctx, &s)
+		}); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "silo/%s: resetting onto %s (stop-first: it's stopped, its disk made fresh from the image; volumes kept)\n", s.Name, dash(s.Spec.From()))
@@ -113,11 +120,13 @@ func reset(ctx context.Context, c *client.Client, o opts, stdout io.Writer) erro
 			return errors.New("reset siloset resets every instance: say --rolling (or reset one: kvo reset silo NAME)")
 		}
 		var set v1.SiloSet
-		if err := c.Get(ctx, "SiloSet", ns, name, &set); err != nil {
-			return err
-		}
-		set.Spec.Reset = stamp
-		if err := c.Update(ctx, &set); err != nil {
+		if err := retryUpdate(func() error {
+			if err := c.Get(ctx, "SiloSet", ns, name, &set); err != nil {
+				return err
+			}
+			set.Spec.Reset = stamp
+			return c.Update(ctx, &set)
+		}); err != nil {
 			return err
 		}
 		unavail, surge := set.Limits()
@@ -141,8 +150,8 @@ func protect(ctx context.Context, c *client.Client, o opts, stdout io.Writer) er
 		return errors.New("protect works on silos")
 	}
 	ns := defaultNS(o)
-	for attempt := 0; attempt < 5; attempt++ {
-		var s v1.Silo
+	var s v1.Silo
+	err := retryUpdate(func() error {
 		if err := c.Get(ctx, "Silo", ns, o.args[1], &s); err != nil {
 			return err
 		}
@@ -154,19 +163,18 @@ func protect(ctx context.Context, c *client.Client, o opts, stdout io.Writer) er
 		} else {
 			s.Labels[v1.LabelProtected] = "true"
 		}
-		err := c.Update(ctx, &s)
-		if client.IsConflict(err) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if o.sets.off {
-			_, _ = fmt.Fprintf(stdout, "silo/%s: no longer protected\n", s.Name)
-		} else {
-			_, _ = fmt.Fprintf(stdout, "silo/%s: protected (scale-in never removes it)\n", s.Name)
-		}
-		return nil
+		return c.Update(ctx, &s)
+	})
+	if client.IsConflict(err) {
+		return errors.New("silo kept changing; try again")
 	}
-	return errors.New("silo kept changing; try again")
+	if err != nil {
+		return err
+	}
+	if o.sets.off {
+		_, _ = fmt.Fprintf(stdout, "silo/%s: no longer protected\n", s.Name)
+	} else {
+		_, _ = fmt.Fprintf(stdout, "silo/%s: protected (scale-in never removes it)\n", s.Name)
+	}
+	return nil
 }

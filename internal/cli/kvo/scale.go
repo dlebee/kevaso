@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"kevaso.com/core/api/client"
+	v1 "kevaso.com/core/api/v1"
 )
 
 // scaleDefined: kvo scale KIND NAME --replicas N, for a defined kind whose definition has the
@@ -22,12 +23,17 @@ func scaleDefined(ctx context.Context, c *client.Client, o opts, stdout io.Write
 	if o.sets.instances < 0 {
 		return errors.New("--replicas can't be negative")
 	}
-	sc, err := c.GetScale(ctx, r.Resource, defaultNS(o), o.args[1])
+	var sc *v1.Scale
+	err = retryUpdate(func() error {
+		var err error
+		sc, err = c.GetScale(ctx, r.Resource, defaultNS(o), o.args[1])
+		if err != nil {
+			return err
+		}
+		sc.Spec.Replicas = int64(o.sets.instances)
+		return c.UpdateScale(ctx, r.Resource, sc)
+	})
 	if err != nil {
-		return err
-	}
-	sc.Spec.Replicas = int64(o.sets.instances)
-	if err := c.UpdateScale(ctx, r.Resource, sc); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "%s/%s scaled to %d\n", r.Resource, sc.Name, sc.Spec.Replicas)

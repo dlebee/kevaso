@@ -20,6 +20,9 @@ import (
 // onHostLoss: Recreate silos); --confirm-fenced is needed when its host is lost, once the old copy
 // is provably stopped; --insist, with it, overrides the refusal while the host's start claim is
 // fresh (it answered moments ago: only for a person who knows the old copy is off).
+//
+// The server reads the silo and writes the move, and retries a store conflict itself. A 409
+// from here is a refusal (the old copy is not provably stopped, or a move is already under way).
 func move(ctx context.Context, c clientCaller, o opts, stdout io.Writer) error {
 	if len(o.args) != 2 || o.moveTo == "" {
 		return errors.New("move needs silo NAME --to HOST")

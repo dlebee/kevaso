@@ -114,22 +114,18 @@ func secretCommand(ctx context.Context, c *client.Client, o opts, stdin io.Reade
 		return errors.New("secret set needs the new value: --from-file FILE or --from-file - (stdin)")
 	}
 	defer clear(value)
-	for attempt := 0; ; attempt++ {
-		var s v1.Secret
+	var s v1.Secret
+	if err := retryUpdate(func() error {
 		if err := c.Get(ctx, "Secret", defaultNS(o), o.args[1], &s); err != nil {
 			return err
 		}
 		s.Spec.Value = value
-		err := c.Update(ctx, &s)
-		if client.IsConflict(err) && attempt < 3 {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintf(stdout, "secret/%s: version %d\n", s.Name, s.Status.Version)
-		return nil
+		return c.Update(ctx, &s)
+	}); err != nil {
+		return err
 	}
+	_, _ = fmt.Fprintf(stdout, "secret/%s: version %d\n", s.Name, s.Status.Version)
+	return nil
 }
 
 func revealSecret(ctx context.Context, c *client.Client, ns, name string, stdout io.Writer) error {
