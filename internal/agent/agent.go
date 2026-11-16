@@ -179,10 +179,14 @@ type Agent struct {
 	// copy its runtime doesn't list is looked for by name (stopUnlisted).
 	seenIDs sync.Map
 	// placedUnder: silo uid → the history (Watermark.history) under which this host last read it
-	// placed here in the store (writeStatus); historyAtStart: the one trusted when this run began. A handoff read
-	// under another history is a restored store's replay, not an order (K-112).
+	// placed here in the store (writeStatus), kept on disk for the next run (placed.go, K-126).
+	// historyAtStart: the one trusted when this run began. A handoff read under another history is
+	// a restored store's replay, not an order (K-112). placedOther: the disk record has a placement
+	// from another history, or can't be read; a copy with no entry is that replay too.
 	placedUnder    sync.Map
 	historyAtStart string
+	placed         placedLog
+	placedOther    bool
 	// abandoned: silo uid → struct{}: a start ended because the store didn't know the silo, whose
 	// stop failed: tried again until it stops (stopAbandoned).
 	abandoned     sync.Map
@@ -352,6 +356,7 @@ func idOf(s *v1.Silo) kri.ID { return kri.ID{Namespace: s.Namespace, Name: s.Nam
 func (a *Agent) Run(ctx context.Context) {
 	a.historyAtStart = a.watermark().history() // read at start, before any answer is judged
 	a.loadSeenDeletes()
+	a.loadPlacedUnder()
 	a.silos = informer.New(a.Client, "Silo")
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
 	a.runCtx = ctx
@@ -1340,7 +1345,7 @@ func (a *Agent) writeStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.Sil
 			return errPlacedElsewhere // placed elsewhere since this host's cache was filled: not ours to write
 		}
 		if cur.Status.Host == a.HostName {
-			a.placedUnder.Store(cur.UID, a.watermark().history()) // the store read now places it here (K-112)
+			a.notePlaced(cur.UID) // the store read now places it here (K-112, K-126)
 		}
 		before := statusKey(cur.Status)
 		mutate(&cur.Status)
@@ -1692,6 +1697,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			}
 			a.forgetDelete(id.UID) // nothing of it left here
 			a.forgetApplied(id.UID)
+			a.forgetPlaced(id.UID)
 			a.removalDone(id.UID)
 		}
 	}
@@ -1769,11 +1775,20 @@ func (a *Agent) mayRemove(ctx context.Context, id kri.ID) (remove bool, why stri
 	return false, fmt.Sprintf("placed on %q with no handoff from this host", cur.Status.Host), nil
 }
 
-// historyPlaced is the history under which this host last found the silo uid placed here (in this
-// run), else the one trusted when this run began.
+// historyPlaced is the history under which this host last found the silo uid placed here, including
+// one recorded on disk by an earlier run (K-126). With no record, it is the history trusted when
+// this run began. After a new history, a copy already here with no record was not placed under
+// that history: the handoff is a replay until the store places it here under the new one.
 func (a *Agent) historyPlaced(uid string) string {
 	if v, ok := a.placedUnder.Load(uid); ok {
 		return v.(string)
+	}
+	cur := a.watermark().history()
+	if cur != a.historyAtStart || a.placedOther {
+		if a.historyAtStart != cur {
+			return a.historyAtStart
+		}
+		return historyNotRecorded
 	}
 	return a.historyAtStart
 }

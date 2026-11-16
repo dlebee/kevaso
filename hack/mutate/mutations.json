@@ -1855,5 +1855,18 @@
    "./test/integration"
   ],
   "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-194",
+  "guard": "a handoff uses the history the copy was placed here under, kept across a restart (K-126)",
+  "file": "internal/agent/agent.go",
+  "find": "if v, ok := a.placedUnder.Load(uid); ok {\n\t\treturn v.(string)\n\t}",
+  "replace": "if _, ok := a.placedUnder.Load(uid); ok {\n\t\treturn a.historyAtStart\n\t}",
+  "mutation": "recorded history ignored",
+  "packages": [
+   "./internal/agent",
+   "./test/integration"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
  }
 ]
