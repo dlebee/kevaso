@@ -56,6 +56,9 @@ func (s *Server) putApproval(ctx context.Context, a *v1.Approval, rev int64, old
 		return err
 	}
 	if rev == 0 {
+		if err := s.creatingIn(ctx, a.Namespace); err != nil {
+			return err
+		}
 		_, err = s.store.Create(ctx, key, data)
 	} else {
 		_, err = s.store.Update(ctx, key, data, rev)

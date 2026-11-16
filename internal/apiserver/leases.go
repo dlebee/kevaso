@@ -80,6 +80,9 @@ func (s *Server) putLease(ctx context.Context, l *v1.Lease, rev int64, old *v1.L
 		return err
 	}
 	if rev == 0 {
+		if err := s.creatingIn(ctx, l.Namespace); err != nil {
+			return err
+		}
 		_, err = s.store.Create(ctx, key, data)
 	} else {
 		_, err = s.store.Update(ctx, key, data, rev)

@@ -2014,5 +2014,17 @@
    "./internal/apiserver"
   ],
   "protects": "a namespace is deleted only as it was when it was found empty"
+ },
+ {
+  "id": "G-344",
+  "guard": "nothing new is made in a namespace that is being deleted",
+  "file": "internal/apiserver/nsdelete.go",
+  "find": "if ns == \"\" {\n\t\treturn nil\n\t}\n\t_, err := s.openNamespace(ctx, ns)\n\treturn err",
+  "replace": "if ns == \"\" || ctx == nil {\n\t\treturn nil\n\t}\n\treturn nil",
+  "mutation": "terminating namespace accepts creates",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a namespace being deleted takes nothing new"
  }
 ]
