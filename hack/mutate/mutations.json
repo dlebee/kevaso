@@ -1978,5 +1978,17 @@
    "./internal/agent"
   ],
   "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-301",
+  "guard": "a kill that was not confirmed stays disarmed across a restart",
+  "file": "internal/agent/fencerecord.go",
+  "find": "if a.keepsKillFailed(s) {\n\t\treturn nil // the mark survived a restart: still disarmed until a kill here is confirmed\n\t}",
+  "replace": "if a.keepsKillFailed(s) && false {\n\t\treturn nil // the mark survived a restart: still disarmed until a kill here is confirmed\n\t}",
+  "mutation": "stored KillFailed ignored",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a silo never runs on two hosts"
  }
 ]

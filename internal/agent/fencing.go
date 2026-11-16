@@ -192,9 +192,16 @@ func (f *fencing) stop(ctx context.Context, t fenceTarget) {
 	}
 	f.stopped[t.id.UID] = stoppedSilo{t: t, claim: aimed}
 	f.mu.Unlock()
-	if _, was := f.a.fenceFaulted.LoadAndDelete(t.id.UID); was {
+	marked := false
+	if o, ok := f.a.silos.Get(t.id.Namespace, t.id.Name); ok && o.(*v1.Silo).UID == t.id.UID {
+		marked = killFailedMark(o.(*v1.Silo), f.a.HostName)
+	}
+	f.a.killConfirmed.Store(t.id.UID, struct{}{})
+	if _, was := f.a.fenceFaulted.LoadAndDelete(t.id.UID); was || marked {
 		f.a.log("fence: %s confirmed stopped by a kill here: armed again", t.id)
-		f.a.resyncAll()
+		if f.a.engine != nil {
+			f.a.resyncAll()
+		}
 	}
 }
 
@@ -206,6 +213,7 @@ func (f *fencing) unconfirm(t fenceTarget, why string) {
 	delete(f.confirmed, t.id.UID)
 	delete(f.stopped, t.id.UID)
 	f.mu.Unlock()
+	f.a.killConfirmed.Delete(t.id.UID)
 	f.a.fenceFaulted.Store(t.id.UID, why) // disarmed once contact is back (armFence)
 }
 

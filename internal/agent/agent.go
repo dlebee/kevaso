@@ -208,7 +208,10 @@ type Agent struct {
 	// fenceFaulted: silo UID → why: its fence kill here failed, or wasn't confirmed (K-094). Not
 	// armed (the control plane doesn't restart it elsewhere on the strength of this host's
 	// fence) until a later kill of it here is confirmed. The host is never rebooted for it.
-	fenceFaulted sync.Map
+	// The silo's FenceArmed KillFailed condition is the same mark across a restart, when this
+	// map is empty (keepsKillFailed). killConfirmed: a kill this process has confirmed since.
+	fenceFaulted  sync.Map
+	killConfirmed sync.Map
 	// removeConfirmed: silo UID → kri.ID: a kept copy a person confirmed the removal of (K-068,
 	// keptcmd.go).
 	removeConfirmed sync.Map
