@@ -756,6 +756,9 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		if oldMeta.DeletionTimestamp != nil {
 			if len(nm.Finalizers) == 0 {
 				d, err := s.commitDelete(ctx, t.key(), expected)
+				if err == nil && !dryRun(ctx) && s.vault != nil && (t.kind.Kind == "Secret" || t.kind.Kind == "ClusterSecret") {
+					s.vault.Forget(ctx, t.namespace, t.name) // the sealed value goes with the object
+				}
 				return store.Object{Key: d.Key}, err // no Data: tells write() the object is gone
 			}
 			if !isSubset(nm.Finalizers, oldMeta.Finalizers) {

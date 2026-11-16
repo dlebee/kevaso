@@ -1978,5 +1978,17 @@
    "./internal/apiserver"
   ],
   "protects": "a dry-run delete changes nothing"
+ },
+ {
+  "id": "G-341",
+  "guard": "a secret deleted by its last finalizer drops the sealed value",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if err == nil && !dryRun(ctx) && s.vault != nil && (t.kind.Kind == \"Secret\" || t.kind.Kind == \"ClusterSecret\") {\n\t\t\t\t\ts.vault.Forget(ctx, t.namespace, t.name) // the sealed value goes with the object\n\t\t\t\t}",
+  "replace": "if false {\n\t\t\t\t\ts.vault.Forget(ctx, t.namespace, t.name) // the sealed value goes with the object\n\t\t\t\t}",
+  "mutation": "sealed value kept",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a deleted secret's sealed value is removed"
  }
 ]
