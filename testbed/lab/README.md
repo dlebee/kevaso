@@ -65,4 +65,19 @@ are not touched. The testbed reset (`testbed/remote`, `/var/lib/kvt-baseline`) a
 
 ## Timings
 
-From `make lab-up LAB=smoke` on this worktree, against the EPYC. Filled in after the smoke run.
+`make lab-up LAB=smoke` on this worktree, against the EPYC (slot 1). The binaries are built
+while the VMs boot, so `build` is the wait left after boot, and here that wait was already over.
+
+| stage | time |
+| --- | --- |
+| connect | 1.29s |
+| check | 342ms |
+| slot | 358ms |
+| key | 589ms |
+| define | 7.442s |
+| boot | 21.384s |
+| seed | 7.597s |
+| build | 0s |
+| kevaso | 54.39s |
+| runtimes | 53.198s |
+| total | 2m26.591s |
