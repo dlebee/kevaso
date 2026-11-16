@@ -22,7 +22,8 @@ import (
 // IP (and not on the system node's), kvo exec reaches them through the agent's tunnel, and their
 // secrets (the local endpoint, a file) come from the system node on the other machine.
 //
-// Listens on machine 2's external IP while it runs: 18200, 18201.
+// Listens on machine 2 while it runs: 18200, 18201. This Mac dials
+// KEVASO_METAL_PORT_<port> (the port itself when unset).
 func TestMetal2Worker(t *testing.T) {
 	p := metal2(t)
 	c := p.c1
@@ -84,7 +85,8 @@ func TestMetal2Worker(t *testing.T) {
 // allowFrom names it; a silo allowFrom doesn't name can't connect; a port on [external] answers
 // on its own host's IP only.
 //
-// Listens on machine 2's external IP while it runs: 18210.
+// Listens on machine 2 while it runs: 18210. This Mac dials KEVASO_METAL_PORT_18210
+// (18210 when unset).
 func TestMetal2Mesh(t *testing.T) {
 	p := metal2(t)
 	p.ensureTwoWorkers()
@@ -374,7 +376,8 @@ func TestMetal2HostLoss(t *testing.T) {
 // TestMetal2Ingress is ingress on one host routing to a silo on the other: a stock nginx on
 // machine 1's external IP, an Ingress to a service whose silo runs on machine 2 (over the mesh).
 //
-// Listens on machine 1's external IP while it runs: 80, 443.
+// Listens on machine 1 while it runs: 80 and 443. This Mac dials KEVASO_METAL_PORT_80
+// (80 when unset). The Ingress inside the VM stays on those ports.
 func TestMetal2Ingress(t *testing.T) {
 	p := metal2(t)
 	p.ensureTwoWorkers()
@@ -422,8 +425,12 @@ spec:
 `)
 	c.waitRunning("kevaso-system", 10*time.Minute, "ingress-edge")
 	c.waitRunning(ns, 10*time.Minute, "app")
+	httpPort, err := metalDialPort(80)
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.eventually("machine 1's nginx answers with the silo on machine 2", 3*time.Minute, func() (bool, string) {
-		code, body, err := fromMac("http://"+p.m1.cfg.ExternalIP+"/", name, 5*time.Second)
+		code, body, err := fromMac(fmt.Sprintf("http://%s:%d/", p.m1.cfg.ExternalIP, httpPort), name, 5*time.Second)
 		return err == nil && code == 200 && strings.Contains(body, "app 8080"), fmt.Sprint(code, " ", strings.TrimSpace(body), " ", err)
 	})
 }

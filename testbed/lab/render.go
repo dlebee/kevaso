@@ -217,8 +217,11 @@ func ForwardScript(name string, slot int, iface string) (string, error) {
 // address on the slot port. The guest still listens on 6443. The bridge also hairpins 6443,
 // because that is the URL the control plane advertises (its listen port) and kvoadm init
 // --restore points workers at; it is not on the public interface, so two labs do not share
-// one host port. Each other port in PairDials is forwarded at that same number. A port
-// already taken on the host, or already forwarded by another lab, refuses the script.
+// one host port. Each port in PairDials is the same: the slot port on the public interface
+// and the bridge, forwarded to the guest's own port. A slot port already taken on the host,
+// or already forwarded by another lab, refuses the script. Public port 80 is the exception
+// (Let's Encrypt HTTP-01, TestMetal2LongSoakSetup): it is published too, but only when the
+// host does not already have it, and a second lab still starts.
 func PairForwardScript(name string, slot int, iface, public string) (string, error) {
 	if err := ValidName(name); err != nil {
 		return "", err
@@ -234,6 +237,10 @@ func PairForwardScript(name string, slot int, iface, public string) (string, err
 	if err != nil {
 		return "", err
 	}
+	hostPorts, err := p.HostPorts()
+	if err != nil {
+		return "", err
+	}
 	pre, post := PreChain(name), PostChain(name)
 	var b strings.Builder
 	fmt.Fprintf(&b, "set -eu\n")
@@ -242,7 +249,8 @@ func PairForwardScript(name string, slot int, iface, public string) (string, err
 	fmt.Fprintf(&b, "nft delete chain %s %s >/dev/null 2>&1 || true\n", Table, q(pre))
 	fmt.Fprintf(&b, "nft flush chain %s %s >/dev/null 2>&1 || true\n", Table, q(post))
 	fmt.Fprintf(&b, "nft delete chain %s %s >/dev/null 2>&1 || true\n", Table, q(post))
-	for _, port := range dialPorts() {
+	for _, d := range PairDials() {
+		port := hostPorts[d.Port]
 		fmt.Fprintf(&b, "if nft list table %s >/dev/null 2>&1 && nft list table %s | grep -q 'dport %d '; then echo 'port %d is already forwarded on the lab host' >&2; exit 1; fi\n",
 			Table, Table, port, port)
 		fmt.Fprintf(&b, "if ss -ltnH | awk '{print $4}' | grep -qE '[:.]%d$'; then echo 'port %d is in use on the lab host' >&2; exit 1; fi\n",
@@ -273,11 +281,34 @@ func PairForwardScript(name string, slot int, iface, public string) (string, err
 			return "", err
 		}
 		ip := IP(slot, oct)
+		host := hostPorts[d.Port]
 		fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s tcp dport %d dnat ip to %s:%d\n",
-			Table, q(pre), q(iface), d.Port, ip, d.Port)
+			Table, q(pre), q(iface), host, ip, d.Port)
 		fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s ip daddr %s tcp dport %d dnat ip to %s:%d\n",
-			Table, q(pre), q(Bridge(slot)), pub, d.Port, ip, d.Port)
+			Table, q(pre), q(Bridge(slot)), pub, host, ip, d.Port)
 	}
+	// Let's Encrypt HTTP-01 connects to port 80 on the address the name resolves to. The slot
+	// port cannot stand in for that. Take public 80 when it is free; a lab that finds it taken
+	// still comes up, and TestMetal2LongSoakSetup runs on the lab that holds it.
+	http, err := http01Dial()
+	if err != nil {
+		return "", err
+	}
+	httpOct, err := pairOctet(http.Role)
+	if err != nil {
+		return "", err
+	}
+	httpIP := IP(slot, httpOct)
+	fmt.Fprintf(&b, "if nft list table %s >/dev/null 2>&1 && nft list table %s | grep -q 'dport %d '; then echo 'public port %d is already forwarded; this lab will not publish it, so TestMetal2LongSoakSetup runs one pair lab at a time' >&2\n",
+		Table, Table, http.Port, http.Port)
+	fmt.Fprintf(&b, "elif ss -ltnH | awk '{print $4}' | grep -qE '[:.]%d$'; then echo 'public port %d is in use on the lab host; this lab will not publish it, so TestMetal2LongSoakSetup runs one pair lab at a time' >&2\n",
+		http.Port, http.Port)
+	fmt.Fprintf(&b, "else\n")
+	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s tcp dport %d dnat ip to %s:%d\n",
+		Table, q(pre), q(iface), http.Port, httpIP, http.Port)
+	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s ip daddr %s tcp dport %d dnat ip to %s:%d\n",
+		Table, q(pre), q(Bridge(slot)), pub, http.Port, httpIP, http.Port)
+	fmt.Fprintf(&b, "fi\n")
 	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 oifname %s ct status dnat masquerade\n",
 		Table, q(post), q(Bridge(slot)))
 	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 ip saddr %s oifname %s masquerade\n",
@@ -285,16 +316,15 @@ func PairForwardScript(name string, slot int, iface, public string) (string, err
 	return b.String(), nil
 }
 
-func dialPorts() []int {
-	var out []int
-	seen := map[int]bool{}
+// http01Dial is the guest port Let's Encrypt's HTTP-01 challenge dials. It is also in
+// PairDials, at a slot offset, for the Mac.
+func http01Dial() (PairDial, error) {
 	for _, d := range PairDials() {
-		if !seen[d.Port] {
-			seen[d.Port] = true
-			out = append(out, d.Port)
+		if d.Port == 80 {
+			return d, nil
 		}
 	}
-	return out
+	return PairDial{}, fmt.Errorf("pair dials: port 80 is not published")
 }
 
 func pairOctet(role string) (int, error) {
@@ -399,6 +429,7 @@ func EnvFile(e Env) (string, error) {
 // KEVASO_METAL2_* is m2, the same names a metalenv file uses for a real pair. Both external
 // addresses are the lab host's public address, where the forwarded ports land. APIPort is
 // that address's port for m1's API (the slot port); the tests read it as KEVASO_METAL_API_PORT.
+// HostPorts is guest port → the slot port the Mac dials (KEVASO_METAL_PORT_<guest>).
 // There is no KVO_CONFIG: Kevaso is not installed, and the tests run kvoadm themselves.
 type PairEnv struct {
 	Name       string
@@ -412,7 +443,8 @@ type PairEnv struct {
 	M1Internal string
 	M2Internal string
 	SpareDisk  string
-	APIPort    int // the lab host port that forwards to m1's 6443 (Ports.API)
+	APIPort    int         // the lab host port that forwards to m1's 6443 (Ports.API)
+	HostPorts  map[int]int // guest port → lab host port, one per PairDials
 }
 
 // PairEnvFile renders PairEnv as a shell script.
@@ -428,6 +460,17 @@ func PairEnvFile(e PairEnv) (string, error) {
 	if e.M1Internal == e.M2Internal {
 		return "", fmt.Errorf("pair env for %s: m1 and m2 have the same internal address", e.Name)
 	}
+	taken := map[int]string{e.M1SSH: "m1 ssh", e.M2SSH: "m2 ssh", e.APIPort: "api"}
+	for _, d := range PairDials() {
+		h, ok := e.HostPorts[d.Port]
+		if !ok || h < 1 || h > 65535 {
+			return "", fmt.Errorf("pair env for %s: no host port for %d", e.Name, d.Port)
+		}
+		if prev, dup := taken[h]; dup {
+			return "", fmt.Errorf("pair env for %s: port %d and %s share host port %d", e.Name, d.Port, prev, h)
+		}
+		taken[h] = fmt.Sprintf("%s:%d", d.Role, d.Port)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# pair lab %s. Two machines, m1 and m2. Kevaso is not installed.\n", e.Name)
 	b.WriteString("# Each VM's fresh state is in /var/lib/kvt-baseline, the harness baseline.\n")
@@ -440,6 +483,9 @@ func PairEnvFile(e PairEnv) (string, error) {
 	fmt.Fprintf(&b, "export KEVASO_METAL_EXTERNAL_IP=%s\n", q(e.ExternalIP))
 	fmt.Fprintf(&b, "export KEVASO_METAL_INTERNAL_IP=%s\n", q(e.M1Internal))
 	fmt.Fprintf(&b, "export KEVASO_METAL_API_PORT=%s\n", q(strconv.Itoa(e.APIPort)))
+	for _, d := range PairDials() {
+		fmt.Fprintf(&b, "export KEVASO_METAL_PORT_%d=%s\n", d.Port, q(strconv.Itoa(e.HostPorts[d.Port])))
+	}
 	fmt.Fprintf(&b, "export KEVASO_METAL2_HOST=%s\n", q(e.Host+":"+strconv.Itoa(e.M2SSH)))
 	fmt.Fprintf(&b, "export KEVASO_METAL2_KEY=%s\n", q(e.KeyPath))
 	fmt.Fprintf(&b, "export KEVASO_METAL2_HOSTKEY=%s\n", q(e.M2HostKey))

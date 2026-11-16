@@ -80,6 +80,7 @@ The two-machine tests reset against that and install Kevaso themselves with `kvo
 | `KEVASO_METAL_INTERNAL_IP` | m1's `10.77.N.10` (`KEVASO_METAL2_INTERNAL_IP` is m2's `.11`) |
 | `KEVASO_METAL2_SPARE_DISK` | `/dev/disk/by-id/virtio-kvlspare` |
 | `KEVASO_METAL_API_PORT` | the slot's API port (`21000 + slot*100 + 43`), forwarded to m1's 6443 |
+| `KEVASO_METAL_PORT_<port>` | the slot port for a guest port the Mac dials (80, 443, 18160, 18200, 18201, 18210) |
 
 There is no `KVO_CONFIG`. The file unsets it.
 
@@ -96,22 +97,37 @@ can dial either URL at the public address. 6443 is not published on the lab host
 interface: each lab's bridge is its own, and a second pair lab no longer stops on
 "port 6443 is already forwarded".
 
-The other ports the tests dial on the external address are forwarded at that same number,
-and again from the lab bridge:
+Every other port pair mode publishes on the lab host's public address is a port in that
+same block, forwarded to the guest's own port. The guest keeps the real number (an Ingress
+on :80 inside the VM stays on 80). The Mac dials the slot port from `KEVASO_METAL_PORT_<port>`,
+which is the real port when unset, so a real pair is unchanged. Offsets 22, 23, 24 and 43
+are the ones a normal lab already uses. These stay clear of them. Nothing in the two-machine
+suite opens a NodePort.
 
-| Port | Machine | Who dials it from the Mac |
-|---|---|---|
-| slot API (offset 43) | m1's 6443 | `kvoadm` and `kvo` (`--api-server`) |
-| 80, 443 | m1 | TestMetal2Ingress (443 also the long soak) |
-| 18160 | m1 | TestMetal2LongSoakCheck |
-| 18200, 18201 | m2 | TestMetal2Worker |
-| 18210 | m2 | TestMetal2Mesh |
+| Guest port | Machine | Offset | Slot 1 | Env | Who dials it from the Mac |
+|---|---|---|---|---|---|
+| 80 | m1 | 80 | 21180 | `KEVASO_METAL_PORT_80` | TestMetal2Ingress |
+| 443 | m1 | 44 | 21144 | `KEVASO_METAL_PORT_443` | the long soak's certificate check (43 is the API) |
+| 18160 | m1 | 60 | 21160 | `KEVASO_METAL_PORT_18160` | TestMetal2LongSoakCheck |
+| 18200 | m2 | 25 | 21125 | `KEVASO_METAL_PORT_18200` | TestMetal2Worker |
+| 18201 | m2 | 26 | 21126 | `KEVASO_METAL_PORT_18201` | TestMetal2Worker |
+| 18210 | m2 | 27 | 21127 | `KEVASO_METAL_PORT_18210` | TestMetal2Mesh |
+
+Each of those is forwarded on the public interface and hairpinned on the lab bridge.
+`lab-up` refuses a slot port the host is already listening on, or that another lab already
+forwards.
+
+Public port 80 is the one exception. Let's Encrypt's HTTP-01 challenge connects to port 80
+on the address the name resolves to, which is the lab host's public address, and there is
+no way to point that at a slot port. The lab also publishes public port 80 to m1's 80 when
+the host is not already using it. A second pair lab still starts: it does not take port 80.
+`TestMetal2LongSoakSetup` (and `TestMetal2LongSoakCheck`, which reads the certificate that
+setup obtained) therefore runs one pair lab at a time, on the lab that holds public port 80.
+`TestMetal2Ingress` dials `KEVASO_METAL_PORT_80` and does not need that public port.
 
 Both external addresses are the one public address, so a port answers for both variables.
 A test that requires the other machine's address to stay closed on that port needs two
-public addresses. `lab-up` refuses one of those dialled ports that the host is already
-listening on, or that another lab already forwards. 80, 443 and the three high ports are
-still one per host, so a second pair lab stops on port 80 until those are free.
+public addresses.
 
 ```bash
 source testbed/lab/.labs/pr/env.sh

@@ -128,6 +128,9 @@ func setUpPair() (p *metalPair, skip string, err error) {
 	if err != nil {
 		return nil, "", err
 	}
+	if err := metalDialPorts(); err != nil {
+		return nil, "", err
+	}
 	p = &metalPair{apiPort: apiPort}
 	reuse := os.Getenv("KEVASO_METAL_REUSE") != ""
 	if reuse { // the cluster kept from an earlier run, if it answers (no reset, no init)
@@ -331,9 +334,15 @@ func (p *pair) ensureTwoWorkers() {
 // on is a placement on one host (after ensureTwoWorkers).
 func on(host string) string { return "  placement: { hostSelector: { kvt/host: " + host + " } }\n" }
 
-// openOn says whether this Mac gets an HTTP answer on a machine's external IP and port.
+// openOn says whether this Mac gets an HTTP answer on a machine's external IP.
+// port is the one on the machine. A pair lab's KEVASO_METAL_PORT_<port> is what
+// this Mac dials; unset, it dials port, which is what a real pair listens on.
 func openOn(s *metalSuite, port int) (bool, string) {
-	code, body, err := fromMac(fmt.Sprintf("http://%s:%d/", s.cfg.ExternalIP, port), "", 5*time.Second)
+	dial, err := metalDialPort(port)
+	if err != nil {
+		return false, err.Error()
+	}
+	code, body, err := fromMac(fmt.Sprintf("http://%s:%d/", s.cfg.ExternalIP, dial), "", 5*time.Second)
 	if err != nil {
 		return false, err.Error()
 	}

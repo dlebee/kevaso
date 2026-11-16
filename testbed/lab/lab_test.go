@@ -77,6 +77,36 @@ func TestPorts(t *testing.T) {
 	if p.SSH("m1") != p.SysSSH || p.SSH("m2") != p.W1SSH {
 		t.Fatal("pair ssh ports")
 	}
+	if err := checkPairDials(); err != nil {
+		t.Fatal(err)
+	}
+	for slot := 1; slot <= MaxLabs; slot++ {
+		ps := PortsForMust(t, slot)
+		base := PortBase + slot*100
+		seen := map[int]string{ps.SysSSH: "sys", ps.W1SSH: "w1", ps.W2SSH: "w2", ps.API: "api"}
+		for _, d := range PairDials() {
+			h, err := ps.Dial(d.Port)
+			if err != nil {
+				t.Fatalf("slot %d port %d: %v", slot, d.Port, err)
+			}
+			if h != base+d.Off || h < base || h >= base+100 {
+				t.Fatalf("slot %d port %d: host port %d, want %d", slot, d.Port, h, base+d.Off)
+			}
+			if prev, ok := seen[h]; ok {
+				t.Fatalf("slot %d: host port %d is %s and %s:%d", slot, h, prev, d.Role, d.Port)
+			}
+			if h == d.Port {
+				t.Fatalf("slot %d publishes guest port %d on itself", slot, d.Port)
+			}
+			seen[h] = d.Role
+		}
+	}
+	if _, err := (Ports{}).Dial(80); !errors.Is(err, ErrBadSlot) {
+		t.Fatalf("empty ports: %v", err)
+	}
+	if _, err := PortsForMust(t, 1).Dial(9); err == nil {
+		t.Fatal("an unpublished port was accepted")
+	}
 }
 
 func PortsForMust(t *testing.T, slot int) Ports {
@@ -369,20 +399,39 @@ func TestPair(t *testing.T) {
 		"iifname 'enp5s0f0' tcp dport 21343 dnat ip to 10.77.3.10:6443",
 		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 21343 dnat ip to 10.77.3.10:6443",
 		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 6443 dnat ip to 10.77.3.10:6443",
-		"tcp dport 80 dnat ip to 10.77.3.10:80",
-		"tcp dport 443 dnat ip to 10.77.3.10:443",
-		"tcp dport 18160 dnat ip to 10.77.3.10:18160",
-		"tcp dport 18200 dnat ip to 10.77.3.11:18200",
-		"tcp dport 18201 dnat ip to 10.77.3.11:18201",
-		"tcp dport 18210 dnat ip to 10.77.3.11:18210",
-		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 18210 dnat ip to 10.77.3.11:18210",
+		"iifname 'enp5s0f0' tcp dport 21380 dnat ip to 10.77.3.10:80",
+		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 21380 dnat ip to 10.77.3.10:80",
+		"tcp dport 21344 dnat ip to 10.77.3.10:443",
+		"tcp dport 21360 dnat ip to 10.77.3.10:18160",
+		"tcp dport 21325 dnat ip to 10.77.3.11:18200",
+		"tcp dport 21326 dnat ip to 10.77.3.11:18201",
+		"tcp dport 21327 dnat ip to 10.77.3.11:18210",
+		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 21327 dnat ip to 10.77.3.11:18210",
+		"public port 80 is already forwarded; this lab will not publish it, so TestMetal2LongSoakSetup runs one pair lab at a time",
+		"iifname 'enp5s0f0' tcp dport 80 dnat ip to 10.77.3.10:80",
+		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 80 dnat ip to 10.77.3.10:80",
 		"oifname 'kvlbr3' ct status dnat masquerade",
 		"ip saddr 10.77.3.0/24 oifname 'enp5s0f0' masquerade",
-		"port 80 is already forwarded",
-		"port 80 is in use on the lab host",
+		"port 21380 is already forwarded on the lab host",
+		"port 21380 is in use on the lab host",
 	} {
 		if !strings.Contains(fw, want) {
 			t.Errorf("pair nft lacks %q\n%s", want, fw)
+		}
+	}
+	note := strings.Index(fw, "public port 80 is already forwarded")
+	open80 := strings.Index(fw, "tcp dport 80 dnat ip to 10.77.3.10:80")
+	if note < 0 || open80 < note || strings.Index(fw, "\nelse\n") < note {
+		t.Fatalf("public port 80 is not behind the already-forwarded check\n%s", fw)
+	}
+	for _, line := range strings.Split(fw, "\n") {
+		if strings.Contains(line, "public port 80") && strings.Contains(line, "exit 1") {
+			t.Errorf("public port 80 still fails the lab: %s", line)
+		}
+	}
+	for _, shared := range []string{"tcp dport 443 ", "tcp dport 18160 ", "tcp dport 18200 ", "tcp dport 18201 ", "tcp dport 18210 "} {
+		if strings.Contains(fw, shared) {
+			t.Errorf("a pair lab publishes %q on the lab host\n%s", shared, fw)
 		}
 	}
 	if strings.Contains(fw, "iifname 'enp5s0f0' tcp dport 6443 ") || strings.Contains(fw, "port 6443 is already forwarded") {
@@ -394,6 +443,22 @@ func TestPair(t *testing.T) {
 	}
 	if !strings.Contains(other, "tcp dport 21143 dnat ip to 10.77.1.10:6443") || strings.Contains(other, "dport 21343 ") {
 		t.Errorf("slot 1 does not use its own API port:\n%s", other)
+	}
+	for _, slot1 := range []string{
+		"tcp dport 21180 dnat ip to 10.77.1.10:80",
+		"tcp dport 21144 dnat ip to 10.77.1.10:443",
+		"tcp dport 21160 dnat ip to 10.77.1.10:18160",
+		"tcp dport 21125 dnat ip to 10.77.1.11:18200",
+		"tcp dport 21126 dnat ip to 10.77.1.11:18201",
+		"tcp dport 21127 dnat ip to 10.77.1.11:18210",
+	} {
+		if !strings.Contains(other, slot1) {
+			t.Errorf("slot 1 lacks %q\n%s", slot1, other)
+		}
+		port := strings.Fields(slot1)[2]
+		if strings.Contains(fw, "dport "+port+" ") {
+			t.Errorf("slot 3 also publishes host port %s", port)
+		}
 	}
 	for _, absent := range []string{"10.77.3.12", "dport 21324", "iptables", "e046", "default"} {
 		if strings.Contains(fw, absent) {
@@ -413,10 +478,15 @@ func TestPair(t *testing.T) {
 	m1pin := "SHA256:" + strings.Repeat("A", 43)
 	m2pin := "SHA256:" + strings.Repeat("B", 43)
 	key := "/work/testbed/lab/.labs/pr/id_ed25519"
+	hostPorts, err := PortsForMust(t, 3).HostPorts()
+	if err != nil {
+		t.Fatal(err)
+	}
 	env, err := PairEnvFile(PairEnv{
 		Name: "pr", Host: "ubuntu@203.0.113.10", M1SSH: 21322, M2SSH: 21323,
 		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, ExternalIP: "203.0.113.10",
 		M1Internal: "10.77.3.10", M2Internal: "10.77.3.11", SpareDisk: SpareByID, APIPort: 21343,
+		HostPorts: hostPorts,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -442,7 +512,10 @@ func TestPair(t *testing.T) {
 		c2.ExternalIP != "203.0.113.10" || c2.InternalIP != "10.77.3.11" || c2.SpareDisk != SpareByID {
 		t.Fatalf("m2 from the env file: %+v", c2)
 	}
-	if got["LAB_NAME"] != "pr" || got["LAB_PAIR"] != "1" || got["KEVASO_METAL_API_PORT"] != "21343" {
+	if got["LAB_NAME"] != "pr" || got["LAB_PAIR"] != "1" || got["KEVASO_METAL_API_PORT"] != "21343" ||
+		got["KEVASO_METAL_PORT_80"] != "21380" || got["KEVASO_METAL_PORT_443"] != "21344" ||
+		got["KEVASO_METAL_PORT_18160"] != "21360" || got["KEVASO_METAL_PORT_18200"] != "21325" ||
+		got["KEVASO_METAL_PORT_18201"] != "21326" || got["KEVASO_METAL_PORT_18210"] != "21327" {
 		t.Fatalf("lab vars: %v", got)
 	}
 	if _, err := PairEnvFile(PairEnv{Name: "pr"}); err == nil {
@@ -452,6 +525,16 @@ func TestPair(t *testing.T) {
 		Name: "pr", Host: "ubuntu@203.0.113.10", M1SSH: 21322, M2SSH: 21323,
 		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, ExternalIP: "203.0.113.10",
 		M1Internal: "10.77.3.10", M2Internal: "10.77.3.10", SpareDisk: SpareByID, APIPort: 21343,
+		HostPorts: hostPorts,
+	}
+	clash := PairEnv{
+		Name: "pr", Host: "ubuntu@203.0.113.10", M1SSH: 21322, M2SSH: 21323,
+		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, ExternalIP: "203.0.113.10",
+		M1Internal: "10.77.3.10", M2Internal: "10.77.3.11", SpareDisk: SpareByID, APIPort: 21343,
+		HostPorts: map[int]int{80: 21380, 443: 21380, 18160: 21360, 18200: 21325, 18201: 21326, 18210: 21327},
+	}
+	if _, err := PairEnvFile(clash); err == nil {
+		t.Fatal("two guest ports sharing a host port was accepted")
 	}
 	if _, err := PairEnvFile(same); err == nil {
 		t.Fatal("m1 and m2 sharing an internal address was accepted")

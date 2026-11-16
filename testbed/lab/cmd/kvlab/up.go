@@ -171,12 +171,16 @@ func cmdUp(args []string) error {
 			return err
 		}
 		clk.mark("baseline")
+		hostPorts, hpErr := ports.HostPorts()
+		if hpErr != nil {
+			return hpErr
+		}
 		text, err = lab.PairEnvFile(lab.PairEnv{
 			Name: name, Host: "ubuntu@" + h.cfg.ExternalIP,
 			M1SSH: ports.SSH("m1"), M2SSH: ports.SSH("m2"), KeyPath: keyPath,
 			M1HostKey: pins["m1"], M2HostKey: pins["m2"], ExternalIP: h.cfg.ExternalIP,
 			M1Internal: lab.IP(slot, 10), M2Internal: lab.IP(slot, 11), SpareDisk: lab.SpareByID,
-			APIPort: ports.API,
+			APIPort: ports.API, HostPorts: hostPorts,
 		})
 	} else {
 		seedPath := lab.StateDir(name) + "/seed.sh"

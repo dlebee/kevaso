@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,9 +27,11 @@ import (
 // cluster is kept between runs; the setup makes it if there is none). Remove it with
 // go test -tags metal -run TestMetal2DiskReset… or kvoadm reset on both machines.
 //
-// Listens on the external IPs while it runs: 80 and 443 on the ingress silo's machine (the
+// Listens on the machines while it runs: 80 and 443 on the ingress silo's machine (the
 // public ingress class, for the staging certificate's HTTP-01 and the route), and 18160 on
-// machine 1 while its lease is open (kvo open, 24h).
+// machine 1 while its lease is open (kvo open, 24h). This Mac dials KEVASO_METAL_PORT_443
+// and KEVASO_METAL_PORT_18160 (those ports when unset). HTTP-01 is not one of those: Let's
+// Encrypt connects to public port 80, so TestMetal2LongSoakSetup runs one pair lab at a time.
 
 const longSoakNS = "longsoak"
 
@@ -198,7 +201,7 @@ func TestMetal2LongSoakCheck(t *testing.T) {
 		t.Log("the volume's checksum file: OK")
 	}
 	if leaf, err := servedCert(b.IngressIP, b.IngressHost); err != nil {
-		t.Errorf("443 on %s for %s: %v", b.IngressIP, b.IngressHost, err)
+		t.Errorf("the certificate on %s for %s: %v", b.IngressIP, b.IngressHost, err)
 	} else if time.Now().After(leaf.NotAfter) || !strings.Contains(leaf.Issuer.String(), "STAGING") {
 		t.Errorf("the certificate: issuer %s, valid until %s", leaf.Issuer, leaf.NotAfter)
 	} else {
@@ -229,10 +232,15 @@ func TestMetal2LongSoakCheck(t *testing.T) {
 	}
 }
 
-// servedCert is the certificate 443 serves for name (staging roots are untrusted by design: the
-// issuer is checked instead).
+// servedCert is the certificate the machine's port 443 serves for name (staging roots are
+// untrusted by design: the issuer is checked instead). This Mac dials KEVASO_METAL_PORT_443,
+// which is 443 when unset.
 func servedCert(ip, name string) (*x509.Certificate, error) {
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", net.JoinHostPort(ip, "443"),
+	port, err := metalDialPort(443)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)),
 		&tls.Config{ServerName: name, InsecureSkipVerify: true})
 	if err != nil {
 		return nil, err
