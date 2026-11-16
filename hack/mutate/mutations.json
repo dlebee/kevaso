@@ -1855,5 +1855,29 @@
    "./test/integration"
   ],
   "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-194",
+  "guard": "egress gate: a grant never opens cluster, loopback or link-local addresses (K-124)",
+  "file": "internal/gate/gate.go",
+  "find": "if _, why := neverOpened(a); why != \"\" {",
+  "replace": "if _, why := neverOpened(a); why != \"\" && false {",
+  "mutation": "closed ranges opened when a grant names them",
+  "packages": [
+   "./internal/gate"
+  ],
+  "protects": "the egress gate never opens cluster, loopback or link-local addresses"
+ },
+ {
+  "id": "G-195",
+  "guard": "admission: a grant naming cluster, loopback or link-local is refused (K-124)",
+  "file": "internal/apiserver/semantic.go",
+  "find": "if pfx, why := v1.ClosedRange(e.Prefix); why != \"\" {",
+  "replace": "if pfx, why := v1.ClosedRange(e.Prefix); why != \"\" && false {",
+  "mutation": "closed ranges admitted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "the egress gate never opens cluster, loopback or link-local addresses"
  }
 ]

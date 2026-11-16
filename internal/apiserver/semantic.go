@@ -40,8 +40,14 @@ func semantic(obj meta.Object) []string {
 		}
 	case *v1.Grant:
 		for _, r := range o.Spec.Egress {
-			if _, err := r.Parse(); err != nil {
+			e, err := r.Parse()
+			if err != nil {
 				errs = append(errs, err.Error())
+				continue
+			}
+			// The cluster's ranges, loopback and link-local are never opened through the gate (K-124).
+			if pfx, why := v1.ClosedRange(e.Prefix); why != "" {
+				errs = append(errs, fmt.Sprintf("egress %q is inside %s (%s), which a grant never opens", r.To, pfx, why))
 			}
 		}
 		for _, sec := range o.Spec.Secrets {

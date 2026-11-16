@@ -120,6 +120,18 @@ IP spec.address="2001:db8::5"
   IP ip: spec.address: "2001:db8::5": IPv6 comes later; IPv4 for now
 Grant spec.egress=[{"to":"2001:db8::/32"}]
   Grant g: egress "2001:db8::/32": IPv6 comes later; IPv4 for now
+Grant spec.egress=[{"to":"10.64.2.5"}]
+  Grant g: egress "10.64.2.5" is inside 10.64.0.0/16 (the silo range), which a grant never opens
+Grant spec.egress=[{"to":"10.65.0.9"}]
+  Grant g: egress "10.65.0.9" is inside 10.65.0.0/16 (the service range), which a grant never opens
+Grant spec.egress=[{"to":"10.63.0.4"}]
+  Grant g: egress "10.63.0.4" is inside 10.63.0.0/16 (the mesh range), which a grant never opens
+Grant spec.egress=[{"to":"10.62.0.4"}]
+  Grant g: egress "10.62.0.4" is inside 10.62.0.0/16 (the mesh range), which a grant never opens
+Grant spec.egress=[{"to":"127.0.0.1"}]
+  Grant g: egress "127.0.0.1" is inside 127.0.0.0/8 (loopback), which a grant never opens
+Grant spec.egress=[{"to":"169.254.169.254"}]
+  Grant g: egress "169.254.169.254" is inside 169.254.0.0/16 (link-local), which a grant never opens
 Silo spec.ports=[{"name":"a","port":80},{"name":"b","port":81}] spec.service={"ports":[{"port":"a","hostPort":["external"],"as":443},{"port":"b","hostPort":["external"],"as":443}]}
   Silo s: service.ports[b]: 443/TCP on the external IP is a's already
 Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","loadBalancer":true}]}

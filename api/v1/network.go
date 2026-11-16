@@ -309,8 +309,63 @@ func (a SiloServiceStatus) Equal(b SiloServiceStatus) bool {
 
 // KevasoRanges are Kevaso's own networks: the mesh (10.62/16, 10.63/16), the silos (10.64/16) and
 // the Services' virtual IPs (10.65/16). A host port never answers on them, or a silo on another
-// host could reach it over the mesh without its allowFrom.
+// host could reach it over the mesh without its allowFrom. A grant never opens them through the
+// egress gate either (ClosedRange).
 var KevasoRanges = []string{"10.62.0.0/16", "10.63.0.0/16", "10.64.0.0/16", "10.65.0.0/16"}
+
+// closedRange is one range a grant never opens (K-124).
+type closedRange struct {
+	p   netip.Prefix
+	why string
+}
+
+// closedRanges are the cluster's own ranges (KevasoRanges: the mesh, the silos, the services),
+// loopback and link-local. The cluster ranges are the same prefixes the mesh and the firewall use.
+func closedRanges() []closedRange {
+	why := map[string]string{
+		"10.62.0.0/16": "the mesh range",
+		"10.63.0.0/16": "the mesh range",
+		"10.64.0.0/16": "the silo range",
+		ServiceCIDR:    "the service range",
+	}
+	out := make([]closedRange, 0, len(KevasoRanges)+4)
+	for _, s := range KevasoRanges {
+		p := netip.MustParsePrefix(s)
+		w := why[p.String()]
+		if w == "" {
+			w = p.String()
+		}
+		out = append(out, closedRange{p, w})
+	}
+	return append(out,
+		closedRange{netip.MustParsePrefix("127.0.0.0/8"), "loopback"},
+		closedRange{netip.MustParsePrefix("::1/128"), "loopback"},
+		closedRange{netip.MustParsePrefix("169.254.0.0/16"), "link-local"},
+		closedRange{netip.MustParsePrefix("fe80::/10"), "link-local"},
+	)
+}
+
+// ClosedRange reports the range a grant never opens when p lies entirely inside one: an address
+// or CIDR of the silo, service or mesh range, or of loopback or link-local. A wider range
+// (10.0.0.0/8, 0.0.0.0/0) is not inside them. why is "" when p is not inside one.
+func ClosedRange(p netip.Prefix) (netip.Prefix, string) {
+	if !p.IsValid() {
+		return netip.Prefix{}, ""
+	}
+	p = p.Masked()
+	a := p.Addr().Unmap().WithZone("")
+	bits := p.Bits()
+	if a != p.Addr().WithZone("") { // an IPv4-mapped address: judge the IPv4 address
+		bits = a.BitLen()
+	}
+	best, why := netip.Prefix{}, ""
+	for _, s := range closedRanges() {
+		if s.p.Contains(a) && bits >= s.p.Bits() && (!best.IsValid() || s.p.Bits() > best.Bits()) {
+			best, why = s.p, s.why
+		}
+	}
+	return best, why
+}
 
 // NodePort range: like Kubernetes'.
 const (
