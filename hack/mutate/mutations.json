@@ -1978,5 +1978,29 @@
    "./internal/agent"
   ],
   "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-321",
+  "guard": "a confirmed removal does not remove a copy the store places here",
+  "file": "internal/agent/agent.go",
+  "find": "if err == nil && cur.UID == id.UID && cur.Status.Host == a.HostName && cur.DeletionTimestamp == nil {\n\t\t\ta.dropRemovalConfirmation(id.UID)\n\t\t\treturn false, \"\", nil\n\t\t}",
+  "replace": "if false {\n\t\t\ta.dropRemovalConfirmation(id.UID)\n\t\t\treturn false, \"\", nil\n\t\t}",
+  "mutation": "placed-here exception removed",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-322",
+  "guard": "the delete watch stops when a new history is accepted",
+  "file": "internal/agent/agent.go",
+  "find": "if wm.mark().histories != m0.histories {\n\t\t\t\t\tbreak // another history accepted: this stream's deletes are of the old one\n\t\t\t\t}",
+  "replace": "if false {\n\t\t\t\t\tbreak // another history accepted: this stream's deletes are of the old one\n\t\t\t\t}",
+  "mutation": "old stream's deletes kept",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
  }
 ]
