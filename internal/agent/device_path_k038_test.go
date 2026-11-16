@@ -13,7 +13,7 @@ func TestMountRefusesWhatIsNoDevicePath(t *testing.T) {
 	for _, dev := range []string{"/etc/passwd", "/dev/../etc/shadow", "/dev/fd/3", "/dev/null", "/var/lib/kevaso/volumes/x", "-o", ""} {
 		h := &fakeHost{codes: map[string]int{"mountpoint": 1, "blkid": 2}}
 		a := &Agent{Host: h}
-		err := a.mount(context.Background(), dev, "/var/lib/kevaso/volumes/u/data")
+		err := a.mount(context.Background(), "", dev, "/var/lib/kevaso/volumes/u/data")
 		if err == nil || err == errNoDevice {
 			t.Errorf("%q: %v", dev, err)
 		}

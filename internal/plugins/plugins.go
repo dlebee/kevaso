@@ -430,6 +430,23 @@ func (r *Registry) LoadBalancer(class string) (*Plugin, kplugin.Class, bool) {
 	return nil, kplugin.Class{}, false
 }
 
+// VolumeDevicePrefixes is the device prefixes the plugin for class declares on this host.
+// checked is false when this host has no such plugin: there is no manifest to check a device against.
+func (r *Registry) VolumeDevicePrefixes(class string) (prefixes []string, checked bool, err error) {
+	if r == nil || class == "" {
+		return nil, false, nil
+	}
+	p, _, ok := r.Storage(class)
+	if !ok || p == nil {
+		return nil, false, nil
+	}
+	g, ok := p.Conn.(*guarded)
+	if !ok {
+		return nil, false, nil
+	}
+	return g.devicePrefixes()
+}
+
 // Storage is the plugin serving a storage class.
 func (r *Registry) Storage(class string) (*Plugin, kplugin.Class, bool) {
 	for _, p := range r.All() {

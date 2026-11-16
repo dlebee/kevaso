@@ -557,9 +557,15 @@ left=$(awk '{print $2}' /proc/mounts | grep -E '`+mountPattern+`')
 	// goes last (RecordStep), and only when every earlier step succeeded. rm's own status is the
 	// step's: daemon-reload and reset-failed still run, and neither may hide a failed removal
 	// (K-114: with the record gone, the next reset finds nothing to undo).
+	// StorageKeep leaves the volume group. The loop file may still be one of its physical volumes
+	// (the group was extended onto a real disk): /var/lib/kevaso-* would delete it.
+	skipImage := ""
+	if in.Storage == StorageKeep {
+		skipImage = `[ "$f" = ` + StorageImage + ` ] && continue; `
+	}
 	destroys("remove Kevaso's files", `if awk '{print $2}' /proc/mounts | grep -qE '`+mountPattern+`'; then echo "something is still mounted under Kevaso's paths: not removing them" >&2; exit 1; fi
 set --
-for f in `+strings.Join(files, " ")+`; do [ "$f" = `+RecordDir+` ] || set -- "$@" "$f"; done
+for f in `+strings.Join(files, " ")+`; do `+skipImage+`[ "$f" = `+RecordDir+` ] || set -- "$@" "$f"; done
 rm -rf --one-file-system "$@"
 rc=$?
 systemctl daemon-reload || true
@@ -684,17 +690,20 @@ func Checklist(o CheckOptions) []Check {
 		procs = append(procs, PodmanProcesses...)
 		files = append(files, PodmanPaths...)
 	}
+	skipImage := ""
+	if o.KeepVG {
+		skipImage = `[ "$f" = ` + StorageImage + ` ] && continue; `
+	}
 	checks := []Check{
 		{"no Kevaso unit is loaded", `systemctl list-units --all --plain --no-legend 'kevaso*' '` + TestUnitPrefix + `*' | awk '{print $1}'`},
 		{"no Kevaso process runs", `for p in ` + strings.Join(procs, " ") + `; do pgrep -x "$(printf %.15s "$p")" >/dev/null && echo "$p"; done; true`},
-		{"no Kevaso file is left", `for f in ` + strings.Join(files, " ") + `; do [ -e "$f" ] && echo "$f"; done; true`},
+		{"no Kevaso file is left", `for f in ` + strings.Join(files, " ") + `; do ` + skipImage + `[ -e "$f" ] && echo "$f"; done; true`},
 		{"nothing is mounted under Kevaso's paths", `awk '{print $2}' /proc/mounts | grep -E '` + mountPattern + `'; true`},
 		{"no Kevaso link is left", `ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -E '^(` + links + `)'; true`},
 		{"no :kv address is left", `ip -4 -o addr show | awk '$NF ~ /:kv$/ {print $2, $4}'`},
 		{"no nftables table named kevaso*", `nft list tables 2>/dev/null | awk '$3 ~ /^kevaso/ {print $2, $3}'`},
 		{"no Kevaso container", `command -v docker >/dev/null && systemctl is-active -q docker && docker ps -aq --filter label=kevaso.com/uid
 command -v podman >/dev/null && podman ps -aq --filter label=kevaso.com/uid; true`},
-		{"no loop device on " + StorageImage, `losetup -n -O NAME -j ` + StorageImage + ` 2>/dev/null`},
 		{"no kevaso-* or " + openshell.UserPrefix + "* user or group", `awk -F: '$1 ~ /^(kevaso-|` + openshell.UserPrefix + `)/ {print "user " $1}' /etc/passwd; awk -F: '$1 ~ /^(kevaso-|` + openshell.UserPrefix + `)/ {print "group " $1}' /etc/group`},
 		{"no " + openshell.UserPrefix + "* member of docker or kvm", `awk -F: '($1 == "docker" || $1 == "kvm") && $4 ~ /(^|,)` + openshell.UserPrefix + `/ {print $1 ": " $4}' /etc/group`},
 		{"no OpenShell sandbox container (kv-[0-9a-f]{10})", `command -v docker >/dev/null && systemctl is-active -q docker && docker ps -a --format '{{.ID}} {{.Names}}' | grep -E ' (.*[^a-z0-9])?kv-[0-9a-f]{10}([^0-9a-f].*)?$'; true`},
@@ -706,6 +715,7 @@ done; true`},
 	}
 	if !o.KeepVG {
 		checks = append(checks,
+			Check{"no loop device on " + StorageImage, `losetup -n -O NAME -j ` + StorageImage + ` 2>/dev/null`},
 			Check{"no volume group " + VG, `vgs --noheadings -o vg_name ` + VG + ` 2>/dev/null | tr -d ' '`},
 			Check{"no device-mapper device of " + VG, `dmsetup ls 2>/dev/null | awk '$1 ~ /^` + VG + `-/ {print $1}'`})
 	}

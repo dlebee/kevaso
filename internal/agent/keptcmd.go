@@ -19,6 +19,9 @@ const (
 	KeptFile = "kept-silos.json"
 	// KeptRemoveDir holds one file per removal asked for, named by the silo's UID.
 	KeptRemoveDir = "kept-remove"
+	// KeptRemovedDir holds one file per copy actually removed, named by the silo's UID.
+	// kvoadm host kept reads it: the UID leaving the kept list is not, by itself, a removal.
+	KeptRemovedDir = "kept-removed"
 )
 
 // KeptEntry is one kept copy, as KeptFile lists it.
@@ -87,6 +90,10 @@ func (a *Agent) takeKeptRemovals() {
 		if _, again := a.removeConfirmed.LoadOrStore(uid, c.id); !again {
 			a.log("removing %s on a person's confirmation (kvoadm host kept --remove): its disk and volumes go", c.name)
 		}
+		// Placed here again while this was read: the confirmation is already void.
+		if _, still := a.keptNoted.Load(uid); !still {
+			a.dropRemovalConfirmation(uid)
+		}
 		if a.engine != nil {
 			a.engine.Changed(engine.Key{Kind: "Silo", Namespace: c.id.Namespace, Name: c.id.Name})
 		}
@@ -98,12 +105,29 @@ func (a *Agent) removalConfirmed(uid string) bool {
 	return ok
 }
 
+// dropRemovalConfirmation forgets a person's removal once the store places that copy here
+// again. The confirmation was for a copy the control plane didn't have; it does not stay and
+// delete the copy if the store later places it elsewhere or loses it.
+func (a *Agent) dropRemovalConfirmation(uid string) {
+	if _, ok := a.removeConfirmed.LoadAndDelete(uid); !ok {
+		return
+	}
+	a.log("a confirmed removal of %s is dropped: the store places that copy here", uid)
+	if dir := a.dataDir(); dir != "" {
+		_ = os.Remove(filepath.Join(dir, KeptRemoveDir, uid))
+	}
+}
+
 // removalDone forgets a confirmed removal once nothing of the copy is left here.
 func (a *Agent) removalDone(uid string) {
 	if v, ok := a.removeConfirmed.LoadAndDelete(uid); ok {
 		a.log("%s removed, as a person confirmed", v.(kri.ID))
 		if dir := a.dataDir(); dir != "" {
 			_ = os.Remove(filepath.Join(dir, KeptRemoveDir, uid))
+			d := filepath.Join(dir, KeptRemovedDir)
+			if err := os.MkdirAll(d, 0o700); err == nil {
+				_ = os.WriteFile(filepath.Join(d, uid), []byte("removed\n"), 0o600)
+			}
 		}
 	}
 }

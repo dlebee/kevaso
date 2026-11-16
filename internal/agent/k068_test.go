@@ -56,7 +56,8 @@ func TestAKeptCopyIsListedAndRemovedOnAPersonsConfirmation(t *testing.T) {
 	r.waitFor("no longer listed, and its request gone", func() bool {
 		r.clk.Step(time.Second)
 		_, err := os.Stat(filepath.Join(dir, agent.KeptRemoveDir, id.UID))
-		return !listed()["dev/single/"+id.UID] && os.IsNotExist(err)
+		b, _ := os.ReadFile(filepath.Join(dir, agent.KeptRemovedDir, id.UID))
+		return !listed()["dev/single/"+id.UID] && os.IsNotExist(err) && string(b) == "removed\n"
 	})
 	if _, err := os.Stat(filepath.Join(dir, agent.KeptRemoveDir, "not-a-kept-copy")); !os.IsNotExist(err) {
 		t.Fatal("a request for a copy that isn't kept was left")

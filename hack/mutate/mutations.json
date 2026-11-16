@@ -1966,5 +1966,185 @@
    "./internal/apiserver"
   ],
   "protects": "a namespace is deleted only when nothing outside it names it"
+ },
+ {
+  "id": "G-300",
+  "guard": "a fence kill in flight reports only the claim it was aimed at, and only while contact is still lost",
+  "file": "internal/agent/fencing.go",
+  "find": "// The claim this kill is aimed at, read before it runs. A start that claims while the kill\n\t// is in flight is another start: reporting that claim would stand for a silo that may run here.\n\taimed := f.a.cachedClaim(t.id)\n\tkctx, cancel := context.WithTimeout(ctx, fence.KillWithin)\n\t// Killed, not stopped gracefully: it asked not to run on without the control plane.\n\tf.a.stoppedByUs(t.id.UID)\n\terr := kri.Kill(kctx, t.rt, t.id)\n\tcancel()\n\tif errors.Is(err, kri.ErrNotFound) {\n\t\terr = nil // not on this host: Status says whether anything of it runs\n\t}\n\tif err == nil {\n\t\tvar r bool\n\t\tif r, err = runs(); err == nil && r {\n\t\t\terr = errors.New(\"it still runs after the kill\")\n\t\t}\n\t}\n\tif err != nil {\n\t\tf.unconfirm(t, err.Error())\n\t\treturn\n\t}\n\tif f.a.silence() <= t.after || !sameClaim(aimed, f.a.cachedClaim(t.id)) {\n\t\t// Contact returned, or a newer claim was stored, while the kill ran. The runtime can\n\t\t// still say nothing runs (that start has claimed and not reached Running). Not recorded.\n\t\treturn\n\t}\n\tf.mu.Lock()\n\tif f.confirmed == nil {\n\t\tf.confirmed = map[string]bool{}\n\t}\n\tf.confirmed[t.id.UID] = true\n\tdelete(f.unconfirmed, t.id.UID)\n\tif f.stopped == nil {\n\t\tf.stopped = map[string]stoppedSilo{}\n\t}\n\tf.stopped[t.id.UID] = stoppedSilo{t: t, claim: aimed}",
+  "replace": "kctx, cancel := context.WithTimeout(ctx, fence.KillWithin)\n\t// Killed, not stopped gracefully: it asked not to run on without the control plane.\n\tf.a.stoppedByUs(t.id.UID)\n\terr := kri.Kill(kctx, t.rt, t.id)\n\tcancel()\n\tif errors.Is(err, kri.ErrNotFound) {\n\t\terr = nil // not on this host: Status says whether anything of it runs\n\t}\n\tif err == nil {\n\t\tvar r bool\n\t\tif r, err = runs(); err == nil && r {\n\t\t\terr = errors.New(\"it still runs after the kill\")\n\t\t}\n\t}\n\tif err != nil {\n\t\tf.unconfirm(t, err.Error())\n\t\treturn\n\t}\n\tf.mu.Lock()\n\tif f.confirmed == nil {\n\t\tf.confirmed = map[string]bool{}\n\t}\n\tf.confirmed[t.id.UID] = true\n\tdelete(f.unconfirmed, t.id.UID)\n\tif f.stopped == nil {\n\t\tf.stopped = map[string]stoppedSilo{}\n\t}\n\tf.stopped[t.id.UID] = stoppedSilo{t: t, claim: f.a.cachedClaim(t.id)}",
+  "mutation": "the claim is read after the kill",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-301",
+  "guard": "a kill that was not confirmed stays disarmed across a restart",
+  "file": "internal/agent/fencerecord.go",
+  "find": "if a.keepsKillFailed(s) {\n\t\treturn nil // the mark survived a restart: still disarmed until a kill here is confirmed\n\t}",
+  "replace": "if a.keepsKillFailed(s) && false {\n\t\treturn nil // the mark survived a restart: still disarmed until a kill here is confirmed\n\t}",
+  "mutation": "stored KillFailed ignored",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-302",
+  "guard": "a crash restart claims again immediately before the main process",
+  "file": "internal/agent/agent.go",
+  "find": "// Claimed once more right before the main process, as at a first start. Every-boot init\n\t\t// can outlast a renewal; the start follows a claim that applied on what is stored now.\n\t\tif err := kp.claimNow(ctx); err != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tstctx, startKept := kp.within(ctx)\n\t\terr := rt.Start(stctx, id)\n\t\tif why := startKept(); why != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.startEnded(s, why, err)\n\t\t}",
+  "replace": "stctx, startKept := kp.within(ctx)\n\t\terr := rt.Start(stctx, id)\n\t\tif why := startKept(); why != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.startEnded(s, why, err)\n\t\t}",
+  "mutation": "no fresh claim before the main process",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-320",
+  "guard": "a confirmed removal is forgotten once the store places that copy here again",
+  "file": "internal/agent/keptcmd.go",
+  "find": "if _, ok := a.removeConfirmed.LoadAndDelete(uid); !ok {\n\t\treturn\n\t}",
+  "replace": "if _, ok := a.removeConfirmed.Load(uid); !ok {\n\t\treturn\n\t}",
+  "mutation": "confirmation kept",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-321",
+  "guard": "a confirmed removal does not remove a copy the store places here",
+  "file": "internal/agent/agent.go",
+  "find": "if err == nil && cur.UID == id.UID && cur.Status.Host == a.HostName && cur.DeletionTimestamp == nil {\n\t\t\ta.dropRemovalConfirmation(id.UID)\n\t\t\treturn false, \"\", nil\n\t\t}",
+  "replace": "if false {\n\t\t\ta.dropRemovalConfirmation(id.UID)\n\t\t\treturn false, \"\", nil\n\t\t}",
+  "mutation": "placed-here exception removed",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-322",
+  "guard": "the delete watch stops when a new history is accepted",
+  "file": "internal/agent/agent.go",
+  "find": "if wm.mark().histories != m0.histories {\n\t\t\t\t\tbreak // another history accepted: this stream's deletes are of the old one\n\t\t\t\t}",
+  "replace": "if false {\n\t\t\t\t\tbreak // another history accepted: this stream's deletes are of the old one\n\t\t\t\t}",
+  "mutation": "old stream's deletes kept",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-323",
+  "guard": "a kept volume group keeps the loop file that still backs it",
+  "file": "internal/hostreset/hostreset.go",
+  "find": "if in.Storage == StorageKeep {\n\t\tskipImage = `[ \"$f\" = ` + StorageImage + ` ] && continue; `\n\t}",
+  "replace": "if false {\n\t\tskipImage = `[ \"$f\" = ` + StorageImage + ` ] && continue; `\n\t}",
+  "mutation": "loop file removed with the other files",
+  "packages": [
+   "./internal/hostreset"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-324",
+  "guard": "labelled docker and podman volumes with no silo are not reset away",
+  "file": "internal/hostreset/inspect.go",
+  "find": "if len(in.Silos) == 0 && !f.WipeStorage && (len(in.EngineVolumes) > 0 || in.EngineVolumesUnknown) {",
+  "replace": "if false {",
+  "mutation": "labelled volumes removed without --wipe-storage",
+  "packages": [
+   "./internal/hostreset"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-325",
+  "guard": "a silo is not made when the volume group's logical volumes cannot be listed",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if lerr != nil {\n\t\t\treturn fmt.Errorf(\"%s: logical volumes in %s could not be listed (%w): not making the silo until they can\", spec.ID, VG, lerr)\n\t\t}",
+  "replace": "if lerr != nil && false {\n\t\t\treturn fmt.Errorf(\"%s: logical volumes in %s could not be listed (%w): not making the silo until they can\", spec.ID, VG, lerr)\n\t\t}",
+  "mutation": "create continues when lvs fails",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-326",
+  "guard": "a delete does not remove a gateway while a silo state cannot be read",
+  "file": "builtin/kri/openshell/runtime.go",
+  "find": "if err := r.statesReadable(); err != nil {\n\t\treturn fmt.Errorf(\"%s: delete: %w\", id, err)\n\t}",
+  "replace": "if err := r.statesReadable(); err != nil && false {\n\t\treturn fmt.Errorf(\"%s: delete: %w\", id, err)\n\t}",
+  "mutation": "unreadable state counted as no neighbour",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-340",
+  "guard": "a dry-run delete stores nothing",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "ctx = withDryRun(ctx, r) // a dry-run delete stores nothing",
+  "replace": "ctx = ctx // a dry-run delete stores nothing",
+  "mutation": "dry-run flag ignored on delete",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a dry-run delete changes nothing"
+ },
+ {
+  "id": "G-341",
+  "guard": "a secret deleted by its last finalizer drops the sealed value",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if err == nil && !dryRun(ctx) && s.vault != nil && (t.kind.Kind == \"Secret\" || t.kind.Kind == \"ClusterSecret\") {\n\t\t\t\t\ts.vault.Forget(ctx, t.namespace, t.name) // the sealed value goes with the object\n\t\t\t\t}",
+  "replace": "if false {\n\t\t\t\t\ts.vault.Forget(ctx, t.namespace, t.name) // the sealed value goes with the object\n\t\t\t\t}",
+  "mutation": "sealed value kept",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a deleted secret's sealed value is removed"
+ },
+ {
+  "id": "G-342",
+  "guard": "a volume is mounted only under its plugin's device prefix",
+  "file": "internal/agent/volumes.go",
+  "find": "if err := kplugin.DeviceUnder(dev, prefixes); err != nil {\n\t\treturn fmt.Errorf(\"not mounting %s: %w\", dev, err)\n\t}",
+  "replace": "if false {\n\t\treturn fmt.Errorf(\"not mounting %s: %w\", dev, err)\n\t}",
+  "mutation": "plugin prefix not checked",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a host disk is never mounted as a volume"
+ },
+ {
+  "id": "G-343",
+  "guard": "a namespace is deleted only at the revision it was marked and found empty",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if nsRev != 0 && cur.Revision != nsRev { // not the namespace as marked and found empty",
+  "replace": "if false && cur.Revision != nsRev { // not the namespace as marked and found empty",
+  "mutation": "revision check removed",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a namespace is deleted only as it was when it was found empty"
+ },
+ {
+  "id": "G-344",
+  "guard": "nothing new is made in a namespace that is being deleted",
+  "file": "internal/apiserver/nsdelete.go",
+  "find": "if ns == \"\" {\n\t\treturn nil\n\t}\n\t_, err := s.openNamespace(ctx, ns)\n\treturn err",
+  "replace": "if ns == \"\" || ctx == nil {\n\t\treturn nil\n\t}\n\treturn nil",
+  "mutation": "terminating namespace accepts creates",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a namespace being deleted takes nothing new"
  }
 ]

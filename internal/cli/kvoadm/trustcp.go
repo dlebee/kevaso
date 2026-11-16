@@ -120,7 +120,8 @@ func runTrust(ctx context.Context, h hostRunner, o TrustOptions, in *bufio.Reade
 		why = fmt.Sprintf("held: its control plane (cluster %s, history %s) answered older than revision %d, which this worker saw; a hold within one history ends only by a new history (kvoadm init --restore) or by this command", k.ClusterID, k.History, k.Revision)
 	}
 	_, _ = fmt.Fprintf(out, "%s on %s: %s.\nkvoadm will keep it as %s.unreadable-TIME and restart kevasod: the worker then trusts the control plane it reaches next as its own.\n"+
-		"Do this only once you know that control plane is the newest of this cluster (not one restored from an older backup outside kvoadm init --restore), and that every silo this host runs is placed here in it.\n", file, o.Address, why, file)
+		"Do this only once you know that control plane is the newest of this cluster (not one restored from an older backup outside kvoadm init --restore), and that every silo this host runs is placed here in it.\n"+
+		"If another worker still holds, trust the host the silo is placed on now before this one.\n", file, o.Address, why, file)
 	if !o.Yes {
 		_, _ = fmt.Fprintf(out, "Type yes to go on: ")
 		line, _ := readLine(in)

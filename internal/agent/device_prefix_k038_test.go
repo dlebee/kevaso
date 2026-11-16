@@ -18,7 +18,7 @@ func TestMountRefusesDevicesOutsideByID(t *testing.T) {
 	for _, dev := range []string{"/dev/sda1", "/dev/vda", "/dev/nvme0n1p1", "/dev/mapper/root"} {
 		h := &fakeHost{codes: map[string]int{"mountpoint": 1, "blkid": 2}}
 		a := &Agent{Host: h}
-		if err := a.mount(context.Background(), dev, "/var/lib/kevaso/volumes/u/data"); err == nil || err == errNoDevice {
+		if err := a.mount(context.Background(), "", dev, "/var/lib/kevaso/volumes/u/data"); err == nil || err == errNoDevice {
 			t.Errorf("%q: %v", dev, err)
 		}
 		for _, cmd := range []string{"test", "blkid", "mkfs", "mount"} {

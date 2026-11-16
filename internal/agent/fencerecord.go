@@ -81,6 +81,9 @@ func (a *Agent) armFence(ctx context.Context, s *v1.Silo) error {
 				Message: "the fence watcher on " + a.HostName + " isn't running: nothing would stop this silo without its agent", ObservedGeneration: s.Generation}, a.now())
 		})
 	}
+	if a.keepsKillFailed(s) {
+		return nil // the mark survived a restart: still disarmed until a kill here is confirmed
+	}
 	if fence.Armed(s) && s.Status.Host == a.HostName {
 		return nil
 	}
@@ -90,6 +93,23 @@ func (a *Agent) armFence(ctx context.Context, s *v1.Silo) error {
 	return a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		meta.SetCondition(&st.Conditions, fence.ArmedCondition(a.HostName, after, s.Generation), a.now())
 	})
+}
+
+// killFailedMark reports whether s carries this host's FenceArmed KillFailed condition: the
+// durable form of a fence kill that was not confirmed.
+func killFailedMark(s *v1.Silo, host string) bool {
+	c := meta.FindCondition(s.Status.Conditions, fence.ConditionArmed)
+	return c != nil && c.Status == meta.ConditionFalse && c.Reason == "KillFailed" &&
+		strings.Contains(c.Message, "the fence on "+host+" couldn't")
+}
+
+// keepsKillFailed: the stored mark stands and this process has not confirmed a kill of s since.
+// A restart begins with an empty killConfirmed, so the condition is what keeps the silo disarmed.
+func (a *Agent) keepsKillFailed(s *v1.Silo) bool {
+	if _, ok := a.killConfirmed.Load(s.UID); ok {
+		return false
+	}
+	return killFailedMark(s, a.HostName)
 }
 
 // watcherLive: the fence watcher's stamp is fresh, of this boot and record version (K-067).

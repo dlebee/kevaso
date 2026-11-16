@@ -64,6 +64,11 @@ func KeptRemoveScript(data, uid string) string {
 	return "set -e; install -d -m 0700 " + shQuote(d) + "; echo kvoadm > " + shQuote(path.Join(d, uid)) + "; echo asked"
 }
 
+// KeptRemovedScript reads whether the worker removed uid (it writes "removed" only then).
+func KeptRemovedScript(data, uid string) string {
+	return "cat " + shQuote(path.Join(data, agent.KeptRemovedDir, uid)) + " 2>/dev/null || true"
+}
+
 func readKept(ctx context.Context, h hostRunner, data string) ([]agent.KeptEntry, error) {
 	b, err := h.Run(ctx, KeptListScript(data), nil)
 	if err != nil {
@@ -111,8 +116,12 @@ func runKept(ctx context.Context, h hostRunner, o KeptOptions, in *bufio.Reader,
 		return fmt.Errorf("%s matches %d kept copies: give more of the UID", o.Remove, len(match))
 	}
 	e := match[0]
-	_, _ = fmt.Fprintf(out, "%s keeps %s/%s (uid %s, %s): %s.\nRemoving it deletes the copy, its disk and its volumes on %s, for good. The control plane doesn't know it, so nothing else holds this data.\n",
-		o.Address, e.Namespace, e.Name, e.UID, e.Runtime, e.What, o.Address)
+	held := "The control plane doesn't know it, so nothing else holds this data."
+	if strings.Contains(e.What, "stopped:") {
+		held = "The control plane still has this silo: this host keeps a stopped copy, and removing it deletes only what is on this host."
+	}
+	_, _ = fmt.Fprintf(out, "%s keeps %s/%s (uid %s, %s): %s.\nRemoving it deletes the copy, its disk and its volumes on %s, for good. %s\n",
+		o.Address, e.Namespace, e.Name, e.UID, e.Runtime, e.What, o.Address, held)
 	if !o.Yes {
 		_, _ = fmt.Fprintf(out, "Type the silo's name (%s/%s) to remove it: ", e.Namespace, e.Name)
 		line, _ := readLine(in)
@@ -124,6 +133,10 @@ func runKept(ctx context.Context, h hostRunner, o KeptOptions, in *bufio.Reader,
 		return fmt.Errorf("asking %s to remove it: %v %s", o.Address, err, strings.TrimSpace(string(b)))
 	}
 	for i := 0; i < 60; i++ {
+		if b, err := h.Run(ctx, KeptRemovedScript(o.Data, e.UID), nil); err == nil && strings.TrimSpace(string(b)) == "removed" {
+			_, _ = fmt.Fprintf(out, "→ %s/%s (uid %s) removed from %s\n", e.Namespace, e.Name, e.UID, o.Address)
+			return nil
+		}
 		l, err := readKept(ctx, h, o.Data)
 		if err == nil {
 			gone := true
@@ -133,8 +146,7 @@ func runKept(ctx context.Context, h hostRunner, o KeptOptions, in *bufio.Reader,
 				}
 			}
 			if gone {
-				_, _ = fmt.Fprintf(out, "→ %s/%s (uid %s) removed from %s\n", e.Namespace, e.Name, e.UID, o.Address)
-				return nil
+				return fmt.Errorf("%s/%s (uid %s) left the list of copies %s keeps, and it was not removed", e.Namespace, e.Name, e.UID, o.Address)
 			}
 		}
 		select {

@@ -49,3 +49,32 @@ func TestACreateNeverRemovesALocalVolumeItDidNotMake(t *testing.T) {
 		}
 	}
 }
+
+// Listing the volume group's logical volumes is what tells a new silo from an earlier copy's
+// disks. When that list fails, the silo is not made.
+func TestACreateRefusesWhenLogicalVolumesCannotBeListed(t *testing.T) {
+	h := newFakeHost()
+	r := newRuntime(t, h)
+	sp := spec("db")
+	sp.Volumes = []kri.Volume{{Name: "data", MountPath: "/data", SizeBytes: 1 << 30}}
+	h.answer = func(cmd string) (string, error) {
+		if cmd == "lvs --noheadings -o lv_name "+VG {
+			return "", errors.New("lvs: failed")
+		}
+		if strings.HasPrefix(cmd, "systemctl is-active") {
+			return "inactive", errors.New("exit 3")
+		}
+		f := strings.Fields(cmd)
+		out, err := h.lv(f[0], f[1:])
+		return string(out), err
+	}
+	err := r.Create(context.Background(), sp)
+	if err == nil {
+		t.Fatal("Create went ahead when logical volumes could not be listed")
+	}
+	for _, c := range h.commands() {
+		if strings.HasPrefix(hostCmd(c), "lvcreate") {
+			t.Fatalf("a volume was made: %s", c)
+		}
+	}
+}

@@ -208,7 +208,10 @@ type Agent struct {
 	// fenceFaulted: silo UID → why: its fence kill here failed, or wasn't confirmed (K-094). Not
 	// armed (the control plane doesn't restart it elsewhere on the strength of this host's
 	// fence) until a later kill of it here is confirmed. The host is never rebooted for it.
-	fenceFaulted sync.Map
+	// The silo's FenceArmed KillFailed condition is the same mark across a restart, when this
+	// map is empty (keepsKillFailed). killConfirmed: a kill this process has confirmed since.
+	fenceFaulted  sync.Map
+	killConfirmed sync.Map
 	// removeConfirmed: silo UID → kri.ID: a kept copy a person confirmed the removal of (K-068,
 	// keptcmd.go).
 	removeConfirmed sync.Map
@@ -864,6 +867,12 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 				a.settleClaim(ctx, rt, s)
 				return a.startEnded(s, why, err)
 			}
+		}
+		// Claimed once more right before the main process, as at a first start. Every-boot init
+		// can outlast a renewal; the start follows a claim that applied on what is stored now.
+		if err := kp.claimNow(ctx); err != nil {
+			a.settleClaim(ctx, rt, s)
+			return a.lostClaim(s, err)
 		}
 		stctx, startKept := kp.within(ctx)
 		err := rt.Start(stctx, id)
@@ -1633,6 +1642,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			listed[id.UID] = true
 			if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {
 				a.keptNoted.Delete(id.UID) // known and placed here (again): no longer a kept copy
+				a.dropRemovalConfirmation(id.UID)
 				continue
 			}
 			// Not in the API (or replaced by another of the same name) and no delete of it seen
@@ -1758,6 +1768,7 @@ func (a *Agent) mayRemove(ctx context.Context, id kri.ID) (remove bool, why stri
 		// K-068: a person confirmed its removal (kvoadm host kept --remove): that is the proof,
 		// unless the store places this very silo here (it isn't a kept copy then).
 		if err == nil && cur.UID == id.UID && cur.Status.Host == a.HostName && cur.DeletionTimestamp == nil {
+			a.dropRemovalConfirmation(id.UID)
 			return false, "", nil
 		}
 		if err != nil && !client.IsNotFound(err) {

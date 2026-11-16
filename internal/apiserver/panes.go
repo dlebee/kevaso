@@ -167,6 +167,9 @@ func (s *Server) putPane(ctx context.Context, silo *v1.Silo, r v1.PaneReport, no
 			return err
 		}
 		if rev == 0 {
+			if err := s.creatingIn(ctx, silo.Namespace); err != nil {
+				return err
+			}
 			_, err = s.store.Create(ctx, key, data)
 		} else {
 			_, err = s.store.Update(ctx, key, data, rev)
@@ -189,6 +192,9 @@ func (s *Server) putBundle(ctx context.Context, silo *v1.Silo, digest string, b 
 	}
 	if cur, err := s.store.Get(ctx, key); err == nil {
 		_, err = s.store.Update(ctx, key, data, cur.Revision)
+		return err
+	}
+	if err := s.creatingIn(ctx, silo.Namespace); err != nil {
 		return err
 	}
 	if _, err := s.store.Create(ctx, key, data); err != nil && !errors.Is(err, store.ErrExists) {
