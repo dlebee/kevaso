@@ -19,6 +19,9 @@ const (
 	KeptFile = "kept-silos.json"
 	// KeptRemoveDir holds one file per removal asked for, named by the silo's UID.
 	KeptRemoveDir = "kept-remove"
+	// KeptRemovedDir holds one file per copy actually removed, named by the silo's UID.
+	// kvoadm host kept reads it: the UID leaving the kept list is not, by itself, a removal.
+	KeptRemovedDir = "kept-removed"
 )
 
 // KeptEntry is one kept copy, as KeptFile lists it.
@@ -121,6 +124,10 @@ func (a *Agent) removalDone(uid string) {
 		a.log("%s removed, as a person confirmed", v.(kri.ID))
 		if dir := a.dataDir(); dir != "" {
 			_ = os.Remove(filepath.Join(dir, KeptRemoveDir, uid))
+			d := filepath.Join(dir, KeptRemovedDir)
+			if err := os.MkdirAll(d, 0o700); err == nil {
+				_ = os.WriteFile(filepath.Join(d, uid), []byte("removed\n"), 0o600)
+			}
 		}
 	}
 }
