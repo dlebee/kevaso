@@ -159,7 +159,9 @@ func Plan(base, now State, spare string) []hostreset.Step {
 
 // spareScript removes the volume group when every physical volume of it is the spare disk or
 // Kevaso's loop file, then leaves the spare disk with nothing on it, only when it has no
-// partitions and isn't mounted.
+// partitions and isn't mounted. LVM prints the kernel name (/dev/vdb) even when the group was
+// created through a stable path (/dev/disk/by-id/…); those are the same disk, and a different
+// disk is still refused.
 func spareScript(spare string) string {
 	return `vg=` + hostreset.VG + `; d=` + spare + `
 if vgs "$vg" >/dev/null 2>&1; then
@@ -169,7 +171,8 @@ if vgs "$vg" >/dev/null 2>&1; then
     "$d") ;;
     /dev/loop*) b=$(losetup -n -O BACK-FILE "$p" | tr -d ' ')
       [ "$b" = ` + hostreset.StorageImage + ` ] || { echo "refusing: volume group $vg is on $p ($b)" >&2; exit 1; } ;;
-    *) echo "refusing: volume group $vg is on $p, not the spare disk $d" >&2; exit 1 ;;
+    *) pd=$(readlink -f "$p" 2>/dev/null || true); dd=$(readlink -f "$d" 2>/dev/null || true)
+      [ -n "$pd" ] && [ "$pd" = "$dd" ] || { echo "refusing: volume group $vg is on $p, not the spare disk $d" >&2; exit 1; } ;;
     esac
   done
   lvremove -qq -fy "$vg"; vgremove -qq -fy "$vg"

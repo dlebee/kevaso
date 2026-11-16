@@ -3,11 +3,12 @@ export GOTOOLCHAIN := auto
 
 .PHONY: test test-short race vet vet-tags lint e2e e2e-ci where fuzz stress contention mutate workspace proto plugins lab-up lab-down lab-list
 
-# A worktree lab on the EPYC: three nested node VMs. LAB is the name.
+# A worktree lab on the EPYC. LAB is the name. PAIR=1 is two machine VMs for the
+# two-machine metal tests (Kevaso is not installed; the tests install it).
 # LAB_HOST, LAB_SSH_KEY and LAB_HOSTKEY override the host (see testbed/lab/README.md).
-lab-up: ## fresh 3-node lab (LAB=name, RECREATE=1 to replace one)
-	@test -n "$(LAB)" || { echo "usage: make lab-up LAB=name" >&2; exit 2; }
-	GOPROXY=off go run ./testbed/lab/cmd/kvlab up --name "$(LAB)" $(if $(RECREATE),--recreate,)
+lab-up: ## fresh lab (LAB=name, PAIR=1 for two machines, RECREATE=1 to replace one)
+	@test -n "$(LAB)" || { echo "usage: make lab-up LAB=name [PAIR=1] [RECREATE=1]" >&2; exit 2; }
+	GOPROXY=off go run ./testbed/lab/cmd/kvlab up --name "$(LAB)" $(if $(filter 1,$(PAIR)),--pair,) $(if $(RECREATE),--recreate,)
 
 lab-down: ## remove lab LAB and nothing else
 	@test -n "$(LAB)" || { echo "usage: make lab-down LAB=name" >&2; exit 2; }

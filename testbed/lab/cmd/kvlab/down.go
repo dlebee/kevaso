@@ -67,6 +67,13 @@ func cmdList(args []string) error {
 		return nil
 	}
 	fmt.Printf("%-12s %-4s %-16s %-8s %-8s %-8s %-8s %s\n", "NAME", "SLOT", "NETWORK", "SYS", "W1", "W2", "API", "VMS")
+	kinds := map[string]string{}
+	for _, line := range facts["kind"] {
+		n, k, ok := cut2(line)
+		if ok {
+			kinds[n] = k
+		}
+	}
 	seen := map[string]bool{}
 	for _, line := range facts["lab"] {
 		name, slotS, ok := cut2(line)
@@ -84,8 +91,16 @@ func cmdList(args []string) error {
 			fmt.Printf("%-12s %s\n", name, slotS)
 			continue
 		}
+		if kinds[name] == "pair" {
+			// SYS and W1 are m1 and m2's SSH ports. W2 is unused. API is 6443, the port the
+			// tests dial, which is also forwarded (the slot's high port forwards it too).
+			fmt.Printf("%-12s %-4d %-16s %-8d %-8d %-8s %-8d %s\n",
+				name, slot, lab.CIDR(slot), p.SSH("m1"), p.SSH("m2"), "-", 6443,
+				"pair "+vmStates(name, facts["vm"], []string{"m1", "m2"}))
+			continue
+		}
 		fmt.Printf("%-12s %-4d %-16s %-8d %-8d %-8d %-8d %s\n",
-			name, slot, lab.CIDR(slot), p.SysSSH, p.W1SSH, p.W2SSH, p.API, vmStates(name, facts["vm"]))
+			name, slot, lab.CIDR(slot), p.SysSSH, p.W1SSH, p.W2SSH, p.API, vmStates(name, facts["vm"], []string{"sys", "w1", "w2"}))
 	}
 	for _, line := range facts["vm"] {
 		vm, _, ok := cut2(line)
@@ -114,6 +129,9 @@ for d in /root/kvl/*/; do
   name=$(basename "$d")
   slot=$(tr -d '[:space:]' < "${d}slot")
   echo "lab=$name $slot"
+  kind=nodes
+  if [ -f "${d}mode" ]; then kind=$(tr -d '[:space:]' < "${d}mode"); fi
+  echo "kind=$name $kind"
 done
 virsh list --all --name | while read -r n; do
   case "$n" in
@@ -122,9 +140,9 @@ virsh list --all --name | while read -r n; do
 done
 `
 
-func vmStates(name string, vms []string) string {
+func vmStates(name string, vms []string, roles []string) string {
 	var parts []string
-	for _, role := range []string{"sys", "w1", "w2"} {
+	for _, role := range roles {
 		vm := lab.VMName(name, role)
 		st := "absent"
 		for _, line := range vms {

@@ -1,8 +1,9 @@
 // Package lab describes one worktree lab: three nested node VMs on the lab host (one system
-// node, two workers), a private /24, and the nftables rules that publish SSH and the API on the
-// host's public address. kvlab (cmd/kvlab) is what creates and deletes them. This package is the
-// part that can be checked without a machine: names, slots, ports, and the text of every file and
-// rule the lab writes.
+// node, two workers), or in pair mode two machine VMs (m1 and m2) with Kevaso not installed,
+// a private /24, and the nftables rules that publish SSH and the API on the host's public
+// address. kvlab (cmd/kvlab) is what creates and deletes them. This package is the part that
+// can be checked without a machine: names, slots, ports, and the text of every file and rule
+// the lab writes.
 //
 // Everything a lab creates is prefixed kvl-NAME-. The base image and libvirt's default network
 // are not, and a lab never names them.
@@ -57,15 +58,26 @@ func ValidName(name string) error {
 	return fmt.Errorf("%w %q: want a lowercase DNS label of at most %d characters (a letter, then letters, digits or hyphens, not ending in a hyphen)", ErrBadName, name, MaxName)
 }
 
-// Node is one of the three VMs.
+// Node is one VM in a lab.
 type Node struct {
-	Role      string // sys, w1, w2
-	VCPU      int
-	MemoryMiB int
-	DiskGiB   int
-	Octet     int // host address in the lab /24
-	SSHOff    int // added to the slot's port base: the forwarded SSH port
+	Role        string // sys, w1, w2, or in a pair lab m1, m2
+	VCPU        int
+	MemoryMiB   int
+	DiskGiB     int
+	Octet       int    // host address in the lab /24
+	SSHOff      int    // added to the slot's port base: the forwarded SSH port
+	SpareSerial string // a second empty virtio disk; the guest sees /dev/disk/by-id/virtio-SERIAL
 }
+
+// SpareSerial is m2's second disk. It is stable so the pair env can name it, and short enough
+// for a virtio-blk serial (20 characters).
+const SpareSerial = "kvlspare"
+
+// SpareByID is that disk in the guest, the path KEVASO_METAL2_SPARE_DISK gets.
+const SpareByID = "/dev/disk/by-id/virtio-" + SpareSerial
+
+// SpareDiskGiB is the spare disk's size. It is empty: no partition, no filesystem.
+const SpareDiskGiB = 20
 
 // Nodes is the cluster: the system node, then the two workers.
 func Nodes() []Node {
@@ -73,6 +85,44 @@ func Nodes() []Node {
 		{Role: "sys", VCPU: 2, MemoryMiB: 4096, DiskGiB: 20, Octet: 10, SSHOff: 22},
 		{Role: "w1", VCPU: 4, MemoryMiB: 8192, DiskGiB: 40, Octet: 11, SSHOff: 23},
 		{Role: "w2", VCPU: 4, MemoryMiB: 8192, DiskGiB: 40, Octet: 12, SSHOff: 24},
+	}
+}
+
+// PairNodes is a pair lab: two machines, sized like the workers. m2 has the spare disk.
+// Kevaso is not installed on either; the metal tests install it themselves.
+func PairNodes() []Node {
+	return []Node{
+		{Role: "m1", VCPU: 4, MemoryMiB: 8192, DiskGiB: 40, Octet: 10, SSHOff: 22},
+		{Role: "m2", VCPU: 4, MemoryMiB: 8192, DiskGiB: 40, Octet: 11, SSHOff: 23, SpareSerial: SpareSerial},
+	}
+}
+
+// AllNodes is every VM a destroy removes: a node lab's three and a pair lab's two. A lab has
+// one of those sets. The names from the other are absent, and destroying them does nothing.
+func AllNodes() []Node {
+	return append(append([]Node{}, Nodes()...), PairNodes()...)
+}
+
+// PairDial is a TCP port the two-machine tests open from the Mac on a machine's external
+// address. The host forwards that same port: the tests dial EXTERNAL_IP:PORT, not a remapped
+// high port. SSH is not here; KEVASO_METAL_HOST carries the forwarded SSH port.
+type PairDial struct {
+	Role string
+	Port int
+}
+
+// PairDials is that list. 6443 is m1's API (kvoadm init --api-server, then kvo). 80 and 443
+// are TestMetal2Ingress, and 443 again the long soak's certificate check. 18160 is the long
+// soak's lease, on machine 1. 18200 and 18201 are TestMetal2Worker; 18210 is TestMetal2Mesh.
+func PairDials() []PairDial {
+	return []PairDial{
+		{Role: "m1", Port: 6443},
+		{Role: "m1", Port: 80},
+		{Role: "m1", Port: 443},
+		{Role: "m1", Port: 18160},
+		{Role: "m2", Port: 18200},
+		{Role: "m2", Port: 18201},
+		{Role: "m2", Port: 18210},
 	}
 }
 
@@ -96,12 +146,13 @@ func PortsFor(slot int) (Ports, error) {
 	return Ports{SysSSH: base + 22, W1SSH: base + 23, W2SSH: base + 24, API: base + APIOff}, nil
 }
 
-// SSH returns the forwarded SSH port of a role.
+// SSH returns the forwarded SSH port of a role. A pair lab's m1 uses the system node's offset
+// and m2 the first worker's; there is no third SSH port.
 func (p Ports) SSH(role string) int {
 	switch role {
-	case "sys":
+	case "sys", "m1":
 		return p.SysSSH
-	case "w1":
+	case "w1", "m2":
 		return p.W1SSH
 	case "w2":
 		return p.W2SSH
@@ -181,6 +232,11 @@ func Disk(name, role string) string {
 
 func Seed(name, role string) string {
 	return ImageDir + "/" + VMName(name, role) + "-seed.img"
+}
+
+// SpareDisk is m2's empty second disk, prefixed kvl-NAME- like every other lab file.
+func SpareDisk(name string) string {
+	return ImageDir + "/" + VMName(name, "m2") + "-spare.qcow2"
 }
 
 // StateDir is /root/kvl/NAME.
