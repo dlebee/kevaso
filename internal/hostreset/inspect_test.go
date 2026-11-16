@@ -27,7 +27,7 @@ func inspectOut(record *Record, installed bool, silos, pvs, lvs []string, now St
 			b.WriteString(StorageImage + " 60G\n")
 		}
 	}
-	b.WriteString("== pvs\n" + strings.Join(pvs, "\n") + "\n== lvs\n" + strings.Join(lvs, "\n") + "\n")
+	b.WriteString("== pvs\n" + strings.Join(pvs, "\n") + "\n== lvs\n" + strings.Join(lvs, "\n") + "\n== engvols\n")
 	b.WriteString("== state\n" + strings.ReplaceAll(now.Render(), "== ", "=== "))
 	return b.String()
 }
@@ -182,7 +182,7 @@ func TestDecideNeverWipesARealDiskUnasked(t *testing.T) {
 }
 
 func TestInspectScriptPrintsEverySection(t *testing.T) {
-	for _, sec := range []string{"record", "installed", "silos", "storagefile", "pvs", "lvs", "state"} {
+	for _, sec := range []string{"record", "installed", "silos", "storagefile", "pvs", "lvs", "engvols", "state"} {
 		if !strings.Contains(InspectScript, "echo '== "+sec+"'") {
 			t.Errorf("InspectScript prints no %q section", sec)
 		}
@@ -315,6 +315,37 @@ func TestDecideLeavesADockerSomeoneInstalledAfterKevaso(t *testing.T) {
 	in, err := ParseInspection(out)
 	if err != nil || !slices.Equal(in.KevasoInstalled, []string{"docker.io", "qemu-utils"}) {
 		t.Fatalf("parsed %v %v", in.KevasoInstalled, err)
+	}
+}
+
+// Labelled docker and podman volumes with no silo on the host are the same kind of leftover as
+// logical volumes on Kevaso's storage: they go only with --wipe-storage.
+func TestDecideRefusesLabelledEngineVolumesWithNoSilo(t *testing.T) {
+	rec := Record{State: fresh}
+	for name, in := range map[string]Inspection{
+		"a labelled volume":  {Record: &rec, EngineVolumes: []string{"kevaso-data"}, Now: afterInstall},
+		"a list that failed": {Record: &rec, EngineVolumesUnknown: true, Now: afterInstall},
+	} {
+		if _, err := Decide(in, Flags{}); !errors.Is(err, ErrStrayVolumes) || !strings.Contains(err.Error(), "--wipe-storage") {
+			t.Errorf("%s: %v, want ErrStrayVolumes naming --wipe-storage", name, err)
+		}
+		if d, err := Decide(in, Flags{WipeStorage: true}); err != nil {
+			t.Errorf("%s with --wipe-storage: %v", name, err)
+		} else if name == "a labelled volume" && !slices.Contains(d.Lost, "kevaso-data") {
+			t.Errorf("%s with --wipe-storage doesn't name the volume as lost: %v", name, d.Lost)
+		}
+	}
+	withSilo := Inspection{Record: &rec, Silos: []string{"container dev/web"}, EngineVolumes: []string{"kevaso-data"}, Now: afterInstall}
+	if d, err := Decide(withSilo, Flags{Force: true}); err != nil {
+		t.Fatalf("volumes with their silo, --force: %v", err)
+	} else if d.Plan.DockerOurs {
+		t.Fatalf("plan %+v", d.Plan)
+	}
+	out := inspectOut(&rec, true, nil, nil, nil, afterInstall)
+	out = strings.Replace(out, "== engvols\n", "== engvols\nkevaso-data\nunreadable\n", 1)
+	in, err := ParseInspection(out)
+	if err != nil || !slices.Equal(in.EngineVolumes, []string{"kevaso-data"}) || !in.EngineVolumesUnknown {
+		t.Fatalf("parsed volumes %v unknown %v %v", in.EngineVolumes, in.EngineVolumesUnknown, err)
 	}
 }
 

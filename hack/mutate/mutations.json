@@ -2014,5 +2014,17 @@
    "./internal/hostreset"
   ],
   "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-324",
+  "guard": "labelled docker and podman volumes with no silo are not reset away",
+  "file": "internal/hostreset/inspect.go",
+  "find": "if len(in.Silos) == 0 && !f.WipeStorage && (len(in.EngineVolumes) > 0 || in.EngineVolumesUnknown) {",
+  "replace": "if false {",
+  "mutation": "labelled volumes removed without --wipe-storage",
+  "packages": [
+   "./internal/hostreset"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
  }
 ]

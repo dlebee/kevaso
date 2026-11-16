@@ -48,6 +48,13 @@ pvs --noheadings -o pv_name -S vg_name=` + VG + ` 2>/dev/null | tr -d ' ' | whil
 done
 echo '== lvs'
 lvs --noheadings -o lv_name,lv_size --units g ` + VG + ` 2>/dev/null | awk '$1 != "silos" {print $1, $2}'
+echo '== engvols'
+if command -v docker >/dev/null && systemctl is-active -q docker; then
+  docker volume ls -q --filter label=kevaso.com/uid || echo unreadable
+fi
+if command -v podman >/dev/null; then
+  podman volume ls -q --filter label=kevaso.com/uid || echo unreadable
+fi
 # What the inspection attached, it detaches (K-078): a kevasod started next must find its pool on
 # a writable device.
 if [ -n "$attached" ]; then vgchange -an ` + VG + ` >/dev/null 2>&1; losetup -d "$attached"; fi
@@ -84,6 +91,10 @@ type Inspection struct {
 	Silos           []string // "vm UNIT", "container NS/NAME" or "openshell NS/NAME"
 	PVs             []PV     // the volume group's physical volumes (none: no volume group)
 	Volumes         []string // its logical volumes but the thin pool, "NAME SIZE"
+	// EngineVolumes are docker and podman volumes labelled kevaso.com/uid. EngineVolumesUnknown
+	// means a list failed: they may be there.
+	EngineVolumes        []string
+	EngineVolumesUnknown bool
 	// StorageFile is Kevaso's loop file when it exists ("PATH SIZE"), attached or not.
 	StorageFile string
 	Now         State
@@ -140,7 +151,7 @@ func ParseInspection(out string) (Inspection, error) {
 	if err != nil {
 		return Inspection{}, fmt.Errorf("inspection: %w", err)
 	}
-	for _, want := range []string{"record", "installed", "silos", "storagefile", "pvs", "lvs", "state"} {
+	for _, want := range []string{"record", "installed", "silos", "storagefile", "pvs", "lvs", "engvols", "state"} {
 		if _, ok := sec[want]; !ok {
 			return Inspection{}, fmt.Errorf("inspection: no %q section", want)
 		}
@@ -158,6 +169,13 @@ func ParseInspection(out string) (Inspection, error) {
 		in.PVs = append(in.PVs, PV{Device: f[0], Backing: f[1]})
 	}
 	in.Volumes = sec["lvs"]
+	for _, l := range sec["engvols"] {
+		if l == "unreadable" {
+			in.EngineVolumesUnknown = true
+			continue
+		}
+		in.EngineVolumes = append(in.EngineVolumes, l)
+	}
 	if f := sec["storagefile"]; len(f) > 0 {
 		in.StorageFile = f[0]
 	}
@@ -264,6 +282,19 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 	// K-114: volumes on Kevaso's own storage with no silo here are no silo's that --force was
 	// given for: kept copies, a disk left by a silo deleted elsewhere, or a volume group that
 	// couldn't be read. They go only when the person says so.
+	// Labelled docker and podman volumes with no silo here are the same leftover (a kept copy's
+	// volume, or one whose list could not be read). They go only with --wipe-storage.
+	if len(in.Silos) == 0 && !f.WipeStorage && (len(in.EngineVolumes) > 0 || in.EngineVolumesUnknown) {
+		what := strings.Join(in.EngineVolumes, ", ")
+		if in.EngineVolumesUnknown {
+			what = "labelled docker or podman volumes that could not be listed"
+			if len(in.EngineVolumes) > 0 {
+				what = strings.Join(in.EngineVolumes, ", ") + ", and others that could not be listed"
+			}
+		}
+		return Decision{}, fmt.Errorf("%w: %s, with no silo on this host using them (a kept copy's). Reset with --wipe-storage to remove them with the rest",
+			ErrStrayVolumes, what)
+	}
 	strayLoop := len(in.Silos) == 0 && !f.WipeStorage && !vgBefore &&
 		(len(in.PVs) == 0 && in.StorageFile != "" || in.OnLoopFile() && len(in.Volumes) > 0)
 	if strayLoop {
@@ -301,6 +332,10 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 			why = "it was there before Kevaso"
 		}
 		say("KEEP the volume group %s (%s) and its volumes %s; --wipe-storage removes them", VG, why, orNone(in.Volumes))
+	}
+	if len(in.EngineVolumes) > 0 {
+		d.Lost = append(d.Lost, in.EngineVolumes...)
+		say("remove labelled docker and podman volumes: %s", strings.Join(in.EngineVolumes, ", "))
 	}
 	if in.Installed {
 		say("the cluster still lists this host until you run kvoadm host remove for it")
