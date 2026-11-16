@@ -2002,5 +2002,17 @@
    "./internal/agent"
   ],
   "protects": "a host disk is never mounted as a volume"
+ },
+ {
+  "id": "G-343",
+  "guard": "a namespace is deleted only at the revision it was marked and found empty",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if nsRev != 0 && cur.Revision != nsRev { // not the namespace as marked and found empty",
+  "replace": "if false && cur.Revision != nsRev { // not the namespace as marked and found empty",
+  "mutation": "revision check removed",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a namespace is deleted only as it was when it was found empty"
  }
 ]
