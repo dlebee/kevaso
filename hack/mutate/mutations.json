@@ -2002,5 +2002,89 @@
    "./internal/agent"
   ],
   "protects": "a silo never runs on two hosts"
+ },
+ {
+  "id": "G-320",
+  "guard": "a confirmed removal is forgotten once the store places that copy here again",
+  "file": "internal/agent/keptcmd.go",
+  "find": "if _, ok := a.removeConfirmed.LoadAndDelete(uid); !ok {\n\t\treturn\n\t}",
+  "replace": "if _, ok := a.removeConfirmed.Load(uid); !ok {\n\t\treturn\n\t}",
+  "mutation": "confirmation kept",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-321",
+  "guard": "a confirmed removal does not remove a copy the store places here",
+  "file": "internal/agent/agent.go",
+  "find": "if err == nil && cur.UID == id.UID && cur.Status.Host == a.HostName && cur.DeletionTimestamp == nil {\n\t\t\ta.dropRemovalConfirmation(id.UID)\n\t\t\treturn false, \"\", nil\n\t\t}",
+  "replace": "if false {\n\t\t\ta.dropRemovalConfirmation(id.UID)\n\t\t\treturn false, \"\", nil\n\t\t}",
+  "mutation": "placed-here exception removed",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-322",
+  "guard": "the delete watch stops when a new history is accepted",
+  "file": "internal/agent/agent.go",
+  "find": "if wm.mark().histories != m0.histories {\n\t\t\t\t\tbreak // another history accepted: this stream's deletes are of the old one\n\t\t\t\t}",
+  "replace": "if false {\n\t\t\t\t\tbreak // another history accepted: this stream's deletes are of the old one\n\t\t\t\t}",
+  "mutation": "old stream's deletes kept",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-323",
+  "guard": "a kept volume group keeps the loop file that still backs it",
+  "file": "internal/hostreset/hostreset.go",
+  "find": "if in.Storage == StorageKeep {\n\t\tskipImage = `[ \"$f\" = ` + StorageImage + ` ] && continue; `\n\t}",
+  "replace": "if false {\n\t\tskipImage = `[ \"$f\" = ` + StorageImage + ` ] && continue; `\n\t}",
+  "mutation": "loop file removed with the other files",
+  "packages": [
+   "./internal/hostreset"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-324",
+  "guard": "labelled docker and podman volumes with no silo are not reset away",
+  "file": "internal/hostreset/inspect.go",
+  "find": "if len(in.Silos) == 0 && !f.WipeStorage && (len(in.EngineVolumes) > 0 || in.EngineVolumesUnknown) {",
+  "replace": "if false {",
+  "mutation": "labelled volumes removed without --wipe-storage",
+  "packages": [
+   "./internal/hostreset"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-325",
+  "guard": "a silo is not made when the volume group's logical volumes cannot be listed",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if lerr != nil {\n\t\t\treturn fmt.Errorf(\"%s: logical volumes in %s could not be listed (%w): not making the silo until they can\", spec.ID, VG, lerr)\n\t\t}",
+  "replace": "if lerr != nil && false {\n\t\t\treturn fmt.Errorf(\"%s: logical volumes in %s could not be listed (%w): not making the silo until they can\", spec.ID, VG, lerr)\n\t\t}",
+  "mutation": "create continues when lvs fails",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-326",
+  "guard": "a delete does not remove a gateway while a silo state cannot be read",
+  "file": "builtin/kri/openshell/runtime.go",
+  "find": "if err := r.statesReadable(); err != nil {\n\t\treturn fmt.Errorf(\"%s: delete: %w\", id, err)\n\t}",
+  "replace": "if err := r.statesReadable(); err != nil && false {\n\t\treturn fmt.Errorf(\"%s: delete: %w\", id, err)\n\t}",
+  "mutation": "unreadable state counted as no neighbour",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
  }
 ]

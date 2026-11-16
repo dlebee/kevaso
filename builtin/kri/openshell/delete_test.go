@@ -94,6 +94,32 @@ func TestDeleteRemovesTheSandboxAndWithTheLastOneTheGateway(t *testing.T) {
 	}
 }
 
+// A neighbour's state that cannot be read is not "no neighbour". Delete does not take the
+// gateway, and with it that neighbour's sandbox home.
+func TestDeleteDoesNotRemoveAGatewayWhoseNeighbourStateCannotBeRead(t *testing.T) {
+	ctx := context.Background()
+	f := newFake()
+	r := newRuntime(f, "")
+	started(t, r, siloA, siloB)
+	for _, id := range []kri.ID{siloA, siloB} {
+		if err := r.Stop(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := gatewayFor(DriverVM, siloA)
+	env := g.Dir() + "/.config/openshell/gateway.env"
+	if len(f.files[env]) == 0 || !f.users[g.User()] {
+		t.Fatal("the gateway's home and user should be there before the delete")
+	}
+	f.unread = map[string]bool{statePath(siloB): true}
+	if err := r.Delete(ctx, siloA); err == nil {
+		t.Fatal("Delete went ahead while a neighbour's state could not be read")
+	}
+	if f.ran("userdel") != 0 || !f.users[g.User()] || len(f.files[env]) == 0 {
+		t.Fatalf("the gateway went: userdel %d, user %v, home %v", f.ran("userdel"), f.users[g.User()], len(f.files[env]) != 0)
+	}
+}
+
 // Item 4, K-080: revoking a credential failed open: detach and delete errors were dropped and
 // the provider forgotten, so a value Kevaso had revoked stayed in the gateway's store and
 // attached. A revoke the gateway can't be told of is an error, and is retried.

@@ -1642,6 +1642,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			listed[id.UID] = true
 			if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {
 				a.keptNoted.Delete(id.UID) // known and placed here (again): no longer a kept copy
+				a.dropRemovalConfirmation(id.UID)
 				continue
 			}
 			// Not in the API (or replaced by another of the same name) and no delete of it seen
@@ -1767,6 +1768,7 @@ func (a *Agent) mayRemove(ctx context.Context, id kri.ID) (remove bool, why stri
 		// K-068: a person confirmed its removal (kvoadm host kept --remove): that is the proof,
 		// unless the store places this very silo here (it isn't a kept copy then).
 		if err == nil && cur.UID == id.UID && cur.Status.Host == a.HostName && cur.DeletionTimestamp == nil {
+			a.dropRemovalConfirmation(id.UID)
 			return false, "", nil
 		}
 		if err != nil && !client.IsNotFound(err) {

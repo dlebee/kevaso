@@ -348,10 +348,13 @@ func underAllowed(p string) bool {
 func TestPlanStorage(t *testing.T) {
 	keep := Plan(PlanInput{Storage: StorageKeep})
 	for _, s := range keep {
-		for _, bad := range []string{"lvremove", "vgremove", "pvremove", StorageImage} {
+		for _, bad := range []string{"lvremove", "vgremove", "pvremove"} {
 			if strings.Contains(s.Script, bad) {
 				t.Errorf("keeping storage, step %q contains %q", s.Name, bad)
 			}
+		}
+		if strings.Contains(s.Script, StorageImage) && !strings.Contains(s.Script, `[ "$f" = `+StorageImage+` ] && continue`) {
+			t.Errorf("keeping storage, step %q names %s other than to leave it", s.Name, StorageImage)
 		}
 	}
 	loop := Plan(PlanInput{Storage: StorageLoop})

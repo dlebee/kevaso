@@ -51,6 +51,7 @@ type fake struct {
 	// comesUp: a unit found activating (started by someone, not yet listening) that becomes active
 	// at the next `gateway add` of its gateway, restoring its sandboxes as a start does.
 	comesUp map[string]bool
+	unread  map[string]bool // ReadFile fails for these paths even when the file is there
 }
 
 // fsb is one sandbox as the gateway records it.
@@ -340,6 +341,9 @@ func (f *fake) WriteFile(p string, d []byte, _ os.FileMode) error {
 	return nil
 }
 func (f *fake) ReadFile(p string) ([]byte, error) {
+	if f.unread[p] {
+		return nil, os.ErrPermission
+	}
 	if b, ok := f.files[p]; ok {
 		return b, nil
 	}
