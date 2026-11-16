@@ -6,12 +6,14 @@ microVMs. Several labs share the host, up to six.
 
 ```bash
 make lab-up LAB=smoke
+make lab-up LAB=pr PAIR=1
 make lab-list
 make lab-down LAB=smoke
 ```
 
 `LAB=name` is a lowercase DNS label of at most 12 characters. `make lab-up LAB=name RECREATE=1`
-replaces a lab of that name. `lab-down` of a name that is not there does nothing.
+replaces a lab of that name. `PAIR=1` is a pair lab (below), not the three-node cluster.
+`lab-down` of a name that is not there does nothing, and it removes a pair lab the same way.
 
 The host is `ubuntu@54.39.243.98`, the key `~/.ssh/kevaso-testbed_ed25519`. Override with
 `LAB_HOST` (`[user@]address[:port]`), `LAB_SSH_KEY`, and `LAB_HOSTKEY` (the `SHA256:` fingerprint
@@ -57,7 +59,53 @@ system node's `10.77.N.10`. `KVO_CONFIG` points at the context `kvoadm init` wro
 The metal suite's check that the external IP is configured on the machine it SSHs to does not
 hold for a nested node: that address is DNATed on the lab host, not assigned inside the VM.
 
-`lab-down` deletes only `kvl-NAME` objects: the three domains, network `kvl-NAME`, disks and logs
+## Pair labs
+
+`make lab-up LAB=name PAIR=1` (`kvlab up --pair`) is the same network, the same slot and the
+same port block, with two machine VMs instead of the cluster. `m1` and `m2` are each 4 vCPU,
+8 GiB and 40 GiB. `m2` has a second empty virtio disk, serial `kvlspare`, which the guest
+names `/dev/disk/by-id/virtio-kvlspare`. LVM reports that disk by its kernel name; the reset treats the by-id path and that name as the same disk, and still refuses any other. Kevaso is not installed. On each fresh VM kvlab runs
+the harness baseline (`testbed/remote` `RecordBaseline`): the checklist has to pass, then the
+VM's packages, nftables tables and IP forwarding are written to `/var/lib/kvt-baseline/state`.
+The two-machine tests reset against that and install Kevaso themselves with `kvoadm`.
+
+`testbed/lab/.labs/NAME/env.sh` sets `KEVASO_METAL_*` to m1 and `KEVASO_METAL2_*` to m2:
+
+| Variable | Value |
+|---|---|
+| `KEVASO_METAL_HOST` | `ubuntu@<lab host>:<m1 ssh port>` |
+| `KEVASO_METAL_KEY` | the lab key (m2 uses the same key, also set as `KEVASO_METAL2_KEY`) |
+| `KEVASO_METAL_HOSTKEY` | m1's fingerprint (`KEVASO_METAL2_HOSTKEY` is m2's) |
+| `KEVASO_METAL_EXTERNAL_IP` | the lab host's public address, for both machines |
+| `KEVASO_METAL_INTERNAL_IP` | m1's `10.77.N.10` (`KEVASO_METAL2_INTERNAL_IP` is m2's `.11`) |
+| `KEVASO_METAL2_SPARE_DISK` | `/dev/disk/by-id/virtio-kvlspare` |
+
+There is no `KVO_CONFIG`. The file unsets it.
+
+SSH is forwarded as for a node lab: m1 at offset 22, m2 at offset 23. The API's high port
+(offset 43) also goes to m1's 6443. The ports the tests dial on the external address are
+forwarded at that same number, and again from the lab bridge so m2 can dial m1 there:
+
+| Port | Machine | Who dials it from the Mac |
+|---|---|---|
+| 6443 | m1 | `kvoadm` and `kvo` (`--api-server`) |
+| 80, 443 | m1 | TestMetal2Ingress (443 also the long soak) |
+| 18160 | m1 | TestMetal2LongSoakCheck |
+| 18200, 18201 | m2 | TestMetal2Worker |
+| 18210 | m2 | TestMetal2Mesh |
+
+Both external addresses are the one public address, so a port answers for both variables.
+A test that requires the other machine's address to stay closed on that port needs two
+public addresses. `lab-up` refuses a dialled port that the host is already listening on, or
+that another lab already forwards.
+
+```bash
+source testbed/lab/.labs/pr/env.sh
+go test -tags metal -run '^TestMetal2' -count=1 ./test/e2e/
+```
+
+`lab-down` deletes only `kvl-NAME` objects: the domains (sys, w1 and w2, or m1 and m2; a
+name that is not there is a no-op), network `kvl-NAME`, disks and logs
 matching `kvl-NAME-*`, `/root/kvl/NAME`, and that lab's nftables chains. The `inet kvl` table is
 removed when no lab chain is left. The base image, libvirt's `default` network, and other labs
 are not touched. The testbed reset (`testbed/remote`, `/var/lib/kvt-baseline`) also leaves

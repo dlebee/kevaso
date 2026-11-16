@@ -19,14 +19,20 @@ import (
 
 	"kevaso.com/core/internal/sshboot"
 	"kevaso.com/core/testbed/lab"
+	"kevaso.com/core/testbed/remote"
 )
 
 func cmdUp(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	recreate := fs.Bool("recreate", false, "replace an existing lab of this name")
+	pair := fs.Bool("pair", false, "two machine VMs (m1, m2), Kevaso not installed, for the two-machine metal tests")
 	name := nameFlag(args, fs)
 	if err := lab.ValidName(name); err != nil {
 		return err
+	}
+	nodes := lab.Nodes()
+	if *pair {
+		nodes = lab.PairNodes()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -87,6 +93,11 @@ func cmdUp(args []string) error {
 	if _, err := h.run(ctx, claimScript(name, slot)); err != nil {
 		return fmt.Errorf("claiming slot %d: %w", slot, err)
 	}
+	if *pair {
+		if _, err := h.run(ctx, "printf '%s\\n' pair > "+sshboot.Quote(lab.StateDir(name)+"/mode")); err != nil {
+			return fmt.Errorf("recording pair mode: %w", err)
+		}
+	}
 	ports, err := lab.PortsFor(slot)
 	if err != nil {
 		return err
@@ -108,9 +119,11 @@ func cmdUp(args []string) error {
 	bctx, bcancel := context.WithCancel(ctx)
 	defer bcancel()
 	buildDone := make(chan error, 1)
-	go func() { buildDone <- buildBins(bctx, root, filepath.Join(local, "bin")) }()
+	if !*pair {
+		go func() { buildDone <- buildBins(bctx, root, filepath.Join(local, "bin")) }()
+	}
 
-	if err := bringUp(ctx, h, name, slot, iface, pub); err != nil {
+	if err := bringUp(ctx, h, name, slot, iface, pub, nodes, *pair); err != nil {
 		bcancel()
 		return err
 	}
@@ -121,19 +134,19 @@ func cmdUp(args []string) error {
 		role, pin string
 		err       error
 	}
-	pc := make(chan pinned, len(lab.Nodes()))
-	for _, n := range lab.Nodes() {
-		go func() {
+	pc := make(chan pinned, len(nodes))
+	for _, n := range nodes {
+		go func(n lab.Node) {
 			addr := net.JoinHostPort(h.cfg.ExternalIP, strconv.Itoa(ports.SSH(n.Role)))
 			pin, err := waitNode(ctx, addr, keyPath)
 			if err != nil {
 				err = fmt.Errorf("%s (%s): %w", n.Role, addr, err)
 			}
 			pc <- pinned{n.Role, pin, err}
-		}()
+		}(n)
 	}
 	var waitErrs []error
-	for range lab.Nodes() {
+	for range nodes {
 		p := <-pc
 		if p.err != nil {
 			waitErrs = append(waitErrs, p.err)
@@ -143,44 +156,61 @@ func cmdUp(args []string) error {
 	}
 	if len(waitErrs) > 0 {
 		bcancel()
-		diag, _ := h.run(ctx, diagScript(name, slot))
+		diag, _ := h.run(ctx, diagScript(name, slot, nodes))
 		return fmt.Errorf("%s\n%s", errors.Join(waitErrs...), scrub(diag))
 	}
 	clk.mark("boot")
 
-	seedPath := lab.StateDir(name) + "/seed.sh"
-	if err := h.upload(ctx, seedPath, []byte(seedScript(name, slot)), 0o700); err != nil {
-		return fmt.Errorf("seed script: %w", err)
-	}
-	if out, err := h.run(ctx, "bash "+sshboot.Quote(seedPath)); err != nil {
-		fmt.Printf("seed: the download cache was not copied (%s); the workers will fetch it\n", scrub(err.Error()))
-	} else if strings.Contains(out, "seeded") {
-		fmt.Println("seed: cloud-hypervisor and the Ubuntu image are on the workers")
-	}
-	clk.mark("seed")
-
-	if err := <-buildDone; err != nil {
-		return err
-	}
-	clk.mark("build")
-
-	bin := filepath.Join(local, "bin")
-	if err := installKevaso(ctx, h, name, slot, ports, pins, keyPath, filepath.Join(bin, "kevasod"), filepath.Join(bin, "kvoadm"), local); err != nil {
-		return err
-	}
-	clk.mark("kevaso")
-
-	if err := waitRuntimes(ctx, filepath.Join(bin, "kvo"), local); err != nil {
-		return err
-	}
-	clk.mark("runtimes")
-
 	envPath := filepath.Join(local, "env.sh")
-	text, err := lab.EnvFile(lab.Env{
-		Name: name, Host: "ubuntu@" + h.cfg.ExternalIP, SSHPort: ports.SysSSH,
-		KeyPath: keyPath, HostKey: pins["sys"], ExternalIP: h.cfg.ExternalIP,
-		InternalIP: lab.IP(slot, 10), ConfigPath: filepath.Join(local, "config.yaml"),
-	})
+	var text string
+	if *pair {
+		// The tests reset each machine against the harness baseline and install Kevaso
+		// themselves. Record that baseline now, on the fresh VM, the same way a real
+		// machine had it recorded (remote.RecordBaseline).
+		if err := recordBaselines(ctx, h.cfg.ExternalIP, slot, nodes, ports, pins, keyPath); err != nil {
+			return err
+		}
+		clk.mark("baseline")
+		text, err = lab.PairEnvFile(lab.PairEnv{
+			Name: name, Host: "ubuntu@" + h.cfg.ExternalIP,
+			M1SSH: ports.SSH("m1"), M2SSH: ports.SSH("m2"), KeyPath: keyPath,
+			M1HostKey: pins["m1"], M2HostKey: pins["m2"], ExternalIP: h.cfg.ExternalIP,
+			M1Internal: lab.IP(slot, 10), M2Internal: lab.IP(slot, 11), SpareDisk: lab.SpareByID,
+		})
+	} else {
+		seedPath := lab.StateDir(name) + "/seed.sh"
+		if err := h.upload(ctx, seedPath, []byte(seedScript(name, slot)), 0o700); err != nil {
+			return fmt.Errorf("seed script: %w", err)
+		}
+		if out, err := h.run(ctx, "bash "+sshboot.Quote(seedPath)); err != nil {
+			fmt.Printf("seed: the download cache was not copied (%s); the workers will fetch it\n", scrub(err.Error()))
+		} else if strings.Contains(out, "seeded") {
+			fmt.Println("seed: cloud-hypervisor and the Ubuntu image are on the workers")
+		}
+		clk.mark("seed")
+
+		if err := <-buildDone; err != nil {
+			return err
+		}
+		clk.mark("build")
+
+		bin := filepath.Join(local, "bin")
+		if err := installKevaso(ctx, h, name, slot, ports, pins, keyPath, filepath.Join(bin, "kevasod"), filepath.Join(bin, "kvoadm"), local); err != nil {
+			return err
+		}
+		clk.mark("kevaso")
+
+		if err := waitRuntimes(ctx, filepath.Join(bin, "kvo"), local); err != nil {
+			return err
+		}
+		clk.mark("runtimes")
+
+		text, err = lab.EnvFile(lab.Env{
+			Name: name, Host: "ubuntu@" + h.cfg.ExternalIP, SSHPort: ports.SysSSH,
+			KeyPath: keyPath, HostKey: pins["sys"], ExternalIP: h.cfg.ExternalIP,
+			InternalIP: lab.IP(slot, 10), ConfigPath: filepath.Join(local, "config.yaml"),
+		})
+	}
 	if err != nil {
 		return err
 	}
@@ -189,11 +219,18 @@ func cmdUp(args []string) error {
 	}
 	timing := clk.done()
 	_ = os.WriteFile(filepath.Join(local, "timings.txt"), []byte(timing), 0o644)
-	fmt.Printf("\nlab %s is up (slot %d, %s)\n", name, slot, lab.CIDR(slot))
-	fmt.Printf("  sys  ssh %s:%d   %s\n", h.cfg.ExternalIP, ports.SysSSH, lab.IP(slot, 10))
-	fmt.Printf("  w1   ssh %s:%d   %s\n", h.cfg.ExternalIP, ports.W1SSH, lab.IP(slot, 11))
-	fmt.Printf("  w2   ssh %s:%d   %s\n", h.cfg.ExternalIP, ports.W2SSH, lab.IP(slot, 12))
-	fmt.Printf("  api  https://%s\n", net.JoinHostPort(h.cfg.ExternalIP, strconv.Itoa(ports.API)))
+	if *pair {
+		fmt.Printf("\nlab %s is up (slot %d, %s, pair)\n", name, slot, lab.CIDR(slot))
+		fmt.Printf("  m1   ssh %s:%d   %s\n", h.cfg.ExternalIP, ports.SSH("m1"), lab.IP(slot, 10))
+		fmt.Printf("  m2   ssh %s:%d   %s   spare %s\n", h.cfg.ExternalIP, ports.SSH("m2"), lab.IP(slot, 11), lab.SpareByID)
+		fmt.Printf("  api  https://%s\n", net.JoinHostPort(h.cfg.ExternalIP, "6443"))
+	} else {
+		fmt.Printf("\nlab %s is up (slot %d, %s)\n", name, slot, lab.CIDR(slot))
+		fmt.Printf("  sys  ssh %s:%d   %s\n", h.cfg.ExternalIP, ports.SysSSH, lab.IP(slot, 10))
+		fmt.Printf("  w1   ssh %s:%d   %s\n", h.cfg.ExternalIP, ports.W1SSH, lab.IP(slot, 11))
+		fmt.Printf("  w2   ssh %s:%d   %s\n", h.cfg.ExternalIP, ports.W2SSH, lab.IP(slot, 12))
+		fmt.Printf("  api  https://%s\n", net.JoinHostPort(h.cfg.ExternalIP, strconv.Itoa(ports.API)))
+	}
 	fmt.Printf("  env  %s\n", envPath)
 	fmt.Print(timing)
 	return nil
@@ -212,7 +249,7 @@ func preflight(ctx context.Context, h *labHost, name string) (map[string][]strin
 	b.WriteString("    slot=$(tr -d '[:space:]' < \"${d}slot\")\n")
 	b.WriteString("    echo \"lab=$name $slot\"\n")
 	b.WriteString("  done\nfi\n")
-	for _, n := range lab.Nodes() {
+	for _, n := range lab.AllNodes() {
 		fmt.Fprintf(&b, "virsh dominfo %s >/dev/null 2>&1 && echo have=domain || true\n", sshboot.Quote(lab.VMName(name, n.Role)))
 	}
 	fmt.Fprintf(&b, "virsh net-info %s >/dev/null 2>&1 && echo have=network || true\n", sshboot.Quote(lab.NetworkName(name)))
@@ -313,12 +350,15 @@ chmod 644 %s
 	return line, nil
 }
 
-func bringUp(ctx context.Context, h *labHost, name string, slot int, iface, pub string) error {
+func bringUp(ctx context.Context, h *labHost, name string, slot int, iface, pub string, nodes []lab.Node, pair bool) error {
 	dir := lab.StateDir(name)
 	if err := h.upload(ctx, dir+"/user-data", []byte(lab.UserData(pub)), 0o600); err != nil {
 		return fmt.Errorf("user-data: %w", err)
 	}
 	xml, err := lab.NetworkXML(name, slot, true)
+	if pair {
+		xml, err = lab.PairNetworkXML(name, slot, true)
+	}
 	if err != nil {
 		return err
 	}
@@ -330,6 +370,9 @@ func bringUp(ctx context.Context, h *labHost, name string, slot int, iface, pub 
 	define := fmt.Sprintf("virsh net-define %s && virsh net-start %s", sshboot.Quote(netPath), sshboot.Quote(net))
 	if _, err := h.run(ctx, define); err != nil {
 		plain, perr := lab.NetworkXML(name, slot, false)
+		if pair {
+			plain, perr = lab.PairNetworkXML(name, slot, false)
+		}
 		if perr != nil {
 			return err
 		}
@@ -339,9 +382,13 @@ func bringUp(ctx context.Context, h *labHost, name string, slot int, iface, pub 
 		if _, err2 := h.run(ctx, define); err2 != nil {
 			return fmt.Errorf("libvirt network: %w", err2)
 		}
-		fmt.Println("note: this libvirt rejected the wildcard DNS entry; sys/w1/w2 names are still served")
+		if pair {
+			fmt.Println("note: this libvirt rejected the wildcard DNS entry; m1/m2 names are still served")
+		} else {
+			fmt.Println("note: this libvirt rejected the wildcard DNS entry; sys/w1/w2 names are still served")
+		}
 	}
-	for _, n := range lab.Nodes() {
+	for _, n := range nodes {
 		if err := h.upload(ctx, dir+"/meta-"+n.Role, []byte(lab.MetaData(name, n.Role)), 0o644); err != nil {
 			return err
 		}
@@ -353,31 +400,39 @@ func bringUp(ctx context.Context, h *labHost, name string, slot int, iface, pub 
 			return err
 		}
 	}
-	if _, err := h.run(ctx, diskScript(name)); err != nil {
+	if _, err := h.run(ctx, diskScript(name, nodes)); err != nil {
 		return fmt.Errorf("disks: %w", err)
 	}
 	fw, err := lab.ForwardScript(name, slot, iface)
+	if pair {
+		fw, err = lab.PairForwardScript(name, slot, iface, h.cfg.ExternalIP)
+	}
 	if err != nil {
 		return err
 	}
 	if _, err := h.run(ctx, fw); err != nil {
 		return fmt.Errorf("nftables: %w", err)
 	}
-	if _, err := h.run(ctx, startScript(name)); err != nil {
+	if _, err := h.run(ctx, startScript(name, nodes)); err != nil {
 		return fmt.Errorf("virsh start: %w", err)
 	}
 	return nil
 }
 
-func diskScript(name string) string {
+func diskScript(name string, nodes []lab.Node) string {
 	dir := lab.StateDir(name)
 	var b strings.Builder
 	b.WriteString("set -eu\n")
-	for _, n := range lab.Nodes() {
+	for _, n := range nodes {
 		disk, seed := lab.Disk(name, n.Role), lab.Seed(name, n.Role)
 		fmt.Fprintf(&b, "qemu-img create -f qcow2 -F qcow2 -b %s %s %dG\n",
 			sshboot.Quote(lab.BaseImage), sshboot.Quote(disk), n.DiskGiB)
 		fmt.Fprintf(&b, "chown libvirt-qemu:kvm %s && chmod 660 %s\n", sshboot.Quote(disk), sshboot.Quote(disk))
+		if n.SpareSerial != "" {
+			spare := lab.SpareDisk(name)
+			fmt.Fprintf(&b, "qemu-img create -f qcow2 %s %dG\n", sshboot.Quote(spare), lab.SpareDiskGiB)
+			fmt.Fprintf(&b, "chown libvirt-qemu:kvm %s && chmod 660 %s\n", sshboot.Quote(spare), sshboot.Quote(spare))
+		}
 		fmt.Fprintf(&b, "cloud-localds %s %s %s\n", sshboot.Quote(seed), sshboot.Quote(dir+"/user-data"), sshboot.Quote(dir+"/meta-"+n.Role))
 		fmt.Fprintf(&b, "chown libvirt-qemu:kvm %s && chmod 644 %s\n", sshboot.Quote(seed), sshboot.Quote(seed))
 		fmt.Fprintf(&b, "virsh define %s\n", sshboot.Quote(dir+"/"+lab.VMName(name, n.Role)+".xml"))
@@ -385,22 +440,22 @@ func diskScript(name string) string {
 	return b.String()
 }
 
-func startScript(name string) string {
+func startScript(name string, nodes []lab.Node) string {
 	var b strings.Builder
 	b.WriteString("set -eu\n")
-	for _, n := range lab.Nodes() {
+	for _, n := range nodes {
 		fmt.Fprintf(&b, "virsh start %s\n", sshboot.Quote(lab.VMName(name, n.Role)))
 	}
 	return b.String()
 }
 
-func diagScript(name string, slot int) string {
+func diagScript(name string, slot int, nodes []lab.Node) string {
 	var b strings.Builder
 	b.WriteString("set +e\n")
 	b.WriteString("virsh list --all\nvirsh net-list --all\n")
 	fmt.Fprintf(&b, "ip -br addr show %s\n", lab.Bridge(slot))
 	b.WriteString("nft list table inet kvl\n")
-	for _, n := range lab.Nodes() {
+	for _, n := range nodes {
 		vm := lab.VMName(name, n.Role)
 		fmt.Fprintf(&b, "echo -- %s --\nvirsh domifaddr %s --source lease\n", n.Role, sshboot.Quote(vm))
 		fmt.Fprintf(&b, "echo -- serial %s --\ntail -n 20 /var/log/libvirt/qemu/%s-serial.log\n", n.Role, vm)
@@ -408,6 +463,56 @@ func diagScript(name string, slot int) string {
 			sshboot.Quote(lab.StateDir(name)+"/known_hosts"), sshboot.Quote(lab.StateDir(name)+"/id_ed25519"), lab.IP(slot, n.Octet), n.Role)
 	}
 	return b.String()
+}
+
+// recordBaselines runs remote.RecordBaseline on each fresh VM: the checklist must pass, then
+// the machine's packages, nftables tables and IP forwarding are written to
+// /var/lib/kvt-baseline/state. That is the baseline the metal tests reset against.
+func recordBaselines(ctx context.Context, host string, slot int, nodes []lab.Node, ports lab.Ports, pins map[string]string, keyPath string) error {
+	errc := make(chan error, len(nodes))
+	for _, n := range nodes {
+		go func(n lab.Node) {
+			errc <- recordBaseline(ctx, host, slot, n, ports, pins[n.Role], keyPath)
+		}(n)
+	}
+	var errs []error
+	for range nodes {
+		if err := <-errc; err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	fmt.Println("baseline: recorded on each machine (/var/lib/kvt-baseline)")
+	return nil
+}
+
+func recordBaseline(ctx context.Context, host string, slot int, n lab.Node, ports lab.Ports, pin, keyPath string) error {
+	cfg := remote.Config{
+		User: "ubuntu", Address: host, Port: ports.SSH(n.Role), KeyFile: keyPath, HostKey: pin,
+		ExternalIP: host, InternalIP: lab.IP(slot, n.Octet),
+	}
+	if n.SpareSerial != "" {
+		cfg.SpareDisk = lab.SpareByID
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("%s: %w", n.Role, err)
+	}
+	d := remote.New(cfg)
+	defer func() { _ = d.Close() }()
+	if n.SpareSerial != "" {
+		byID := sshboot.Quote(lab.SpareByID)
+		script := "for i in $(seq 1 15); do if [ -b " + byID + " ]; then lsblk -dn -o TYPE,SIZE " + byID + "; exit 0; fi; sleep 1; done; echo MISSING; ls -1 /dev/disk/by-id 2>/dev/null || true; exit 1"
+		out, err := d.Run(ctx, script, nil)
+		if err != nil {
+			return fmt.Errorf("%s: spare disk %s: %v\n%s", n.Role, lab.SpareByID, err, scrub(out))
+		}
+	}
+	if _, err := d.RecordBaseline(ctx); err != nil {
+		return fmt.Errorf("%s: recording the harness baseline: %w", n.Role, err)
+	}
+	return nil
 }
 
 func seedScript(name string, slot int) string {

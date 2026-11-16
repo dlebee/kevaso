@@ -1,6 +1,8 @@
-// Command kvlab builds and removes a worktree lab: three nested node VMs on the lab host.
+// Command kvlab builds and removes a worktree lab: three nested node VMs on the lab host,
+// or with --pair two machine VMs (m1 and m2) and no Kevaso, for the two-machine metal tests.
 //
 //	kvlab up --name smoke
+//	kvlab up --name pairlab --pair
 //	kvlab down --name smoke
 //	kvlab list
 //
@@ -43,10 +45,11 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `kvlab up --name NAME [--recreate]
+	fmt.Fprintf(os.Stderr, `kvlab up --name NAME [--recreate] [--pair]
 kvlab down --name NAME
 kvlab list
 
+--pair is two machine VMs (m1, m2) with Kevaso not installed.
 LAB_HOST, LAB_SSH_KEY and LAB_HOSTKEY choose the lab host.
 `)
 }

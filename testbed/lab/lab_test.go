@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"kevaso.com/core/testbed/remote"
 )
 
 func TestValidName(t *testing.T) {
@@ -71,6 +73,9 @@ func TestPorts(t *testing.T) {
 	}
 	if p.SSH("sys") != p.SysSSH || PortsForMust(t, 2).SSH("w2") != 21224 {
 		t.Fatal("role ports")
+	}
+	if p.SSH("m1") != p.SysSSH || p.SSH("m2") != p.W1SSH {
+		t.Fatal("pair ssh ports")
 	}
 }
 
@@ -204,6 +209,9 @@ func TestCloudInitAndForwardAndDestroy(t *testing.T) {
 	if strings.Contains(fw, "iptables") || strings.Contains(fw, "libvirt") || strings.Contains(fw, "delete table ip") {
 		t.Errorf("nft rules touch another table:\n%s", fw)
 	}
+	if strings.Contains(fw, "dport 6443 ") || strings.Contains(fw, "dport 80 ") {
+		t.Errorf("a node lab forwards a well-known host port:\n%s", fw)
+	}
 	if _, err := ForwardScript("smoke", 1, "enp0; rm"); err == nil {
 		t.Fatal("an unsafe interface was accepted")
 	}
@@ -216,6 +224,8 @@ func TestCloudInitAndForwardAndDestroy(t *testing.T) {
 		"virsh destroy 'kvl-smoke-sys'",
 		"virsh destroy 'kvl-smoke-w1'",
 		"virsh destroy 'kvl-smoke-w2'",
+		"virsh destroy 'kvl-smoke-m1'",
+		"virsh destroy 'kvl-smoke-m2'",
 		"virsh net-destroy 'kvl-smoke'",
 		"virsh net-undefine 'kvl-smoke'",
 		"rm -f /var/lib/libvirt/images/kvl-smoke-*",
@@ -269,4 +279,191 @@ func TestEnvFile(t *testing.T) {
 	if strings.Contains(text, "PRIVATE KEY") {
 		t.Fatal("env file contains a private key")
 	}
+	if strings.Contains(text, "KEVASO_METAL2_") || strings.Contains(text, "LAB_PAIR") {
+		t.Fatalf("a node lab's env names the pair:\n%s", text)
+	}
+}
+
+func TestPair(t *testing.T) {
+	m1, m2 := PairNodes()[0], PairNodes()[1]
+	if m1.Role != "m1" || m2.Role != "m2" || m1.VCPU != 4 || m2.VCPU != 4 || m1.MemoryMiB != 8192 || m2.MemoryMiB != 8192 || m1.DiskGiB != 40 || m2.DiskGiB != 40 {
+		t.Fatalf("sizes: %+v %+v", m1, m2)
+	}
+	if m1.SpareSerial != "" || m2.SpareSerial != SpareSerial || SpareDiskGiB != 20 {
+		t.Fatalf("spare: %+v %+v %d", m1, m2, SpareDiskGiB)
+	}
+	if SpareByID != "/dev/disk/by-id/virtio-"+SpareSerial {
+		t.Fatal(SpareByID)
+	}
+
+	xml, err := PairNetworkXML("pr", 3, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"<name>kvl-pr</name>",
+		"<forward mode='open'/>",
+		"<bridge name='kvlbr3'",
+		"<hostname>m1.pr.lab.test</hostname>",
+		"<hostname>m2.pr.lab.test</hostname>",
+		"mac='52:54:00:77:03:0a' name='m1' ip='10.77.3.10'",
+		"mac='52:54:00:77:03:0b' name='m2' ip='10.77.3.11'",
+		"start='10.77.3.10' end='10.77.3.11'",
+		"address=/.pr.lab.test/10.77.3.10",
+	} {
+		if !strings.Contains(xml, want) {
+			t.Errorf("pair network lacks %q\n%s", want, xml)
+		}
+	}
+	for _, absent := range []string{"sys.pr", "w1.pr", "w2.pr", "10.77.3.12", "e046", "default"} {
+		if strings.Contains(xml, absent) {
+			t.Errorf("pair network contains %q\n%s", absent, xml)
+		}
+	}
+
+	d1, err := DomainXML("pr", 3, m1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := DomainXML("pr", 3, m2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(d1, "<name>kvl-pr-m1</name>") || !strings.Contains(d1, "<vcpu placement='static'>4</vcpu>") || !strings.Contains(d1, "<memory unit='MiB'>8192</memory>") {
+		t.Fatalf("m1 domain:\n%s", d1)
+	}
+	if strings.Contains(d1, "vdb") || strings.Contains(d1, SpareSerial) || strings.Contains(d1, "spare") {
+		t.Fatalf("m1 has the spare disk:\n%s", d1)
+	}
+	for _, want := range []string{
+		"<name>kvl-pr-m2</name>",
+		"<target dev='vdb' bus='virtio'/>",
+		"<serial>" + SpareSerial + "</serial>",
+		SpareDisk("pr"),
+		"mode='host-passthrough' check='none' migratable='off'",
+	} {
+		if !strings.Contains(d2, want) {
+			t.Errorf("m2 domain lacks %q\n%s", want, d2)
+		}
+	}
+	if strings.Contains(d2, BaseImage) || strings.Contains(d2, "e046") {
+		t.Fatalf("m2 domain names the base image:\n%s", d2)
+	}
+	sys, err := DomainXML("pr", 3, Nodes()[0])
+	if err != nil || strings.Contains(sys, "vdb") || strings.Contains(sys, SpareSerial) {
+		t.Fatalf("a system node gained the spare disk: %v\n%s", err, sys)
+	}
+	bad := m2
+	bad.SpareSerial = "kvl spare"
+	if _, err := DomainXML("pr", 3, bad); err == nil {
+		t.Fatal("a serial with a space was accepted")
+	}
+
+	fw, err := PairForwardScript("pr", 3, "enp5s0f0", "203.0.113.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"iifname 'enp5s0f0' tcp dport 21322 dnat ip to 10.77.3.10:22",
+		"tcp dport 21323 dnat ip to 10.77.3.11:22",
+		"tcp dport 21343 dnat ip to 10.77.3.10:6443",
+		"iifname 'enp5s0f0' tcp dport 6443 dnat ip to 10.77.3.10:6443",
+		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 6443 dnat ip to 10.77.3.10:6443",
+		"tcp dport 80 dnat ip to 10.77.3.10:80",
+		"tcp dport 443 dnat ip to 10.77.3.10:443",
+		"tcp dport 18160 dnat ip to 10.77.3.10:18160",
+		"tcp dport 18200 dnat ip to 10.77.3.11:18200",
+		"tcp dport 18201 dnat ip to 10.77.3.11:18201",
+		"tcp dport 18210 dnat ip to 10.77.3.11:18210",
+		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 18210 dnat ip to 10.77.3.11:18210",
+		"oifname 'kvlbr3' ct status dnat masquerade",
+		"ip saddr 10.77.3.0/24 oifname 'enp5s0f0' masquerade",
+		"port 6443 is already forwarded",
+		"port 6443 is in use on the lab host",
+	} {
+		if !strings.Contains(fw, want) {
+			t.Errorf("pair nft lacks %q\n%s", want, fw)
+		}
+	}
+	for _, absent := range []string{"10.77.3.12", "dport 21324", "iptables", "e046", "default"} {
+		if strings.Contains(fw, absent) {
+			t.Errorf("pair nft contains %q\n%s", absent, fw)
+		}
+	}
+	if _, err := PairForwardScript("pr", 3, "enp0; rm", "203.0.113.10"); err == nil {
+		t.Fatal("an unsafe interface was accepted")
+	}
+	if _, err := PairForwardScript("pr", 3, "enp5s0f0", "10.77.3.1"); err == nil {
+		t.Fatal("a private address was accepted as the public address")
+	}
+	if _, err := PairForwardScript("pr", 3, "enp5s0f0", "203.0.113.10;id"); err == nil {
+		t.Fatal("a public address with a command was accepted")
+	}
+
+	m1pin := "SHA256:" + strings.Repeat("A", 43)
+	m2pin := "SHA256:" + strings.Repeat("B", 43)
+	key := "/work/testbed/lab/.labs/pr/id_ed25519"
+	env, err := PairEnvFile(PairEnv{
+		Name: "pr", Host: "ubuntu@203.0.113.10", M1SSH: 21322, M2SSH: 21323,
+		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, ExternalIP: "203.0.113.10",
+		M1Internal: "10.77.3.10", M2Internal: "10.77.3.11", SpareDisk: SpareByID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(env, "PRIVATE KEY") || strings.Contains(env, "KVO_CONFIG=") {
+		t.Fatalf("pair env has a key or a kvo config:\n%s", env)
+	}
+	got := exports(env)
+	getenv := func(k string) string { return got[k] }
+	c1, err := remote.FromEnv(getenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2, err := remote.FromEnvPrefix(getenv, remote.SecondPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c1.User != "ubuntu" || c1.Address != "203.0.113.10" || c1.Port != 21322 || c1.KeyFile != key || c1.HostKey != m1pin ||
+		c1.ExternalIP != "203.0.113.10" || c1.InternalIP != "10.77.3.10" || c1.SpareDisk != "" {
+		t.Fatalf("m1 from the env file: %+v", c1)
+	}
+	if c2.User != "ubuntu" || c2.Address != "203.0.113.10" || c2.Port != 21323 || c2.KeyFile != key || c2.HostKey != m2pin ||
+		c2.ExternalIP != "203.0.113.10" || c2.InternalIP != "10.77.3.11" || c2.SpareDisk != SpareByID {
+		t.Fatalf("m2 from the env file: %+v", c2)
+	}
+	if got["LAB_NAME"] != "pr" || got["LAB_PAIR"] != "1" {
+		t.Fatalf("lab vars: %v", got)
+	}
+	if _, err := PairEnvFile(PairEnv{Name: "pr"}); err == nil {
+		t.Fatal("an incomplete pair env was accepted")
+	}
+	same := PairEnv{
+		Name: "pr", Host: "ubuntu@203.0.113.10", M1SSH: 21322, M2SSH: 21323,
+		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, ExternalIP: "203.0.113.10",
+		M1Internal: "10.77.3.10", M2Internal: "10.77.3.10", SpareDisk: SpareByID,
+	}
+	if _, err := PairEnvFile(same); err == nil {
+		t.Fatal("m1 and m2 sharing an internal address was accepted")
+	}
+}
+
+// exports reads the export lines of an env file. Values are single-quoted.
+func exports(text string) map[string]string {
+	out := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "export ")
+		if !ok {
+			continue
+		}
+		k, v, ok := strings.Cut(rest, "=")
+		if !ok {
+			continue
+		}
+		if len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'' {
+			v = strings.ReplaceAll(v[1:len(v)-1], `'\''`, "'")
+		}
+		out[k] = v
+	}
+	return out
 }
