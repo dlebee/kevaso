@@ -1966,5 +1966,17 @@
    "./internal/apiserver"
   ],
   "protects": "a namespace is deleted only when nothing outside it names it"
+ },
+ {
+  "id": "G-320",
+  "guard": "a confirmed removal is forgotten once the store places that copy here again",
+  "file": "internal/agent/keptcmd.go",
+  "find": "if _, ok := a.removeConfirmed.LoadAndDelete(uid); !ok {\n\t\treturn\n\t}",
+  "replace": "if _, ok := a.removeConfirmed.Load(uid); !ok {\n\t\treturn\n\t}",
+  "mutation": "confirmation kept",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
  }
 ]

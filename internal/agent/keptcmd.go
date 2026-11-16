@@ -87,6 +87,10 @@ func (a *Agent) takeKeptRemovals() {
 		if _, again := a.removeConfirmed.LoadOrStore(uid, c.id); !again {
 			a.log("removing %s on a person's confirmation (kvoadm host kept --remove): its disk and volumes go", c.name)
 		}
+		// Placed here again while this was read: the confirmation is already void.
+		if _, still := a.keptNoted.Load(uid); !still {
+			a.dropRemovalConfirmation(uid)
+		}
 		if a.engine != nil {
 			a.engine.Changed(engine.Key{Kind: "Silo", Namespace: c.id.Namespace, Name: c.id.Name})
 		}
@@ -96,6 +100,19 @@ func (a *Agent) takeKeptRemovals() {
 func (a *Agent) removalConfirmed(uid string) bool {
 	_, ok := a.removeConfirmed.Load(uid)
 	return ok
+}
+
+// dropRemovalConfirmation forgets a person's removal once the store places that copy here
+// again. The confirmation was for a copy the control plane didn't have; it does not stay and
+// delete the copy if the store later places it elsewhere or loses it.
+func (a *Agent) dropRemovalConfirmation(uid string) {
+	if _, ok := a.removeConfirmed.LoadAndDelete(uid); !ok {
+		return
+	}
+	a.log("a confirmed removal of %s is dropped: the store places that copy here", uid)
+	if dir := a.dataDir(); dir != "" {
+		_ = os.Remove(filepath.Join(dir, KeptRemoveDir, uid))
+	}
 }
 
 // removalDone forgets a confirmed removal once nothing of the copy is left here.
