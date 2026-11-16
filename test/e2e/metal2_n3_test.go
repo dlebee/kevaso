@@ -8,13 +8,13 @@ import (
 	"time"
 )
 
-// TestMetal2EgressByNameRefusesPrivate is network-3's N3-1 and N3-2 (K-057, a5190c2) on machine 2:
-// a microVM whose grant opens, by name, 127-0-0-1.sslip.io, 169-254-169-254.sslip.io, the
-// machine's own address as a name, and the silo bridge's gate port by name. Each connection (sent
-// to a public stand-in address, so it leaves the silo and the gate judges it by its SNI) is
-// refused, and the journal says "which a name never leads to" for each. Then the grant also names
-// 169.254.169.254/32 for 443: that name is let through, and a SYN to 169.254.169.254 leaves the
-// machine (tcpdump).
+// TestMetal2EgressByNameRefusesPrivate is network-3's N3-1 and N3-2 (K-057, a5190c2; K-124) on
+// machine 2: a microVM whose grant opens, by name, 127-0-0-1.sslip.io, 169-254-169-254.sslip.io,
+// the machine's own address as a name, and the silo bridge's gate port by name. Each connection
+// (sent to a public stand-in address, so it leaves the silo and the gate judges it by its SNI) is
+// refused. Loopback, link-local and the bridge's own range say "which a grant never opens" (K-124);
+// the machine's own public address says "which a name never leads to" (K-057). A grant that names
+// 169.254.169.254 is refused at admission.
 //
 // Listens on nothing outside.
 func TestMetal2EgressByNameRefusesPrivate(t *testing.T) {
@@ -57,31 +57,24 @@ spec:
 	j := p.c2.mustSh("journalctl -u kevasod --no-pager --since '" + since + "' | grep 'gate: BLOCKED' | grep " + ns + " | tail -12; true")
 	t.Logf("machine 2's journal:\n%s", j)
 	for _, n := range append(names, gateName) {
+		phrase := "which a grant never opens" // loopback, link-local, the bridge (K-124)
+		if n == hostName {
+			phrase = "which a name never leads to" // the machine's own public address (K-057)
+		}
 		found := false
 		for _, l := range strings.Split(j, "\n") {
-			if strings.Contains(l, n) && strings.Contains(l, "which a name never leads to") {
+			if strings.Contains(l, n) && strings.Contains(l, phrase) {
 				found = true
 			}
 		}
 		if !found {
-			t.Errorf("no 'gate: BLOCKED … %s … which a name never leads to' line", n)
+			t.Errorf("no 'gate: BLOCKED … %s … %s' line", n, phrase)
 		}
 	}
 
-	// The grant names 169.254.169.254/32 for 443: that name is let through.
-	c.apply(grant(`    - { to: 169.254.169.254/32, ports: ["443"] }`))
-	time.Sleep(15 * time.Second) // the grant reaches the gate
-	p.c2.mustSh("rm -f /run/kvt-n3.pcap; systemd-run -q --unit kvt-n3dump timeout 25 tcpdump -ni any -c 5 -w /run/kvt-n3.pcap host 169.254.169.254 and tcp port 443")
-	t.Cleanup(func() { _, _ = p.c2.sh("systemctl stop kvt-n3dump 2>/dev/null; rm -f /run/kvt-n3.pcap; true") })
-	time.Sleep(2 * time.Second)
-	t.Logf("N3-1 with the /32 named:\n%s", try("169-254-169-254.sslip.io", "443"))
-	c.eventually("tcpdump ended", 40*time.Second, func() (bool, string) {
-		out := strings.TrimSpace(p.c2.mustSh("systemctl is-active kvt-n3dump || true"))
-		return out != "active", out
-	})
-	syns := strings.TrimSpace(p.c2.mustSh("tcpdump -nr /run/kvt-n3.pcap 2>/dev/null | grep -c 'Flags \\[S\\]' || true"))
-	t.Logf("SYNs to 169.254.169.254:443 seen on machine 2: %s", syns)
-	if syns == "0" {
-		t.Errorf("with 169.254.169.254/32 named, no SYN to it left machine 2")
+	// Naming the link-local metadata address is refused; the name stays closed.
+	out, exitCode := c.kvo(grant(`    - { to: 169.254.169.254/32, ports: ["443"] }`), "apply", "-f", "-")
+	if exitCode == 0 || !strings.Contains(out, "169.254.0.0/16") {
+		t.Fatalf("a grant naming link-local was admitted: exit %d\n%s", exitCode, out)
 	}
 }

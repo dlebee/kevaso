@@ -17,12 +17,12 @@ import (
 )
 
 // K-057, K-092: egress by host name. The gate resolves a granted name itself and dials what it
-// resolves to, from the host. A name whose owner points it at a private, loopback, link-local,
-// mesh, silo or service address (or the host's own) would reach that address from the host, past
-// the bridge's input drop and other silos' allowFrom. Such an address is refused unless a grant
-// of the silo names it (a CIDR rule inside that range), for every address a name resolves to, at
-// every connection (a name that changes its answer, DNS rebinding, gets no more than its first),
-// IPv4 and IPv6 alike.
+// resolves to, from the host. A name whose owner points it at a private address, or at the host's
+// own, would reach that address from the host, past the bridge's input drop and other silos'
+// allowFrom. Such an address is refused unless a grant of the silo names it (a CIDR rule inside
+// that range), for every address a name resolves to, at every connection (a name that changes its
+// answer, DNS rebinding, gets no more than its first), IPv4 and IPv6 alike. The cluster's own
+// ranges, loopback and link-local are never opened even when the grant names them (K-124).
 
 // nameRig is a gate for one silo with grants g, whose resolver answers what answers says (one
 // list per call, the last repeated), and whose dialer records every address it is asked for and
@@ -165,7 +165,11 @@ func TestAGrantedNameNeverLeadsToAPrivateAddress(t *testing.T) {
 		if len(dialled) > 0 {
 			t.Errorf("%s: the gate dialled %v", target, dialled)
 		}
-		if !strings.Contains(log, netip.MustParseAddr(target).String()) || !strings.Contains(log, "egress `to`") {
+		phrase := "egress `to`"
+		if _, why := neverOpened(netip.MustParseAddr(target)); why != "" {
+			phrase = "which a grant never opens" // cluster, loopback, link-local: naming it does not open it
+		}
+		if !strings.Contains(log, netip.MustParseAddr(target).String()) || !strings.Contains(log, phrase) {
 			t.Errorf("%s: the refusal doesn't name the address and what to do:\n%s", target, log)
 		}
 	}

@@ -120,8 +120,9 @@ func setup(t *testing.T, cidrPort string) *env {
 	e.silo.AppendCertsFromPEM(ca.PEM)
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "claude-1"}, Spec: v1.SiloSpec{Grants: []string{"g"}}}
 	g := &v1.Grant{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "g"}, Spec: v1.GrantSpec{
-		// Every name resolves to the upstream on 127.0.0.1, which a grant has to name (K-057).
-		Egress:  []v1.EgressRule{{To: "pass.test"}, {To: "127.0.0.0/8", Ports: []string{cidrPort}}, {To: "127.0.0.1/32", Ports: []string{"443"}}},
+		// Names resolve to a public address. Loopback is never opened by a grant (K-124); the
+		// 127.0.0.0/8 rule is only the CIDR passthrough of what the silo dialled.
+		Egress:  []v1.EgressRule{{To: "pass.test"}, {To: "127.0.0.0/8", Ports: []string{cidrPort}}},
 		Secrets: []v1.GrantSecret{{Name: "key", Deliver: v1.DeliverInject, To: &v1.InjectTarget{Host: "api.allowed.test"}}},
 	}}
 	pol := PolicyFor(s, []*v1.Grant{g})
@@ -150,14 +151,14 @@ func setup(t *testing.T, cidrPort string) *env {
 			defer e.dstMu.Unlock()
 			return e.dst, nil
 		},
-		// Every name is the upstream; the "internet" port 443 is its port.
+		// Every name is a public address; the dialer reaches this test's upstream for port 443.
 		Resolve: func(context.Context, string) ([]netip.Addr, error) {
-			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+			return []netip.Addr{netip.MustParseAddr("203.0.113.50")}, nil
 		},
 		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, _ := net.SplitHostPort(addr)
 			if port == "443" {
-				port = upPort
+				host, port = "127.0.0.1", upPort
 			}
 			var d net.Dialer
 			return d.DialContext(ctx, network, net.JoinHostPort(host, port))
