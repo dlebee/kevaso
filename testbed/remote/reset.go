@@ -82,13 +82,13 @@ func Checklist(spare string, listenOK ...string) []hostreset.Check {
 		}
 		base[i].Script = script + "; true"
 	}
-	cs := append(base,
+	base = append(base,
 		hostreset.Check{Name: "no file of the tests is left", Script: `for f in ` + strings.Join(TestPaths, " ") + `; do [ -e "$f" ] && echo "$f"; done; true`})
 	if spare != "" {
-		cs = append(cs, hostreset.Check{Name: "the spare disk " + spare + " is empty",
+		base = append(base, hostreset.Check{Name: "the spare disk " + spare + " is empty",
 			Script: `lsblk -nr -o NAME,TYPE,MOUNTPOINT ` + spare + ` | tail -n +2; wipefs -n ` + spare + `; true`})
 	}
-	return cs
+	return base
 }
 
 // A worktree lab (testbed/lab) lives on this same machine: libvirt domains, networks and disks

@@ -75,7 +75,10 @@ func cmdList(args []string) error {
 		}
 		seen[name] = true
 		var slot int
-		fmt.Sscanf(slotS, "%d", &slot)
+		if _, err := fmt.Sscanf(slotS, "%d", &slot); err != nil {
+			fmt.Printf("%-12s %s\n", name, slotS)
+			continue
+		}
 		p, err := lab.PortsFor(slot)
 		if err != nil {
 			fmt.Printf("%-12s %s\n", name, slotS)

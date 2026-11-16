@@ -685,7 +685,7 @@ func (c *clock) done() string {
 	for _, r := range c.rows {
 		b.WriteString("  " + r + "\n")
 	}
-	b.WriteString(fmt.Sprintf("  %-16s %s\n", "total", time.Since(c.t0).Round(time.Millisecond)))
+	fmt.Fprintf(&b, "  %-16s %s\n", "total", time.Since(c.t0).Round(time.Millisecond))
 	return b.String()
 }
 
