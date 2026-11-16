@@ -2038,5 +2038,17 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-326",
+  "guard": "a delete does not remove a gateway while a silo state cannot be read",
+  "file": "builtin/kri/openshell/runtime.go",
+  "find": "if err := r.statesReadable(); err != nil {\n\t\treturn fmt.Errorf(\"%s: delete: %w\", id, err)\n\t}",
+  "replace": "if err := r.statesReadable(); err != nil && false {\n\t\treturn fmt.Errorf(\"%s: delete: %w\", id, err)\n\t}",
+  "mutation": "unreadable state counted as no neighbour",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
  }
 ]

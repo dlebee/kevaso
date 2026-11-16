@@ -135,6 +135,26 @@ func (r *Runtime) all() []state {
 	return out
 }
 
+// statesReadable reads every silo state on this host. A file that cannot be listed, read, or
+// understood is not "no silo": a delete must not treat a neighbour it cannot see as absent.
+func (r *Runtime) statesReadable() error {
+	paths, err := r.Host.Glob(StateDir + "/silos/*.json")
+	if err != nil {
+		return fmt.Errorf("silo states could not be listed: %w", err)
+	}
+	for _, p := range paths {
+		b, err := r.Host.ReadFile(p)
+		if err != nil {
+			return fmt.Errorf("silo state %s could not be read: %w", p, err)
+		}
+		var s state
+		if json.Unmarshal(b, &s) != nil || s.ID.UID == "" {
+			return fmt.Errorf("silo state %s could not be read", p)
+		}
+	}
+	return nil
+}
+
 // cli runs `openshell ARGS` against gateway g and returns stdout (stderr in the error).
 func (r *Runtime) cli(ctx context.Context, g Gateway, stdin io.Reader, env []string, args ...string) ([]byte, error) {
 	var out, errb bytes.Buffer
@@ -866,6 +886,9 @@ func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 	s.Running = false
 	if err := r.save(s); err != nil {
 		return err
+	}
+	if err := r.statesReadable(); err != nil {
+		return fmt.Errorf("%s: delete: %w", id, err)
 	}
 	g := s.Gateway
 	last := true
