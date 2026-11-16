@@ -2026,5 +2026,17 @@
    "./internal/hostreset"
   ],
   "protects": "no delete of disk or volume without an explicit delete"
+ },
+ {
+  "id": "G-325",
+  "guard": "a silo is not made when the volume group's logical volumes cannot be listed",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if lerr != nil {\n\t\t\treturn fmt.Errorf(\"%s: logical volumes in %s could not be listed (%w): not making the silo until they can\", spec.ID, VG, lerr)\n\t\t}",
+  "replace": "if lerr != nil && false {\n\t\t\treturn fmt.Errorf(\"%s: logical volumes in %s could not be listed (%w): not making the silo until they can\", spec.ID, VG, lerr)\n\t\t}",
+  "mutation": "create continues when lvs fails",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "no delete of disk or volume without an explicit delete"
  }
 ]

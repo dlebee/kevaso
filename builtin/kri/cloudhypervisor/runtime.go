@@ -256,12 +256,14 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	// The same for its local volumes (K-111): one there with no state is an earlier copy's data.
 	// Made over, it was taken into the new silo, and a failed step's clean-up removed it.
 	if _, ok, _ := r.readState(spec.ID); !ok {
-		if out, err := r.Host.Run(ctx, "lvs", "--noheadings", "-o", "lv_name", VG); err == nil {
-			for _, f := range strings.Fields(string(out)) {
-				if strings.HasPrefix(f, n.LV+"-") {
-					return fmt.Errorf("%s: local volume %s/%s is there with no state of this host's (%s/silo.json): not making the silo over it; "+
-						"keep it (restore silo.json) or remove it yourself (lvremove %s/%s) to start afresh", spec.ID, VG, f, n.Dir, VG, f)
-				}
+		out, lerr := r.Host.Run(ctx, "lvs", "--noheadings", "-o", "lv_name", VG)
+		if lerr != nil {
+			return fmt.Errorf("%s: logical volumes in %s could not be listed (%w): not making the silo until they can", spec.ID, VG, lerr)
+		}
+		for _, f := range strings.Fields(string(out)) {
+			if strings.HasPrefix(f, n.LV+"-") {
+				return fmt.Errorf("%s: local volume %s/%s is there with no state of this host's (%s/silo.json): not making the silo over it; "+
+					"keep it (restore silo.json) or remove it yourself (lvremove %s/%s) to start afresh", spec.ID, VG, f, n.Dir, VG, f)
 			}
 		}
 	}
