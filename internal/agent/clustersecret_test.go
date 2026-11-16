@@ -304,7 +304,7 @@ func (r *csRig) start() {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		r.a.runClusterSecrets(ctx)
+		r.a.RunClusterSecrets(ctx)
 	}()
 	r.t.Cleanup(func() {
 		cancel()
