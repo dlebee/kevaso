@@ -1,7 +1,20 @@
 MODULES := . api sdk
 export GOTOOLCHAIN := auto
 
-.PHONY: test test-short race vet vet-tags lint e2e e2e-ci where fuzz stress contention mutate workspace proto plugins
+.PHONY: test test-short race vet vet-tags lint e2e e2e-ci where fuzz stress contention mutate workspace proto plugins lab-up lab-down lab-list
+
+# A worktree lab on the EPYC: three nested node VMs. LAB is the name.
+# LAB_HOST, LAB_SSH_KEY and LAB_HOSTKEY override the host (see testbed/lab/README.md).
+lab-up: ## fresh 3-node lab (LAB=name, RECREATE=1 to replace one)
+	@test -n "$(LAB)" || { echo "usage: make lab-up LAB=name" >&2; exit 2; }
+	GOPROXY=off go run ./testbed/lab/cmd/kvlab up --name "$(LAB)" $(if $(RECREATE),--recreate,)
+
+lab-down: ## remove lab LAB and nothing else
+	@test -n "$(LAB)" || { echo "usage: make lab-down LAB=name" >&2; exit 2; }
+	GOPROXY=off go run ./testbed/lab/cmd/kvlab down --name "$(LAB)"
+
+lab-list: ## labs on the host
+	GOPROXY=off go run ./testbed/lab/cmd/kvlab list
 
 test:                       ## unit tests, every module
 	@for m in $(MODULES); do (cd $$m && go test ./...) || exit 1; done
