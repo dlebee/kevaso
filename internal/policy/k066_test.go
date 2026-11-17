@@ -14,7 +14,7 @@ func TestAnInjectedEnvNameIsChecked(t *testing.T) {
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "agent", Namespace: "dev"}, Spec: v1.SiloSpec{Runtime: "openshell", Grants: []string{"api"}}}
 	g := &v1.Grant{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "dev"}, Spec: v1.GrantSpec{Secrets: []v1.GrantSecret{
 		{Name: "api-key", Deliver: v1.DeliverInject, Env: "LD_PRELOAD", To: &v1.InjectTarget{Host: "api.example.com"}}}}}
-	problems := Check(s, []*v1.Grant{g})
+	problems := Check(s, []*v1.Grant{g}, nil)
 	if len(problems) == 0 || !strings.Contains(strings.Join(problems, "; "), "LD_PRELOAD") {
 		t.Fatalf("problems: %v", problems)
 	}

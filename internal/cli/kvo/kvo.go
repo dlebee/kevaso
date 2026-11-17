@@ -705,6 +705,8 @@ func summary(obj meta.Object) string {
 	case *v1.Lease:
 		c := leaseColumns(o, time.Now())
 		parts = append(parts, "silo="+c[0], "port="+c[1], "phase="+c[2], c[3])
+	case *v1.OpenShellPolicy:
+		parts = append(parts, fmt.Sprintf("rules=%d", len(o.Spec.NetworkPolicies)))
 	case *v1.Host:
 		names := make([]string, 0, len(o.Status.Runtimes))
 		for n := range o.Status.Runtimes {
@@ -752,6 +754,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 		head = append(head, "DESCRIPTION", "VERSION", "CHANGED")
 	case "Grant":
 		head = append(head, "EGRESS", "SECRETS")
+	case "OpenShellPolicy":
+		head = append(head, "RULES")
 	case "Ingress":
 		head = append(head, "CLASS", "HOSTS", "ADDRESS", "READY")
 	case "Certificate":
@@ -841,6 +845,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 				ver = fmt.Sprint(o.Status.Version)
 			}
 			row = append(row, dash(o.Spec.Description), ver, changed)
+		case *v1.OpenShellPolicy:
+			row = append(row, fmt.Sprint(len(o.Spec.NetworkPolicies)))
 		case *v1.Grant:
 			var eg, secs []string
 			for _, e := range o.Spec.Egress {

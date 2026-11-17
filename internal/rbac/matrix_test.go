@@ -18,7 +18,7 @@ import (
 var (
 	allVerbs     = []string{"get", "list", "watch", "create", "update", "patch", "delete", v1.VerbUse, v1.VerbReadValue, v1.VerbWrite, v1.VerbApprove, v1.VerbOpen}
 	allResources = []string{
-		"silos", "silosets", "services", "vmimages", "serviceaccounts", "grants", "ingresses", "certificates",
+		"silos", "silosets", "services", "vmimages", "serviceaccounts", "grants", "openshellpolicies", "ingresses", "certificates",
 		"silos/status", "silos/exec", "silos/move", "silos/ssh", "silos/files", v1.ResourceExposure, "silosets/scale",
 		"serviceaccounts/token", "services/expose-public", "ingresses/publish-public",
 		"secrets", "approvals", "panes", "leases", "ips", "roles", "rolebindings", "runs",
@@ -26,7 +26,7 @@ var (
 	}
 	rw        = []string{"get", "list", "watch", "create", "update", "patch", "delete"}
 	ro        = []string{"get", "list", "watch"}
-	workloadR = []string{"silos", "silosets", "services", "vmimages", "serviceaccounts", "grants", "ingresses", "certificates"}
+	workloadR = []string{"silos", "silosets", "services", "vmimages", "serviceaccounts", "grants", "openshellpolicies", "ingresses", "certificates"}
 )
 
 // grants is a role's spec: resource → the verbs it allows (secrets' list and write aliases

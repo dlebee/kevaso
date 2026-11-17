@@ -28,6 +28,7 @@ On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
 Service:                none: no name, nothing reachable (a silo IP for its own traffic only)
 Grants:                 -
+OpenShell policies:     -
 Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
 Init steps:
   NAME     STATE    EXIT  DURATION
@@ -52,6 +53,7 @@ Service:                api
 Egress IP:              -
 In and out:             no outside address in or out
 Grants:                 -
+OpenShell policies:     -
 Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
 Ports:
   PORT       NUMBER    SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP         LOAD BALANCER  ALLOW FROM  SOURCES
@@ -87,6 +89,7 @@ On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
 Service:                none: no name, nothing reachable (a silo IP for its own traffic only)
 Grants:                 -
+OpenShell policies:     -
 Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
 ---
 Name:                   ledger
@@ -103,6 +106,7 @@ On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
 Service:                none: no name, nothing reachable (a silo IP for its own traffic only)
 Grants:                 -
+OpenShell policies:     -
 Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
 ---
 Name:                   eth-node-a
@@ -122,6 +126,7 @@ Load balancer:          ip-pool
 Egress IP:              - (sameAsService)
 In and out:             no outside address in or out
 Grants:                 -
+OpenShell policies:     -
 Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
 Ports:
   PORT       NUMBER     SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER         ALLOW FROM  SOURCES
@@ -150,6 +155,7 @@ Load balancer:          ip-pool
 Egress IP:              - (sameAsService)
 In and out:             no outside address in or out
 Grants:                 -
+OpenShell policies:     -
 Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
 Ports:
   PORT       NUMBER     SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER         ALLOW FROM  SOURCES

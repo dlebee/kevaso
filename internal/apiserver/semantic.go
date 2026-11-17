@@ -12,6 +12,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/ips"
 	"kevaso.com/core/internal/names"
+	"kevaso.com/core/internal/policy"
 	"kevaso.com/core/internal/probes"
 )
 
@@ -28,6 +29,9 @@ func semantic(obj meta.Object) []string {
 		}
 		errs = append(errs, probes.Validate(o.Spec)...)
 		errs = append(errs, o.Spec.Availability.ControlPlaneLossProblems()...)
+		if len(o.Spec.OpenShellPolicies) > 0 && !policy.SelfEnforced(o.Spec.Runtime) { // openshellPolicies only on an openshell runtime
+			errs = append(errs, fmt.Sprintf("openshellPolicies is only for runtime openshell or openshell-container; %s can't use one", o.Spec.Runtime))
+		}
 	case *v1.Service:
 		for _, p := range o.Spec.Ports {
 			if t := p.TargetPort; t != "" && !label.MatchString(t) {
@@ -90,6 +94,8 @@ func semantic(obj meta.Object) []string {
 				errs = append(errs, fmt.Sprintf("spec.address: %q: IPv6 comes later; IPv4 for now", a))
 			}
 		}
+	case *v1.OpenShellPolicy:
+		errs = append(errs, openShellPolicyProblems(o)...)
 	case *v1.Host:
 		for _, f := range []struct{ field, v string }{{"spec.internalIP", o.Spec.InternalIP}, {"spec.externalIP", o.Spec.ExternalIP}} {
 			if a, err := netip.ParseAddr(f.v); f.v != "" && (err != nil || !a.Is4()) {
@@ -145,7 +151,42 @@ func normalize(obj meta.Object) {
 				}
 			}
 		}
+	case *v1.OpenShellPolicy:
+		for i := range o.Spec.NetworkPolicies {
+			for j := range o.Spec.NetworkPolicies[i].Endpoints {
+				h := o.Spec.NetworkPolicies[i].Endpoints[j].Host
+				if canon, err := v1.OpenShellHost(h); err == nil {
+					o.Spec.NetworkPolicies[i].Endpoints[j].Host = canon
+				}
+			}
+		}
 	}
+}
+
+// openShellPolicyProblems checks hosts and paths, which CEL does not.
+func openShellPolicyProblems(o *v1.OpenShellPolicy) []string {
+	var errs []string
+	for _, rule := range o.Spec.NetworkPolicies {
+		for _, e := range rule.Endpoints {
+			if _, err := v1.OpenShellHost(e.Host); err != nil && e.Host != "" {
+				errs = append(errs, err.Error())
+			}
+			if e.Path != "" && !v1.OpenShellPath(e.Path) {
+				errs = append(errs, fmt.Sprintf("path %q: an absolute path glob (starts with /), no control character or .. segment, at most 200 characters", e.Path))
+			}
+		}
+		if rule.Binaries != nil && len(rule.Binaries) == 0 {
+			// An omitted list is nil (every binary). An empty list is set, and a rule with no
+			// binary allows nothing, so it is refused rather than stored as "every binary".
+			errs = append(errs, "binaries, when set, are 1 to 16 paths")
+		}
+		for _, b := range rule.Binaries {
+			if b.Path != "" && !v1.OpenShellPath(b.Path) {
+				errs = append(errs, fmt.Sprintf("binaries path %q: an absolute path (starts with /), no control character or .. segment, at most 200 characters", b.Path))
+			}
+		}
+	}
+	return errs
 }
 
 // transition checks what may change on an update: a VMImage's versions are immutable once added

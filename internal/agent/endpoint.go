@@ -401,9 +401,10 @@ func (e *Endpoint) ServeEndpoint(ctx context.Context, addr string) {
 	}
 }
 
-// Affected returns the silos (of those given) that receive something from a changed secret or
-// grant: for a secret, every silo with a grant naming it; for a grant, every silo listing it.
-// That's the rotation fan-out: one secret, many silos, renewed in one place (design §8.4).
+// Affected returns the silos (of those given) that receive something from a changed secret,
+// grant or OpenShellPolicy: for a secret, every silo with a grant naming it; for a grant or an
+// OpenShellPolicy, every silo listing it. That's the rotation fan-out: one secret, many silos,
+// renewed in one place (design §8.4).
 func Affected(silos []*v1.Silo, grants []*v1.Grant, kind, namespace, name string) []*v1.Silo {
 	var out []*v1.Silo
 	for _, s := range silos {
@@ -413,6 +414,10 @@ func Affected(silos []*v1.Silo, grants []*v1.Grant, kind, namespace, name string
 		switch kind {
 		case "Grant":
 			if slices.Contains(s.Spec.Grants, name) {
+				out = append(out, s)
+			}
+		case "OpenShellPolicy":
+			if slices.Contains(s.Spec.OpenShellPolicies, name) {
 				out = append(out, s)
 			}
 		case "Secret":

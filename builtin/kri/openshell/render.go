@@ -208,11 +208,19 @@ landlock:
   compatibility: best_effort
 `
 
+// enforceLimited writes enforcement on an endpoint that sets protocol, path or access. OpenShell
+// reads that field on the endpoint, and its schema default is audit: a request that breaks the
+// limit is logged and still allowed. Kevaso always enforces; a plain host:port endpoint is a
+// connection allow and does not carry the field (protocol tcp accepts none).
+func enforceLimited(b *strings.Builder) {
+	b.WriteString("        enforcement: enforce\n") // protocol, path and access limits are enforced
+}
+
 // PolicyYAML is a silo's OpenShell policy: no network_policies means nothing outside; each endpoint
 // is a rule for any program (`/**`: a rule without binaries allows nothing, E037). Hosts that get a
 // credential are inspected (rest), so the proxy can swap the placeholder.
 func PolicyYAML(p kri.Policy) string {
-	if len(p.Egress) == 0 {
+	if len(p.Egress) == 0 && len(p.Rules) == 0 {
 		return basePolicy
 	}
 	rest := map[string]bool{}
@@ -230,8 +238,35 @@ func PolicyYAML(p kri.Policy) string {
 		fmt.Fprintf(&b, "  %s:\n    name: %s\n    endpoints:\n      - host: %q\n        port: %d\n", name, name, e.Host, e.Port)
 		if rest[strings.ToLower(e.Host)] && e.Port == 443 {
 			b.WriteString("        protocol: rest\n        access: read-write\n")
+			enforceLimited(&b)
 		}
 		b.WriteString("    binaries:\n      - path: \"/**\"\n")
+	}
+	for _, rule := range p.Rules {
+		fmt.Fprintf(&b, "  %s:\n    name: %s\n    endpoints:\n", rule.Name, rule.Name)
+		for _, e := range rule.Endpoints {
+			fmt.Fprintf(&b, "      - host: %q\n        port: %d\n", e.Host, e.Port)
+			if e.Protocol != "" {
+				fmt.Fprintf(&b, "        protocol: %s\n", e.Protocol)
+			}
+			if e.Path != "" {
+				fmt.Fprintf(&b, "        path: %q\n", e.Path)
+			}
+			if e.Access != "" {
+				fmt.Fprintf(&b, "        access: %s\n", e.Access)
+			}
+			if e.Protocol != "" || e.Path != "" || e.Access != "" {
+				enforceLimited(&b)
+			}
+		}
+		bins := rule.Binaries
+		if len(bins) == 0 {
+			bins = []string{"/**"}
+		}
+		b.WriteString("    binaries:\n")
+		for _, path := range bins {
+			fmt.Fprintf(&b, "      - path: %q\n", path)
+		}
 	}
 	return b.String()
 }

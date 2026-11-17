@@ -1,5 +1,5 @@
-// Package policy turns a silo's grants into the policy of a runtime that enforces grants itself
-// (OpenShell, research E037), and says what such a runtime can't enforce.
+// Package policy turns a silo's grants and OpenShellPolicies into the policy of a runtime that
+// enforces grants itself (OpenShell, research E037), and says what such a runtime can't enforce.
 package policy
 
 import (
@@ -16,10 +16,11 @@ import (
 // maxPolicyPorts is the most ports one grant rule may open on a runtime that lists them one by one.
 const maxPolicyPorts = 16
 
-// For turns a silo's grants into a runtime policy (OpenShell: research E037). It returns what
-// the runtime can't enforce as problems, so they're reported rather than silently not opened:
-// address ranges (only single addresses), UDP, and delivery modes other than inject. Pure.
-func For(s *v1.Silo, grants []*v1.Grant, injections []client.Injection) (kri.Policy, []string) {
+// For turns a silo's grants and OpenShellPolicies into one runtime policy (OpenShell: research
+// E037). It returns what the runtime can't enforce as problems, so they're reported rather than
+// silently not opened: address ranges (only single addresses), UDP, and delivery modes other than
+// inject. A policy name with no object is skipped, as a missing grant is. Pure.
+func For(s *v1.Silo, grants []*v1.Grant, policies []*v1.OpenShellPolicy, injections []client.Injection) (kri.Policy, []string) {
 	var p kri.Policy
 	var problems []string
 	seen := map[kri.Endpoint]bool{}
@@ -101,6 +102,20 @@ func For(s *v1.Silo, grants []*v1.Grant, injections []client.Injection) (kri.Pol
 		p.Credentials = append(p.Credentials, c)
 		add(kri.Endpoint{Host: in.Host, Port: 443})
 	}
+	for _, op := range v1.PoliciesFor(s, policies) {
+		for _, rule := range op.Spec.NetworkPolicies {
+			nr := kri.NetworkRule{Name: "osp_" + op.Name + "_" + rule.Name}
+			for _, e := range rule.Endpoints {
+				nr.Endpoints = append(nr.Endpoints, kri.RuleEndpoint{
+					Host: e.Host, Port: e.Port, Protocol: e.Protocol, Path: e.Path, Access: e.Access,
+				})
+			}
+			for _, b := range rule.Binaries {
+				nr.Binaries = append(nr.Binaries, b.Path)
+			}
+			p.Rules = append(p.Rules, nr)
+		}
+	}
 	sort.Slice(p.Egress, func(i, j int) bool {
 		a, b := p.Egress[i], p.Egress[j]
 		return a.Host < b.Host || (a.Host == b.Host && a.Port < b.Port)
@@ -133,7 +148,7 @@ func contains(l []string, v string) bool {
 
 // Check is what For would refuse for this silo, from its grants alone (admission: before any value
 // exists).
-func Check(s *v1.Silo, grants []*v1.Grant) []string {
+func Check(s *v1.Silo, grants []*v1.Grant, policies []*v1.OpenShellPolicy) []string {
 	var inj []client.Injection
 	for _, g := range v1.GrantsFor(s, grants) {
 		for _, sec := range g.Spec.Secrets {
@@ -150,7 +165,7 @@ func Check(s *v1.Silo, grants []*v1.Grant) []string {
 			inj = append(inj, client.Injection{Host: sec.To.Host, Header: header, Format: format, Secret: sec.Name, Env: sec.Env, Approval: sec.NeedsApproval()})
 		}
 	}
-	_, problems := For(s, grants, inj)
+	_, problems := For(s, grants, policies, inj)
 	return problems
 }
 

@@ -267,6 +267,9 @@ type SiloSpec struct {
 	// Grants are the Grant objects (in this namespace) the silo uses: what it may reach outside
 	// the cluster and which secrets it gets, and how (design §8).
 	Grants []string `json:"grants,omitempty"`
+	// OpenShellPolicies are the OpenShellPolicy objects (in this namespace) added to an openshell
+	// or openshell-container silo's policy, in order. Any other runtime naming one is refused.
+	OpenShellPolicies []string `json:"openshellPolicies,omitempty"`
 	// Volumes are extra storage, kept across stops and restarts; on containers they're what
 	// persists (design §6).
 	Volumes []Volume `json:"volumes,omitempty"`

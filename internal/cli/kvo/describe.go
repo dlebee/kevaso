@@ -207,6 +207,7 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			})
 		}
 		kv(0, "Grants", dash(strings.Join(o.Spec.Grants, ", ")))
+		kv(0, "OpenShell policies", dash(strings.Join(o.Spec.OpenShellPolicies, ", ")))
 		// What proves the silo's identity to the broker (design §8.3): today the host vouches.
 		kv(0, "Assurance", "host (kevasod on its host vouches for it; no vTPM or confidential VM)")
 		conds = o.Status.Conditions
@@ -423,6 +424,35 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			kv(0, "Value", "none yet")
 		} else {
 			kv(0, "Value", fmt.Sprintf("version %d, changed %s ago (kvo get clustersecret %s --reveal)", o.Status.Version, since(*o.Status.ChangedAt), o.Name))
+		}
+	case *v1.OpenShellPolicy:
+		for i, rule := range o.Spec.NetworkPolicies {
+			label := ""
+			if i == 0 {
+				label = "Network policies"
+			}
+			bins := "every binary"
+			if len(rule.Binaries) > 0 {
+				var paths []string
+				for _, b := range rule.Binaries {
+					paths = append(paths, b.Path)
+				}
+				bins = strings.Join(paths, ", ")
+			}
+			_, _ = fmt.Fprintf(tw, "%s:\t%s (%d endpoints, %s)\n", label, rule.Name, len(rule.Endpoints), bins)
+			for _, e := range rule.Endpoints {
+				extra := ""
+				if e.Protocol != "" {
+					extra += " " + e.Protocol
+				}
+				if e.Path != "" {
+					extra += " " + e.Path
+				}
+				if e.Access != "" {
+					extra += " " + e.Access
+				}
+				_, _ = fmt.Fprintf(tw, "\t  %s:%d%s\n", e.Host, e.Port, extra)
+			}
 		}
 	case *v1.Grant:
 		for i, e := range o.Spec.Egress {

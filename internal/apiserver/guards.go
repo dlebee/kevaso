@@ -47,6 +47,7 @@ func (s *Server) guard(ctx context.Context, t target, old, obj meta.Object) erro
 		s.checkExposure,
 		s.checkPublishPublic,
 		s.checkSecretUse,
+		s.checkOpenShellPolicyNames,
 		s.checkImages,
 		s.checkRuntimeFit,
 		s.checkIPs,
@@ -72,11 +73,15 @@ func privileges(obj meta.Object) string {
 	case *v1.Silo:
 		g := slices.Clone(o.Spec.Grants)
 		slices.Sort(g)
-		p += fmt.Sprint("|grants:", g) + pullOf(o.Spec.Pull())
+		op := slices.Clone(o.Spec.OpenShellPolicies)
+		slices.Sort(op)
+		p += fmt.Sprint("|grants:", g, "|openshellPolicies:", op) + pullOf(o.Spec.Pull())
 	case *v1.SiloSet:
 		g := slices.Clone(o.Spec.Template.Grants)
 		slices.Sort(g)
-		p += fmt.Sprint("|grants:", g) + pullOf(o.Spec.Template.Pull())
+		op := slices.Clone(o.Spec.Template.OpenShellPolicies)
+		slices.Sort(op)
+		p += fmt.Sprint("|grants:", g, "|openshellPolicies:", op) + pullOf(o.Spec.Template.Pull())
 	case *v1.Grant:
 		p += "|uses:" + fmt.Sprint(grantUses(o))
 	case *v1.Ingress:

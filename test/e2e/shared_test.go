@@ -22,7 +22,8 @@ import (
 // Helpers shared by the Lima tests (e2e) and the bare-metal ones (metal).
 
 // hgetGo is a tiny HTTP client for the silos (OpenShell's default image has no curl or python):
-// hget URL [HEADER=VALUE]… prints the status and body, or "error: …".
+// hget [METHOD] URL [HEADER=VALUE]… prints the status and body, or "error: …".
+// METHOD defaults to GET when the first argument is the URL.
 const hgetGo = `package main
 
 import (
@@ -35,8 +36,17 @@ import (
 )
 
 func main() {
-	req, _ := http.NewRequest("GET", os.Args[1], nil)
-	for _, h := range os.Args[2:] {
+	args := os.Args[1:]
+	method := "GET"
+	if len(args) > 1 && !strings.Contains(args[0], "/") {
+		method, args = args[0], args[1:]
+	}
+	req, err := http.NewRequest(method, args[0], nil)
+	if err != nil {
+		fmt.Println("error:", err)
+		os.Exit(1)
+	}
+	for _, h := range args[1:] {
 		k, v, _ := strings.Cut(h, "=")
 		req.Header.Set(k, v)
 	}

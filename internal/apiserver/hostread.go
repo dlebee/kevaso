@@ -31,7 +31,7 @@ func workerReadScope(kind string) workerScope {
 		// silo's addresses, and mayRemove reads a silo that has moved to another host. The API
 		// returns the whole object.
 		return workerCluster
-	case "Grant", "Secret", "Lease", "Ingress":
+	case "Grant", "Secret", "Lease", "Ingress", "OpenShellPolicy": // a worker reads an OpenShellPolicy only when a silo on it names it
 		return workerRelated
 	default:
 		return workerNone
@@ -109,6 +109,8 @@ func (s *Server) relations(ctx context.Context, host, kind, namespace string) (m
 	switch kind {
 	case "Grant":
 		return s.grantRelations(ctx, host, namespace)
+	case "OpenShellPolicy":
+		return s.policyRelations(ctx, host, namespace)
 	case "Secret":
 		return s.secretRelations(ctx, host, namespace)
 	case "Lease":
@@ -128,6 +130,23 @@ func (s *Server) grantRelations(ctx context.Context, host, namespace string) (ma
 	out := map[string]int64{}
 	for _, p := range placed {
 		for _, name := range p.silo.Spec.Grants {
+			if name == "" {
+				continue
+			}
+			bump(out, objKey(p.silo.Namespace, name), p.rev)
+		}
+	}
+	return out, nil
+}
+
+func (s *Server) policyRelations(ctx context.Context, host, namespace string) (map[string]int64, error) {
+	placed, _, _, err := s.placedSilos(ctx, host, namespace)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int64{}
+	for _, p := range placed {
+		for _, name := range p.silo.Spec.OpenShellPolicies {
 			if name == "" {
 				continue
 			}

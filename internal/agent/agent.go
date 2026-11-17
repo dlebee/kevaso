@@ -144,6 +144,7 @@ type Agent struct {
 	silos       *informer.Informer
 	secrets     *informer.Informer
 	grants      *informer.Informer
+	policies    *informer.Informer
 	fenced      atomic.Bool
 	silosSynced atomic.Bool
 	fencePrev   fence.Record  // the fence record as an earlier run left it (FenceDir)
@@ -362,6 +363,7 @@ func (a *Agent) Run(ctx context.Context) {
 	a.loadPlacedUnder()
 	a.silos = informer.New(a.Client, "Silo")
 	a.secrets, a.grants = informer.New(a.Client, "Secret"), informer.New(a.Client, "Grant")
+	a.policies = informer.New(a.Client, "OpenShellPolicy")
 	a.runCtx = ctx
 	a.started, a.startedBoot = a.Clock.Now(), boottime.Now()
 	a.endpoint = &Endpoint{Client: a.Client, HostName: a.HostName, Log: a.Log, Bound: a.Bound, Held: a.ControlPlaneHeld}
@@ -393,7 +395,7 @@ func (a *Agent) Run(ctx context.Context) {
 	go a.RunClusterSecrets(ctx)
 	// Rotation fan-out: a secret or grant changing looks again at every silo here that receives
 	// it (its files and env vars are written again, its endpoint and policy follow its grants).
-	for kind, inf := range map[string]*informer.Informer{"Secret": a.secrets, "Grant": a.grants} {
+	for kind, inf := range map[string]*informer.Informer{"Secret": a.secrets, "Grant": a.grants, "OpenShellPolicy": a.policies} {
 		inf.AddHandler(func(k informer.Key) { a.fanOut(kind, k.Namespace, k.Name) })
 		go inf.Run(ctx)
 	}
@@ -416,7 +418,7 @@ func (a *Agent) Run(ctx context.Context) {
 	// Nothing is reconciled before the agent knows the grants and secrets: with their caches still
 	// empty (a restart) a silo would seem to receive nothing, and start, or run its init steps,
 	// without its secrets.
-	if !a.grants.WaitSynced(ctx) || !a.secrets.WaitSynced(ctx) {
+	if !a.grants.WaitSynced(ctx) || !a.secrets.WaitSynced(ctx) || !a.policies.WaitSynced(ctx) {
 		return
 	}
 	done := make(chan struct{})
@@ -1832,7 +1834,7 @@ func hostLocalVolumes(s *v1.Silo) []string {
 	return out
 }
 
-// fanOut looks again at the local silos a changed secret or grant reaches.
+// fanOut looks again at the local silos a changed secret, grant or OpenShellPolicy reaches.
 func (a *Agent) fanOut(kind, namespace, name string) {
 	var local []*v1.Silo
 	for _, o := range a.silos.List() {
@@ -1862,7 +1864,7 @@ func (a *Agent) siloPolicy(ctx context.Context, s *v1.Silo) (kri.Policy, []strin
 	if resp.Error != "" {
 		return kri.Policy{}, nil, fmt.Errorf("credentials for the policy: %s", resp.Error)
 	}
-	p, problems := policy.For(s, a.grantList(), resp.Injections)
+	p, problems := policy.For(s, a.grantList(), a.policyList(), resp.Injections)
 	return p, problems, nil
 }
 
@@ -1917,7 +1919,11 @@ func (a *Agent) applyPolicy(ctx context.Context, rt kri.Policied, s *v1.Silo) er
 			setCond(st, "PolicyApplied", meta.ConditionFalse, "NotEnforceable", strings.Join(problems, "; "), s.Generation, a.now())
 			return
 		}
-		setCond(st, "PolicyApplied", meta.ConditionTrue, "Applied", fmt.Sprintf("%d endpoints, %d injected credentials", len(p.Egress), len(p.Credentials)), s.Generation, a.now())
+		msg := fmt.Sprintf("%d endpoints, %d injected credentials", len(p.Egress), len(p.Credentials))
+		if n := len(p.Rules); n > 0 {
+			msg = fmt.Sprintf("%d endpoints, %d openshell rules, %d injected credentials", len(p.Egress), n, len(p.Credentials))
+		}
+		setCond(st, "PolicyApplied", meta.ConditionTrue, "Applied", msg, s.Generation, a.now())
 	})
 }
 

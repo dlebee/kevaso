@@ -197,4 +197,12 @@ func TestAffected(t *testing.T) {
 	if got := names(agent.Affected(silos, grants, "Secret", "web3", "nothing")); got != "" {
 		t.Errorf("an unused secret reaches %q", got)
 	}
+	silos[0].Spec.OpenShellPolicies = []string{"web"}
+	silos[3].Spec.OpenShellPolicies = []string{"web"}
+	if got := names(agent.Affected(silos, grants, "OpenShellPolicy", "web3", "web")); got != "a" {
+		t.Errorf("changing policy web reaches %q, want a (not d: another namespace)", got)
+	}
+	if got := names(agent.Affected(silos, grants, "OpenShellPolicy", "web3", "other")); got != "" {
+		t.Errorf("an unlisted policy reaches %q", got)
+	}
 }

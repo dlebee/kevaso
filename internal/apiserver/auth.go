@@ -368,8 +368,8 @@ func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
 			return false
 		}
 		if r.Method == http.MethodGet {
-			// Which kinds. A Grant, Secret, Lease or Ingress still has to belong to a silo on
-			// this host (authorizeRequest, which can see the stored objects).
+			// Which kinds. A Grant, Secret, Lease, Ingress or OpenShellPolicy still has to belong
+			// to a silo on this host (authorizeRequest, which can see the stored objects).
 			return workerReadableKind(t.kind.Kind)
 		}
 		if r.Method != http.MethodPut || !t.status {
