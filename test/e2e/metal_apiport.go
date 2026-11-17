@@ -7,8 +7,8 @@ import (
 	"strconv"
 )
 
-// metalAPIPort is the port the two-machine tests dial for machine 1's API.
-// KEVASO_METAL_API_PORT is a pair lab's slot port; unset means 6443, the port a real pair listens on.
+// metalAPIPort is the port this Mac dials for machine 1's API.
+// KEVASO_METAL_API_PORT is a pair lab's slot port; unset means 6443, the port a real machine listens on.
 func metalAPIPort() (string, error) {
 	p := os.Getenv("KEVASO_METAL_API_PORT")
 	if p == "" {
@@ -26,11 +26,12 @@ func metalAPIServer(ip, port string) string {
 	return "https://" + net.JoinHostPort(ip, port)
 }
 
-// metalAPIServerFor is the URL this Mac uses for machine 1's API. A real pair
-// (port 6443) is https://external:6443. A pair lab publishes 6443 on the lab
-// host at the slot port; the machine's external address is on the lab's
-// external bridge, which this Mac does not route. The worker does not use this
-// URL: it dials https://external:6443 on that bridge, passed as --server.
+// metalAPIServerFor is the URL this Mac uses for machine 1's API, and the one
+// kvoadm init records in kvo's config. A real machine (port 6443) is
+// https://external:6443. A pair lab publishes 6443 on the lab host at the slot
+// port; the machine's external address is on the lab's external bridge, which
+// this Mac does not route. The worker does not use this URL: a second machine
+// dials https://external:6443 on that bridge, passed as --server.
 func metalAPIServerFor(external, sshAddr, port string) string {
 	host := external
 	if port != "6443" {

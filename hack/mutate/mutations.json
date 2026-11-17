@@ -1995,8 +1995,8 @@
   "id": "G-302",
   "guard": "a crash restart claims again immediately before the main process",
   "file": "internal/agent/agent.go",
-  "find": "// Claimed once more right before the main process, as at a first start. Every-boot init\n\t\t// can outlast a renewal; the start follows a claim that applied on what is stored now.\n\t\tif err := kp.claimNow(ctx); err != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tstctx, startKept := kp.within(ctx)\n\t\terr := rt.Start(stctx, id)\n\t\tif why := startKept(); why != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.startEnded(s, why, err)\n\t\t}",
-  "replace": "stctx, startKept := kp.within(ctx)\n\t\terr := rt.Start(stctx, id)\n\t\tif why := startKept(); why != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.startEnded(s, why, err)\n\t\t}",
+  "find": "// Claimed once more right before the main process, as at a first start. Every-boot init\n\t\t// can outlast a renewal; the start follows a claim that applied on what is stored now.\n\t\tif err := kp.claimNow(ctx); err != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tstctx, startKept := kp.within(ctx)\n\t\terr := a.startSilo(stctx, rt, s)\n\t\tif why := startKept(); why != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.startEnded(s, why, err)\n\t\t}",
+  "replace": "stctx, startKept := kp.within(ctx)\n\t\terr := a.startSilo(stctx, rt, s)\n\t\tif why := startKept(); why != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.startEnded(s, why, err)\n\t\t}",
   "mutation": "no fresh claim before the main process",
   "packages": [
    "./internal/agent"
@@ -2218,5 +2218,77 @@
    "./internal/apiserver"
   ],
   "protects": "the host a silo is leaving still reads what that silo needs"
+  },
+  {
+  "id": "G-420",
+  "guard": "an OpenShell sandbox is created with the policy file staged from its grants",
+  "file": "internal/agent/agent.go",
+  "find": "if err := a.stagePolicy(ctx, rt, s); err != nil { // the policy file is current before the sandbox is created or started\n\t\treturn err\n\t}",
+  "replace": "if err := error(nil); err != nil { // the policy file is current before the sandbox is created or started\n\t\treturn err\n\t}",
+  "mutation": "sandbox create keeps the deny-all file",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "a sandbox is created with its silo's grants"
+  },
+  {
+  "id": "G-421",
+  "guard": "a saved policy hash skips a push only after this process pushed it",
+  "file": "builtin/kri/openshell/runtime.go",
+  "find": "if h == s.PolicyHash && r.pushedAlready(s, h) { // a saved hash is not a push this process has made\n\t\treturn nil\n\t}",
+  "replace": "if h == s.PolicyHash { // a saved hash is not a push this process has made\n\t\treturn nil\n\t}",
+  "mutation": "a saved hash skips the push after a restart",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "a kevasod start pushes a running sandbox's policy once"
+  },
+  {
+  "id": "G-422",
+  "guard": "a gateway that came up is a new generation for the policy push",
+  "file": "builtin/kri/openshell/runtime.go",
+  "find": "r.gwGen[key]++ // a gateway that came up is pushed once more",
+  "replace": "_ = key // a gateway that came up is pushed once more",
+  "mutation": "a gateway that came up keeps the previous push",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "a gateway that came up is pushed once more"
+  },
+  {
+  "id": "G-423",
+  "guard": "a failed policy set does not record the hash",
+  "file": "builtin/kri/openshell/runtime.go",
+  "find": "if _, err := r.cli(ctx, g, nil, nil, \"policy\", \"set\", SandboxName(id), \"--policy\", policyPath(id), \"--yes\", \"--wait\"); err != nil {\n\t\t\treturn err // a failed push leaves the saved hash unchanged\n\t\t}",
+  "replace": "if _, err := r.cli(ctx, g, nil, nil, \"policy\", \"set\", SandboxName(id), \"--policy\", policyPath(id), \"--yes\", \"--wait\"); err != nil {\n\t\t\t_ = err // a failed push leaves the saved hash unchanged\n\t\t}",
+  "mutation": "a failed push is recorded as applied",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "the saved hash changes only after a push succeeds"
+  },
+  {
+  "id": "G-424",
+  "guard": "starting an existing sandbox applies the policy file",
+  "file": "builtin/kri/openshell/runtime.go",
+  "find": "return r.pushPolicy(ctx, s) // an existing sandbox is given the policy file as it starts",
+  "replace": "return nil // an existing sandbox is given the policy file as it starts",
+  "mutation": "an existing sandbox starts without its policy file",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "a policy pending while the gateway was down is applied when the sandbox starts"
+  },
+  {
+  "id": "G-425",
+  "guard": "a failed policy push is not reported as applied",
+  "file": "internal/agent/agent.go",
+  "find": "if err := rt.SetPolicy(ctx, idOf(s), p); err != nil {\n\t\t_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {\n\t\t\tsetCond(st, \"PolicyApplied\", meta.ConditionFalse, \"NotApplied\", err.Error(), s.Generation, a.now()) // a failed push is not reported as applied\n\t\t})\n\t\treturn fmt.Errorf(\"policy: %w\", err)\n\t}",
+  "replace": "if err := rt.SetPolicy(ctx, idOf(s), p); err != nil {\n\t\treturn fmt.Errorf(\"policy: %w\", err) // a failed push is not reported as applied\n\t}",
+  "mutation": "a failed push leaves PolicyApplied true",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "a silo's grants are reported applied only after a push succeeds"
   }
 ]

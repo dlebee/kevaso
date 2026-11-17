@@ -148,6 +148,16 @@ func setUpMetal() (s *metalSuite, skip string, err error) {
 	defer cancel()
 	pinGoEnv()
 	say := func(f string, a ...any) { fmt.Printf("metal: "+f+"\n", a...) }
+	// Where this Mac reaches the API, and the published ports it dials. A pair lab
+	// sets KEVASO_METAL_API_PORT and KEVASO_METAL_PORT_*; a real machine leaves them
+	// unset and these stay 6443 and the guest port.
+	apiPort, err := metalAPIPort()
+	if err != nil {
+		return nil, "", err
+	}
+	if err := metalDialPorts(); err != nil {
+		return nil, "", err
+	}
 	s = &metalSuite{cfg: cfg, d: remote.New(cfg)}
 
 	// 1. The machine, its host key checked against the pin before anything is sent.
@@ -271,8 +281,10 @@ func setUpMetal() (s *metalSuite, skip string, err error) {
 	}
 
 	// 5. The cluster: one machine, control plane and worker, both runtimes, its addresses declared.
+	// --api-server is the URL kvo's config records. On a pair lab that is the lab host
+	// and the slot port; the machine still listens on 6443, which this Mac does not route.
 	args := []string{"init", cfg.SSHTarget(), "--ssh-port", strconv.Itoa(cfg.Port), "--ssh-key", cfg.KeyFile, "--host-key", cfg.HostKey,
-		"--kevasod", bin, "--name", metalHost, "--cluster", metalCluster, "--api-server", "https://" + net.JoinHostPort(cfg.ExternalIP, "6443"),
+		"--kevasod", bin, "--name", metalHost, "--cluster", metalCluster, "--api-server", metalAPIServerFor(cfg.ExternalIP, cfg.Address, apiPort),
 		"--external-ip", cfg.ExternalIP, "--worker", "--runtime", "cloud-hypervisor", "--runtime", "docker",
 		"--loop-storage", metalLoop, "--egress-extra-ca", "/etc/kevaso/test-internet-ca.pem", "--no-extra-hardening"}
 	if cfg.InternalIP != "" {

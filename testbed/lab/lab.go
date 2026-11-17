@@ -140,24 +140,43 @@ func AllNodes() []Node {
 	return append(append([]Node{}, Nodes()...), PairNodes()...)
 }
 
-// PairDial is a TCP port the two-machine tests open from the Mac on a machine's external
-// address. The guest keeps Port (an Ingress on :80 inside the VM stays on 80). The lab host
+// PairDial is a port the metal tests open from the Mac on a machine's external address.
+// The guest keeps Port (an Ingress on :80 inside the VM stays on 80). The lab host
 // publishes it at 21000+slot*100+Off, and the tests dial that (KEVASO_METAL_PORT_<Port>),
 // which is Port when the variable is unset. SSH is not here; KEVASO_METAL_HOST carries the
 // forwarded SSH port. The API is not here either: each lab publishes it on Ports.API.
 // Off stays clear of 22, 23, 24 and APIOff, the offsets a normal lab already uses.
+// Proto is empty for TCP. "udp" publishes UDP, and "both" publishes TCP and UDP on the
+// same slot port (DNS).
 type PairDial struct {
-	Role string
-	Port int // on the machine
-	Off  int // added to the slot's port base
+	Role  string
+	Port  int    // on the machine
+	Off   int    // added to the slot's port base
+	Proto string // "", "tcp", "udp", or "both"
+}
+
+// protos is what the lab host publishes for this dial. Empty Proto is TCP.
+func (d PairDial) protos() ([]string, error) {
+	switch d.Proto {
+	case "", "tcp":
+		return []string{"tcp"}, nil
+	case "udp":
+		return []string{"udp"}, nil
+	case "both":
+		return []string{"tcp", "udp"}, nil
+	default:
+		return nil, fmt.Errorf("pair dial %d: proto %q: want tcp, udp or both", d.Port, d.Proto)
+	}
 }
 
 // PairDials is every port pair mode publishes on the lab host's public address, other than
-// SSH and the API. 80 and 443 are TestMetal2Ingress; 443 is also the long soak's certificate
-// check from the Mac. 18160 is the long soak's lease, on machine 1. 18200 and 18201 are
-// TestMetal2Worker; 18210 is TestMetal2Mesh. Nothing in the two-machine suite opens a NodePort.
-// Public port 80 is also published when the host does not already have it, because Let's
-// Encrypt's HTTP-01 challenge (TestMetal2LongSoakSetup) has to reach port 80 itself.
+// SSH and the API. 80 and 443 are ingress (TestMetal2Ingress and TestMetalIngress); 443 is
+// also the long soak's certificate check. 18160 is the long soak's lease, on machine 1.
+// 18200 and 18201 are TestMetal2Worker; 18210 is TestMetal2Mesh. The rest are ports the
+// one-machine suite opens on m1, including 53 (DNS, UDP and TCP). Nothing in the
+// two-machine suite opens a NodePort. Public port 80 is also published when the host does
+// not already have it, because Let's Encrypt's HTTP-01 challenge (TestMetal2LongSoakSetup)
+// has to reach port 80 itself.
 func PairDials() []PairDial {
 	return []PairDial{
 		{Role: "m1", Port: 80, Off: 80},
@@ -166,6 +185,26 @@ func PairDials() []PairDial {
 		{Role: "m2", Port: 18200, Off: 25},
 		{Role: "m2", Port: 18201, Off: 26},
 		{Role: "m2", Port: 18210, Off: 27},
+		// One-machine suite, all on m1. 53 is TestMetalNames.
+		{Role: "m1", Port: 53, Off: 53, Proto: "both"},
+		{Role: "m1", Port: 8081, Off: 28}, // TestMetalModel, the declared port (closed)
+		{Role: "m1", Port: 8091, Off: 29},
+		{Role: "m1", Port: 18080, Off: 30},
+		{Role: "m1", Port: 18081, Off: 31},
+		{Role: "m1", Port: 18082, Off: 32},
+		{Role: "m1", Port: 18090, Off: 33},
+		{Role: "m1", Port: 18091, Off: 34},
+		{Role: "m1", Port: 18092, Off: 35},
+		{Role: "m1", Port: 18093, Off: 36},
+		{Role: "m1", Port: 18095, Off: 37},
+		{Role: "m1", Port: 18096, Off: 38},
+		{Role: "m1", Port: 18110, Off: 39}, // TestMetalProbes
+		{Role: "m1", Port: 18111, Off: 40},
+		{Role: "m1", Port: 18120, Off: 41}, // TestMetalLeases
+		{Role: "m1", Port: 18121, Off: 42},
+		{Role: "m1", Port: 18130, Off: 45}, // TestMetalPodman; 43 is the API, 44 is 443
+		{Role: "m1", Port: 18140, Off: 46}, // TestMetalReboot
+		{Role: "m1", Port: 18141, Off: 47},
 	}
 }
 
@@ -180,6 +219,9 @@ func checkPairDials() error {
 		}
 		if d.Port < 1 || d.Port > 65535 {
 			return fmt.Errorf("pair dial port %d: want a TCP port", d.Port)
+		}
+		if _, err := d.protos(); err != nil {
+			return err
 		}
 		if prev, ok := used[d.Off]; ok {
 			return fmt.Errorf("pair dial %d: offset %d is already %s", d.Port, d.Off, prev)

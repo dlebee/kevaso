@@ -136,6 +136,7 @@ func TestMetalModel(t *testing.T) {
 // never forwards.
 //
 // Listens on the external IP while it runs: 18100 (api), 53/udp+tcp while the switch is on.
+// This Mac dials KEVASO_METAL_PORT_53 for DNS (53 when unset).
 func TestMetalNames(t *testing.T) {
 	c := metal(t)
 	ns := "names"
@@ -176,8 +177,12 @@ func TestMetalNames(t *testing.T) {
 	// From this Mac: the external IP as a DNS server.
 	ask := func(name string) ([]netip.Addr, error) {
 		r := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			target, err := metalDialTarget(c.cfg.ExternalIP, c.cfg.Address, 53)
+			if err != nil {
+				return nil, err
+			}
 			var d net.Dialer
-			return d.DialContext(ctx, network, net.JoinHostPort(c.cfg.ExternalIP, "53"))
+			return d.DialContext(ctx, network, target)
 		}}
 		ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
 		defer cancel()

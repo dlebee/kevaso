@@ -73,11 +73,21 @@ func TestMetalDialTarget(t *testing.T) {
 
 	t.Setenv("KEVASO_METAL_PORT_80", "21180")
 	t.Setenv("KEVASO_METAL_PORT_18200", "21125")
+	t.Setenv("KEVASO_METAL_PORT_18120", "21141")
+	t.Setenv("KEVASO_METAL_PORT_53", "21153")
 	t.Setenv("KEVASO_METAL_EXTERNAL_IP", "10.88.1.11")
 	t.Setenv("KEVASO_METAL2_EXTERNAL_IP", "10.88.1.12")
 	got, err = metalDialTarget("10.88.1.11", "203.0.113.1", 80)
 	if err != nil || got != "203.0.113.1:21180" {
 		t.Fatalf("m1's published port: %s %v", got, err)
+	}
+	got, err = metalDialTarget("10.88.1.11", "203.0.113.1", 18120)
+	if err != nil || got != "203.0.113.1:21141" {
+		t.Fatalf("m1's lease port: %s %v", got, err)
+	}
+	got, err = metalDialTarget("10.88.1.11", "203.0.113.1", 53)
+	if err != nil || got != "203.0.113.1:21153" {
+		t.Fatalf("m1's DNS port: %s %v", got, err)
 	}
 	got, err = metalDialTarget("10.88.1.12", "203.0.113.1", 18200)
 	if err != nil || got != "203.0.113.1:21125" {

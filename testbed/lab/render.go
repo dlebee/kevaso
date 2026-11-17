@@ -403,10 +403,20 @@ func PairForwardScript(name string, slot int, iface, public string) (string, err
 	fmt.Fprintf(&b, "nft delete chain %s %s >/dev/null 2>&1 || true\n", Table, q(post))
 	for _, d := range PairDials() {
 		port := hostPorts[d.Port]
+		protos, err := d.protos()
+		if err != nil {
+			return "", err
+		}
 		fmt.Fprintf(&b, "if nft list table %s >/dev/null 2>&1 && nft list table %s | grep -q 'dport %d '; then echo 'port %d is already forwarded on the lab host' >&2; exit 1; fi\n",
 			Table, Table, port, port)
-		fmt.Fprintf(&b, "if ss -ltnH | awk '{print $4}' | grep -qE '[:.]%d$'; then echo 'port %d is in use on the lab host' >&2; exit 1; fi\n",
-			port, port)
+		for _, proto := range protos {
+			flag := "-ltnH"
+			if proto == "udp" {
+				flag = "-lunH"
+			}
+			fmt.Fprintf(&b, "if ss %s | awk '{print $4}' | grep -qE '[:.]%d$'; then echo 'port %d is in use on the lab host' >&2; exit 1; fi\n",
+				flag, port, port)
+		}
 	}
 	fmt.Fprintf(&b, "nft add chain %s %s '{ type nat hook prerouting priority dstnat - 10; policy accept; }'\n", Table, q(pre))
 	fmt.Fprintf(&b, "nft add chain %s %s '{ type nat hook postrouting priority srcnat; policy accept; }'\n", Table, q(post))
@@ -424,8 +434,14 @@ func PairForwardScript(name string, slot int, iface, public string) (string, err
 			return "", err
 		}
 		host := hostPorts[d.Port]
-		fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s tcp dport %d dnat ip to %s:%d\n",
-			Table, q(pre), q(iface), host, ext, d.Port)
+		protos, err := d.protos()
+		if err != nil {
+			return "", err
+		}
+		for _, proto := range protos {
+			fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s %s dport %d dnat ip to %s:%d\n",
+				Table, q(pre), q(iface), proto, host, ext, d.Port)
+		}
 	}
 	// Let's Encrypt HTTP-01 connects to port 80 on the address the name resolves to. The slot
 	// port cannot stand in for that. Take public 80 when it is free; a lab that finds it taken

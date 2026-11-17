@@ -235,6 +235,13 @@ type Policied interface {
 	SetPolicy(ctx context.Context, id ID, p Policy) error
 }
 
+// PolicyStager is a Policied runtime that can write a silo's policy before its sandbox exists.
+// The next create uses that file, so the sandbox is born with those rules. Writing the file does
+// not mean a sandbox that already exists is enforcing it.
+type PolicyStager interface {
+	StagePolicy(ctx context.Context, id ID, p Policy) error
+}
+
 // Policy is what a silo may reach outside the cluster, and the credentials injected on the way.
 type Policy struct {
 	Egress      []Endpoint

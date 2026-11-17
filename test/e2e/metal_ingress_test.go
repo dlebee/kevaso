@@ -29,7 +29,8 @@ const letsEncryptStaging = "https://acme-staging-v02.api.letsencrypt.org/directo
 // when KEVASO_METAL_HOSTNAME names the machine in public DNS, a certificate from Let's Encrypt's
 // STAGING directory over HTTP-01, served on 443.
 //
-// Listens on the external IP while it runs: 80 and 443 (the nginx silo).
+// Listens on the external IP while it runs: 80 and 443 (the nginx silo). This Mac dials
+// KEVASO_METAL_PORT_80 and KEVASO_METAL_PORT_443 (those ports when unset).
 func TestMetalIngress(t *testing.T) {
 	c := metal(t)
 	ns := "web"
@@ -72,14 +73,18 @@ spec:
 `)
 	c.waitRunning("kevaso-system", 10*time.Minute, "ingress-public")
 	c.waitRunning(ns, 10*time.Minute, "app")
+	httpTarget, err := metalDialTarget(c.cfg.ExternalIP, c.cfg.Address, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
 	get := func() (bool, string) {
-		code, body, err := fromMac("http://"+c.cfg.ExternalIP+"/", name, 5*time.Second)
+		code, body, err := fromMac("http://"+httpTarget+"/", name, 5*time.Second)
 		return err == nil && code == 200 && strings.Contains(body, "app 8080"), fmt.Sprint(code, " ", strings.TrimSpace(body), " ", err)
 	}
 	c.eventually("the Ingress answers this Mac on port 80", 3*time.Minute, get)
 	// No tls: block means HTTPS (the default): port 80 answers with a redirect to it.
 	c.eventually("an Ingress without tls: redirects port 80 to HTTPS", time.Minute, func() (bool, string) {
-		req, _ := http.NewRequest(http.MethodGet, "http://"+c.cfg.ExternalIP+"/x?y=1", nil)
+		req, _ := http.NewRequest(http.MethodGet, "http://"+httpTarget+"/x?y=1", nil)
 		req.Host = "tls." + name
 		resp, err := (&http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
 		if err != nil {
@@ -89,7 +94,7 @@ spec:
 		loc := resp.Header.Get("Location")
 		return resp.StatusCode == 308 && loc == "https://tls."+name+"/x?y=1", fmt.Sprint(resp.StatusCode, " ", loc)
 	})
-	code, _, _ := fromMac("http://"+c.cfg.ExternalIP+"/", "nobody."+name, 5*time.Second)
+	code, _, _ := fromMac("http://"+httpTarget+"/", "nobody."+name, 5*time.Second)
 	if code != 404 {
 		t.Errorf("an unknown host: %d, want 404", code)
 	}
@@ -189,8 +194,12 @@ spec:
 	// Issued while the broken Ingress holds the class (challenges are served anyway); the new
 	// route and its certificate wait for the class to be good again, by design.
 	c.must("", "delete", "ingress", "broken", "-n", ns)
+	tlsTarget, err := metalDialTarget(c.cfg.ExternalIP, c.cfg.Address, 443)
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.eventually("443 serves it", 2*time.Minute, func() (bool, string) {
-		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", net.JoinHostPort(c.cfg.ExternalIP, "443"),
+		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", tlsTarget,
 			&tls.Config{ServerName: host, InsecureSkipVerify: true}) // staging roots are untrusted by design; the issuer is checked instead
 		if err != nil {
 			return false, err.Error()
