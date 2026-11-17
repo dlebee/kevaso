@@ -39,6 +39,20 @@ type Runtime struct {
 	Sleep func(time.Duration)
 
 	mu sync.Mutex
+
+	// pushed is the policy hash this process last pushed onto each silo, and which gateway
+	// generation that push was for. It is not saved: a kevasod start has pushed nothing yet, so
+	// the next SetPolicy pushes once even when the saved hash matches.
+	pushed map[string]policyPush
+	// gwGen counts, per gateway key, how many times this process has seen that gateway come up.
+	gwGen  map[string]uint64
+	gateMu sync.Mutex
+}
+
+// policyPush is one successful policy set this process has made.
+type policyPush struct {
+	hash string
+	gen  uint64
 }
 
 // state is what the runtime remembers about a silo.
@@ -299,7 +313,11 @@ func (r *Runtime) up(ctx context.Context, g Gateway, self kri.ID) error {
 		// Nothing tells what of it ran before: only a silo Kevaso started and hasn't stopped is
 		// kept running; every other is settled as after a start.
 		keep := func(o *state) bool { return o != nil && r.startedThisBoot(*o) }
-		return r.settled(ctx, g, self, keep)
+		if err := r.settled(ctx, g, self, keep); err != nil {
+			return err
+		}
+		r.gatewayCameUp(g.Key) // it was not answering; this start is a new gateway
+		return nil
 	}
 	before, err := r.runningContainers(ctx, g) // what ran before the start (the Docker driver's containers)
 	if err != nil {
@@ -329,7 +347,41 @@ func (r *Runtime) up(ctx context.Context, g Gateway, self kri.ID) error {
 		}
 		r.sleep(3 * time.Second)
 	}
-	return r.settled(ctx, g, self, keep)
+	if err := r.settled(ctx, g, self, keep); err != nil {
+		return err
+	}
+	r.gatewayCameUp(g.Key) // we started it; the next policy push happens once more
+	return nil
+}
+
+// gatewayCameUp records that this process brought gateway key up, or found it had come up.
+// The next policy push for a sandbox on it happens once even when the saved hash matches.
+func (r *Runtime) gatewayCameUp(key string) {
+	r.gateMu.Lock()
+	defer r.gateMu.Unlock()
+	if r.gwGen == nil {
+		r.gwGen = map[string]uint64{}
+	}
+	r.gwGen[key]++ // a gateway that came up is pushed once more
+}
+
+// pushedAlready reports that this process already pushed hash h onto s for the gateway
+// generation that is current. A kevasod start has no such record.
+func (r *Runtime) pushedAlready(s state, h string) bool {
+	r.gateMu.Lock()
+	defer r.gateMu.Unlock()
+	p, ok := r.pushed[s.ID.UID]
+	return ok && p.hash == h && p.gen == r.gwGen[s.Gateway.Key]
+}
+
+// notePushed records a policy set that succeeded, for the gateway generation current then.
+func (r *Runtime) notePushed(s state, h string) {
+	r.gateMu.Lock()
+	defer r.gateMu.Unlock()
+	if r.pushed == nil {
+		r.pushed = map[string]policyPush{}
+	}
+	r.pushed[s.ID.UID] = policyPush{hash: h, gen: r.gwGen[s.Gateway.Key]}
 }
 
 // settled stops every sandbox on gateway g but self and those keep says ran before, confirms
@@ -675,6 +727,8 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 		if Phase(sb.Phase) == kri.Failed {
 			// Seen on the VM driver: a gateway started again brings the sandbox's VM back itself,
 			// then marks it Error ("already running") and refuses start. A stop clears that.
+			// That gateway start is a new proxy whether or not this process started the unit.
+			r.gatewayCameUp(s.Gateway.Key)
 			if _, err := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "stop", SandboxName(id)); err != nil {
 				return err
 			}
@@ -1258,7 +1312,8 @@ func (r *Runtime) SetPolicy(ctx context.Context, id kri.ID, p kri.Policy) (err e
 		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
 	}
 	h := PolicyHash(p)
-	if h == s.PolicyHash {
+	// A saved hash skips the push only after this process has pushed it onto the gateway that is up now.
+	if h == s.PolicyHash && r.pushedAlready(s, h) { // a saved hash is not a push this process has made
 		return nil
 	}
 	g := s.Gateway
@@ -1330,7 +1385,13 @@ func (r *Runtime) SetPolicy(ctx context.Context, id kri.ID, p kri.Policy) (err e
 		}
 	}
 	s.PolicyHash = h
-	return r.save(s)
+	if err := r.save(s); err != nil {
+		return err
+	}
+	if s.Created {
+		r.notePushed(s, h) // only a push that ran counts; the hash alone does not
+	}
+	return nil
 }
 
 var (

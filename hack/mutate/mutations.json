@@ -2230,5 +2230,29 @@
    "./builtin/kri/openshell"
   ],
   "protects": "a sandbox is created with its silo's grants"
+  },
+  {
+  "id": "G-421",
+  "guard": "a saved policy hash skips a push only after this process pushed it",
+  "file": "builtin/kri/openshell/runtime.go",
+  "find": "if h == s.PolicyHash && r.pushedAlready(s, h) { // a saved hash is not a push this process has made\n\t\treturn nil\n\t}",
+  "replace": "if h == s.PolicyHash { // a saved hash is not a push this process has made\n\t\treturn nil\n\t}",
+  "mutation": "a saved hash skips the push after a restart",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "a kevasod start pushes a running sandbox's policy once"
+  },
+  {
+  "id": "G-422",
+  "guard": "a gateway that came up is a new generation for the policy push",
+  "file": "builtin/kri/openshell/runtime.go",
+  "find": "r.gwGen[key]++ // a gateway that came up is pushed once more",
+  "replace": "_ = key // a gateway that came up is pushed once more",
+  "mutation": "a gateway that came up keeps the previous push",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "a gateway that came up is pushed once more"
   }
 ]
