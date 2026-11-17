@@ -127,4 +127,19 @@ func TestDeletedHostCertificateIsRefusedUntilItJoinsAgain(t *testing.T) {
 	if err := tlsClient(ts2, &other).Get(ctx, "Host", "", "hv2", host("hv2")); err != nil {
 		t.Fatalf("after restart, the other host: %v", err)
 	}
+
+	// A removal record that can't be read refuses the certificate instead of accepting it.
+	o, err := st.Get(ctx, store.Key{Kind: "HostRemoval", Name: "hv1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Update(ctx, store.Key{Kind: "HostRemoval", Name: "hv1"}, []byte("not json"), o.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := tlsClient(ts2, &fresh).Get(ctx, "Host", "", "hv1", host("hv1")); code(err) != http.StatusUnauthorized || !strings.Contains(err.Error(), "can't check whether it was removed") {
+		t.Fatalf("unreadable removal record: %v", err)
+	}
+	if err := tlsClient(ts2, &other).Get(ctx, "Host", "", "hv2", host("hv2")); err != nil {
+		t.Fatalf("unreadable record of another host: %v", err)
+	}
 }

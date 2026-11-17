@@ -122,9 +122,16 @@ func (s *Server) noteIssuedHostCert(ctx context.Context, name string, certPEM []
 // the removal is recorded too: a clock that disagrees between members cannot make an old
 // certificate look new, and a new one is not refused for the backdate.
 func (s *Server) removedHostCert(ctx context.Context, name string, cert *x509.Certificate) error {
-	rec, ok := s.hostRemoval(ctx, name)
-	if !ok {
+	o, err := s.store.Get(ctx, hostRemovalKey(name))
+	if errors.Is(err, store.ErrNotFound) {
 		return nil
+	}
+	var rec hostRemovalRecord
+	if err == nil {
+		err = json.Unmarshal(o.Data, &rec)
+	}
+	if err != nil { // the removal record can't be read: refuse rather than accept a certificate it may revoke
+		return fmt.Errorf("host %s: can't check whether it was removed from the cluster (%v); try again", name, err)
 	}
 	serial := cert.SerialNumber.Text(16)
 	if cert.NotBefore.Before(rec.RemovedAt) || !slices.Contains(rec.Serials, serial) { // a certificate issued before this host was removed is refused

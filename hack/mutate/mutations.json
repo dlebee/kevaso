@@ -2376,5 +2376,17 @@
    "./internal/apiserver"
   ],
   "protects": "a host certificate issued before that host was removed is refused"
+  },
+  {
+  "id": "G-443",
+  "guard": "an unreadable host-removal record refuses the certificate",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "if err != nil { // the removal record can't be read: refuse rather than accept a certificate it may revoke",
+  "replace": "if false && err != nil { // the removal record can't be read: refuse rather than accept a certificate it may revoke",
+  "mutation": "an unreadable host-removal record lets the certificate through",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a removed host's certificate is never accepted because its removal record couldn't be read"
   }
 ]
