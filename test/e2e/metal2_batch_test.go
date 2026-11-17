@@ -145,10 +145,15 @@ func TestMetal2RootDiskKeptOverAConfirmedMove(t *testing.T) {
 	ns := "rootkept2"
 	c.namespace(ns)
 	t.Cleanup(p.uncut)
+	// The VM must start on machine 2: machine 1 is cordoned while it is placed. No hostSelector,
+	// so the confirmed move to machine 1 is still allowed.
+	p.kvoadm("host", "drain", metalHost)
+	t.Cleanup(func() { p.kvoadm("host", "uncordon", metalHost) })
 	c.apply(vmEcho(ns, "vm", 8080) + "  availability: { onHostLoss: Recreate }\n") // --recreate needs it
 	c.waitRunning(ns, 20*time.Minute, "vm")
-	if c.silo(ns, "vm").Status.Host != metalHost2 {
-		t.Skip("placed on machine 1, and a microVM's local root can't move to machine 2: run again")
+	p.kvoadm("host", "uncordon", metalHost)
+	if h := c.silo(ns, "vm").Status.Host; h != metalHost2 {
+		t.Fatalf("placed on %s with %s cordoned", h, metalHost)
 	}
 	if out, code := c.in(ns, "vm", "echo before > /root/marker && sync"); code != 0 {
 		t.Fatalf("write: %d %s", code, out)

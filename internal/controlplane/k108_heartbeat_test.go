@@ -63,6 +63,11 @@ func TestK108ASystemNodesHeartbeatIsNoContactWhileItsWorkerIsHeld(t *testing.T) 
 			}
 			time.Sleep(time.Millisecond)
 		}
+		// The write is in the store before the client has read its reply: cancelling now can end
+		// the beat before it marks the contact. Give it until the contact is marked, or 300ms.
+		for wait := time.Now().Add(300 * time.Millisecond); contact.Last().IsZero() && time.Now().Before(wait); {
+			time.Sleep(time.Millisecond)
+		}
 		stop()
 		<-done
 		return !contact.Last().IsZero()
