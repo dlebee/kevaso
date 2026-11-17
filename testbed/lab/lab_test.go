@@ -236,7 +236,7 @@ func TestCloudInitAndForwardAndDestroy(t *testing.T) {
 			t.Errorf("nft rules lack %q\n%s", want, fw)
 		}
 	}
-	if strings.Contains(fw, "iptables") || strings.Contains(fw, "libvirt") || strings.Contains(fw, "delete table ip") {
+	if strings.Contains(fw, "iptables") || strings.Contains(fw, "libvirt") || strings.Contains(fw, "delete table ip") || strings.Contains(fw, "10.88.") {
 		t.Errorf("nft rules touch another table:\n%s", fw)
 	}
 	if strings.Contains(fw, "dport 6443 ") || strings.Contains(fw, "dport 80 ") {
@@ -263,6 +263,7 @@ func TestCloudInitAndForwardAndDestroy(t *testing.T) {
 		"nft delete chain inet kvl 'kvl-smoke-pre'",
 		"nft delete chain inet kvl 'kvl-smoke-post'",
 		"nft delete table inet kvl",
+		"ip link del \"kvlxbr${slot}\"",
 	} {
 		if !strings.Contains(del, want) {
 			t.Errorf("destroy script lacks %q\n%s", want, del)
@@ -386,6 +387,20 @@ func TestPair(t *testing.T) {
 	if strings.Contains(d1, "vdb") || strings.Contains(d1, SpareSerial) || strings.Contains(d1, "spare") {
 		t.Fatalf("m1 has the spare disk:\n%s", d1)
 	}
+	m1mac, err := ExtMAC(3, "m1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2mac, err := ExtMAC(3, "m2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(d1, "<source bridge='kvlxbr3'/>") || !strings.Contains(d1, m1mac) || strings.Contains(d1, m2mac) {
+		t.Fatalf("m1 external NIC:\n%s", d1)
+	}
+	if !strings.Contains(d2, "<source bridge='kvlxbr3'/>") || !strings.Contains(d2, m2mac) || strings.Contains(d2, m1mac) {
+		t.Fatalf("m2 external NIC:\n%s", d2)
+	}
 	for _, want := range []string{
 		"<name>kvl-pr-m2</name>",
 		"<target dev='vdb' bus='virtio'/>",
@@ -401,8 +416,8 @@ func TestPair(t *testing.T) {
 		t.Fatalf("m2 domain names the base image:\n%s", d2)
 	}
 	sys, err := DomainXML("pr", 3, Nodes()[0])
-	if err != nil || strings.Contains(sys, "vdb") || strings.Contains(sys, SpareSerial) {
-		t.Fatalf("a system node gained the spare disk: %v\n%s", err, sys)
+	if err != nil || strings.Contains(sys, "vdb") || strings.Contains(sys, SpareSerial) || strings.Contains(sys, "kvlxbr") || strings.Contains(sys, "52:54:00:88:") {
+		t.Fatalf("a system node gained the spare disk or the external NIC: %v\n%s", err, sys)
 	}
 	bad := m2
 	bad.SpareSerial = "kvl spare"
@@ -417,20 +432,15 @@ func TestPair(t *testing.T) {
 	for _, want := range []string{
 		"iifname 'enp5s0f0' tcp dport 21322 dnat ip to 10.77.3.10:22",
 		"tcp dport 21323 dnat ip to 10.77.3.11:22",
-		"iifname 'enp5s0f0' tcp dport 21343 dnat ip to 10.77.3.10:6443",
-		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 21343 dnat ip to 10.77.3.10:6443",
-		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 6443 dnat ip to 10.77.3.10:6443",
-		"iifname 'enp5s0f0' tcp dport 21380 dnat ip to 10.77.3.10:80",
-		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 21380 dnat ip to 10.77.3.10:80",
-		"tcp dport 21344 dnat ip to 10.77.3.10:443",
-		"tcp dport 21360 dnat ip to 10.77.3.10:18160",
-		"tcp dport 21325 dnat ip to 10.77.3.11:18200",
-		"tcp dport 21326 dnat ip to 10.77.3.11:18201",
-		"tcp dport 21327 dnat ip to 10.77.3.11:18210",
-		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 21327 dnat ip to 10.77.3.11:18210",
+		"iifname 'enp5s0f0' tcp dport 21343 dnat ip to 10.88.3.11:6443",
+		"iifname 'enp5s0f0' tcp dport 21380 dnat ip to 10.88.3.11:80",
+		"tcp dport 21344 dnat ip to 10.88.3.11:443",
+		"tcp dport 21360 dnat ip to 10.88.3.11:18160",
+		"tcp dport 21325 dnat ip to 10.88.3.12:18200",
+		"tcp dport 21326 dnat ip to 10.88.3.12:18201",
+		"tcp dport 21327 dnat ip to 10.88.3.12:18210",
 		"public port 80 is already forwarded; this lab will not publish it, so TestMetal2LongSoakSetup runs one pair lab at a time",
-		"iifname 'enp5s0f0' tcp dport 80 dnat ip to 10.77.3.10:80",
-		"iifname 'kvlbr3' ip daddr 203.0.113.10 tcp dport 80 dnat ip to 10.77.3.10:80",
+		"iifname 'enp5s0f0' tcp dport 80 dnat ip to 10.88.3.11:80",
 		"oifname 'kvlbr3' ct status dnat masquerade",
 		"ip saddr 10.77.3.0/24 oifname 'enp5s0f0' masquerade",
 		"port 21380 is already forwarded on the lab host",
@@ -441,7 +451,7 @@ func TestPair(t *testing.T) {
 		}
 	}
 	note := strings.Index(fw, "public port 80 is already forwarded")
-	open80 := strings.Index(fw, "tcp dport 80 dnat ip to 10.77.3.10:80")
+	open80 := strings.Index(fw, "tcp dport 80 dnat ip to 10.88.3.11:80")
 	if note < 0 || open80 < note || strings.Index(fw, "\nelse\n") < note {
 		t.Fatalf("public port 80 is not behind the already-forwarded check\n%s", fw)
 	}
@@ -458,20 +468,23 @@ func TestPair(t *testing.T) {
 	if strings.Contains(fw, "iifname 'enp5s0f0' tcp dport 6443 ") || strings.Contains(fw, "port 6443 is already forwarded") {
 		t.Errorf("a pair lab publishes public port 6443:\n%s", fw)
 	}
+	if strings.Contains(fw, "iifname 'kvlbr3'") || strings.Contains(fw, "203.0.113.10") {
+		t.Errorf("a pair lab hairpins the lab host's public address:\n%s", fw)
+	}
 	other, err := PairForwardScript("pr", 1, "enp5s0f0", "203.0.113.10")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(other, "tcp dport 21143 dnat ip to 10.77.1.10:6443") || strings.Contains(other, "dport 21343 ") {
+	if !strings.Contains(other, "tcp dport 21143 dnat ip to 10.88.1.11:6443") || strings.Contains(other, "dport 21343 ") {
 		t.Errorf("slot 1 does not use its own API port:\n%s", other)
 	}
 	for _, slot1 := range []string{
-		"tcp dport 21180 dnat ip to 10.77.1.10:80",
-		"tcp dport 21144 dnat ip to 10.77.1.10:443",
-		"tcp dport 21160 dnat ip to 10.77.1.10:18160",
-		"tcp dport 21125 dnat ip to 10.77.1.11:18200",
-		"tcp dport 21126 dnat ip to 10.77.1.11:18201",
-		"tcp dport 21127 dnat ip to 10.77.1.11:18210",
+		"tcp dport 21180 dnat ip to 10.88.1.11:80",
+		"tcp dport 21144 dnat ip to 10.88.1.11:443",
+		"tcp dport 21160 dnat ip to 10.88.1.11:18160",
+		"tcp dport 21125 dnat ip to 10.88.1.12:18200",
+		"tcp dport 21126 dnat ip to 10.88.1.12:18201",
+		"tcp dport 21127 dnat ip to 10.88.1.12:18210",
 	} {
 		if !strings.Contains(other, slot1) {
 			t.Errorf("slot 1 lacks %q\n%s", slot1, other)
@@ -481,7 +494,7 @@ func TestPair(t *testing.T) {
 			t.Errorf("slot 3 also publishes host port %s", port)
 		}
 	}
-	for _, absent := range []string{"10.77.3.12", "dport 21324", "iptables", "e046", "default"} {
+	for _, absent := range []string{"10.77.3.12", "10.88.3.10", "dport 21324", "iptables", "e046", "default"} {
 		if strings.Contains(fw, absent) {
 			t.Errorf("pair nft contains %q\n%s", absent, fw)
 		}
@@ -503,9 +516,17 @@ func TestPair(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	m1ext, err := ExtIP(3, "m1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2ext, err := ExtIP(3, "m2")
+	if err != nil {
+		t.Fatal(err)
+	}
 	env, err := PairEnvFile(PairEnv{
 		Name: "pr", Host: "ubuntu@203.0.113.10", M1SSH: 21322, M2SSH: 21323,
-		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, ExternalIP: "203.0.113.10",
+		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, M1External: m1ext, M2External: m2ext,
 		M1Internal: "10.77.3.10", M2Internal: "10.77.3.11", SpareDisk: SpareByID, APIPort: 21343,
 		HostPorts: hostPorts,
 	})
@@ -526,11 +547,11 @@ func TestPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c1.User != "ubuntu" || c1.Address != "203.0.113.10" || c1.Port != 21322 || c1.KeyFile != key || c1.HostKey != m1pin ||
-		c1.ExternalIP != "203.0.113.10" || c1.InternalIP != "10.77.3.10" || c1.SpareDisk != "" {
+		c1.ExternalIP != "10.88.3.11" || c1.InternalIP != "10.77.3.10" || c1.SpareDisk != "" {
 		t.Fatalf("m1 from the env file: %+v", c1)
 	}
 	if c2.User != "ubuntu" || c2.Address != "203.0.113.10" || c2.Port != 21323 || c2.KeyFile != key || c2.HostKey != m2pin ||
-		c2.ExternalIP != "203.0.113.10" || c2.InternalIP != "10.77.3.11" || c2.SpareDisk != SpareByID {
+		c2.ExternalIP != "10.88.3.12" || c2.InternalIP != "10.77.3.11" || c2.SpareDisk != SpareByID {
 		t.Fatalf("m2 from the env file: %+v", c2)
 	}
 	if got["LAB_NAME"] != "pr" || got["LAB_PAIR"] != "1" || got["KEVASO_METAL_API_PORT"] != "21343" ||
@@ -544,21 +565,80 @@ func TestPair(t *testing.T) {
 	}
 	same := PairEnv{
 		Name: "pr", Host: "ubuntu@203.0.113.10", M1SSH: 21322, M2SSH: 21323,
-		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, ExternalIP: "203.0.113.10",
+		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, M1External: m1ext, M2External: m2ext,
 		M1Internal: "10.77.3.10", M2Internal: "10.77.3.10", SpareDisk: SpareByID, APIPort: 21343,
 		HostPorts: hostPorts,
 	}
 	clash := PairEnv{
 		Name: "pr", Host: "ubuntu@203.0.113.10", M1SSH: 21322, M2SSH: 21323,
-		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, ExternalIP: "203.0.113.10",
+		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, M1External: m1ext, M2External: m2ext,
 		M1Internal: "10.77.3.10", M2Internal: "10.77.3.11", SpareDisk: SpareByID, APIPort: 21343,
 		HostPorts: map[int]int{80: 21380, 443: 21380, 18160: 21360, 18200: 21325, 18201: 21326, 18210: 21327},
+	}
+	sharedExt := PairEnv{
+		Name: "pr", Host: "ubuntu@203.0.113.10", M1SSH: 21322, M2SSH: 21323,
+		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, M1External: m1ext, M2External: m1ext,
+		M1Internal: "10.77.3.10", M2Internal: "10.77.3.11", SpareDisk: SpareByID, APIPort: 21343,
+		HostPorts: hostPorts,
+	}
+	if _, err := PairEnvFile(sharedExt); err == nil {
+		t.Fatal("m1 and m2 sharing an external address was accepted")
+	}
+	publicAsExt := sharedExt
+	publicAsExt.M2External = "203.0.113.10"
+	if _, err := PairEnvFile(publicAsExt); err == nil {
+		t.Fatal("the lab host's public address was accepted as a machine's external address")
 	}
 	if _, err := PairEnvFile(clash); err == nil {
 		t.Fatal("two guest ports sharing a host port was accepted")
 	}
 	if _, err := PairEnvFile(same); err == nil {
 		t.Fatal("m1 and m2 sharing an internal address was accepted")
+	}
+
+	nc, err := NetworkConfig(3, m1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`macaddress: "` + MAC(3, 10) + `"`,
+		"dhcp4: true",
+		`macaddress: "` + m1mac + `"`,
+		`"` + m1ext + `/24"`,
+		`to: "` + ExtCIDR(3) + `"`,
+		"scope: link",
+		`via: "` + ExtGateway(3) + `"`,
+		`from: "` + m1ext + `/32"`,
+		"table: " + strconv.Itoa(ExtRouteTable),
+	} {
+		if !strings.Contains(nc, want) {
+			t.Errorf("network config lacks %q\n%s", want, nc)
+		}
+	}
+	if strings.Contains(nc, m2ext) || strings.Contains(nc, "10.77.3.11") {
+		t.Fatalf("m1 network config names m2:\n%s", nc)
+	}
+	if empty, err := NetworkConfig(3, Nodes()[0]); err != nil || empty != "" {
+		t.Fatalf("a system node got a network config: %v %q", err, empty)
+	}
+	ud, err := PairUserData("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyForTests kvl", 3, m2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ud, m2ext) || !strings.Contains(ud, m2mac) || !strings.Contains(ud, "/var/lib/kvl-external.sh") || !strings.Contains(ud, "rp_filter=2") || !strings.Contains(ud, "/var/lib/kvl-external.ok") || strings.Contains(ud, "PRIVATE KEY") {
+		t.Fatalf("pair user-data:\n%s", ud)
+	}
+	br, err := ExtBridgeScript(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ip link add 'kvlxbr3' type bridge", "ip addr add " + ExtGateway(3) + "/24 dev 'kvlxbr3'", "type bridge stp_state 0", "net.ipv4.conf.kvlxbr3.forwarding=1"} {
+		if !strings.Contains(br, want) {
+			t.Errorf("external bridge script lacks %q\n%s", want, br)
+		}
+	}
+	if _, err := ExtBridgeScript(0); err == nil {
+		t.Fatal("slot 0 was accepted")
 	}
 }
 

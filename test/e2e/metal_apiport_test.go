@@ -18,6 +18,12 @@ func TestMetalAPIPort(t *testing.T) {
 	if metalAPIServer("203.0.113.10", got) != "https://203.0.113.10:21143" {
 		t.Fatal(metalAPIServer("203.0.113.10", got))
 	}
+	if metalAPIServerFor("203.0.113.10", "198.51.100.1", "6443") != "https://203.0.113.10:6443" {
+		t.Fatal(metalAPIServerFor("203.0.113.10", "198.51.100.1", "6443"))
+	}
+	if metalAPIServerFor("10.88.1.11", "203.0.113.1", "21143") != "https://203.0.113.1:21143" {
+		t.Fatal(metalAPIServerFor("10.88.1.11", "203.0.113.1", "21143"))
+	}
 	if ports := metalAPIDropPorts("6443"); len(ports) != 1 || ports[0] != "6443" {
 		t.Fatalf("real pair drops one port: %v", ports)
 	}

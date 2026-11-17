@@ -192,6 +192,17 @@ func TestFromEnv(t *testing.T) {
 	if c.User != "root" || c.Address != "metal.example.net" || c.Port != 2222 || c.InternalIP != "" || c.SSHTarget() != "root@metal.example.net" {
 		t.Fatalf("got %+v", c)
 	}
+	env[EnvExternalIP] = "10.88.1.11"
+	if c, err = FromEnv(get); err != nil || c.ExternalIP != "10.88.1.11" {
+		t.Fatalf("pair-lab external range: %+v %v", c, err)
+	}
+	env[EnvExternalIP] = "10.88.6.12"
+	env[EnvInternalIP] = "10.77.6.11"
+	if c, err = FromEnv(get); err != nil || c.ExternalIP != "10.88.6.12" || c.InternalIP != "10.77.6.11" {
+		t.Fatalf("pair-lab m2: %+v %v", c, err)
+	}
+	env[EnvExternalIP] = "203.0.113.10"
+	delete(env, EnvInternalIP)
 
 	_, err = FromEnv(func(string) string { return "" })
 	if !errors.Is(err, ErrNotConfigured) {
@@ -209,6 +220,7 @@ func TestFromEnv(t *testing.T) {
 	for name, bad := range map[string]map[string]string{
 		"no SHA256 pin":           {EnvHostKey: "ab:cd:ef"},
 		"a private external IP":   {EnvExternalIP: "10.0.0.5"},
+		"the lab internal range":  {EnvExternalIP: "10.77.1.10"},
 		"an IPv6 external IP":     {EnvExternalIP: "2001:db8::1"},
 		"internal = external":     {EnvInternalIP: "203.0.113.10"},
 		"internal not an address": {EnvInternalIP: "lan"},

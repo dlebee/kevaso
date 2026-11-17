@@ -1,9 +1,10 @@
 // Package lab describes one worktree lab: three nested node VMs on the lab host (one system
 // node, two workers), or in pair mode two machine VMs (m1 and m2) with Kevaso not installed,
 // a private /24, and the nftables rules that publish SSH, the API and the two-machine
-// tests' ports on the host's public address. kvlab (cmd/kvlab) is what creates and deletes
-// them. This package is the part that can be checked without a machine: names, slots, ports,
-// and the text of every file and rule the lab writes.
+// tests' ports on the host's public address. A pair lab also gives each machine its own
+// external address on a second, lab-only bridge. kvlab (cmd/kvlab) is what creates and
+// deletes them. This package is the part that can be checked without a machine: names,
+// slots, ports, and the text of every file and rule the lab writes.
 //
 // Everything a lab creates is prefixed kvl-NAME-. The base image and libvirt's default network
 // are not, and a lab never names them.
@@ -12,6 +13,7 @@ package lab
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
@@ -69,6 +71,7 @@ type Node struct {
 	Octet       int    // host address in the lab /24
 	SSHOff      int    // added to the slot's port base: the forwarded SSH port
 	SpareSerial string // a second empty virtio disk; the guest sees /dev/disk/by-id/virtio-SERIAL
+	ExternalNIC bool   // a second NIC on the lab-only external bridge (pair labs)
 }
 
 // SpareSerial is m2's second disk. It is stable so the pair env can name it, and short enough
@@ -126,8 +129,8 @@ func PairNodesWith(vcpu int) ([]Node, error) {
 
 func pairNodes(vcpu int) []Node {
 	return []Node{
-		{Role: "m1", VCPU: vcpu, MemoryMiB: 8192, DiskGiB: 40, Octet: 10, SSHOff: 22},
-		{Role: "m2", VCPU: vcpu, MemoryMiB: 8192, DiskGiB: 40, Octet: 11, SSHOff: 23, SpareSerial: SpareSerial},
+		{Role: "m1", VCPU: vcpu, MemoryMiB: 8192, DiskGiB: 40, Octet: 10, SSHOff: 22, ExternalNIC: true},
+		{Role: "m2", VCPU: vcpu, MemoryMiB: 8192, DiskGiB: 40, Octet: 11, SSHOff: 23, SpareSerial: SpareSerial, ExternalNIC: true},
 	}
 }
 
@@ -329,6 +332,63 @@ func CIDR(slot int) string { return fmt.Sprintf("10.77.%d.0/24", slot) }
 // MAC is the NIC address reserved in DHCP. Slot and octet are both in the last two bytes,
 // so two labs never share one.
 func MAC(slot, octet int) string { return fmt.Sprintf("52:54:00:77:%02x:%02x", slot, octet) }
+
+// ExtPrefix is the pair-lab stand-in for public addresses. E009 used a network namespace
+// as the internet; a pair lab uses this range, one /24 per slot, on a bridge that is not
+// the lab host's public interface. Each machine's address is configured on its second NIC.
+// remote.Config accepts an external address in this range and still refuses every other
+// private address, so a real machine is unchanged.
+var ExtPrefix = netip.MustParsePrefix("10.88.0.0/16")
+
+// ExtRouteTable is the guest policy-routing table for traffic from its external address.
+// On-link peers (the other machine) stay on the bridge; everything else goes to the lab
+// host, which is the gateway on that bridge.
+const ExtRouteTable = 88
+
+// ExtBridge is the lab-only external bridge for a slot. It is not a libvirt network.
+// Linux interface names stop at 15 characters; kvlxbrN is short of that.
+func ExtBridge(slot int) string { return "kvlxbr" + strconv.Itoa(slot) }
+
+// ExtGateway is the lab host's address on that bridge.
+func ExtGateway(slot int) string { return fmt.Sprintf("10.88.%d.1", slot) }
+
+// ExtCIDR is the slot's external network.
+func ExtCIDR(slot int) string { return fmt.Sprintf("10.88.%d.0/24", slot) }
+
+// ExtIP is one pair machine's external address: m1 is 10.88.SLOT.11, m2 is 10.88.SLOT.12.
+func ExtIP(slot int, role string) (string, error) {
+	if _, err := PortsFor(slot); err != nil {
+		return "", err
+	}
+	oct, err := extOctet(role)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("10.88.%d.%d", slot, oct), nil
+}
+
+// ExtMAC is the second NIC's address. The 0x88 byte keeps it off the internal NIC's 0x77.
+func ExtMAC(slot int, role string) (string, error) {
+	if _, err := PortsFor(slot); err != nil {
+		return "", err
+	}
+	oct, err := extOctet(role)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("52:54:00:88:%02x:%02x", slot, oct), nil
+}
+
+func extOctet(role string) (int, error) {
+	switch role {
+	case "m1":
+		return 11, nil
+	case "m2":
+		return 12, nil
+	default:
+		return 0, fmt.Errorf("external address: %q is not a pair-lab machine", role)
+	}
+}
 
 // Hostname is the DNS name of a node (sys.NAME.lab.test).
 func Hostname(name, role string) string { return role + "." + name + "." + DNSDomain }

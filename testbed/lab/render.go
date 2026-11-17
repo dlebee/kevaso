@@ -107,6 +107,10 @@ func DomainXML(name string, slot int, n Node) (string, error) {
 		return "", err
 	}
 	vm := VMName(name, n.Role)
+	ext, err := extNIC(slot, n)
+	if err != nil {
+		return "", err
+	}
 	serialLog := "/var/log/libvirt/qemu/" + vm + "-serial.log"
 	spare := ""
 	if n.SpareSerial != "" {
@@ -159,7 +163,7 @@ func DomainXML(name string, slot int, n Node) (string, error) {
       <source network='` + NetworkName(name) + `'/>
       <model type='virtio'/>
     </interface>
-    <serial type='file'>
+` + ext + `    <serial type='file'>
       <source path='` + serialLog + `'/>
       <target type='isa-serial' port='0'/>
     </serial>
@@ -170,6 +174,151 @@ func DomainXML(name string, slot int, n Node) (string, error) {
   </devices>
 </domain>
 `, nil
+}
+
+// extNIC is the pair machine's second virtio NIC, on the lab-only external bridge.
+// A node lab's VM has none.
+func extNIC(slot int, n Node) (string, error) {
+	if !n.ExternalNIC {
+		return "", nil
+	}
+	mac, err := ExtMAC(slot, n.Role)
+	if err != nil {
+		return "", err
+	}
+	return `    <interface type='bridge'>
+      <mac address='` + mac + `'/>
+      <source bridge='` + ExtBridge(slot) + `'/>
+      <model type='virtio'/>
+    </interface>
+`, nil
+}
+
+// NetworkConfig is the cloud-init v2 network config for a pair machine: DHCP on the
+// internal NIC, and the external address on the second NIC. Traffic from that address
+// to the other machine stays on the bridge; traffic to anywhere else (the Mac, via the
+// lab host) uses the bridge's gateway. A node has no second NIC, and the result is empty.
+func NetworkConfig(slot int, n Node) (string, error) {
+	if !n.ExternalNIC {
+		return "", nil
+	}
+	if _, err := PortsFor(slot); err != nil {
+		return "", err
+	}
+	ext, err := ExtIP(slot, n.Role)
+	if err != nil {
+		return "", err
+	}
+	xmac, err := ExtMAC(slot, n.Role)
+	if err != nil {
+		return "", err
+	}
+	return `version: 2
+ethernets:
+  kvlint:
+    match:
+      macaddress: "` + MAC(slot, n.Octet) + `"
+    dhcp4: true
+    dhcp6: false
+  kvlext:
+    match:
+      macaddress: "` + xmac + `"
+    dhcp4: false
+    dhcp6: false
+    addresses:
+      - "` + ext + `/24"
+    routes:
+      - to: "` + ExtCIDR(slot) + `"
+        scope: link
+        table: ` + strconv.Itoa(ExtRouteTable) + `
+      - to: "0.0.0.0/0"
+        via: "` + ExtGateway(slot) + `"
+        table: ` + strconv.Itoa(ExtRouteTable) + `
+    routing-policy:
+      - from: "` + ext + `/32"
+        table: ` + strconv.Itoa(ExtRouteTable) + `
+`, nil
+}
+
+// PairUserData is UserData plus a first-boot script that configures the external NIC
+// if cloud-init's network config did not. The script is idempotent.
+func PairUserData(pub string, slot int, n Node) (string, error) {
+	script, err := extBootScript(slot, n)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	b.WriteString(UserData(pub))
+	b.WriteString("write_files:\n")
+	b.WriteString("  - path: /var/lib/kvl-external.sh\n")
+	b.WriteString("    permissions: \"0755\"\n")
+	b.WriteString("    content: |\n")
+	for _, line := range strings.Split(script, "\n") {
+		b.WriteString("      " + line + "\n")
+	}
+	b.WriteString("runcmd:\n")
+	b.WriteString("  - [/var/lib/kvl-external.sh]\n")
+	return b.String(), nil
+}
+
+// extBootScript brings up the external address and its policy route. It looks the NIC
+// up by MAC, so a renamed interface still gets the address.
+func extBootScript(slot int, n Node) (string, error) {
+	if !n.ExternalNIC {
+		return "", fmt.Errorf("external boot script: %s has no external NIC", n.Role)
+	}
+	ext, err := ExtIP(slot, n.Role)
+	if err != nil {
+		return "", err
+	}
+	mac, err := ExtMAC(slot, n.Role)
+	if err != nil {
+		return "", err
+	}
+	return `#!/bin/bash
+set -eu
+mac=` + q(mac) + `
+ip4=` + q(ext) + `
+gw=` + q(ExtGateway(slot)) + `
+cidr=` + q(ExtCIDR(slot)) + `
+dev=
+for _ in $(seq 1 30); do
+  dev=$(ip -o link | awk -v m="$mac" 'BEGIN{IGNORECASE=1} index(tolower($0), tolower(m)) {gsub(/:/, "", $2); print $2; exit}')
+  if [ -n "$dev" ]; then break; fi
+  sleep 1
+done
+test -n "$dev"
+ip link set "$dev" up
+# A reply to the Mac arrives on this NIC and leaves by the policy route. Strict
+# reverse-path filtering would drop it, because the main table's default route is
+# the internal NIC. Loose on this NIC accepts it. The kernel uses the max of all
+# and this interface.
+sysctl -w net.ipv4.conf."$dev".rp_filter=2 >/dev/null
+ip -4 -o addr show dev "$dev" | grep -F "$ip4/" >/dev/null || ip addr add "$ip4/24" dev "$dev"
+ip rule show | grep -F "from $ip4" >/dev/null || ip rule add from "$ip4/32" table ` + strconv.Itoa(ExtRouteTable) + `
+ip route replace "$cidr" dev "$dev" scope link table ` + strconv.Itoa(ExtRouteTable) + `
+ip route replace default via "$gw" dev "$dev" table ` + strconv.Itoa(ExtRouteTable) + `
+touch /var/lib/kvl-external.ok
+`, nil
+}
+
+// ExtBridgeScript creates the slot's external bridge and gives the lab host .1 on it.
+// DNATed connections are forwarded out this bridge (the host already forwards). The
+// two machines are bridge ports, so they reach each other without the host routing.
+func ExtBridgeScript(slot int) (string, error) {
+	if _, err := PortsFor(slot); err != nil {
+		return "", err
+	}
+	br := ExtBridge(slot)
+	gw := ExtGateway(slot)
+	var b strings.Builder
+	b.WriteString("set -eu\n")
+	fmt.Fprintf(&b, "ip link show %s >/dev/null 2>&1 || ip link add %s type bridge\n", q(br), q(br))
+	fmt.Fprintf(&b, "ip -4 -o addr show dev %s | grep -F %s >/dev/null || ip addr add %s/24 dev %s\n", q(br), q(gw+"/"), gw, q(br))
+	fmt.Fprintf(&b, "ip link set %s up\n", q(br))
+	fmt.Fprintf(&b, "ip link set %s type bridge stp_state 0\n", q(br))
+	fmt.Fprintf(&b, "sysctl -w net.ipv4.conf.%s.forwarding=1 >/dev/null\n", br)
+	return b.String(), nil
 }
 
 // ForwardScript is the nftables rules for one lab, in Table only. DNAT is on the host interface
@@ -211,17 +360,17 @@ func ForwardScript(name string, slot int, iface string) (string, error) {
 	return b.String(), nil
 }
 
-// PairForwardScript publishes a pair lab. SSH uses the slot block, the same offsets as the
-// system node and the first worker. The API uses that block too (Ports.API, guest 6443): the
-// public interface and the lab bridge (hairpin), so the Mac and m2 both dial the external
-// address on the slot port. The guest still listens on 6443. The bridge also hairpins 6443,
-// because that is the URL the control plane advertises (its listen port) and kvoadm init
-// --restore points workers at; it is not on the public interface, so two labs do not share
-// one host port. Each port in PairDials is the same: the slot port on the public interface
-// and the bridge, forwarded to the guest's own port. A slot port already taken on the host,
-// or already forwarded by another lab, refuses the script. Public port 80 is the exception
-// (Let's Encrypt HTTP-01, TestMetal2LongSoakSetup): it is published too, but only when the
-// host does not already have it, and a second lab still starts.
+// PairForwardScript publishes a pair lab. SSH uses the slot block and is DNATed to the
+// machine's internal address (sshd listens on every address; the internal NIC is the one
+// DHCP brings up). The API and every PairDials port are DNATed to that machine's external
+// address, on the port the guest listens on, so the packet arrives on the external NIC
+// with that destination. Kevaso's hostPort rules match the external address. The other
+// machine reaches it on the external bridge; there is no hairpin. The client address is
+// kept (E009): replies from the external address go back to the lab host, and conntrack
+// restores the public source. A slot port already taken on the host, or already forwarded
+// by another lab, refuses the script. Public port 80 is the exception (Let's Encrypt
+// HTTP-01, TestMetal2LongSoakSetup): it is published too, but only when the host does not
+// already have it, and a second lab still starts. public is the lab host's public address.
 func PairForwardScript(name string, slot int, iface, public string) (string, error) {
 	if err := ValidName(name); err != nil {
 		return "", err
@@ -229,8 +378,7 @@ func PairForwardScript(name string, slot int, iface, public string) (string, err
 	if iface == "" || strings.ContainsAny(iface, " \t'\"$;|&") {
 		return "", fmt.Errorf("interface %q: want a device name", iface)
 	}
-	pub, err := publicIPv4(public)
-	if err != nil {
+	if _, err := publicIPv4(public); err != nil {
 		return "", err
 	}
 	p, err := PortsFor(slot)
@@ -238,6 +386,10 @@ func PairForwardScript(name string, slot int, iface, public string) (string, err
 		return "", err
 	}
 	hostPorts, err := p.HostPorts()
+	if err != nil {
+		return "", err
+	}
+	m1Ext, err := ExtIP(slot, "m1")
 	if err != nil {
 		return "", err
 	}
@@ -262,53 +414,43 @@ func PairForwardScript(name string, slot int, iface, public string) (string, err
 		fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s tcp dport %d dnat ip to %s:22\n",
 			Table, q(pre), q(iface), p.SSH(n.Role), IP(slot, n.Octet))
 	}
-	m1 := IP(slot, PairNodes()[0].Octet)
-	// The slot's API port, on the public interface and from the lab bridge. The guest listens
-	// on 6443; the Mac and m2 dial the external address on this port (KEVASO_METAL_API_PORT).
+	// The guest listens on 6443. The Mac dials the slot port; the packet arrives on m1's
+	// external address. m2 dials that address on 6443 over the external bridge.
 	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s tcp dport %d dnat ip to %s:6443\n",
-		Table, q(pre), q(iface), p.API, m1)
-	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s ip daddr %s tcp dport %d dnat ip to %s:6443\n",
-		Table, q(pre), q(Bridge(slot)), pub, p.API, m1)
-	// The control plane advertises https://<external>:6443 (the listen port). kvoadm has no
-	// flag to change that, and init --restore points workers there. Hairpin it on this lab's
-	// bridge only: a second lab's bridge is a different interface, and 6443 is not published
-	// on the lab host's public address.
-	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s ip daddr %s tcp dport 6443 dnat ip to %s:6443\n",
-		Table, q(pre), q(Bridge(slot)), pub, m1)
+		Table, q(pre), q(iface), p.API, m1Ext)
 	for _, d := range PairDials() {
-		oct, err := pairOctet(d.Role)
+		ext, err := ExtIP(slot, d.Role)
 		if err != nil {
 			return "", err
 		}
-		ip := IP(slot, oct)
 		host := hostPorts[d.Port]
 		fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s tcp dport %d dnat ip to %s:%d\n",
-			Table, q(pre), q(iface), host, ip, d.Port)
-		fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s ip daddr %s tcp dport %d dnat ip to %s:%d\n",
-			Table, q(pre), q(Bridge(slot)), pub, host, ip, d.Port)
+			Table, q(pre), q(iface), host, ext, d.Port)
 	}
 	// Let's Encrypt HTTP-01 connects to port 80 on the address the name resolves to. The slot
 	// port cannot stand in for that. Take public 80 when it is free; a lab that finds it taken
-	// still comes up, and TestMetal2LongSoakSetup runs on the lab that holds it.
+	// still comes up, and TestMetal2LongSoakSetup runs on the lab that holds it. The name in
+	// that test is built from the machine's external address, which is not this public address.
 	http, err := http01Dial()
 	if err != nil {
 		return "", err
 	}
-	httpOct, err := pairOctet(http.Role)
+	httpExt, err := ExtIP(slot, http.Role)
 	if err != nil {
 		return "", err
 	}
-	httpIP := IP(slot, httpOct)
 	fmt.Fprintf(&b, "if nft list table %s >/dev/null 2>&1 && nft list table %s | grep -q 'dport %d '; then echo 'public port %d is already forwarded; this lab will not publish it, so TestMetal2LongSoakSetup runs one pair lab at a time' >&2\n",
 		Table, Table, http.Port, http.Port)
 	fmt.Fprintf(&b, "elif ss -ltnH | awk '{print $4}' | grep -qE '[:.]%d$'; then echo 'public port %d is in use on the lab host; this lab will not publish it, so TestMetal2LongSoakSetup runs one pair lab at a time' >&2\n",
 		http.Port, http.Port)
 	fmt.Fprintf(&b, "else\n")
 	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s tcp dport %d dnat ip to %s:%d\n",
-		Table, q(pre), q(iface), http.Port, httpIP, http.Port)
-	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 iifname %s ip daddr %s tcp dport %d dnat ip to %s:%d\n",
-		Table, q(pre), q(Bridge(slot)), pub, http.Port, httpIP, http.Port)
+		Table, q(pre), q(iface), http.Port, httpExt, http.Port)
 	fmt.Fprintf(&b, "fi\n")
+	// SSH is the connection this masquerades, so the guest answers the gateway. Service
+	// ports are not: their reply is sourced from the external address and conntrack on
+	// the way out restores the public source. Masquerading them would hide the client
+	// and break that reply.
 	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 oifname %s ct status dnat masquerade\n",
 		Table, q(post), q(Bridge(slot)))
 	fmt.Fprintf(&b, "nft add rule %s %s meta nfproto ipv4 ip saddr %s oifname %s masquerade\n",
@@ -334,6 +476,23 @@ func pairOctet(role string) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("pair dial role %q is not m1 or m2", role)
+}
+
+// pairExternal reports two external addresses that are not the lab stand-in range,
+// or that collide with each other or with an internal address.
+func pairExternal(m1, m2, in1, in2 string) error {
+	a1, err1 := netip.ParseAddr(m1)
+	a2, err2 := netip.ParseAddr(m2)
+	if err1 != nil || !ExtPrefix.Contains(a1) || err2 != nil || !ExtPrefix.Contains(a2) {
+		return fmt.Errorf("external addresses %s and %s: want two addresses in %s", m1, m2, ExtPrefix)
+	}
+	if a1 == a2 {
+		return fmt.Errorf("m1 and m2 have the same external address")
+	}
+	if m1 == in1 || m1 == in2 || m2 == in1 || m2 == in2 {
+		return fmt.Errorf("an external address is also an internal address")
+	}
+	return nil
 }
 
 func publicIPv4(s string) (string, error) {
@@ -364,6 +523,9 @@ func DestroyScript(name string) (string, error) {
 	fmt.Fprintf(&b, "[ -d %s ] && need=1 || true\n", q(StateDir(name)))
 	fmt.Fprintf(&b, "ls %s/%s-* >/dev/null 2>&1 && need=1 || true\n", ImageDir, "kvl-"+name)
 	fmt.Fprintf(&b, "nft list chain %s %s >/dev/null 2>&1 && need=1 || true\n", Table, q(pre))
+	slotFile := StateDir(name) + "/slot"
+	fmt.Fprintf(&b, "slot=\n[ -f %s ] && slot=$(tr -d '[:space:]' < %s) || true\n", q(slotFile), q(slotFile))
+	b.WriteString("case \"$slot\" in 1|2|3|4|5|6) ip link show \"kvlxbr${slot}\" >/dev/null 2>&1 && need=1 || true;; esac\n")
 	b.WriteString("[ \"$need\" = 1 ] || exit 0\n")
 	b.WriteString("mkdir -p " + StateRoot + "\n")
 	b.WriteString("exec 9>" + StateRoot + "/.lock\nflock 9\n")
@@ -375,6 +537,9 @@ func DestroyScript(name string) (string, error) {
 	}
 	fmt.Fprintf(&b, "virsh net-destroy %s >/dev/null 2>&1 || true\n", q(net))
 	fmt.Fprintf(&b, "virsh net-undefine %s >/dev/null 2>&1 || true\n", q(net))
+	// The external bridge is not a libvirt network. The slot was read above, before the
+	// state directory goes. Only 1..6, so the name cannot escape kvlxbrN.
+	b.WriteString("case \"$slot\" in 1|2|3|4|5|6) ip link del \"kvlxbr${slot}\" >/dev/null 2>&1 || true;; esac\n")
 	fmt.Fprintf(&b, "rm -f %s/%s-*\n", ImageDir, "kvl-"+name)
 	fmt.Fprintf(&b, "rm -f /var/log/libvirt/qemu/%s-*\n", "kvl-"+name)
 	fmt.Fprintf(&b, "rm -f /var/lib/libvirt/dnsmasq/%s.*\n", net)
@@ -426,11 +591,13 @@ func EnvFile(e Env) (string, error) {
 }
 
 // PairEnv is the file the two-machine metal tests source. KEVASO_METAL_* is m1 and
-// KEVASO_METAL2_* is m2, the same names a metalenv file uses for a real pair. Both external
-// addresses are the lab host's public address, where the forwarded ports land. APIPort is
-// that address's port for m1's API (the slot port); the tests read it as KEVASO_METAL_API_PORT.
-// HostPorts is guest port → the slot port the Mac dials (KEVASO_METAL_PORT_<guest>).
-// There is no KVO_CONFIG: Kevaso is not installed, and the tests run kvoadm themselves.
+// KEVASO_METAL2_* is m2, the same names a metalenv file uses for a real pair. Each
+// external address is that machine's address on the lab-only external bridge (ExtIP),
+// not the lab host's public address. The Mac reaches a published port on Host, which
+// is the lab host; the slot port is DNATed to the machine's external address. APIPort
+// is that port for m1's API; the tests read it as KEVASO_METAL_API_PORT. HostPorts is
+// guest port → the slot port the Mac dials (KEVASO_METAL_PORT_<guest>). There is no
+// KVO_CONFIG: Kevaso is not installed, and the tests run kvoadm themselves.
 type PairEnv struct {
 	Name       string
 	Host       string // ubuntu@public-ip, no port
@@ -439,7 +606,8 @@ type PairEnv struct {
 	KeyPath    string
 	M1HostKey  string
 	M2HostKey  string
-	ExternalIP string
+	M1External string
+	M2External string
 	M1Internal string
 	M2Internal string
 	SpareDisk  string
@@ -454,11 +622,14 @@ func PairEnvFile(e PairEnv) (string, error) {
 	}
 	if e.M1SSH < 1 || e.M2SSH < 1 || e.M1SSH == e.M2SSH || e.APIPort < 1 || e.APIPort > 65535 ||
 		e.Host == "" || e.KeyPath == "" || e.M1HostKey == "" || e.M2HostKey == "" ||
-		e.ExternalIP == "" || e.M1Internal == "" || e.M2Internal == "" || e.SpareDisk == "" {
+		e.M1External == "" || e.M2External == "" || e.M1Internal == "" || e.M2Internal == "" || e.SpareDisk == "" {
 		return "", fmt.Errorf("pair env for %s: incomplete", e.Name)
 	}
 	if e.M1Internal == e.M2Internal {
 		return "", fmt.Errorf("pair env for %s: m1 and m2 have the same internal address", e.Name)
+	}
+	if err := pairExternal(e.M1External, e.M2External, e.M1Internal, e.M2Internal); err != nil {
+		return "", fmt.Errorf("pair env for %s: %w", e.Name, err)
 	}
 	taken := map[int]string{e.M1SSH: "m1 ssh", e.M2SSH: "m2 ssh", e.APIPort: "api"}
 	for _, d := range PairDials() {
@@ -480,7 +651,7 @@ func PairEnvFile(e PairEnv) (string, error) {
 	fmt.Fprintf(&b, "export KEVASO_METAL_HOST=%s\n", q(e.Host+":"+strconv.Itoa(e.M1SSH)))
 	fmt.Fprintf(&b, "export KEVASO_METAL_KEY=%s\n", q(e.KeyPath))
 	fmt.Fprintf(&b, "export KEVASO_METAL_HOSTKEY=%s\n", q(e.M1HostKey))
-	fmt.Fprintf(&b, "export KEVASO_METAL_EXTERNAL_IP=%s\n", q(e.ExternalIP))
+	fmt.Fprintf(&b, "export KEVASO_METAL_EXTERNAL_IP=%s\n", q(e.M1External))
 	fmt.Fprintf(&b, "export KEVASO_METAL_INTERNAL_IP=%s\n", q(e.M1Internal))
 	fmt.Fprintf(&b, "export KEVASO_METAL_API_PORT=%s\n", q(strconv.Itoa(e.APIPort)))
 	for _, d := range PairDials() {
@@ -489,7 +660,7 @@ func PairEnvFile(e PairEnv) (string, error) {
 	fmt.Fprintf(&b, "export KEVASO_METAL2_HOST=%s\n", q(e.Host+":"+strconv.Itoa(e.M2SSH)))
 	fmt.Fprintf(&b, "export KEVASO_METAL2_KEY=%s\n", q(e.KeyPath))
 	fmt.Fprintf(&b, "export KEVASO_METAL2_HOSTKEY=%s\n", q(e.M2HostKey))
-	fmt.Fprintf(&b, "export KEVASO_METAL2_EXTERNAL_IP=%s\n", q(e.ExternalIP))
+	fmt.Fprintf(&b, "export KEVASO_METAL2_EXTERNAL_IP=%s\n", q(e.M2External))
 	fmt.Fprintf(&b, "export KEVASO_METAL2_INTERNAL_IP=%s\n", q(e.M2Internal))
 	fmt.Fprintf(&b, "export KEVASO_METAL2_SPARE_DISK=%s\n", q(e.SpareDisk))
 	b.WriteString("unset KVO_CONFIG\n")
