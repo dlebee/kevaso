@@ -24,6 +24,7 @@ import (
 // stays closed until a person says yes, and closes again on kvo close.
 //
 // Listens on the external IP while it runs: 18120 (for its minute), 18121 (once approved).
+// This Mac dials KEVASO_METAL_PORT_18120 and KEVASO_METAL_PORT_18121 (those ports when unset).
 func TestMetalLeases(t *testing.T) {
 	c := metal(t)
 	ns := "leases"
@@ -41,7 +42,11 @@ func TestMetalLeases(t *testing.T) {
 	opened := time.Now()
 	c.eventually("leased for a minute: it answers this Mac", 30*time.Second, func() (bool, string) { return c.open(18120) })
 	// A connection held open across the lease's end.
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(c.cfg.ExternalIP, "18120"), 5*time.Second)
+	held, err := metalDialTarget(c.cfg.ExternalIP, c.cfg.Address, 18120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.DialTimeout("tcp", held, 5*time.Second)
 	if err != nil {
 		t.Fatalf("holding a connection: %v", err)
 	}

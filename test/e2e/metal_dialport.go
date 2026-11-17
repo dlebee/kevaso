@@ -12,7 +12,7 @@ import (
 
 // metalDialPort is the port this Mac dials for a service that listens on real
 // on the machine. KEVASO_METAL_PORT_<real> is a pair lab's slot port; unset means
-// real, the port a real pair listens on.
+// real, the port a real machine listens on.
 func metalDialPort(real int) (int, error) {
 	if real < 1 || real > 65535 {
 		return 0, fmt.Errorf("port %d: want a TCP port", real)
@@ -79,7 +79,8 @@ func labForwardsTo(external string, real int) bool {
 // sshAddr:slotPort: the lab host DNATs that to external:real, so the packet
 // arrives on the external NIC with that destination. A check of the other
 // machine dials external:real. A pair lab's external address is not routed
-// from this Mac, so that dial fails closed.
+// from this Mac, so that dial fails closed. The one-machine suite uses this
+// for every dial from this Mac to KEVASO_METAL_EXTERNAL_IP.
 func metalDialTarget(external, sshAddr string, real int) (string, error) {
 	slot, err := metalDialPort(real)
 	if err != nil {

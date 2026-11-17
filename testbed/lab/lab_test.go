@@ -439,6 +439,12 @@ func TestPair(t *testing.T) {
 		"tcp dport 21325 dnat ip to 10.88.3.12:18200",
 		"tcp dport 21326 dnat ip to 10.88.3.12:18201",
 		"tcp dport 21327 dnat ip to 10.88.3.12:18210",
+		"tcp dport 21353 dnat ip to 10.88.3.11:53",
+		"udp dport 21353 dnat ip to 10.88.3.11:53",
+		"if ss -lunH | awk '{print $4}' | grep -qE '[:.]21353$'; then echo 'port 21353 is in use on the lab host' >&2; exit 1; fi",
+		"tcp dport 21330 dnat ip to 10.88.3.11:18080",
+		"tcp dport 21341 dnat ip to 10.88.3.11:18120",
+		"tcp dport 21347 dnat ip to 10.88.3.11:18141",
 		"public port 80 is already forwarded; this lab will not publish it, so TestMetal2LongSoakSetup runs one pair lab at a time",
 		"iifname 'enp5s0f0' tcp dport 80 dnat ip to 10.88.3.11:80",
 		"oifname 'kvlbr3' ct status dnat masquerade",
@@ -554,11 +560,14 @@ func TestPair(t *testing.T) {
 		c2.ExternalIP != "10.88.3.12" || c2.InternalIP != "10.77.3.11" || c2.SpareDisk != SpareByID {
 		t.Fatalf("m2 from the env file: %+v", c2)
 	}
-	if got["LAB_NAME"] != "pr" || got["LAB_PAIR"] != "1" || got["KEVASO_METAL_API_PORT"] != "21343" ||
-		got["KEVASO_METAL_PORT_80"] != "21380" || got["KEVASO_METAL_PORT_443"] != "21344" ||
-		got["KEVASO_METAL_PORT_18160"] != "21360" || got["KEVASO_METAL_PORT_18200"] != "21325" ||
-		got["KEVASO_METAL_PORT_18201"] != "21326" || got["KEVASO_METAL_PORT_18210"] != "21327" {
+	if got["LAB_NAME"] != "pr" || got["LAB_PAIR"] != "1" || got["KEVASO_METAL_API_PORT"] != "21343" {
 		t.Fatalf("lab vars: %v", got)
+	}
+	for _, d := range PairDials() {
+		key := "KEVASO_METAL_PORT_" + strconv.Itoa(d.Port)
+		if got[key] != strconv.Itoa(hostPorts[d.Port]) {
+			t.Errorf("%s = %q, want %d", key, got[key], hostPorts[d.Port])
+		}
 	}
 	if _, err := PairEnvFile(PairEnv{Name: "pr"}); err == nil {
 		t.Fatal("an incomplete pair env was accepted")
@@ -569,11 +578,16 @@ func TestPair(t *testing.T) {
 		M1Internal: "10.77.3.10", M2Internal: "10.77.3.10", SpareDisk: SpareByID, APIPort: 21343,
 		HostPorts: hostPorts,
 	}
+	clashPorts := make(map[int]int, len(hostPorts))
+	for k, v := range hostPorts {
+		clashPorts[k] = v
+	}
+	clashPorts[443] = clashPorts[80]
 	clash := PairEnv{
 		Name: "pr", Host: "ubuntu@203.0.113.10", M1SSH: 21322, M2SSH: 21323,
 		KeyPath: key, M1HostKey: m1pin, M2HostKey: m2pin, M1External: m1ext, M2External: m2ext,
 		M1Internal: "10.77.3.10", M2Internal: "10.77.3.11", SpareDisk: SpareByID, APIPort: 21343,
-		HostPorts: map[int]int{80: 21380, 443: 21380, 18160: 21360, 18200: 21325, 18201: 21326, 18210: 21327},
+		HostPorts: clashPorts,
 	}
 	sharedExt := PairEnv{
 		Name: "pr", Host: "ubuntu@203.0.113.10", M1SSH: 21322, M2SSH: 21323,

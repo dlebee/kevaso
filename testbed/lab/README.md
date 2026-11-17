@@ -86,7 +86,7 @@ The two-machine tests reset against that and install Kevaso themselves with `kvo
 | `KEVASO_METAL_INTERNAL_IP` | m1's `10.77.N.10` (`KEVASO_METAL2_INTERNAL_IP` is m2's `.11`) |
 | `KEVASO_METAL2_SPARE_DISK` | `/dev/disk/by-id/virtio-kvlspare` |
 | `KEVASO_METAL_API_PORT` | the slot's API port (`21000 + slot*100 + 43`), forwarded to m1's 6443 |
-| `KEVASO_METAL_PORT_<port>` | the slot port for a guest port the Mac dials (80, 443, 18160, 18200, 18201, 18210) |
+| `KEVASO_METAL_PORT_<port>` | the slot port for each guest port in the table below |
 
 There is no `KVO_CONFIG`. The file unsets it.
 
@@ -105,10 +105,12 @@ The API is the same slot port as a node lab, offset 43 (`21000 + slot*100 + 43`)
 to m1's external address port 6443. The guest still listens on 6443. The packet arrives
 on the external NIC with destination `10.88.N.11`, which is the address Kevaso's
 hostPort rules match. `env.sh` sets `KEVASO_METAL_API_PORT` to that slot port. The Mac's
-`kvoadm --api-server` is `https://<lab host>:<slot port>` (the lab host DNATs it). m2 is
-given `--server https://10.88.N.11:6443` and dials m1 on the external bridge. Unset, those
-tests use 6443 and do not pass `--server`, which is what a real pair does. The
-certificate names the machine's addresses and, because the SSH address is the lab host's
+`kvoadm --api-server` is `https://<lab host>:<slot port>` (the lab host DNATs it). The
+one-machine suite passes that same URL to `kvoadm init`, so the kvo config it writes
+names the lab host and the slot port. m2 is given `--server https://10.88.N.11:6443`
+and dials m1 on the external bridge. Unset, the URL stays `https://<external>:6443`
+and the two-machine worker is not given `--server`, which is what a real machine does.
+The certificate names the machine's addresses and, because the SSH address is the lab host's
 public address, that address too, so the Mac's TLS name matches. There is no hairpin of
 the public address on the internal bridge, and DNATed service traffic is not masqueraded:
 the client address is kept, and conntrack on the lab host restores the public source on
@@ -118,18 +120,38 @@ are still masqueraded as they leave the internal bridge, so the guest answers th
 Every other port pair mode publishes on the lab host's public address is a port in that
 same block, forwarded to the guest's own port. The guest keeps the real number (an Ingress
 on :80 inside the VM stays on 80). The Mac dials the slot port from `KEVASO_METAL_PORT_<port>`,
-which is the real port when unset, so a real pair is unchanged. Offsets 22, 23, 24 and 43
+which is the real port when unset, so a real machine is unchanged. Offsets 22, 23, 24 and 43
 are the ones a normal lab already uses. These stay clear of them. Nothing in the two-machine
-suite opens a NodePort.
+suite opens a NodePort. The one-machine suite's ports are in the same table, on m1. Port 53
+is DNS and is published for UDP and TCP.
 
 | Guest port | Machine | Offset | Slot 1 | Env | Who dials it from the Mac |
 |---|---|---|---|---|---|
-| 80 | m1 | 80 | 21180 | `KEVASO_METAL_PORT_80` | TestMetal2Ingress |
-| 443 | m1 | 44 | 21144 | `KEVASO_METAL_PORT_443` | the long soak's certificate check (43 is the API) |
+| 80 | m1 | 80 | 21180 | `KEVASO_METAL_PORT_80` | TestMetal2Ingress, TestMetalIngress |
+| 443 | m1 | 44 | 21144 | `KEVASO_METAL_PORT_443` | TestMetalIngress and the long soak's certificate check (43 is the API) |
 | 18160 | m1 | 60 | 21160 | `KEVASO_METAL_PORT_18160` | TestMetal2LongSoakCheck |
 | 18200 | m2 | 25 | 21125 | `KEVASO_METAL_PORT_18200` | TestMetal2Worker |
 | 18201 | m2 | 26 | 21126 | `KEVASO_METAL_PORT_18201` | TestMetal2Worker |
 | 18210 | m2 | 27 | 21127 | `KEVASO_METAL_PORT_18210` | TestMetal2Mesh |
+| 53 | m1 | 53 | 21153 | `KEVASO_METAL_PORT_53` | TestMetalNames (UDP and TCP) |
+| 8081 | m1 | 28 | 21128 | `KEVASO_METAL_PORT_8081` | TestMetalModel (the declared port, closed) |
+| 8091 | m1 | 29 | 21129 | `KEVASO_METAL_PORT_8091` | TestMetalModel |
+| 18080 | m1 | 30 | 21130 | `KEVASO_METAL_PORT_18080` | TestMetalModel |
+| 18081 | m1 | 31 | 21131 | `KEVASO_METAL_PORT_18081` | TestMetalModel |
+| 18082 | m1 | 32 | 21132 | `KEVASO_METAL_PORT_18082` | TestMetalModel |
+| 18090 | m1 | 33 | 21133 | `KEVASO_METAL_PORT_18090` | TestMetalModel |
+| 18091 | m1 | 34 | 21134 | `KEVASO_METAL_PORT_18091` | TestMetalModel |
+| 18092 | m1 | 35 | 21135 | `KEVASO_METAL_PORT_18092` | TestMetalModel |
+| 18093 | m1 | 36 | 21136 | `KEVASO_METAL_PORT_18093` | TestMetalModel |
+| 18095 | m1 | 37 | 21137 | `KEVASO_METAL_PORT_18095` | TestMetalModel |
+| 18096 | m1 | 38 | 21138 | `KEVASO_METAL_PORT_18096` | TestMetalModel |
+| 18110 | m1 | 39 | 21139 | `KEVASO_METAL_PORT_18110` | TestMetalProbes |
+| 18111 | m1 | 40 | 21140 | `KEVASO_METAL_PORT_18111` | TestMetalProbes |
+| 18120 | m1 | 41 | 21141 | `KEVASO_METAL_PORT_18120` | TestMetalLeases |
+| 18121 | m1 | 42 | 21142 | `KEVASO_METAL_PORT_18121` | TestMetalLeases |
+| 18130 | m1 | 45 | 21145 | `KEVASO_METAL_PORT_18130` | TestMetalPodman |
+| 18140 | m1 | 46 | 21146 | `KEVASO_METAL_PORT_18140` | TestMetalReboot |
+| 18141 | m1 | 47 | 21147 | `KEVASO_METAL_PORT_18141` | TestMetalReboot |
 
 Each of those is forwarded on the public interface to that machine's external address,
 not hairpinned. `lab-up` refuses a slot port the host is already listening on, or that
