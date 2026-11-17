@@ -37,7 +37,11 @@ func TestLabHostDelete(t *testing.T) {
 	c := p.c1
 	const ns = "kvthd"
 	c.namespace(ns)
-	c.apply(boxEcho(ns, "mover", 8080) + on(metalHost2) + "  availability: { onHostLoss: Recreate }\n---\n" +
+	// mover has no hostSelector, so it can be placed elsewhere after the delete: machine 1 is
+	// cordoned while it is placed, then uncordoned.
+	p.kvoadm("host", "drain", metalHost)
+	t.Cleanup(func() { p.kvoadm("host", "uncordon", metalHost) })
+	c.apply(boxEcho(ns, "mover", 8080) + "  availability: { onHostLoss: Recreate }\n---\n" +
 		boxEcho(ns, "pin", 8080) + on(metalHost2) + "  volumes: [{ name: data, size: 1Gi, mountPath: /data }]\n")
 	for _, name := range []string{"mover", "pin"} {
 		c.eventually(name+" running on "+metalHost2, 5*time.Minute, func() (bool, string) {
@@ -46,6 +50,7 @@ func TestLabHostDelete(t *testing.T) {
 		})
 	}
 
+	p.kvoadm("host", "uncordon", metalHost)
 	p.c2.mustSh("systemctl stop kevasod")
 	c.must("", "delete", "host", metalHost2, "--confirm-off")
 	c.eventually("mover running on "+metalHost, 5*time.Minute, func() (bool, string) {
