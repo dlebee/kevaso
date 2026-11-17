@@ -557,10 +557,32 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		// and its providers stay known, to be revoked by the next policy.
 		s.ResetPending, s.Providers = old.Created || old.ResetPending, old.Providers
 	}
+	// Deny-all until the agent stages the silo's grants (StagePolicy), which it does before Start
+	// creates the sandbox. A silo with no grants stays this file: nothing outside.
 	if err := r.Host.WriteFile(policyPath(spec.ID), []byte(basePolicy), 0o600); err != nil {
 		return err
 	}
 	return r.save(s)
+}
+
+// StagePolicy writes the policy file the next sandbox create is given (--policy). It does not
+// push it onto a sandbox that already exists, and it does not record the policy as applied.
+// The gateway does not need to be up: the file is on the host.
+func (r *Runtime) StagePolicy(ctx context.Context, id kri.ID, p kri.Policy) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.load(id); !ok {
+		return fmt.Errorf("%s: %w", id, kri.ErrNotFound)
+	}
+	for _, c := range p.Credentials {
+		if err := CheckCredential(c); err != nil {
+			return fmt.Errorf("%s: %w", id, err)
+		}
+	}
+	return r.Host.WriteFile(policyPath(id), []byte(PolicyYAML(p)), 0o600)
 }
 
 func policyPath(id kri.ID) string { return StateDir + "/policies/" + Short(id) + ".yaml" }
@@ -1312,8 +1334,9 @@ func (r *Runtime) SetPolicy(ctx context.Context, id kri.ID, p kri.Policy) (err e
 }
 
 var (
-	_ kri.Runtime  = (*Runtime)(nil)
-	_ kri.Policied = (*Runtime)(nil)
+	_ kri.Runtime      = (*Runtime)(nil)
+	_ kri.Policied     = (*Runtime)(nil)
+	_ kri.PolicyStager = (*Runtime)(nil)
 )
 
 // ErrNoKVM: the VM driver needs /dev/kvm.

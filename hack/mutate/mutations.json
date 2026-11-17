@@ -1995,8 +1995,8 @@
   "id": "G-302",
   "guard": "a crash restart claims again immediately before the main process",
   "file": "internal/agent/agent.go",
-  "find": "// Claimed once more right before the main process, as at a first start. Every-boot init\n\t\t// can outlast a renewal; the start follows a claim that applied on what is stored now.\n\t\tif err := kp.claimNow(ctx); err != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tstctx, startKept := kp.within(ctx)\n\t\terr := rt.Start(stctx, id)\n\t\tif why := startKept(); why != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.startEnded(s, why, err)\n\t\t}",
-  "replace": "stctx, startKept := kp.within(ctx)\n\t\terr := rt.Start(stctx, id)\n\t\tif why := startKept(); why != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.startEnded(s, why, err)\n\t\t}",
+  "find": "// Claimed once more right before the main process, as at a first start. Every-boot init\n\t\t// can outlast a renewal; the start follows a claim that applied on what is stored now.\n\t\tif err := kp.claimNow(ctx); err != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.lostClaim(s, err)\n\t\t}\n\t\tstctx, startKept := kp.within(ctx)\n\t\terr := a.startSilo(stctx, rt, s)\n\t\tif why := startKept(); why != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.startEnded(s, why, err)\n\t\t}",
+  "replace": "stctx, startKept := kp.within(ctx)\n\t\terr := a.startSilo(stctx, rt, s)\n\t\tif why := startKept(); why != nil {\n\t\t\ta.settleClaim(ctx, rt, s)\n\t\t\treturn a.startEnded(s, why, err)\n\t\t}",
   "mutation": "no fresh claim before the main process",
   "packages": [
    "./internal/agent"
@@ -2218,5 +2218,17 @@
    "./internal/apiserver"
   ],
   "protects": "the host a silo is leaving still reads what that silo needs"
+  },
+  {
+  "id": "G-420",
+  "guard": "an OpenShell sandbox is created with the policy file staged from its grants",
+  "file": "internal/agent/agent.go",
+  "find": "if err := a.stagePolicy(ctx, rt, s); err != nil { // the policy file is current before the sandbox is created or started\n\t\treturn err\n\t}",
+  "replace": "if err := error(nil); err != nil { // the policy file is current before the sandbox is created or started\n\t\treturn err\n\t}",
+  "mutation": "sandbox create keeps the deny-all file",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "a sandbox is created with its silo's grants"
   }
 ]

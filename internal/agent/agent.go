@@ -799,7 +799,7 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 			return a.lostClaim(s, err)
 		}
 		stctx, startKept := kp.within(ctx)
-		err := rt.Start(stctx, id)
+		err := a.startSilo(stctx, rt, s)
 		if why := startKept(); why != nil {
 			return ended(why, err) // placed elsewhere or fenced meanwhile: the removal or the fence ends what came up
 		}
@@ -875,7 +875,7 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 			return a.lostClaim(s, err)
 		}
 		stctx, startKept := kp.within(ctx)
-		err := rt.Start(stctx, id)
+		err := a.startSilo(stctx, rt, s)
 		if why := startKept(); why != nil {
 			a.settleClaim(ctx, rt, s)
 			return a.startEnded(s, why, err)
@@ -1851,29 +1851,61 @@ func (a *Agent) fanOut(kind, namespace, name string) {
 	}
 }
 
-// applyPolicy gives a runtime that enforces grants itself the silo's policy, with the credentials
-// it injects (from the control plane, for silos on this host), and says in a condition what it
-// couldn't enforce.
-func (a *Agent) applyPolicy(ctx context.Context, rt kri.Policied, s *v1.Silo) error {
+// siloPolicy is the silo's grants as a runtime policy, with the credentials it injects.
+func (a *Agent) siloPolicy(ctx context.Context, s *v1.Silo) (kri.Policy, []string, error) {
 	var resp client.BrokerResponse
 	if err := a.Client.Call(ctx, http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{
 		Namespace: s.Namespace, Name: s.Name, UID: s.UID, Host: a.HostName,
 		Request: client.BrokerRequest{Op: client.OpInjections}}, &resp); err != nil {
-		return fmt.Errorf("credentials for the policy: %w", err)
+		return kri.Policy{}, nil, fmt.Errorf("credentials for the policy: %w", err)
 	}
 	if resp.Error != "" {
-		return fmt.Errorf("credentials for the policy: %s", resp.Error)
+		return kri.Policy{}, nil, fmt.Errorf("credentials for the policy: %s", resp.Error)
 	}
-	var grants []*v1.Grant
-	for _, o := range a.grants.List() {
-		grants = append(grants, o.(*v1.Grant))
+	p, problems := policy.For(s, a.grantList(), resp.Injections)
+	return p, problems, nil
+}
+
+func clearPolicy(p kri.Policy) {
+	for _, c := range p.Credentials {
+		clear(c.Value)
 	}
-	p, problems := policy.For(s, grants, resp.Injections)
-	defer func() {
-		for _, c := range p.Credentials {
-			clear(c.Value)
-		}
-	}()
+}
+
+// stagePolicy writes a stager's policy file from the silo's grants. Other runtimes have nothing
+// to write. A silo with no grants is written as deny-all.
+func (a *Agent) stagePolicy(ctx context.Context, rt kri.Runtime, s *v1.Silo) error {
+	st, ok := rt.(kri.PolicyStager)
+	if !ok {
+		return nil
+	}
+	p, _, err := a.siloPolicy(ctx, s)
+	if err != nil {
+		return err
+	}
+	defer clearPolicy(p)
+	return st.StagePolicy(ctx, idOf(s), p)
+}
+
+// startSilo writes the policy file, then starts. A new OpenShell sandbox is created with that
+// file, so its first moment already has the silo's grants, including a grant that changed while
+// the silo was stopped. A silo with no grants is created deny-all.
+func (a *Agent) startSilo(ctx context.Context, rt kri.Runtime, s *v1.Silo) error {
+	if err := a.stagePolicy(ctx, rt, s); err != nil { // the policy file is current before the sandbox is created or started
+		return err
+	}
+	return rt.Start(ctx, idOf(s))
+}
+
+// applyPolicy gives a runtime that enforces grants itself the silo's policy, with the credentials
+// it injects (from the control plane, for silos on this host), and says in a condition what it
+// couldn't enforce.
+func (a *Agent) applyPolicy(ctx context.Context, rt kri.Policied, s *v1.Silo) error {
+	p, problems, err := a.siloPolicy(ctx, s)
+	if err != nil {
+		return err
+	}
+	defer clearPolicy(p)
 	if err := rt.SetPolicy(ctx, idOf(s), p); err != nil {
 		return fmt.Errorf("policy: %w", err)
 	}
