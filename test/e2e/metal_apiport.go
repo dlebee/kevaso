@@ -26,6 +26,19 @@ func metalAPIServer(ip, port string) string {
 	return "https://" + net.JoinHostPort(ip, port)
 }
 
+// metalAPIServerFor is the URL this Mac uses for machine 1's API. A real pair
+// (port 6443) is https://external:6443. A pair lab publishes 6443 on the lab
+// host at the slot port; the machine's external address is on the lab's
+// external bridge, which this Mac does not route. The worker does not use this
+// URL: it dials https://external:6443 on that bridge, passed as --server.
+func metalAPIServerFor(external, sshAddr, port string) string {
+	host := external
+	if port != "6443" {
+		host = sshAddr
+	}
+	return metalAPIServer(host, port)
+}
+
 // metalAPIDropPorts are the ports a cut of machine 2's path to the API has to drop: the one the
 // tests dial, and 6443 when that is different. The control plane advertises its listen port
 // (6443; kvoadm has no flag to change it), and the worker's tunnel dials that URL.

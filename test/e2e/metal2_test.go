@@ -106,6 +106,16 @@ func reach(ctx context.Context, cfg remote.Config) (*metalSuite, error) {
 	if err := s.d.Reset(ctx); err != nil {
 		return nil, fmt.Errorf("%s, the starting reset: %w", cfg.SSHTarget(), err)
 	}
+	// hostPort DNAT matches the external address, so that address has to be on an
+	// interface. The reset removes kv* links and :kv addresses; a netplan address stays.
+	// The internal address is not checked here: a real pair may omit it.
+	addr, err := s.d.Run(ctx, "ip -4 -o addr", nil)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", cfg.SSHTarget(), err)
+	}
+	if !strings.Contains(addr+" ", cfg.ExternalIP+"/") {
+		return nil, fmt.Errorf("%s isn't on any interface of %s (ip -4 addr): [external] ports match that address", cfg.ExternalIP, cfg.SSHTarget())
+	}
 	return s, nil
 }
 
@@ -216,7 +226,7 @@ func setUpPair() (p *metalPair, skip string, err error) {
 	}
 	// Machine 1: the system node, no worker.
 	if err := run(append(append([]string{"init"}, ssh(cfg1)...), "--name", metalHost, "--cluster", "metal2",
-		"--api-server", metalAPIServer(cfg1.ExternalIP, p.apiPort), "--external-ip", cfg1.ExternalIP)...); err != nil {
+		"--api-server", metalAPIServerFor(cfg1.ExternalIP, cfg1.Address, p.apiPort), "--external-ip", cfg1.ExternalIP)...); err != nil {
 		return nil, "", err
 	}
 	p.recoveryKey = regexp.MustCompile(`KVR1-[A-Z0-9-]+`).FindString(lastOut)
@@ -233,8 +243,15 @@ func setUpPair() (p *metalPair, skip string, err error) {
 		return nil, "", fmt.Errorf("the stand-in internet on %s: %v\n%s", metalHost2, err, out)
 	}
 	storage = append(storage, "--egress-extra-ca", "/etc/kevaso/test-internet-ca.pem")
-	if err := run(append(append(append([]string{"host", "add"}, ssh(cfg2)...), "--name", metalHost2, "--install", "worker",
-		"--runtime", "cloud-hypervisor", "--runtime", "docker", "--external-ip", cfg2.ExternalIP), storage...)...); err != nil {
+	// A real pair's worker dials the context server, https://external:6443. A pair lab's
+	// context server is the lab host's slot port, which m2 cannot route. m2 dials m1's
+	// external address on 6443, on the external bridge.
+	add := append(append(append([]string{"host", "add"}, ssh(cfg2)...), "--name", metalHost2, "--install", "worker",
+		"--runtime", "cloud-hypervisor", "--runtime", "docker", "--external-ip", cfg2.ExternalIP), storage...)
+	if p.apiPort != "6443" {
+		add = append(add, "--server", metalAPIServer(cfg1.ExternalIP, "6443"))
+	}
+	if err := run(add...); err != nil {
 		return nil, "", err
 	}
 	say("kvoadm host add: %s, a worker", metalHost2)
@@ -335,14 +352,16 @@ func (p *pair) ensureTwoWorkers() {
 func on(host string) string { return "  placement: { hostSelector: { kvt/host: " + host + " } }\n" }
 
 // openOn says whether this Mac gets an HTTP answer on a machine's external IP.
-// port is the one on the machine. A pair lab's KEVASO_METAL_PORT_<port> is what
-// this Mac dials; unset, it dials port, which is what a real pair listens on.
+// port is the one on the machine. A pair lab publishes it on the lab host when
+// this machine owns that port. A check of the other machine dials that machine's
+// external address on the real port. Unset, this dials the real port, which is
+// what a real pair listens on.
 func openOn(s *metalSuite, port int) (bool, string) {
-	dial, err := metalDialPort(port)
+	target, err := metalDialTarget(s.cfg.ExternalIP, s.cfg.Address, port)
 	if err != nil {
 		return false, err.Error()
 	}
-	code, body, err := fromMac(fmt.Sprintf("http://%s:%d/", s.cfg.ExternalIP, dial), "", 5*time.Second)
+	code, body, err := fromMac("http://"+target+"/", "", 5*time.Second)
 	if err != nil {
 		return false, err.Error()
 	}

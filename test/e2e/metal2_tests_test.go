@@ -425,12 +425,12 @@ spec:
 `)
 	c.waitRunning("kevaso-system", 10*time.Minute, "ingress-edge")
 	c.waitRunning(ns, 10*time.Minute, "app")
-	httpPort, err := metalDialPort(80)
+	target, err := metalDialTarget(p.m1.cfg.ExternalIP, p.m1.cfg.Address, 80)
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.eventually("machine 1's nginx answers with the silo on machine 2", 3*time.Minute, func() (bool, string) {
-		code, body, err := fromMac(fmt.Sprintf("http://%s:%d/", p.m1.cfg.ExternalIP, httpPort), name, 5*time.Second)
+		code, body, err := fromMac("http://"+target+"/", name, 5*time.Second)
 		return err == nil && code == 200 && strings.Contains(body, "app 8080"), fmt.Sprint(code, " ", strings.TrimSpace(body), " ", err)
 	})
 }

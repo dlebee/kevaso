@@ -118,6 +118,18 @@ func ParseTarget(s string) (user, addr string, port int, err error) {
 	return user, addr, port, nil
 }
 
+// pairLabExternal is testbed/lab ExtPrefix (10.88.0.0/16). A pair lab stands in for a
+// public address with one address per machine on its external bridge. A real machine
+// does not use this range. Every other private address is still refused.
+var pairLabExternal = netip.MustParsePrefix("10.88.0.0/16")
+
+func externalOK(a netip.Addr) bool {
+	if pairLabExternal.Contains(a) {
+		return true
+	}
+	return !a.IsPrivate() && !a.IsLoopback() && !a.IsLinkLocalUnicast() && !a.IsUnspecified()
+}
+
 // Validate checks the config's shape (not the machine).
 func (c Config) Validate() error {
 	var errs []error
@@ -127,7 +139,7 @@ func (c Config) Validate() error {
 	ext, err := netip.ParseAddr(c.ExternalIP)
 	if err != nil || !ext.Is4() {
 		errs = append(errs, fmt.Errorf("%s %q: want an IPv4 address", EnvExternalIP, c.ExternalIP))
-	} else if ext.IsPrivate() || ext.IsLoopback() || ext.IsLinkLocalUnicast() || ext.IsUnspecified() {
+	} else if !externalOK(ext) {
 		errs = append(errs, fmt.Errorf("%s %s: not a public address", EnvExternalIP, c.ExternalIP))
 	}
 	if c.InternalIP != "" {

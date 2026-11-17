@@ -61,7 +61,7 @@ func (r *restorer) restore() {
 	_ = r.p.m1.d.Close()
 	r.t.Log(r.kvoadm("", append(append([]string{"reset"}, r.ssh...), "--force", "--yes", "--wipe-storage")...))
 	out := r.kvoadm(r.p.recoveryKey+"\n", append(append([]string{"init"}, r.ssh...), "--kevasod", r.p.bin, "--no-extra-hardening", "--restore", r.file,
-		"--api-server", metalAPIServer(cfg.ExternalIP, r.p.apiPort), "--external-ip", cfg.ExternalIP)...)
+		"--api-server", metalAPIServerFor(cfg.ExternalIP, cfg.Address, r.p.apiPort), "--external-ip", cfg.ExternalIP)...)
 	r.t.Logf("kvoadm init --restore:\n%s", out)
 	r.p.mu.Lock()
 	r.p.m1Worker = false

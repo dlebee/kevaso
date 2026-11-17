@@ -673,14 +673,15 @@ func fromMac(url, host string, timeout time.Duration) (int, string, error) {
 }
 
 // open says whether this Mac gets an HTTP answer on the external IP.
-// port is the one on the machine. A pair lab's KEVASO_METAL_PORT_<port> is what
-// this Mac dials; unset, it dials port, which is what a real machine listens on.
+// port is the one on the machine. A pair lab publishes it on the lab host when
+// this machine owns that port; unset, this dials the machine's own address,
+// which is what a real machine listens on.
 func (c *mt) open(port int) (bool, string) {
-	dial, err := metalDialPort(port)
+	target, err := metalDialTarget(c.cfg.ExternalIP, c.cfg.Address, port)
 	if err != nil {
 		return false, err.Error()
 	}
-	code, body, err := fromMac(fmt.Sprintf("http://%s:%d/", c.cfg.ExternalIP, dial), "", 5*time.Second)
+	code, body, err := fromMac("http://"+target+"/", "", 5*time.Second)
 	if err != nil {
 		return false, err.Error()
 	}

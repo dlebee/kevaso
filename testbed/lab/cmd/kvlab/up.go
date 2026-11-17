@@ -189,10 +189,18 @@ func cmdUp(args []string) error {
 		if hpErr != nil {
 			return hpErr
 		}
+		m1Ext, extErr := lab.ExtIP(slot, "m1")
+		if extErr != nil {
+			return extErr
+		}
+		m2Ext, extErr := lab.ExtIP(slot, "m2")
+		if extErr != nil {
+			return extErr
+		}
 		text, err = lab.PairEnvFile(lab.PairEnv{
 			Name: name, Host: "ubuntu@" + h.cfg.ExternalIP,
 			M1SSH: ports.SSH("m1"), M2SSH: ports.SSH("m2"), KeyPath: keyPath,
-			M1HostKey: pins["m1"], M2HostKey: pins["m2"], ExternalIP: h.cfg.ExternalIP,
+			M1HostKey: pins["m1"], M2HostKey: pins["m2"], M1External: m1Ext, M2External: m2Ext,
 			M1Internal: lab.IP(slot, 10), M2Internal: lab.IP(slot, 11), SpareDisk: lab.SpareByID,
 			APIPort: ports.API, HostPorts: hostPorts,
 		})
@@ -239,9 +247,11 @@ func cmdUp(args []string) error {
 	timing := clk.done()
 	_ = os.WriteFile(filepath.Join(local, "timings.txt"), []byte(timing), 0o644)
 	if *pair {
-		fmt.Printf("\nlab %s is up (slot %d, %s, pair)\n", name, slot, lab.CIDR(slot))
-		fmt.Printf("  m1   ssh %s:%d   %s\n", h.cfg.ExternalIP, ports.SSH("m1"), lab.IP(slot, 10))
-		fmt.Printf("  m2   ssh %s:%d   %s   spare %s\n", h.cfg.ExternalIP, ports.SSH("m2"), lab.IP(slot, 11), lab.SpareByID)
+		m1Ext, _ := lab.ExtIP(slot, "m1")
+		m2Ext, _ := lab.ExtIP(slot, "m2")
+		fmt.Printf("\nlab %s is up (slot %d, %s, external %s, pair)\n", name, slot, lab.CIDR(slot), lab.ExtCIDR(slot))
+		fmt.Printf("  m1   ssh %s:%d   internal %s   external %s\n", h.cfg.ExternalIP, ports.SSH("m1"), lab.IP(slot, 10), m1Ext)
+		fmt.Printf("  m2   ssh %s:%d   internal %s   external %s   spare %s\n", h.cfg.ExternalIP, ports.SSH("m2"), lab.IP(slot, 11), m2Ext, lab.SpareByID)
 		fmt.Printf("  api  https://%s\n", net.JoinHostPort(h.cfg.ExternalIP, strconv.Itoa(ports.API)))
 	} else {
 		fmt.Printf("\nlab %s is up (slot %d, %s)\n", name, slot, lab.CIDR(slot))
@@ -371,7 +381,15 @@ chmod 644 %s
 
 func bringUp(ctx context.Context, h *labHost, name string, slot int, iface, pub string, nodes []lab.Node, pair bool) error {
 	dir := lab.StateDir(name)
-	if err := h.upload(ctx, dir+"/user-data", []byte(lab.UserData(pub)), 0o600); err != nil {
+	if pair {
+		script, err := lab.ExtBridgeScript(slot)
+		if err != nil {
+			return err
+		}
+		if _, err := h.run(ctx, script); err != nil {
+			return fmt.Errorf("external bridge: %w", err)
+		}
+	} else if err := h.upload(ctx, dir+"/user-data", []byte(lab.UserData(pub)), 0o600); err != nil {
 		return fmt.Errorf("user-data: %w", err)
 	}
 	xml, err := lab.NetworkXML(name, slot, true)
@@ -411,6 +429,22 @@ func bringUp(ctx context.Context, h *labHost, name string, slot int, iface, pub 
 		if err := h.upload(ctx, dir+"/meta-"+n.Role, []byte(lab.MetaData(name, n.Role)), 0o644); err != nil {
 			return err
 		}
+		if pair {
+			ud, err := lab.PairUserData(pub, slot, n)
+			if err != nil {
+				return err
+			}
+			if err := h.upload(ctx, dir+"/user-"+n.Role, []byte(ud), 0o600); err != nil {
+				return fmt.Errorf("user-data: %w", err)
+			}
+			netcfg, err := lab.NetworkConfig(slot, n)
+			if err != nil {
+				return err
+			}
+			if err := h.upload(ctx, dir+"/net-"+n.Role, []byte(netcfg), 0o644); err != nil {
+				return fmt.Errorf("network config: %w", err)
+			}
+		}
 		dom, err := lab.DomainXML(name, slot, n)
 		if err != nil {
 			return err
@@ -419,7 +453,7 @@ func bringUp(ctx context.Context, h *labHost, name string, slot int, iface, pub 
 			return err
 		}
 	}
-	if _, err := h.run(ctx, diskScript(name, nodes)); err != nil {
+	if _, err := h.run(ctx, diskScript(name, nodes, pair)); err != nil {
 		return fmt.Errorf("disks: %w", err)
 	}
 	fw, err := lab.ForwardScript(name, slot, iface)
@@ -438,7 +472,7 @@ func bringUp(ctx context.Context, h *labHost, name string, slot int, iface, pub 
 	return nil
 }
 
-func diskScript(name string, nodes []lab.Node) string {
+func diskScript(name string, nodes []lab.Node, pair bool) string {
 	dir := lab.StateDir(name)
 	var b strings.Builder
 	b.WriteString("set -eu\n")
@@ -452,7 +486,13 @@ func diskScript(name string, nodes []lab.Node) string {
 			fmt.Fprintf(&b, "qemu-img create -f qcow2 %s %dG\n", sshboot.Quote(spare), lab.SpareDiskGiB)
 			fmt.Fprintf(&b, "chown libvirt-qemu:kvm %s && chmod 660 %s\n", sshboot.Quote(spare), sshboot.Quote(spare))
 		}
-		fmt.Fprintf(&b, "cloud-localds %s %s %s\n", sshboot.Quote(seed), sshboot.Quote(dir+"/user-data"), sshboot.Quote(dir+"/meta-"+n.Role))
+		user := dir + "/user-data"
+		if pair {
+			user = dir + "/user-" + n.Role
+			fmt.Fprintf(&b, "cloud-localds -N %s %s %s %s\n", sshboot.Quote(dir+"/net-"+n.Role), sshboot.Quote(seed), sshboot.Quote(user), sshboot.Quote(dir+"/meta-"+n.Role))
+		} else {
+			fmt.Fprintf(&b, "cloud-localds %s %s %s\n", sshboot.Quote(seed), sshboot.Quote(user), sshboot.Quote(dir+"/meta-"+n.Role))
+		}
 		fmt.Fprintf(&b, "chown libvirt-qemu:kvm %s && chmod 644 %s\n", sshboot.Quote(seed), sshboot.Quote(seed))
 		fmt.Fprintf(&b, "virsh define %s\n", sshboot.Quote(dir+"/"+lab.VMName(name, n.Role)+".xml"))
 	}
@@ -473,6 +513,7 @@ func diagScript(name string, slot int, nodes []lab.Node) string {
 	b.WriteString("set +e\n")
 	b.WriteString("virsh list --all\nvirsh net-list --all\n")
 	fmt.Fprintf(&b, "ip -br addr show %s\n", lab.Bridge(slot))
+	fmt.Fprintf(&b, "ip -br addr show %s\n", lab.ExtBridge(slot))
 	b.WriteString("nft list table inet kvl\n")
 	for _, n := range nodes {
 		vm := lab.VMName(name, n.Role)
@@ -526,6 +567,22 @@ func recordBaseline(ctx context.Context, host string, slot int, n lab.Node, port
 		out, err := d.Run(ctx, script, nil)
 		if err != nil {
 			return fmt.Errorf("%s: spare disk %s: %v\n%s", n.Role, lab.SpareByID, err, scrub(out))
+		}
+	}
+	if n.ExternalNIC {
+		ext, err := lab.ExtIP(slot, n.Role)
+		if err != nil {
+			return err
+		}
+		// The address has to be on the NIC before the baseline, and the policy
+		// route has to send replies from it back across the external bridge.
+		script := "for i in $(seq 1 30); do ip -4 -o addr show | grep -F " + sshboot.Quote(ext+"/") +
+			" >/dev/null && ip rule show | grep -F " + sshboot.Quote("from "+ext) +
+			" >/dev/null && ip route show table " + strconv.Itoa(lab.ExtRouteTable) + " | grep -F " + sshboot.Quote(lab.ExtCIDR(slot)) +
+			" >/dev/null && test -f /var/lib/kvl-external.ok && exit 0; sleep 2; done; echo MISSING; ip -4 addr; ip rule; ip route show table " + strconv.Itoa(lab.ExtRouteTable) + "; ls -l /var/lib/kvl-external.ok /var/lib/kvl-external.sh 2>&1 || true; exit 1"
+		out, err := d.Run(ctx, script, nil)
+		if err != nil {
+			return fmt.Errorf("%s: external address %s: %v\n%s", n.Role, ext, err, scrub(out))
 		}
 	}
 	if _, err := d.RecordBaseline(ctx); err != nil {

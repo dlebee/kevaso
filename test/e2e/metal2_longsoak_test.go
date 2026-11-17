@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,9 +28,11 @@ import (
 //
 // Listens on the machines while it runs: 80 and 443 on the ingress silo's machine (the
 // public ingress class, for the staging certificate's HTTP-01 and the route), and 18160 on
-// machine 1 while its lease is open (kvo open, 24h). This Mac dials KEVASO_METAL_PORT_443
-// and KEVASO_METAL_PORT_18160 (those ports when unset). HTTP-01 is not one of those: Let's
-// Encrypt connects to public port 80, so TestMetal2LongSoakSetup runs one pair lab at a time.
+// machine 1 while its lease is open (kvo open, 24h). This Mac dials the lab host's slot
+// port for 443 and 18160 when the env file publishes them (those ports when unset).
+// HTTP-01 is not one of those: Let's Encrypt connects to port 80 of the name, and the
+// name is the machine's external address. On a pair lab that address is 10.88, which the
+// internet cannot reach.
 
 const longSoakNS = "longsoak"
 
@@ -236,11 +237,15 @@ func TestMetal2LongSoakCheck(t *testing.T) {
 // untrusted by design: the issuer is checked instead). This Mac dials KEVASO_METAL_PORT_443,
 // which is 443 when unset.
 func servedCert(ip, name string) (*x509.Certificate, error) {
-	port, err := metalDialPort(443)
+	sshAddr, err := metalLabHost()
 	if err != nil {
 		return nil, err
 	}
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)),
+	target, err := metalDialTarget(ip, sshAddr, 443)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", target,
 		&tls.Config{ServerName: name, InsecureSkipVerify: true})
 	if err != nil {
 		return nil, err

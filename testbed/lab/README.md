@@ -82,7 +82,7 @@ The two-machine tests reset against that and install Kevaso themselves with `kvo
 | `KEVASO_METAL_HOST` | `ubuntu@<lab host>:<m1 ssh port>` |
 | `KEVASO_METAL_KEY` | the lab key (m2 uses the same key, also set as `KEVASO_METAL2_KEY`) |
 | `KEVASO_METAL_HOSTKEY` | m1's fingerprint (`KEVASO_METAL2_HOSTKEY` is m2's) |
-| `KEVASO_METAL_EXTERNAL_IP` | the lab host's public address, for both machines |
+| `KEVASO_METAL_EXTERNAL_IP` | m1's `10.88.N.11` (`KEVASO_METAL2_EXTERNAL_IP` is m2's `.12`) |
 | `KEVASO_METAL_INTERNAL_IP` | m1's `10.77.N.10` (`KEVASO_METAL2_INTERNAL_IP` is m2's `.11`) |
 | `KEVASO_METAL2_SPARE_DISK` | `/dev/disk/by-id/virtio-kvlspare` |
 | `KEVASO_METAL_API_PORT` | the slot's API port (`21000 + slot*100 + 43`), forwarded to m1's 6443 |
@@ -90,18 +90,30 @@ The two-machine tests reset against that and install Kevaso themselves with `kvo
 
 There is no `KVO_CONFIG`. The file unsets it.
 
-SSH is forwarded as for a node lab: m1 at offset 22, m2 at offset 23. The API is the same
-slot port as a node lab, offset 43 (`21000 + slot*100 + 43`), forwarded to m1's 6443. The
-guest still listens on 6443. `env.sh` sets `KEVASO_METAL_API_PORT` to that port; the
-two-machine tests pass it to `kvoadm --api-server`. Unset, those tests use 6443, which is
-what a real pair listens on. The certificate names the machine's addresses, not the port.
-kvoadm already takes the URL on `--api-server` (init) and `--server` (host add; it defaults
-to the context init wrote). There is no kvoadm flag for the port kevasod listens on, so the
-control plane still advertises `https://<external>:6443`, and `kvoadm init --restore`
-points workers at that. The lab bridge hairpins both the slot port and 6443 to m1, so m2
-can dial either URL at the public address. 6443 is not published on the lab host's public
-interface: each lab's bridge is its own, and a second pair lab no longer stops on
-"port 6443 is already forwarded".
+Each machine has a second virtio NIC on a lab-only bridge, `kvlxbrN` (not a libvirt
+network). The lab host is `10.88.N.1/24` on that bridge. m1 is `10.88.N.11/24` and m2 is
+`10.88.N.12/24`, and those addresses are on the NIC, the way a bare-metal machine's
+external address is. Traffic from that address uses policy-routing table 88: the other
+machine is on-link, and everything else (this Mac) goes to `10.88.N.1`. The internal
+`10.77.N.0/24` and a normal lab are unchanged. A real machine is unchanged: its external
+address is still its public address, and `10.88.0.0/16` is the only private range
+`testbed/remote` accepts as an external address.
+
+SSH is forwarded as for a node lab: m1 at offset 22, m2 at offset 23, DNATed to the
+internal address (sshd listens on every address, and DHCP brings the internal NIC up).
+The API is the same slot port as a node lab, offset 43 (`21000 + slot*100 + 43`), DNATed
+to m1's external address port 6443. The guest still listens on 6443. The packet arrives
+on the external NIC with destination `10.88.N.11`, which is the address Kevaso's
+hostPort rules match. `env.sh` sets `KEVASO_METAL_API_PORT` to that slot port. The Mac's
+`kvoadm --api-server` is `https://<lab host>:<slot port>` (the lab host DNATs it). m2 is
+given `--server https://10.88.N.11:6443` and dials m1 on the external bridge. Unset, those
+tests use 6443 and do not pass `--server`, which is what a real pair does. The
+certificate names the machine's addresses and, because the SSH address is the lab host's
+public address, that address too, so the Mac's TLS name matches. There is no hairpin of
+the public address on the internal bridge, and DNATed service traffic is not masqueraded:
+the client address is kept, and conntrack on the lab host restores the public source on
+the reply (E009). 6443 is not published on the lab host's public interface. SSH replies
+are still masqueraded as they leave the internal bridge, so the guest answers the gateway.
 
 Every other port pair mode publishes on the lab host's public address is a port in that
 same block, forwarded to the guest's own port. The guest keeps the real number (an Ingress
@@ -119,21 +131,30 @@ suite opens a NodePort.
 | 18201 | m2 | 26 | 21126 | `KEVASO_METAL_PORT_18201` | TestMetal2Worker |
 | 18210 | m2 | 27 | 21127 | `KEVASO_METAL_PORT_18210` | TestMetal2Mesh |
 
-Each of those is forwarded on the public interface and hairpinned on the lab bridge.
-`lab-up` refuses a slot port the host is already listening on, or that another lab already
-forwards.
+Each of those is forwarded on the public interface to that machine's external address,
+not hairpinned. `lab-up` refuses a slot port the host is already listening on, or that
+another lab already forwards. The Mac dials the lab host's slot port only for the machine
+that owns the guest port. WireGuard between the two machines uses the external addresses
+and needs no forward: they are on the same bridge.
 
 Public port 80 is the one exception. Let's Encrypt's HTTP-01 challenge connects to port 80
-on the address the name resolves to, which is the lab host's public address, and there is
-no way to point that at a slot port. The lab also publishes public port 80 to m1's 80 when
-the host is not already using it. A second pair lab still starts: it does not take port 80.
-`TestMetal2LongSoakSetup` (and `TestMetal2LongSoakCheck`, which reads the certificate that
-setup obtained) therefore runs one pair lab at a time, on the lab that holds public port 80.
-`TestMetal2Ingress` dials `KEVASO_METAL_PORT_80` and does not need that public port.
+on the address the name resolves to. The lab also publishes public port 80 to m1's
+external address port 80 when the host is not already using it. A second pair lab still
+starts: it does not take port 80. `TestMetal2LongSoakSetup` builds the name from the
+machine's external address (`10.88.N.11`), which the internet cannot reach, so HTTP-01
+does not complete against a pair lab. `TestMetal2Ingress` dials the slot port and does
+not need public port 80.
 
-Both external addresses are the one public address, so a port answers for both variables.
-A test that requires the other machine's address to stay closed on that port needs two
-public addresses.
+These checks need this Mac to reach an external address directly, not through a forwarded
+port. On a pair lab that dial has no route, so it fails closed:
+
+- `TestMetal2Worker` checks that 18200 and 18201 do not answer on m1. The slot ports are
+  forwarded only to m2, so the check dials m1's `10.88` address on the real port.
+- `TestMetal2Mesh` checks that 18210 does not answer on m1, the same way.
+- `TestMetal2LongSoakSetup`'s HTTP-01 name is the external address. The certificate check
+  dials the lab host when 443 is forwarded to that machine (m1). It still needs a route
+  of its own when the ingress is on m2, and HTTP-01 itself needs a name the internet can
+  reach.
 
 ```bash
 source testbed/lab/.labs/pr/env.sh
