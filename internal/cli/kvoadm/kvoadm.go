@@ -568,6 +568,7 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	}
 	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
 	var restore []byte
+	existing := false // the machine already holds this cluster's data (a volume moved over to it)
 	if o.Restore != "" {
 		var err error
 		if restore, err = prepareRestore(&o, stdin, out); err != nil {
@@ -587,10 +588,15 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	} else {
 		// Starting a cluster is always explicit (§0.7): the record that makes the next start create
 		// it. kevasod's unit never creates one, so a node that loses its data refuses to start.
-		if _, err := conn.Run(ctx, "kevasod admin create-cluster --cluster "+sshboot.Quote(o.Cluster)+" --data /var/lib/kevaso", nil); err != nil {
+		rec, err := conn.Run(ctx, "kevasod admin create-cluster --cluster "+sshboot.Quote(o.Cluster)+" --data /var/lib/kevaso", nil)
+		if err != nil {
 			return fmt.Errorf("create cluster %s: %w", o.Cluster, err)
 		}
-		say("cluster %s created on this host (its record in /var/lib/kevaso)", o.Cluster)
+		if existing = clusterExists(rec); existing {
+			say("cluster %s found on this host (its data in /var/lib/kevaso): starting it as it is, no new cluster", o.Cluster)
+		} else {
+			say("cluster %s created on this host (its record in /var/lib/kevaso)", o.Cluster)
+		}
 	}
 	if err := installUnits(ctx, conn, UnitsFor(Unit(o), o.Worker, o.Runtimes)); err != nil {
 		return err
@@ -648,9 +654,12 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 		return fmt.Errorf("recovery key: %w", err)
 	} else if restore != nil {
 		say("the recovery key is still the one you restored with")
+	} else if existing {
+		say("the recovery key is still this cluster's: no new one is made")
 	}
-	// 8. After a restore: the workers, pointed at this control plane.
-	if restore != nil {
+	// 8. After a restore, or on a machine that took over the cluster's data: the workers, pointed
+	// at this control plane (its address may be new).
+	if restore != nil || existing {
 		if err := reconnectWorkers(ctx, o, c, "https://"+net.JoinHostPort(o.Reach(), "6443"), stdin, out); err != nil {
 			return fmt.Errorf("reconnecting workers: %w", err)
 		}
@@ -752,6 +761,19 @@ func bootstrap(ctx context.Context, o InitOptions, home string, stdin io.Reader,
 	}
 	say("kevasod installed (signature verified on the host)")
 	return conn, nil
+}
+
+// clusterExists reads what `kevasod admin create-cluster` answers (the record, as JSON, on its last
+// line): true when the record is of a cluster that was already started here, so init found the
+// cluster's data on the machine (a data volume moved to it) rather than making a new one.
+func clusterExists(out []byte) bool {
+	var r struct {
+		State string `json:"state"`
+	}
+	if len(bytes.TrimSpace(out)) == 0 || json.Unmarshal(lastLine(out), &r) != nil {
+		return false
+	}
+	return r.State != "" && r.State != "new"
 }
 
 func lastLine(b []byte) []byte {

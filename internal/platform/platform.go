@@ -51,18 +51,46 @@ func Stamp() string { return stamp }
 
 // FromBinary reads the list out of a kevasod binary. ok is false for a binary that has none (one
 // older than the list).
+//
+// The marker can sit in a binary more than once: Marker is a constant of its own too, so the bare
+// marker, followed by whatever the linker put next, is there as well as the stamp. So every place
+// the marker appears is tried, and the list is the first one made only of list characters, up to
+// ";", that parses.
 func FromBinary(b []byte) (list []Platform, ok bool, err error) {
-	i := bytes.Index(b, []byte(Marker))
-	if i < 0 {
-		return nil, false, nil
+	m := []byte(Marker)
+	seen := false
+	for off := 0; ; {
+		i := bytes.Index(b[off:], m)
+		if i < 0 && seen {
+			return nil, false, fmt.Errorf("platform list in the binary: a marker, but no list after it")
+		}
+		if i < 0 {
+			return nil, false, nil
+		}
+		seen = true
+		rest := b[off+i+len(m):]
+		off += i + len(m)
+		j := bytes.IndexByte(rest, ';')
+		if j <= 0 || j > 4096 || !listChars(rest[:j]) {
+			continue
+		}
+		if list, err := Parse(string(rest[:j])); err == nil {
+			return list, true, nil
+		}
 	}
-	rest := b[i+len(Marker):]
-	j := bytes.IndexByte(rest, ';')
-	if j < 0 || j > 4096 {
-		return nil, false, fmt.Errorf("platform list in the binary: no end")
+}
+
+// listChars reports whether s holds only what a list is written with: lower-case os-release IDs and
+// versions, "/" and ",".
+func listChars(s []byte) bool {
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '.', c == '-', c == '_', c == '/', c == ',':
+		default:
+			return false
+		}
 	}
-	list, err = Parse(string(rest[:j]))
-	return list, err == nil, err
+	return true
 }
 
 // Supports reports whether an OS (os-release ID and VERSION_ID) is on the list.

@@ -297,8 +297,15 @@ func TestAssessAsksTheKevasodBinary(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("\x7fELF old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if sup := supportedFor(bin); sup.From != "kvoadm" || !strings.Contains(osLine(sup).Note, "kvoadm's list") {
+	if sup := supportedFor(bin); sup.From != "kvoadm" || !strings.Contains(osLine(sup).Note, "kvoadm's list (this kevasod binary carries none) supports") {
 		t.Fatalf("an older binary: %+v %+v", sup, osLine(sup))
+	}
+	// A real kevasod holds the bare marker (the constant) before its list: the list is still read.
+	if err := os.WriteFile(bin, []byte("\x7fELF "+platform.Marker+"\x00\x02;"+platform.Marker+"ubuntu/24.04;"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if sup := supportedFor(bin); sup.From != "kevasod" {
+		t.Fatalf("the bare marker first: %+v", sup)
 	}
 }
 

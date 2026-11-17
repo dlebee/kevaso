@@ -75,7 +75,7 @@ func AssessWith(facts map[string]string, sup Supported) []CheckResult {
 	} else {
 		who := "this kevasod supports"
 		if sup.From != "kevasod" {
-			who = "supported (kvoadm's list: the kevasod binary doesn't say)"
+			who = "kvoadm's list (this kevasod binary carries none) supports"
 		}
 		add("warn", "operating system", osName, who+": "+platform.Names(sup.List)+"; others may work")
 	}

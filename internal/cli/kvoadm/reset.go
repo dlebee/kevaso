@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"kevaso.com/core/internal/hostreset"
 )
@@ -83,6 +84,42 @@ type hostRunner interface {
 	Run(ctx context.Context, cmd string, stdin []byte) ([]byte, error)
 }
 
+// How long reset waits for silos still on the host to go before it refuses: right after
+// `kvo delete silo`, the worker is still stopping them (a microVM's unit takes a few seconds).
+var resetSiloWait, resetSiloPoll = 30 * time.Second, 3 * time.Second
+
+// waitSilosStopped looks at the host again until no silo is left on it, for up to resetSiloWait,
+// and then decides with what it found. Silos that are still there are refused as before, with how
+// long it waited, so a reset never takes down a silo that is meant to run (that's --force).
+func waitSilosStopped(ctx context.Context, h hostRunner, o ResetOptions, insp hostreset.Inspection, out io.Writer) (hostreset.Decision, error) {
+	_, _ = fmt.Fprintf(out, "→ silos are still on the host (%s): waiting up to %s, in case they're still stopping after a delete\n", strings.Join(insp.Silos, ", "), resetSiloWait)
+	deadline := time.Now().Add(resetSiloWait)
+	for {
+		select {
+		case <-ctx.Done():
+			return hostreset.Decision{}, ctx.Err()
+		case <-time.After(resetSiloPoll):
+		}
+		raw, err := h.Run(ctx, hostreset.InspectScript, nil)
+		if err != nil {
+			return hostreset.Decision{}, fmt.Errorf("looking at the host: %w", err)
+		}
+		if insp, err = hostreset.ParseInspection(string(raw)); err != nil {
+			return hostreset.Decision{}, fmt.Errorf("looking at the host: %w", err)
+		}
+		d, err := hostreset.Decide(insp, hostreset.Flags{Force: o.Force, WipeStorage: o.WipeStorage})
+		if !errors.Is(err, hostreset.ErrSilos) {
+			if err == nil {
+				_, _ = fmt.Fprintln(out, "→ they stopped")
+			}
+			return d, err
+		}
+		if time.Now().After(deadline) {
+			return d, fmt.Errorf("%w (kvoadm waited %s: they are running, not stopping)", err, resetSiloWait)
+		}
+	}
+}
+
 // runReset is the reset on a connected host.
 func runReset(ctx context.Context, h hostRunner, o ResetOptions, in *bufio.Reader, out io.Writer) error {
 	raw, err := h.Run(ctx, hostreset.InspectScript, nil)
@@ -94,6 +131,9 @@ func runReset(ctx context.Context, h hostRunner, o ResetOptions, in *bufio.Reade
 		return fmt.Errorf("looking at the host: %w", err)
 	}
 	d, err := hostreset.Decide(insp, hostreset.Flags{Force: o.Force, WipeStorage: o.WipeStorage})
+	if errors.Is(err, hostreset.ErrSilos) {
+		d, err = waitSilosStopped(ctx, h, o, insp, out)
+	}
 	if err != nil {
 		return err
 	}

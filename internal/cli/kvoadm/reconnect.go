@@ -225,8 +225,9 @@ func sshTarget(h *v1.Host) (user, addr string, port int, ok bool) {
 	return user, addr, port, err == nil && user != "" && addr != ""
 }
 
-// reconnectWorkers is kvoadm init --restore's last step: every worker in the restored cluster,
-// pointed at the new control plane, over SSH with the key you restored with (or kvoadm's own).
+// reconnectWorkers is the last step of kvoadm init --restore, and of an init that found the
+// cluster's data already on the machine (a data volume moved to it): every worker in the cluster,
+// pointed at the new control plane, over SSH with the key you gave init (or kvoadm's own).
 // What it can't reach is listed with the command to run.
 func reconnectWorkers(ctx context.Context, o InitOptions, c *client.Client, server string, stdin io.Reader, out io.Writer) error {
 	l, err := c.List(ctx, "Host", "")

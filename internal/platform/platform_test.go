@@ -27,6 +27,11 @@ func TestFromBinary(t *testing.T) {
 	if _, _, err := FromBinary([]byte(Marker + "ubuntu/24.04")); err == nil {
 		t.Error("an unterminated list was accepted")
 	}
+	// A real kevasod has the bare marker too (the constant), before the stamp: the stamp is found.
+	twice := append(append([]byte("\x7fELF "+Marker+"\x00\x01junk;more\x00"), Stamp()...), "\x00"...)
+	if list, ok, err := FromBinary(twice); err != nil || !ok || !slices.Equal(list, Supported()) {
+		t.Fatalf("the bare marker first: %v %v %v", list, ok, err)
+	}
 	if _, err := Parse("ubuntu"); err == nil {
 		t.Error("a malformed entry was accepted")
 	}
