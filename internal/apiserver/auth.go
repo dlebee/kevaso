@@ -421,6 +421,12 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "%s", err))
 			return
 		}
+		if id.Type == "host" && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			if err := s.removedHostCert(r.Context(), id.Name, r.TLS.PeerCertificates[0]); err != nil {
+				writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "%s", err))
+				return
+			}
+		}
 		ctx := context.WithValue(context.WithValue(r.Context(), identityKey, id), groupsKey, groups)
 		r = r.WithContext(ctx)
 		if r.URL.Path == "/admin/certs" {
@@ -538,7 +544,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errf(code, http.StatusText(code), "%s", err))
 		return
 	}
-	s.signAndReply(w, []byte(req.CSR), id)
+	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
 }
 
 // issueUserCert: only through the admin socket (root on a control-plane host) can a user
@@ -558,14 +564,29 @@ func (s *Server) issueUserCert(w http.ResponseWriter, r *http.Request, caller pk
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
 		return
 	}
-	s.signAndReply(w, []byte(req.CSR), id)
+	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
 }
 
-func (s *Server) signAndReply(w http.ResponseWriter, csr []byte, id pki.Identity) {
-	cert, err := s.auth.CA.SignCSR(csr, id, s.clock.Now(), s.certTTL())
+func (s *Server) signAndReply(ctx context.Context, w http.ResponseWriter, csr []byte, id pki.Identity) {
+	now := s.clock.Now()
+	earliest := time.Time{}
+	if id.Type == "host" {
+		if rec, ok := s.hostRemoval(ctx, id.Name); ok {
+			// One second after the stored removal, so NotBefore (a whole second) is after it
+			// even though SignCSR otherwise backdates by a minute.
+			earliest = rec.RemovedAt.Add(time.Second)
+		}
+	}
+	cert, err := s.auth.CA.SignCSRNotBefore(csr, id, now, s.certTTL(), earliest)
 	if err != nil {
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
 		return
+	}
+	if id.Type == "host" {
+		if err := s.noteIssuedHostCert(ctx, id.Name, cert); err != nil {
+			writeErr(w, errf(http.StatusInternalServerError, "InternalError", "recording the certificate: %s", err))
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, CertResponse{Certificate: string(cert), CA: string(s.auth.CA.PEM)})
 }

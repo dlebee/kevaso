@@ -2340,5 +2340,41 @@
    "./internal/policy"
   ],
   "protects": "a read-only or path-limited OpenShell endpoint blocks the request instead of only logging it"
+  },
+  {
+  "id": "G-440",
+  "guard": "deleting a host that still has silos needs confirmOff",
+  "file": "internal/apiserver/hostdelete.go",
+  "find": "if n > 0 && r.URL.Query().Get(\"confirmOff\") != \"true\" { // deleting a host that still has silos needs ?confirmOff=true",
+  "replace": "if n > 0 && r.URL.Query().Get(\"confirmOff\") != \"true\" && false { // deleting a host that still has silos needs ?confirmOff=true",
+  "mutation": "a host with silos is deleted without confirmation",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host with silos is not deleted without ?confirmOff=true"
+  },
+  {
+  "id": "G-441",
+  "guard": "a silo that cannot move stays unplaced when its host is deleted",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "if !place { // HostDeleted: a silo that cannot move stays in the store, unplaced",
+  "replace": "if !place && false { // HostDeleted: a silo that cannot move stays in the store, unplaced",
+  "mutation": "a silo that cannot move is placed after its host is deleted",
+  "packages": [
+   "./internal/controllers/silo"
+  ],
+  "protects": "a silo that cannot move stays in the store, unplaced, when its host is deleted"
+  },
+  {
+  "id": "G-442",
+  "guard": "a certificate issued before a host was removed is refused",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "if cert.NotBefore.Before(rec.RemovedAt) || !slices.Contains(rec.Serials, serial) { // a certificate issued before this host was removed is refused",
+  "replace": "if false && (cert.NotBefore.Before(rec.RemovedAt) || !slices.Contains(rec.Serials, serial)) { // a certificate issued before this host was removed is refused",
+  "mutation": "a certificate issued before the host was removed is accepted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host certificate issued before that host was removed is refused"
   }
 ]

@@ -306,10 +306,12 @@ func (c *Client) UpdateStatus(ctx context.Context, obj meta.Object) error {
 }
 
 // Precondition says which object a delete is for: the one with this UID and, when set, at this
-// resourceVersion. Anything else under the name is not deleted (a Conflict error).
+// resourceVersion. Anything else under the name is not deleted (a Conflict error). ConfirmOff
+// is the confirmation a Host delete needs when silos are still placed on it or moving from it.
 type Precondition struct {
 	UID             string
 	ResourceVersion string
+	ConfirmOff      bool
 }
 
 // Seen is the precondition "exactly what I read": obj's UID and version.
@@ -337,6 +339,9 @@ func (c *Client) Delete(ctx context.Context, kind, namespace, name string, pre .
 		}
 		if x.ResourceVersion != "" {
 			q.Set("resourceVersion", x.ResourceVersion)
+		}
+		if x.ConfirmOff {
+			q.Set("confirmOff", "true")
 		}
 	}
 	if len(q) > 0 {

@@ -379,18 +379,29 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 		}
 		o.KvoContext = kctx
 		if args[0] == "uninstall" {
-			return hostRemoveSystemNode(ctx, args[1], kctx, false, out)
+			return hostRemoveSystemNode(ctx, args[1], kctx, false, false, stdin, out)
 		}
 		return hostInstallControlPlane(ctx, args[1], o, stdin, out)
 	case "remove":
 		if len(args) < 2 {
-			return errors.New("host remove NAME")
+			return errors.New("host remove NAME [--confirm-off] [--context NAME]")
 		}
-		kctx := ""
-		if len(args) == 4 && args[2] == "--context" {
-			kctx = args[3]
+		name, kctx, confirmOff := args[1], "", false
+		for i := 2; i < len(args); i++ {
+			switch args[i] {
+			case "--confirm-off":
+				confirmOff = true
+			case "--context":
+				if i+1 >= len(args) {
+					return errors.New("--context needs a value")
+				}
+				i++
+				kctx = args[i]
+			default:
+				return fmt.Errorf("unknown flag %s", args[i])
+			}
 		}
-		return hostRemoveSystemNode(ctx, args[1], kctx, true, out)
+		return hostRemoveSystemNode(ctx, name, kctx, true, confirmOff, stdin, out)
 	case "reconnect":
 		return hostReconnect(ctx, args[1:], stdin, out)
 	case "trust-control-plane":
