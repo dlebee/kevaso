@@ -16,7 +16,9 @@ import (
 // TestMetalOpenShell. The ubuntu image has no curl or python, so the sandbox uses the same
 // static client that test copies in. A read-only GET of https://example.com/ is allowed. A POST
 // and a path the rule does not name are the proxy's own HTTP response: CONNECT succeeded, and
-// the status is 403 with a policy_denied body. Detaching the policy (the silo's list), and
+// the status is 403 with a policy_denied body. The rendered endpoint sets enforcement: enforce
+// (OpenShell's schema default is audit, which would only log), so the proxy refuses the POST
+// and the other path with that 403. Detaching the policy (the silo's list), and
 // deleting it while the silo still lists it, is deny-all: the proxy rejects CONNECT, which the
 // client reports as a connection error.
 func TestLabOpenShellPolicy(t *testing.T) {

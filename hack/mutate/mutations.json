@@ -2327,5 +2327,18 @@
    "./internal/apiserver"
   ],
   "protects": "a worker reads an OpenShellPolicy only when a silo on that host names it"
+  },
+  {
+  "id": "G-433",
+  "guard": "an inspected endpoint enforces its protocol, path and access limits",
+  "file": "builtin/kri/openshell/render.go",
+  "find": "\tb.WriteString(\"        enforcement: enforce\\n\") // protocol, path and access limits are enforced",
+  "replace": "\tb.WriteString(\"\") // protocol, path and access limits are enforced",
+  "mutation": "access, path and protocol limits are audit-only",
+  "packages": [
+   "./builtin/kri/openshell",
+   "./internal/policy"
+  ],
+  "protects": "a read-only or path-limited OpenShell endpoint blocks the request instead of only logging it"
   }
 ]

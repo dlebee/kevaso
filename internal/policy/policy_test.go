@@ -119,8 +119,8 @@ func TestGrantsAndOpenShellPoliciesAreOneFile(t *testing.T) {
 		"  kv_0:\n    name: kv_0\n    endpoints:\n      - host: \"a.example.com\"\n        port: 443\n    binaries:\n      - path: \"/**\"\n" +
 		"  kv_1:\n    name: kv_1\n    endpoints:\n      - host: \"b.example.com\"\n        port: 443\n    binaries:\n      - path: \"/**\"\n" +
 		"  osp_b_z:\n    name: osp_b_z\n    endpoints:\n      - host: \"z.example.com\"\n        port: 443\n    binaries:\n      - path: \"/usr/bin/curl\"\n" +
-		"  osp_b_y:\n    name: osp_b_y\n    endpoints:\n      - host: \"y.example.com\"\n        port: 80\n      - host: \"y.example.com\"\n        port: 443\n        path: \"/v1\"\n    binaries:\n      - path: \"/**\"\n" +
-		"  osp_a_web:\n    name: osp_a_web\n    endpoints:\n      - host: \"example.com\"\n        port: 443\n        protocol: rest\n        path: \"/\"\n        access: read-only\n    binaries:\n      - path: \"/**\"\n"
+		"  osp_b_y:\n    name: osp_b_y\n    endpoints:\n      - host: \"y.example.com\"\n        port: 80\n      - host: \"y.example.com\"\n        port: 443\n        path: \"/v1\"\n        enforcement: enforce\n    binaries:\n      - path: \"/**\"\n" +
+		"  osp_a_web:\n    name: osp_a_web\n    endpoints:\n      - host: \"example.com\"\n        port: 443\n        protocol: rest\n        path: \"/\"\n        access: read-only\n        enforcement: enforce\n    binaries:\n      - path: \"/**\"\n"
 	if got != want {
 		t.Fatalf("policy file:\n%s\nwant:\n%s", got, want)
 	}
