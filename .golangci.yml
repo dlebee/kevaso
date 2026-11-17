@@ -5,8 +5,11 @@ linters:
     depguard:
       rules:
         # Built-in plugins use the same interfaces as any provider: api and sdk only.
+        # A plugin's own tests may drive the agent; they are not linked into the plugin.
         builtin:
-          files: ["**/builtin/**"]
+          files:
+            - "**/builtin/**"
+            - "!**/*_test.go"
           deny:
             - pkg: kevaso.com/core/internal
               desc: built-in plugins may import only kevaso.com/core/api and kevaso.com/core/sdk

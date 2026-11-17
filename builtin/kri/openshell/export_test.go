@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"sync"
+
+	"kevaso.com/core/sdk/kri"
 )
 
 // TestHost is the in-memory OpenShell host, safe for the agent to call from several goroutines.
@@ -22,6 +24,20 @@ func (h *TestHost) Runtime() *Runtime {
 	rt := newRuntime(h.fake, "")
 	rt.Host = h
 	return rt
+}
+
+// FailOn makes the next openshell commands whose line contains substr fail. Empty clears it.
+func (h *TestHost) FailOn(substr string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.fake.failOn = substr
+}
+
+// Policy is the policy file on disk for id.
+func (h *TestHost) Policy(id kri.ID) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return string(h.fake.files[policyPath(id)])
 }
 
 // Born is the policy file contents passed to sandbox create ("" until then).

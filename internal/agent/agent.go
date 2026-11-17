@@ -1907,6 +1907,9 @@ func (a *Agent) applyPolicy(ctx context.Context, rt kri.Policied, s *v1.Silo) er
 	}
 	defer clearPolicy(p)
 	if err := rt.SetPolicy(ctx, idOf(s), p); err != nil {
+		_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {
+			setCond(st, "PolicyApplied", meta.ConditionFalse, "NotApplied", err.Error(), s.Generation, a.now()) // a failed push is not reported as applied
+		})
 		return fmt.Errorf("policy: %w", err)
 	}
 	return a.setStatus(ctx, s, func(st *v1.SiloStatus) {

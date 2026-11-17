@@ -733,8 +733,10 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 				return err
 			}
 		}
-		_, err := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "start", SandboxName(id))
-		return err
+		if _, err := r.cli(ctx, s.Gateway, nil, nil, "sandbox", "start", SandboxName(id)); err != nil {
+			return err
+		}
+		return r.pushPolicy(ctx, s) // an existing sandbox is given the policy file as it starts
 	}
 	args := []string{"sandbox", "create", "--name", SandboxName(id), "--detach", "--no-tty", "--no-auto-providers",
 		"--label", "kevaso.com/namespace=" + id.Namespace, "--label", "kevaso.com/name=" + id.Name, "--label", "kevaso.com/uid=" + id.UID,
@@ -1324,10 +1326,14 @@ func (r *Runtime) SetPolicy(ctx context.Context, id kri.ID, p kri.Policy) (err e
 		}
 		want[ProfileID(id, c)] = c
 	}
+	// The file is the pending policy, written before the gateway is asked: a push needs the gateway,
+	// and with it down the saved hash stays as it was. The next start of the sandbox applies this file.
+	if err := r.Host.WriteFile(policyPath(id), []byte(PolicyYAML(p)), 0o600); err != nil {
+		return err
+	}
 	// The providers live in the gateway's store: it must answer. A policy change never brings it
 	// back (only a claimed Start does, review-batch4 claim 4: the Running flag outlives a kevasod
-	// restart, and isn't a claim): with its gateway down, the policy waits for the silo's next
-	// start (the agent applies it after Start).
+	// restart, and isn't a claim).
 	if reach, err := r.reachable(ctx, g); err != nil {
 		return err
 	} else if !reach {
@@ -1376,12 +1382,9 @@ func (r *Runtime) SetPolicy(ctx context.Context, id kri.ID, p kri.Policy) (err e
 	if err := r.revoke(ctx, &s, gone); err != nil {
 		return err
 	}
-	if err := r.Host.WriteFile(policyPath(id), []byte(PolicyYAML(p)), 0o600); err != nil {
-		return err
-	}
 	if s.Created {
 		if _, err := r.cli(ctx, g, nil, nil, "policy", "set", SandboxName(id), "--policy", policyPath(id), "--yes", "--wait"); err != nil {
-			return err
+			return err // a failed push leaves the saved hash unchanged
 		}
 	}
 	s.PolicyHash = h
@@ -1391,6 +1394,18 @@ func (r *Runtime) SetPolicy(ctx context.Context, id kri.ID, p kri.Policy) (err e
 	if s.Created {
 		r.notePushed(s, h) // only a push that ran counts; the hash alone does not
 	}
+	return nil
+}
+
+// pushPolicy sets the sandbox's policy from the file on disk. It does not record the hash:
+// SetPolicy does that, once its own push has succeeded, so a failed push is tried again.
+// A file that still matches the saved hash is remembered as pushed, so the following SetPolicy
+// of that same policy does not push a second time.
+func (r *Runtime) pushPolicy(ctx context.Context, s state) error {
+	if _, err := r.cli(ctx, s.Gateway, nil, nil, "policy", "set", SandboxName(s.ID), "--policy", policyPath(s.ID), "--yes", "--wait"); err != nil {
+		return err
+	}
+	r.notePushed(s, s.PolicyHash)
 	return nil
 }
 

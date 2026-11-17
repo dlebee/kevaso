@@ -2254,5 +2254,41 @@
    "./builtin/kri/openshell"
   ],
   "protects": "a gateway that came up is pushed once more"
+  },
+  {
+  "id": "G-423",
+  "guard": "a failed policy set does not record the hash",
+  "file": "builtin/kri/openshell/runtime.go",
+  "find": "if _, err := r.cli(ctx, g, nil, nil, \"policy\", \"set\", SandboxName(id), \"--policy\", policyPath(id), \"--yes\", \"--wait\"); err != nil {\n\t\t\treturn err // a failed push leaves the saved hash unchanged\n\t\t}",
+  "replace": "if _, err := r.cli(ctx, g, nil, nil, \"policy\", \"set\", SandboxName(id), \"--policy\", policyPath(id), \"--yes\", \"--wait\"); err != nil {\n\t\t\t_ = err // a failed push leaves the saved hash unchanged\n\t\t}",
+  "mutation": "a failed push is recorded as applied",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "the saved hash changes only after a push succeeds"
+  },
+  {
+  "id": "G-424",
+  "guard": "starting an existing sandbox applies the policy file",
+  "file": "builtin/kri/openshell/runtime.go",
+  "find": "return r.pushPolicy(ctx, s) // an existing sandbox is given the policy file as it starts",
+  "replace": "return nil // an existing sandbox is given the policy file as it starts",
+  "mutation": "an existing sandbox starts without its policy file",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "a policy pending while the gateway was down is applied when the sandbox starts"
+  },
+  {
+  "id": "G-425",
+  "guard": "a failed policy push is not reported as applied",
+  "file": "internal/agent/agent.go",
+  "find": "if err := rt.SetPolicy(ctx, idOf(s), p); err != nil {\n\t\t_ = a.setStatus(ctx, s, func(st *v1.SiloStatus) {\n\t\t\tsetCond(st, \"PolicyApplied\", meta.ConditionFalse, \"NotApplied\", err.Error(), s.Generation, a.now()) // a failed push is not reported as applied\n\t\t})\n\t\treturn fmt.Errorf(\"policy: %w\", err)\n\t}",
+  "replace": "if err := rt.SetPolicy(ctx, idOf(s), p); err != nil {\n\t\treturn fmt.Errorf(\"policy: %w\", err) // a failed push is not reported as applied\n\t}",
+  "mutation": "a failed push leaves PolicyApplied true",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "a silo's grants are reported applied only after a push succeeds"
   }
 ]
