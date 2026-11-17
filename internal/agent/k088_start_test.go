@@ -212,6 +212,10 @@ func TestASlowGuestInitStepKeepsItsStartClaimFresh(t *testing.T) {
 		}
 	}()
 	r.waitIn("the silo is reported Running", running)
+	// The agent writes Running, then ends the claim's renewals: a step in between may renew it
+	// once more. After that step, no renewal follows.
+	r.clk.Step(agent.ClaimRefreshEvery)
+	time.Sleep(100 * time.Millisecond)
 	last := claimOf(r.get())
 	for range 3 {
 		r.clk.Step(agent.ClaimRefreshEvery)
