@@ -80,8 +80,13 @@ spec:
 	}
 	// Deny-all rejects CONNECT. hget exits with "error: … Forbidden", the status text Go keeps
 	// from the proxy's 403, and there is no policy_denied body.
+	// With no rule left, the connection itself is refused: either the proxy answers CONNECT with
+	// Forbidden, or the sandbox can't open the connection at all ("connect: permission denied").
 	connectDenied := func(out string, code int) bool {
-		return code != 0 && strings.HasPrefix(out, "error:") && strings.Contains(out, "Forbidden") && !strings.Contains(out, "policy_denied") && !strings.Contains(out, "Example Domain")
+		if code == 0 || !strings.HasPrefix(out, "error:") || strings.Contains(out, "policy_denied") || strings.Contains(out, "Example Domain") {
+			return false
+		}
+		return strings.Contains(out, "Forbidden") || strings.Contains(out, "connect: permission denied")
 	}
 	c.eventually("GET https://example.com/ is allowed", 2*time.Minute, func() (bool, string) {
 		out, code := c.in(ns, "box", get)
