@@ -42,8 +42,10 @@ const (
 )
 
 // labTLS is a client inside a silo: one TLS connection to dest:port with SNI name, then an HTTP
-// line. A refused connection exits non-zero. A completed handshake prints the answer.
-const labTLS = `import socket, ssl, sys
+// line. A refused connection exits non-zero, with no second try: a blocked gate should fail
+// fast. After the handshake it reads until "HTTP/" arrives, the server closes, or a short
+// deadline. One recv can return only the first segment.
+var labTLS = `import socket, ssl, sys, time
 name, dest, port, timeout = sys.argv[1], sys.argv[2], int(sys.argv[3]), float(sys.argv[4])
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 ctx.check_hostname = False
@@ -51,10 +53,9 @@ ctx.verify_mode = ssl.CERT_NONE
 s = socket.create_connection((dest, port), timeout)
 s.settimeout(timeout)
 tls = ctx.wrap_socket(s, server_hostname=name)
-tls.settimeout(timeout)
+tls.settimeout(0.2)
 tls.sendall(b"GET / HTTP/1.0\r\nHost: " + name.encode() + b"\r\n\r\n")
-sys.stdout.buffer.write(tls.recv(180))
-`
+` + labReadUntil("HTTP/", 2)
 
 // TestLabEgressGateClosedRanges is K-124 on a worktree lab (testbed/lab): a grant cannot open a
 // silo's address, loopback, link-local or the mesh, and a name is not dialled to one of them
@@ -381,7 +382,10 @@ func labWaitDeleted(t *testing.T, ctx context.Context, admin, kind, ns, name str
 
 func labAwaitListen(t *testing.T, ctx context.Context, admin, ns, silo string) string {
 	t.Helper()
-	script := fmt.Sprintf("import socket; s=socket.create_connection(('127.0.0.1',%d),5); s.sendall(b'GET / HTTP/1.0\\r\\n\\r\\n'); print(s.recv(400).decode())", labListenPort)
+	script, err := labProbeScript(labListenPort, silo)
+	if err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(30 * time.Second)
 	var last string
 	var code int
