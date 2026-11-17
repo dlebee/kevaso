@@ -362,6 +362,47 @@ func (s *Server) checkNewGrants(ctx context.Context, t target, what string, had,
 	return nil
 }
 
+// checkOpenShellPolicyNames: a person giving a silo (or a set's template) an OpenShellPolicy it
+// didn't have needs that object to exist, the same 422 as a missing grant. Other runtimes are
+// refused by semantic, which names the runtime; this check stays quiet for them.
+func (s *Server) checkOpenShellPolicyNames(ctx context.Context, t target, obj meta.Object) error {
+	var what, runtime string
+	var had, names []string
+	switch o := obj.(type) {
+	case *v1.Silo:
+		what, runtime, names = "silo "+o.Name, o.Spec.Runtime, o.Spec.OpenShellPolicies
+		if prev, ok := s.stored(ctx, t).(*v1.Silo); ok {
+			had = prev.Spec.OpenShellPolicies
+		}
+	case *v1.SiloSet:
+		what, runtime, names = "siloset "+o.Name, o.Spec.Template.Runtime, o.Spec.Template.OpenShellPolicies
+		if prev, ok := s.stored(ctx, t).(*v1.SiloSet); ok {
+			had = prev.Spec.Template.OpenShellPolicies
+		}
+	default:
+		return nil
+	}
+	if !policy.SelfEnforced(runtime) {
+		return nil
+	}
+	if _, ok := person(ctx); !ok || s.auth == nil {
+		return nil
+	}
+	for _, name := range names {
+		if slices.Contains(had, name) {
+			continue
+		}
+		_, err := s.store.Get(ctx, store.Key{Kind: "OpenShellPolicy", Namespace: t.namespace, Name: name})
+		if errors.Is(err, store.ErrNotFound) {
+			return errf(http.StatusUnprocessableEntity, "Invalid", "%s: openshell policy %q doesn't exist in namespace %s", what, name, t.namespace)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // secretLabels are a stored secret's labels (nil if it doesn't exist), for RBAC selector rules.
 func (s *Server) secretLabels(ctx context.Context, t target) map[string]string {
 	if t.kind.Kind != "Secret" || t.name == "" {
@@ -581,7 +622,17 @@ func (s *Server) checkRuntimeFit(ctx context.Context, t target, obj meta.Object)
 			grants = append(grants, g.(*v1.Grant))
 		}
 	}
-	problems = append(problems, policy.Check(silo, grants)...)
+	var policies []*v1.OpenShellPolicy
+	for _, name := range silo.Spec.OpenShellPolicies {
+		o, err := s.store.Get(ctx, store.Key{Kind: "OpenShellPolicy", Namespace: t.namespace, Name: name})
+		if err != nil {
+			continue // checkOpenShellPolicyNames reports missing policies
+		}
+		if p, _, err := v1.Decode(o.Data); err == nil {
+			policies = append(policies, p.(*v1.OpenShellPolicy))
+		}
+	}
+	problems = append(problems, policy.Check(silo, grants, policies)...)
 	if len(problems) > 0 {
 		return errf(http.StatusUnprocessableEntity, "Invalid", "Silo %s: %s", silo.Name, strings.Join(problems, "; "))
 	}

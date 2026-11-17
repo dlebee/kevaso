@@ -455,3 +455,14 @@ func (a *Agent) grantList() []*v1.Grant {
 	}
 	return out
 }
+
+func (a *Agent) policyList() []*v1.OpenShellPolicy {
+	if a.policies == nil {
+		return nil
+	}
+	var out []*v1.OpenShellPolicy
+	for _, o := range a.policies.List() {
+		out = append(out, o.(*v1.OpenShellPolicy))
+	}
+	return out
+}

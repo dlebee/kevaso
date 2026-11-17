@@ -1,5 +1,13 @@
 Silo spec.runtime="kvm"
   Silo s: spec.runtime must be one of cloud-hypervisor, openshell, docker, podman, openshell-container
+Silo spec.openshellPolicies=["Bad"]
+  Silo s: openshellPolicies: at most 32 names, each a lower-case name (letters, digits, -); openshellPolicies is only for runtime openshell or openshell-container; docker can't use one
+Silo spec.openshellPolicies=["web","web"]
+  Silo s: openshellPolicies names must be unique; openshellPolicies is only for runtime openshell or openshell-container; docker can't use one
+Silo spec.openshellPolicies=["web"]
+  Silo s: openshellPolicies is only for runtime openshell or openshell-container; docker can't use one
+SiloSet spec.template.openshellPolicies=["web"]
+  SiloSet set: template: openshellPolicies is only for runtime openshell or openshell-container; docker can't use one
 Silo spec.resources={"cpu":-1}
   Silo s: spec.resources.cpu can't be negative
 Silo spec.tolerations=[{"key":""}]
@@ -242,6 +250,18 @@ Grant spec.secrets=[{"name":"k","deliver":"file","path":"/run/k","approval":{"re
   Grant g: approval works with deliver: broker or inject (and operations.sign): once a value sits in a file or an env var, nothing can ask again
 Grant spec.egress=[{"to":"not a host"}]
   Grant g: egress "not a host": not a CIDR, an address or a host name
+OpenShellPolicy spec.networkPolicies!
+  OpenShellPolicy p: an OpenShellPolicy needs 1 to 32 network policies
+OpenShellPolicy spec.networkPolicies=[{"name":"Bad","endpoints":[{"host":"example.com","port":443}]}]
+  OpenShellPolicy p: every network policy needs a name (lower-case letters, digits, -)
+OpenShellPolicy spec.networkPolicies=[{"name":"web","endpoints":[{"host":"example.com","port":443}]},{"name":"web","endpoints":[{"host":"example.com","port":80}]}]
+  OpenShellPolicy p: network policy names must be unique
+OpenShellPolicy spec.networkPolicies=[{"name":"web","endpoints":[]}]
+  OpenShellPolicy p: every network policy needs 1 to 16 endpoints
+OpenShellPolicy spec.networkPolicies=[{"name":"web","endpoints":[{"host":"example.com","port":0}]}]
+  OpenShellPolicy p: every endpoint needs a host, a port from 1 to 65535, protocol rest or none, and access read-only, read-write or none
+OpenShellPolicy spec.networkPolicies=[{"name":"web","endpoints":[{"host":"example.com","port":443}],"binaries":[]}]
+  OpenShellPolicy p: binaries, when set, are 1 to 16 paths
 Grant spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"*.example.com"}}]
   Grant g: secret k: to.host "*.example.com" must be one host name
 Grant spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"a.example.com","format":"Bearer"}}]

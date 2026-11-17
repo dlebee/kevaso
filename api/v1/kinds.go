@@ -35,6 +35,7 @@ func init() {
 	register(KindInfo{Kind: "Secret", Plural: "secrets", Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Secret{} }})
 	register(KindInfo{Kind: "ClusterSecret", Plural: "clustersecrets", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &ClusterSecret{} }})
 	register(KindInfo{Kind: "Grant", Plural: "grants", Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Grant{} }})
+	register(KindInfo{Kind: "OpenShellPolicy", Plural: "openshellpolicies", Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &OpenShellPolicy{} }})
 	register(KindInfo{Kind: "IngressClass", Plural: "ingressclasses", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &IngressClass{} }})
 	register(KindInfo{Kind: "Ingress", Plural: "ingresses", ShortNames: []string{"ing"}, Scope: Namespaced, HasSpec: true, New: func() meta.Object { return &Ingress{} }})
 	register(KindInfo{Kind: "Issuer", Plural: "issuers", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &Issuer{} }})

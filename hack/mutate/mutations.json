@@ -2290,5 +2290,42 @@
    "./builtin/kri/openshell"
   ],
   "protects": "a silo's grants are reported applied only after a push succeeds"
+  },
+  {
+  "id": "G-430",
+  "guard": "admission: an OpenShellPolicy host in a closed range is refused",
+  "file": "api/v1/openshellpolicy.go",
+  "find": "if closed, why := ClosedRange(pfx); why != \"\" { // an OpenShellPolicy never opens a closed range",
+  "replace": "if closed, why := ClosedRange(pfx); why != \"\" && false { // an OpenShellPolicy never opens a closed range",
+  "mutation": "a closed-range host is admitted",
+  "packages": [
+   "./api/v1",
+   "./internal/apiserver"
+  ],
+  "protects": "an OpenShellPolicy never opens a silo, service, mesh, loopback or link-local range"
+  },
+  {
+  "id": "G-431",
+  "guard": "admission: openshellPolicies only on an openshell runtime",
+  "file": "internal/apiserver/semantic.go",
+  "find": "if len(o.Spec.OpenShellPolicies) > 0 && !policy.SelfEnforced(o.Spec.Runtime) { // openshellPolicies only on an openshell runtime",
+  "replace": "if len(o.Spec.OpenShellPolicies) > 0 && !policy.SelfEnforced(o.Spec.Runtime) && false { // openshellPolicies only on an openshell runtime",
+  "mutation": "another runtime may name an OpenShellPolicy",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "only openshell and openshell-container may name an OpenShellPolicy"
+  },
+  {
+  "id": "G-432",
+  "guard": "a worker reads an OpenShellPolicy only when a silo on it names it",
+  "file": "internal/apiserver/hostread.go",
+  "find": "case \"Grant\", \"Secret\", \"Lease\", \"Ingress\", \"OpenShellPolicy\": // a worker reads an OpenShellPolicy only when a silo on it names it",
+  "replace": "case \"Grant\", \"Secret\", \"Lease\", \"Ingress\": // a worker reads an OpenShellPolicy only when a silo on it names it",
+  "mutation": "a worker may read every OpenShellPolicy",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a worker reads an OpenShellPolicy only when a silo on that host names it"
   }
 ]

@@ -243,9 +243,29 @@ type PolicyStager interface {
 }
 
 // Policy is what a silo may reach outside the cluster, and the credentials injected on the way.
+// Rules are the silo's OpenShellPolicies, rendered after the grant endpoints.
 type Policy struct {
 	Egress      []Endpoint
 	Credentials []Credential
+	Rules       []NetworkRule
+}
+
+// NetworkRule is one OpenShell network policy, already named so it cannot collide with the kv_N
+// grant rules. Empty Binaries means every program.
+type NetworkRule struct {
+	Name      string
+	Endpoints []RuleEndpoint
+	Binaries  []string
+}
+
+// RuleEndpoint is one destination of a NetworkRule. Empty Protocol, Path and Access are omitted
+// from the policy file.
+type RuleEndpoint struct {
+	Host     string
+	Port     int
+	Protocol string
+	Path     string
+	Access   string
 }
 
 // Endpoint is one destination: a host name ("api.github.com", "*.github.com") or one IPv4 address, and

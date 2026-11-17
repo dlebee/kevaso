@@ -212,7 +212,7 @@ landlock:
 // is a rule for any program (`/**`: a rule without binaries allows nothing, E037). Hosts that get a
 // credential are inspected (rest), so the proxy can swap the placeholder.
 func PolicyYAML(p kri.Policy) string {
-	if len(p.Egress) == 0 {
+	if len(p.Egress) == 0 && len(p.Rules) == 0 {
 		return basePolicy
 	}
 	rest := map[string]bool{}
@@ -232,6 +232,29 @@ func PolicyYAML(p kri.Policy) string {
 			b.WriteString("        protocol: rest\n        access: read-write\n")
 		}
 		b.WriteString("    binaries:\n      - path: \"/**\"\n")
+	}
+	for _, rule := range p.Rules {
+		fmt.Fprintf(&b, "  %s:\n    name: %s\n    endpoints:\n", rule.Name, rule.Name)
+		for _, e := range rule.Endpoints {
+			fmt.Fprintf(&b, "      - host: %q\n        port: %d\n", e.Host, e.Port)
+			if e.Protocol != "" {
+				fmt.Fprintf(&b, "        protocol: %s\n", e.Protocol)
+			}
+			if e.Path != "" {
+				fmt.Fprintf(&b, "        path: %q\n", e.Path)
+			}
+			if e.Access != "" {
+				fmt.Fprintf(&b, "        access: %s\n", e.Access)
+			}
+		}
+		bins := rule.Binaries
+		if len(bins) == 0 {
+			bins = []string{"/**"}
+		}
+		b.WriteString("    binaries:\n")
+		for _, path := range bins {
+			fmt.Fprintf(&b, "      - path: %q\n", path)
+		}
 	}
 	return b.String()
 }

@@ -93,7 +93,7 @@ func TestWorkerReadScope(t *testing.T) {
 		Spec:       v1.GrantSpec{Egress: []v1.EgressRule{{To: "example.com"}}}})
 
 	cluster := map[string]bool{"Host": true, "Silo": true, "Service": true, "IngressClass": true}
-	related := map[string]bool{"Grant": true, "Secret": true, "Lease": true, "Ingress": true}
+	related := map[string]bool{"Grant": true, "Secret": true, "Lease": true, "Ingress": true, "OpenShellPolicy": true}
 	for _, k := range v1.Kinds() {
 		if k.Kind == "ClusterSecret" {
 			continue
@@ -236,6 +236,49 @@ func TestWorkerReadsOnlyWhatIsOnIt(t *testing.T) {
 	}
 	if err := worker.Get(e.ctx, "Grant", "idle", "unused", &v1.Grant{}); code(err) != http.StatusForbidden {
 		t.Fatalf("grant in a namespace with nothing here: want 403, got %v", err)
+	}
+
+	osp := func(name, namespace string) *v1.OpenShellPolicy {
+		return &v1.OpenShellPolicy{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "OpenShellPolicy"},
+			ObjectMeta: meta.ObjectMeta{Name: name, Namespace: namespace},
+			Spec: v1.OpenShellPolicySpec{NetworkPolicies: []v1.OpenShellNetworkPolicy{{
+				Name: "web", Endpoints: []v1.OpenShellEndpoint{{Host: "example.com", Port: 443}},
+			}}}}
+	}
+	for _, name := range []string{"use", "leave", "far"} {
+		mustCreate(t, e, osp(name, "dev"))
+	}
+	mustCreate(t, e, osp("unused", "idle"))
+	osSpec := func(policy string) v1.SiloSpec {
+		return v1.SiloSpec{Runtime: "openshell", Container: &v1.ContainerSource{Image: "ubuntu-24.04"},
+			Resources: v1.Resources{CPU: 1, Memory: "256Mi"}, OpenShellPolicies: []string{policy}}
+	}
+	place(t, e, "osp-web", "dev", "hv2", osSpec("use"))
+	place(t, e, "osp-far", "dev", "hv3", osSpec("far"))
+	leaving := place(t, e, "osp-moving", "dev", "hv3", osSpec("leave"))
+	leaving.Status.MovingFrom = "hv2"
+	if err := e.admin.UpdateStatus(e.ctx, leaving); err != nil {
+		t.Fatal(err)
+	}
+	policies := namesOf(t, worker, e.ctx, "OpenShellPolicy", "")
+	for _, want := range []string{"use", "leave"} {
+		if !hasName(policies, "dev", want) {
+			t.Errorf("openshell policy %s not listed: %v", want, policies)
+		}
+	}
+	for _, ban := range []string{"far", "unused"} {
+		if hasName(policies, "dev", ban) || hasName(policies, "idle", ban) {
+			t.Errorf("openshell policy %s listed: %v", ban, policies)
+		}
+	}
+	if err := worker.Get(e.ctx, "OpenShellPolicy", "dev", "leave", &v1.OpenShellPolicy{}); err != nil {
+		t.Fatalf("policy of a silo moving away: %v", err)
+	}
+	if err := worker.Get(e.ctx, "OpenShellPolicy", "dev", "far", &v1.OpenShellPolicy{}); code(err) != http.StatusForbidden {
+		t.Fatalf("policy of a silo on another host: want 403, got %v", err)
+	}
+	if err := worker.Get(e.ctx, "OpenShellPolicy", "idle", "unused", &v1.OpenShellPolicy{}); code(err) != http.StatusForbidden {
+		t.Fatalf("policy nothing here names: want 403, got %v", err)
 	}
 
 	secrets := namesOf(t, worker, e.ctx, "Secret", "")

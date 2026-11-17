@@ -340,3 +340,119 @@ func TestASandboxIsBornWithTheSilosGrants(t *testing.T) {
 		t.Fatalf("a grant added while the silo was not started was not the policy it was created with:\n%s", got)
 	}
 }
+
+// Changing or deleting an OpenShellPolicy requeues the local silo that lists it, and the running
+// sandbox gets the new file on the existing SetPolicy path. A deleted policy is left out, so a
+// silo with nothing else falls back to deny-all.
+func TestAnOpenShellPolicyIsPushedOnChangeAndDelete(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	st := store.NewMemory(0)
+	srv, err := apiserver.New(st, clock.Real{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := kms.OpenLocal(t.TempDir() + "/k.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetVault(&secrets.Vault{Store: st, KMS: key, Now: time.Now})
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	c := client.New(ts.URL)
+	tm := func(k string) meta.TypeMeta { return meta.TypeMeta{APIVersion: v1.APIVersion, Kind: k} }
+	if err := c.Create(ctx, &v1.Namespace{TypeMeta: tm("Namespace"), ObjectMeta: meta.ObjectMeta{Name: "dev"}}); err != nil {
+		t.Fatal(err)
+	}
+	pol := &v1.OpenShellPolicy{TypeMeta: tm("OpenShellPolicy"), ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "dev"},
+		Spec: v1.OpenShellPolicySpec{NetworkPolicies: []v1.OpenShellNetworkPolicy{{
+			Name: "web", Endpoints: []v1.OpenShellEndpoint{{Host: "example.com", Port: 443, Protocol: "rest", Path: "/", Access: v1.AccessReadOnly}},
+		}}}}
+	if err := c.Create(ctx, pol); err != nil {
+		t.Fatal(err)
+	}
+	s := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "box", Namespace: "dev"},
+		Spec: v1.SiloSpec{Runtime: "openshell", Container: &v1.ContainerSource{Image: "ubuntu-24.04"},
+			Resources: v1.Resources{CPU: 1, Memory: "256Mi"}, OpenShellPolicies: []string{"web"}}}
+	if err := c.Create(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	s.Status.Host, s.Status.Phase = "hv1", "Scheduled"
+	if err := c.UpdateStatus(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	h := openshell.NewTestHost()
+	var logMu sync.Mutex
+	logEnded := false
+	a := &agent.Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"openshell": h.Runtime()},
+		Clock: clock.Real{}, ClaimRefresh: time.Hour,
+		Log: func(f string, args ...any) {
+			logMu.Lock()
+			defer logMu.Unlock()
+			if !logEnded {
+				t.Logf(f, args...)
+			}
+		}}
+	runCtx, runCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.Run(runCtx)
+	}()
+	t.Cleanup(func() {
+		runCancel()
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+			t.Errorf("the agent did not stop")
+		}
+		logMu.Lock()
+		logEnded = true
+		logMu.Unlock()
+	})
+	id := func() kri.ID {
+		var cur v1.Silo
+		if err := c.Get(ctx, "Silo", "dev", "box", &cur); err != nil {
+			t.Fatal(err)
+		}
+		return kri.ID{Namespace: cur.Namespace, Name: cur.Name, UID: cur.UID}
+	}
+	wait := func(pred func(string) bool, what string) {
+		t.Helper()
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			got := h.Policy(id())
+			if pred(got) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s\npolicy:\n%s\n%s", what, got, h.Commands())
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	wait(func(got string) bool {
+		return strings.Contains(got, `host: "example.com"`) && strings.Contains(got, "osp_web_web") && strings.Contains(got, "access: read-only")
+	}, "the sandbox was not given the policy")
+	for attempt := 0; ; attempt++ {
+		var cur v1.OpenShellPolicy
+		if err := c.Get(ctx, "OpenShellPolicy", "dev", "web", &cur); err != nil {
+			t.Fatal(err)
+		}
+		cur.Spec.NetworkPolicies[0].Endpoints[0].Host = "example.org"
+		err := c.Update(ctx, &cur)
+		if err == nil {
+			break
+		}
+		if !client.IsConflict(err) || attempt > 20 {
+			t.Fatal(err)
+		}
+	}
+	wait(func(got string) bool {
+		return strings.Contains(got, `host: "example.org"`) && !strings.Contains(got, "example.com")
+	}, "a changed policy was not pushed")
+	if err := c.Delete(ctx, "OpenShellPolicy", "dev", "web"); err != nil {
+		t.Fatal(err)
+	}
+	wait(func(got string) bool { return !strings.Contains(got, "network_policies") }, "deleting the policy did not fall back to deny-all")
+}
