@@ -108,11 +108,52 @@ func reset(h hostRunner, o ResetOptions, stdin string) (string, error) {
 	return out.String(), err
 }
 
+// shortSiloWait makes reset's wait for stopping silos test-sized.
+func shortSiloWait(t *testing.T) {
+	w, p := resetSiloWait, resetSiloPoll
+	resetSiloWait, resetSiloPoll = 20*time.Millisecond, time.Millisecond
+	t.Cleanup(func() { resetSiloWait, resetSiloPoll = w, p })
+}
+
+// stoppingHost is a host whose silos are gone after the first look: deleted, still stopping.
+type stoppingHost struct {
+	*fakeResetHost
+	first string
+	looks int
+}
+
+func (s *stoppingHost) Run(ctx context.Context, cmd string, in []byte) ([]byte, error) {
+	if cmd == hostreset.InspectScript {
+		s.looks++
+		if s.looks == 1 {
+			return []byte(s.first), nil
+		}
+	}
+	return s.fakeResetHost.Run(ctx, cmd, in)
+}
+
+// Right after kvo delete silo, the worker is still stopping it: reset waits for it to go, then
+// resets, instead of refusing a host that is about to be empty.
+func TestResetWaitsForSilosStillStopping(t *testing.T) {
+	shortSiloWait(t)
+	rec := &hostreset.Record{State: baseState}
+	busy := newResetHost(t, rec, []string{"vm kevaso-silo-0fa4ee1a6c.service"}, nil, nil, hostreset.Flags{})
+	h := &stoppingHost{fakeResetHost: newResetHost(t, rec, nil, nil, nil, hostreset.Flags{}), first: busy.inspection}
+	out, err := reset(h, ResetOptions{Yes: true}, "")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out, "in case they're still stopping after a delete") || !strings.Contains(out, "→ they stopped") || h.looks < 2 {
+		t.Fatalf("looks %d:\n%s", h.looks, out)
+	}
+}
+
 func TestResetRefusesAHostWithSilos(t *testing.T) {
+	shortSiloWait(t)
 	rec := &hostreset.Record{State: baseState}
 	h := newResetHost(t, rec, []string{"container web/api"}, nil, nil, hostreset.Flags{})
 	_, err := reset(h, ResetOptions{Yes: true}, "")
-	if !errors.Is(err, hostreset.ErrSilos) || !strings.Contains(err.Error(), "web/api") {
+	if !errors.Is(err, hostreset.ErrSilos) || !strings.Contains(err.Error(), "web/api") || !strings.Contains(err.Error(), "they are running, not stopping") {
 		t.Fatalf("got %v", err)
 	}
 	if len(h.ran) != 0 {
