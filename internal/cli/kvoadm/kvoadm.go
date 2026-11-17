@@ -645,16 +645,18 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	_ = annotateSSH(ctx, c, o.Name, fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))), conn.Fingerprint)
 
 	// 7. The recovery key for secrets: made on the host, shown once, here, and never again.
-	if rk, err := conn.Run(ctx, "kevasod admin recovery-key", nil); err == nil {
+	rk, err := conn.Run(ctx, "kevasod admin recovery-key", nil)
+	switch {
+	case err == nil:
 		var r client.RecoveryKey
 		if json.Unmarshal(lastLine(rk), &r) == nil && r.RecoveryKey != "" {
 			_, _ = fmt.Fprintf(out, "\nRecovery key for secrets (the spare key to them; shown only now, keep it offline):\n\n    %s\n\n", r.RecoveryKey)
 		}
-	} else if !strings.Contains(err.Error(), "AlreadyExists") {
+	case !strings.Contains(err.Error(), "AlreadyExists"):
 		return fmt.Errorf("recovery key: %w", err)
-	} else if restore != nil {
+	case restore != nil:
 		say("the recovery key is still the one you restored with")
-	} else if existing {
+	case existing:
 		say("the recovery key is still this cluster's: no new one is made")
 	}
 	// 8. After a restore, or on a machine that took over the cluster's data: the workers, pointed
