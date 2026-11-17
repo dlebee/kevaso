@@ -3,18 +3,22 @@
 package e2e
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"kevaso.com/core/internal/cli/kvo"
 )
 
 // TestLabOpenShellPolicy is an OpenShellPolicy on a pair lab, the same env file as
-// TestMetalOpenShell. The ubuntu image has no curl, so the silo is born on a policy that can
-// reach the Ubuntu archives, installs curl, and is then pointed at a read-only GET of
-// https://example.com/. A POST and a path the rule does not name are refused by the proxy.
-// Detaching the policy (the silo's list) refuses the curl, and deleting the policy while the
-// silo still lists it falls back to deny-all.
+// TestMetalOpenShell. The ubuntu image has no curl or python, so the sandbox uses the same
+// static client that test copies in. A read-only GET of https://example.com/ is allowed. A POST
+// and a path the rule does not name are the proxy's own HTTP response: CONNECT succeeded, and
+// the status is 403 with a policy_denied body. Detaching the policy (the silo's list), and
+// deleting it while the silo still lists it, is deny-all: the proxy rejects CONNECT, which the
+// client reports as a connection error.
 func TestLabOpenShellPolicy(t *testing.T) {
 	c := metal(t)
 	ns := "ospol"
@@ -39,24 +43,6 @@ spec:
 	}
 	c.apply(fmt.Sprintf(`apiVersion: kevaso/v1
 kind: OpenShellPolicy
-metadata: { name: apt, namespace: %s }
-spec:
-  networkPolicies:
-    - name: apt
-      endpoints:
-        - { host: archive.ubuntu.com, port: 80 }
-        - { host: archive.ubuntu.com, port: 443 }
-        - { host: security.ubuntu.com, port: 80 }
-        - { host: security.ubuntu.com, port: 443 }
----
-%s`, ns, silo("apt")))
-	c.waitRunning(ns, 35*time.Minute, "box")
-	if out, code := c.in(ns, "box", "DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl"); code != 0 {
-		t.Fatalf("install curl: %s", out)
-	}
-
-	c.apply(fmt.Sprintf(`apiVersion: kevaso/v1
-kind: OpenShellPolicy
 metadata: { name: example, namespace: %s }
 spec:
   networkPolicies:
@@ -69,33 +55,47 @@ spec:
           access: read-only
 ---
 %s`, ns, silo("example")))
-	get := `curl -sS -o /tmp/ex -w '%{http_code}' https://example.com/; echo; cat /tmp/ex`
-	post := `curl -sS -o /tmp/ex -w '%{http_code}' -X POST https://example.com/; echo; cat /tmp/ex`
-	other := `curl -sS -o /tmp/ex -w '%{http_code}' https://example.com/not-allowed; echo; cat /tmp/ex`
-	allowed := func(out string, code int) bool {
-		return code == 0 && strings.Contains(out, "200") && strings.Contains(out, "Example Domain")
+	c.waitRunning(ns, 35*time.Minute, "box")
+
+	// OpenShell takes at most 4 MiB of piped stdin: the client is compressed, as in
+	// TestMetalOpenShell.
+	hget := buildHget(t, c.arch)
+	var o bytes.Buffer
+	if code := kvo.Run(c.ctx, []string{"exec", "silo", "box", "-n", ns, "--", "sh", "-c", "gunzip -c > /sandbox/hget && chmod +x /sandbox/hget"}, bytes.NewReader(hget), &o, &o); code != 0 {
+		t.Fatalf("upload hget: %d %s", code, o.String())
 	}
-	// A proxy that let the request through shows the origin: the page, a 405, or its 404.
-	// A refusal is curl failing, or a body that is none of those.
-	refused := func(out string, code int) bool {
-		origin := strings.Contains(out, "Example Domain") || strings.Contains(out, "405") || strings.Contains(out, "Not Found")
-		return code != 0 || !origin
+
+	get := `/sandbox/hget https://example.com/`
+	post := `/sandbox/hget POST https://example.com/`
+	other := `/sandbox/hget https://example.com/not-allowed`
+	allowed := func(out string, code int) bool {
+		return code == 0 && strings.HasPrefix(out, "200") && strings.Contains(out, "Example Domain")
+	}
+	// The host is allowed, so the proxy accepts CONNECT and answers the request: HTTP 403,
+	// body policy_denied. hget prints that status and exits 0.
+	proxyDenied := func(out string, code int) bool {
+		return code == 0 && strings.HasPrefix(out, "403") && strings.Contains(out, "policy_denied") && !strings.Contains(out, "Example Domain")
+	}
+	// Deny-all rejects CONNECT. hget exits with "error: … Forbidden", the status text Go keeps
+	// from the proxy's 403, and there is no policy_denied body.
+	connectDenied := func(out string, code int) bool {
+		return code != 0 && strings.HasPrefix(out, "error:") && strings.Contains(out, "Forbidden") && !strings.Contains(out, "policy_denied") && !strings.Contains(out, "Example Domain")
 	}
 	c.eventually("GET https://example.com/ is allowed", 2*time.Minute, func() (bool, string) {
 		out, code := c.in(ns, "box", get)
 		return allowed(out, code), fmt.Sprintf("exit %d %s", code, out)
 	})
-	if out, code := c.in(ns, "box", post); !refused(out, code) {
+	if out, code := c.in(ns, "box", post); !proxyDenied(out, code) {
 		t.Fatalf("POST was not refused by the proxy: exit %d %s", code, out)
 	}
-	if out, code := c.in(ns, "box", other); !refused(out, code) {
+	if out, code := c.in(ns, "box", other); !proxyDenied(out, code) {
 		t.Fatalf("a path the rule does not allow was not refused: exit %d %s", code, out)
 	}
 
 	c.apply(silo(""))
-	c.eventually("detached: curl is refused", 2*time.Minute, func() (bool, string) {
+	c.eventually("detached: the GET is refused", 2*time.Minute, func() (bool, string) {
 		out, code := c.in(ns, "box", get)
-		return refused(out, code), fmt.Sprintf("exit %d %s", code, out)
+		return connectDenied(out, code), fmt.Sprintf("exit %d %s", code, out)
 	})
 
 	// Attach it again and see the GET work before deleting the object, so a push that never
@@ -110,6 +110,6 @@ spec:
 	}
 	c.eventually("deleted while attached: deny-all", 2*time.Minute, func() (bool, string) {
 		out, code := c.in(ns, "box", get)
-		return refused(out, code), fmt.Sprintf("exit %d %s", code, out)
+		return connectDenied(out, code), fmt.Sprintf("exit %d %s", code, out)
 	})
 }
