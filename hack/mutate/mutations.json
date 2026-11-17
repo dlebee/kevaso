@@ -2146,5 +2146,77 @@
    "./internal/apiserver"
   ],
   "protects": "a namespace being deleted takes nothing new"
- }
+  },
+  {
+  "id": "G-400",
+  "guard": "a worker may not read a kind it does not need",
+  "file": "internal/apiserver/auth.go",
+  "find": "return false, false, \"a worker may not read \" + t.kind.Kind, nil // a worker may not read this kind",
+  "replace": "return true, false, \"a worker may not read \" + t.kind.Kind, nil // a worker may not read this kind",
+  "mutation": "a worker may read every kind",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a worker is refused kinds it does not run from"
+  },
+  {
+  "id": "G-401",
+  "guard": "a worker's list leaves out objects that are not on it",
+  "file": "internal/apiserver/hostread.go",
+  "find": "if _, ok := rel[objKey(o.Namespace, o.Name)]; !ok { // a worker's list leaves out what is not on it",
+  "replace": "if _, ok := rel[objKey(o.Namespace, o.Name)]; false && ok { // a worker's list leaves out what is not on it",
+  "mutation": "a worker's list is not filtered",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a worker's list omits objects that are not on it"
+  },
+  {
+  "id": "G-402",
+  "guard": "a worker may not get an object that is not on it",
+  "file": "internal/apiserver/auth.go",
+  "find": "return false, false, \"a worker may not read \" + t.kind.Kind + \" \" + named, nil // a worker may not read an object that is not on it",
+  "replace": "return true, false, \"a worker may not read \" + t.kind.Kind + \" \" + named, nil // a worker may not read an object that is not on it",
+  "mutation": "a worker may get an unrelated object",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a worker is refused one object that is not on it"
+  },
+  {
+  "id": "G-403",
+  "guard": "a worker's watch does not replay an object from before it was on the host",
+  "file": "internal/apiserver/hostread.go",
+  "find": "stale := ev.Object.Revision <= have || ev.Object.Revision < curRev // a watch does not replay an object from before it was on this host",
+  "replace": "stale := have < 0 || curRev < 0 // a watch does not replay an object from before it was on this host",
+  "mutation": "a watch replays earlier revisions",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a watch does not send an object's state from before it was on this host"
+  },
+  {
+  "id": "G-404",
+  "guard": "a worker's watch drops an object that leaves the host",
+  "file": "internal/apiserver/hostread.go",
+  "find": "if err := w.send(string(store.Deleted), left.raw); err != nil { // a watch drops an object that is no longer on this host",
+  "replace": "if err := error(nil); err != nil || len(left.raw) < 0 { // a watch drops an object that is no longer on this host",
+  "mutation": "a watch keeps an object that left the host",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a watch reports an object deleted when it is no longer on this host"
+  },
+  {
+  "id": "G-405",
+  "guard": "a worker reads for a silo moving to or from it",
+  "file": "internal/apiserver/hostread.go",
+  "find": "on := silo.Status.Host == host || silo.Status.MovingFrom == host // a worker reads for a silo moving to or from it",
+  "replace": "on := silo.Status.Host == host // a worker reads for a silo moving to or from it",
+  "mutation": "a move's source host loses the silo's objects",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "the host a silo is leaving still reads what that silo needs"
+  }
 ]

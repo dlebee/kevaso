@@ -344,6 +344,13 @@ func (s *Server) list(ctx context.Context, w http.ResponseWriter, t target) {
 	if filter, _ := ctx.Value(secretFilterKey).(bool); filter {
 		objs = slices.DeleteFunc(objs, func(o store.Object) bool { return !s.visibleSecret(ctx, o) })
 	}
+	if _, ok := ctx.Value(hostReadKey).(string); ok {
+		objs, err = s.keepRelated(ctx, t.kind.Kind, t.namespace, objs)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
 	for _, o := range objs {
 		b, err := render(o)
 		if err != nil {
@@ -370,6 +377,10 @@ func (s *Server) watch(ctx context.Context, w http.ResponseWriter, r *http.Reque
 			return
 		}
 		from = n
+	}
+	if host, ok := ctx.Value(hostReadKey).(string); ok && host != "" {
+		s.watchRelated(ctx, w, from, host, t)
+		return
 	}
 	ch, err := s.store.Watch(ctx, store.Selector{Kind: t.kind.Kind, Namespace: t.namespace}, from)
 	if err != nil {

@@ -33,7 +33,10 @@ import (
 //     A role or a binding does not change that. Reads stay with RBAC;
 //   - hosts with role control-plane: everything (they run the controllers), except a mutation in
 //     that reserved namespace, which is a cluster-admin's;
-//   - hosts with role worker: read everything, write only their own Host's status and the status
+//   - hosts with role worker: read only what running the silos on them takes
+//     (hack/design/worker-reads.md). Hosts, Silos, Services and IngressClasses, cluster-wide;
+//     Grants, Secrets (never a value), Leases and Ingresses only for a silo placed on them or
+//     moving to or from them; nothing else. They write only their own Host's status and the status
 //     of silos placed on them (they can't move a silo elsewhere), and of the ingress controllers
 //     among them in their IngressClass;
 //   - anyone without credentials: only POST /enroll, with a join token.
@@ -65,6 +68,7 @@ const (
 	nsFilterKey
 	secretFilterKey
 	inProcessIDKey // an in-process connection's identity (InProcessAs)
+	hostReadKey    // a worker host whose list or watch of a related kind is filtered
 )
 
 // LocalAdmin is the identity of whoever reaches the admin socket (root on the host). Its name has
@@ -206,6 +210,28 @@ func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups [
 		return true, false, "kevasod itself", nil
 	}
 	if id.Type == "host" {
+		// A worker's reads are the rule in hack/design/worker-reads.md. Writes stay in hostAuthorize.
+		if id.Role == "worker" && r.Method == http.MethodGet && workerObjectRead(t) {
+			switch workerReadScope(t.kind.Kind) {
+			case workerNone:
+				return false, false, "a worker may not read " + t.kind.Kind, nil // a worker may not read this kind
+			case workerRelated:
+				if t.name != "" {
+					ok, err := s.workerRelatedGet(ctx, id.Name, t)
+					if err != nil {
+						return false, false, "", err
+					}
+					if !ok {
+						named := t.name
+						if t.namespace != "" {
+							named = t.namespace + "/" + t.name
+						}
+						return false, false, "a worker may not read " + t.kind.Kind + " " + named, nil // a worker may not read an object that is not on it
+					}
+				}
+			}
+			return true, false, "host worker", nil
+		}
 		if hostAuthorize(id, r, t) {
 			return true, false, "host " + id.Role, nil
 		}
@@ -342,7 +368,9 @@ func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
 			return false
 		}
 		if r.Method == http.MethodGet {
-			return true
+			// Which kinds. A Grant, Secret, Lease or Ingress still has to belong to a silo on
+			// this host (authorizeRequest, which can see the stored objects).
+			return workerReadableKind(t.kind.Kind)
 		}
 		if r.Method != http.MethodPut || !t.status {
 			return false
@@ -439,10 +467,15 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 				return
 			}
 			if filter && t.kind.Kind == "Secret" {
-				r = r.WithContext(context.WithValue(ctx, secretFilterKey, true))
+				ctx = context.WithValue(ctx, secretFilterKey, true)
 			} else if filter {
-				r = r.WithContext(context.WithValue(ctx, nsFilterKey, true))
+				ctx = context.WithValue(ctx, nsFilterKey, true)
 			}
+			// List and watch of a related kind: the handler returns only what is on this host.
+			if id.Type == "host" && id.Role == "worker" && t.name == "" && r.Method == http.MethodGet && workerReadScope(t.kind.Kind) == workerRelated {
+				ctx = context.WithValue(ctx, hostReadKey, id.Name)
+			}
+			r = r.WithContext(ctx)
 		}
 		next.ServeHTTP(w, r)
 	})
