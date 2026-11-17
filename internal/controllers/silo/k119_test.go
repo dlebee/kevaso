@@ -14,14 +14,14 @@ import (
 	"kevaso.com/core/sdk/kplugin"
 )
 
-// K-119: a handoff waits for its source to let go. With the source gone (lost, or its Host
-// removed), the handoff ends by itself only for a silo whose source armed its fence for it
+// K-119: a handoff waits for its source to let go. With the source lost (the Host still exists),
+// the handoff ends by itself only for a silo whose source armed its fence for it
 // (onControlPlaneLoss: Stop, this generation) and that reported its fence stopped it (FenceStopped,
 // for its standing start claim), once this control plane has heard nothing from the source for its
 // `after` plus StopMargin, on its own count (Env.Silence). Silence alone never ends it: a fence
 // whose kill failed can't say so. Otherwise it waits, and the SourceUnreachable condition says so and names
 // the command that ends it (kvo move … --confirm-fenced), and, for an armed silo, when it ends by
-// itself.
+// itself. A deleted Host is that confirmation: the handoff ends at once, fence or not.
 func TestK119AHandoffFromAGoneSourceEndsOnlyForAnArmedStopSilo(t *testing.T) {
 	const after = 2 * time.Minute
 	classes := map[string]scheduler.Class{"juicefs": {Plugin: "juicefs", Topology: kplugin.TopologyGlobal}}
@@ -58,8 +58,7 @@ func TestK119AHandoffFromAGoneSourceEndsOnlyForAnArmedStopSilo(t *testing.T) {
 		t.Fatalf("the command named: %+v, %v", p, err)
 	}
 	sourceSets := map[string][]*v1.Host{
-		"S lost":    {lostHost("S", now.Add(-time.Hour)), readyHost("D")},
-		"S removed": {readyHost("D")},
+		"S lost": {lostHost("S", now.Add(-time.Hour)), readyHost("D")},
 	}
 	for name, hosts := range sourceSets {
 		// Armed by S, opted in: waits for after + margin of S's silence, then ends by itself.
@@ -106,11 +105,20 @@ func TestK119AHandoffFromAGoneSourceEndsOnlyForAnArmedStopSilo(t *testing.T) {
 			}
 		}
 	}
+	// S's Host was deleted: that is the confirmation, so the handoff ends with no fence and no wait.
+	removed := []*v1.Host{readyHost("D")}
+	st, changed, again, err := silo.DecideIn(mk(false, "", ""), removed, nil, now, env(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := cond(st); st.MovingFrom != "" || !changed || again != 0 || st.Host != "D" || c == nil || c.Status != meta.ConditionFalse || c.Reason != "HandoffEnded" || !strings.Contains(c.Message, "was deleted") {
+		t.Fatalf("S removed: movingFrom %q on %q again %v, %+v", st.MovingFrom, st.Host, again, c)
+	}
 	// S back: the condition says so; the handoff goes on as usual (S lets go).
 	s := mk(true, "S", "S")
-	st, _, _, _ := silo.DecideIn(s, sourceSets["S lost"], nil, now, env(time.Second))
+	st, _, _, _ = silo.DecideIn(s, sourceSets["S lost"], nil, now, env(time.Second))
 	s.Status = st
-	st, changed, _, _ := silo.DecideIn(s, []*v1.Host{readyHost("S"), readyHost("D")}, nil, now.Add(time.Minute), env(0))
+	st, changed, _, _ = silo.DecideIn(s, []*v1.Host{readyHost("S"), readyHost("D")}, nil, now.Add(time.Minute), env(0))
 	if c := cond(st); !changed || st.MovingFrom != "S" || c == nil || c.Status != meta.ConditionFalse || c.Reason != "SourceBack" {
 		t.Fatalf("S back: changed %v, movingFrom %q, %+v", changed, st.MovingFrom, c)
 	}

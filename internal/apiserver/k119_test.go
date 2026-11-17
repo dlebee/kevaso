@@ -20,11 +20,11 @@ import (
 )
 
 // K-119, the API server's half: on a cluster only the source host ends a handoff, or a person's
-// confirm-fenced move (K-070). The one other end is the silo controller's (Component), for a
-// handoff whose source is lost or gone, armed its fence for the silo as it is, and reported that
-// its fence stopped it (FenceStopped): the API server checks what it can see (the source lost, its
-// armed fence and its report stored), the controller the silence it counted. Anyone else, or
-// without those, is still refused: silence alone never ends it.
+// confirm-fenced move (K-070). The silo controller (Component) may also end one whose source is
+// lost, armed its fence for the silo as it is, and reported that its fence stopped it
+// (FenceStopped): the API server checks what it can see, the controller the silence it counted.
+// Anyone else, or without those, is still refused while the Host object exists. Deleting the Host
+// is the confirmation, so the controller may then end the handoff with no fence.
 func TestK119OnlyTheControllerEndsAHandoffFromAGoneArmedSource(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -117,9 +117,19 @@ func TestK119OnlyTheControllerEndsAHandoffFromAGoneArmedSource(t *testing.T) {
 	if got.Status.MovingFrom != "" || got.Status.Host != "dst" {
 		t.Fatalf("after: %+v", got.Status)
 	}
-	// Its Host removed counts as gone.
+	// Its Host deleted is the confirmation: the controller ends the handoff, armed or not.
+	// The admin socket still cannot.
 	handingOff("removed", true, true)
-	must(admin.Delete(ctx, "Host", "", "src"))
+	if err := admin.Delete(ctx, "Host", "", "src"); code(err) != http.StatusConflict {
+		t.Fatalf("deleting a host silos are moving from, without ?confirmOff=true: %v, want 409", err)
+	}
+	must(admin.Delete(ctx, "Host", "", "src", client.Precondition{ConfirmOff: true}))
+	if err := end(admin, "removed"); code(err) != http.StatusConflict {
+		t.Fatalf("the admin socket ending a handoff from a deleted source: %v, want 409", err)
+	}
+	if err := end(comp, "unarmed"); err != nil {
+		t.Fatalf("the controller ending an unarmed handoff from a deleted source: %v", err)
+	}
 	if err := end(comp, "removed"); err != nil {
 		t.Fatalf("the controller ending a handoff from a removed armed source: %v", err)
 	}

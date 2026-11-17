@@ -255,7 +255,15 @@ func (ca *CA) SignServerCSR(csrDER []byte, hosts []string, now time.Time, ttl ti
 
 // SignCSR issues a client certificate for the CSR's public key, with exactly the given identity.
 // The CSR's own subject and SANs are ignored: whoever calls SignCSR decides the identity.
+// NotBefore is a minute before now, so a little clock skew still verifies.
 func (ca *CA) SignCSR(csrPEM []byte, id Identity, now time.Time, ttl time.Duration) ([]byte, error) {
+	return ca.SignCSRNotBefore(csrPEM, id, now, ttl, time.Time{})
+}
+
+// SignCSRNotBefore is SignCSR, except NotBefore is not earlier than earliest. earliest is the
+// removal time of a host plus one second: the minute of backdating would otherwise put a
+// certificate issued just after the removal before that time, and auth would refuse it.
+func (ca *CA) SignCSRNotBefore(csrPEM []byte, id Identity, now time.Time, ttl time.Duration, earliest time.Time) ([]byte, error) {
 	if err := id.Validate(); err != nil {
 		return nil, err
 	}
@@ -270,11 +278,15 @@ func (ca *CA) SignCSR(csrPEM []byte, id Identity, now time.Time, ttl time.Durati
 	if err := csr.CheckSignature(); err != nil {
 		return nil, fmt.Errorf("csr: %w", err)
 	}
+	notBefore := now.Add(-time.Minute)
+	if earliest.After(notBefore) {
+		notBefore = earliest
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial(),
 		Subject:      pkix.Name{CommonName: id.Type + ":" + id.Name},
 		URIs:         []*url.URL{id.URI()},
-		NotBefore:    now.Add(-time.Minute),
+		NotBefore:    notBefore,
 		NotAfter:     now.Add(ttl),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},

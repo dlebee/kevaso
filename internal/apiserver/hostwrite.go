@@ -128,6 +128,13 @@ func (s *Server) siloIPInSubnet(ctx context.Context, old, next v1.SiloStatus, ho
 	return nil
 }
 
+// hostDeleted reports whether the Host object is gone. An error reading it is not deleted.
+// A host that still exists and is only lost is not deleted (hostGone covers that).
+func (s *Server) hostDeleted(ctx context.Context, host string) bool {
+	_, err := s.store.Get(ctx, store.Key{Kind: "Host", Name: host})
+	return errors.Is(err, store.ErrNotFound)
+}
+
 // hostGone reports whether host is lost (its Ready HostLost) or no longer a Host. An error reading
 // it is not gone.
 func (s *Server) hostGone(ctx context.Context, host string) bool {

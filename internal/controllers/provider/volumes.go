@@ -369,6 +369,10 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 		attachedLost := false
 		if oh, ok := c.Hosts.Get("", vs.AttachedTo); ok {
 			attachedLost, _ = hostctl.Lost(oh.(*v1.Host))
+		} else {
+			// The Host object is gone. Detach is safe once lostNow agrees; deleting the volume
+			// is not, and this path never does that.
+			attachedLost = true
 		}
 		if vs.Mounted && !moves.ForceRelease(s, vs, attachedLost) {
 			vs.Message = "waiting for " + vs.AttachedTo + " to unmount it"
@@ -459,6 +463,11 @@ func (c *Volumes) ensureMounted(ctx context.Context, s *v1.Silo, h *v1.Host, p *
 	if vs.AttachedTo != "" && vs.AttachedTo != h.Name {
 		if oh, ok := c.Hosts.Get("", vs.AttachedTo); ok {
 			attachedLost, _ = hostctl.Lost(oh.(*v1.Host))
+		} else {
+			// Same as a block volume: a deleted host is lost for the detach, never a reason to
+			// delete the volume. lostNow re-reads, so a cache that hasn't seen a live host yet
+			// does not detach it.
+			attachedLost = true
 		}
 		if attachedLost && vs.Mounted { // forced off a lost host: only if it is lost now
 			var err error

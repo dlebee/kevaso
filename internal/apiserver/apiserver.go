@@ -679,7 +679,11 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		// here as far as the store shows it (siloctl.EndsLostHandoff); the silence it waited for
 		// is the leader's count.
 		if err := moves.Replaces(old.(*v1.Silo).Status, obj.(*v1.Silo).Status); err != nil && (s.auth != nil || !letGo(old.(*v1.Silo).Status, obj.(*v1.Silo).Status)) {
-			if !ok || id != Component || !siloctl.EndsLostHandoff(old.(*v1.Silo), obj.(*v1.Silo).Status, s.hostGone(ctx, old.(*v1.Silo).Status.MovingFrom)) {
+			src := old.(*v1.Silo).Status.MovingFrom
+			// A lost source ends only with its fence (EndsLostHandoff). A deleted Host is the
+			// confirmation itself (EndsDeletedHandoff): the object is gone, not merely lost.
+			if !ok || id != Component || (!siloctl.EndsLostHandoff(old.(*v1.Silo), obj.(*v1.Silo).Status, s.hostGone(ctx, src)) &&
+				!siloctl.EndsDeletedHandoff(old.(*v1.Silo), obj.(*v1.Silo).Status, s.hostDeleted(ctx, src))) {
 				return store.Object{}, errf(http.StatusConflict, "Conflict", "%v", err)
 			}
 		}
@@ -875,6 +879,18 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if wantRV != "" && nsRev == 0 && strconv.FormatInt(cur.Revision, 10) != wantRV {
 			writeErr(w, errf(http.StatusConflict, "Conflict", "%s changed since it was read (at %d, not %s): not deleted", t.key(), cur.Revision, wantRV))
 			return
+		}
+		if t.kind.Kind == "Host" {
+			if err := s.guardHostDelete(ctx, r, t.name); err != nil {
+				writeErr(w, err)
+				return
+			}
+			if !dryRun(ctx) {
+				if err := s.revokeHost(ctx, t.name); err != nil {
+					writeErr(w, err)
+					return
+				}
+			}
 		}
 		if len(om.Finalizers) == 0 {
 			if _, err := s.commitDelete(ctx, t.key(), cur.Revision); errors.Is(err, store.ErrConflict) {

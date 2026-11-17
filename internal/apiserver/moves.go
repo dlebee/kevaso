@@ -123,6 +123,11 @@ func (s *Server) moveSilo(w http.ResponseWriter, r *http.Request, t target) {
 		if from != nil {
 			fromLost, _ = hostctl.Lost(from)
 		}
+		if from == nil && silo.Status.Host != "" {
+			// The Host object is gone: deleting it was the confirmation the machine is off, so
+			// `kvo move silo NAME -n NS --to HOST --recreate` does not ask for it again.
+			req.ConfirmFenced = true
+		}
 		fits, err := s.fits(ctx, silo, to)
 		if err != nil {
 			writeErr(w, err)

@@ -31,6 +31,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/etcd"
 	"kevaso.com/core/internal/kvoconfig"
+	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/sshboot"
 )
 
@@ -447,12 +448,12 @@ func runtimesOf(h *v1.Host) []string {
 // hostRemoveSystemNode takes the control-plane component off a host: its store membership goes
 // first (the leader's member controller removes it, keeping the majority), refused when it
 // would lose the majority. remove also deletes the Host when nothing else is installed.
-func hostRemoveSystemNode(ctx context.Context, name, kctx string, deleteHost bool, out io.Writer) error {
+func hostRemoveSystemNode(ctx context.Context, name, kctx string, deleteHost, confirmOff bool, stdin io.Reader, out io.Writer) error {
 	c, _, err := adminClient(kctx)
 	if err != nil {
 		return err
 	}
-	return RemoveSystemNode(ctx, c, name, deleteHost, out)
+	return removeSystemNode(ctx, c, name, deleteHost, confirmOff, stdin, out)
 }
 
 // RemoveSystemNode is host uninstall … control-plane (deleteHost false) and host remove (true)
@@ -461,6 +462,10 @@ func hostRemoveSystemNode(ctx context.Context, name, kctx string, deleteHost boo
 // uninstall is refused and remove deletes the Host held by etcd.FinalizerMember: a Host being
 // deleted asks for no member, the member controller removes the member, then lets the Host go.
 func RemoveSystemNode(ctx context.Context, c *client.Client, name string, deleteHost bool, out io.Writer) error {
+	return removeSystemNode(ctx, c, name, deleteHost, false, nil, out)
+}
+
+func removeSystemNode(ctx context.Context, c *client.Client, name string, deleteHost, confirmOff bool, stdin io.Reader, out io.Writer) error {
 	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
 	hosts, err := listHosts(ctx, c)
 	if err != nil {
@@ -479,7 +484,7 @@ func RemoveSystemNode(ctx context.Context, c *client.Client, name string, delete
 		if !deleteHost {
 			return fmt.Errorf("%s has no control-plane component", name)
 		}
-		return removeWorkerHost(ctx, c, name, say)
+		return removeWorkerHost(ctx, c, name, confirmOff, stdin, say)
 	}
 	onlySystem := h.Spec.Components.Worker == nil
 	if onlySystem && !deleteHost {
@@ -487,6 +492,12 @@ func RemoveSystemNode(ctx context.Context, c *client.Client, name string, delete
 	}
 	if err := RemovalCheck(hosts, name, time.Now(), 40*time.Second); err != nil {
 		return err
+	}
+	if onlySystem {
+		// Asked before anything is written: a no leaves the host as it was.
+		if err := confirmHostOff(ctx, c, name, confirmOff, stdin, say); err != nil {
+			return err
+		}
 	}
 	for attempt := 0; ; attempt++ {
 		var cur v1.Host
@@ -509,7 +520,7 @@ func RemoveSystemNode(ctx context.Context, c *client.Client, name string, delete
 		}
 	}
 	if onlySystem {
-		if err := c.Delete(ctx, "Host", "", name); err != nil && !client.IsNotFound(err) {
+		if err := c.Delete(ctx, "Host", "", name, client.Precondition{ConfirmOff: true}); err != nil && !client.IsNotFound(err) {
 			return err
 		}
 	}
@@ -539,32 +550,96 @@ func RemoveSystemNode(ctx context.Context, c *client.Client, name string, delete
 	}
 }
 
-func removeWorkerHost(ctx context.Context, c *client.Client, name string, say func(string, ...any)) error {
+func removeWorkerHost(ctx context.Context, c *client.Client, name string, confirmOff bool, stdin io.Reader, say func(string, ...any)) error {
+	if err := confirmHostOff(ctx, c, name, confirmOff, stdin, say); err != nil {
+		return err
+	}
+	// The CLI already listed the silos and got the yes. The flag is what the API requires.
+	if err := c.Delete(ctx, "Host", "", name, client.Precondition{ConfirmOff: true}); err != nil {
+		return err
+	}
+	say("host %s removed from the cluster; the machine itself is yours (stop it: systemctl disable --now kevasod)", name)
+	return nil
+}
+
+// confirmHostOff lists the silos a host delete will start elsewhere and the ones that stay
+// unschedulable, then asks that the machine is off or wiped. No such silo: nothing to ask.
+func confirmHostOff(ctx context.Context, c *client.Client, name string, confirmOff bool, stdin io.Reader, say func(string, ...any)) error {
 	l, err := c.List(ctx, "Silo", "")
 	if err != nil {
 		return err
 	}
+	var silos []*v1.Silo
 	for _, raw := range l.Items {
 		obj, _, err := v1.Decode(raw)
 		if err != nil {
 			return err
 		}
-		s := obj.(*v1.Silo)
-		if s.Status.Host == name {
-			return fmt.Errorf("silo %s/%s is on %s: kvoadm host drain %s first", s.Namespace, s.Name, name, name)
+		silos = append(silos, obj.(*v1.Silo))
+	}
+	moving, staying := hostDeleteFates(silos, name)
+	if len(moving)+len(staying) == 0 {
+		return nil
+	}
+	say("deleting %s starts these silos elsewhere:", name)
+	if len(moving) == 0 {
+		say("  (none)")
+	}
+	for _, line := range moving {
+		say("  %s", line)
+	}
+	say("these stay unschedulable:")
+	if len(staying) == 0 {
+		say("  (none)")
+	}
+	for _, line := range staying {
+		say("  %s", line)
+	}
+	if confirmOff {
+		return nil
+	}
+	say("Is %s off or wiped? [y/N]", name)
+	if stdin == nil {
+		return fmt.Errorf("host %s was not removed: silos are still on it (pass --confirm-off, or answer yes)", name)
+	}
+	line, err := readLine(bufio.NewReader(stdin))
+	if err != nil && line == "" {
+		return fmt.Errorf("host %s was not removed", name)
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return nil
+	default:
+		return fmt.Errorf("host %s was not removed", name)
+	}
+}
+
+// hostDeleteFates splits the silos a host delete touches. A named class other than local is
+// treated as able to attach elsewhere: kvoadm has no plugin map here. The controller uses the
+// real one.
+func hostDeleteFates(silos []*v1.Silo, name string) (moving, staying []string) {
+	classes := moves.ClassesForList(silos)
+	for _, s := range silos {
+		on := s.Status.Host == name
+		from := s.Status.MovingFrom == name
+		if !on && !from {
+			continue
 		}
-		if s.Status.MovingFrom == name {
-			// K-119: its handoff ends only when this host lets go of it; with the Host gone it never
-			// would, and its copy here may still run.
-			return fmt.Errorf("silo %s/%s is moving from %s to %s, and %s hasn't let go of it yet: wait for the move to finish (kvo get silo %s -n %s), or, once %s is known stopped, end it with kvo move silo %s -n %s --to %s --confirm-fenced",
-				s.Namespace, s.Name, name, s.Status.Host, name, s.Name, s.Namespace, name, s.Name, s.Namespace, s.Status.Host)
+		label := s.Namespace + "/" + s.Name
+		switch {
+		case from && s.Status.Host != name:
+			moving = append(moving, label+" (its handoff from "+name+" ends; "+s.Status.Host+" starts it)")
+		case on && moves.HandingOff(s.Status):
+			moving = append(moving, label+" (it was moving to "+name+", which never started it)")
+		default:
+			if place, _, _ := moves.PlaceAfterHostDelete(s, classes); place {
+				moving = append(moving, label)
+			} else {
+				staying = append(staying, label)
+			}
 		}
 	}
-	if err := c.Delete(ctx, "Host", "", name); err != nil {
-		return err
-	}
-	say("host %s removed from the cluster; the machine itself is yours (stop it: systemctl disable --now kevasod)", name)
-	return nil
+	return moving, staying
 }
 
 // storeMigrate switches the control plane at [USER@]ADDRESS to etcd with a peer listener: once,

@@ -241,6 +241,7 @@ func Apply(st v1.SiloStatus, p Plan) v1.SiloStatus {
 			st.Image = &img
 		}
 	}
+	st.Conditions = withoutHostDeleted(st.Conditions) // a move is the way off a deleted host
 	return st
 }
 
@@ -276,6 +277,9 @@ func Replaces(old, next v1.SiloStatus) error {
 // MayStart reports whether the silo's (new) host may start it: not while another host still
 // has to let go of it.
 func MayStart(s *v1.Silo, host string) bool {
+	if StuckOnDeletedHost(s.Status, host) {
+		return false // the host was deleted: this name coming back does not start the silo
+	}
 	return s.Status.Host == host && (s.Status.MovingFrom == "" || s.Status.MovingFrom == host)
 }
 
