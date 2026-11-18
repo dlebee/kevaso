@@ -638,7 +638,8 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "ClusterSecret %s: status is set by the server when the value changes", t.name)
 	}
 	om := obj.GetObjectMeta()
-	if om.ResourceVersion == "" {
+	version := om.ResourceVersion // admit clears it on the object; the claim needs the write's version
+	if version == "" {
 		return store.Object{}, errf(http.StatusBadRequest, "BadRequest", "metadata.resourceVersion is required on update (read the object first)")
 	}
 	expected, err := strconv.ParseInt(om.ResourceVersion, 10, 64)
@@ -807,12 +808,30 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 	if err != nil {
 		return store.Object{}, err
 	}
+	var release func()
+	if !t.status && !dryRun(ctx) {
+		var rel func()
+		rel, err = s.claimAddedHostPorts(ctx, old, admitted, version) // a placed silo's new host port is claimed before the write
+		if err != nil {
+			return store.Object{}, err
+		}
+		release = rel
+	}
 	prev := bytes.Clone(cur.Data)
 	o, err := s.commitUpdate(ctx, t.key(), data, expected)
-	if err != nil || dryRun(ctx) {
+	if err != nil {
+		if release != nil {
+			release()
+		}
+		return o, err
+	}
+	if dryRun(ctx) {
 		return o, err
 	}
 	if err := s.recheckNewNames(ctx, seen); err != nil {
+		if release != nil {
+			release()
+		}
 		if _, rerr := s.store.Update(ctx, t.key(), prev, o.Revision); rerr != nil && !errors.Is(rerr, store.ErrNotFound) {
 			return store.Object{}, fmt.Errorf("%s names a namespace being deleted, and restoring it failed: %w", t.key(), rerr)
 		}
@@ -1031,22 +1050,30 @@ func (s *Server) ensureBuiltins(ctx context.Context) error {
 }
 
 // checkExposure: making silos reachable from outside is its own permission, create on
-// services/expose-public in the namespace (design §7.2a), on top of writing the object: a silo
-// exposed with hostPort or loadBalancer, a SiloSet whose instances would be (its controller makes
-// them, so the check is here), and a Service of type LoadBalancer. Status writes don't change the
-// spec, so they don't need it.
+// services/expose-public in the namespace (design §7.2a), on top of writing the object. It is
+// judged field by field. An update that only removes or tightens what is already open needs
+// nothing extra. Adding an outside port, a network, or a load balancer, changing the number or
+// the class, widening sources, dropping a lease or its approval, a selector that newly matches a
+// silo, or an Ingress backend on a leased port, does. A SiloSet is judged on its template. Status
+// writes don't change the spec, so they don't need it.
 func (s *Server) checkExposure(ctx context.Context, t target, obj meta.Object) error {
-	if t.status || s.auth == nil {
+	if t.status || s.auth == nil || !exposureRelevant(obj) {
 		return nil
 	}
-	how := exposure(obj)
-	if how == "" {
-		return nil
-	}
-	if old, err := s.store.Get(ctx, t.key()); err == nil { // already exposed the same way: nothing new
-		if prev, _, err := v1.Decode(old.Data); err == nil && exposure(prev) == how {
-			return nil
+	var prev meta.Object
+	if old, err := s.store.Get(ctx, t.key()); err == nil {
+		if p, _, derr := v1.Decode(old.Data); derr == nil {
+			prev = p
 		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	silos, svcs, err := s.silosAndServices(ctx, t.namespace)
+	if err != nil {
+		return err
+	}
+	if !exposureLoosened(prev, obj, silos, svcs) { // an update that only removes or tightens outside reach needs no extra permission
+		return nil
 	}
 	id, _ := IdentityFrom(ctx)
 	if id == LocalAdmin || id == Component || id.Type == "host" {

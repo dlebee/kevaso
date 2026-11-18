@@ -12,6 +12,7 @@ import (
 
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/informer"
+	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kni"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
@@ -31,9 +32,13 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 	if h != nil {
 		view.InternalIP, _ = netip.ParseAddr(h.Internal())
 		view.ExternalIP, _ = netip.ParseAddr(h.External())
+		view.Reserved = h.ExtraReservedPorts() // numbers this host listens on, beyond the fixed set
 	}
 	for _, s := range silos {
 		ks := kni.Silo{Key: s.Namespace + "/" + s.Name, Spec: s.Spec}
+		if c := meta.FindCondition(s.Status.Conditions, "HostPorts"); c != nil && c.Status == meta.ConditionFalse { // the controller says this silo does not hold a host port it asks for
+			ks.HostPortsRefused = true
+		}
 		if ip, err := netip.ParseAddr(s.Status.SiloIP); err == nil {
 			ks.IP = ip
 			view.All = append(view.All, ks)
