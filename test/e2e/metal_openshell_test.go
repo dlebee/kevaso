@@ -212,11 +212,12 @@ const osInetName = "kvt-inject.192-168-250-1.sslip.io"
 // metalInetSetup's server (the same CA, which the egress gate trusts), as a transient unit the
 // reset stops (kvt-inet-os).
 const osInetSetup = `set -e; cd /var/lib/kvt-inet
-ip link show kvt-inet0 >/dev/null 2>&1 || { ip link add kvt-inet0 type dummy; ip addr add 192.168.250.1/32 dev kvt-inet0; ip link set kvt-inet0 up; }
+ip link show kvt-inet0 >/dev/null 2>&1 || { ip link add kvt-inet0 type dummy; ip link set kvt-inet0 up; }
+ip addr show dev kvt-inet0 | grep -qF ' 192.168.250.1/' || ip addr add 192.168.250.1/32 dev kvt-inet0
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout os.key -out os.csr -subj /CN=` + osInetName + ` 2>/dev/null
 printf 'subjectAltName=DNS:` + osInetName + `\n' > os.ext
 openssl x509 -req -in os.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -extfile os.ext -out os.pem 2>/dev/null
-sed -e 's#/var/lib/kvt-inet/leaf.pem#/var/lib/kvt-inet/os.pem#' -e 's#/var/lib/kvt-inet/leaf.key#/var/lib/kvt-inet/os.key#' -e 's#"127.0.0.77"#"192.168.250.1"#' server.py > os-server.py
+sed -e 's#/var/lib/kvt-inet/leaf.pem#/var/lib/kvt-inet/os.pem#' -e 's#/var/lib/kvt-inet/leaf.key#/var/lib/kvt-inet/os.key#' -e 's#"` + metalInetAddr + `"#"192.168.250.1"#' server.py > os-server.py
 systemctl stop kvt-inet-os 2>/dev/null || true
 systemd-run --unit=kvt-inet-os python3 /var/lib/kvt-inet/os-server.py >/dev/null
 `

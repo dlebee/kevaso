@@ -10,10 +10,12 @@
 //     client asked for (resolved here, so an address can't be smuggled in);
 //   - a name is never followed to an address the outside can't reach from the internet (private,
 //     the host's own: Special), unless a grant of the silo names that address itself (K-057,
-//     K-092). The cluster's own ranges (silos, services, the mesh), loopback and link-local are
-//     never opened, whatever a grant says (K-124). Every address is checked when it is dialled,
-//     so a name that changes its answer (DNS rebinding) gets no further;
-//   - an address a grant allows by CIDR: passed through to where the client dialled;
+//     K-092). The cluster's own ranges (silos, services, the mesh), loopback, link-local,
+//     this-network, multicast and reserved are never opened, whatever a grant says. Every address
+//     is checked when it is dialled, so a name that changes its answer (DNS rebinding) gets no
+//     further;
+//   - an address a grant allows by CIDR: passed through to where the client dialled, except an
+//     address a grant never opens, or this host's own address unless the grant names that address;
 //   - anything else, including no SNI: refused.
 //
 // The gate knows which silo is calling from the source address: the bridge drops any packet a
@@ -227,7 +229,10 @@ func (g *Gate) dial(ctx context.Context, p Policy, addr string, byName bool) (ne
 		}
 		d = nd.DialContext
 	}
-	if !byName { // a CIDR rule's address, where the client dialled: the rule decided
+	if !byName { // a CIDR rule's address, where the client dialled: still never a closed range or this host
+		if err := g.cidrRefused(p, addr); err != nil { // a CIDR rule never opens a closed range or this host
+			return nil, err
+		}
 		return d(ctx, "tcp", addr)
 	}
 	host, port, _ := net.SplitHostPort(addr)
@@ -267,10 +272,10 @@ func (g *Gate) atConnect(p Policy) func(network, address string, c syscall.RawCo
 }
 
 // refused says why a name may not lead to a on port (nil: it may). The cluster's own ranges,
-// loopback and link-local are never opened, whatever a grant says (K-124). Any other address
-// Special refuses, or one in Internal, is opened only by a CIDR rule of the silo's grants that
-// names it: inside the refused range, for that port, over TCP (a wider rule, 0.0.0.0/0, doesn't
-// name it).
+// loopback, link-local, this-network, multicast and reserved are never opened, whatever a grant
+// says. Any other address Special refuses, or one in Internal, is opened only by a CIDR rule of
+// the silo's grants that names it: inside the refused range, for that port, over TCP (a wider
+// rule, 0.0.0.0/0, doesn't name it).
 func (g *Gate) refused(p Policy, resolved netip.Addr, port uint16) error {
 	a := resolved.Unmap().WithZone("") // a zone would make every range miss it
 	if _, why := neverOpened(a); why != "" {
@@ -287,13 +292,50 @@ func (g *Gate) refused(p Policy, resolved netip.Addr, port uint16) error {
 	if why == "" {
 		return nil
 	}
+	if namedByCIDR(p, a, port, r) {
+		return nil
+	}
+	return fmt.Errorf("it resolves to %s (%s), which a name never leads to: name the address itself in a grant's egress `to` (as %s) to allow it", resolved, why, netip.PrefixFrom(a, a.BitLen()))
+}
+
+// cidrRefused says why a CIDR rule may not dial addr (nil: it may). The same ranges a name never
+// opens are refused here too, before the dial. This host's own addresses, the ones Internal
+// lists, are refused unless a CIDR rule names that address itself: a wide rule does not.
+func (g *Gate) cidrRefused(p Policy, addr string) error {
+	ap, err := netip.ParseAddrPort(addr)
+	if err != nil {
+		return err
+	}
+	a := ap.Addr().Unmap().WithZone("")
+	if _, closed := neverOpened(a); closed != "" {
+		return fmt.Errorf("%s is %s, which a grant never opens", a, closed)
+	}
+	if g.Internal == nil {
+		return nil
+	}
+	var own netip.Prefix
+	why := ""
+	for _, pr := range g.Internal() {
+		if pr.Contains(a) && (!own.IsValid() || pr.Bits() > own.Bits()) {
+			own, why = pr, "an address of this host or its cluster"
+		}
+	}
+	if why == "" || namedByCIDR(p, a, ap.Port(), own) {
+		return nil
+	}
+	return fmt.Errorf("%s is %s, which a grant never opens", a, why)
+}
+
+// namedByCIDR reports whether a CIDR rule of p names a itself: the rule is inside r, covers a,
+// and allows port over TCP. A wider rule (0.0.0.0/0) does not name it.
+func namedByCIDR(p Policy, a netip.Addr, port uint16, r netip.Prefix) bool {
 	for _, c := range p.CIDRs {
 		if c.Prefix.Contains(a) && c.Prefix.Bits() >= r.Bits() && r.Contains(c.Prefix.Addr()) &&
 			c.AllowsPort(int(port)) && contains(c.Protocols, "tcp") {
-			return nil
+			return true
 		}
 	}
-	return fmt.Errorf("it resolves to %s (%s), which a name never leads to: name the address itself in a grant's egress `to` (as %s) to allow it", resolved, why, netip.PrefixFrom(a, a.BitLen()))
+	return false
 }
 
 // special are the ranges a host name never leads to: the host itself, its networks and the
@@ -339,9 +381,10 @@ func carriedIPv4(a netip.Addr) (netip.Addr, bool) {
 	}
 }
 
-// neverOpened reports the range a grant never opens when a is inside one (K-124): the cluster's
-// own ranges, loopback or link-local, including an IPv4 address carried in NAT64 or 6to4. why is
-// "" when a grant may still name it (an ordinary private address, the host's own public address).
+// neverOpened reports the range a grant never opens when a is inside one: the cluster's own
+// ranges, loopback, link-local, this-network, multicast or reserved, including an IPv4 address
+// carried in NAT64 or 6to4. why is "" when a grant may still name it (an ordinary private
+// address, the host's own public address).
 func neverOpened(a netip.Addr) (netip.Prefix, string) {
 	a = a.Unmap().WithZone("")
 	if v4, ok := carriedIPv4(a); ok {

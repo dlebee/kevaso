@@ -2388,5 +2388,138 @@
    "./internal/apiserver"
   ],
   "protects": "a removed host's certificate is never accepted because its removal record couldn't be read"
+  },
+  {
+  "id": "G-450",
+  "guard": "a host delete sends confirmOff only after a yes or --confirm-off",
+  "file": "internal/cli/kvoadm/systemnodes.go",
+  "find": "if confirmed { // ConfirmOff only after a yes or --confirm-off",
+  "replace": "if true { // ConfirmOff only after a yes or --confirm-off",
+  "mutation": "a host is deleted with confirmOff when nobody was asked",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "a host is deleted with confirmOff only after a yes or --confirm-off"
+  },
+  {
+  "id": "G-451",
+  "guard": "a host certificate is refused before its silos are counted",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "rev, err := s.revokeHost(ctx, t.name)",
+  "replace": "rev, err := int64(0), error(nil)",
+  "mutation": "a host's silos are counted before its certificate is refused",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host certificate is refused before its silos are counted"
+  },
+  {
+  "id": "G-452",
+  "guard": "a refused host delete puts the removal record back",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if uerr := s.restoreHostRemoval(ctx, t.name, hostPrev); uerr != nil { // a refused delete puts the removal record back",
+  "replace": "if uerr := error(nil); uerr != nil { // a refused delete puts the removal record back",
+  "mutation": "a refused host delete leaves the removal record",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a refused host delete does not leave the removal record"
+  },
+  {
+  "id": "G-453",
+  "guard": "a fresh start claim keeps a silo when its host is deleted",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "if err := moves.CheckFenced(s, moves.Request{ConfirmFenced: true}, now); err == nil { // a fresh start claim keeps the silo here",
+  "replace": "if true { // a fresh start claim keeps the silo here",
+  "mutation": "a silo with a fresh start claim is placed when its host is deleted",
+  "packages": [
+   "./internal/controllers/silo"
+  ],
+  "protects": "a silo with a fresh start claim is not placed when its host is deleted"
+  },
+  {
+  "id": "G-454",
+  "guard": "this-network, multicast and reserved addresses are never opened",
+  "file": "api/v1/network.go",
+  "find": "out = append(out, neverRouted()...) // this network, multicast and reserved are never opened",
+  "replace": "out = append(out) // this network, multicast and reserved are never opened",
+  "mutation": "a grant opens this-network, multicast and reserved addresses",
+  "packages": [
+   "./internal/gate",
+   "./internal/apiserver"
+  ],
+  "protects": "a grant never opens this-network, multicast, or reserved addresses"
+  },
+  {
+  "id": "G-455",
+  "guard": "a CIDR rule never opens a closed range or this host",
+  "file": "internal/gate/gate.go",
+  "find": "if err := g.cidrRefused(p, addr); err != nil { // a CIDR rule never opens a closed range or this host",
+  "replace": "if err := g.cidrRefused(p, addr); err != nil && false { // a CIDR rule never opens a closed range or this host",
+  "mutation": "a CIDR rule dials a closed range or this host",
+  "packages": [
+   "./internal/gate"
+  ],
+  "protects": "a CIDR rule never dials a closed range or this host's own address"
+  },
+  {
+  "id": "G-456",
+  "guard": "silo egress to a closed range is dropped before a grant",
+  "file": "builtin/kni/rules.go",
+  "find": "for _, r := range closedRangeDrops(h) { // a grant never reaches a closed range",
+  "replace": "for _, r := range []string(nil) { // a grant never reaches a closed range",
+  "mutation": "a grant's accept reaches a closed range",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "silo traffic to a closed range is dropped before a grant's accept"
+  },
+  {
+  "id": "G-457",
+  "guard": "silo egress to this host's own addresses is dropped before a grant",
+  "file": "builtin/kni/rules.go",
+  "find": "for _, r := range hostAddressDrops(h) { // a grant never reaches this host's own addresses",
+  "replace": "for _, r := range []string(nil) { // a grant never reaches this host's own addresses",
+  "mutation": "a grant's accept reaches this host's own addresses",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "silo traffic to this host's own addresses is dropped before a grant's accept"
+  },
+  {
+  "id": "G-458",
+  "guard": "a plugin renews only its own token",
+  "file": "internal/apiserver/auth.go",
+  "find": "return id.Type == \"serviceaccount\" && r.Method == http.MethodPost && t.token &&\n\t\tt.namespace == v1.PluginNamespace && id.Name == rbac.ServiceAccountUser(t.namespace, t.name) // a plugin renews only its own token",
+  "replace": "return true // a plugin renews only its own token",
+  "mutation": "any write in kevaso-system by a plugin's service account is allowed",
+  "packages": [
+   "./test/integration"
+  ],
+  "protects": "a plugin's service account renews only its own token in kevaso-system"
+  },
+  {
+  "id": "G-459",
+  "guard": "a plugin package never grants a cluster secret's value",
+  "file": "internal/operators/package.go",
+  "find": "\"clustersecrets/value\"",
+  "replace": "\"invites\"",
+  "mutation": "a plugin package grants a cluster secret's value",
+  "packages": [
+   "./internal/operators"
+  ],
+  "protects": "a plugin package cannot grant a cluster secret's value"
+  },
+  {
+  "id": "G-460",
+  "guard": "a refused host delete undoes only the removal record it wrote",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "if o.Revision != prev.wrote { // only the record this request wrote is undone",
+  "replace": "if false && o.Revision != prev.wrote { // only the record this request wrote is undone",
+  "mutation": "a refused host delete undoes a removal record another delete wrote",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host deleted with confirmation keeps its removal record when an overlapping delete is refused"
   }
 ]

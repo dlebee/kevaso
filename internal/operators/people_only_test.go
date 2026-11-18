@@ -38,6 +38,26 @@ func TestPluginRolesNeverMintPeople(t *testing.T) {
 	}
 }
 
+// A plugin package never grants a cluster secret's value: not the resource itself, not a rule
+// pinned to names, and not a wildcard that would cover it. get and list of clustersecrets (the
+// names, not the value) stay a rule a package may carry. A cluster-admin's own ClusterRole is
+// not this check.
+func TestPluginRolesNeverGrantAClusterSecretValue(t *testing.T) {
+	for _, r := range []v1.PolicyRule{
+		{Verbs: []string{"get"}, Resources: []string{"clustersecrets/value"}},
+		{Verbs: []string{"get"}, Resources: []string{"clustersecrets/value"}, ResourceNames: []string{"signer"}},
+		{Verbs: []string{"get"}, Resources: []string{"*/value"}},
+		{Verbs: []string{"*"}, Resources: []string{"*"}},
+	} {
+		if errs := RuleProblems(r); len(errs) == 0 {
+			t.Errorf("a plugin role %v on %v was accepted", r.Verbs, r.Resources)
+		}
+	}
+	if errs := RuleProblems(v1.PolicyRule{Verbs: []string{"get", "list"}, Resources: []string{"clustersecrets"}}); len(errs) != 0 {
+		t.Errorf("get and list of clustersecrets (not the value): %v", errs)
+	}
+}
+
 // K-010: a plugin role names plain resources: nothing with a wildcard in it (it would match the
 // forbidden ones), nothing that is not a resource name.
 func TestPluginRoleResourcesAreStrict(t *testing.T) {

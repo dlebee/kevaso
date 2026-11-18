@@ -49,7 +49,7 @@ func semantic(obj meta.Object) []string {
 				errs = append(errs, err.Error())
 				continue
 			}
-			// The cluster's ranges, loopback and link-local are never opened through the gate (K-124).
+			// The cluster's ranges, loopback, link-local, this-network, multicast and reserved are never opened through the gate.
 			if pfx, why := v1.ClosedRange(e.Prefix); why != "" {
 				errs = append(errs, fmt.Sprintf("egress %q is inside %s (%s), which a grant never opens", r.To, pfx, why))
 			}

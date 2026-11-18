@@ -852,6 +852,14 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		writeErr(w, err)
 		return
 	}
+	// A host's certificate is refused from the moment its removal is recorded. That record is
+	// written before the silos are counted, and put back if the delete is then refused, so a
+	// start claim cannot land after the count. A host that had joined again keeps its record
+	// when the delete does not go through.
+	var (
+		hostRevoked bool
+		hostPrev    hostRemovalSnap
+	)
 	for attempt := 0; attempt < 5; attempt++ {
 		cur, err := s.store.Get(ctx, t.key())
 		if err != nil {
@@ -880,22 +888,39 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			writeErr(w, errf(http.StatusConflict, "Conflict", "%s changed since it was read (at %d, not %s): not deleted", t.key(), cur.Revision, wantRV))
 			return
 		}
-		if t.kind.Kind == "Host" {
-			if err := s.guardHostDelete(ctx, r, t.name); err != nil {
+		if t.kind.Kind == "Host" && !dryRun(ctx) && !hostRevoked {
+			var err error
+			hostPrev, err = s.hostRemovalSnap(ctx, t.name)
+			if err != nil {
 				writeErr(w, err)
 				return
 			}
-			if !dryRun(ctx) {
-				if err := s.revokeHost(ctx, t.name); err != nil {
-					writeErr(w, err)
-					return
+			rev, err := s.revokeHost(ctx, t.name)
+			if err != nil { // the certificate is refused before its silos are counted
+				writeErr(w, err)
+				return
+			}
+			hostPrev.wrote = rev
+			hostRevoked = true
+		}
+		if t.kind.Kind == "Host" {
+			if err := s.guardHostDelete(ctx, r, t.name); err != nil {
+				if hostRevoked {
+					if uerr := s.restoreHostRemoval(ctx, t.name, hostPrev); uerr != nil { // a refused delete puts the removal record back
+						writeErr(w, uerr)
+						return
+					}
+					hostRevoked = false
 				}
+				writeErr(w, err)
+				return
 			}
 		}
 		if len(om.Finalizers) == 0 {
 			if _, err := s.commitDelete(ctx, t.key(), cur.Revision); errors.Is(err, store.ErrConflict) {
 				continue
 			} else if err != nil {
+				s.undoHostRemoval(ctx, t.name, &hostRevoked, hostPrev)
 				writeErr(w, err)
 				return
 			}
@@ -910,6 +935,7 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			om.DeletionTimestamp = &now
 			_, data, err := toMap(obj)
 			if err != nil {
+				s.undoHostRemoval(ctx, t.name, &hostRevoked, hostPrev)
 				writeErr(w, err)
 				return
 			}
@@ -917,6 +943,7 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			if errors.Is(err, store.ErrConflict) {
 				continue
 			} else if err != nil {
+				s.undoHostRemoval(ctx, t.name, &hostRevoked, hostPrev)
 				writeErr(w, err)
 				return
 			}
@@ -930,7 +957,17 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusAccepted, b)
 		return
 	}
+	s.undoHostRemoval(ctx, t.name, &hostRevoked, hostPrev)
 	writeErr(w, errf(http.StatusConflict, "Conflict", "%s keeps changing; try again", t.key()))
+}
+
+// undoHostRemoval puts back the removal record when a host delete stops after recording it.
+func (s *Server) undoHostRemoval(ctx context.Context, name string, revoked *bool, prev hostRemovalSnap) {
+	if revoked == nil || !*revoked {
+		return
+	}
+	_ = s.restoreHostRemoval(ctx, name, prev)
+	*revoked = false
 }
 
 func isSubset(a, b []string) bool {

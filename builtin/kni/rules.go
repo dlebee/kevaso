@@ -187,6 +187,38 @@ var MeshDevices = []string{"kevaso0", "kevaso1"}
 // servicesAll is where Services' virtual IPs are (v1.ServiceCIDR).
 const servicesAll = "10.65.0.0/16"
 
+// closedRangeDrops refuses silo egress to every IPv4 range a grant never opens, before any
+// per-grant accept. Link-local 169.254/16 is one of those ranges.
+func closedRangeDrops(h Host) []string {
+	var pfx []string
+	for _, p := range v1.ClosedPrefixes() {
+		if p.Addr().Is4() {
+			pfx = append(pfx, p.String())
+		}
+	}
+	if len(pfx) == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf("iifname %q ip daddr { %s } drop", h.Bridge, strings.Join(pfx, ", "))}
+}
+
+// hostAddressDrops refuses silo egress to this host's own addresses. A wide grant does not
+// name them; the same addresses the egress gate keeps off a name (InternalIP, ExternalIP).
+func hostAddressDrops(h Host) []string {
+	var addrs []string
+	seen := map[netip.Addr]bool{}
+	for _, a := range []netip.Addr{h.InternalIP, h.ExternalIP} {
+		if a.IsValid() && a.Is4() && !a.IsUnspecified() && !seen[a] {
+			seen[a] = true
+			addrs = append(addrs, a.String())
+		}
+	}
+	if len(addrs) == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf("iifname %q ip daddr { %s } drop", h.Bridge, strings.Join(addrs, ", "))}
+}
+
 // pick sends to one of targets, chosen at random per connection.
 func pick(ts []Target) string {
 	if len(ts) == 1 {
@@ -609,6 +641,15 @@ func Generate(h Host) (string, []Problem) {
 	// From silos: replies, other silos (over the mesh: their host decides), then grants only.
 	w("    iifname %q ct state established,related accept", h.Bridge)
 	w("    iifname %q ip daddr %s accept", h.Bridge, silosAll)
+	// A grant's accept can be as wide as 0.0.0.0/0. These drops are first, so that still means
+	// the internet: not a closed range, not link-local, not this host's own addresses. Silo
+	// traffic was accepted on the line above; Services are already translated to a silo address.
+	for _, r := range closedRangeDrops(h) { // a grant never reaches a closed range
+		w("    %s", r)
+	}
+	for _, r := range hostAddressDrops(h) { // a grant never reaches this host's own addresses
+		w("    %s", r)
+	}
 	for _, r := range egress {
 		w("    %s", r)
 	}

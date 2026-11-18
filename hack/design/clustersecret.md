@@ -42,9 +42,10 @@ status:
 - **Namespace `kevaso-system` is reserved.** A person or a service account may create, update or delete any object
   in it — service accounts, roles, role bindings, secrets, `serviceaccounts/token`, and everything else — or delete
   the namespace, only as a cluster-admin (`rbac.Policy.ClusterAdmin`, or the admin socket). Anyone else gets 403,
-  whatever their roles or bindings say. A RoleBinding in another namespace does not apply: a namespaced binding
-  reaches only its own namespace. get and list stay with RBAC. kevasod's own controllers, and a worker writing a
-  status it may already write, are not these callers.
+  whatever their roles or bindings say, except a plugin's own service account posting a token for that same
+  account (its controller renews the token it runs as, and nothing else). A RoleBinding in another namespace does
+  not apply: a namespaced binding reaches only its own namespace. get and list stay with RBAC. kevasod's own
+  controllers, and a worker writing a status it may already write, are not these callers.
 - No namespaced object may reference a ClusterSecret (grants' secrets, container pull secretRef).
 
 ## Delivery to plugins on a host

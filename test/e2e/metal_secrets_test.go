@@ -31,7 +31,7 @@ const metalShell = "docker.io/nicolaka/netshoot:v0.13"
 // egress gate into an HTTPS request that never appears inside the silo (nor on the VM's disk,
 // read from the host); a secret with approval: required that holds the call until it's approved.
 //
-// Listens on nothing outside (the stand-in API is on the machine's loopback).
+// Listens on nothing outside (the stand-in API is on a dummy link of the machine).
 func TestMetalSecrets(t *testing.T) {
 	c := metal(t)
 	ns := "vault"
@@ -48,7 +48,7 @@ func TestMetalSecrets(t *testing.T) {
 kind: Grant
 metadata: { name: app, namespace: ` + ns + ` }
 spec:
-  egress: [{ to: "` + metalInetAddr + `/32", ports: ["443"] }] # the stand-in is on loopback: K-057 refuses it by name alone
+  egress: [{ to: "` + metalInetAddr + `/32", ports: ["443"] }] # the stand-in is a private address: by name alone the gate refuses it
   secrets:
     - { name: db-password }
     - { name: tls-key, deliver: file, path: /run/secrets/tls.pem }
@@ -60,7 +60,7 @@ apiVersion: kevaso/v1
 kind: Grant
 metadata: { name: boxapp, namespace: ` + ns + ` }
 spec:
-  egress: [{ to: "` + metalInetAddr + `/32", ports: ["443"] }] # the stand-in is on loopback: K-057 refuses it by name alone
+  egress: [{ to: "` + metalInetAddr + `/32", ports: ["443"] }] # the stand-in is a private address: by name alone the gate refuses it
   secrets:
     - { name: db-password }
     - { name: api-key, deliver: inject, to: { host: ` + metalInetName + ` } }

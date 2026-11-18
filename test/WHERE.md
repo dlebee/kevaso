@@ -11,7 +11,7 @@ for linux and darwin (`make vet-tags`), so tagged code cannot rot, but compiling
 | Tag | Where it can run | Tests | Run in CI |
 |---|---|---|---|
 | `e2e` | Lima VMs on macOS, or a Linux machine with SSH access to its test machines | 20 | 1 |
-| `metal` | bare metal (test/e2e/METAL.md) | 4 | 0 |
+| `metal` | bare metal (test/e2e/METAL.md) | 5 | 0 |
 | `metal` | two bare-metal machines (test/e2e/METAL.md) | 47 | 0 |
 | `metal` | one bare-metal machine (test/e2e/METAL.md) | 28 | 0 |
 
@@ -49,6 +49,7 @@ fails when any of them reports SKIP (`hack/skipbudget`). Every other tagged test
 |---|---|---|---|
 | TestLabAPIHardening | test/e2e/lab_audit_test.go | bare metal (test/e2e/METAL.md) | skips |
 | TestLabEgressGateClosedRanges | test/e2e/lab_audit_test.go | bare metal (test/e2e/METAL.md) | skips |
+| TestLabEgressGateWideCIDR | test/e2e/lab_audit_test.go | bare metal (test/e2e/METAL.md) | skips |
 | TestLabClusterSecret | test/e2e/lab_clustersecret_test.go | bare metal (test/e2e/METAL.md) | skips |
 | TestLabHostDelete | test/e2e/lab_hostdelete_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
 | TestLabOpenShellPolicy | test/e2e/lab_openshell_policy_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |

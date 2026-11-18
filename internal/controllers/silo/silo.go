@@ -9,6 +9,8 @@
 // is known to be off, and onHostLoss says how (Move: with its data; Recreate: a fresh copy).
 // Deleting the Host is that same confirmation (hack/design/host-delete.md): a movable silo is
 // placed elsewhere, one that is not stays unscheduled, and a handoff from the deleted host ends.
+// A start claim of that host that is still fresh keeps the silo there until the claim is stale,
+// the same rule as `kvo move --confirm-fenced`.
 package silo
 
 import (
@@ -363,11 +365,20 @@ func handoffSource(s *v1.Silo, st *v1.SiloStatus, hosts []*v1.Host, env schedule
 
 // placeDeletedHost is a silo whose status.host names a Host that no longer exists, or one already
 // marked Unschedulable/HostDeleted. schedule means the caller should place it (status.host was
-// cleared). Otherwise the caller returns st as it is: kept in the store, not placed.
-func placeDeletedHost(s *v1.Silo, st v1.SiloStatus, now time.Time, env scheduler.Env) (v1.SiloStatus, bool, bool) {
+// cleared). Otherwise the caller returns st as it is: kept in the store, not placed. again is
+// how long a fresh start claim keeps it before it is looked at again.
+func placeDeletedHost(s *v1.Silo, st v1.SiloStatus, now time.Time, env scheduler.Env) (v1.SiloStatus, bool, bool, time.Duration) {
 	host := st.Host
 	if moves.StuckOnDeletedHost(st, host) {
-		return st, false, false
+		return st, false, false, 0
+	}
+	if left, hold := deletedHostClaimFresh(s, now); hold {
+		changed := meta.SetCondition(&st.Conditions, meta.Condition{
+			Type: CondHostUnreachable, Status: meta.ConditionTrue, Reason: "StartClaim",
+			Message:            fmt.Sprintf("%s was deleted, and its start claim of this silo is still fresh: the silo stays there until the claim is stale", host),
+			ObservedGeneration: s.Generation,
+		}, now)
+		return st, changed, false, left
 	}
 	if moves.HandingOff(st) {
 		// The deleted host was the destination. It never started the silo; the source still has
@@ -376,14 +387,14 @@ func placeDeletedHost(s *v1.Silo, st v1.SiloStatus, now time.Time, env scheduler
 			Message:            fmt.Sprintf("%s, where it was moving, was deleted; it never started there (%s hasn't let go): placing it elsewhere", host, st.MovingFrom),
 			ObservedGeneration: s.Generation}, now)
 		st.Host, st.SiloIP = "", ""
-		return st, true, true
+		return st, true, true, 0
 	}
 	place, recreate, local := moves.PlaceAfterHostDelete(s, env.Classes)
 	if !place { // HostDeleted: a silo that cannot move stays in the store, unplaced
 		st.Phase = PhaseUnknown
 		changed := meta.SetCondition(&st.Conditions, meta.Condition{Type: moves.CondUnschedulable, Status: meta.ConditionTrue,
 			Reason: moves.ReasonHostDeleted, Message: moves.HostDeletedMessage(s, host, local), ObservedGeneration: s.Generation}, now)
-		return st, changed || st.Phase != s.Status.Phase, false
+		return st, changed || st.Phase != s.Status.Phase, false, 0
 	}
 	// Movable: the delete is the confirmation, so this is the confirmed-fence status change
 	// (the Move and Recreate branches of a host that restarts itself), and the scheduler places it.
@@ -406,7 +417,22 @@ func placeDeletedHost(s *v1.Silo, st v1.SiloStatus, now time.Time, env scheduler
 		Message:            fmt.Sprintf("%s was deleted, which confirmed it is off or wiped: %s elsewhere (onHostLoss: %s)", host, how, s.Policy()),
 		ObservedGeneration: s.Generation}, now)
 	st.Host, st.SiloIP = "", ""
-	return st, true, true
+	return st, true, true, 0
+}
+
+// deletedHostClaimFresh reports how long a start claim of the silo's host still stands. The
+// delete of that host is the same confirmation as `kvo move --confirm-fenced`: a claim that is
+// still fresh keeps the silo there (CheckFenced), and it is placed once the claim is stale.
+func deletedHostClaimFresh(s *v1.Silo, now time.Time) (time.Duration, bool) {
+	if err := moves.CheckFenced(s, moves.Request{ConfirmFenced: true}, now); err == nil { // a fresh start claim keeps the silo here
+		return 0, false
+	}
+	c := meta.FindCondition(s.Status.Conditions, moves.CondStartClaim)
+	left := moves.StartClaimFresh - now.Sub(c.LastTransitionTime)
+	if left < time.Second {
+		left = time.Second
+	}
+	return left, true
 }
 
 // Decide returns the status the silo should have, whether it differs from the current one, and
@@ -471,9 +497,9 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 		if h == nil || moves.StuckOnDeletedHost(st, st.Host) {
 			// The Host object is gone, or this silo was already kept back after that delete
 			// (including a machine that joined again under the same name).
-			next, changedDel, schedule := placeDeletedHost(s, st, now, env)
+			next, changedDel, schedule, hold := placeDeletedHost(s, st, now, env)
 			if !schedule {
-				return next, changedDel || imageChanged || movableChanged, 0, nil
+				return next, changedDel || imageChanged || movableChanged, hold, nil
 			}
 			st = next
 		} else {

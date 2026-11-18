@@ -49,9 +49,10 @@ const (
 	// metalLoop is the loop file backing the volume group: the machine's disks are left alone.
 	metalLoop = "60G"
 	// metalInetName is the stand-in for an API on the internet the egress gate injects a key
-	// into: an HTTPS server on the machine's loopback (metalInetAddr), with a CA of the test's.
+	// into: an HTTPS server on a dummy link of the machine (metalInetAddr, on kvt-inet0), with a
+	// CA of the test's. Not loopback: a grant never opens the host's loopback.
 	metalInetName = "api.kvt-inject.test"
-	metalInetAddr = "127.0.0.77"
+	metalInetAddr = "192.168.250.2"
 	// testNet is TEST-NET-1 (RFC 5737): a source range nobody connects from.
 	testNet = "192.0.2.0/24"
 )
@@ -377,6 +378,8 @@ func metalRedact(s string) string {
 // got (never the value), run as a transient unit the reset stops (kvt-inet).
 const metalInetSetup = `set -e
 mkdir -p /etc/kevaso /var/lib/kvt-inet && cd /var/lib/kvt-inet
+ip link show kvt-inet0 >/dev/null 2>&1 || { ip link add kvt-inet0 type dummy; ip link set kvt-inet0 up; }
+ip addr show dev kvt-inet0 | grep -qF ' ` + metalInetAddr + `/' || ip addr add ` + metalInetAddr + `/32 dev kvt-inet0
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout ca.key -out ca.pem -days 2 -subj /CN=kvt-internet-ca 2>/dev/null
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout leaf.key -out leaf.csr -subj /CN=` + metalInetName + ` 2>/dev/null
 printf 'subjectAltName=DNS:` + metalInetName + `\n' > ext

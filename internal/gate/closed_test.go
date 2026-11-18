@@ -129,7 +129,8 @@ func TestClosedRangesFollowTheMeshAndTheNetworkModel(t *testing.T) {
 	if !slices.Equal(want, v1.KevasoRanges) {
 		t.Fatalf("mesh and service %v, KevasoRanges %v", want, v1.KevasoRanges)
 	}
-	for _, s := range append(want, "127.0.0.0/8", "::1/128", "169.254.0.0/16", "fe80::/10") {
+	for _, s := range append(want, "127.0.0.0/8", "::1/128", "169.254.0.0/16", "fe80::/10",
+		"0.0.0.0/8", "224.0.0.0/4", "240.0.0.0/4", "ff00::/8") {
 		if _, why := v1.ClosedRange(netip.MustParsePrefix(s)); why == "" {
 			t.Errorf("%s is not a range a grant never opens", s)
 		}

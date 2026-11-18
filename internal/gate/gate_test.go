@@ -120,9 +120,9 @@ func setup(t *testing.T, cidrPort string) *env {
 	e.silo.AppendCertsFromPEM(ca.PEM)
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "claude-1"}, Spec: v1.SiloSpec{Grants: []string{"g"}}}
 	g := &v1.Grant{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "g"}, Spec: v1.GrantSpec{
-		// Names resolve to a public address. Loopback is never opened by a grant (K-124); the
-		// 127.0.0.0/8 rule is only the CIDR passthrough of what the silo dialled.
-		Egress:  []v1.EgressRule{{To: "pass.test"}, {To: "127.0.0.0/8", Ports: []string{cidrPort}}},
+		// Names resolve to a public address. A wide CIDR passes what the silo dialled, except a
+		// range a grant never opens (loopback, link-local, this-network, multicast, reserved).
+		Egress:  []v1.EgressRule{{To: "pass.test"}, {To: "0.0.0.0/0", Ports: []string{cidrPort}}},
 		Secrets: []v1.GrantSecret{{Name: "key", Deliver: v1.DeliverInject, To: &v1.InjectTarget{Host: "api.allowed.test"}}},
 	}}
 	pol := PolicyFor(s, []*v1.Grant{g})
@@ -178,6 +178,38 @@ func setup(t *testing.T, cidrPort string) *env {
 	go func() { _ = gt.Serve(context.Background(), l) }()
 	e.gate = l.Addr().String()
 	return e
+}
+
+// localPrivate is an address of this machine that a grant may still dial: not loopback,
+// link-local, this-network, multicast or reserved.
+func localPrivate(t *testing.T) netip.Addr {
+	t.Helper()
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ifi := range ifaces {
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipn, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip, ok := netip.AddrFromSlice(ipn.IP)
+			if !ok {
+				continue
+			}
+			ip = ip.Unmap()
+			if ip.Is4() && ip.IsPrivate() {
+				return ip
+			}
+		}
+	}
+	t.Fatal("no private IPv4 address on this machine")
+	return netip.Addr{}
 }
 
 func (e *env) setDst(s string) {
@@ -296,7 +328,7 @@ func TestGate(t *testing.T) {
 
 // A CIDR grant passes raw TCP to the original destination.
 func TestGateCIDRPassthrough(t *testing.T) {
-	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	echo, err := net.Listen("tcp", net.JoinHostPort(localPrivate(t).String(), "0"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +342,7 @@ func TestGateCIDRPassthrough(t *testing.T) {
 			_ = c.Close()
 		}
 	}()
-	e.setDst("127.0.0.1:" + port)
+	e.setDst(echo.Addr().String())
 	c, err := net.Dial("tcp", e.gate)
 	if err != nil {
 		t.Fatal(err)
