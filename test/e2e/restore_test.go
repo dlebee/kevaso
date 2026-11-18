@@ -133,13 +133,13 @@ func TestBackupAndRestore(t *testing.T) {
 	// 4. A fresh machine; the wrong key is refused before anything changes, the right one restores.
 	_, targetB, ipB := machine("cpb")
 	var o, e bytes.Buffer
-	if code := kvoadm.Run(ctx, append(append([]string{"init"}, targetB...), "--kevasod", bin, "--restore", file,
+	if code := kvoadm.Run(ctx, append(append([]string{"init"}, targetB...), "--kevasod", bin, "--restore", file, "--no-hosts-added",
 		"--api-server", "https://127.0.0.1:6443", "--internal-ip", ipB),
 		strings.NewReader(kms.NewRecoveryKey().String()+"\n"), &o, &e); code == 0 {
 		t.Fatal("restored with a wrong recovery key")
 	}
 	t.Logf("wrong key: %s", strings.TrimSpace(e.String()))
-	restoreOut := kvoadmRun(rk+"\n", append(append([]string{"init"}, targetB...), "--kevasod", bin, "--restore", file,
+	restoreOut := kvoadmRun(rk+"\n", append(append([]string{"init"}, targetB...), "--kevasod", bin, "--restore", file, "--no-hosts-added",
 		"--api-server", "https://127.0.0.1:6443", "--internal-ip", ipB)...)
 	t.Logf("kvoadm init --restore:\n%s", restoreOut)
 	if strings.Contains(restoreOut, "KVR1-") {

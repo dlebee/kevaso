@@ -667,6 +667,7 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		if err := s.siloIPInSubnet(ctx, old.(*v1.Silo).Status, obj.(*v1.Silo).Status, id.Name); err != nil {
 			return store.Object{}, err
 		}
+		obj.(*v1.Silo).Status.Restore = old.(*v1.Silo).Status.Restore // a worker cannot mark a silo settled
 	}
 	if id, ok := IdentityFrom(ctx); (!ok || id.Type != "host" || id.Role != "worker") && t.kind.Kind == "Silo" && t.status && !t.planned {
 		// K-070: whatever the caller does, a handoff under way is not replaced or dropped. The
@@ -918,6 +919,17 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 				writeErr(w, err)
 				return
 			}
+			if err := s.guardRestoreHost(ctx, t.name, r.URL.Query().Get("confirmOff") == "true"); err != nil {
+				if hostRevoked {
+					if uerr := s.restoreHostRemoval(ctx, t.name, hostPrev); uerr != nil {
+						writeErr(w, uerr)
+						return
+					}
+					hostRevoked = false
+				}
+				writeErr(w, err)
+				return
+			}
 		}
 		if len(om.Finalizers) == 0 {
 			if _, err := s.commitDelete(ctx, t.key(), cur.Revision); errors.Is(err, store.ErrConflict) {
@@ -933,6 +945,9 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			if hostRevoked {
 				s.finalizeHostRemoval(ctx, t.name) // the delete committed: the removal is final
 				s.closeHostStreams(t.name)         // on this member now, whether or not that write held
+			}
+			if t.kind.Kind == "Host" {
+				s.accountedHostDelete(ctx, t.name, r.URL.Query().Get("confirmOff") == "true")
 			}
 			writeJSON(w, http.StatusOK, Status{Code: http.StatusOK, Reason: "Deleted", Message: t.key().String() + " deleted"})
 			return
@@ -959,6 +974,9 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if hostRevoked {
 			s.finalizeHostRemoval(ctx, t.name) // marked for deletion: the removal is final
 			s.closeHostStreams(t.name)
+		}
+		if t.kind.Kind == "Host" {
+			s.accountedHostDelete(ctx, t.name, r.URL.Query().Get("confirmOff") == "true")
 		}
 		b, err := render(cur)
 		if err != nil {

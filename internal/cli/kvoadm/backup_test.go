@@ -40,13 +40,19 @@ func TestReadRecoveryKeyLeavesTheRest(t *testing.T) {
 }
 
 func TestParseInitRestore(t *testing.T) {
-	o, err := parseInit([]string{"root@10.0.0.5", "--ssh-key", "k", "--kevasod", "b", "--restore", "prod.kvb"})
-	if err != nil || o.Restore != "prod.kvb" || o.nameGiven || o.clusterGiven {
+	if _, err := parseInit([]string{"root@10.0.0.5", "--ssh-key", "k", "--kevasod", "b", "--restore", "prod.kvb"}); err == nil {
+		t.Fatal("a restore without a statement about hosts was accepted")
+	}
+	if _, err := parseInit([]string{"root@10.0.0.5", "--ssh-key", "k", "--kevasod", "b", "--restore", "prod.kvb", "--no-hosts-added", "--host-added", "hv9"}); err == nil {
+		t.Fatal("both statements were accepted")
+	}
+	o, err := parseInit([]string{"root@10.0.0.5", "--ssh-key", "k", "--kevasod", "b", "--restore", "prod.kvb", "--no-hosts-added"})
+	if err != nil || o.Restore != "prod.kvb" || !o.NoHostsAdded || o.nameGiven || o.clusterGiven {
 		t.Fatalf("%+v %v", o, err)
 	}
-	o, _ = parseInit([]string{"root@10.0.0.5", "--ssh-key", "k", "--kevasod", "b", "--restore", "x", "--name", "cp-2", "--cluster", "c"})
-	if !o.nameGiven || !o.clusterGiven {
-		t.Fatalf("%+v", o)
+	o, err = parseInit([]string{"root@10.0.0.5", "--ssh-key", "k", "--kevasod", "b", "--restore", "x", "--host-added", "hv9", "--host-added", "hv8", "--name", "cp-2", "--cluster", "c"})
+	if err != nil || !o.nameGiven || !o.clusterGiven || len(o.HostsAdded) != 2 || o.HostsAdded[0] != "hv9" {
+		t.Fatalf("%+v %v", o, err)
 	}
 }
 
@@ -72,7 +78,7 @@ func TestPrepareRestore(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "prod.kvb")
 	_ = os.WriteFile(file, blob, 0o600)
 
-	o := InitOptions{Restore: file, Cluster: "kevaso", Name: "10-0-0-5"}
+	o := InitOptions{Restore: file, Cluster: "kevaso", Name: "10-0-0-5", NoHostsAdded: true}
 	var out bytes.Buffer
 	req, err := prepareRestore(&o, strings.NewReader(rk.String()+"\n"), &out)
 	if err != nil {
@@ -82,7 +88,7 @@ func TestPrepareRestore(t *testing.T) {
 		t.Fatalf("%+v %s", o, out.String())
 	}
 	var r client.RestoreRequest
-	if json.Unmarshal(req, &r) != nil || !bytes.Equal(r.Backup, blob) || r.RecoveryKey != rk.String() {
+	if json.Unmarshal(req, &r) != nil || !bytes.Equal(r.Backup, blob) || r.RecoveryKey != rk.String() || !r.NoHostsAdded {
 		t.Fatal("restore request")
 	}
 	o = InitOptions{Restore: file}

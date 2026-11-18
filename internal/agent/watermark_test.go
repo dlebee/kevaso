@@ -155,15 +155,24 @@ func TestAHeldWorkerChangesNothingUntilANewHistory(t *testing.T) {
 		t.Fatalf("another cluster's answer was kept: %+v", w)
 	}
 
-	// A deliberate restore (a new history, epoch 2): accepted. The new silo starts; web, which
-	// the restored state doesn't know and whose delete came from the held control plane, is kept.
+	// A deliberate restore (a new history, epoch 2): accepted. web, which the restored state
+	// doesn't know, is kept. new is not started until the control plane marks it settled.
 	switchTo(client.ControlPlaneSeen{ClusterID: "c1", History: "h2", Epoch: 2, Revision: 10})
+	notChanging("after the new history, before it is settled", 1500*time.Millisecond, map[string]kri.State{"web": kri.Running, "new": kri.Absent})
+	var neu v1.Silo
+	if err := c.Get(ctx, "Silo", "dev", "new", &neu); err != nil {
+		t.Fatal(err)
+	}
+	neu.Status.Restore = &v1.SiloRestore{History: "h2", Phase: v1.RestoreSettled}
+	if err := c.UpdateStatus(ctx, &neu); err != nil {
+		t.Fatal(err)
+	}
 	for deadline := time.Now().Add(10 * time.Second); state("new") != kri.Running; time.Sleep(50 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatalf("not started after the new history: %s", state("new"))
+			t.Fatalf("not started after the silo was settled: %s", state("new"))
 		}
 	}
-	notChanging("after the new history", 1500*time.Millisecond, map[string]kri.State{"web": kri.Running, "new": kri.Running})
+	notChanging("after the silo was settled", 1500*time.Millisecond, map[string]kri.State{"web": kri.Running, "new": kri.Running})
 	if w := kept(); w.Held || w.History != "h2" || w.Epoch != 2 {
 		t.Fatalf("after the new history, on disk: %+v", w)
 	}

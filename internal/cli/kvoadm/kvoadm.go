@@ -134,7 +134,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if len(args) == 0 || args[0] != "init" {
 		_, _ = fmt.Fprintln(stderr, `usage:
-  kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL] [--store sqlite|etcd] [--restore BACKUP] [--internal-ip IP] [--external-ip IP]
+  kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL] [--store sqlite|etcd] [--restore BACKUP (--no-hosts-added | --host-added NAME)] [--internal-ip IP] [--external-ip IP]
   kvoadm backup [USER@]ADDRESS --output FILE [--ssh-key PATH]
   kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime NAME]… [--loop-storage SIZE | --storage-device /dev/DISK]
   kvoadm host reconnect [USER@]ADDRESS --ssh-key PATH [--server URL]
@@ -142,7 +142,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm host kept [USER@]ADDRESS --ssh-key PATH [--data DIR] [--remove NAMESPACE/NAME/UID [--yes]]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker [--runtime NAME]… [--internal-ip IP] [--external-ip IP]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install control-plane [--state-only] [--internal-ip IP] [--external-ip IP]
-  kvoadm host install HOST control-plane [--state-only] | uninstall HOST control-plane | remove HOST
+  kvoadm host install HOST control-plane [--state-only] | uninstall HOST control-plane | remove HOST | confirm-off NAME
   kvoadm host list | drain NAME | uncordon NAME
   kvoadm store migrate [USER@]ADDRESS --ssh-key PATH
   kvoadm upgrade --kevasod PATH [--ssh-key PATH] [--batch N] [--version V] [--dry-run]
@@ -189,9 +189,11 @@ type InitOptions struct {
 	// Extra hardening, only when asked for (flags, or a question in a terminal).
 	DisablePasswordLogin bool
 	ChangeRootPassword   bool
-	DryRun               bool   // look at the machine, change nothing
-	Restore              string // a backup to restore (kvoadm backup), instead of a new cluster
-	Store                string // init: sqlite (default) or etcd (the embedded member with a peer listener, ready for more system nodes)
+	DryRun               bool     // look at the machine, change nothing
+	Restore              string   // a backup to restore (kvoadm backup), instead of a new cluster
+	NoHostsAdded         bool     // restore: no host joined since the backup
+	HostsAdded           []string // restore: a host that joined since the backup (repeatable)
+	Store                string   // init: sqlite (default) or etcd (the embedded member with a peer listener, ready for more system nodes)
 	nameGiven            bool
 	clusterGiven         bool
 	looked               bool // the machine was already looked at (host add)
@@ -201,20 +203,41 @@ type InitOptions struct {
 func parseInit(args []string) (InitOptions, error) {
 	var rest []string
 	store := ""
+	var noHosts bool
+	var added []string
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--store" {
+		switch args[i] {
+		case "--store":
 			if i+1 >= len(args) {
 				return InitOptions{}, errors.New("--store needs a value: sqlite or etcd")
 			}
 			store = args[i+1]
 			i++
-			continue
+		case "--no-hosts-added":
+			noHosts = true
+		case "--host-added":
+			if i+1 >= len(args) {
+				return InitOptions{}, errors.New("--host-added needs a host name")
+			}
+			i++
+			added = append(added, args[i])
+		default:
+			rest = append(rest, args[i])
 		}
-		rest = append(rest, args[i])
 	}
 	o, err := parseTarget(rest)
 	if err != nil {
 		return o, err
+	}
+	o.NoHostsAdded, o.HostsAdded = noHosts, added
+	if o.Restore != "" && !o.NoHostsAdded && len(o.HostsAdded) == 0 { // a restore names the hosts the backup cannot know
+		return o, errors.New("kvoadm init --restore needs --no-hosts-added, or --host-added NAME for each host joined since the backup")
+	}
+	if o.NoHostsAdded && len(o.HostsAdded) > 0 { // one statement, not both
+		return o, errors.New("kvoadm init --restore takes --no-hosts-added or --host-added, not both")
+	}
+	if o.Restore == "" && (o.NoHostsAdded || len(o.HostsAdded) > 0) {
+		return o, errors.New("--no-hosts-added and --host-added are only for kvoadm init --restore")
 	}
 	switch store {
 	case "", "sqlite":
@@ -664,6 +687,11 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	if restore != nil || existing {
 		if err := reconnectWorkers(ctx, o, c, "https://"+net.JoinHostPort(o.Reach(), "6443"), stdin, out); err != nil {
 			return fmt.Errorf("reconnecting workers: %w", err)
+		}
+	}
+	if restore != nil {
+		if err := printRestoreAccount(ctx, c, out); err != nil {
+			return fmt.Errorf("restore: %w", err)
 		}
 	}
 	return nil

@@ -11,6 +11,7 @@ import (
 	"kevaso.com/core/api/informer"
 	v1 "kevaso.com/core/api/v1"
 	hostctl "kevaso.com/core/internal/controllers/host"
+	"kevaso.com/core/internal/controllers/restore"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/plugins"
@@ -38,6 +39,9 @@ type Volumes struct {
 	Providers *Providers
 	// Poll is how soon to look again while something is in progress (default 5s).
 	Poll time.Duration
+	// Gates is the restore gate. Gate, if set, is the one ensure consults instead (tests).
+	Gates *informer.Informer
+	Gate  *v1.RestoreGate
 
 	mu        sync.Mutex
 	hostsSeen map[string]string
@@ -48,6 +52,21 @@ func (c *Volumes) Name() string { return "volumes" }
 
 // Kind implements engine.Controller.
 func (c *Volumes) Kind() string { return "Silo" }
+
+func (c *Volumes) restoreGate() *v1.RestoreGate {
+	if c.Gate != nil {
+		return c.Gate
+	}
+	if c.Gates == nil {
+		return nil
+	}
+	o, ok := c.Gates.Get("", v1.RestoreGateName)
+	if !ok {
+		return nil
+	}
+	g, _ := o.(*v1.RestoreGate)
+	return g
+}
 
 func (c *Volumes) poll() time.Duration {
 	if c.Poll > 0 {
@@ -312,6 +331,10 @@ func find(vs []v1.VolumeStatus, name string) int {
 
 // ensure creates the volume (in the host's region) and attaches it to the silo's host.
 func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Volume, vs v1.VolumeStatus) (v1.VolumeStatus, time.Duration, error) {
+	if s.DeletionTimestamp == nil && restore.BlocksPlacement(s, c.restoreGate()) { // restored history: do not attach until the silo is settled
+		vs.Message = "waiting until the restored history settles this silo"
+		return vs, c.poll(), nil
+	}
 	vs.Class, vs.Message = spec.Class, ""
 	p, cls, ok := c.Plugins.Storage(spec.Class)
 	if !ok {

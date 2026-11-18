@@ -238,9 +238,17 @@ func TestARestoredBackupStartsANewHistoryOfTheSameCluster(t *testing.T) {
 	if r2.Cluster.ID != r.Cluster.ID || r2.Cluster.Epoch != r.Cluster.Epoch+1 || r2.Cluster.History == r.Cluster.History {
 		t.Fatalf("restored identity %+v, was %+v", r2.Cluster, r.Cluster)
 	}
+	admin2 := client.NewUnix(cfg2.AdminSocket)
 	var got v1.Namespace
-	if err := client.NewUnix(cfg2.AdminSocket).Get(ctx, "Namespace", "", "kept", &got); err != nil {
+	if err := admin2.Get(ctx, "Namespace", "", "kept", &got); err != nil {
 		t.Fatalf("the restored store: %v", err)
+	}
+	var gate v1.RestoreGate
+	if err := admin2.Get(ctx, "RestoreGate", "", v1.RestoreGateName, &gate); err != nil {
+		t.Fatalf("the restore gate: %v", err)
+	}
+	if gate.Spec.History != r2.Cluster.History || gate.Spec.NoHostsAdded || len(gate.Spec.HostsAdded) != 0 {
+		t.Fatalf("a restore with no statement: %+v", gate.Spec)
 	}
 	if rec, _ := ReadClusterRecord(fresh); rec == nil || rec.State != RecordInitialized || rec.ID != r.Cluster.ID {
 		t.Fatalf("record after the restored start %+v", rec)

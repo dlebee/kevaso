@@ -2823,5 +2823,245 @@
    "./internal/apiserver"
   ],
   "protects": "a removed host's streams close when its delete commits"
-  }
+  },
+ {
+  "id": "G-560",
+  "guard": "a restored history starts nothing this worker is not already running",
+  "file": "internal/agent/agent.go",
+  "find": "if a.restoreBlocksStart(&cur) { // a restored history starts nothing this worker is not already running",
+  "replace": "if false { // a restored history starts nothing this worker is not already running",
+  "mutation": "a restored history starts a silo before it is settled",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a silo is not started on a restored history until the control plane settles it"
+ },
+ {
+  "id": "G-561",
+  "guard": "only a silo settled for this history may start",
+  "file": "internal/agent/agent.go",
+  "find": "if r := s.Status.Restore; r != nil && r.History == history && r.Phase == v1.RestoreSettled { // settled for this history: it may start",
+  "replace": "if true || history == \"\" { // settled for this history: it may start",
+  "mutation": "any mark, or none, counts as settled",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a silo starts on a restored history only once it is settled for that history"
+ },
+ {
+  "id": "G-562",
+  "guard": "an unsettled silo is not placed or moved",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "if restore.BlocksPlacement(s, env.Restore) { // an unsettled silo is not placed or moved",
+  "replace": "if false && restore.BlocksPlacement(s, env.Restore) { // an unsettled silo is not placed or moved",
+  "mutation": "an unsettled silo is scheduled",
+  "packages": [
+   "./internal/controllers/silo"
+  ],
+  "protects": "a restored history does not place a silo until it is settled"
+ },
+ {
+  "id": "G-563",
+  "guard": "an unsettled silo does not attach a volume",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "if s.DeletionTimestamp == nil && restore.BlocksPlacement(s, c.restoreGate()) { // restored history: do not attach until the silo is settled",
+  "replace": "if false && restore.BlocksPlacement(s, c.restoreGate()) { // restored history: do not attach until the silo is settled",
+  "mutation": "an unsettled silo attaches a volume",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a restored history does not attach a volume until the silo is settled"
+ },
+ {
+  "id": "G-564",
+  "guard": "a worker cannot mark a silo settled",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "obj.(*v1.Silo).Status.Restore = old.(*v1.Silo).Status.Restore // a worker cannot mark a silo settled",
+  "replace": "_ = old.(*v1.Silo).Status.Restore // a worker cannot mark a silo settled",
+  "mutation": "a worker's restore mark is stored",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "only the control plane marks a silo settled"
+ },
+ {
+  "id": "G-565",
+  "guard": "more than one copy freezes the silo",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(holders) > 1 { // more than one copy: frozen, placement unchanged, every disk kept",
+  "replace": "if false && len(holders) > 1 { // more than one copy: frozen, placement unchanged, every disk kept",
+  "mutation": "two copies are treated as none",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a silo held on more than one host stays frozen and keeps its placement"
+ },
+ {
+  "id": "G-566",
+  "guard": "no copy leaves the stored placement",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "st.Restore = marked(g.Spec.History, v1.RestoreSettled, nil) // no copy anywhere: the stored placement stands",
+  "replace": "st.Restore = marked(g.Spec.History, v1.RestoreSettled, nil); st.Host = \"\" // no copy anywhere: the stored placement stands",
+  "mutation": "no copy clears the stored placement",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a silo nobody holds keeps the placement the backup stored"
+ },
+ {
+  "id": "G-567",
+  "guard": "the one copy is the placement",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "st.Host, st.MovingFrom, st.SiloIP, st.Phase = holders[0], \"\", \"\", \"Scheduled\" // the one copy is the placement",
+  "replace": "st.Host, st.MovingFrom, st.SiloIP, st.Phase = st.Host, st.MovingFrom, st.SiloIP, st.Phase // the one copy is the placement",
+  "mutation": "the one host that holds the copy is not where it is placed",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a silo held on one host is placed on that host"
+ },
+ {
+  "id": "G-568",
+  "guard": "a host that has not reported still decides nothing",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(waiting) > 0 { // a host that has not reported still decides nothing",
+  "replace": "if false && len(waiting) > 0 { // a host that has not reported still decides nothing",
+  "mutation": "a missing report is treated as no copy",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a silo stays pending until every host in the account has reported"
+ },
+ {
+  "id": "G-569",
+  "guard": "a confirmed-off host holds nothing",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if ConfirmedOff(g, name) { // confirmed off: it holds nothing this history will start",
+  "replace": "if false { // confirmed off: it holds nothing this history will start",
+  "mutation": "a confirmed-off host is still waited on",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a host confirmed off is not waited on and contributes no copy"
+ },
+ {
+  "id": "G-570",
+  "guard": "a host joined since the backup is part of the account",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "for _, n := range g.Spec.HostsAdded { // a host joined since the backup is part of the account",
+  "replace": "for _, n := range []string(nil) { // a host joined since the backup is part of the account",
+  "mutation": "a host added since the backup is not waited on",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "every host the operator says joined since the backup reports before a silo settles"
+ },
+ {
+  "id": "G-571",
+  "guard": "a required host during an open restore is deleted only when confirmed off",
+  "file": "internal/apiserver/restorehost.go",
+  "find": "if !confirmOff { // a required host during an open restore is deleted only when confirmed off",
+  "replace": "if false { // a required host during an open restore is deleted only when confirmed off",
+  "mutation": "a required host is deleted with no confirmation",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host the restored history is waiting on is deleted only when confirmed off"
+ },
+ {
+  "id": "G-572",
+  "guard": "a confirmed-off host is accounted in the restored history",
+  "file": "internal/apiserver/restorehost.go",
+  "find": "s.noteConfirmedOff(ctx, name) // a confirmed-off host is accounted in the restored history",
+  "replace": "_ = name // a confirmed-off host is accounted in the restored history",
+  "mutation": "a confirmed-off delete is not recorded",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "deleting a host with confirmation records that it is off"
+ },
+ {
+  "id": "G-573",
+  "guard": "no statement settles nothing",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if !HasStatement(g) { // no statement: nothing this history can settle",
+  "replace": "if false { // no statement: nothing this history can settle",
+  "mutation": "a restore with no statement settles silos",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "without the operator's statement about hosts, no silo from before the history settles"
+ },
+ {
+  "id": "G-574",
+  "guard": "a silo made in this history is settled at once",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if createdSince(s, g) { // made in this history: no earlier copy to find",
+  "replace": "if false { // made in this history: no earlier copy to find",
+  "mutation": "a new silo waits on hosts that cannot hold its copy",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a silo created after the history began is settled without waiting for older hosts"
+ },
+ {
+  "id": "G-575",
+  "guard": "a handoff in the backup is not cleared",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if st.Host != holders[0] && !moves.HandingOff(st) { // a handoff in the backup is not cleared here",
+  "replace": "if st.Host != holders[0] { // a handoff in the backup is not cleared here",
+  "mutation": "settlement rewrites a handoff",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a handoff recorded in the backup is left for the host that still has to let go"
+ },
+ {
+  "id": "G-576",
+  "guard": "a settled or frozen silo is not decided again",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "return st, false // decided once: a later report does not move it or unfreeze it",
+  "replace": "st.Phase = st.Phase // decided once: a later report does not move it or unfreeze it",
+  "mutation": "a later report moves or unfreezes a silo",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "once a silo is settled or frozen, a later report does not move it or unfreeze it"
+ },
+ {
+  "id": "G-577",
+  "guard": "the scheduler reads the open restore",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "env.Restore = c.openGate() // an unsettled silo is not scheduled",
+  "replace": "env.Restore = nil // an unsettled silo is not scheduled",
+  "mutation": "the scheduler ignores the open restore",
+  "packages": [
+   "./internal/controllers/silo"
+  ],
+  "protects": "the silo controller does not schedule an unsettled silo"
+ },
+ {
+  "id": "G-578",
+  "guard": "a restore names the hosts the backup cannot know",
+  "file": "internal/cli/kvoadm/kvoadm.go",
+  "find": "if o.Restore != \"\" && !o.NoHostsAdded && len(o.HostsAdded) == 0 { // a restore names the hosts the backup cannot know",
+  "replace": "if false { // a restore names the hosts the backup cannot know",
+  "mutation": "a restore with no statement about hosts is accepted",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init --restore requires a statement about hosts joined since the backup"
+ },
+ {
+  "id": "G-579",
+  "guard": "one statement about hosts, not both",
+  "file": "internal/cli/kvoadm/kvoadm.go",
+  "find": "if o.NoHostsAdded && len(o.HostsAdded) > 0 { // one statement, not both",
+  "replace": "if false { // one statement, not both",
+  "mutation": "both statements about hosts are accepted",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init --restore takes one statement about hosts, not both"
+ }
 ]

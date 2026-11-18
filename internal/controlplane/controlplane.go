@@ -37,6 +37,7 @@ import (
 	hostcontroller "kevaso.com/core/internal/controllers/host"
 	ipcontroller "kevaso.com/core/internal/controllers/ip"
 	"kevaso.com/core/internal/controllers/provider"
+	restorecontroller "kevaso.com/core/internal/controllers/restore"
 	servicecontroller "kevaso.com/core/internal/controllers/service"
 	silocontroller "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/controllers/siloset"
@@ -486,7 +487,10 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	}
 	// How long each host has been silent, on this leader's clock, from its own start (K-014).
 	contacts := hostcontroller.NewContacts(cfg.Clock.Now())
-	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, IPs: ipInf, Images: images, Clock: cfg.Clock, Claims: uniq, Contacts: contacts}
+	gates := newInf("RestoreGate")
+	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, IPs: ipInf, Images: images, Gates: gates, Clock: cfg.Clock, Claims: uniq, Contacts: contacts}
+	e.Register(&restorecontroller.Controller{Client: c, Silos: silos, Hosts: hosts, Gates: gates}, engine.Options{Workers: 1})
+	gates.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "RestoreGate", Name: k.Name}) })
 	if cfg.Plugins != nil {
 		reg := cfg.Plugins
 		sc.Classes = func() map[string]scheduler.Class { return provider.Classes(reg) }
@@ -557,7 +561,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 		})
 		go leaseInf.Run(ctx)
 		e.Register(&provider.Balancers{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Leases: leaseInf, Plugins: reg, Clock: cfg.Clock, Providers: known}, engine.Options{Workers: 2})
-		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg, Records: cd.store, Providers: known}, engine.Options{Workers: 2})
+		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg, Records: cd.store, Providers: known, Gates: gates}, engine.Options{Workers: 2})
 		e.Register(&provider.IngressDNS{Client: c, Ingresses: ingresses, Classes: classes, Plugins: reg, Cluster: cfg.ClusterName, Clock: cfg.Clock}, engine.Options{Workers: 1})
 		classes.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IngressClass", Name: k.Name}) })
 		// A plugin came or went: everything that may use it looks again.
@@ -585,6 +589,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	}
 	go silos.Run(ctx)
 	go hosts.Run(ctx)
+	go gates.Run(ctx)
 	go ipInf.Run(ctx)
 	go images.Run(ctx)
 	go sets.Run(ctx)

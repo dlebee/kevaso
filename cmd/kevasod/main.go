@@ -435,9 +435,17 @@ func runRestore(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if req.NoHostsAdded && len(req.HostsAdded) > 0 {
+		return errors.New("restore says no host was added and also names hosts that were")
+	}
 	m, err := backup.Restore(ctx, req.Backup, rk, *data)
 	if err != nil {
 		return err
+	}
+	if req.NoHostsAdded || len(req.HostsAdded) > 0 {
+		if err := controlplane.WriteRestoreHosts(*data, req.NoHostsAdded, req.HostsAdded); err != nil {
+			return err
+		}
 	}
 	// The restored cluster's next start is a deliberate new history (brainstorm §0.7).
 	if err := controlplane.MarkRestored(*data); err != nil {

@@ -1617,8 +1617,30 @@ func (a *Agent) mayStartHere(ctx context.Context, s *v1.Silo) (wait bool, err er
 		}
 		return true, nil
 	}
+	if a.restoreBlocksStart(&cur) { // a restored history starts nothing this worker is not already running
+		if _, noted := a.staleNoted.LoadOrStore("restore:"+s.UID, struct{}{}); !noted {
+			a.log("not starting %s/%s: a restored history starts nothing this worker is not already running, until the control plane settles it",
+				s.Namespace, s.Name)
+		}
+		return true, nil
+	}
 	a.staleNoted.Delete(s.UID)
+	a.staleNoted.Delete("restore:" + s.UID)
 	return false, nil
+}
+
+// restoreBlocksStart reports whether a restored history forbids starting this silo here.
+// A copy this worker is already running does not come through here. Epoch 0 or 1 is a cluster's
+// creation, not a restore. A missing mark is not settled: the control plane has not decided yet.
+func (a *Agent) restoreBlocksStart(s *v1.Silo) bool {
+	epoch, history := a.watermark().trusted()
+	if epoch <= 1 { // a created cluster, not a restored history
+		return false
+	}
+	if r := s.Status.Restore; r != nil && r.History == history && r.Phase == v1.RestoreSettled { // settled for this history: it may start
+		return false
+	}
+	return true
 }
 
 // releaseMove tells the control plane this host has let go of a silo that moved away.
