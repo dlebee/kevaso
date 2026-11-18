@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -19,9 +20,9 @@ import (
 )
 
 // Volumes creates a silo's volumes on a plugin's storage class and attaches them to its host; the
-// host's agent formats each once and mounts it. Removing one (from the spec, or deleting the silo)
-// waits until the host has unmounted it, then detaches it (polled: a detach can take minutes,
-// E032) and deletes it.
+// host's agent formats each once and mounts it. One taken out of the spec is detached once the
+// host has unmounted it and kept until the silo is deleted. Deleting the silo detaches it (polled:
+// a detach can take minutes, E032) and deletes it.
 //
 // A mount-reach class (juicefs) attaches nothing: the volume is created once, and status says
 // which host should mount it (attachedTo); that host's agent asks the plugin's node side to mount
@@ -179,6 +180,7 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 	}
 	keep := vols[:0]
 	var dropping []string // removals to start: dropped from the status first, conditionally
+	var letting []string  // taken out of the spec: detach after the status write confirms it
 	for _, vs := range vols {
 		spec, wanted := want[vs.Name]
 		var (
@@ -192,6 +194,11 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 			next, wait = vs, time.Minute // a person's to sort out; nothing is asked of the plugin
 		case wanted && pending[vs.Name]:
 			next, wait = v1.VolumeStatus{Name: vs.Name, Class: vs.Class, Message: "waiting for the volume of this name being deleted to be gone"}, c.poll()
+		case !wanted && s.DeletionTimestamp == nil: // taken out of the spec: kept until the silo is deleted
+			next, wait, err = c.retain(vs)
+			if !vs.Mounted && vs.AttachedTo != "" {
+				letting = append(letting, vs.Name)
+			}
 		case !wanted && c.Records != nil && vs.Mounted:
 			next, wait = vs, c.poll()
 			next.Message = "waiting for " + vs.AttachedTo + " to unmount it"
@@ -236,7 +243,7 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 		}
 		// A removal applies only on the silo as this write finds it: still not wanted, still
 		// unmounted (the write is conditional on that copy's version).
-		for _, name := range dropping {
+		for _, name := range append(append([]string{}, dropping...), letting...) {
 			j := find(st.Volumes, name)
 			_, wantedNow := want[name]
 			for _, v := range v1.PluginVolumes(cur) {
@@ -262,6 +269,11 @@ func (c *Volumes) Reconcile(ctx context.Context, k engine.Key) (engine.Result, e
 	}
 	if stale {
 		return engine.Result{RequeueAfter: time.Second}, errors.Join(errs...)
+	}
+	if w, err := c.detachKept(ctx, s, letting); err != nil {
+		return engine.Result{}, err
+	} else if w > 0 && (again == 0 || w < again) {
+		again = w
 	}
 	if c.Records != nil {
 		removing := map[string]bool{}
@@ -312,6 +324,7 @@ func find(vs []v1.VolumeStatus, name string) int {
 
 // ensure creates the volume (in the host's region) and attaches it to the silo's host.
 func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Volume, vs v1.VolumeStatus) (v1.VolumeStatus, time.Duration, error) {
+	vs.Kept = false
 	vs.Class, vs.Message = spec.Class, ""
 	p, cls, ok := c.Plugins.Storage(spec.Class)
 	if !ok {
@@ -497,6 +510,135 @@ func PlaceMounted(s *v1.Silo, vs v1.VolumeStatus, host string, attachedLost bool
 		vs.AttachedTo = host
 	}
 	return vs, ""
+}
+
+// keptVolumeMessage is what status says about a volume taken out of the spec.
+const keptVolumeMessage = "kept: taken out of the spec; it stays until the silo is deleted"
+
+// retain keeps a volume the spec no longer names. It is deleted only with the silo.
+func (c *Volumes) retain(vs v1.VolumeStatus) (v1.VolumeStatus, time.Duration, error) {
+	vs.Kept = true
+	if vs.Mounted {
+		vs.Message = "waiting for " + vs.AttachedTo + " to unmount it"
+		return vs, c.poll(), nil
+	}
+	vs.Message = keptVolumeMessage
+	return vs, 0, nil
+}
+
+// detachKept detaches volumes taken out of the spec, after a fresh read still says they are
+// unwanted, unmounted and kept. It does not delete them.
+func (c *Volumes) detachKept(ctx context.Context, s *v1.Silo, names []string) (time.Duration, error) {
+	if len(names) == 0 || c.Client == nil {
+		return 0, nil
+	}
+	var cur v1.Silo
+	if err := c.Client.Get(ctx, "Silo", s.Namespace, s.Name, &cur); err != nil {
+		return 0, client.IgnoreNotFound(err)
+	}
+	if cur.UID != s.UID || cur.DeletionTimestamp != nil {
+		return 0, nil
+	}
+	want := map[string]bool{}
+	for _, v := range v1.PluginVolumes(&cur) {
+		want[v.Name] = true
+	}
+	var wait time.Duration
+	changed := false
+	for _, name := range names {
+		if want[name] {
+			continue
+		}
+		j := find(cur.Status.Volumes, name)
+		if j < 0 || cur.Status.Volumes[j].Mounted || !cur.Status.Volumes[j].Kept {
+			continue
+		}
+		vs := &cur.Status.Volumes[j]
+		if vs.AttachedTo == "" {
+			continue
+		}
+		if vs.Handle != "" {
+			p, cls, ok := c.Plugins.Storage(vs.Class)
+			if !ok {
+				vs.Message = "detaching it needs the plugin serving " + vs.Class
+				changed = true
+				wait = 30 * time.Second
+				continue
+			}
+			if !cls.Mounted() {
+				hi := kplugin.HostInfo{Name: vs.AttachedTo}
+				if c.Hosts != nil {
+					if oh, ok := c.Hosts.Get("", vs.AttachedTo); ok {
+						if ohp, known := c.Providers.Of(oh.(*v1.Host)); known && ohp != nil {
+							hi = info(vs.AttachedTo, ohp)
+						}
+					}
+				}
+				err := p.Conn.DetachVolume(ctx, kplugin.Attachment{Class: vs.Class, Handle: vs.Handle, Host: hi})
+				if errors.Is(err, kplugin.ErrInProgress) {
+					vs.Message = "detaching from " + vs.AttachedTo
+					changed = true
+					wait = c.poll()
+					continue
+				}
+				if err != nil && !errors.Is(err, kplugin.ErrNotFound) {
+					return 0, err
+				}
+			}
+		}
+		vs.AttachedTo, vs.Device = "", ""
+		vs.Kept = true
+		vs.Message = keptVolumeMessage
+		changed = true
+	}
+	if !changed {
+		return wait, nil
+	}
+	if err := c.Client.UpdateStatus(ctx, &cur); err != nil {
+		return 0, err
+	}
+	if c.Records != nil {
+		for _, name := range names {
+			j := find(cur.Status.Volumes, name)
+			if j < 0 {
+				continue
+			}
+			if err := c.writeRecord(ctx, &cur, cur.Status.Volumes[j]); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return wait, nil
+}
+
+func (c *Volumes) writeRecord(ctx context.Context, s *v1.Silo, vs v1.VolumeStatus) error {
+	key := recordKey(s, vs.Name)
+	o, err := c.Records.Get(ctx, key)
+	if errors.Is(err, store.ErrNotFound) {
+		data, merr := json.Marshal(recorded(vs))
+		if merr != nil {
+			return merr
+		}
+		_, err = c.Records.Create(ctx, key, data)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	r, err := decodeRecord(o)
+	if err != nil {
+		return err
+	}
+	r.VolumeStatus = recorded(vs)
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	if string(o.Data) == string(data) {
+		return nil
+	}
+	_, err = c.Records.Update(ctx, o.Key, data, o.Revision)
+	return err
 }
 
 // remove detaches (once unmounted) and deletes a volume; done when it's gone.

@@ -523,4 +523,7 @@ type VolumeStatus struct {
 	// SizeNotEnforced: the class can't hold the volume to its size (a folder with no quota): it can
 	// fill whatever backs it.
 	SizeNotEnforced bool `json:"sizeNotEnforced,omitempty"`
+	// Kept: the volume was taken out of the spec. It is detached and stays, with this handle,
+	// until the silo is deleted. The same name and class in the spec attaches it again.
+	Kept bool `json:"kept,omitempty"`
 }

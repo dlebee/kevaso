@@ -2885,6 +2885,30 @@
   "protects": "a root disk is not written beside its volume"
   },
   {
+  "id": "G-505",
+  "guard": "a volume taken out of the spec is kept",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "case !wanted && s.DeletionTimestamp == nil: // taken out of the spec: kept until the silo is deleted",
+  "replace": "case false && s.DeletionTimestamp == nil: // taken out of the spec: kept until the silo is deleted",
+  "mutation": "a volume taken out of the spec is deleted while the silo lives",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a provider volume stays until the silo is deleted"
+  },
+  {
+  "id": "G-506",
+  "guard": "a volume's class cannot change in place",
+  "file": "internal/apiserver/semantic.go",
+  "find": "errs = append(errs, volumeClassChanges(old, next)...)",
+  "replace": "errs = append(errs, volumeClassChanges(old, old)...)",
+  "mutation": "a volume's class changes in place",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "changing a volume's class, or disk.class, under the same name is refused"
+  },
+  {
   "id": "G-509",
   "guard": "a qcow2 backing file is refused",
   "file": "builtin/kri/cloudhypervisor/image.go",
