@@ -135,7 +135,12 @@ func (ca *CA) Pool() *x509.CertPool {
 }
 
 // Save writes ca.crt (0644) and ca.key (0600) into dir.
-func (ca *CA) Save(dir string) error {
+func (ca *CA) Save(dir string) error { return ca.SaveNamed(dir, "ca") }
+
+// SaveNamed writes base.crt (0644) and base.key (0600) into dir. The cluster CA is "ca"; the
+// internal CA (what internal-ca signs with) is "internal-ca", a different key, in the same
+// directory so a join and a backup copy it with the other pki files.
+func (ca *CA) SaveNamed(dir, base string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -143,19 +148,29 @@ func (ca *CA) Save(dir string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ca.key"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, base+".key"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "ca.crt"), ca.PEM, 0o644)
+	return os.WriteFile(filepath.Join(dir, base+".crt"), ca.PEM, 0o644)
 }
 
 // LoadCA reads what Save wrote.
-func LoadCA(dir string) (*CA, error) {
-	certPEM, err := os.ReadFile(filepath.Join(dir, "ca.crt"))
+func LoadCA(dir string) (*CA, error) { return LoadNamed(dir, "ca") }
+
+// LoadNamed reads what SaveNamed wrote. Both files missing is os.ErrNotExist. One of them missing,
+// or a file that isn't a CA, is an error: a new CA is not made over half a pair.
+func LoadNamed(dir, base string) (*CA, error) {
+	certPath, keyPath := filepath.Join(dir, base+".crt"), filepath.Join(dir, base+".key")
+	_, certErr := os.Stat(certPath)
+	_, keyErr := os.Stat(keyPath)
+	if errors.Is(certErr, os.ErrNotExist) && errors.Is(keyErr, os.ErrNotExist) {
+		return nil, os.ErrNotExist
+	}
+	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return nil, err
 	}
-	keyPEM, err := os.ReadFile(filepath.Join(dir, "ca.key"))
+	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, err
 	}
@@ -174,9 +189,36 @@ func LoadCA(dir string) (*CA, error) {
 	}
 	signer, ok := k.(crypto.Signer)
 	if !ok {
-		return nil, errors.New("ca.key: not a signing key")
+		return nil, errors.New(base + ".key: not a signing key")
 	}
 	return &CA{Cert: cert, Key: signer, PEM: certPEM}, nil
+}
+
+// ParseCertificatePEM reads the first certificate in a PEM block.
+func ParseCertificatePEM(b []byte) (*x509.Certificate, error) {
+	block, _ := pem.Decode(b)
+	if block == nil {
+		return nil, errors.New("not a PEM certificate")
+	}
+	return x509.ParseCertificate(block.Bytes)
+}
+
+// IdentityOfPEM is IdentityOf for a PEM certificate.
+func IdentityOfPEM(b []byte) (Identity, error) {
+	cert, err := ParseCertificatePEM(b)
+	if err != nil {
+		return Identity{}, err
+	}
+	return IdentityOf(cert)
+}
+
+// CertificateLifetime reads NotBefore and NotAfter. ok is false when the PEM isn't a certificate.
+func CertificateLifetime(b []byte) (notBefore, notAfter time.Time, ok bool) {
+	cert, err := ParseCertificatePEM(b)
+	if err != nil {
+		return time.Time{}, time.Time{}, false
+	}
+	return cert.NotBefore, cert.NotAfter, true
 }
 
 // ServerCert issues the API server's certificate for the given DNS names and IP addresses.

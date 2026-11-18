@@ -5,17 +5,24 @@
 package kvoconfig
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	yaml "go.yaml.in/yaml/v3"
 
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/internal/login"
+	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/tokenstore"
 )
+
+// warnCert is where a certificate that could not be renewed, and expires within ten days, is
+// reported. Tests replace it.
+var warnCert = func(format string, args ...any) { fmt.Fprintf(os.Stderr, format, args...) }
 
 // Context is one cluster to talk to.
 type Context struct {
@@ -177,6 +184,75 @@ func (c Config) Client(path, name string) (*client.Client, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	cert, key, err = renewContextCert(name, ctx, ca, cert, key)
+	if err != nil {
+		return nil, name, err
+	}
 	cl, err := client.NewTLSEndpoints(client.SplitServers(ctx.Server), ca, cert, key)
 	return cl, name, err
+}
+
+// renewContextCert renews a certificate user's client certificate once it is past two thirds of
+// its life, or inside the last ten days. An expired certificate is an error naming how to sign a
+// new one. A renewal that fails inside the last ten days is warned about, and the current
+// certificate is still used: it can still connect. A renewed certificate for a different identity
+// is refused and not stored.
+func renewContextCert(name string, ctx Context, ca, cert, key []byte) ([]byte, []byte, error) {
+	nb, na, ok := pki.CertificateLifetime(cert)
+	if !ok {
+		return cert, key, nil // not a certificate (a test's stand-in, or a file the TLS client will reject)
+	}
+	now := time.Now()
+	id, idErr := pki.IdentityOfPEM(cert)
+	who := id.Name
+	if who == "" {
+		who = name
+	}
+	if !now.Before(na) {
+		return nil, nil, fmt.Errorf("context %s certificate for %s expired on %s. On a control-plane host, run: kevasod admin sign-user --name %s",
+			name, who, na.UTC().Format(time.RFC3339), who)
+	}
+	if client.RenewDue(nb, na, now) { // renew a certificate past two thirds of its life
+		cl, err := client.NewTLSEndpoints(client.SplitServers(ctx.Server), ca, cert, key)
+		if err != nil {
+			return cert, key, nil
+		}
+		rctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		cred, rerr := cl.Renew(rctx)
+		cancel()
+		within10 := !now.Before(na.Add(-10 * 24 * time.Hour))
+		if rerr != nil {
+			if within10 {
+				warnCert("kvo: context %s certificate for %s expires on %s and could not be renewed (%v). On a control-plane host, run: kevasod admin sign-user --name %s\n",
+					name, who, na.UTC().Format(time.RFC3339), rerr, who)
+			}
+			return cert, key, nil
+		}
+		if idErr == nil {
+			newID, err := pki.IdentityOfPEM(cred.Certificate)
+			if err != nil {
+				return nil, nil, err
+			}
+			if newID != id { // a renewal is the same identity
+				return nil, nil, fmt.Errorf("context %s: refusing a renewed certificate for %s %s (this context is %s %s)",
+					name, newID.Type, newID.Name, id.Type, id.Name)
+			}
+		}
+		if err := writeFileAtomic(ctx.Key, cred.Key, 0o600); err != nil {
+			return nil, nil, err
+		}
+		if err := writeFileAtomic(ctx.Certificate, cred.Certificate, 0o644); err != nil {
+			return nil, nil, err
+		}
+		return cred.Certificate, cred.Key, nil
+	}
+	return cert, key, nil
+}
+
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

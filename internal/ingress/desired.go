@@ -120,6 +120,21 @@ func Desire(in Inputs) Desired {
 		}
 		knobs := kic.Annotations(info.Name, ing.Annotations)
 		tls := !ing.Spec.TLS.None
+		allowed := map[string]bool{}
+		for _, h := range ing.Spec.Hosts {
+			h = strings.ToLower(strings.TrimSuffix(h, "."))
+			if !c.AllowsHost(ing.Namespace, h) { // a host not assigned to this namespace is not served
+				continue
+			}
+			allowed[h] = true
+		}
+		if len(ing.Spec.Hosts) > 0 && len(allowed) == 0 {
+			if out.Refused == nil {
+				out.Refused = map[string]string{}
+			}
+			out.Refused[who] = fmt.Sprintf("no host is assigned to namespace %s on ingress class %s: ask a cluster admin to assign it", ing.Namespace, c.Name)
+			continue
+		}
 		for _, r := range ing.Spec.Rules {
 			b, ok := Backend(in.Silos, in.Services, ing.Namespace, r.Service, routed)
 			if !ok {
@@ -127,6 +142,9 @@ func Desire(in Inputs) Desired {
 			}
 			for _, h := range ing.Spec.Hosts {
 				h = strings.ToLower(strings.TrimSuffix(h, "."))
+				if !allowed[h] {
+					continue
+				}
 				key := claimKey(h, pathOf(r))
 				if claimed[key] {
 					continue
@@ -148,9 +166,9 @@ func Desire(in Inputs) Desired {
 			continue // not issued yet
 		}
 		certs[name] = true
-		hosts := make([]string, 0, len(ing.Spec.Hosts))
-		for _, h := range ing.Spec.Hosts {
-			hosts = append(hosts, strings.ToLower(strings.TrimSuffix(h, ".")))
+		hosts := make([]string, 0, len(allowed))
+		for h := range allowed {
+			hosts = append(hosts, h)
 		}
 		sort.Strings(hosts)
 		out.State.Certificates = append(out.State.Certificates, kic.Certificate{Name: name, Ingress: who, Hosts: hosts, Chain: chain, Key: key})

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"kevaso.com/core/sdk/kri"
@@ -46,9 +47,36 @@ type Local struct{}
 // ends; kevasod's stop then waits for it too.
 const WaitDelay = 5 * time.Second
 
+var (
+	dirOnce sync.Once
+	dirPath string
+	dirErr  error
+)
+
+func commandDir() (string, error) {
+	dirOnce.Do(func() {
+		dirPath, dirErr = os.MkdirTemp("", "kevaso-hostexec-")
+	})
+	return dirPath, dirErr
+}
+
+// SetCommandDir runs cmd in an empty directory. A relative path in its arguments is that
+// directory, not the process's working directory (for kevasod, the host's root).
+func SetCommandDir(cmd *exec.Cmd) error {
+	dir, err := commandDir()
+	if err != nil {
+		return err
+	}
+	cmd.Dir = dir // no relative path resolves against the host's root
+	return nil
+}
+
 // Run implements Runner.
 func (Local) Run(ctx context.Context, c Cmd) (int, error) {
 	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
+	if err := SetCommandDir(cmd); err != nil {
+		return -1, err
+	}
 	cmd.WaitDelay = WaitDelay
 	cmd.Env = append([]string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"}, c.Env...)
 	if c.TTY != nil {

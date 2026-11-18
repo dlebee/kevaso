@@ -125,6 +125,30 @@ func ParseImageRef(ref string) (ImageRef, error) {
 	return r, nil
 }
 
+// ArchiveName reports whether the repository's last part names a rootfs archive. Those are files
+// on a disk, not registry references.
+func ArchiveName(repository string) bool {
+	base := repository
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	switch {
+	case strings.HasSuffix(base, ".tar.gz"), strings.HasSuffix(base, ".tgz"), strings.HasSuffix(base, ".tar"):
+		return true // a rootfs archive is not an image
+	default:
+		return false
+	}
+}
+
+// RegistryBinding is the registry a sealed credential is bound to: the normalised host, or the
+// server text when it isn't a host yet.
+func RegistryBinding(server string) string {
+	if h, err := RegistryHost(server); err == nil {
+		return h
+	}
+	return strings.ToLower(strings.TrimSpace(server))
+}
+
 // RegistryHost normalises a registry secret's server: a host[:port], with Docker Hub's aliases
 // (and a scheme or path pasted from docker login) reduced to docker.io.
 func RegistryHost(server string) (string, error) {
@@ -183,8 +207,11 @@ func SourceProblems(spec SiloSpec, isVMImage func(name string) bool) []string {
 		case isVMImage != nil && isVMImage(name):
 			out = append(out, fmt.Sprintf("%s is a VMImage, a disk for cloud-hypervisor; container.image is a registry reference, used as it is (e.g. ghcr.io/acme/api@sha256:…)", name))
 		default:
-			if _, err := ParseImageRef(c.Image); err != nil {
+			ref, err := ParseImageRef(c.Image)
+			if err != nil {
 				out = append(out, "container.image is a registry reference: "+err.Error())
+			} else if (rt == "openshell" || rt == "openshell-container") && ArchiveName(ref.Repository) {
+				out = append(out, "container.image is a registry reference, not a rootfs archive (.tar, .tar.gz, .tgz)")
 			}
 		}
 	}

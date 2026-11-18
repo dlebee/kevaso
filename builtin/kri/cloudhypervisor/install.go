@@ -512,6 +512,9 @@ type Local struct{}
 // Run implements Host.
 func (Local) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	if err := hostexec.SetCommandDir(cmd); err != nil {
+		return nil, err
+	}
 	cmd.WaitDelay = hostexec.WaitDelay // a process it leaves with the output open doesn't hold the caller
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	out, err := cmd.CombinedOutput()

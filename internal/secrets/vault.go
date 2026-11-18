@@ -57,7 +57,21 @@ type Vault struct {
 	Now   func() time.Time
 }
 
-func aad(ns, name, uid string) []byte { return []byte(ns + "/" + name + "/" + uid) }
+func aad(ns, name, uid, registry string) []byte {
+	b := ns + "/" + name + "/" + uid
+	if registry != "" { // the sealed value opens only for this registry
+		b += "/" + registry
+	}
+	return []byte(b)
+}
+
+// registryOf is the registry a secret's value is bound to ("" for anything but a registry secret).
+func registryOf(sec *v1.Secret) string {
+	if sec != nil && sec.Spec.Type == v1.SecretRegistry {
+		return v1.RegistryBinding(sec.Spec.Server)
+	}
+	return ""
+}
 
 func valueKey(ns, name string) store.Key {
 	return store.Key{Kind: KindValue, Namespace: ns, Name: name}
@@ -70,7 +84,7 @@ func (v *Vault) Put(ctx context.Context, sec *v1.Secret, value []byte) (v1.Secre
 	if err != nil {
 		return v1.SecretStatus{}, err
 	}
-	r, err := v.putRecord(ctx, sec.Namespace, sec.Name, sec.UID, value, !sec.Readable())
+	r, err := v.putRecord(ctx, sec.Namespace, sec.Name, sec.UID, registryOf(sec), value, !sec.Readable())
 	if err != nil {
 		return v1.SecretStatus{}, err
 	}
@@ -82,7 +96,7 @@ func (v *Vault) Put(ctx context.Context, sec *v1.Secret, value []byte) (v1.Secre
 // cluster-admin's --reveal, or a ClusterRole pinned to the name): it is not write-only in the vault.
 // The version is what the caller records; the clock that stamps changedAt is the server's.
 func (v *Vault) PutCluster(ctx context.Context, cs *v1.ClusterSecret, value []byte) (int64, error) {
-	r, err := v.putRecord(ctx, "", cs.Name, cs.UID, value, false)
+	r, err := v.putRecord(ctx, "", cs.Name, cs.UID, "", value, false)
 	if err != nil {
 		return 0, err
 	}
@@ -91,8 +105,8 @@ func (v *Vault) PutCluster(ctx context.Context, cs *v1.ClusterSecret, value []by
 
 // putRecord seals value under namespace/name, bound to uid. A new uid starts at version 1; the
 // same uid bumps the version. writeOnly sticks to the value (K-060).
-func (v *Vault) putRecord(ctx context.Context, ns, name, uid string, value []byte, writeOnly bool) (record, error) {
-	sealed, err := kms.Seal(ctx, v.KMS, value, aad(ns, name, uid))
+func (v *Vault) putRecord(ctx context.Context, ns, name, uid, registry string, value []byte, writeOnly bool) (record, error) {
+	sealed, err := kms.Seal(ctx, v.KMS, value, aad(ns, name, uid, registry))
 	if err != nil {
 		return record{}, err
 	}
@@ -160,7 +174,7 @@ func (v *Vault) ClusterValue(ctx context.Context, cs *v1.ClusterSecret) ([]byte,
 	if err != nil {
 		return nil, 0, err
 	}
-	pt, err := kms.Open(ctx, v.KMS, r.Sealed, aad("", cs.Name, cs.UID))
+	pt, err := kms.Open(ctx, v.KMS, r.Sealed, aad("", cs.Name, cs.UID, ""))
 	return pt, r.Version, err
 }
 
@@ -170,7 +184,7 @@ func (v *Vault) Value(ctx context.Context, sec *v1.Secret) ([]byte, int64, error
 	if err != nil {
 		return nil, 0, err
 	}
-	pt, err := kms.Open(ctx, v.KMS, r.Sealed, aad(sec.Namespace, sec.Name, sec.UID))
+	pt, err := kms.Open(ctx, v.KMS, r.Sealed, aad(sec.Namespace, sec.Name, sec.UID, registryOf(sec)))
 	return pt, r.Version, err
 }
 
@@ -184,7 +198,7 @@ func (v *Vault) PersonValue(ctx context.Context, sec *v1.Secret) ([]byte, int64,
 	if r.WriteOnly {
 		return nil, 0, ErrWriteOnly
 	}
-	pt, err := kms.Open(ctx, v.KMS, r.Sealed, aad(sec.Namespace, sec.Name, sec.UID))
+	pt, err := kms.Open(ctx, v.KMS, r.Sealed, aad(sec.Namespace, sec.Name, sec.UID, registryOf(sec)))
 	return pt, r.Version, err
 }
 

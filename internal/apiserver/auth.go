@@ -426,6 +426,10 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			w.Header().Set("Content-Type", "application/x-pem-file")
 			_, _ = w.Write(s.auth.CA.PEM)
 			return
+		case r.URL.Path == "/internal-ca.crt" && s.internalCA != nil: // public certificate only; not a client pin
+			w.Header().Set("Content-Type", "application/x-pem-file")
+			_, _ = w.Write(s.internalCA.PEM)
+			return
 		case s.auth.Issuer != nil && (r.URL.Path == issuer.PathDiscovery || strings.HasPrefix(r.URL.Path, "/oidc/")):
 			s.auth.Issuer.Handler().ServeHTTP(w, r)
 			return
@@ -481,6 +485,10 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 		}
 		if r.URL.Path == "/auth/whoami" {
 			writeJSON(w, http.StatusOK, client.WhoAmI{Type: id.Type, Name: id.Name, Role: id.Role, Groups: groups})
+			return
+		}
+		if r.URL.Path == "/renew" {
+			s.renewCert(w, r, id)
 			return
 		}
 		t, err := s.parseAny(ctx, r.URL.Path)
@@ -594,6 +602,23 @@ func (s *Server) issueUserCert(w http.ResponseWriter, r *http.Request, caller pk
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
 		return
 	}
+	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
+}
+
+// renewCert signs a new certificate for the caller, and for nobody else: the name and role are
+// the authenticated certificate's, never a name in the request. A removed host is refused before
+// this runs. The new serial is recorded where a removal record exists (signAndReply).
+func (s *Server) renewCert(w http.ResponseWriter, r *http.Request, caller pki.Identity) {
+	if caller.Type != "host" && caller.Type != "user" {
+		writeErr(w, errf(http.StatusForbidden, "Forbidden", "only a host or user certificate can be renewed"))
+		return
+	}
+	req, err := decodeCertRequest(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	id := caller // renewed for the authenticated caller only
 	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
 }
 

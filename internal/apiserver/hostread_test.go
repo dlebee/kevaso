@@ -325,7 +325,8 @@ func TestWorkerReadsOnlyWhatIsOnIt(t *testing.T) {
 
 	mustCreate(t, e, &v1.IngressClass{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IngressClass"},
 		ObjectMeta: meta.ObjectMeta{Name: "office"},
-		Spec:       v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Namespace: "dev", Silo: "web"}}})
+		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Namespace: "dev", Silo: "web"},
+			Hosts: []v1.HostAssignment{{Host: "*.example.com", Namespaces: []string{"dev"}}}}})
 	web := &v1.Silo{}
 	if err := e.admin.Get(e.ctx, "Silo", "dev", "web", web); err != nil {
 		t.Fatal(err)

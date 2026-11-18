@@ -592,6 +592,24 @@ func loadOrCreateCA(cfg Config, rec *ClusterRecord) (*pki.CA, error) {
 	return ca, nil
 }
 
+// loadOrCreateInternalCA loads the CA internal-ca signs with (pki/internal-ca.crt and
+// internal-ca.key). It is not the cluster CA: clients that pin the cluster CA do not trust it.
+// Both files missing creates one. Either file present and unreadable is an error, not a new CA.
+func loadOrCreateInternalCA(cfg Config) (*pki.CA, error) {
+	dir := filepath.Join(cfg.DataDir, "pki")
+	ca, err := pki.LoadNamed(dir, "internal-ca")
+	if errors.Is(err, os.ErrNotExist) {
+		cfg.Log("creating the internal CA in %s", dir)
+		if ca, err = pki.NewCA(cfg.ClusterName+" internal", cfg.Clock.Now()); err == nil {
+			err = ca.SaveNamed(dir, "internal-ca")
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("internal CA: %w", err)
+	}
+	return ca, nil
+}
+
 // haKMS refuses rotating the master key while the store has other members: each system node keeps
 // its own copy of the key file, and a key made on one alone would leave the others unable to open
 // what it seals. (A shared KMS, or rotation handed to every node, is the follow-up.)

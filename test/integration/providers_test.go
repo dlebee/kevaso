@@ -164,7 +164,8 @@ func TestProviderPlugin(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := admin.Create(ctx, &v1.IngressClass{TypeMeta: tm("IngressClass"), ObjectMeta: meta.ObjectMeta{Name: "web"},
-		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "ingress", Namespace: "kevaso-system"}, DNS: &v1.IngressDNS{Provider: "fake-dns", TTL: 120}}}); err != nil {
+		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "ingress", Namespace: "kevaso-system"}, DNS: &v1.IngressDNS{Provider: "fake-dns", TTL: 120},
+			Hosts: []v1.HostAssignment{{Host: "shop.example.com", Namespaces: []string{"payments"}}}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := admin.Create(ctx, &v1.Ingress{TypeMeta: tm("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "shop", Namespace: "payments"},

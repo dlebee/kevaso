@@ -16,7 +16,8 @@ import (
 func TestADNSNamePutBackSinceTheReadIsNotDeleted(t *testing.T) {
 	x := newK037(t)
 	x.must(x.c.Create(x.ctx, &v1.IngressClass{TypeMeta: tm037("IngressClass"), ObjectMeta: meta.ObjectMeta{Name: "web"},
-		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "ingress", Namespace: "d"}, DNS: &v1.IngressDNS{Provider: "fake-dns", TTL: 120}}}))
+		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "ingress", Namespace: "d"}, DNS: &v1.IngressDNS{Provider: "fake-dns", TTL: 120},
+			Hosts: []v1.HostAssignment{{Host: "*.example", Namespaces: []string{"d"}}}}}))
 	ing := &v1.Ingress{TypeMeta: tm037("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "shop", Namespace: "d", Finalizers: []string{provider.FinalizerDNS}},
 		Spec: v1.IngressSpec{IngressClass: "web", Hosts: []string{"a.example", "b.example"}, Rules: []v1.IngressRule{{Path: "/", Service: v1.IngressTarget{Name: "web", Port: "http"}}}}}
 	x.must(x.c.Create(x.ctx, ing))

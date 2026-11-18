@@ -47,6 +47,7 @@ func (s *Server) guard(ctx context.Context, t target, old, obj meta.Object) erro
 		s.checkExposure,
 		s.checkClusterHostPorts,
 		s.checkPublishPublic,
+		s.checkHostAssignment,
 		s.checkSecretUse,
 		s.checkOpenShellPolicyNames,
 		s.checkImages,

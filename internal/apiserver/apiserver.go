@@ -37,6 +37,7 @@ import (
 	"kevaso.com/core/internal/ingress"
 	"kevaso.com/core/internal/leases"
 	"kevaso.com/core/internal/moves"
+	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/rbac"
 	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/internal/secrets"
@@ -71,7 +72,18 @@ type Server struct {
 	policies policyCache // the admission policies (policies.go)
 	logf     func(string, ...any)
 	drain    time.Duration // silo streams' drain (default streamDrain): tests shorten it
+
+	apiNames   []string // this process's API names (cluster DNS, extra names, its own); hosts add theirs
+	internalCA *pki.CA  // signs internal-ca certificates; not the CA clients pin for the API
 }
+
+// SetAPINames records names of this API server (its host name, addresses, cluster DNS, extra
+// names). A certificate for one of them is refused. Other system nodes' names are read from Hosts.
+func (s *Server) SetAPINames(names []string) { s.apiNames = append([]string(nil), names...) }
+
+// SetInternalCA is the CA internal-ca signs with. Its certificate is served at /internal-ca.crt.
+// It is not added to the pool API clients pin.
+func (s *Server) SetInternalCA(ca *pki.CA) { s.internalCA = ca }
 
 // SetLog is where the server logs what no client hears of (a silo stream that broke).
 func (s *Server) SetLog(f func(string, ...any)) { s.logf = f }

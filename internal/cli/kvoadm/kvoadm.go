@@ -60,6 +60,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/etcd"
 	"kevaso.com/core/internal/kvoconfig"
+	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/sshboot"
 )
 
@@ -655,6 +656,10 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 		return err
 	}
 	say("kvo context %q written to %s (server %s)", o.Cluster, cfgPath, server)
+	if cert, err := pki.ParseCertificatePEM([]byte(cred.Certificate)); err == nil {
+		say("certificate for %s is valid until %s. After that, on a control-plane host: kevasod admin sign-user --name %s",
+			o.UserName, cert.NotAfter.UTC().Format("2006-01-02"), o.UserName)
+	}
 
 	// 6. Check it from here, over TLS, the way kvo will.
 	c, err := client.NewTLS(server, []byte(cred.CA), []byte(cred.Certificate), keyPEM)
