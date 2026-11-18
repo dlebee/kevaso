@@ -27,6 +27,7 @@ const (
 	labEgressB    = "k124b"
 	labWideA      = "kwidea"
 	labWideB      = "kwideb"
+	labWideC      = "kwidec"
 	labHardNS     = "k125"
 	labHardUser   = "kvthard"
 	labNSX        = "k128x"
@@ -171,12 +172,13 @@ func TestLabEgressGateWideCIDR(t *testing.T) {
 		if node != nil {
 			_ = node.d.Close()
 		}
-		labSweep(ctx, t, admin, [][2]string{{labWideA, "target"}, {labWideB, "probe"}},
-			[][3]string{{"grant", labWideB, "out"}}, []string{labWideA, labWideB})
+		labSweep(ctx, t, admin, [][2]string{{labWideA, "target"}, {labWideB, "probe"}, {labWideC, "direct"}},
+			[][3]string{{"grant", labWideB, "out"}, {"grant", labWideC, "out"}}, []string{labWideA, labWideB, labWideC})
 	})
 
 	labNamespace(t, ctx, admin, labWideA)
 	labNamespace(t, ctx, admin, labWideB)
+	labNamespace(t, ctx, admin, labWideC)
 	labKvo(t, ctx, boxEcho(labWideA, "target", labListenPort)+fmt.Sprintf(`  ports: [{ name: http, port: %d }]
   service:
     ports: [{ port: http }]
@@ -248,42 +250,79 @@ spec:
 		}
 	}
 
-	var host v1.Host
-	if err := json.Unmarshal([]byte(jsonObject(labKvo(t, ctx, "", "get", "--context", admin, "host", probe.Status.Host, "-o", "json"))), &host); err != nil {
-		t.Fatal(err)
-	}
-	blocked := []string{"169.254.169.254", host.Spec.InternalIP, target.Status.SiloIP}
-	if host.Spec.ExternalIP != "" {
-		blocked = append(blocked, host.Spec.ExternalIP)
-	}
-	for ip := range node.ownAddrs {
-		blocked = append(blocked, ip)
-	}
-	dial := `import socket, sys
-socket.create_connection((sys.argv[1], int(sys.argv[2])), 4)`
-	for _, ip := range blocked {
-		if ip == "" {
-			continue
+	// probe's grant names hosts on every port, so its connections go to the egress gate, which
+	// takes the TCP handshake before it decides: what counts is whether any bytes come back.
+	// direct's grant is 0.0.0.0/0 alone, so its packets are not redirected: they meet the
+	// forward chain's drops, and the connect itself must fail.
+	labKvo(t, ctx, fmt.Sprintf(`apiVersion: kevaso/v1
+kind: Grant
+metadata: { name: out, namespace: %s }
+spec:
+  egress:
+    - { to: "0.0.0.0/0", ports: ["%d"] }
+---
+apiVersion: kevaso/v1
+kind: Silo
+metadata: { name: direct, namespace: %s }
+spec:
+  runtime: docker
+  container: { image: %s, command: ["python3", "-c", "import time; time.sleep(10**9)"] }
+  resources: { cpu: 1, memory: 256Mi }
+  grants: [out]
+`, labWideC, labListenPort, labWideC, labImage), "apply", "--context", admin, "-f", "-")
+	direct := labWaitRunning(t, ctx, admin, labWideC, "direct", 20*time.Minute)
+	// What a silo on hostName must not reach: link-local, the other namespace's silo, and every
+	// address of its own host.
+	blockedFrom := func(hostName string, n *labNode) []string {
+		var host v1.Host
+		if err := json.Unmarshal([]byte(jsonObject(labKvo(t, ctx, "", "get", "--context", admin, "host", hostName, "-o", "json"))), &host); err != nil {
+			t.Fatal(err)
 		}
-		deadline = time.Now().Add(45 * time.Second)
-		opened := false
-		for {
-			last, code = labExec(ctx, admin, labWideB, "probe", "python3", "-c", dial, ip, fmt.Sprint(labListenPort))
-			if code == 0 {
-				opened = true
-				if time.Now().After(deadline) {
-					t.Fatalf("%s:%d was reached:\n%s", ip, labListenPort, last)
-				}
-				time.Sleep(3 * time.Second)
+		b := []string{"169.254.169.254", host.Spec.InternalIP, target.Status.SiloIP}
+		if host.Spec.ExternalIP != "" {
+			b = append(b, host.Spec.ExternalIP)
+		}
+		for ip := range n.ownAddrs {
+			b = append(b, ip)
+		}
+		return b
+	}
+	directNode := node
+	if direct.Status.Host != probe.Status.Host {
+		directNode = labDial(t, ctx, labGetHost(t, ctx, admin, direct.Status.Host), os.Getenv("KEVASO_METAL_KEY"))
+		defer func() { _ = directNode.d.Close() }()
+	}
+	answered := `import socket, sys
+s = socket.create_connection((sys.argv[1], int(sys.argv[2])), 4)
+s.settimeout(4)
+s.sendall(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n")
+sys.exit(0 if s.recv(64) else 1)`
+	connects := `import socket, sys
+socket.create_connection((sys.argv[1], int(sys.argv[2])), 4)`
+	for _, w := range []struct {
+		ns, silo, script, what string
+		blocked                []string
+	}{
+		{labWideB, "probe", answered, "through the gate, an answer", blockedFrom(probe.Status.Host, node)},
+		{labWideC, "direct", connects, "directly, a connection", blockedFrom(direct.Status.Host, directNode)},
+	} {
+		for _, ip := range w.blocked {
+			if ip == "" {
 				continue
 			}
-			opened = false
-			break
+			deadline = time.Now().Add(45 * time.Second)
+			for {
+				last, code = labExec(ctx, admin, w.ns, w.silo, "python3", "-c", w.script, ip, fmt.Sprint(labListenPort))
+				if code != 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("%s/%s to %s:%d: %s came back:\n%s", w.ns, w.silo, ip, labListenPort, w.what, last)
+				}
+				time.Sleep(3 * time.Second)
+			}
+			t.Logf("%s/%s to %s:%d, %s: refused (exit %d)", w.ns, w.silo, ip, labListenPort, w.what, code)
 		}
-		if opened {
-			t.Fatalf("%s:%d was reached", ip, labListenPort)
-		}
-		t.Logf("%s:%d refused (exit %d)", ip, labListenPort, code)
 	}
 }
 
