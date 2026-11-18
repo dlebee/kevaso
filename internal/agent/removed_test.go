@@ -17,10 +17,19 @@ import (
 )
 
 func removedAPI(msg string, code int) *httptest.Server {
+	reason := http.StatusText(code)
+	if code == http.StatusUnauthorized && strings.Contains(msg, "was removed from the cluster") {
+		reason = client.ReasonHostRemoved
+	}
+	return reasonAPI(reason, msg, code)
+}
+
+// reasonAPI answers every request with that error.
+func reasonAPI(reason, msg string, code int) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
-		_ = json.NewEncoder(w).Encode(client.Error{Code: code, Reason: http.StatusText(code), Message: msg})
+		_ = json.NewEncoder(w).Encode(client.Error{Code: code, Reason: reason, Message: msg})
 	}))
 }
 
@@ -113,9 +122,19 @@ func (noStop) Stop(context.Context, kri.ID) error {
 }
 
 func TestAnotherErrorDoesNotStopTheHost(t *testing.T) {
+	for _, srv := range []*httptest.Server{
+		removedAPI("unavailable", http.StatusInternalServerError),
+		// The text alone is never the signal: only the HostRemoved reason is.
+		reasonAPI("Unauthorized", "host hv1 was removed from the cluster", http.StatusUnauthorized),
+		reasonAPI("Unavailable", "host hv1: its removal record can't be read; try again", http.StatusServiceUnavailable),
+	} {
+		anotherErrorKeepsRunning(t, srv)
+	}
+}
+
+func anotherErrorKeepsRunning(t *testing.T, srv *httptest.Server) {
+	t.Helper()
 	rt, id := runningSilo(t)
-	srv := removedAPI("unavailable", http.StatusInternalServerError)
-	defer srv.Close()
 	c := client.New(srv.URL)
 	a := &Agent{
 		Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"fake": rt},

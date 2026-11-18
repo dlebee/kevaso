@@ -7,8 +7,12 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
+	"strings"
 	"time"
+
+	"kevaso.com/core/api/client"
 
 	"kevaso.com/core/internal/store"
 )
@@ -179,6 +183,23 @@ func (s *Server) noteIssuedHostCert(ctx context.Context, name string, certPEM []
 	return fmt.Errorf("host %s: recording the new certificate kept conflicting", name)
 }
 
+// errHostRemoved is the final refusal of a removed host's certificate (reason HostRemoved, which
+// the host acts on); errRemovalUnreadable is a refusal for now, the record couldn't be read.
+var (
+	errHostRemoved       = errors.New("HostRemoved")
+	errRemovalUnreadable = errors.New("RemovalUnreadable")
+)
+
+// hostRefusal is the HTTP error for removedHostCert's refusal: 401 with reason HostRemoved for a
+// removed host, 503 when the record can't be read. Only HostRemoved is final for the host.
+func hostRefusal(err error) error {
+	msg := strings.TrimPrefix(strings.TrimPrefix(err.Error(), errHostRemoved.Error()+": "), errRemovalUnreadable.Error()+": ")
+	if errors.Is(err, errHostRemoved) {
+		return errf(http.StatusUnauthorized, client.ReasonHostRemoved, "%s", msg)
+	}
+	return errf(http.StatusServiceUnavailable, "Unavailable", "%s", msg)
+}
+
 // removedHostCert refuses a host certificate issued before that host was removed.
 // NotBefore is backdated by a minute and stored at second precision, so a serial issued after
 // the removal is recorded too: a clock that disagrees between members cannot make an old
@@ -193,11 +214,11 @@ func (s *Server) removedHostCert(ctx context.Context, name string, cert *x509.Ce
 		err = json.Unmarshal(o.Data, &rec)
 	}
 	if err != nil { // the removal record can't be read: refuse rather than accept a certificate it may revoke
-		return fmt.Errorf("host %s: can't check whether it was removed from the cluster (%v); try again", name, err)
+		return fmt.Errorf("%w: host %s: its removal record can't be read (%v); try again", errRemovalUnreadable, name, err)
 	}
 	serial := cert.SerialNumber.Text(16)
 	if cert.NotBefore.Before(rec.RemovedAt) || !slices.Contains(rec.Serials, serial) { // a certificate issued before this host was removed is refused
-		return fmt.Errorf("host %s was removed from the cluster; join it again with kvoadm host add", name)
+		return fmt.Errorf("%w: host %s was removed from the cluster; join it again with kvoadm host add", errHostRemoved, name)
 	}
 	return nil
 }

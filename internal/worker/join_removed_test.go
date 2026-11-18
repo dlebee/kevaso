@@ -155,7 +155,7 @@ func TestHeartbeatRemovalIsFinal(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(client.Error{Code: http.StatusUnauthorized, Reason: "Unauthorized", Message: "host hv1 was removed from the cluster; join it again with kvoadm host add"})
+		_ = json.NewEncoder(w).Encode(client.Error{Code: http.StatusUnauthorized, Reason: client.ReasonHostRemoved, Message: "host hv1 was removed from the cluster; join it again with kvoadm host add"})
 	}))
 	defer srv.Close()
 	fired := make(chan struct{}, 1)

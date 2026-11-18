@@ -2739,5 +2739,17 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a failed Create removes the root LV only when this Create made it"
+  },
+  {
+  "id": "G-490",
+  "guard": "only the HostRemoved reason makes a host stop its silos",
+  "file": "api/client/client.go",
+  "find": "return errors.As(err, &e) && e.Code == http.StatusUnauthorized && e.Reason == ReasonHostRemoved",
+  "replace": "return errors.As(err, &e) && e.Code == http.StatusUnauthorized",
+  "mutation": "any 401 makes a host stop every silo it runs",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a host stops its silos only on the final removal refusal, never on another refusal"
   }
 ]

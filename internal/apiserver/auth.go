@@ -444,7 +444,7 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 		}
 		if id.Type == "host" && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 			if err := s.removedHostCert(r.Context(), id.Name, r.TLS.PeerCertificates[0]); err != nil {
-				writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "%s", err))
+				writeErr(w, hostRefusal(err))
 				return
 			}
 		}
