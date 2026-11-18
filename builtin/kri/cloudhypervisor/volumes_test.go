@@ -408,7 +408,7 @@ func TestRootDiskFile(t *testing.T) {
 			t.Fatal(err)
 		}
 		cmds := h.commands()
-		convert := indexOf(cmds, "qemu-img convert -O raw ")
+		convert := indexOf(cmds, "qemu-img convert -f raw ")
 		if exists != (convert < 0) {
 			t.Fatalf("exists=%v: %v", exists, cmds)
 		}
@@ -431,7 +431,7 @@ func TestRootDiskFile(t *testing.T) {
 			if err := r.Reset(ctx, sp); err != nil {
 				t.Fatal(err)
 			}
-			if indexOf(h.commands()[before:], "qemu-img convert -O raw ") < 0 {
+			if indexOf(h.commands()[before:], "qemu-img convert -f raw ") < 0 {
 				t.Fatal("reset kept the old disk")
 			}
 			if string(h.files[NamesFor(sp.ID).Dir+"/meta-data"]) == md {

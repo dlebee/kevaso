@@ -23,9 +23,12 @@ const (
 	ImagesDir = "/var/lib/kevaso-images"
 	BinDir    = "/opt/kevaso/cloud-hypervisor"
 	VMMUser   = "kevaso-vmm"
-	VG        = "kevaso"
-	ThinPool  = "silos"
-	Bridge    = "kvbr0"
+	// ImgUser converts a silo's disk image. It has no login and is not in kvm or disk. A conversion
+	// shows it only that image and the target.
+	ImgUser  = "kevaso-img"
+	VG       = "kevaso"
+	ThinPool = "silos"
+	Bridge   = "kvbr0"
 	// ExecUser is who Exec logs in as: root, with the host's exec key only (no password, no
 	// other key). Not a user with sudo: sudo would log every command line to the guest's
 	// journal and hand it to the command as SUDO_COMMAND.

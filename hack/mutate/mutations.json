@@ -2823,5 +2823,113 @@
    "./internal/apiserver"
   ],
   "protects": "a removed host's streams close when its delete commits"
+  },
+  {
+  "id": "G-500",
+  "guard": "a refused disk image is not converted",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "if err != nil { // refused: not raw, or a qcow2 with a backing file, an external data file, or encryption",
+  "replace": "if false && err != nil { // refused: not raw, or a qcow2 with a backing file, an external data file, or encryption",
+  "mutation": "a refused disk image is converted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk image that is not raw or a plain qcow2 is refused"
+  },
+  {
+  "id": "G-501",
+  "guard": "qemu-img is told the format",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "argv := []string{\"convert\", \"-f\", format}",
+  "replace": "argv := []string{\"convert\", format}",
+  "mutation": "qemu-img converts without a format",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "conversion is pinned to raw or qcow2"
+  },
+  {
+  "id": "G-502",
+  "guard": "conversion runs as kevaso-img, bound to kevasod",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "return r.runConfined(ctx, img, dst, argv)",
+  "replace": "_, err = r.Host.Run(ctx, \"qemu-img\", argv...); return err",
+  "mutation": "qemu-img convert runs as root over the host",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "conversion sees only the image and the target, and stops when kevasod stops"
+  },
+  {
+  "id": "G-504",
+  "guard": "a root disk is written only on the volume's mount",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if err := r.mustBeMounted(ctx, filepath.Dir(l.RootFile)); err != nil { // a root disk is written only on the volume's mount",
+  "replace": "if err := r.mustBeMounted(ctx, filepath.Dir(l.RootFile)); err == nil && false { // a root disk is written only on the volume's mount",
+  "mutation": "a root disk is written when the folder is not a mount",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a root disk is not written beside its volume"
+  },
+  {
+  "id": "G-509",
+  "guard": "a qcow2 backing file is refused",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "if backingOff != 0 || backingSize != 0 { // a backing file is refused",
+  "replace": "if false && (backingOff != 0 || backingSize != 0) { // a backing file is refused",
+  "mutation": "a qcow2 that names a backing file is accepted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a qcow2 that names a backing file is refused"
+  },
+  {
+  "id": "G-510",
+  "guard": "an image larger than the disk is refused",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "if dstSize > 0 && virt > uint64(dstSize) { // the image does not fit the disk",
+  "replace": "if false && dstSize > 0 && virt > uint64(dstSize) { // the image does not fit the disk",
+  "mutation": "an image larger than the disk is converted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "an image that does not fit the disk is refused"
+  },
+  {
+  "id": "G-511",
+  "guard": "an external data file is refused",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "allowed := qcow2Dirty | qcow2Compression | qcow2ExtendedL2",
+  "replace": "allowed := qcow2Dirty | qcow2Compression | qcow2ExtendedL2 | qcow2ExternalData",
+  "mutation": "a qcow2 with an external data file is accepted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a qcow2 that names an external data file is refused"
+  },
+  {
+  "id": "G-512",
+  "guard": "an encrypted disk image is refused",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "if crypt := binary.BigEndian.Uint32(b[32:36]); crypt != 0 { // encryption is refused",
+  "replace": "if crypt := binary.BigEndian.Uint32(b[32:36]); false && crypt != 0 { // encryption is refused",
+  "mutation": "an encrypted disk image is accepted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "an encrypted disk image is refused"
+  },
+  {
+  "id": "G-513",
+  "guard": "VMDK, VHD and the other disk formats are refused",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "if why := foreignDisk(b); why != \"\" { // VMDK, VHD, VHDX, VDI and the rest are refused",
+  "replace": "if why := foreignDisk(b); false && why != \"\" { // VMDK, VHD, VHDX, VDI and the rest are refused",
+  "mutation": "VMDK and the other disk formats are accepted as raw",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "VMDK, VHD, VHDX, VDI and the other disk formats are refused"
   }
 ]

@@ -118,10 +118,15 @@ func (r *Runtime) Install(ctx context.Context, store StorageOptions, progress fu
 	}{
 		{"packages (lvm2, nftables, qemu-utils, genisoimage)", func() error { return r.installPackages(ctx) }},
 		{"vmm user", func() error {
-			if _, err := r.Host.Run(ctx, "id", VMMUser); err == nil {
+			if _, err := r.Host.Run(ctx, "id", VMMUser); err != nil {
+				if err := r.run(ctx, "useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "--groups", "kvm", VMMUser); err != nil {
+					return err
+				}
+			}
+			if _, err := r.Host.Run(ctx, "id", ImgUser); err == nil {
 				return nil
 			}
-			return r.run(ctx, "useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", "--groups", "kvm", VMMUser)
+			return r.run(ctx, "useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", ImgUser)
 		}},
 		{"directories", func() error {
 			if err := r.run(ctx, "install", "-d", "-m", "0755", BinDir, SilosDir); err != nil {
