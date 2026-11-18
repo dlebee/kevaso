@@ -246,11 +246,18 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	n := NamesFor(spec.ID)
 	// A root volume that is there with no state of its own is a disk of an earlier copy of this
 	// silo (its state lost): data whose owner can't be proven from here. Never made over (review
-	// claim B): it is kept, and the silo isn't made until a person decides.
-	if spec.DiskHostPath == "" && r.lvExists(ctx, n.LV) {
-		if _, ok, _ := r.readState(spec.ID); !ok {
-			return fmt.Errorf("%s: root volume %s/%s is there with no state of this host's (%s/silo.json): not making the silo over it; "+
-				"keep it (restore silo.json) or remove it yourself (lvremove %s/%s) to start afresh", spec.ID, VG, n.LV, n.Dir, VG, n.LV)
+	// claim B): it is kept, and the silo isn't made until a person decides. A failed lvs is not
+	// "absent": Create returns before it saves state, and removes nothing.
+	if spec.DiskHostPath == "" {
+		present, err := r.lvExists(ctx, n.LV)
+		if err != nil { // a failed lvs is never "no volume"
+			return fmt.Errorf("%s: root volume %s/%s could not be checked (%w): not making the silo and removing nothing", spec.ID, VG, n.LV, err)
+		}
+		if present {
+			if _, ok, _ := r.readState(spec.ID); !ok {
+				return fmt.Errorf("%s: root volume %s/%s is there with no state of this host's (%s/silo.json): not making the silo over it; "+
+					"keep it (restore silo.json) or remove it yourself (lvremove %s/%s) to start afresh", spec.ID, VG, n.LV, n.Dir, VG, n.LV)
+			}
 		}
 	}
 	// The same for its local volumes (K-111): one there with no state is an earlier copy's data.
@@ -261,7 +268,7 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 			return fmt.Errorf("%s: logical volumes in %s could not be listed (%w): not making the silo until they can", spec.ID, VG, lerr)
 		}
 		for _, f := range strings.Fields(string(out)) {
-			if strings.HasPrefix(f, n.LV+"-") {
+			if f == n.LV || strings.HasPrefix(f, n.LV+"-") { // the root LV's own name, not only its local volumes
 				return fmt.Errorf("%s: local volume %s/%s is there with no state of this host's (%s/silo.json): not making the silo over it; "+
 					"keep it (restore silo.json) or remove it yourself (lvremove %s/%s) to start afresh", spec.ID, VG, f, n.Dir, VG, f)
 			}
@@ -311,8 +318,15 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		return err
 	}
 	unlockIP()
+	madeRoot := false
 	steps := []func() error{
-		func() error { return r.rootDisk(ctx, n, layout, img, disk, false) },
+		func() error {
+			made, err := r.rootDisk(ctx, n, layout, img, disk, false)
+			if made {
+				madeRoot = true
+			}
+			return err
+		},
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
 		},
@@ -332,7 +346,7 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {
-			_ = r.deleteLocked(context.WithoutCancel(ctx), spec.ID)
+			_ = r.deleteLockedRoot(context.WithoutCancel(ctx), spec.ID, madeRoot) // the root LV goes only if this Create made it
 			return fmt.Errorf("create %s: %w", spec.ID, err)
 		}
 	}
@@ -582,6 +596,12 @@ func (r *Runtime) Delete(ctx context.Context, id kri.ID) error {
 // the volume's, not this host's: it stays (the silo may have moved; deleting the silo deletes the
 // volume through its plugin).
 func (r *Runtime) deleteLocked(ctx context.Context, id kri.ID) error {
+	return r.deleteLockedRoot(ctx, id, true)
+}
+
+// deleteLockedRoot removes what the silo owns. dropRoot is false for a Create step that
+// failed before this Create made the root LV: that volume is not this Create's to remove.
+func (r *Runtime) deleteLockedRoot(ctx context.Context, id kri.ID, dropRoot bool) error {
 	st, ok := r.state(id)
 	if !ok {
 		return nil
@@ -599,7 +619,7 @@ func (r *Runtime) deleteLocked(ctx context.Context, id kri.ID) error {
 	_, _ = r.Host.Run(ctx, "systemctl", "daemon-reload")
 	_, _ = r.Host.Run(ctx, "ip", "link", "del", n.Tap)
 	lvs := []string{}
-	if l.RootFile == "" {
+	if l.RootFile == "" && dropRoot { // a step-failure removes the root LV only if this Create made it
 		lvs = append(lvs, n.LV)
 	}
 	// Every local volume it ever had (one dropped from the spec is kept until the silo goes).
@@ -623,38 +643,48 @@ func (r *Runtime) deleteLocked(ctx context.Context, id kri.ID) error {
 // rootDisk makes the silo's root disk from its image: a thin LV, or an image file on a mount
 // class's folder. An image file already there is the silo's disk come from another host: it's
 // kept, unless fresh (a reset) asks for a new one.
-func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, size int64, fresh bool) error {
+// rootDisk reports whether it made the root LV. made is true only after lvcreate succeeded,
+// including when a later step of the disk fails: the caller may then remove that LV.
+func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, size int64, fresh bool) (made bool, err error) {
 	if l.RootFile == "" {
-		if r.lvExists(ctx, n.LV) {
+		present, err := r.lvExists(ctx, n.LV)
+		if err != nil { // a failed lvs is never "no volume"
+			return false, fmt.Errorf("root volume %s/%s could not be checked (%w): not removing it", VG, n.LV, err)
+		}
+		if present {
 			if !fresh {
-				return fmt.Errorf("root volume %s/%s is there already: only a reset makes it afresh", VG, n.LV)
+				return false, fmt.Errorf("root volume %s/%s is there already: only a reset makes it afresh", VG, n.LV)
 			}
 			if err := r.runPool(ctx, "lvremove", "-q", "-y", VG+"/"+n.LV); err != nil {
-				if r.lvExists(ctx, n.LV) {
-					return fmt.Errorf("%w: %v", errRootKept, err)
+				still, serr := r.lvExists(ctx, n.LV)
+				if serr != nil || still {
+					return false, fmt.Errorf("%w: %v", errRootKept, err)
 				}
-				return err
+				return false, err
 			}
 		}
 		if err := r.runPool(ctx, "lvcreate", "-q", "-T", VG+"/"+ThinPool, "-V", strconv.FormatInt(size>>20, 10)+"m", "-n", n.LV); err != nil {
-			return err
+			return false, err
 		}
-		return r.run(ctx, "qemu-img", "convert", "-n", "--target-is-zero", "-O", "raw", img, "/dev/"+VG+"/"+n.LV)
+		if err := r.run(ctx, "qemu-img", "convert", "-n", "--target-is-zero", "-O", "raw", img, "/dev/"+VG+"/"+n.LV); err != nil {
+			return true, err // this Create made the LV
+		}
+		return true, nil
 	}
 	if _, err := r.Host.Run(ctx, "test", "-e", l.RootFile); err == nil && !fresh {
-		return nil // moved here with its data
+		return false, nil // moved here with its data
 	}
 	tmp := l.RootFile + ".new"
 	for _, c := range RootFilePlan(img, tmp, l.RootFile, size) {
 		if err := r.run(ctx, c[0], c[1:]...); err != nil {
 			_ = r.Host.RemoveAll(tmp)
 			if _, terr := r.Host.Run(ctx, "test", "-e", l.RootFile); terr == nil {
-				return fmt.Errorf("%w: %v", errRootKept, err) // written beside it, put in place last
+				return false, fmt.Errorf("%w: %v", errRootKept, err) // written beside it, put in place last
 			}
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return false, nil
 }
 
 // errRootKept: making a root disk afresh failed before the old one was touched (its lvremove
@@ -1036,7 +1066,10 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 	oldLayout := LayoutFor(n, rm.OldVolumes, rm.OldRootDir)
 	layout := st.layout()
 	steps := []func() error{
-		func() error { return r.rootDisk(ctx, n, layout, img, rm.DiskBytes, true) },
+		func() error {
+			_, err := r.rootDisk(ctx, n, layout, img, rm.DiskBytes, true)
+			return err
+		},
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
 		},

@@ -43,7 +43,7 @@ func TestALocalVolumeBeyondThePoolIsRefusedWithTheNumbers(t *testing.T) {
 		case strings.HasPrefix(cmd, "lvs --noheadings --units b"):
 			return "  silos 107374182400 \n  kv-other 75161927680 silos\n", nil // 100 GiB, 70 GiB promised
 		case strings.HasPrefix(cmd, "lvs --noheadings kevaso/"):
-			return "", errors.New("not found")
+			return "", errors.New("Failed to find logical volume")
 		}
 		return "", nil
 	}

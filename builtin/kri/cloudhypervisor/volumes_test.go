@@ -280,7 +280,7 @@ func TestSetVolumes(t *testing.T) {
 			}
 			return "inactive", errors.New("exit 3")
 		case strings.HasPrefix(cmd, "lvs --noheadings kevaso/"):
-			return "", errors.New("exit 5") // no such LV yet
+			return "", errors.New("Failed to find logical volume") // no such LV yet
 		}
 		return "", nil
 	}

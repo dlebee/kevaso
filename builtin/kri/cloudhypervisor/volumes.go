@@ -352,10 +352,29 @@ func volumesKey(vols []kri.Volume) string {
 	return strings.Join(parts, "\x01")
 }
 
-// lvExists reports whether a logical volume is there.
-func (r *Runtime) lvExists(ctx context.Context, lv string) bool {
+// lvMissing is lvs's own "not found". Any other failure is not that: the volume may be there.
+func lvMissing(out []byte, err error) bool {
+	msg := string(out)
+	if err != nil {
+		msg += " " + err.Error()
+	}
+	return strings.Contains(msg, "Failed to find logical volume")
+}
+
+// lvExists reports whether a logical volume is there. Absent is only a clean "not found".
+// A failed lvs is an error, never "no volume".
+func (r *Runtime) lvExists(ctx context.Context, lv string) (bool, error) {
 	out, err := r.Host.Run(ctx, "lvs", "--noheadings", VG+"/"+lv)
-	return err == nil && len(strings.TrimSpace(string(out))) > 0
+	if err == nil {
+		if len(strings.TrimSpace(string(out))) == 0 {
+			return false, fmt.Errorf("lvs %s/%s returned nothing", VG, lv)
+		}
+		return true, nil
+	}
+	if lvMissing(out, err) { // a clean not found
+		return false, nil
+	}
+	return false, fmt.Errorf("lvs %s/%s: %w", VG, lv, err)
 }
 
 // applyLayout makes what a layout needs on the host and writes the units: new local disks (an LV
@@ -364,7 +383,11 @@ func (r *Runtime) lvExists(ctx context.Context, lv string) bool {
 func (r *Runtime) applyLayout(ctx context.Context, st State, old, l Layout) error {
 	n := NamesFor(st.ID)
 	for _, d := range l.Disks {
-		if r.lvExists(ctx, d.LV) {
+		present, err := r.lvExists(ctx, d.LV)
+		if err != nil { // a failed lvs is not "no volume"
+			return fmt.Errorf("volume %s: %w", d.Name, err)
+		}
+		if present {
 			continue
 		}
 		size := d.SizeBytes
