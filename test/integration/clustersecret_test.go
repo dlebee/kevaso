@@ -297,17 +297,20 @@ func TestClusterSecretRoleNamingItIsRefused(t *testing.T) {
 	}
 }
 
-// ?for=PLUGIN is allowed only for a host certificate, and only when service account
-// plugin-PLUGIN in kevaso-system may read the name. A Plugin object is not consulted, and
-// the account object itself need not exist. A host has no access of its own.
+// ?for=PLUGIN&side=node|controller is allowed only for a host certificate. side=node is
+// service account plugin-PLUGIN-node; side=controller is plugin-PLUGIN. A worker certificate
+// may ask only for the node side. A control-plane certificate may ask for either. A Plugin
+// object is not consulted, and the account object itself need not exist. The host may get,
+// list and watch the object, and that body never carries a value.
 func TestClusterSecretHostForPlugin(t *testing.T) {
 	c := newCluster(t)
-	for _, name := range []string{"bucket", "metering", "other"} {
+	for _, name := range []string{"bucket", "metering", "other", "nodesec"} {
 		if err := c.admin.Create(c.ctx, clusterSecret(name, name+"-bytes")); err != nil {
 			t.Fatal(err)
 		}
 	}
 	juiceSA := operators.ServiceAccountName("juicefs")
+	nodeSA := operators.ServiceAccountNodeName("juicefs")
 	if err := c.admin.Create(c.ctx, clusterRole("juicefs-secrets", v1.PolicyRule{
 		Verbs: []string{"get"}, Resources: []string{"clustersecrets/value"}, ResourceNames: []string{"bucket", "metering"},
 	})); err != nil {
@@ -334,37 +337,113 @@ func TestClusterSecretHostForPlugin(t *testing.T) {
 		name string
 		cl   *client.Client
 	}{{"worker", hv1}, {"system node", cp}} {
-		for _, name := range []string{"bucket", "metering"} {
-			v, err := c.readClusterValue(t, who.cl, name, "for=juicefs")
-			if err != nil || string(v.Value) != name+"-bytes" {
-				t.Fatalf("%s ?for=juicefs %s: %q %v", who.name, name, v.Value, err)
-			}
-		}
-		if _, err := c.readClusterValue(t, who.cl, "other", "for=juicefs"); status(err) != http.StatusForbidden {
-			t.Fatalf("%s ?for=juicefs other: want 403, got %v", who.name, err)
-		}
 		if _, err := c.readClusterValue(t, who.cl, "bucket", ""); status(err) != http.StatusForbidden {
-			t.Fatalf("%s without ?for: want 403, got %v", who.name, err)
+			t.Fatalf("%s without ?for and side: want 403, got %v", who.name, err)
 		}
-		if _, err := c.readClusterValue(t, who.cl, "bucket", "for=s3"); status(err) != http.StatusForbidden {
+		if _, err := c.readClusterValue(t, who.cl, "bucket", "for=juicefs"); status(err) != http.StatusForbidden {
+			t.Fatalf("%s without side: want 403, got %v", who.name, err)
+		}
+		if _, err := c.readClusterValue(t, who.cl, "bucket", "for=s3&side=node"); status(err) != http.StatusForbidden {
 			t.Fatalf("%s ?for=s3: want 403, got %v", who.name, err)
 		}
-		if _, err := c.readClusterValue(t, who.cl, "bucket", "for=missing"); status(err) != http.StatusForbidden {
+		if _, err := c.readClusterValue(t, who.cl, "bucket", "for=missing&side=node"); status(err) != http.StatusForbidden {
 			t.Fatalf("%s ?for=missing: want 403, got %v", who.name, err)
 		}
-		if _, err := c.readClusterValue(t, who.cl, "bucket", "for=idle"); status(err) != http.StatusForbidden {
+		if _, err := c.readClusterValue(t, who.cl, "bucket", "for=idle&side=controller"); status(err) != http.StatusForbidden {
 			t.Fatalf("%s ?for=idle: want 403, got %v", who.name, err)
 		}
-		for _, bad := range []string{"for=JuiceFS", "for=a_b", "for=a-", "for=../x", "for=plugin.juicefs"} {
+		for _, bad := range []string{"for=JuiceFS&side=node", "for=a_b&side=node", "for=a-&side=node", "for=../x&side=node", "for=plugin.juicefs&side=node"} {
 			if _, err := c.readClusterValue(t, who.cl, "bucket", bad); status(err) != http.StatusForbidden {
 				t.Fatalf("%s %s: want 403, got %v", who.name, bad, err)
 			}
 		}
-		if err := who.cl.Get(c.ctx, "ClusterSecret", "", "bucket", &v1.ClusterSecret{}); status(err) != http.StatusForbidden {
-			t.Fatalf("%s get of the object: want 403, got %v", who.name, err)
+		var got v1.ClusterSecret
+		if err := who.cl.Get(c.ctx, "ClusterSecret", "", "bucket", &got); err != nil || len(got.Spec.Value) != 0 || got.Status.Version == 0 {
+			t.Fatalf("%s get of the object: %+v %v", who.name, got, err)
+		}
+		var raw json.RawMessage
+		if err := who.cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/bucket", nil, &raw); err != nil || strings.Contains(string(raw), "bucket-bytes") || strings.Contains(string(raw), `"value"`) {
+			t.Fatalf("%s get carries a value: %s %v", who.name, raw, err)
+		}
+		if err := who.cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets", nil, &raw); err != nil || strings.Contains(string(raw), "bucket-bytes") || strings.Contains(string(raw), "metering-bytes") || strings.Contains(string(raw), `"value"`) {
+			t.Fatalf("%s list carries a value: %s %v", who.name, raw, err)
 		}
 		if err := who.cl.Create(c.ctx, clusterSecret("from-"+who.name, "nope")); status(err) != http.StatusForbidden {
 			t.Fatalf("%s create: want 403, got %v", who.name, err)
+		}
+	}
+	// A worker certificate asks only for the node side, even when the controller account may read.
+	if _, err := c.readClusterValue(t, hv1, "bucket", "for=juicefs&side=controller"); status(err) != http.StatusForbidden || !strings.Contains(err.Error(), "only for a plugin's node side") {
+		t.Fatalf("worker side=controller: want 403 naming the side, got %v", err)
+	}
+	if _, err := c.readClusterValue(t, hv1, "bucket", "for=juicefs&side=node"); status(err) != http.StatusForbidden || !strings.Contains(err.Error(), "node side") {
+		t.Fatalf("worker side=node before the node account is bound: want 403, got %v", err)
+	}
+	for _, name := range []string{"bucket", "metering"} {
+		v, err := c.readClusterValue(t, cp, name, "for=juicefs&side=controller")
+		if err != nil || string(v.Value) != name+"-bytes" {
+			t.Fatalf("system node side=controller %s: %q %v", name, v.Value, err)
+		}
+	}
+	if _, err := c.readClusterValue(t, cp, "other", "for=juicefs&side=controller"); status(err) != http.StatusForbidden {
+		t.Fatalf("system node other: want 403, got %v", err)
+	}
+	if _, err := c.readClusterValue(t, cp, "bucket", "for=juicefs&side=node"); status(err) != http.StatusForbidden {
+		t.Fatalf("system node side=node before the node account is bound: want 403, got %v", err)
+	}
+
+	if err := c.admin.Create(c.ctx, clusterRole("juicefs-node-secrets", v1.PolicyRule{
+		Verbs: []string{"get"}, Resources: []string{"clustersecrets/value"}, ResourceNames: []string{"bucket", "metering", "nodesec"},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, clusterBind("juicefs-node-secrets", "juicefs-node-secrets", saSubject(v1.PluginNamespace, nodeSA))); err != nil {
+		t.Fatal(err)
+	}
+	for _, who := range []struct {
+		name string
+		cl   *client.Client
+	}{{"worker", hv1}, {"system node", cp}} {
+		for _, name := range []string{"bucket", "metering"} {
+			v, err := c.readClusterValue(t, who.cl, name, "for=juicefs&side=node")
+			if err != nil || string(v.Value) != name+"-bytes" {
+				t.Fatalf("%s side=node %s: %q %v", who.name, name, v.Value, err)
+			}
+		}
+	}
+	// nodesec is bound only to the node account. A worker reads it on the node side.
+	// The controller account cannot, so a lookup that forgot the -node suffix is refused.
+	v, err := c.readClusterValue(t, hv1, "nodesec", "for=juicefs&side=node")
+	if err != nil || string(v.Value) != "nodesec-bytes" {
+		t.Fatalf("worker side=node nodesec: %q %v", v.Value, err)
+	}
+	if _, err := c.readClusterValue(t, hv1, "bucket", "for=juicefs&side=controller"); status(err) != http.StatusForbidden || !strings.Contains(err.Error(), "only for a plugin's node side") {
+		t.Fatalf("worker side=controller after the node binding: want 403 naming the side, got %v", err)
+	}
+	if _, err := c.readClusterValue(t, cp, "nodesec", "for=juicefs&side=controller"); status(err) != http.StatusForbidden {
+		t.Fatalf("system node side=controller nodesec: want 403, got %v", err)
+	}
+
+	ch, err := hv1.Watch(c.ctx, "ClusterSecret", "", "0")
+	if err != nil {
+		t.Fatalf("worker watch: %v", err)
+	}
+	deadline := time.After(5 * time.Second)
+	saw := false
+	for !saw {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				t.Fatal("worker watch ended before the object")
+			}
+			if strings.Contains(string(ev.Object), "bucket-bytes") || strings.Contains(string(ev.Object), `"value"`) {
+				t.Fatalf("watch carries a value: %s", ev.Object)
+			}
+			if strings.Contains(string(ev.Object), `"bucket"`) {
+				saw = true
+			}
+		case <-deadline:
+			t.Fatal("worker watch showed no clustersecret")
 		}
 	}
 	if _, err := c.readClusterValue(t, ada, "bucket", "for=juicefs"); status(err) != http.StatusForbidden {
@@ -508,6 +587,7 @@ func TestKevasoSystemReservedForClusterAdmin(t *testing.T) {
 	c := newCluster(t)
 	sys := v1.PluginNamespace
 	juice := operators.ServiceAccountName("juicefs")
+	juiceNode := operators.ServiceAccountNodeName("juicefs")
 	if err := c.admin.Create(c.ctx, ns(sys)); err != nil {
 		t.Fatal(err)
 	}
@@ -516,6 +596,10 @@ func TestKevasoSystemReservedForClusterAdmin(t *testing.T) {
 	}
 	if err := c.admin.Create(c.ctx, &v1.ServiceAccount{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ServiceAccount"},
 		ObjectMeta: meta.ObjectMeta{Name: juice, Namespace: sys}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, &v1.ServiceAccount{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ServiceAccount"},
+		ObjectMeta: meta.ObjectMeta{Name: juiceNode, Namespace: sys}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.admin.Create(c.ctx, &v1.ServiceAccount{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ServiceAccount"},
@@ -651,12 +735,12 @@ func TestKevasoSystemReservedForClusterAdmin(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.admin.Create(c.ctx, clusterBind("juicefs-secrets", "juicefs-secrets", saSubject(sys, juice))); err != nil {
+	if err := c.admin.Create(c.ctx, clusterBind("juicefs-secrets", "juicefs-secrets", saSubject(sys, juiceNode))); err != nil {
 		t.Fatal(err)
 	}
 	hv := c.workerCert(t, "hv-reserve")
-	v, err := c.readClusterValue(t, hv, "bucket", "for=juicefs")
+	v, err := c.readClusterValue(t, hv, "bucket", "for=juicefs&side=node")
 	if err != nil || string(v.Value) != "bucket-bytes" {
-		t.Fatalf("host ?for=juicefs: %q %v", v.Value, err)
+		t.Fatalf("host ?for=juicefs&side=node: %q %v", v.Value, err)
 	}
 }

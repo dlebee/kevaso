@@ -3,6 +3,7 @@ package apiserver
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -267,9 +268,13 @@ func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups [
 //     ClusterRole grants on clustersecrets;
 //   - one value is a cluster-admin's, or get on clustersecrets/value pinned to that name
 //     (rbac.namesGrant: an empty resourceNames grants nothing);
-//   - a host certificate reads a value only with ?for=PLUGIN, and only when the service
-//     account plugin-PLUGIN in kevaso-system would be allowed the same read. A host has no
-//     access of its own, so a binding that happens to name the host is not consulted.
+//   - a host certificate reads a value only with ?for=PLUGIN&side=node|controller. A worker
+//     certificate may ask only for the node side (service account plugin-PLUGIN-node). A
+//     control-plane certificate may ask for either side. The named account in kevaso-system
+//     must itself be allowed the read. A host has no access of its own, so a binding that
+//     happens to name the host is not consulted.
+//   - the same host certificate may get, list and watch the objects (metadata and status).
+//     The value is not on the object; it stays on the value route.
 func (s *Server) authorizeClusterSecret(ctx context.Context, id pki.Identity, groups []string, r *http.Request, t target) (bool, bool, string, error) {
 	admin, err := s.clusterAdmin(ctx, id, groups)
 	if err != nil {
@@ -280,8 +285,11 @@ func (s *Server) authorizeClusterSecret(ctx context.Context, id pki.Identity, gr
 	}
 	if id.Type == "host" || id.Type == "component" || id == Component {
 		if t.value && hostCertificate(id) {
-			ok, reason, err := s.hostForPlugin(ctx, r, t.name)
+			ok, reason, err := s.hostForPlugin(ctx, id, r, t.name)
 			return ok, false, reason, err
+		}
+		if hostCertificate(id) && !t.value && r.Method == http.MethodGet { // metadata and status, never a value
+			return true, false, "a host reads a clustersecret's metadata and status, never its value", nil
 		}
 		return false, false, "a host has no clustersecret access of its own", nil
 	}
@@ -436,11 +444,20 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 		}
 		if id.Type == "host" && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 			if err := s.removedHostCert(r.Context(), id.Name, r.TLS.PeerCertificates[0]); err != nil {
-				writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "%s", err))
+				writeErr(w, hostRefusal(err))
 				return
 			}
 		}
 		ctx := context.WithValue(context.WithValue(r.Context(), identityKey, id), groupsKey, groups)
+		if id.Type == "host" {
+			var cert *x509.Certificate
+			if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+				cert = r.TLS.PeerCertificates[0]
+			}
+			var stop func()
+			ctx, stop = s.trackHost(ctx, id.Name, cert)
+			defer stop()
+		}
 		r = r.WithContext(ctx)
 		if r.URL.Path == "/admin/certs" {
 			s.issueUserCert(w, r, id)

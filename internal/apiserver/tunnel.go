@@ -46,6 +46,16 @@ func (t *tunnels) drop(host string, s *yamux.Session) {
 	}
 }
 
+func (t *tunnels) close(host string) {
+	t.mu.Lock()
+	s := t.sess[host]
+	delete(t.sess, host)
+	t.mu.Unlock()
+	if s != nil {
+		_ = s.Close()
+	}
+}
+
 func (t *tunnels) get(host string) *yamux.Session {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -126,6 +136,13 @@ func (s *Server) agentConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.tunnels.set(host, sess)
+	go func() {
+		select {
+		case <-r.Context().Done(): // this host was removed, on this member or another
+			_ = sess.Close()
+		case <-sess.CloseChan():
+		}
+	}()
 	<-sess.CloseChan()
 	s.tunnels.drop(host, sess)
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,8 +114,14 @@ func TestWorkerReadScope(t *testing.T) {
 	if _, err := worker.Watch(e.ctx, "Role", "", "0"); code(err) != http.StatusForbidden {
 		t.Fatalf("watch Role: want 403, got %v", err)
 	}
-	if _, err := worker.List(e.ctx, "ClusterSecret", ""); code(err) != http.StatusForbidden {
-		t.Fatalf("list ClusterSecret: want 403, got %v", err)
+	if _, err := worker.List(e.ctx, "ClusterSecret", ""); err != nil {
+		t.Fatalf("list ClusterSecret: %v", err)
+	}
+	if _, err := worker.Watch(e.ctx, "ClusterSecret", "", "0"); err != nil {
+		t.Fatalf("watch ClusterSecret: %v", err)
+	}
+	if err := worker.Call(e.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/bucket/value?for=juicefs&side=controller", nil, nil); code(err) != http.StatusForbidden || !strings.Contains(err.Error(), "only for a plugin's node side") {
+		t.Fatalf("worker value side=controller: want 403 naming the side, got %v", err)
 	}
 	if err := worker.Call(e.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/dev/secrets/x/value", nil, nil); code(err) != http.StatusForbidden {
 		t.Fatalf("secret value: want 403, got %v", err)

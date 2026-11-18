@@ -34,10 +34,13 @@ func TestPluginServiceAccount(t *testing.T) {
 	defer ts.Close()
 	c := client.New(ts.URL)
 
-	if pluginAccountBindLine("juicefs") != "bind a ClusterRole to service account plugin-juicefs in namespace kevaso-system" {
-		t.Fatalf("bind line: %s", pluginAccountBindLine("juicefs"))
+	if pluginAccountBindLine("juicefs", "controller") != "bind a ClusterRole to service account plugin-juicefs in namespace kevaso-system" {
+		t.Fatalf("bind line: %s", pluginAccountBindLine("juicefs", "controller"))
 	}
-	if err := ensurePluginServiceAccount(ctx, c, "juicefs"); err != nil {
+	if pluginAccountBindLine("juicefs", "node") != "bind a ClusterRole to service account plugin-juicefs-node in namespace kevaso-system" {
+		t.Fatalf("node bind line: %s", pluginAccountBindLine("juicefs", "node"))
+	}
+	if err := ensurePluginServiceAccount(ctx, c, "juicefs", "controller"); err != nil {
 		t.Fatal(err)
 	}
 	var ns v1.Namespace
@@ -50,7 +53,7 @@ func TestPluginServiceAccount(t *testing.T) {
 	}
 	uid, rv := sa.UID, sa.ResourceVersion
 	nsRV := ns.ResourceVersion
-	if err := ensurePluginServiceAccount(ctx, c, "juicefs"); err != nil {
+	if err := ensurePluginServiceAccount(ctx, c, "juicefs", "controller"); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Get(ctx, "ServiceAccount", v1.PluginNamespace, "plugin-juicefs", &sa); err != nil || sa.UID != uid || sa.ResourceVersion != rv {
@@ -59,7 +62,13 @@ func TestPluginServiceAccount(t *testing.T) {
 	if err := c.Get(ctx, "Namespace", "", v1.PluginNamespace, &ns); err != nil || ns.ResourceVersion != nsRV {
 		t.Fatalf("a second install changed the namespace: %s %v", ns.ResourceVersion, err)
 	}
-	if err := ensurePluginServiceAccount(ctx, c, "linode"); err != nil {
+	if err := ensurePluginServiceAccount(ctx, c, "juicefs", "node"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, "ServiceAccount", v1.PluginNamespace, "plugin-juicefs-node", &v1.ServiceAccount{}); err != nil {
+		t.Fatalf("node account: %v", err)
+	}
+	if err := ensurePluginServiceAccount(ctx, c, "linode", "controller"); err != nil {
 		t.Fatal(err)
 	}
 	for _, kind := range []string{"RoleBinding", "Role"} {
@@ -83,11 +92,14 @@ func TestPluginServiceAccount(t *testing.T) {
 		}
 	}
 
-	if err := deletePluginServiceAccount(ctx, c, "juicefs"); err != nil {
+	if err := deletePluginServiceAccount(ctx, c, "juicefs", "controller"); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Get(ctx, "ServiceAccount", v1.PluginNamespace, "plugin-juicefs", &sa); !client.IsNotFound(err) {
 		t.Fatalf("plugin-juicefs still there: %v", err)
+	}
+	if err := c.Get(ctx, "ServiceAccount", v1.PluginNamespace, "plugin-juicefs-node", &v1.ServiceAccount{}); err != nil {
+		t.Fatalf("plugin-juicefs-node was removed with the controller account: %v", err)
 	}
 	if err := c.Get(ctx, "ServiceAccount", v1.PluginNamespace, "plugin-linode", &v1.ServiceAccount{}); err != nil {
 		t.Fatalf("plugin-linode was removed with juicefs: %v", err)
@@ -95,10 +107,10 @@ func TestPluginServiceAccount(t *testing.T) {
 	if err := c.Get(ctx, "Namespace", "", v1.PluginNamespace, &ns); err != nil {
 		t.Fatalf("the namespace was removed: %v", err)
 	}
-	if err := deletePluginServiceAccount(ctx, c, "juicefs"); err != nil {
+	if err := deletePluginServiceAccount(ctx, c, "juicefs", "controller"); err != nil {
 		t.Fatalf("deleting an account that is already gone: %v", err)
 	}
-	if err := ensurePluginServiceAccount(ctx, c, "juicefs"); err != nil {
+	if err := ensurePluginServiceAccount(ctx, c, "juicefs", "controller"); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Get(ctx, "ServiceAccount", v1.PluginNamespace, "plugin-juicefs", &sa); err != nil || sa.UID == uid {

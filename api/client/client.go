@@ -93,6 +93,9 @@ func (c *Client) send(hc *http.Client, req *http.Request) (*http.Response, error
 func New(baseURL string) *Client { return &Client{BaseURL: strings.TrimRight(baseURL, "/")} }
 
 // Error is an API error.
+// ReasonHostRemoved is the reason of the 401 for a host whose certificate a removal refused.
+const ReasonHostRemoved = "HostRemoved"
+
 type Error struct {
 	Code    int    `json:"code"`
 	Reason  string `json:"reason"`
@@ -111,6 +114,14 @@ func reasonOf(err error) string {
 
 // IsNotFound reports a 404.
 func IsNotFound(err error) bool { return reasonOf(err) == "NotFound" }
+
+// HostWasRemoved reports the 401 a control plane sends when this host's certificate was
+// issued before the host was removed. It is final: the machine joins again, and nothing
+// else about the error is a reason to drop a disk.
+func HostWasRemoved(err error) bool { // matched by its reason, never by message text
+	var e *Error
+	return errors.As(err, &e) && e.Code == http.StatusUnauthorized && e.Reason == ReasonHostRemoved
+}
 
 // IgnoreNotFound is nil for a NotFound error, err otherwise.
 func IgnoreNotFound(err error) error {

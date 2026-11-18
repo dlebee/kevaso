@@ -7,8 +7,12 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
+	"strings"
 	"time"
+
+	"kevaso.com/core/api/client"
 
 	"kevaso.com/core/internal/store"
 )
@@ -23,7 +27,20 @@ const hostRemovalKind = "HostRemoval"
 type hostRemovalRecord struct {
 	RemovedAt time.Time `json:"removedAt"`
 	Serials   []string  `json:"serials,omitempty"`
+	// Pending is a removal whose Host delete has not committed yet: the certificate is refused
+	// for now (503, try again), not finally. finalizeHostRemoval clears it once the delete
+	// commits; a pending record whose Host is gone or being deleted counts as final too.
+	Pending bool `json:"pending,omitempty"`
+	// HostUID is the UID of the Host the pending delete is for: a Host of that name with
+	// another UID was made after the delete committed, so the removal is final.
+	HostUID string `json:"hostUID,omitempty"`
+	// Prev is the record this pending one replaced, put back if the delete never commits.
+	Prev json.RawMessage `json:"prev,omitempty"`
 }
+
+// pendingStale is how long a pending removal can stand with its Host unchanged before the
+// sweep takes it for a delete that never committed (a member that stopped mid-delete).
+const pendingStale = 2 * time.Minute
 
 func hostRemovalKey(name string) store.Key { return store.Key{Kind: hostRemovalKind, Name: name} }
 
@@ -42,6 +59,13 @@ func (s *Server) hostRemovalSnap(ctx context.Context, name string) (hostRemovalS
 	}
 	if err != nil {
 		return hostRemovalSnap{}, err
+	}
+	var rec hostRemovalRecord
+	if json.Unmarshal(o.Data, &rec) == nil && rec.Pending { // a delete that never finished: what stood before it
+		if len(rec.Prev) == 0 {
+			return hostRemovalSnap{}, nil
+		}
+		return hostRemovalSnap{data: append([]byte(nil), rec.Prev...), ok: true}, nil
 	}
 	return hostRemovalSnap{data: append([]byte(nil), o.Data...), ok: true}, nil
 }
@@ -101,8 +125,11 @@ func (s *Server) hostRemoval(ctx context.Context, name string) (hostRemovalRecor
 
 // revokeHost records that certificates for name issued before now are no longer accepted.
 // A later delete replaces the record, which drops serials issued after the previous one.
-func (s *Server) revokeHost(ctx context.Context, name string) (int64, error) {
-	rec := hostRemovalRecord{RemovedAt: s.clock.Now().UTC().Truncate(time.Second)}
+func (s *Server) revokeHost(ctx context.Context, name, hostUID string, prev hostRemovalSnap) (int64, error) {
+	rec := hostRemovalRecord{RemovedAt: s.clock.Now().UTC().Truncate(time.Second), Pending: true, HostUID: hostUID}
+	if prev.ok {
+		rec.Prev = prev.data
+	}
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return 0, err
@@ -179,6 +206,23 @@ func (s *Server) noteIssuedHostCert(ctx context.Context, name string, certPEM []
 	return fmt.Errorf("host %s: recording the new certificate kept conflicting", name)
 }
 
+// errHostRemoved is the final refusal of a removed host's certificate (reason HostRemoved, which
+// the host acts on); errRemovalUnreadable is a refusal for now, the record couldn't be read.
+var (
+	errHostRemoved       = errors.New("HostRemoved")
+	errRemovalUnreadable = errors.New("RemovalUnreadable")
+)
+
+// hostRefusal is the HTTP error for removedHostCert's refusal: 401 with reason HostRemoved for a
+// removed host, 503 when the record can't be read. Only HostRemoved is final for the host.
+func hostRefusal(err error) error {
+	msg := strings.TrimPrefix(strings.TrimPrefix(err.Error(), errHostRemoved.Error()+": "), errRemovalUnreadable.Error()+": ")
+	if errors.Is(err, errHostRemoved) {
+		return errf(http.StatusUnauthorized, client.ReasonHostRemoved, "%s", msg)
+	}
+	return errf(http.StatusServiceUnavailable, "Unavailable", "%s", msg)
+}
+
 // removedHostCert refuses a host certificate issued before that host was removed.
 // NotBefore is backdated by a minute and stored at second precision, so a serial issued after
 // the removal is recorded too: a clock that disagrees between members cannot make an old
@@ -192,12 +236,105 @@ func (s *Server) removedHostCert(ctx context.Context, name string, cert *x509.Ce
 	if err == nil {
 		err = json.Unmarshal(o.Data, &rec)
 	}
+	if err == nil && rec.RemovedAt.IsZero() {
+		err = errors.New("no removal time")
+	}
 	if err != nil { // the removal record can't be read: refuse rather than accept a certificate it may revoke
-		return fmt.Errorf("host %s: can't check whether it was removed from the cluster (%v); try again", name, err)
+		return fmt.Errorf("%w: host %s: its removal record can't be read (%v); try again", errRemovalUnreadable, name, err)
 	}
 	serial := cert.SerialNumber.Text(16)
-	if cert.NotBefore.Before(rec.RemovedAt) || !slices.Contains(rec.Serials, serial) { // a certificate issued before this host was removed is refused
-		return fmt.Errorf("host %s was removed from the cluster; join it again with kvoadm host add", name)
+	if !cert.NotBefore.Before(rec.RemovedAt) && slices.Contains(rec.Serials, serial) {
+		return nil // issued after the removal, by joining again
 	}
-	return nil
+	if rec.Pending && !s.hostGoing(ctx, name, rec.HostUID) { // a delete is under way and may still be refused: not final
+		return fmt.Errorf("%w: host %s: a delete of this host is under way; try again", errRemovalUnreadable, name)
+	}
+	// a certificate issued before this host was removed is refused
+	return fmt.Errorf("%w: host %s was removed from the cluster; join it again with kvoadm host add", errHostRemoved, name)
+}
+
+// hostGoing reports whether Host name is gone, marked for deletion, or another Host than uid
+// (made after the delete committed). An error reading it is not "gone": the refusal stays the
+// try-again one.
+func (s *Server) hostGoing(ctx context.Context, name, uid string) bool {
+	o, err := s.store.Get(ctx, store.Key{Kind: "Host", Name: name})
+	if errors.Is(err, store.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	var h struct {
+		Metadata struct {
+			UID               string     `json:"uid"`
+			DeletionTimestamp *time.Time `json:"deletionTimestamp"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal(o.Data, &h) != nil {
+		return false
+	}
+	return h.Metadata.DeletionTimestamp != nil || uid != "" && h.Metadata.UID != uid
+}
+
+// sweepHostRemovals settles pending removals a member left behind: final when the delete
+// committed (the Host is gone, marked, or made again), and put back when the Host stood
+// unchanged for pendingStale (the delete never committed). Every member runs it.
+func (s *Server) sweepHostRemovals() {
+	for {
+		time.Sleep(30 * time.Second)
+		s.sweepHostRemovalsOnce(context.Background())
+	}
+}
+
+func (s *Server) sweepHostRemovalsOnce(ctx context.Context) {
+	objs, _, err := s.store.List(ctx, store.Selector{Kind: hostRemovalKind})
+	if err != nil {
+		return
+	}
+	for _, o := range objs {
+		var rec hostRemovalRecord
+		if json.Unmarshal(o.Data, &rec) != nil || !rec.Pending {
+			continue
+		}
+		if s.hostGoing(ctx, o.Name, rec.HostUID) {
+			s.finalizeHostRemoval(ctx, o.Name) // the delete committed: final, and its streams close
+			s.closeHostStreams(o.Name)         // here too, whether or not that write held
+			continue
+		}
+		if s.clock.Now().Sub(rec.RemovedAt) < pendingStale {
+			continue
+		}
+		key := hostRemovalKey(o.Name)
+		if len(rec.Prev) == 0 { // a delete that never committed: what stood before it comes back
+			_, _ = s.store.Delete(ctx, key, o.Revision)
+		} else {
+			_, _ = s.store.Update(ctx, key, rec.Prev, o.Revision)
+		}
+	}
+}
+
+// finalizeHostRemoval marks the removal record final once the Host delete committed: from then
+// on the host's certificate gets the final refusal, and its streams are closed. A failure here
+// leaves it pending, which hostGoing then answers as final.
+func (s *Server) finalizeHostRemoval(ctx context.Context, name string) {
+	key := hostRemovalKey(name)
+	for attempt := 0; attempt < 5; attempt++ {
+		o, err := s.store.Get(ctx, key)
+		if err != nil {
+			return
+		}
+		var rec hostRemovalRecord
+		if json.Unmarshal(o.Data, &rec) != nil || !rec.Pending {
+			return
+		}
+		rec.Pending, rec.Prev = false, nil
+		data, err := json.Marshal(rec)
+		if err != nil {
+			return
+		}
+		if _, err := s.store.Update(ctx, key, data, o.Revision); errors.Is(err, store.ErrConflict) {
+			continue
+		}
+		return
+	}
 }

@@ -2369,8 +2369,8 @@
   "id": "G-442",
   "guard": "a certificate issued before a host was removed is refused",
   "file": "internal/apiserver/hostremoval.go",
-  "find": "if cert.NotBefore.Before(rec.RemovedAt) || !slices.Contains(rec.Serials, serial) { // a certificate issued before this host was removed is refused",
-  "replace": "if false && (cert.NotBefore.Before(rec.RemovedAt) || !slices.Contains(rec.Serials, serial)) { // a certificate issued before this host was removed is refused",
+  "find": "if !cert.NotBefore.Before(rec.RemovedAt) && slices.Contains(rec.Serials, serial) {",
+  "replace": "if true || !cert.NotBefore.Before(rec.RemovedAt) && slices.Contains(rec.Serials, serial) {",
   "mutation": "a certificate issued before the host was removed is accepted",
   "packages": [
    "./internal/apiserver"
@@ -2405,7 +2405,7 @@
   "id": "G-451",
   "guard": "a host certificate is refused before its silos are counted",
   "file": "internal/apiserver/apiserver.go",
-  "find": "rev, err := s.revokeHost(ctx, t.name)",
+  "find": "rev, err := s.revokeHost(ctx, t.name, om.UID, hostPrev)",
   "replace": "rev, err := int64(0), error(nil)",
   "mutation": "a host's silos are counted before its certificate is refused",
   "packages": [
@@ -2521,5 +2521,307 @@
    "./internal/apiserver"
   ],
   "protects": "a host deleted with confirmation keeps its removal record when an overlapping delete is refused"
+  },
+  {
+  "id": "G-470",
+  "guard": "a worker certificate asks only for a plugin's node side",
+  "file": "internal/apiserver/clustersecret.go",
+  "find": "if id.Role == \"worker\" && side != \"node\" { // a worker certificate asks only for the node side",
+  "replace": "if false { // a worker certificate asks only for the node side",
+  "mutation": "a worker certificate reads a controller-side cluster secret",
+  "packages": [
+   "./test/integration",
+   "./internal/apiserver"
+  ],
+  "protects": "a worker certificate reads a cluster secret only for a plugin's node side"
+  },
+  {
+  "id": "G-471",
+  "guard": "a host value read names side=node or side=controller",
+  "file": "internal/apiserver/clustersecret.go",
+  "find": "return false, \"a host reads a clustersecret's value with side=node or side=controller\", nil",
+  "replace": "return true, \"a host reads a clustersecret's value with side=node or side=controller\", nil",
+  "mutation": "a host reads a cluster secret value with no side",
+  "packages": [
+   "./test/integration"
+  ],
+  "protects": "a host reads a cluster secret value only with side=node or side=controller"
+  },
+  {
+  "id": "G-472",
+  "guard": "the node side's service account is plugin-NAME-node",
+  "file": "internal/operators/package.go",
+  "find": "return \"plugin-\" + plugin + \"-node\"",
+  "replace": "return \"plugin-\" + plugin",
+  "mutation": "the node side is checked as the controller account",
+  "packages": [
+   "./test/integration"
+  ],
+  "protects": "a node-side read is the service account plugin-NAME-node"
+  },
+  {
+  "id": "G-473",
+  "guard": "a host may read clustersecret metadata and status",
+  "file": "internal/apiserver/auth.go",
+  "find": "if hostCertificate(id) && !t.value && r.Method == http.MethodGet { // metadata and status, never a value",
+  "replace": "if false { // metadata and status, never a value",
+  "mutation": "a host is refused the clustersecret object",
+  "packages": [
+   "./test/integration",
+   "./internal/apiserver"
+  ],
+  "protects": "a host certificate gets, lists and watches a clustersecret's metadata and status"
+  },
+  {
+  "id": "G-474",
+  "guard": "a delivered cluster secret is remembered by uid and version",
+  "file": "internal/agent/clustersecret.go",
+  "find": "if !d.restarted || d.version != version || d.uid != uid || uid == \"\" { // uid plus version: a re-create is delivered again",
+  "replace": "if !d.restarted || d.version != version { // uid plus version: a re-create is delivered again",
+  "mutation": "a re-created cluster secret with the same version is not delivered",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a deleted and re-created cluster secret is delivered again"
+  },
+  {
+  "id": "G-475",
+  "guard": "a side refusal keeps the cached cluster secret",
+  "file": "internal/agent/clustersecret.go",
+  "find": "if sideRefused(err) {",
+  "replace": "if false && sideRefused(err) {",
+  "mutation": "a worker refused the controller side deletes the cached file",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a side refusal leaves the credential file for the certificate that may read it"
+  },
+  {
+  "id": "G-476",
+  "guard": "a recorded host removal closes that host's streams",
+  "file": "internal/apiserver/hoststreams.go",
+  "find": "if !s.hostStreams.noteRemoval(name, rec.RemovedAt) {",
+  "replace": "if true {",
+  "mutation": "a host removal leaves watches and the tunnel open",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a removed host's watches and tunnel close on every control-plane member"
+  },
+  {
+  "id": "G-477",
+  "guard": "the removal 401 stops the host's silos",
+  "file": "internal/agent/agent.go",
+  "find": "if client.HostWasRemoved(err) { // a removed host stops its silos and keeps every disk",
+  "replace": "if false { // a removed host stops its silos and keeps every disk",
+  "mutation": "the removal 401 is retried and the silos keep running",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a removed host stops its silos and does not reconcile until it joins again"
+  },
+  {
+  "id": "G-478",
+  "guard": "a removed host stops every silo it runs",
+  "file": "internal/agent/agent.go",
+  "find": "a.stopSilosKept(ctx)",
+  "replace": "_ = ctx",
+  "mutation": "a removed host leaves its silos running",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a removed host stops every silo and keeps every disk and volume"
+  },
+  {
+  "id": "G-479",
+  "guard": "a stored certificate is replaced only after the removal 401",
+  "file": "internal/worker/join.go",
+  "find": "if !certificateRemoved(ctx, c, cfg.HostName) { // any other error keeps the stored certificate",
+  "replace": "if false { // any other error keeps the stored certificate",
+  "mutation": "a working certificate is replaced whenever a join token is present",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "a stored host certificate is kept until the control plane says the host was removed"
+  },
+  {
+  "id": "G-480",
+  "guard": "a removed host's pki directory is renamed, not deleted",
+  "file": "internal/worker/join.go",
+  "find": "return os.Rename(dir, aside)",
+  "replace": "return os.RemoveAll(dir)",
+  "mutation": "re-enrolling deletes the old pki directory",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "re-enrolling a removed host keeps the old key under a dated name"
+  },
+  {
+  "id": "G-481",
+  "guard": "a removal ends the heartbeat",
+  "file": "internal/worker/join.go",
+  "find": "if removed { // the removal is final: this loop does not retry it",
+  "replace": "if removed && false { // the removal is final: this loop does not retry it",
+  "mutation": "the heartbeat retries after the host was removed",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "the removal 401 ends the heartbeat"
+  },
+  {
+  "id": "G-482",
+  "guard": "a removed host without a token is told how to join again",
+  "file": "internal/worker/join.go",
+  "find": "return nil, fmt.Errorf(\"host %s was removed from the cluster; its certificate in %s is refused. Move %s aside and join again with kvoadm host add\", cfg.HostName, dir, dir)",
+  "replace": "return c, nil",
+  "mutation": "a removed certificate with no token is reused",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "without a join token, a removed host is told which pki directory to move aside"
+  },
+  {
+  "id": "G-483",
+  "guard": "lvs is absent only on a clean not-found",
+  "file": "builtin/kri/cloudhypervisor/volumes.go",
+  "find": "if lvMissing(out, err) { // a clean not found",
+  "replace": "if true { // a clean not found",
+  "mutation": "any lvs failure is treated as no volume",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a failed lvs is an error, never an absent volume"
+  },
+  {
+  "id": "G-484",
+  "guard": "empty lvs output is an error",
+  "file": "builtin/kri/cloudhypervisor/volumes.go",
+  "find": "return false, fmt.Errorf(\"lvs %s/%s returned nothing\", VG, lv)",
+  "replace": "return false, nil",
+  "mutation": "empty lvs output is treated as no volume",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "empty lvs output is an error, never an absent volume"
+  },
+  {
+  "id": "G-485",
+  "guard": "Create returns when the root volume cannot be checked",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if err != nil { // a failed lvs is never \"no volume\"\n\t\t\treturn fmt.Errorf(\"%s: root volume %s/%s could not be checked (%w): not making the silo and removing nothing\", spec.ID, VG, n.LV, err)",
+  "replace": "if false { // a failed lvs is never \"no volume\"\n\t\t\treturn fmt.Errorf(\"%s: root volume %s/%s could not be checked (%w): not making the silo and removing nothing\", spec.ID, VG, n.LV, err)",
+  "mutation": "Create continues when lvs fails",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "Create returns before saving state when lvs fails, and removes nothing"
+  },
+  {
+  "id": "G-486",
+  "guard": "the group listing refuses the root LV's own name",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if f == n.LV || strings.HasPrefix(f, n.LV+\"-\") { // the root LV's own name, not only its local volumes",
+  "replace": "if strings.HasPrefix(f, n.LV+\"-\") { // the root LV's own name, not only its local volumes",
+  "mutation": "a root LV listed under its own name is made over",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "Create refuses a root LV that is already there, including under its own name"
+  },
+  {
+  "id": "G-487",
+  "guard": "a step failure removes the root LV only when this Create made it",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if l.RootFile == \"\" && dropRoot { // a step-failure removes the root LV only if this Create made it",
+  "replace": "if l.RootFile == \"\" { // a step-failure removes the root LV only if this Create made it",
+  "mutation": "a step failure removes a root LV this Create did not make",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a failed Create removes the root LV only when this Create made it"
+  },
+  {
+  "id": "G-490",
+  "guard": "only the HostRemoved reason makes a host stop its silos",
+  "file": "api/client/client.go",
+  "find": "return errors.As(err, &e) && e.Code == http.StatusUnauthorized && e.Reason == ReasonHostRemoved",
+  "replace": "return errors.As(err, &e) && e.Code == http.StatusUnauthorized",
+  "mutation": "any 401 makes a host stop every silo it runs",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a host stops its silos only on the final removal refusal, never on another refusal"
+  },
+  {
+  "id": "G-491",
+  "guard": "a removal is final only once its Host delete commits",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "if rec.Pending && !s.hostGoing(ctx, name, rec.HostUID) { // a delete is under way and may still be refused: not final",
+  "replace": "if false && rec.Pending && !s.hostGoing(ctx, name, rec.HostUID) { // a delete is under way and may still be refused: not final",
+  "mutation": "a live host gets the final removal answer during a delete that is then refused",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a refused host delete never tells the live host it was removed"
+  },
+  {
+  "id": "G-492",
+  "guard": "a removal record with no removal time is never final",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "if err == nil && rec.RemovedAt.IsZero() {",
+  "replace": "if false && err == nil && rec.RemovedAt.IsZero() {",
+  "mutation": "a removal record with no time is answered as final",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "only a readable, dated removal makes a host stop its silos"
+  },
+  {
+  "id": "G-493",
+  "guard": "a delivered cluster secret is fetched again now and then",
+  "file": "internal/agent/clustersecret.go",
+  "find": "if a.csNow().Sub(d.checked) >= recheck { // fetched again now and then: access can change with no object change",
+  "replace": "if false && a.csNow().Sub(d.checked) >= recheck { // fetched again now and then: access can change with no object change",
+  "mutation": "a binding taken away never removes the host's copy",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a plugin loses a secret's value on every host once its binding is taken away"
+  },
+  {
+  "id": "G-494",
+  "guard": "a Host made again after a delete makes a pending removal final",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "return h.Metadata.DeletionTimestamp != nil || uid != \"\" && h.Metadata.UID != uid",
+  "replace": "return h.Metadata.DeletionTimestamp != nil",
+  "mutation": "a machine removed while on is never told once its name is added again",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a removed host's old certificate gets the final refusal after the name is added again"
+  },
+  {
+  "id": "G-495",
+  "guard": "the sweep settles a pending removal whose delete committed",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "s.finalizeHostRemoval(ctx, o.Name) // the delete committed: final, and its streams close",
+  "replace": "_ = o // the delete committed: final, and its streams close",
+  "mutation": "a removal whose final write was lost stays pending",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a removal left pending by a member that stopped is made final"
+  },
+  {
+  "id": "G-496",
+  "guard": "the member that commits a host delete closes its streams",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "s.closeHostStreams(t.name)         // on this member now, whether or not that write held",
+  "replace": "_ = t // on this member now, whether or not that write held",
+  "mutation": "a removed host's open watch keeps delivering when the final write fails",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a removed host's streams close when its delete commits"
   }
 ]
