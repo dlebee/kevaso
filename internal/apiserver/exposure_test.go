@@ -232,7 +232,8 @@ func TestAnEditorNeedsExposePublicToLoosenOutsideReach(t *testing.T) {
 		Spec: v1.ServiceSpec{Type: v1.ServiceLoadBalancer, LoadBalancerClass: "linode-nodebalancer",
 			Selector: map[string]string{"app": "pay"}, Ports: []v1.ServicePortSpec{{Name: "http", Port: 80}}}}))
 	must(comp.Create(ctx, &v1.IngressClass{TypeMeta: tm("IngressClass"), ObjectMeta: meta.ObjectMeta{Name: "office"},
-		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Namespace: "web3", Silo: "edge"}}}))
+		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Namespace: "web3", Silo: "edge"},
+			Hosts: []v1.HostAssignment{{Host: "app.example.com", Namespaces: []string{"web3"}}}}}))
 	must(comp.Create(ctx, &v1.Ingress{TypeMeta: tm("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "in", Namespace: "web3"},
 		Spec: v1.IngressSpec{IngressClass: "office", Hosts: []string{"app.example.com"}, TLS: v1.IngressTLS{None: true},
 			Rules: []v1.IngressRule{{Path: "/", Service: v1.IngressTarget{Name: "api", Port: "web"}}}}}))
