@@ -30,8 +30,9 @@ func hostRemovalKey(name string) store.Key { return store.Key{Kind: hostRemovalK
 // hostRemovalSnap is the removal record that stood before a delete, so a refused delete can put
 // it back. ok is false when there was none: the record the delete wrote is removed instead.
 type hostRemovalSnap struct {
-	data []byte
-	ok   bool
+	data  []byte
+	ok    bool
+	wrote int64 // the revision of the record this request wrote: only that one is undone
 }
 
 func (s *Server) hostRemovalSnap(ctx context.Context, name string) (hostRemovalSnap, error) {
@@ -49,22 +50,22 @@ func (s *Server) hostRemovalSnap(ctx context.Context, name string) (hostRemovalS
 // again keeps the serials issued after the earlier removal.
 func (s *Server) restoreHostRemoval(ctx context.Context, name string, prev hostRemovalSnap) error {
 	key := hostRemovalKey(name)
+	// Another delete of this host went through meanwhile: its removal stands.
+	if _, err := s.store.Get(ctx, store.Key{Kind: "Host", Name: name}); errors.Is(err, store.ErrNotFound) {
+		return nil
+	} else if err != nil {
+		return err
+	}
 	for attempt := 0; attempt < 5; attempt++ {
 		o, err := s.store.Get(ctx, key)
 		if errors.Is(err, store.ErrNotFound) {
-			if !prev.ok {
-				return nil
-			}
-			if _, err := s.store.Create(ctx, key, prev.data); err != nil {
-				if errors.Is(err, store.ErrExists) {
-					continue
-				}
-				return err
-			}
-			return nil
+			return nil // not the record this request wrote: nothing of ours to undo
 		}
 		if err != nil {
 			return err
+		}
+		if o.Revision != prev.wrote { // only the record this request wrote is undone
+			return nil
 		}
 		if !prev.ok {
 			if _, err := s.store.Delete(ctx, key, o.Revision); err != nil {
@@ -100,36 +101,38 @@ func (s *Server) hostRemoval(ctx context.Context, name string) (hostRemovalRecor
 
 // revokeHost records that certificates for name issued before now are no longer accepted.
 // A later delete replaces the record, which drops serials issued after the previous one.
-func (s *Server) revokeHost(ctx context.Context, name string) error {
+func (s *Server) revokeHost(ctx context.Context, name string) (int64, error) {
 	rec := hostRemovalRecord{RemovedAt: s.clock.Now().UTC().Truncate(time.Second)}
 	data, err := json.Marshal(rec)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	key := hostRemovalKey(name)
 	for attempt := 0; attempt < 5; attempt++ {
 		o, err := s.store.Get(ctx, key)
 		if errors.Is(err, store.ErrNotFound) {
-			if _, err := s.store.Create(ctx, key, data); err != nil {
+			c, err := s.store.Create(ctx, key, data)
+			if err != nil {
 				if errors.Is(err, store.ErrExists) {
 					continue
 				}
-				return err
+				return 0, err
 			}
-			return nil
+			return c.Revision, nil
 		}
 		if err != nil {
-			return err
+			return 0, err
 		}
-		if _, err := s.store.Update(ctx, key, data, o.Revision); err != nil {
+		u, err := s.store.Update(ctx, key, data, o.Revision)
+		if err != nil {
 			if errors.Is(err, store.ErrConflict) {
 				continue
 			}
-			return err
+			return 0, err
 		}
-		return nil
+		return u.Revision, nil
 	}
-	return fmt.Errorf("host %s: recording the removal kept conflicting", name)
+	return 0, fmt.Errorf("host %s: recording the removal kept conflicting", name)
 }
 
 // noteIssuedHostCert records the serial of a host certificate issued after a removal, so auth

@@ -895,10 +895,12 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 				writeErr(w, err)
 				return
 			}
-			if err := s.revokeHost(ctx, t.name); err != nil { // the certificate is refused before its silos are counted
+			rev, err := s.revokeHost(ctx, t.name)
+			if err != nil { // the certificate is refused before its silos are counted
 				writeErr(w, err)
 				return
 			}
+			hostPrev.wrote = rev
 			hostRevoked = true
 		}
 		if t.kind.Kind == "Host" {

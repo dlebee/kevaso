@@ -2405,8 +2405,8 @@
   "id": "G-451",
   "guard": "a host certificate is refused before its silos are counted",
   "file": "internal/apiserver/apiserver.go",
-  "find": "if err := s.revokeHost(ctx, t.name); err != nil { // the certificate is refused before its silos are counted",
-  "replace": "if err := error(nil); err != nil { // the certificate is refused before its silos are counted",
+  "find": "rev, err := s.revokeHost(ctx, t.name)",
+  "replace": "rev, err := int64(0), error(nil)",
   "mutation": "a host's silos are counted before its certificate is refused",
   "packages": [
    "./internal/apiserver"
@@ -2509,5 +2509,17 @@
    "./internal/operators"
   ],
   "protects": "a plugin package cannot grant a cluster secret's value"
+  },
+  {
+  "id": "G-460",
+  "guard": "a refused host delete undoes only the removal record it wrote",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "if o.Revision != prev.wrote { // only the record this request wrote is undone",
+  "replace": "if false && o.Revision != prev.wrote { // only the record this request wrote is undone",
+  "mutation": "a refused host delete undoes a removal record another delete wrote",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host deleted with confirmation keeps its removal record when an overlapping delete is refused"
   }
 ]
