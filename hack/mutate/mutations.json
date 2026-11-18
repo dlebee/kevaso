@@ -2485,5 +2485,17 @@
    "./builtin/kni"
   ],
   "protects": "silo traffic to this host's own addresses is dropped before a grant's accept"
+  },
+  {
+  "id": "G-458",
+  "guard": "a plugin renews only its own token",
+  "file": "internal/apiserver/auth.go",
+  "find": "return id.Type == \"serviceaccount\" && r.Method == http.MethodPost && t.token &&\n\t\tt.namespace == v1.PluginNamespace && id.Name == rbac.ServiceAccountUser(t.namespace, t.name) // a plugin renews only its own token",
+  "replace": "return true // a plugin renews only its own token",
+  "mutation": "any write in kevaso-system by a plugin's service account is allowed",
+  "packages": [
+   "./test/integration"
+  ],
+  "protects": "a plugin's service account renews only its own token in kevaso-system"
   }
 ]

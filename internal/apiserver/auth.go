@@ -30,7 +30,8 @@ import (
 //     minted by kvoadm are in the cluster-admins group;
 //   - namespace kevaso-system is reserved (reservedNamespace): a person or a service account may
 //     create, update or delete an object there, or delete the namespace, only as a cluster-admin.
-//     A role or a binding does not change that. Reads stay with RBAC;
+//     A role or a binding does not change that, except a plugin's own service account posting
+//     its own token (it renews that, and nothing else). Reads stay with RBAC;
 //   - hosts with role control-plane: everything (they run the controllers), except a mutation in
 //     that reserved namespace, which is a cluster-admin's;
 //   - hosts with role worker: read only what running the silos on them takes
@@ -191,7 +192,7 @@ func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups [
 	if t.kind.Kind == "ClusterSecret" && id != LocalAdmin {
 		return s.authorizeClusterSecret(ctx, id, groups, r, t)
 	}
-	if reason, reserved := reservedNamespace(r, t); reserved {
+	if reason, reserved := reservedNamespace(id, r, t); reserved {
 		admin, err := s.clusterAdmin(ctx, id, groups)
 		if err != nil {
 			return false, false, "", err
@@ -319,13 +320,18 @@ func (s *Server) clusterAdmin(ctx context.Context, id pki.Identity, groups []str
 
 // reservedNamespace is a create, update or delete of any object in v1.PluginNamespace
 // (kevaso-system), including a service account's token, or a delete of that namespace itself.
-// get, list and watch are not: RBAC already decides those.
+// get, list and watch are not: RBAC already decides those. One request is not reserved: a
+// plugin's own service account posting a token for that same account, so its controller can
+// renew the token it runs as. Nothing else in the namespace is opened by that.
 //
 // A RoleBinding elsewhere cannot grant the mutation. Authorize applies a RoleBinding only when
 // its namespace is the request's (internal/rbac: b.Namespace != a.Namespace is skipped), so a
 // binding in another namespace never reaches this one. A binding in kevaso-system, and a
 // ClusterRoleBinding, do reach it; neither overrides this.
-func reservedNamespace(r *http.Request, t target) (string, bool) {
+func reservedNamespace(id pki.Identity, r *http.Request, t target) (string, bool) {
+	if pluginRenewsOwnToken(id, r, t) {
+		return "", false
+	}
 	if t.namespace == v1.PluginNamespace && requestMutates(r) {
 		return fmt.Sprintf("namespace %s is reserved: only a cluster-admin may create, update or delete objects in it, whatever a role or binding says", v1.PluginNamespace), true
 	}
@@ -333,6 +339,13 @@ func reservedNamespace(r *http.Request, t target) (string, bool) {
 		return fmt.Sprintf("namespace %s is reserved: only a cluster-admin may delete it", v1.PluginNamespace), true
 	}
 	return "", false
+}
+
+// pluginRenewsOwnToken is a plugin controller renewing the token it runs as: a POST of
+// serviceaccounts/<its own name>/token in kevaso-system, by that same service account.
+func pluginRenewsOwnToken(id pki.Identity, r *http.Request, t target) bool {
+	return id.Type == "serviceaccount" && r.Method == http.MethodPost && t.token &&
+		t.namespace == v1.PluginNamespace && id.Name == rbac.ServiceAccountUser(t.namespace, t.name) // a plugin renews only its own token
 }
 
 // requestMutates is any method but a read. Watch and a secret's value are GET.
