@@ -144,9 +144,11 @@ func TestLabClusterSecret(t *testing.T) {
 		}
 	}
 	// The worker reads the shared secret, bound to both accounts, for its node side.
-	code, hash, _ := labFetch(t, node, apiIP, labSecret, "node", aVal, bVal, ctrlVal)
-	if code != 200 || hash != aHash {
-		node.fatal(t, "worker, a secret bound to both accounts", fmt.Sprintf("http %d sha256 %s", code, hash), aVal, bVal, ctrlVal)
+	// (labFetch hashes the JSON reply, not the value, so the code is what counts here; the file
+	// the node side got was compared byte for byte in step 3.)
+	code, _, msg := labFetch(t, node, apiIP, labSecret, "node", aVal, bVal, ctrlVal)
+	if code != 200 {
+		node.fatal(t, "worker, a secret bound to both accounts", fmt.Sprintf("http %d: %s", code, msg), aVal, bVal, ctrlVal)
 	}
 	// The system node has no certificate file: its controller side is delivered in-process as
 	// host/control-plane, which the integration tests cover for both sides.
