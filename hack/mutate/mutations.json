@@ -2497,5 +2497,17 @@
    "./test/integration"
   ],
   "protects": "a plugin's service account renews only its own token in kevaso-system"
+  },
+  {
+  "id": "G-459",
+  "guard": "a plugin package never grants a cluster secret's value",
+  "file": "internal/operators/package.go",
+  "find": "\"clustersecrets/value\"",
+  "replace": "\"invites\"",
+  "mutation": "a plugin package grants a cluster secret's value",
+  "packages": [
+   "./internal/operators"
+  ],
+  "protects": "a plugin package cannot grant a cluster secret's value"
   }
 ]

@@ -199,7 +199,9 @@ func ValidName(n string) bool { return pluginNameRE.MatchString(n) && !strings.H
 var forbidden = []string{"roles", "rolebindings", "clusterroles", "clusterrolebindings", "serviceaccounts/token",
 	"kinddefinitions", "validationpolicies", "mutationpolicies", "plugins", "plugins/status",
 	// people's: who may sign in, and what may join as a host (any subresource too: see RuleProblems)
-	"invites", "jointokens", "users"}
+	"invites", "jointokens", "users",
+	// a plugin package never grants a cluster secret's value
+	"clustersecrets/value"}
 
 // resourceRE is a resource a plugin's role can name: a plain name (a built-in's plural or a
 // plugin kind's "plural.group"), and at most one subresource. No wildcard of any kind.
