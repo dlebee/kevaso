@@ -2,12 +2,14 @@ package apiserver_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -169,4 +171,57 @@ func waitReadEnds(t *testing.T, rc io.Reader, what string) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("%s stayed open", what)
 	}
+}
+
+// noFinalStore refuses every update of a HostRemoval record while armed: a removal whose final
+// write is lost.
+type noFinalStore struct {
+	store.Store
+	armed atomic.Bool
+}
+
+func (s *noFinalStore) Update(ctx context.Context, key store.Key, data []byte, expected int64) (store.Object, error) {
+	if s.armed.Load() && key.Kind == "HostRemoval" {
+		return store.Object{}, errors.New("the store did not answer")
+	}
+	return s.Store.Update(ctx, key, data, expected)
+}
+
+// The member that commits a host delete closes that host's streams itself, so they close even
+// when the write that makes the removal final is lost.
+func TestCommittingMemberClosesStreamsWhenTheFinalWriteFails(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ca, err := pki.NewCA("test", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &noFinalStore{Store: store.NewMemory(0)}
+	tokens := &jointoken.Issuer{Store: st, Clock: clock.Real{}}
+	dir, err := os.MkdirTemp("/tmp", "kvs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	ts, admin := member(t, st, ca, tokens, filepath.Join(dir, "a.sock"))
+	if err := admin.Create(ctx, host("hv1")); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := tokens.Create(ctx, "hv1", []string{"worker"}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, err := tlsOn(t, ts, ca.PEM, nil).Enroll(ctx, tok, "hv1", "worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := tlsOn(t, ts, ca.PEM, &cred).Watch(ctx, "Host", "", "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.armed.Store(true)
+	if err := admin.Delete(ctx, "Host", "", "hv1"); err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, ch, "the removed host's watch, its final write lost")
 }

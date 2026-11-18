@@ -2405,7 +2405,7 @@
   "id": "G-451",
   "guard": "a host certificate is refused before its silos are counted",
   "file": "internal/apiserver/apiserver.go",
-  "find": "rev, err := s.revokeHost(ctx, t.name)",
+  "find": "rev, err := s.revokeHost(ctx, t.name, om.UID, hostPrev)",
   "replace": "rev, err := int64(0), error(nil)",
   "mutation": "a host's silos are counted before its certificate is refused",
   "packages": [
@@ -2756,8 +2756,8 @@
   "id": "G-491",
   "guard": "a removal is final only once its Host delete commits",
   "file": "internal/apiserver/hostremoval.go",
-  "find": "if rec.Pending && !s.hostGoing(ctx, name) { // a delete is under way and may still be refused: not final",
-  "replace": "if false && rec.Pending && !s.hostGoing(ctx, name) { // a delete is under way and may still be refused: not final",
+  "find": "if rec.Pending && !s.hostGoing(ctx, name, rec.HostUID) { // a delete is under way and may still be refused: not final",
+  "replace": "if false && rec.Pending && !s.hostGoing(ctx, name, rec.HostUID) { // a delete is under way and may still be refused: not final",
   "mutation": "a live host gets the final removal answer during a delete that is then refused",
   "packages": [
    "./internal/apiserver"
@@ -2787,5 +2787,41 @@
    "./internal/agent"
   ],
   "protects": "a plugin loses a secret's value on every host once its binding is taken away"
+  },
+  {
+  "id": "G-494",
+  "guard": "a Host made again after a delete makes a pending removal final",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "return h.Metadata.DeletionTimestamp != nil || uid != \"\" && h.Metadata.UID != uid",
+  "replace": "return h.Metadata.DeletionTimestamp != nil",
+  "mutation": "a machine removed while on is never told once its name is added again",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a removed host's old certificate gets the final refusal after the name is added again"
+  },
+  {
+  "id": "G-495",
+  "guard": "the sweep settles a pending removal whose delete committed",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "s.finalizeHostRemoval(ctx, o.Name) // the delete committed: final, and its streams close",
+  "replace": "_ = o // the delete committed: final, and its streams close",
+  "mutation": "a removal whose final write was lost stays pending",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a removal left pending by a member that stopped is made final"
+  },
+  {
+  "id": "G-496",
+  "guard": "the member that commits a host delete closes its streams",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "s.closeHostStreams(t.name)         // on this member now, whether or not that write held",
+  "replace": "_ = t // on this member now, whether or not that write held",
+  "mutation": "a removed host's open watch keeps delivering when the final write fails",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a removed host's streams close when its delete commits"
   }
 ]

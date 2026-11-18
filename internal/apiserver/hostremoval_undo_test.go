@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"kevaso.com/core/internal/clock"
@@ -25,10 +26,10 @@ func TestARefusedHostDeleteUndoesOnlyItsOwnRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapA.wrote, err = s.revokeHost(ctx, "hv1"); err != nil {
+	if snapA.wrote, err = s.revokeHost(ctx, "hv1", "", hostRemovalSnap{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.revokeHost(ctx, "hv1"); err != nil { // the second delete's record
+	if _, err := s.revokeHost(ctx, "hv1", "", hostRemovalSnap{}); err != nil { // the second delete's record
 		t.Fatal(err)
 	}
 	if err := s.restoreHostRemoval(ctx, "hv1", snapA); err != nil {
@@ -42,14 +43,18 @@ func TestARefusedHostDeleteUndoesOnlyItsOwnRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapC.wrote, err = s.revokeHost(ctx, "hv1"); err != nil {
+	if snapC.wrote, err = s.revokeHost(ctx, "hv1", "", hostRemovalSnap{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.restoreHostRemoval(ctx, "hv1", snapC); err != nil {
 		t.Fatal(err)
 	}
-	o, err := mem.Get(ctx, hostRemovalKey("hv1"))
-	if err != nil || string(o.Data) != string(snapC.data) {
-		t.Fatalf("undoing its own record should put back the one before it: %v", err)
+	// What stood before was a pending record (a delete that never finished), which counts as
+	// none: putting back "none" removes the record.
+	if snapC.ok {
+		t.Fatal("a pending record was taken for what stood before")
+	}
+	if _, err := mem.Get(ctx, hostRemovalKey("hv1")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("undoing its own record should leave what stood before it (none): %v", err)
 	}
 }

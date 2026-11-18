@@ -94,6 +94,7 @@ func NewWithAuth(s store.Store, c clock.Clock, auth *Auth) (*Server, error) {
 	srv := &Server{store: s, clock: c, valid: v, mux: http.NewServeMux(), auth: auth, approvalLimits: approvals.Limits{}.WithDefaults()}
 	srv.tunnels.sess = map[string]*yamux.Session{}
 	go srv.watchHostRemovals() // every member, including one that did not handle the delete
+	go srv.sweepHostRemovals() // pending removals a member left behind
 	srv.policy = &rbac.Source{Store: s}
 	if auth != nil {
 		if err := srv.ensureBuiltins(context.Background()); err != nil {
@@ -897,7 +898,7 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 				writeErr(w, err)
 				return
 			}
-			rev, err := s.revokeHost(ctx, t.name)
+			rev, err := s.revokeHost(ctx, t.name, om.UID, hostPrev)
 			if err != nil { // the certificate is refused before its silos are counted
 				writeErr(w, err)
 				return
@@ -931,6 +932,7 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			}
 			if hostRevoked {
 				s.finalizeHostRemoval(ctx, t.name) // the delete committed: the removal is final
+				s.closeHostStreams(t.name)         // on this member now, whether or not that write held
 			}
 			writeJSON(w, http.StatusOK, Status{Code: http.StatusOK, Reason: "Deleted", Message: t.key().String() + " deleted"})
 			return
@@ -956,6 +958,7 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		}
 		if hostRevoked {
 			s.finalizeHostRemoval(ctx, t.name) // marked for deletion: the removal is final
+			s.closeHostStreams(t.name)
 		}
 		b, err := render(cur)
 		if err != nil {

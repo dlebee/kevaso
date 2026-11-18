@@ -132,6 +132,11 @@ func (s *Server) closeIfRemoved(name string, data []byte) {
 	if !s.hostStreams.noteRemoval(name, rec.RemovedAt) {
 		return
 	}
+	s.closeHostStreams(name)
+}
+
+// closeHostStreams ends host name's open watches and its tunnel on this member.
+func (s *Server) closeHostStreams(name string) {
 	s.hostStreams.close(name) // open watches, and the tunnel's request
 	s.tunnels.close(name)     // the tunnel, on this member
 }
