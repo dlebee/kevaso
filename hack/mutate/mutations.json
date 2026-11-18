@@ -1316,10 +1316,10 @@
  },
  {
   "id": "G-133",
-  "guard": "apiserver: already-exposed-the-same-way is the only exemption",
+  "guard": "apiserver: an update that only removes or tightens outside reach is the exemption",
   "file": "internal/apiserver/apiserver.go",
-  "find": "exposure(prev) == how {",
-  "replace": "exposure(prev) == how || true {",
+  "find": "if !exposureLoosened(prev, obj, silos, svcs) { // an update that only removes or tightens outside reach needs no extra permission",
+  "replace": "if !exposureLoosened(prev, obj, silos, svcs) || true { // an update that only removes or tightens outside reach needs no extra permission",
   "mutation": "any write exempt",
   "packages": [
    "./internal/apiserver",
@@ -2823,5 +2823,245 @@
    "./internal/apiserver"
   ],
   "protects": "a removed host's streams close when its delete commits"
+  },
+  {
+  "id": "G-520",
+  "guard": "a placed silo's new host port is claimed before the write",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "rel, err = s.claimAddedHostPorts(ctx, old, admitted, version) // a placed silo's new host port is claimed before the write",
+  "replace": "rel, err = func() (func(), error) { return nil, nil }() // a placed silo's new host port is claimed before the write",
+  "mutation": "a placed silo's new host port is written without a claim",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host port another silo holds is refused on update"
+  },
+  {
+  "id": "G-521",
+  "guard": "a silo whose HostPorts condition is false opens no host port",
+  "file": "builtin/kni/rules.go",
+  "find": "if len(p.HostPort) > 0 && s.HostPortsRefused { // its HostPorts condition is false: it does not hold the port",
+  "replace": "if false && len(p.HostPort) > 0 && s.HostPortsRefused { // its HostPorts condition is false: it does not hold the port",
+  "mutation": "a silo that does not hold its host port is still translated",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "a host port is opened only for the silo that holds it"
+  },
+  {
+  "id": "G-522",
+  "guard": "a host port two local silos both ask for is opened for neither",
+  "file": "builtin/kni/rules.go",
+  "find": "if !claimed || owner != s.Key { // two silos ask and it is not settled which one holds it",
+  "replace": "if false && (!claimed || owner != s.Key) { // two silos ask and it is not settled which one holds it",
+  "mutation": "a host port is translated for every silo that asks",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "an unsettled host port is not opened"
+  },
+  {
+  "id": "G-523",
+  "guard": "a number the platform listens on is not translated",
+  "file": "builtin/kni/rules.go",
+  "find": "if why := reservedWhy(h, at); why != \"\" { // a number the platform listens on is not opened, whatever the spec says",
+  "replace": "if why := reservedWhy(h, at); false && why != \"\" { // a number the platform listens on is not opened, whatever the spec says",
+  "mutation": "a platform listener's number is translated to a silo",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "a host port the platform listens on is not opened"
+  },
+  {
+  "id": "G-524",
+  "guard": "a host port on a platform listener's number is refused",
+  "file": "internal/apiserver/ports.go",
+  "find": "if why := v1.ReservedHostPort(at); len(p.HostPort) > 0 && why != \"\" { // a number the platform listens on",
+  "replace": "if why := v1.ReservedHostPort(at); false && len(p.HostPort) > 0 && why != \"\" { // a number the platform listens on",
+  "mutation": "a host port on a platform listener's number is accepted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a silo cannot take a host port the platform listens on"
+  },
+  {
+  "id": "G-525",
+  "guard": "a host port a host in the cluster listens on is refused",
+  "file": "internal/apiserver/hostports.go",
+  "find": "if why, ok := extra[p.HostNumber()]; ok { // a host in the cluster listens here",
+  "replace": "if why, ok := extra[p.HostNumber()]; false && ok { // a host in the cluster listens here",
+  "mutation": "a host port a host listens on beyond the fixed set is accepted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a silo cannot take a host's own SSH, mesh, API, or etcd port"
+  },
+  {
+  "id": "G-526",
+  "guard": "an update that only removes or tightens outside reach needs no extra permission",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if !exposureLoosened(prev, obj, silos, svcs) { // an update that only removes or tightens outside reach needs no extra permission",
+  "replace": "if !exposureLoosened(prev, obj, silos, svcs) || true { // an update that only removes or tightens outside reach needs no extra permission",
+  "mutation": "widening outside reach needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "expose-public is required when a write adds or loosens outside reach"
+  },
+  {
+  "id": "G-527",
+  "guard": "an outside port the stored object does not open needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if !ok { // an outside port the stored object does not open",
+  "replace": "if !ok && false { // an outside port the stored object does not open",
+  "mutation": "a new outside port needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a new outside port needs expose-public"
+  },
+  {
+  "id": "G-528",
+  "guard": "a changed protocol or host number needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if o.proto != n.proto || o.number != n.number { // protocol or the number on the host changed",
+  "replace": "if false && (o.proto != n.proto || o.number != n.number) { // protocol or the number on the host changed",
+  "mutation": "a changed protocol or host number needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "changing a port's protocol or host number needs expose-public"
+  },
+  {
+  "id": "G-529",
+  "guard": "a new host network needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if facetNetworkAdded(o, n) { // a host network the stored port did not open on",
+  "replace": "if false && facetNetworkAdded(o, n) { // a host network the stored port did not open on",
+  "mutation": "a new host network needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "opening a port on another host network needs expose-public"
+  },
+  {
+  "id": "G-530",
+  "guard": "wider sources need the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if sourcesWider(o.sources, n.sources) { // a source removed, or a wider one added",
+  "replace": "if false && sourcesWider(o.sources, n.sources) { // a source removed, or a wider one added",
+  "mutation": "wider sources need no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "widening who can reach an open port needs expose-public"
+  },
+  {
+  "id": "G-531",
+  "guard": "removing a lease or its approval needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if o.lease && !n.lease || o.approval && !n.approval { // a lease removed, or one that needed a yes made automatic",
+  "replace": "if false && (o.lease && !n.lease || o.approval && !n.approval) { // a lease removed, or one that needed a yes made automatic",
+  "mutation": "removing a lease or its approval needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "removing a lease, or making it automatic, needs expose-public"
+  },
+  {
+  "id": "G-532",
+  "guard": "a new load balancer or a changed class needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if facetBalancerAdded(o, n) { // load balancer newly set, or its class changed",
+  "replace": "if false && facetBalancerAdded(o, n) { // load balancer newly set, or its class changed",
+  "mutation": "a new load balancer or a changed class needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "adding a load balancer, or changing its class, needs expose-public"
+  },
+  {
+  "id": "G-533",
+  "guard": "labels that newly match a load balancer need the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if v1.Selects(sv.Spec.Selector, next.Labels) && !v1.Selects(sv.Spec.Selector, oldLabels) { // this silo's labels newly match a load balancer",
+  "replace": "if false && (v1.Selects(sv.Spec.Selector, next.Labels) && !v1.Selects(sv.Spec.Selector, oldLabels)) { // this silo's labels newly match a load balancer",
+  "mutation": "labels that newly match a load balancer need no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a silo newly selected by a load balancer needs expose-public"
+  },
+  {
+  "id": "G-534",
+  "guard": "a load balancer that opens more, or selects a new silo, needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if serviceSelectorLoosened(old, next, silos) || servicePortsLoosened(old, next) || old.Spec.LoadBalancerClass != next.Spec.LoadBalancerClass { // a load balancer opens more, or its selector matches a new silo",
+  "replace": "if false && (serviceSelectorLoosened(old, next, silos) || servicePortsLoosened(old, next) || old.Spec.LoadBalancerClass != next.Spec.LoadBalancerClass) { // a load balancer opens more, or its selector matches a new silo",
+  "mutation": "a load balancer that opens more needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a load balancer that opens more, or selects a new silo, needs expose-public"
+  },
+  {
+  "id": "G-535",
+  "guard": "a port this update just took is put back when another is held",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "rollback() // a port this update just took is put back when another is held",
+  "replace": "_ = held // a port this update just took is put back when another is held",
+  "mutation": "a refused update keeps a host port it took alongside one it could not",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a refused update leaves no host-port claim behind"
+  },
+  {
+  "id": "G-536",
+  "guard": "an Ingress backend on a leased port needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if backendLeased(next.Namespace, r.Service, silos, svcs) { // a backend the stored Ingress did not already target, on a leased port",
+  "replace": "if false && backendLeased(next.Namespace, r.Service, silos, svcs) { // a backend the stored Ingress did not already target, on a leased port",
+  "mutation": "an Ingress backend on a leased port needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "an Ingress backend on a leased port needs expose-public"
+  },
+  {
+  "id": "G-537",
+  "guard": "a packet from a silo that arrives over the mesh reaches nothing of this host",
+  "file": "builtin/kni/rules.go",
+  "find": "w(\"    iifname { %q, %q } ip saddr %s drop\", MeshDevices[0], MeshDevices[1], silosAll) // a silo on another host reaches nothing of this one",
+  "replace": "_ = silosAll // a silo on another host reaches nothing of this one",
+  "mutation": "a silo on another host reaches this host's own listeners",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "a silo reaches nothing of another host"
+  },
+  {
+  "id": "G-538",
+  "guard": "a silo reaches no host's own address on the silo network",
+  "file": "builtin/kni/rules.go",
+  "find": "w(\"    iifname %q ip daddr %s drop\", h.Bridge, siloGatewaySet()) // a silo reaches no host's own address on the silo network",
+  "replace": "_ = siloGatewaySet() // a silo reaches no host's own address on the silo network",
+  "mutation": "a silo reaches a host's address on the silo network",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "a silo reaches no host's own address on the silo network"
+  },
+  {
+  "id": "G-539",
+  "guard": "a false HostPorts condition is carried into the firewall view",
+  "file": "internal/worker/network.go",
+  "find": "if c := meta.FindCondition(s.Status.Conditions, \"HostPorts\"); c != nil && c.Status == meta.ConditionFalse { // the controller says this silo does not hold a host port it asks for",
+  "replace": "if c := meta.FindCondition(s.Status.Conditions, \"HostPorts\"); c != nil && false && c.Status == meta.ConditionFalse { // the controller says this silo does not hold a host port it asks for",
+  "mutation": "a silo that does not hold its host port is still opened",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "the firewall view records that a silo does not hold its host port"
   }
 ]

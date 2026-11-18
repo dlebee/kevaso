@@ -118,3 +118,26 @@ func TestPoolAndAnnouncedAddressesAreIPv4Only(t *testing.T) {
 		t.Errorf("announced %v", got)
 	}
 }
+
+func TestNetworkViewCarriesAHostPortRefusalAndTheHostsOwnListeners(t *testing.T) {
+	h := &v1.Host{ObjectMeta: meta.ObjectMeta{Name: "metal-1", Annotations: map[string]string{v1.AnnotationSSH: "root@10.0.0.5:2222"}},
+		Spec: v1.HostSpec{InternalIP: "10.0.0.5", Network: v1.HostNetwork{ListenPort: 51822}}}
+	refused := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "a", Namespace: "web3"}}
+	refused.Status.Host, refused.Status.SiloIP = "metal-1", "10.64.0.2"
+	refused.Status.Conditions = []meta.Condition{{Type: "HostPorts", Status: meta.ConditionFalse}}
+	open := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "b", Namespace: "web3"}}
+	open.Status.Host, open.Status.SiloIP = "metal-1", "10.64.0.3"
+	view := NetworkView("metal-1", h, []*v1.Silo{refused, open}, nil, nil)
+	if len(view.Local) != 2 || !view.Local[0].HostPortsRefused || view.Local[1].HostPortsRefused {
+		t.Fatalf("HostPorts false is the only silo with no host-port rules: %+v", view.Local)
+	}
+	if view.Reserved[2222] != "the SSH port" || view.Reserved[51822] != "the mesh" {
+		t.Fatalf("this host's listeners: %+v", view.Reserved)
+	}
+	if _, ok := view.Reserved[22]; ok {
+		t.Fatalf("22 is in the fixed set: %+v", view.Reserved)
+	}
+	if v1.ReservedHostPort(GatePort) == "" {
+		t.Fatal("the egress gate's port is not reserved")
+	}
+}

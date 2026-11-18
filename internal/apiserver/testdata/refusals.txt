@@ -106,6 +106,10 @@ Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web",
   Silo s: service.ports[web].sources: only with hostPort or loadBalancer (who may connect on its silo IP is allowFrom)
 Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"as":70000}]}
   Silo s: service.ports[web].as: 70000 isn't from 1 to 65535
+Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"as":6443}]}
+  Silo s: service.ports[web]: 6443 is the API, which a silo may not take
+SiloSet spec.template.ports=[{"name":"web","port":80}] spec.template.service={"ports":[{"port":"web","hostPort":["external"],"as":6443}]}
+  SiloSet set: template: service.ports[web]: 6443 is the API, which a silo may not take
 Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":["10.0.0.0/33"]}]}
   Silo s: service.ports[web].sources: "10.0.0.0/33" isn't an address or CIDR
 Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":["2001:db8::/32"]}]}

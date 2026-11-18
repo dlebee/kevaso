@@ -888,6 +888,70 @@ func claimPorts(ctx context.Context, cl *claims.Claims, s *v1.Silo, st v1.SiloSt
 	return &held, nil
 }
 
+// ClaimNewHostPorts takes ports on host for s, and only those: a placed silo's update claims a
+// host port it is adding before the write. held names each port another silo already holds
+// ("80/TCP on the internal IP is held by ns/name"); any port this call took is put back then, so
+// a refused update leaves no claim. ErrBusy: the claim kept changing.
+func ClaimNewHostPorts(ctx context.Context, cl *claims.Claims, s *v1.Silo, host string, ports []scheduler.HostPort) ([]string, error) {
+	if cl == nil || s == nil || host == "" || len(ports) == 0 {
+		return nil, nil
+	}
+	h := claims.Holder{Kind: "Silo", Namespace: s.Namespace, Name: s.Name, UID: s.UID, Version: s.ResourceVersion}
+	keep := map[string]bool{}
+	for _, p := range scheduler.HostPorts(s) {
+		keep[hostPortValue(p)] = true
+	}
+	pool := poolHostPort(host)
+	var taken []string
+	rollback := func() {
+		for _, v := range taken {
+			if keep[v] {
+				continue
+			}
+			_ = cl.Drop(ctx, pool, v, s.UID)
+		}
+	}
+	var held []string
+	for _, p := range ports {
+		value := hostPortValue(p)
+		ok, err := cl.Take(ctx, pool, value, h, usesHostPort(host))
+		if err != nil {
+			rollback()
+			return nil, err
+		}
+		if !ok {
+			who := "another silo"
+			if holder, ok := cl.Who(ctx, pool, value); ok && holder.Name != "" {
+				who = holder.Name
+				if holder.Namespace != "" {
+					who = holder.Namespace + "/" + holder.Name
+				}
+			}
+			held = append(held, fmt.Sprintf("%s is held by %s", p, who))
+			continue
+		}
+		taken = append(taken, value)
+	}
+	if len(held) > 0 {
+		rollback() // a port this update just took is put back when another is held
+		slices.Sort(held)
+		return held, nil
+	}
+	return nil, nil
+}
+
+// ReleaseHostPorts puts back ports this silo just took, when the write they were for did not
+// commit. A port someone else holds now is left alone.
+func ReleaseHostPorts(ctx context.Context, cl *claims.Claims, uid, host string, ports []scheduler.HostPort) {
+	if cl == nil || uid == "" || host == "" {
+		return
+	}
+	pool := poolHostPort(host)
+	for _, p := range ports {
+		_ = cl.Drop(ctx, pool, hostPortValue(p), uid)
+	}
+}
+
 // CondHostPorts says a silo placed on its host by a path that didn't claim (K-029) has host ports
 // there that another silo holds: it is not re-placed (it may run there already); a person moves
 // one of the two. Written only once that happens, and set back to True when it is over.

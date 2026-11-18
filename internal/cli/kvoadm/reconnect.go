@@ -23,7 +23,7 @@ import (
 // They're in the store, so a backup carries them, and kvoadm init --restore can reconnect each
 // worker to the restored control plane without asking.
 const (
-	AnnotationSSH        = "kevaso.com/ssh"          // USER@ADDRESS:PORT
+	AnnotationSSH        = v1.AnnotationSSH          // USER@ADDRESS:PORT
 	AnnotationSSHHostKey = "kevaso.com/ssh-host-key" // SHA256:…
 )
 

@@ -8,7 +8,9 @@
 // outside the cluster unless one of its
 // Grants opens it (raw TCP/UDP to a CIDR here; host names through the egress gate); silos can't
 // reach the mesh's host addresses, nor their own host beyond DNS, ping and, for a silo whose grants
-// need one, its local endpoint (ADR 0009). Exposed ports are DNAT (the client's address is kept: E009), and a silo's
+// need one, its local endpoint (ADR 0009). A silo also reaches no host's own address on the silo
+// network (10.64.N.1), on this host or another, and a packet that arrives over the mesh from a
+// silo reaches nothing of this host. Exposed ports are DNAT (the client's address is kept: E009), and a silo's
 // outbound source is SNAT to its service's or its pool's address when it asks.
 package kni
 
@@ -60,6 +62,10 @@ type Silo struct {
 	// it has stay (a lease is access, readiness is load). allowFrom stays too: the name is held
 	// where names are answered (no address).
 	Held bool
+	// HostPortsRefused: the controller's HostPorts condition is False. Another silo holds a host
+	// port this one asks for, so none of its host-port rules are emitted. A load balancer it has
+	// is unaffected. The zero value emits rules, which is what a silo with no such condition does.
+	HostPortsRefused bool
 	// Paths are extra silo-to-silo openings (an Ingress's controller to its target's port), as if
 	// that port's allowFrom named them: port name → callers (NAMESPACE/NAME).
 	Paths map[string][]string
@@ -174,6 +180,9 @@ type Host struct {
 	Endpoint netip.Addr
 	// Services are the cluster's standalone Services with endpoints.
 	Services []Service
+	// Reserved: host-port numbers this host listens on beyond ReservedHostPort, and why. A silo's
+	// host-port DNAT for one of them is left out. Nil means this host adds none.
+	Reserved map[int]string
 }
 
 // Prefixes no silo may reach directly: the mesh's host addresses.
@@ -386,6 +395,7 @@ func Generate(h Host) (string, []Problem) {
 	h.Local = keep
 	local := append([]Silo(nil), h.Local...)
 	sort.Slice(local, func(i, j int) bool { return local[i].Key < local[j].Key })
+	portOwners := hostPortOwners(local, h) // the one silo, if there is exactly one, that may open each host address
 	byKey := map[string]Silo{}
 	for _, s := range h.All {
 		byKey[s.Key] = s
@@ -402,17 +412,40 @@ func Generate(h Host) (string, []Problem) {
 		// external IP, its load-balancer address), at its number there (as), then let through
 		// only its sources.
 		for _, p := range s.Spec.Open() {
-			var ips []string
 			if !okPort(p.Number) || !okPort(p.HostNumber()) || !okProto(lower(p.Protocol)) {
 				g.bad("Silo", s.Key, p.Name, fmt.Sprintf("%s %d as %d", p.Protocol, p.Number, p.HostNumber()), "not a port the rules can open")
 				continue
 			}
+			proto, at := lower(p.Protocol), p.HostNumber()
+			var ips []string
+			hostWhy := ""
+			if len(p.HostPort) > 0 && s.HostPortsRefused { // its HostPorts condition is false: it does not hold the port
+				hostWhy = "its HostPorts condition is false, so its host ports are not opened"
+			} else if len(p.HostPort) > 0 {
+				if why := reservedWhy(h, at); why != "" { // a number the platform listens on is not opened, whatever the spec says
+					hostWhy = why + ", which a silo may not take"
+				}
+			}
+			if hostWhy != "" {
+				g.bad("Silo", s.Key, p.Name, fmt.Sprintf("%s/%d", proto, at), hostWhy)
+			}
 			for _, n := range p.HostPort {
+				if hostWhy != "" {
+					break
+				}
 				a := h.InternalIP
 				if n == v1.NetworkExternal {
 					a = h.ExternalIP
 				}
-				if a.IsValid() && !contains(ips, a.String()) {
+				if !a.IsValid() {
+					continue
+				}
+				owner, claimed := portOwners[hpKey{a.String(), proto, at}]
+				if !claimed || owner != s.Key { // two silos ask and it is not settled which one holds it
+					g.bad("Silo", s.Key, p.Name, fmt.Sprintf("%s/%d on %s", proto, at, a), "another silo on this host asks for it and it is not settled which one holds it, so it is not opened")
+					continue
+				}
+				if !contains(ips, a.String()) {
 					ips = append(ips, a.String())
 				}
 			}
@@ -422,7 +455,6 @@ func Generate(h Host) (string, []Problem) {
 			if len(ips) == 0 {
 				continue
 			}
-			proto, at := lower(p.Protocol), p.HostNumber()
 			orig := "ct original ip daddr " + set(ips)
 			// Leased with no lease now: no rule; cut what a lease let in. Held by routing: no
 			// rule, nothing cut.
@@ -638,8 +670,10 @@ func Generate(h Host) (string, []Problem) {
 		w("    %s", r)
 	}
 	w("    oifname %q drop", h.Bridge)
-	// From silos: replies, other silos (over the mesh: their host decides), then grants only.
+	// From silos: replies, then never a host's own address on the silo network (10.64.N.1, here or
+	// on another host), then other silos (their host decides), then grants only.
 	w("    iifname %q ct state established,related accept", h.Bridge)
+	w("    iifname %q ip daddr %s drop", h.Bridge, siloGatewaySet()) // a silo reaches no host's own address on the silo network
 	w("    iifname %q ip daddr %s accept", h.Bridge, silosAll)
 	// A grant's accept can be as wide as 0.0.0.0/0. These drops are first, so that still means
 	// the internet: not a closed range, not link-local, not this host's own addresses. Silo
@@ -657,7 +691,9 @@ func Generate(h Host) (string, []Problem) {
 	w("  }")
 	w("  chain input {")
 	w("    type filter hook input priority filter; policy accept;")
-	if h.Endpoint.IsValid() { // the local endpoint is the bridge's only: never from the mesh or the uplink
+	w("    iifname { %q, %q } ip saddr %s ct state established,related accept", MeshDevices[0], MeshDevices[1], silosAll)
+	w("    iifname { %q, %q } ip saddr %s drop", MeshDevices[0], MeshDevices[1], silosAll) // a silo on another host reaches nothing of this one
+	if h.Endpoint.IsValid() {                                                              // the local endpoint is the bridge's only: never from the mesh or the uplink
 		w("    iifname != %q ip daddr %s drop", h.Bridge, h.Endpoint)
 	}
 	w("    iifname %q ct state established,related accept", h.Bridge)
