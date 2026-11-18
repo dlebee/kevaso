@@ -96,10 +96,13 @@ type Backup struct {
 	Backup []byte `json:"backup"`
 }
 
-// RestoreRequest is what kevasod admin restore reads on stdin.
+// RestoreRequest is what kevasod admin restore reads on stdin. Exactly one of NoHostsAdded and
+// HostsAdded is the operator's statement about hosts the backup cannot know.
 type RestoreRequest struct {
-	Backup      []byte `json:"backup"`
-	RecoveryKey string `json:"recoveryKey"`
+	Backup       []byte   `json:"backup"`
+	RecoveryKey  string   `json:"recoveryKey"`
+	NoHostsAdded bool     `json:"noHostsAdded,omitempty"`
+	HostsAdded   []string `json:"hostsAdded,omitempty"`
 }
 
 // Restored is what kevasod admin restore prints: what the backup was of.

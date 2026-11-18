@@ -62,7 +62,7 @@ func TestMetal2RestoreKeepsWhatItDoesntKnow(t *testing.T) {
 	// Machine 1's control plane, reset and restored from the backup.
 	_ = p.m1.d.Close()
 	t.Log(kvoadmRun("", append(append([]string{"reset"}, sshArgs...), "--force", "--yes", "--wipe-storage")...))
-	out := kvoadmRun(p.recoveryKey+"\n", append(append([]string{"init"}, sshArgs...), "--kevasod", p.bin, "--no-extra-hardening", "--restore", file,
+	out := kvoadmRun(p.recoveryKey+"\n", append(append([]string{"init"}, sshArgs...), "--kevasod", p.bin, "--no-extra-hardening", "--restore", file, "--no-hosts-added",
 		"--api-server", metalAPIServerFor(cfg1.ExternalIP, cfg1.Address, p.apiPort), "--external-ip", cfg1.ExternalIP)...)
 	t.Logf("kvoadm init --restore:\n%s", out)
 	p.mu.Lock()

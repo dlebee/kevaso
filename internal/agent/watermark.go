@@ -242,7 +242,7 @@ func (w *Watermark) Judged(sentAt int64, seen client.ControlPlaneSeen, stamped b
 		case client.Foreign:
 			w.log("ignoring a control plane of another cluster (%s; this worker's is %s)", seen.ClusterID, w.kept.ClusterID)
 		case client.NewHistory:
-			w.log("a new history of cluster %s (epoch %d, a deliberate restore): accepted; what it doesn't know is kept", seen.ClusterID, seen.Epoch)
+			w.log("a new history of cluster %s (epoch %d, a deliberate restore): accepted; what it doesn't know is kept, and nothing this worker is not already running starts until that silo is settled", seen.ClusterID, seen.Epoch)
 		}
 	}
 	w.last, w.seen, w.kept = v, seen, next
@@ -307,6 +307,13 @@ func (w *Watermark) state() (client.Watermark, client.ControlPlaneSeen, client.V
 	return w.kept, w.seen, w.last
 }
 
+// trusted is the history this worker is acting on, and its epoch. Epoch 0 is no answer yet.
+func (w *Watermark) trusted() (epoch int64, history string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.kept.Epoch, w.kept.History
+}
+
 // ControlPlaneJudge is the judge of the control plane's answers (client.Client.ControlPlane): the
 // worker sets it on every client it uses toward the control plane (the agent's Client included),
 // before the client is used.
@@ -338,8 +345,9 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 	// since. Each is written again under a new history (the coordinator's finding on claim 1: a
 	// copy kept and listed under one history was never listed under the next).
 	const unwritten = "\x00"
-	reported := ""        // the condition last written: status and reason
-	keptSaid := unwritten // the kept silos last listed
+	reported := ""          // the condition last written: status and reason
+	keptSaid := unwritten   // the kept silos last listed
+	copiesSaid := unwritten // the inventory last written for this history
 	wasBlocked := false
 	wroteTo := a.watermark().mark().histories
 	for {
@@ -350,7 +358,7 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 		}
 		a.watermark().ReadAgain() // an unreadable file is read again on every tick (claim 5)
 		if h := a.watermark().mark().histories; h != wroteTo {
-			wroteTo, reported, keptSaid = h, "", unwritten
+			wroteTo, reported, keptSaid, copiesSaid = h, "", unwritten, unwritten
 		}
 		blocked := a.watermark().blocked()
 		kept, seen, verdict := a.watermark().state()
@@ -364,6 +372,9 @@ func (a *Agent) watchControlPlane(ctx context.Context) {
 		wasBlocked = blocked
 		if !blocked {
 			keptSaid = a.reportKept(ctx, keptSaid)
+			if kept.Epoch > 1 {
+				copiesSaid = a.reportCopies(ctx, copiesSaid, kept)
+			}
 		}
 		cond := a.controlPlaneCondition(kept, seen)
 		key := string(cond.Status) + "/" + cond.Reason
@@ -452,6 +463,55 @@ func (a *Agent) reportKept(ctx context.Context, said string) string {
 			Message: "kept running with their disks and volumes, though the control plane doesn't know them (no delete of them was seen here): " + now},
 			a.now().UTC().Truncate(time.Second))
 	}
+	if err := a.Client.UpdateStatus(ctx, &h); err != nil {
+		return said
+	}
+	return now
+}
+
+// reportCopies writes this host's inventory for the history it trusts, once that inventory
+// changed. A runtime that does not answer leaves the previous report: a partial list is not
+// "this host holds nothing". Epoch 1 never calls this.
+func (a *Agent) reportCopies(ctx context.Context, said string, kept client.Watermark) string {
+	if kept.History == "" || len(a.Runtimes) == 0 {
+		return said
+	}
+	var held []v1.HostHeldCopy
+	for _, rt := range a.Runtimes {
+		ids, err := rt.List(ctx)
+		if err != nil {
+			return said
+		}
+		for _, id := range ids {
+			st, err := rt.Status(ctx, id)
+			if err != nil {
+				return said
+			}
+			held = append(held, v1.HostHeldCopy{Namespace: id.Namespace, Name: id.Name, UID: id.UID, Running: st.State == kri.Running})
+		}
+	}
+	sort.Slice(held, func(i, j int) bool {
+		if held[i].Namespace != held[j].Namespace {
+			return held[i].Namespace < held[j].Namespace
+		}
+		if held[i].Name != held[j].Name {
+			return held[i].Name < held[j].Name
+		}
+		return held[i].UID < held[j].UID
+	})
+	b, err := json.Marshal(held)
+	if err != nil {
+		return said
+	}
+	now := kept.History + "\n" + string(b)
+	if now == said {
+		return said
+	}
+	var h v1.Host
+	if err := a.Client.Get(ctx, "Host", "", a.HostName, &h); err != nil {
+		return said
+	}
+	h.Status.Copies = &v1.HostCopies{History: kept.History, Reported: true, Held: held}
 	if err := a.Client.UpdateStatus(ctx, &h); err != nil {
 		return said
 	}

@@ -193,7 +193,7 @@ func prepareRecord(cfg Config) (*ClusterRecord, error) {
 	return ReadClusterRecord(cfg.DataDir)
 }
 
-const howToRestore = "restore a backup onto this machine (kvoadm init --restore BACKUP)"
+const howToRestore = "restore a backup onto this machine (kvoadm init --restore BACKUP --no-hosts-added, or --host-added NAME for each host joined since the backup)"
 
 // ExitRefused is kevasod's exit status for a start refused because of what this node is (a
 // ClusterError: its data is gone, or another cluster's): starting it again changes nothing, so
@@ -320,12 +320,20 @@ func settleIdentity(ctx context.Context, st store.Store, cfg Config, rec *Cluste
 			return cur, refuseStart("the restored store in %s holds no cluster identity: the backup predates it, or isn't this cluster's", cfg.DataDir)
 		}
 		cur.History, cur.Epoch = newID(), cur.Epoch+1
+		if err := openRestoreGate(ctx, st, cfg, cur); err != nil {
+			return cur, err
+		}
 		b, _ := json.Marshal(cur)
 		if _, err := st.Update(ctx, identityKey, b, rev); err != nil {
 			return cur, fmt.Errorf("starting the restored history: %w", err)
 		}
-		cfg.Log("cluster %q restored: history %s, epoch %d (workers take it as a deliberate new start)", cur.Name, cur.History, cur.Epoch)
-		return done(*rec)
+		cfg.Log("cluster %q restored: history %s, epoch %d (workers take it as a deliberate new start; a silo starts once every host has reported)", cur.Name, cur.History, cur.Epoch)
+		id, err := done(*rec)
+		if err != nil {
+			return id, err
+		}
+		_ = os.Remove(RestoreHostsPath(cfg.DataDir))
+		return id, nil
 	default: // RecordInitialized
 		if !found {
 			return cur, refuseStart("this node belongs to cluster %q (%s), but its store holds no cluster: not starting an empty one. %s",

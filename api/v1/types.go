@@ -142,6 +142,9 @@ type HostStatus struct {
 	Version string `json:"version,omitempty"`
 	// ControlPlane is what a system node reports about its control-plane component.
 	ControlPlane *ControlPlaneStatus `json:"controlPlane,omitempty"`
+	// Copies is this host's inventory of the silos it holds, for the history it names. The
+	// control plane settles a restored history only from inventories that name that history.
+	Copies *HostCopies `json:"copies,omitempty"`
 }
 
 // ControlPlaneStatus is a system node's control-plane component as it reports itself (APIURL,
@@ -492,6 +495,10 @@ type SiloStatus struct {
 	Restarts  *LivenessRestarts `json:"restarts,omitempty"`
 	// Routing is whether its own service gets traffic now (routeWhen), and why not.
 	Routing *Routing `json:"routing,omitempty"`
+	// Restore is the control plane's mark for a restored history: pending until every host has
+	// reported, settled once the placement is known, frozen when more than one host holds a copy.
+	// A worker's write of it is ignored.
+	Restore *SiloRestore `json:"restore,omitempty"`
 }
 
 // SiloImage is a silo's image: resolved by the control plane (a VMImage's version, an inline
