@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kri/hostexec"
 	"kevaso.com/core/sdk/kri"
 )
@@ -747,7 +748,11 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 	if s.Memory > 0 {
 		args = append(args, "--memory", Memory(s.Memory))
 	}
-	if from := imageRef(s.Image); from != "" {
+	from, err := canonicalImage(s.Image)
+	if err != nil {
+		return err
+	}
+	if from != "" {
 		args = append(args, "--from", from)
 	}
 	names := make([]string, 0, len(s.Providers))
@@ -765,13 +770,22 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 	return r.save(s)
 }
 
-// imageRef: Kevaso's ubuntu-24.04 is OpenShell's default image; anything else is passed as is (an
-// image reference or a rootfs tar).
-func imageRef(image string) string {
+// canonicalImage is what --from is given. ubuntu-24.04 and an empty image are OpenShell's default.
+// Anything else is the reference ParseImageRef rebuilds (host, repository, tag, digest), never the
+// string as written. A repository whose last part is a rootfs archive name is refused: a tar is
+// not an image reference.
+func canonicalImage(image string) (string, error) {
 	if image == "" || image == "ubuntu-24.04" {
-		return ""
+		return "", nil
 	}
-	return image
+	ref, err := v1.ParseImageRef(image)
+	if err != nil {
+		return "", fmt.Errorf("container.image: %w", err)
+	}
+	if v1.ArchiveName(ref.Repository) {
+		return "", fmt.Errorf("container.image %q is a registry reference, not a rootfs archive", image)
+	}
+	return ref.String(), nil // the reference, not the string as written
 }
 
 // Stop implements kri.Runtime: after it returns, nothing of the sandbox runs, by looking (the VM
