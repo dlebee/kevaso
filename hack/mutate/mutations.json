@@ -2436,5 +2436,54 @@
    "./internal/controllers/silo"
   ],
   "protects": "a silo with a fresh start claim is not placed when its host is deleted"
+  },
+  {
+  "id": "G-454",
+  "guard": "this-network, multicast and reserved addresses are never opened",
+  "file": "api/v1/network.go",
+  "find": "out = append(out, neverRouted()...) // this network, multicast and reserved are never opened",
+  "replace": "out = append(out) // this network, multicast and reserved are never opened",
+  "mutation": "a grant opens this-network, multicast and reserved addresses",
+  "packages": [
+   "./internal/gate",
+   "./internal/apiserver"
+  ],
+  "protects": "a grant never opens this-network, multicast, or reserved addresses"
+  },
+  {
+  "id": "G-455",
+  "guard": "a CIDR rule never opens a closed range or this host",
+  "file": "internal/gate/gate.go",
+  "find": "if err := g.cidrRefused(p, addr); err != nil { // a CIDR rule never opens a closed range or this host",
+  "replace": "if err := g.cidrRefused(p, addr); err != nil && false { // a CIDR rule never opens a closed range or this host",
+  "mutation": "a CIDR rule dials a closed range or this host",
+  "packages": [
+   "./internal/gate"
+  ],
+  "protects": "a CIDR rule never dials a closed range or this host's own address"
+  },
+  {
+  "id": "G-456",
+  "guard": "silo egress to a closed range is dropped before a grant",
+  "file": "builtin/kni/rules.go",
+  "find": "for _, r := range closedRangeDrops(h) { // a grant never reaches a closed range",
+  "replace": "for _, r := range []string(nil) { // a grant never reaches a closed range",
+  "mutation": "a grant's accept reaches a closed range",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "silo traffic to a closed range is dropped before a grant's accept"
+  },
+  {
+  "id": "G-457",
+  "guard": "silo egress to this host's own addresses is dropped before a grant",
+  "file": "builtin/kni/rules.go",
+  "find": "for _, r := range hostAddressDrops(h) { // a grant never reaches this host's own addresses",
+  "replace": "for _, r := range []string(nil) { // a grant never reaches this host's own addresses",
+  "mutation": "a grant's accept reaches this host's own addresses",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "silo traffic to this host's own addresses is dropped before a grant's accept"
   }
 ]

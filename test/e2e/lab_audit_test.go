@@ -25,6 +25,8 @@ import (
 const (
 	labEgressA    = "k124a"
 	labEgressB    = "k124b"
+	labWideA      = "kwidea"
+	labWideB      = "kwideb"
 	labHardNS     = "k125"
 	labHardUser   = "kvthard"
 	labNSX        = "k128x"
@@ -152,6 +154,137 @@ spec:
 
 	// (c) A name the grant allows, to a public address on 443.
 	labExpectOpen(t, ctx, admin, labPublicName)
+}
+
+// TestLabEgressGateWideCIDR is a grant of 0.0.0.0/0 on a worktree lab. The silo reaches a public
+// address. It does not reach link-local, the host's loopback, the host's own addresses, or a
+// silo in another namespace. It does not call metal().
+func TestLabEgressGateWideCIDR(t *testing.T) {
+	admin := labAdmin(t)
+	if os.Getenv("KEVASO_METAL_KEY") == "" {
+		t.Fatal("KEVASO_METAL_KEY comes from the lab env file")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	t.Cleanup(cancel)
+	var node *labNode
+	t.Cleanup(func() {
+		if node != nil {
+			_ = node.d.Close()
+		}
+		labSweep(ctx, t, admin, [][2]string{{labWideA, "target"}, {labWideB, "probe"}},
+			[][3]string{{"grant", labWideB, "out"}}, []string{labWideA, labWideB})
+	})
+
+	labNamespace(t, ctx, admin, labWideA)
+	labNamespace(t, ctx, admin, labWideB)
+	labKvo(t, ctx, boxEcho(labWideA, "target", labListenPort)+fmt.Sprintf(`  ports: [{ name: http, port: %d }]
+  service:
+    ports: [{ port: http }]
+`, labListenPort), "apply", "--context", admin, "-f", "-")
+	target := labWaitRunning(t, ctx, admin, labWideA, "target", 20*time.Minute)
+	loopName := "127-0-0-1.sslip.io"
+	zeroName := "0-0-0-0.sslip.io"
+	linkName := "169-254-169-254.sslip.io"
+	grant := fmt.Sprintf(`apiVersion: kevaso/v1
+kind: Grant
+metadata: { name: out, namespace: %s }
+spec:
+  egress:
+    - { to: "0.0.0.0/0", ports: ["443", "%d"] }
+    - { to: %s, ports: ["%d"] }
+    - { to: %s, ports: ["%d"] }
+    - { to: %s, ports: ["%d"] }
+    - { to: %s }
+`, labWideB, labListenPort, yamlStr(loopName), labListenPort, yamlStr(zeroName), labListenPort, yamlStr(linkName), labListenPort, yamlStr(labPublicName))
+	labKvo(t, ctx, grant, "apply", "--context", admin, "-f", "-")
+	labKvo(t, ctx, fmt.Sprintf(`apiVersion: kevaso/v1
+kind: Silo
+metadata: { name: probe, namespace: %s }
+spec:
+  runtime: docker
+  container: { image: %s, command: ["python3", "-c", "import time; time.sleep(10**9)"] }
+  resources: { cpu: 1, memory: 256Mi }
+  grants: [out]
+`, labWideB, labImage), "apply", "--context", admin, "-f", "-")
+	probe := labWaitRunning(t, ctx, admin, labWideB, "probe", 20*time.Minute)
+	node = labDial(t, ctx, labGetHost(t, ctx, admin, probe.Status.Host), os.Getenv("KEVASO_METAL_KEY"))
+	since := strings.TrimSpace(node.must("date -u '+%Y-%m-%d %H:%M:%S'"))
+
+	deadline := time.Now().Add(2 * time.Minute)
+	var last string
+	var code int
+	for {
+		last, code = labExec(ctx, admin, labWideB, "probe", "python3", "-c", labTLS, labPublicName, labPublicName, "443", "20")
+		if code == 0 && strings.Contains(last, "HTTP/") {
+			t.Logf("%s:443: %s", labPublicName, oneLine(last))
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s:443 did not answer (exit %d)\n%s", labPublicName, code, last)
+		}
+		time.Sleep(3 * time.Second)
+	}
+	for _, c := range []struct{ name, ip string }{
+		{loopName, "127.0.0.1"},
+		{zeroName, "0.0.0.0"},
+		{linkName, "169.254.169.254"},
+	} {
+		deadline = time.Now().Add(90 * time.Second)
+		var j string
+		for {
+			last, code = labExec(ctx, admin, labWideB, "probe", "python3", "-c", labTLS, c.name, labStandIn, fmt.Sprint(labListenPort), "8")
+			if code == 0 && strings.Contains(last, "HTTP/") {
+				t.Fatalf("%s reached %s:\n%s", c.name, c.ip, last)
+			}
+			j = node.must("journalctl -u kevasod --no-pager --since " + sshboot.Quote(since) + " | grep -F 'gate: BLOCKED' || true")
+			if labBlocked(j, labWideB+"/probe", c.name, c.ip) {
+				t.Logf("%s → %s refused", c.name, c.ip)
+				break
+			}
+			if time.Now().After(deadline) {
+				node.fatal(t, "gate", fmt.Sprintf("no refusal of %s → %s (exit %d)\n%s\n%s", c.name, c.ip, code, last, j))
+			}
+			time.Sleep(3 * time.Second)
+		}
+	}
+
+	var host v1.Host
+	if err := json.Unmarshal([]byte(jsonObject(labKvo(t, ctx, "", "get", "--context", admin, "host", probe.Status.Host, "-o", "json"))), &host); err != nil {
+		t.Fatal(err)
+	}
+	blocked := []string{"169.254.169.254", host.Spec.InternalIP, target.Status.SiloIP}
+	if host.Spec.ExternalIP != "" {
+		blocked = append(blocked, host.Spec.ExternalIP)
+	}
+	for ip := range node.ownAddrs {
+		blocked = append(blocked, ip)
+	}
+	dial := `import socket, sys
+socket.create_connection((sys.argv[1], int(sys.argv[2])), 4)`
+	for _, ip := range blocked {
+		if ip == "" {
+			continue
+		}
+		deadline = time.Now().Add(45 * time.Second)
+		opened := false
+		for {
+			last, code = labExec(ctx, admin, labWideB, "probe", "python3", "-c", dial, ip, fmt.Sprint(labListenPort))
+			if code == 0 {
+				opened = true
+				if time.Now().After(deadline) {
+					t.Fatalf("%s:%d was reached:\n%s", ip, labListenPort, last)
+				}
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			opened = false
+			break
+		}
+		if opened {
+			t.Fatalf("%s:%d was reached", ip, labListenPort)
+		}
+		t.Logf("%s:%d refused (exit %d)", ip, labListenPort, code)
+	}
 }
 
 // TestLabAPIHardening is K-125 and K-128 on a worktree lab. A namespace admin's create stores

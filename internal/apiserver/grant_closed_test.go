@@ -35,6 +35,14 @@ func TestAGrantNamingClusterLoopbackOrLinkLocalIsRefused(t *testing.T) {
 		{"169.254.169.254/32", "169.254.0.0/16"},
 		{"169.254.42.1", "169.254.0.0/16"},
 		{"169.254.0.0/16", "link-local"},
+		{"0.0.0.0", "this network"},
+		{"0.1.2.3", "this network"},
+		{"0.0.0.0/8", "this network"},
+		{"224.0.0.1", "multicast"},
+		{"224.0.0.0/4", "multicast"},
+		{"240.0.0.1", "reserved"},
+		{"255.255.255.255", "reserved"},
+		{"240.0.0.0/4", "reserved"},
 	}
 	for _, c := range closed {
 		err := admitJSON(t, s, "Grant", objectOf(t, "Grant", []string{`spec.egress=[{"to":"` + c.to + `"}]`}))

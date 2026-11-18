@@ -352,7 +352,7 @@ func TestLocalEndpoint(t *testing.T) {
 		!strings.Contains(pre, `iifname "kvt5566778899" arp saddr ip 10.64.2.3 accept`) {
 		t.Errorf("anti-spoofing isn't in the bridge's prerouting hook:\n%s", bt)
 	}
-	if hasEP := Rules(host(Silo{Key: "web3/node", IP: a("10.64.2.2"), Endpoint: true})); strings.Contains(hasEP, "169.254") {
+	if hasEP := Rules(host(Silo{Key: "web3/node", IP: a("10.64.2.2"), Endpoint: true})); strings.Contains(hasEP, "tcp dport 80") {
 		t.Error("an endpoint rule on a host without the endpoint")
 	}
 }

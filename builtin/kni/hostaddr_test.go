@@ -48,5 +48,5 @@ func TestHostPortOnTheHostsIPs(t *testing.T) {
 		Ports: []v1.ServicePort{{Port: "p2p", LoadBalancer: true}}, LoadBalancer: &v1.LoadBalancerSpec{Class: v1.LBIPPool}}}
 	pr := Rules(host(Silo{Key: "web3/p", IP: a("10.64.2.5"), Spec: pool, LoadBalancerIP: a("192.168.1.50")}))
 	has(t, pr, "ip daddr 192.168.1.50 tcp dport 30303 dnat ip to 10.64.2.5:30303")
-	hasNot(t, pr, "ip daddr { 10.0.0.5")
+	hasNot(t, pr, "10.0.0.5 tcp dport 30303", "198.51.100.10 tcp dport 30303")
 }

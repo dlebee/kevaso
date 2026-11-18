@@ -320,7 +320,10 @@ type closedRange struct {
 }
 
 // closedRanges are the cluster's own ranges (KevasoRanges: the mesh, the silos, the services),
-// loopback and link-local. The cluster ranges are the same prefixes the mesh and the firewall use.
+// loopback, link-local, and what Special calls this-network, multicast or reserved. Those last
+// ones are not reachable as ordinary egress: 0.0.0.0 is this host, and multicast and reserved
+// addresses are not a peer on the internet. The cluster ranges are the same prefixes the mesh
+// and the firewall use.
 func closedRanges() []closedRange {
 	why := map[string]string{
 		"10.62.0.0/16": "the mesh range",
@@ -328,7 +331,7 @@ func closedRanges() []closedRange {
 		"10.64.0.0/16": "the silo range",
 		ServiceCIDR:    "the service range",
 	}
-	out := make([]closedRange, 0, len(KevasoRanges)+4)
+	out := make([]closedRange, 0, len(KevasoRanges)+8)
 	for _, s := range KevasoRanges {
 		p := netip.MustParsePrefix(s)
 		w := why[p.String()]
@@ -337,17 +340,41 @@ func closedRanges() []closedRange {
 		}
 		out = append(out, closedRange{p, w})
 	}
-	return append(out,
+	out = append(out,
 		closedRange{netip.MustParsePrefix("127.0.0.0/8"), "loopback"},
 		closedRange{netip.MustParsePrefix("::1/128"), "loopback"},
 		closedRange{netip.MustParsePrefix("169.254.0.0/16"), "link-local"},
 		closedRange{netip.MustParsePrefix("fe80::/10"), "link-local"},
 	)
+	out = append(out, neverRouted()...) // this network, multicast and reserved are never opened
+	return out
+}
+
+// neverRouted are the ranges Special calls this-network, multicast or reserved. A grant never
+// opens them: they are not a host the internet can route a silo to.
+func neverRouted() []closedRange {
+	return []closedRange{
+		{netip.MustParsePrefix("0.0.0.0/8"), "this network"},
+		{netip.MustParsePrefix("224.0.0.0/4"), "multicast"},
+		{netip.MustParsePrefix("240.0.0.0/4"), "reserved"},
+		{netip.MustParsePrefix("ff00::/8"), "multicast"},
+	}
+}
+
+// ClosedPrefixes are the ranges a grant never opens, in the order closedRanges lists them.
+func ClosedPrefixes() []netip.Prefix {
+	src := closedRanges()
+	out := make([]netip.Prefix, len(src))
+	for i, s := range src {
+		out[i] = s.p
+	}
+	return out
 }
 
 // ClosedRange reports the range a grant never opens when p lies entirely inside one: an address
-// or CIDR of the silo, service or mesh range, or of loopback or link-local. A wider range
-// (10.0.0.0/8, 0.0.0.0/0) is not inside them. why is "" when p is not inside one.
+// or CIDR of the silo, service or mesh range, of loopback or link-local, or of this-network,
+// multicast or reserved. A wider range (10.0.0.0/8, 0.0.0.0/0) is not inside them. why is ""
+// when p is not inside one.
 func ClosedRange(p netip.Prefix) (netip.Prefix, string) {
 	if !p.IsValid() {
 		return netip.Prefix{}, ""

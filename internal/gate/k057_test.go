@@ -270,8 +270,8 @@ func TestTheClustersOwnAddressesAreRefused(t *testing.T) {
 	}
 }
 
-// The gate's own dialer checks the socket's address again when it connects (whatever chose it),
-// and only for a name: a CIDR rule's passthrough is the rule's decision.
+// The gate's own dialer checks the socket's address again when it connects for a name. A CIDR
+// rule still dials an ordinary private address, and does not dial loopback.
 func TestTheDefaultDialerChecksAtConnectTime(t *testing.T) {
 	g := &Gate{}
 	check := g.atConnect(Policy{})
@@ -280,7 +280,7 @@ func TestTheDefaultDialerChecksAtConnectTime(t *testing.T) {
 			t.Errorf("at connect, %s: %v", addr, err)
 		}
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := net.Listen("tcp", net.JoinHostPort(localPrivate(t).String(), "0"))
 	if err != nil {
 		t.Fatal(err)
 	}
