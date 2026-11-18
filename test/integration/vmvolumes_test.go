@@ -142,6 +142,12 @@ func TestVMVolumesFollowTheSilo(t *testing.T) {
 		}
 		return on(x, first, "home")
 	})
+	root := volPath(get(), v1.RootDiskVolume)
+	for _, c := range share.CallLog() {
+		if c == "unmount "+first+" "+root {
+			t.Fatalf("disk.root was unmounted while the silo stayed on %s: %v", first, share.CallLog())
+		}
+	}
 	if get().Status.Movable != "Anywhere" {
 		t.Fatalf("movable: %q", cur.Status.Movable)
 	}

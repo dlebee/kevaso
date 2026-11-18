@@ -2861,6 +2861,18 @@
   "protects": "conversion sees only the image and the target, and stops when kevasod stops"
   },
   {
+  "id": "G-503",
+  "guard": "the root disk's volume counts as wanted",
+  "file": "internal/agent/dropped.go",
+  "find": "for _, v := range v1.PluginVolumes(s) { // the root disk's volume counts as wanted",
+  "replace": "for _, v := range s.Spec.Volumes { // the root disk's volume counts as wanted",
+  "mutation": "disk.root is treated as dropped from the spec",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a microVM's root-disk volume stays mounted"
+  },
+  {
   "id": "G-504",
   "guard": "a root disk is written only on the volume's mount",
   "file": "builtin/kri/cloudhypervisor/runtime.go",

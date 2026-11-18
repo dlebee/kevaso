@@ -77,6 +77,16 @@ func (r *VM) GuestMounts(id kri.ID) []kri.Volume {
 	return append([]kri.Volume(nil), r.guest[id]...)
 }
 
+// VolumesOf is the volumes the VM was given. The root disk is DiskHostPath, not one of these,
+// which is what the cloud-hypervisor runtime reports.
+func (r *VM) VolumesOf(id kri.ID) ([]kri.Volume, bool) {
+	sp, ok := r.Spec(id)
+	if !ok {
+		return nil, false
+	}
+	return append([]kri.Volume(nil), sp.Volumes...), true
+}
+
 var (
 	_ kri.VolumeSetter = (*VM)(nil)
 	_ kri.GuestVolumes = (*VM)(nil)
