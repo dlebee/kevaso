@@ -131,10 +131,7 @@ func TestLabClusterSecret(t *testing.T) {
 
 	// A secret bound only to the controller account is refused to the worker, and a
 	// secret bound to both accounts is readable by the worker and by the system node.
-	sysNode := labDial(t, ctx, sys, keyFile)
-	t.Cleanup(func() { _ = sysNode.d.Close() })
 	ctrlVal := randomValue(t, "kvtcs-ctrl-")
-	ctrlHash := labHash(ctrlVal)
 	ctrlFile, _ := labValueFiles(t, ctrlVal, ctrlVal)
 	out = labKvo(t, ctx, "", "create", "--context", admin, "clustersecret", labCtrlSecret, "--from-file", ctrlFile)
 	t.Logf("controller-only secret: %s", labRedact(strings.TrimSpace(out), aVal, bVal, ctrlVal))
@@ -146,21 +143,14 @@ func TestLabClusterSecret(t *testing.T) {
 			node.fatal(t, "worker fetch of a controller-only secret", fmt.Sprintf("side=%s http %d, want 403 naming the side: %s", side, code, msg), aVal, bVal, ctrlVal)
 		}
 	}
-	code, hash, _ := labFetch(t, sysNode, apiIP, labCtrlSecret, "controller", aVal, bVal, ctrlVal)
-	if code != 200 || hash != ctrlHash {
-		sysNode.fatal(t, "system node controller side", fmt.Sprintf("http %d sha256 %s", code, hash), aVal, bVal, ctrlVal)
+	// The worker reads the shared secret, bound to both accounts, for its node side.
+	code, hash, _ := labFetch(t, node, apiIP, labSecret, "node", aVal, bVal, ctrlVal)
+	if code != 200 || hash != aHash {
+		node.fatal(t, "worker, a secret bound to both accounts", fmt.Sprintf("http %d sha256 %s", code, hash), aVal, bVal, ctrlVal)
 	}
-	code, _, _ = labFetch(t, sysNode, apiIP, labCtrlSecret, "node", aVal, bVal, ctrlVal)
-	if code != 403 {
-		sysNode.fatal(t, "system node node side of a controller-only secret", fmt.Sprintf("http %d, want 403", code), aVal, bVal, ctrlVal)
-	}
-	for _, side := range []string{"node", "controller"} {
-		code, hash, _ = labFetch(t, sysNode, apiIP, labSecret, side, aVal, bVal, ctrlVal)
-		if code != 200 || hash != aHash {
-			sysNode.fatal(t, "system node both accounts", fmt.Sprintf("side=%s http %d sha256 %s", side, code, hash), aVal, bVal, ctrlVal)
-		}
-	}
-	t.Logf("step 3 sides: worker refused the controller-only secret; both accounts reach the shared secret")
+	// The system node has no certificate file: its controller side is delivered in-process as
+	// host/control-plane, which the integration tests cover for both sides.
+	t.Logf("step 3 sides: worker refused the controller-only secret; it reads the secret bound to both accounts")
 
 	// 4. A new value rewrites the file and restarts the unit once, within 60s.
 	// The same bytes again leave the file and the unit alone.
