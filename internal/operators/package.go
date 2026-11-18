@@ -74,6 +74,18 @@ func (p *Package) ServiceAccount() string { return ServiceAccountName(p.Name()) 
 // ServiceAccountName is a plugin's controller's service account.
 func ServiceAccountName(plugin string) string { return "plugin-" + plugin }
 
+// ServiceAccountNodeName is a plugin's node side's service account. A worker certificate
+// reads a cluster secret only as this account; the controller account is the control plane's.
+func ServiceAccountNodeName(plugin string) string { return "plugin-" + plugin + "-node" }
+
+// ServiceAccountForSide is the service account of one side: "node", or the controller side.
+func ServiceAccountForSide(plugin, side string) string {
+	if side == "node" {
+		return ServiceAccountNodeName(plugin)
+	}
+	return ServiceAccountName(plugin)
+}
+
 // Objects are the package's objects, in the order they're applied: kinds, then the policies on
 // them, then roles.
 func (p *Package) Objects() []meta.Object {

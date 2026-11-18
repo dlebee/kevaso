@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,16 +29,18 @@ const clusterSecretPayload = "kevaso-cluster-secret-payload"
 // csAPI is a control plane that lists and watches ClusterSecrets and serves their values.
 // Answers carry the control-plane headers the test set.
 type csAPI struct {
-	mu      sync.Mutex
-	seen    client.ControlPlaneSeen
-	plugin  string
-	objs    map[string]*v1.ClusterSecret
-	values  map[string][]byte
-	forbid  bool
-	rev     int64
-	fetches atomic.Int64
-	lastFor atomic.Value // string
-	watches []chan []byte
+	mu       sync.Mutex
+	seen     client.ControlPlaneSeen
+	plugin   string
+	objs     map[string]*v1.ClusterSecret
+	values   map[string][]byte
+	forbid   bool
+	worker   bool // a worker certificate: side=controller is refused, naming the side
+	rev      int64
+	fetches  atomic.Int64
+	lastFor  atomic.Value // string
+	lastSide atomic.Value // string
+	watches  []chan []byte
 }
 
 func newCSAPI(plugin string) *csAPI {
@@ -69,6 +72,7 @@ func (s *csAPI) set(name string, version int64, value []byte) {
 	o := &v1.ClusterSecret{
 		TypeMeta:   meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterSecret"},
 		ObjectMeta: meta.ObjectMeta{Name: name, UID: "uid-" + name, ResourceVersion: strconv.FormatInt(s.rev, 10)},
+		Spec:       v1.ClusterSecretSpec{Value: append([]byte(nil), value...)},
 		Status:     v1.ClusterSecretStatus{Version: version},
 	}
 	s.objs[name] = o
@@ -88,8 +92,32 @@ func (s *csAPI) del(name string) {
 	}
 }
 
+// public is the object a list or a watch may carry: metadata and status, never the value.
+func (s *csAPI) public(o *v1.ClusterSecret) *v1.ClusterSecret {
+	c := *o
+	c.Spec.Value = nil
+	return &c
+}
+
+// recreate is a delete and a create that the watch reports as one new object: the same
+// status.version, a new UID, new bytes. The old delivery must not be treated as this one.
+func (s *csAPI) recreate(name string, version int64, value []byte) {
+	s.mu.Lock()
+	s.rev++
+	o := &v1.ClusterSecret{
+		TypeMeta:   meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterSecret"},
+		ObjectMeta: meta.ObjectMeta{Name: name, UID: "uid-" + name + "-new-" + strconv.FormatInt(s.rev, 10), ResourceVersion: strconv.FormatInt(s.rev, 10)},
+		Spec:       v1.ClusterSecretSpec{Value: append([]byte(nil), value...)},
+		Status:     v1.ClusterSecretStatus{Version: version},
+	}
+	s.objs[name] = o
+	s.values[name] = append([]byte(nil), value...)
+	s.mu.Unlock()
+	s.broadcast("MODIFIED", o)
+}
+
 func (s *csAPI) broadcast(typ string, o *v1.ClusterSecret) {
-	b, err := json.Marshal(o)
+	b, err := json.Marshal(s.public(o))
 	if err != nil {
 		return
 	}
@@ -129,7 +157,7 @@ func (s *csAPI) serveList(w http.ResponseWriter, _ *http.Request) {
 	rev := s.rev
 	var items []json.RawMessage
 	for _, o := range s.objs {
-		b, _ := json.Marshal(o)
+		b, _ := json.Marshal(s.public(o))
 		items = append(items, b)
 	}
 	s.mu.Unlock()
@@ -187,9 +215,13 @@ func (s *csAPI) serveWatch(w http.ResponseWriter, r *http.Request) {
 func (s *csAPI) serveValue(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/apis/kevaso/v1/clustersecrets/"), "/value")
 	s.fetches.Add(1)
-	s.lastFor.Store(r.URL.Query().Get("for"))
+	forPlugin := r.URL.Query().Get("for")
+	side := r.URL.Query().Get("side")
+	s.lastFor.Store(forPlugin)
+	s.lastSide.Store(side)
 	s.mu.Lock()
 	forbid := s.forbid
+	worker := s.worker
 	want := s.plugin
 	val := append([]byte(nil), s.values[name]...)
 	ver := int64(0)
@@ -199,7 +231,17 @@ func (s *csAPI) serveValue(w http.ResponseWriter, r *http.Request) {
 	_, ok := s.values[name]
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	if r.URL.Query().Get("for") != want || forbid {
+	if forPlugin != want || (side != "node" && side != "controller") {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(client.Error{Code: http.StatusForbidden, Reason: "Forbidden", Message: "a host reads a clustersecret's value with side=node or side=controller"})
+		return
+	}
+	if worker && side != "node" { // a worker certificate asks only for the node side
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(client.Error{Code: http.StatusForbidden, Reason: "Forbidden", Message: "a worker reads a clustersecret only for a plugin's node side (side=node)"})
+		return
+	}
+	if forbid {
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(client.Error{Code: http.StatusForbidden, Reason: "Forbidden", Message: "plugin may not read clustersecret " + name})
 		return
@@ -243,6 +285,7 @@ type csRig struct {
 	logs     *logBuf
 	dir      string
 	secret   string
+	url      string
 	cut      atomic.Bool
 }
 
@@ -272,7 +315,7 @@ func newCSRig(t *testing.T) *csRig {
 		ClusterSecretEvery: 20 * time.Millisecond, RestartUnit: restarts.call,
 		Watermark: wm, Log: func(f string, args ...any) { logs.write(f, args...) },
 	}
-	r := &csRig{t: t, api: api, a: a, restarts: restarts, logs: logs, dir: dir, secret: clusterSecretPayload}
+	r := &csRig{t: t, api: api, a: a, restarts: restarts, logs: logs, dir: dir, secret: clusterSecretPayload, url: ts.URL}
 	r.a.LastContact = func() time.Time {
 		if r.cut.Load() {
 			return time.Now().Add(-time.Hour)
@@ -389,6 +432,18 @@ func TestClusterSecretFirstDelivery(t *testing.T) {
 	}
 	if forPlugin, _ := r.api.lastFor.Load().(string); forPlugin != "juicefs" {
 		t.Fatalf("fetched ?for=%q, want juicefs", forPlugin)
+	}
+	if side, _ := r.api.lastSide.Load().(string); side != "controller" {
+		t.Fatalf("fetched side=%q, want controller", side)
+	}
+	resp, err := http.Get(r.url + "/apis/kevaso/v1/clustersecrets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if strings.Contains(string(body), r.secret) || strings.Contains(string(body), `"value"`) {
+		t.Fatalf("list carries a value: %s", body)
 	}
 	if strings.Contains(r.logs.String(), r.secret) {
 		t.Fatalf("the value was logged:\n%s", r.logs.String())
@@ -556,4 +611,49 @@ func TestClusterSecretCutOffKeepsTheFile(t *testing.T) {
 		_, err := os.Stat(r.path())
 		return os.IsNotExist(err)
 	})
+}
+
+// A delete and a re-create reuse status.version 1. The new object's UID is not the one
+// already delivered, so the new bytes are written again.
+func TestClusterSecretRecreateIsDeliveredAgain(t *testing.T) {
+	r := newCSRig(t)
+	r.api.set("token", 1, []byte(r.secret))
+	r.start()
+	r.wait(3*time.Second, "the first write", func() bool {
+		b, err := os.ReadFile(r.path())
+		return err == nil && string(b) == r.secret && len(r.restarts.units()) == 1
+	})
+	r.waitWatchers(1)
+	before := r.api.fetches.Load()
+	again := r.secret + "-recreated"
+	r.api.recreate("token", 1, []byte(again))
+	r.wait(3*time.Second, "the re-created value", func() bool {
+		b, err := os.ReadFile(r.path())
+		return err == nil && string(b) == again && r.api.fetches.Load() > before
+	})
+}
+
+// A worker refused the controller side keeps the file. That 403 names the side; it is not
+// "the plugin may not read", which is what removes a file.
+func TestClusterSecretSideRefusalKeepsTheFile(t *testing.T) {
+	r := newCSRig(t)
+	if err := os.WriteFile(r.path(), []byte(r.secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.api.mu.Lock()
+	r.api.worker = true
+	r.api.mu.Unlock()
+	r.api.set("token", 1, []byte(r.secret+"-other"))
+	r.start()
+	r.wait(3*time.Second, "the side refusal", func() bool {
+		return r.api.fetches.Load() > 0 && strings.Contains(r.logs.String(), "only for a plugin's node side")
+	})
+	time.Sleep(200 * time.Millisecond)
+	got, err := os.ReadFile(r.path())
+	if err != nil || string(got) != r.secret {
+		t.Fatalf("a side refusal removed the file: %q %v", got, err)
+	}
+	if units := r.restarts.units(); len(units) != 0 {
+		t.Fatalf("a side refusal restarted the plugin: %v", units)
+	}
 }

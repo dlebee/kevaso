@@ -48,10 +48,10 @@ worker-only host.
 | `internal/agent` ingress report | get | IngressClass | cluster | Read-modify-write of this silo's entry in the class status | The class that silo runs. |
 | `internal/agent.RunTunnels` | list | Host | cluster | One dial-out tunnel per system node that serves the API | Every Host's `spec.components.controlPlane` and `status.controlPlane.apiURL`. |
 | `internal/agent` fence record, watermark | get | Host | cluster | Record contact and whether this host is fenced | This host's own Host. |
-| `internal/agent.RunClusterSecrets` | list, watch | ClusterSecret | cluster | Notice a rotation (`status.version`) and a delete | Already refused. `authorizeClusterSecret` gives a host no clustersecret access of its own. The loop retries. Delivery does not depend on the list: it GETs each recorded name. |
+| `internal/agent.RunClusterSecrets` | list, watch | ClusterSecret | cluster | Notice a rotation (`status.version`) and a delete | Allowed for a host certificate. The object is metadata and status; it never carries a value. A seen delete removes the host's file. |
 | `internal/mesh.Agent` on a worker | list, watch | Host | cluster | Build this host's WireGuard peers | Every Host that has a mesh index and a public key: keys, endpoints, NAT, index, subnet. |
 | `internal/mesh.Agent` | get | Host | cluster | Publish this host's public keys | This host's own Host. |
-| System node, no worker (`controlplane.Run` → `RunClusterSecrets`) | list, watch, get value | ClusterSecret | cluster | Same delivery, as host role `control-plane` | The list and watch are already refused. GET `.../clustersecrets/NAME/value?for=PLUGIN` is allowed only when service account `plugin-PLUGIN` in `kevaso-system` may read that name. Role `control-plane` is otherwise unchanged by the worker read rule (it is not a worker certificate). |
+| System node (`controlplane.Run` → `RunClusterSecrets`) | list, watch, get value | ClusterSecret | cluster | Same delivery, as host role `control-plane`. With a worker on the same node, this loop delivers the controller side and the worker delivers the node side | GET `.../clustersecrets/NAME/value?for=PLUGIN&side=node\|controller` is allowed when the service account of that side (`plugin-PLUGIN` or `plugin-PLUGIN-node`) in `kevaso-system` may read that name. A worker certificate may ask only for `side=node`. |
 
 `cmd/kevasod` does not read objects itself. `kevasod worker` builds the host client and calls `worker.Run`, `worker.Heartbeat`, and `mesh.Agent.Run`. `kevasod control-plane` starts the same worker when `--worker` is set, on `workerClient`.
 
@@ -61,7 +61,7 @@ worker-only host.
 | --- | --- | --- | --- |
 | `internal/agent` deliver, policy, pull; `internal/worker` egress; local endpoint | POST `/agent/broker` | Secret values, signatures, pull credentials, port open and close, pane reports | The silo is placed on this host, and one of its grants allows the operation. |
 | `internal/agent` ingress loop | GET `/agent/ingress?namespace=&name=` | Routes, certificates (keys included), and challenges for one controller silo | The silo is placed on this host and runs the class. |
-| `internal/agent.fetchClusterSecret` | GET `/apis/kevaso/v1/clustersecrets/NAME/value?for=PLUGIN` | The plugin's credential file | The plugin's service account may read that name. |
+| `internal/agent.fetchClusterSecret` | GET `/apis/kevaso/v1/clustersecrets/NAME/value?for=PLUGIN&side=node\|controller` | The plugin's credential file | The service account of that side may read that name. A worker certificate may ask only for the node side. |
 
 ## Kinds nothing on the worker reads
 

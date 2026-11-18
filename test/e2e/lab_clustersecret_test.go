@@ -38,12 +38,14 @@ import (
 // Names this test creates. All of them start with kvt so a lab host (which this
 // test does not log into) is never asked to touch anything else.
 const (
-	labSecret = "kvt-cs-token"
-	labPlugin = "kvtcs"
-	labNS     = "kvtcs"
-	labUser   = "kvtada"
-	labUnit   = "kevaso-plugin-kvtcs-node.service"
-	labRole   = "kvtcs"
+	labSecret     = "kvt-cs-token"
+	labCtrlSecret = "kvt-cs-ctrl"
+	labPlugin     = "kvtcs"
+	labNS         = "kvtcs"
+	labUser       = "kvtada"
+	labUnit       = "kevaso-plugin-kvtcs-node.service"
+	labRole       = "kvtcs"
+	labCtrlRole   = "kvtcs-ctrl"
 )
 
 // TestLabClusterSecret is ClusterSecret delivery on a worktree lab (testbed/lab):
@@ -100,8 +102,9 @@ func TestLabClusterSecret(t *testing.T) {
 		t.Fatalf("create: want version 1: %s", labRedact(out, aVal, bVal))
 	}
 	labKvo(t, ctx, labRoleYAML(), "apply", "--context", admin, "-f", "-")
-	t.Logf("step 1: clustersecret %s version 1, ClusterRole %s pinned to it, bound to %s/%s",
-		labSecret, labRole, v1.PluginNamespace, operators.ServiceAccountName(labPlugin))
+	t.Logf("step 1: clustersecret %s version 1, ClusterRole %s pinned to it, bound to %s/%s and %s/%s",
+		labSecret, labRole, v1.PluginNamespace, operators.ServiceAccountName(labPlugin),
+		v1.PluginNamespace, operators.ServiceAccountNodeName(labPlugin))
 
 	// 2. Install the node side on w1. The unit is enabled and not started: kevasod
 	// writes the credential and starts it (pluginInstall, secret path).
@@ -125,6 +128,39 @@ func TestLabClusterSecret(t *testing.T) {
 	}
 	u0 := labAwaitStable(t, node, aVal, bVal)
 	t.Logf("step 3: sha256 %s mode %s owner %s pid %s started %s", got.hash, got.mode, got.owner, u0.pid, u0.started)
+
+	// A secret bound only to the controller account is refused to the worker, and a
+	// secret bound to both accounts is readable by the worker and by the system node.
+	sysNode := labDial(t, ctx, sys, keyFile)
+	t.Cleanup(func() { _ = sysNode.d.Close() })
+	ctrlVal := randomValue(t, "kvtcs-ctrl-")
+	ctrlHash := labHash(ctrlVal)
+	ctrlFile, _ := labValueFiles(t, ctrlVal, ctrlVal)
+	out = labKvo(t, ctx, "", "create", "--context", admin, "clustersecret", labCtrlSecret, "--from-file", ctrlFile)
+	t.Logf("controller-only secret: %s", labRedact(strings.TrimSpace(out), aVal, bVal, ctrlVal))
+	labKvo(t, ctx, labCtrlRoleYAML(), "apply", "--context", admin, "-f", "-")
+	apiIP := labAPIAddrs(t, node, sys.internal)[0]
+	for _, side := range []string{"node", "controller"} {
+		code, _, msg := labFetch(t, node, apiIP, labCtrlSecret, side, aVal, bVal, ctrlVal)
+		if code != 403 || !strings.Contains(msg, "side") {
+			node.fatal(t, "worker fetch of a controller-only secret", fmt.Sprintf("side=%s http %d, want 403 naming the side: %s", side, code, msg), aVal, bVal, ctrlVal)
+		}
+	}
+	code, hash, _ := labFetch(t, sysNode, apiIP, labCtrlSecret, "controller", aVal, bVal, ctrlVal)
+	if code != 200 || hash != ctrlHash {
+		sysNode.fatal(t, "system node controller side", fmt.Sprintf("http %d sha256 %s", code, hash), aVal, bVal, ctrlVal)
+	}
+	code, _, _ = labFetch(t, sysNode, apiIP, labCtrlSecret, "node", aVal, bVal, ctrlVal)
+	if code != 403 {
+		sysNode.fatal(t, "system node node side of a controller-only secret", fmt.Sprintf("http %d, want 403", code), aVal, bVal, ctrlVal)
+	}
+	for _, side := range []string{"node", "controller"} {
+		code, hash, _ = labFetch(t, sysNode, apiIP, labSecret, side, aVal, bVal, ctrlVal)
+		if code != 200 || hash != aHash {
+			sysNode.fatal(t, "system node both accounts", fmt.Sprintf("side=%s http %d sha256 %s", side, code, hash), aVal, bVal, ctrlVal)
+		}
+	}
+	t.Logf("step 3 sides: worker refused the controller-only secret; both accounts reach the shared secret")
 
 	// 4. A new value rewrites the file and restarts the unit once, within 60s.
 	// The same bytes again leave the file and the unit alone.
@@ -159,6 +195,18 @@ func TestLabClusterSecret(t *testing.T) {
 	gone := labAwaitRemoval(t, node, cred, rot.unit, ips, 2*time.Minute, aVal, bVal)
 	t.Logf("step 5 uncut: file removed, unit %s pid %s started %s (%s)", gone.state, gone.pid, gone.started, gone.result)
 
+	// The binding is put back, the file returns, and deleting the ClusterSecret
+	// itself removes the file within a minute. The secret is created again so the
+	// namespace-admin check below still meets a secret it must not read.
+	labKvo(t, ctx, labRoleYAML(), "apply", "--context", admin, "-f", "-")
+	back := labAwaitFile(t, node, cred, bHash, time.Minute, aVal, bVal)
+	backUnit := labAwaitStable(t, node, aVal, bVal)
+	labKvo(t, ctx, "", "delete", "--context", admin, "clustersecret", labSecret)
+	deleted := labAwaitRemoval(t, node, cred, backUnit, nil, time.Minute, aVal, bVal)
+	t.Logf("step 5 delete: file removed within a minute, unit %s (was inode %s)", deleted.state, back.inode)
+	out = labKvo(t, ctx, "", "create", "--context", admin, "clustersecret", labSecret, "--from-file", bFile)
+	t.Logf("secret recreated: %s", labRedact(strings.TrimSpace(out), aVal, bVal))
+
 	// 6. A namespace admin (invite into a namespace as admin, the same binding
 	// kvoadm users invite writes) cannot read the value, cannot bind anyone into
 	// kevaso-system, and cannot mint a token for the plugin account.
@@ -190,7 +238,10 @@ func labFinish(ctx context.Context, t *testing.T, node *labNode, labDir, admin s
 		{"delete", "--context", admin, "namespace", labNS},
 		{"delete", "--context", admin, "clusterrolebinding", labRole},
 		{"delete", "--context", admin, "clusterrole", labRole},
+		{"delete", "--context", admin, "clusterrolebinding", labCtrlRole},
+		{"delete", "--context", admin, "clusterrole", labCtrlRole},
 		{"delete", "--context", admin, "clustersecret", labSecret},
+		{"delete", "--context", admin, "clustersecret", labCtrlSecret},
 	} {
 		out, code := labKvoCode(cctx, "", args...)
 		if code != 0 && !strings.Contains(out, "NotFound") {
@@ -203,7 +254,8 @@ func labFinish(ctx context.Context, t *testing.T, node *labNode, labDir, admin s
 }
 
 func labRoleYAML() string {
-	sa := operators.ServiceAccountName(labPlugin)
+	ctrl := operators.ServiceAccountName(labPlugin)
+	node := operators.ServiceAccountNodeName(labPlugin)
 	return fmt.Sprintf(`apiVersion: kevaso/v1
 kind: ClusterRole
 metadata: { name: %s }
@@ -218,7 +270,51 @@ metadata: { name: %s }
 roleRef: { kind: ClusterRole, name: %s }
 subjects:
   - { kind: ServiceAccount, name: %s, namespace: %s }
-`, labRole, labSecret, labRole, labRole, sa, v1.PluginNamespace)
+  - { kind: ServiceAccount, name: %s, namespace: %s }
+`, labRole, labSecret, labRole, labRole, ctrl, v1.PluginNamespace, node, v1.PluginNamespace)
+}
+
+// labCtrlRoleYAML binds the controller account only. The node account is not a subject.
+func labCtrlRoleYAML() string {
+	ctrl := operators.ServiceAccountName(labPlugin)
+	return fmt.Sprintf(`apiVersion: kevaso/v1
+kind: ClusterRole
+metadata: { name: %s }
+rules:
+  - verbs: [get]
+    resources: [clustersecrets/value]
+    resourceNames: [%s]
+---
+apiVersion: kevaso/v1
+kind: ClusterRoleBinding
+metadata: { name: %s }
+roleRef: { kind: ClusterRole, name: %s }
+subjects:
+  - { kind: ServiceAccount, name: %s, namespace: %s }
+`, labCtrlRole, labCtrlSecret, labCtrlRole, labCtrlRole, ctrl, v1.PluginNamespace)
+}
+
+// labFetch reads one value with the host certificate and returns the HTTP status, the
+// sha256 of the body, and the body when the status is not 200. The body file is removed
+// on the host. A 200 body is not returned.
+func labFetch(t *testing.T, n *labNode, ip, name, side string, secrets ...string) (int, string, string) {
+	t.Helper()
+	q := sshboot.Quote("https://" + ip + ":6443/apis/kevaso/v1/clustersecrets/" + name + "/value?for=" + labPlugin + "&side=" + side)
+	out := n.must("body=$(mktemp); code=$(curl -sS -o \"$body\" -w '%{http_code}' --cacert /etc/kevaso/ca.crt --cert /var/lib/kevaso/pki/host.crt --key /var/lib/kevaso/pki/host.key " + q + "); hash=$(sha256sum \"$body\" | awk '{print $1}'); msg=; if [ \"$code\" != 200 ]; then msg=$(tr '\\n' ' ' < \"$body\"); fi; rm -f \"$body\"; printf '%s %s\\n%s\\n' \"$code\" \"$hash\" \"$msg\"")
+	lines := strings.SplitN(strings.TrimRight(out, "\n"), "\n", 2)
+	fields := strings.Fields(lines[0])
+	if len(fields) < 2 {
+		n.fatal(t, "fetch", out, secrets...)
+	}
+	code, err := strconv.Atoi(fields[0])
+	if err != nil {
+		n.fatal(t, "fetch", out, secrets...)
+	}
+	msg := ""
+	if len(lines) == 2 {
+		msg = strings.TrimSpace(lines[1])
+	}
+	return code, fields[1], msg
 }
 
 func labNamespaceAdmin(t *testing.T, ctx context.Context, admin, aVal, bVal string) {

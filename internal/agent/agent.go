@@ -221,8 +221,14 @@ type Agent struct {
 	csInf           *informer.Informer
 	csWake          chan struct{}
 	csMu            sync.Mutex
-	csHave          map[string]csDelivered // plugin\x00name → the version written and restarted for
+	csHave          map[string]csDelivered // plugin\x00name → the uid and version written and restarted for
 	csSeen          map[string]csSeenDel   // cluster-secret name → the delete seen, and of which revision
+	csRefuse        map[string]csSideRefusal
+	// OnlyClusterSecretSide, when set, is the only side this loop fetches ("node" or
+	// "controller"). Empty fetches every side installed here.
+	OnlyClusterSecretSide string
+	removed               atomic.Bool
+	removedOnce           sync.Once
 }
 
 func (a *Agent) stopsOnLoss(s *v1.Silo) (bool, time.Duration) {
@@ -523,9 +529,16 @@ func (a *Agent) collectGarbage(ctx context.Context, e *engine.Engine) {
 
 // Reconcile implements engine.Controller.
 func (a *Agent) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
+	if a.removed.Load() { // this host was removed: nothing is reconciled until it joins again
+		return engine.Result{}, nil
+	}
 	a.inFlight.Store(k, time.Now())
 	defer a.inFlight.Delete(k)
 	res, err := a.reconcile(ctx, k)
+	if client.HostWasRemoved(err) { // a removed host stops its silos and keeps every disk
+		a.HostRemoved(context.WithoutCancel(ctx))
+		return engine.Result{}, nil
+	}
 	if errors.Is(err, errPlacedElsewhere) {
 		// The store places it on another host since this host's cache was filled: whatever was
 		// under way stops here (nothing is started), and the cache brings the rest.
@@ -1626,6 +1639,54 @@ func (a *Agent) releaseMove(ctx context.Context, s *v1.Silo) error {
 		}
 	}
 	return errors.New("status kept changing; will retry")
+}
+
+// HostRemoved is the distinct "host NAME was removed from the cluster" 401. It is final:
+// every silo here is stopped (a normal stop, then a kill if that times out, as the fence
+// does) and then left, with its disk and volumes. Nothing is deleted. Reconcile does no
+// more work until this machine joins again.
+func (a *Agent) HostRemoved(ctx context.Context) {
+	a.removedOnce.Do(func() {
+		a.removed.Store(true)
+		a.log("host %s was removed from the cluster: stopping every silo here. Disks and volumes are kept. Not reconciling until this machine joins again (kvoadm host add)", a.HostName)
+		a.stopSilosKept(ctx)
+	})
+}
+
+// removedStopWithin is how long a normal stop may take after this host was removed,
+// before the fence's kill. A VM's stop waits for the guest to power off.
+const removedStopWithin = 40 * time.Second
+
+// stopSilosKept stops every silo a runtime lists. It never deletes one: a removal is not
+// a delete the system saw of the silo (Rule 2).
+func (a *Agent) stopSilosKept(ctx context.Context) {
+	for name, rt := range a.Runtimes {
+		ids, err := rt.List(ctx)
+		if err != nil {
+			a.log("host %s was removed: listing %s: %v (nothing is deleted)", a.HostName, name, err)
+			continue
+		}
+		for _, id := range ids {
+			a.stopOneKept(ctx, rt, id)
+		}
+	}
+}
+
+func (a *Agent) stopOneKept(ctx context.Context, rt kri.Runtime, id kri.ID) {
+	sctx, cancel := context.WithTimeout(ctx, removedStopWithin)
+	err := rt.Stop(sctx, id)
+	cancel()
+	if err == nil || errors.Is(err, kri.ErrNotFound) {
+		a.log("host %s was removed: %s stopped; its disk and volumes stay", a.HostName, id)
+		return
+	}
+	a.log("host %s was removed: %s did not stop (%v); killing it. Its disk and volumes stay", a.HostName, id, err)
+	kctx, kcancel := context.WithTimeout(ctx, fence.KillWithin)
+	err = kri.Kill(kctx, rt, id)
+	kcancel()
+	if err != nil && !errors.Is(err, kri.ErrNotFound) {
+		a.log("host %s was removed: killing %s: %v (its disk and volumes stay)", a.HostName, id, err)
+	}
 }
 
 // removeEverywhere deletes the silo from every runtime that has it. For a silo still in the API

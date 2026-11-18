@@ -54,12 +54,13 @@ type Server struct {
 	auth  *Auth
 	h     http.Handler
 
-	tunnels  tunnels // agents' dial-out connections, by host
-	policy   *rbac.Source
-	vault    *secrets.Vault // nil: no KMS, secrets can't hold values
-	kmsAdmin KMSAdmin
-	backup   func(context.Context, []byte) ([]byte, error)
-	joinNode SystemNodeJoiner // POST /join/system-node (systemnodes.go)
+	tunnels     tunnels     // agents' dial-out connections, by host
+	hostStreams hostStreams // open watches and tunnels, cancelled when the host is removed
+	policy      *rbac.Source
+	vault       *secrets.Vault // nil: no KMS, secrets can't hold values
+	kmsAdmin    KMSAdmin
+	backup      func(context.Context, []byte) ([]byte, error)
+	joinNode    SystemNodeJoiner // POST /join/system-node (systemnodes.go)
 
 	approvalLimits approvals.Limits
 	leaseLimits    leases.Limits                     // port leases (leases.go)
@@ -92,6 +93,7 @@ func NewWithAuth(s store.Store, c clock.Clock, auth *Auth) (*Server, error) {
 	}
 	srv := &Server{store: s, clock: c, valid: v, mux: http.NewServeMux(), auth: auth, approvalLimits: approvals.Limits{}.WithDefaults()}
 	srv.tunnels.sess = map[string]*yamux.Session{}
+	go srv.watchHostRemovals() // every member, including one that did not handle the delete
 	srv.policy = &rbac.Source{Store: s}
 	if auth != nil {
 		if err := srv.ensureBuiltins(context.Background()); err != nil {

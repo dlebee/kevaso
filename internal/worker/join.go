@@ -30,7 +30,10 @@ type JoinConfig struct {
 
 // Join returns a client authenticated as this host. The first time it enrolls with the join token
 // (the key is made here and never leaves; research E019) and keeps the certificate; afterwards it
-// reuses the certificate.
+// reuses the certificate. A stored certificate the control plane refuses because this host was
+// removed is enrolled again when a join token is present: the old pki directory is moved aside
+// to a dated name and is not deleted. Without a token, the error names that directory and
+// kvoadm host add.
 func Join(ctx context.Context, cfg JoinConfig) (*client.Client, error) {
 	ca, err := os.ReadFile(cfg.CAFile)
 	if err != nil {
@@ -40,6 +43,22 @@ func Join(ctx context.Context, cfg JoinConfig) (*client.Client, error) {
 	certPath, keyPath := filepath.Join(dir, "host.crt"), filepath.Join(dir, "host.key")
 	cert, cerr := os.ReadFile(certPath)
 	key, kerr := os.ReadFile(keyPath)
+	if cerr == nil && kerr == nil {
+		c, err := client.NewTLSEndpoints(Servers(cfg.Server, cfg.DataDir), ca, cert, key)
+		if err != nil {
+			return nil, err
+		}
+		if !certificateRemoved(ctx, c, cfg.HostName) { // any other error keeps the stored certificate
+			return c, nil
+		}
+		if _, err := os.Stat(cfg.TokenFile); err != nil {
+			return nil, fmt.Errorf("host %s was removed from the cluster; its certificate in %s is refused. Move %s aside and join again with kvoadm host add", cfg.HostName, dir, dir)
+		}
+		if err := movePKIAside(dir); err != nil { // never deleted: the old key stays under a dated name
+			return nil, fmt.Errorf("moving %s aside: %w", dir, err)
+		}
+		cerr, kerr = os.ErrNotExist, os.ErrNotExist
+	}
 	if cerr != nil || kerr != nil {
 		tok, err := os.ReadFile(cfg.TokenFile)
 		if err != nil {
@@ -66,6 +85,23 @@ func Join(ctx context.Context, cfg JoinConfig) (*client.Client, error) {
 		cert, key = cred.Certificate, cred.Key
 	}
 	return client.NewTLSEndpoints(Servers(cfg.Server, cfg.DataDir), ca, cert, key)
+}
+
+// certificateRemoved reports the distinct removal 401. A connection error, or any other
+// status, is not this: the stored certificate stays in use.
+func certificateRemoved(ctx context.Context, c *client.Client, host string) bool {
+	var h v1.Host
+	return client.HostWasRemoved(c.Get(ctx, "Host", "", host, &h))
+}
+
+// movePKIAside renames dir to a dated sibling. It does not delete it.
+func movePKIAside(dir string) error {
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	aside := dir + ".removed-" + stamp
+	if _, err := os.Stat(aside); err == nil {
+		aside = dir + ".removed-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	}
+	return os.Rename(dir, aside)
 }
 
 // serversFile keeps the control planes the agent learned from the system nodes (ServersFile).
@@ -105,9 +141,27 @@ func KeepServers(dataDir string, servers []string) error {
 // Contact remembers when this host last reached the control plane (the agent fences by it), and
 // whether a fence applies here at all (fence.Applies).
 type Contact struct {
-	unixNano atomic.Int64
-	boot     atomic.Int64 // boottime reading + 1 (0: none yet)
-	fence    atomic.Int32 // 0: not decided yet, 1: no, 2: yes
+	unixNano  atomic.Int64
+	boot      atomic.Int64 // boottime reading + 1 (0: none yet)
+	fence     atomic.Int32 // 0: not decided yet, 1: no, 2: yes
+	onRemoved atomic.Value // func(): this host's certificate was refused as removed
+}
+
+// OnRemoved is called once, from Heartbeat, when the control plane says this host was removed.
+func (c *Contact) OnRemoved(fn func()) {
+	if c != nil && fn != nil {
+		c.onRemoved.Store(fn)
+	}
+}
+
+func (c *Contact) fireRemoved() {
+	if c == nil {
+		return
+	}
+	fn, _ := c.onRemoved.Load().(func())
+	if fn != nil {
+		fn()
+	}
 }
 
 // SetFence records whether this host needs fencing.
@@ -162,13 +216,26 @@ func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Du
 		h, ok := c.ControlPlane.(interface{ Held() bool })
 		return ok && h.Held()
 	}
+	removed := false
+	noteRemoved := func(err error) bool {
+		if !client.HostWasRemoved(err) {
+			return false
+		}
+		removed = true
+		log("host %s was removed from the cluster: %v", host, err)
+		if contact != nil {
+			contact.fireRemoved()
+		}
+		return true
+	}
 	tick := func() {
 		for attempt := 0; attempt < 5; attempt++ {
 			var h v1.Host
 			if err := c.Get(ctx, "Host", "", host, &h); err != nil {
-				if ctx.Err() == nil {
-					log("heartbeat: %v", err)
+				if noteRemoved(err) || ctx.Err() != nil {
+					return
 				}
+				log("heartbeat: %v", err)
 				return
 			}
 			now, sentBoot := clk.Now().UTC(), boottime.Now()
@@ -192,6 +259,9 @@ func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Du
 				// its arrival, so the agent's always ends first (§0.7, silo.StopMargin).
 				contact.Mark(now, sentBoot)
 			}
+			if noteRemoved(err) {
+				return
+			}
 			if err != nil && ctx.Err() == nil {
 				log("heartbeat: %v", err)
 			}
@@ -202,6 +272,9 @@ func Heartbeat(ctx context.Context, c *client.Client, host string, every time.Du
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
+		if removed { // the removal is final: this loop does not retry it
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return

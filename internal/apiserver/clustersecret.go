@@ -143,25 +143,37 @@ func hostCertificate(id pki.Identity) bool {
 }
 
 // hostForPlugin is a host certificate's read of clustersecret name. Allowed only with
-// ?for=PLUGIN, where PLUGIN is a DNS label, and only when the service account plugin-PLUGIN
-// in kevaso-system would itself be allowed the read. A provider plugin has no Plugin object:
-// install creates that account, and the admin binds it. The host has no access of its own.
-func (s *Server) hostForPlugin(ctx context.Context, r *http.Request, name string) (bool, string, error) {
+// ?for=PLUGIN&side=node|controller, where PLUGIN is a DNS label. side=node is checked as
+// service account plugin-PLUGIN-node; side=controller as plugin-PLUGIN. A worker certificate
+// may ask only for the node side. A control-plane certificate may ask for either (a system
+// node can also be a worker). A provider plugin has no Plugin object: install creates the
+// account for the side it installs, and the admin binds it. The host has no access of its own.
+func (s *Server) hostForPlugin(ctx context.Context, id pki.Identity, r *http.Request, name string) (bool, string, error) {
 	plugin := r.URL.Query().Get("for")
+	side := r.URL.Query().Get("side")
 	if plugin == "" {
-		return false, "a host reads a clustersecret's value only with ?for=PLUGIN", nil
+		return false, "a host reads a clustersecret's value only with ?for=PLUGIN&side=node|controller", nil
 	}
 	if meta.ValidateName(plugin) != nil {
 		return false, fmt.Sprintf("plugin %s may not read clustersecret %s", plugin, name), nil
 	}
-	user := rbac.ServiceAccountUser(v1.PluginNamespace, operators.ServiceAccountName(plugin))
+	switch side {
+	case "node", "controller":
+	default:
+		return false, "a host reads a clustersecret's value with side=node or side=controller", nil
+	}
+	if id.Role == "worker" && side != "node" { // a worker certificate asks only for the node side
+		return false, "a worker reads a clustersecret only for a plugin's node side (side=node)", nil
+	}
+	account := operators.ServiceAccountForSide(plugin, side)
+	user := rbac.ServiceAccountUser(v1.PluginNamespace, account)
 	p, err := s.policy.Policy(ctx)
 	if err != nil {
 		return false, "", err
 	}
 	d := p.Authorize(rbac.Attributes{User: user, Verb: "get", Resource: rbac.ClusterSecretValue, Name: name})
 	if !d.Allowed {
-		return false, fmt.Sprintf("plugin %s may not read clustersecret %s", plugin, name), nil
+		return false, fmt.Sprintf("plugin %s %s side may not read clustersecret %s", plugin, side, name), nil
 	}
-	return true, "host for plugin " + plugin, nil
+	return true, "host for plugin " + plugin + " " + side + " side", nil
 }

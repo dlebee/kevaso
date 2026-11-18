@@ -358,13 +358,17 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 			closeWorker()
 		}()
 		go worker.Run(hbCtx, wcl, wc, rts)
-	} else if cfg.PluginsEtc != "" {
-		// The controller side of a plugin is installed on the system node. That node usually
-		// runs no worker, and the delivery loop otherwise starts only inside the worker's
-		// agent, so the credential file was never written and the unit never started.
-		// This host talks to its own API: in contact while the process runs (a fetch that
-		// fails because the store doesn't answer leaves the file). Held is the watermark,
-		// the same rule as a worker.
+	}
+	if cfg.PluginsEtc != "" {
+		// The controller side of a plugin is installed on the system node. With no worker,
+		// nothing else would write its credential file. With a worker, that worker's
+		// certificate may ask only for the node side, so this certificate delivers the
+		// controller side. This host talks to its own API: in contact while the process
+		// runs. Held is the watermark, the same rule as a worker.
+		only := ""
+		if cfg.Worker != nil {
+			only = "controller"
+		}
 		cswm := agent.OpenWatermark(filepath.Join(cfg.DataDir, "control-plane-watermark.json"), cfg.Log)
 		ccl, closeCS := inProcessHost(srv, st, cswm, cfg.HostName, "control-plane")
 		go func() {
@@ -373,7 +377,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		}()
 		go (&agent.Agent{
 			Client: ccl, HostName: cfg.HostName, Clock: cfg.Clock, Log: cfg.Log,
-			PluginsEtc: cfg.PluginsEtc, Watermark: cswm,
+			PluginsEtc: cfg.PluginsEtc, Watermark: cswm, OnlyClusterSecretSide: only,
 		}).RunClusterSecrets(hbCtx)
 	}
 

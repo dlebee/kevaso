@@ -112,6 +112,14 @@ func reasonOf(err error) string {
 // IsNotFound reports a 404.
 func IsNotFound(err error) bool { return reasonOf(err) == "NotFound" }
 
+// HostWasRemoved reports the 401 a control plane sends when this host's certificate was
+// issued before the host was removed. It is final: the machine joins again, and nothing
+// else about the error is a reason to drop a disk.
+func HostWasRemoved(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Code == http.StatusUnauthorized && strings.Contains(e.Message, "was removed from the cluster")
+}
+
 // IgnoreNotFound is nil for a NotFound error, err otherwise.
 func IgnoreNotFound(err error) error {
 	if IsNotFound(err) {

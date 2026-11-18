@@ -460,10 +460,10 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 		if err != nil {
 			return err
 		}
-		if err := ensurePluginServiceAccount(ctx, c, o.Name); err != nil {
+		if err := ensurePluginServiceAccount(ctx, c, o.Name, o.side()); err != nil {
 			return err
 		}
-		say("%s", pluginAccountBindLine(o.Name))
+		say("%s", pluginAccountBindLine(o.Name, o.side()))
 	}
 	conn, _, err := dialHost(ctx, o.InitOptions, in, stdin, out)
 	if err != nil {
@@ -572,20 +572,15 @@ func pluginRemove(ctx context.Context, o PluginOptions, stdin io.Reader, out io.
 		return err
 	}
 	defer func() { _ = conn.Close() }()
-	word, err := conn.Run(ctx, PluginRemoveScript(o.Name, o.side()), nil)
-	if err != nil {
+	if _, err := conn.Run(ctx, PluginRemoveScript(o.Name, o.side()), nil); err != nil {
 		return err
 	}
-	if lastPluginSide(string(word)) {
-		c, _, err := adminClient("")
-		if err != nil {
-			return err
-		}
-		if err := deletePluginServiceAccount(ctx, c, o.Name); err != nil {
-			return fmt.Errorf("service account %s: %w", operators.ServiceAccountName(o.Name), err)
-		}
+	if c, _, err := adminClient(""); err != nil {
+		return err
+	} else if err := deletePluginServiceAccount(ctx, c, o.Name, o.side()); err != nil {
+		return fmt.Errorf("service account %s: %w", operators.ServiceAccountForSide(o.Name, o.side()), err)
 	}
-	_, _ = fmt.Fprintf(out, "→ plugin %s's %s side removed (its unit; the program, credentials and service account once no side is left)\n", o.Name, o.side())
+	_, _ = fmt.Fprintf(out, "→ plugin %s's %s side removed (its unit and service account %s; the program and credentials once no side is left)\n", o.Name, o.side(), operators.ServiceAccountForSide(o.Name, o.side()))
 	return nil
 }
 
@@ -597,19 +592,20 @@ const pluginLastSide = "kevaso-plugin-last-side"
 func lastPluginSide(output string) bool { return strings.Contains(output, pluginLastSide) }
 
 // pluginAccountBindLine is the one line install prints: which account the admin binds.
-func pluginAccountBindLine(plugin string) string {
-	return fmt.Sprintf("bind a ClusterRole to service account %s in namespace %s", operators.ServiceAccountName(plugin), v1.PluginNamespace)
+// side is "node" or the controller side. A secret both sides need is bound to both accounts.
+func pluginAccountBindLine(plugin, side string) string {
+	return fmt.Sprintf("bind a ClusterRole to service account %s in namespace %s", operators.ServiceAccountForSide(plugin, side), v1.PluginNamespace)
 }
 
-// ensurePluginServiceAccount makes namespace kevaso-system and service account plugin-NAME,
-// creating either only when it is missing. It does not create a role or a binding, and it
-// does not change an account that is already there.
+// ensurePluginServiceAccount makes namespace kevaso-system and the service account for side
+// (plugin-NAME, or plugin-NAME-node), creating either only when it is missing. It does not
+// create a role or a binding, and it does not change an account that is already there.
 //
 // The namespace needs nothing special. Its name is not a network name (mesh, internal,
 // external), and it is not a public suffix, so it does not take over names the way a
 // namespace called com would (K-075). Creating a namespace adds no binding: a tenant reaches
 // it only when someone binds them there.
-func ensurePluginServiceAccount(ctx context.Context, c *client.Client, plugin string) error {
+func ensurePluginServiceAccount(ctx context.Context, c *client.Client, plugin, side string) error {
 	if names.Reserved(v1.PluginNamespace) {
 		return fmt.Errorf("namespace %s is a network's name", v1.PluginNamespace)
 	}
@@ -619,17 +615,18 @@ func ensurePluginServiceAccount(ctx context.Context, c *client.Client, plugin st
 		return fmt.Errorf("namespace %s: %w", v1.PluginNamespace, err)
 	}
 	sa := &v1.ServiceAccount{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ServiceAccount"},
-		ObjectMeta: meta.ObjectMeta{Name: operators.ServiceAccountName(plugin), Namespace: v1.PluginNamespace}}
+		ObjectMeta: meta.ObjectMeta{Name: operators.ServiceAccountForSide(plugin, side), Namespace: v1.PluginNamespace}}
 	if err := c.Create(ctx, sa); err != nil && !client.IsAlreadyExists(err) {
 		return fmt.Errorf("service account %s: %w", sa.Name, err)
 	}
 	return nil
 }
 
-// deletePluginServiceAccount removes plugin-NAME. Missing is fine: this side may never have
-// asked for a cluster secret. The namespace stays; other plugins use it.
-func deletePluginServiceAccount(ctx context.Context, c *client.Client, plugin string) error {
-	err := c.Delete(ctx, "ServiceAccount", v1.PluginNamespace, operators.ServiceAccountName(plugin))
+// deletePluginServiceAccount removes the service account of side. Missing is fine: this side
+// may never have asked for a cluster secret. The namespace stays; other plugins and the other
+// side's account stay.
+func deletePluginServiceAccount(ctx context.Context, c *client.Client, plugin, side string) error {
+	err := c.Delete(ctx, "ServiceAccount", v1.PluginNamespace, operators.ServiceAccountForSide(plugin, side))
 	if err != nil && !client.IsNotFound(err) {
 		return err
 	}

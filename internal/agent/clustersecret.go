@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"kevaso.com/core/api/client"
@@ -22,9 +23,20 @@ import (
 )
 
 // csDelivered is one cluster secret as this agent last left it on disk.
+// uid is the object's UID: a delete and a re-create start status.version at 1 again,
+// and the new object is delivered again.
 type csDelivered struct {
+	uid       string
 	version   int64
 	restarted bool // the unit was restarted onto these bytes (or the bytes had not changed)
+}
+
+// csSideRefusal is a fetch this certificate was refused because of the side, remembered
+// so the file stays and the value is not fetched again until the object changes.
+type csSideRefusal struct {
+	uid     string
+	version int64
+	logged  bool
 }
 
 // csSeenDel is a ClusterSecret delete this agent saw on a watch it accepts.
@@ -89,9 +101,12 @@ type clusterSecretWant struct {
 }
 
 // clusterSecretGroup is one secret file (a plugin and a name) and the units that load it.
+// side is the side to ask for: node when any recorded want is the node side, otherwise
+// the controller side. A worker certificate may ask only for the node side; asking node
+// when that side is installed is allowed for a control-plane certificate too.
 type clusterSecretGroup struct {
-	plugin, name, path string
-	units              []string
+	plugin, name, path, side string
+	units                    []string
 }
 
 // clusterSecretWants reads the records kvoadm wrote. A missing directory is a host with no
@@ -111,6 +126,9 @@ func (a *Agent) clusterSecretWants() []clusterSecretWant {
 		}
 		plugin := e.Name()
 		for _, side := range []string{"", "node"} {
+			if a.OnlyClusterSecretSide != "" && clusterSecretSide(side) != a.OnlyClusterSecretSide {
+				continue
+			}
 			b, err := os.ReadFile(plugins.ClusterSecretsPath(a.PluginsEtc, plugin, side))
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -140,6 +158,14 @@ func (a *Agent) clusterSecretWants() []clusterSecretWant {
 	return out
 }
 
+// clusterSecretSide is the query value for a recorded side: "" is the controller side.
+func clusterSecretSide(side string) string {
+	if side == "node" {
+		return "node"
+	}
+	return "controller"
+}
+
 func pluginUnitName(plugin, side string) string {
 	if side == "node" {
 		return "kevaso-plugin-" + plugin + "-node.service"
@@ -154,9 +180,12 @@ func groupClusterSecrets(ws []clusterSecretWant) []clusterSecretGroup {
 		k := w.plugin + "\x00" + w.name
 		g, ok := m[k]
 		if !ok {
-			g = &clusterSecretGroup{plugin: w.plugin, name: w.name, path: w.path}
+			g = &clusterSecretGroup{plugin: w.plugin, name: w.name, path: w.path, side: clusterSecretSide(w.side)}
 			m[k] = g
 			order = append(order, k)
+		}
+		if w.side == "node" { // both certificates may ask for the node side; a worker may not ask for the other
+			g.side = "node"
 		}
 		if !slices.Contains(g.units, w.unit) {
 			g.units = append(g.units, w.unit)
@@ -196,16 +225,28 @@ func (a *Agent) deliverOne(ctx context.Context, g clusterSecretGroup) {
 			return
 		}
 	}
-	if sv, ok := a.clusterSecretVersion(g.name); ok && a.clusterSecretDelivered(g, sv) {
+	if uid, sv, ok := a.clusterSecretID(g.name); ok && a.clusterSecretDelivered(g, uid, sv) {
 		return
 	}
+	if uid, sv, ok := a.clusterSecretID(g.name); ok && a.sideRefused(g, uid, sv) {
+		return // this certificate may not ask for this side; the file stays
+	}
 	m := a.watermark().mark()
-	v, err := a.fetchClusterSecret(ctx, g.plugin, g.name)
+	v, err := a.fetchClusterSecret(ctx, g.plugin, g.side, g.name)
 	if err != nil {
 		// The mark is from before the request: an answer that itself puts this agent on
 		// hold (a control plane older than what it kept) is not a reason to drop the cache.
+		// A worker refused the controller side is not "the plugin may not read": the file
+		// stays, and a control-plane certificate delivers that side.
+		if sideRefused(err) {
+			uid, sv, _ := a.clusterSecretID(g.name)
+			if a.noteSideRefusal(g, uid, sv) {
+				a.log("plugin %s: cluster secret %s: %v (kept; a control-plane certificate delivers this side)", g.plugin, g.name, err)
+			}
+			return
+		}
 		drop := a.watermark().acceptedSince(m) && a.inContact()
-		if drop && (forbidden(err) || client.IsNotFound(err) && a.seenClusterSecretNow(g.name)) {
+		if drop && (forbidden(err) || client.IsNotFound(err) && a.seenClusterSecretNow(g.name)) { // a bare 404 does not remove the file
 			a.removeClusterSecret(ctx, g)
 			return
 		}
@@ -234,33 +275,45 @@ func (a *Agent) deliverOne(ctx context.Context, g clusterSecretGroup) {
 		a.setRestarted(g, false)
 	}
 	ver := v.Version
-	if sv, ok := a.clusterSecretVersion(g.name); ok {
+	uid := ""
+	if id, sv, ok := a.clusterSecretID(g.name); ok {
 		ver = sv
+		uid = id
 	}
 	d := a.deliveryState(g)
-	if same && d.restarted && d.version == ver {
+	if same && d.restarted && d.version == ver && d.uid == uid && uid != "" {
 		return
 	}
 	if !same || !d.restarted {
 		for _, u := range g.units {
 			if err := a.restartPlugin(ctx, u); err != nil {
-				a.rememberClusterSecret(g, ver, false)
+				a.rememberClusterSecret(g, uid, ver, false)
 				a.log("plugin %s: %s: %v", g.plugin, u, err)
 				return
 			}
 		}
 	}
-	a.rememberClusterSecret(g, ver, true)
+	a.rememberClusterSecret(g, uid, ver, true)
 	if !same {
 		a.log("plugin %s: cluster secret %s written", g.plugin, g.name)
 	}
 }
 
-func (a *Agent) fetchClusterSecret(ctx context.Context, plugin, name string) (client.SecretValue, error) {
+func (a *Agent) fetchClusterSecret(ctx context.Context, plugin, side, name string) (client.SecretValue, error) {
 	var v client.SecretValue
-	p := "/apis/kevaso/v1/clustersecrets/" + url.PathEscape(name) + "/value?for=" + url.QueryEscape(plugin)
+	if side == "" {
+		side = "controller"
+	}
+	p := "/apis/kevaso/v1/clustersecrets/" + url.PathEscape(name) + "/value?for=" + url.QueryEscape(plugin) + "&side=" + url.QueryEscape(side)
 	err := a.Client.Call(ctx, http.MethodGet, p, nil, &v)
 	return v, err
+}
+
+// sideRefused is a 403 that names the side: a worker asked for the controller side.
+// The plugin's binding is not what refused, so the cached file stays.
+func sideRefused(err error) bool {
+	var e *client.Error
+	return errors.As(err, &e) && e.Code == http.StatusForbidden && strings.Contains(e.Message, "only for a plugin's node side")
 }
 
 func forbidden(err error) bool {
@@ -301,22 +354,22 @@ func (a *Agent) deliveryState(g clusterSecretGroup) csDelivered {
 	return a.csHave[a.csKey(g)]
 }
 
-func (a *Agent) clusterSecretDelivered(g clusterSecretGroup, version int64) bool {
+func (a *Agent) clusterSecretDelivered(g clusterSecretGroup, uid string, version int64) bool {
 	d := a.deliveryState(g)
-	if !d.restarted || d.version != version {
+	if !d.restarted || d.version != version || d.uid != uid || uid == "" { // uid plus version: a re-create is delivered again
 		return false
 	}
 	_, err := os.Stat(g.path)
 	return err == nil
 }
 
-func (a *Agent) rememberClusterSecret(g clusterSecretGroup, version int64, restarted bool) {
+func (a *Agent) rememberClusterSecret(g clusterSecretGroup, uid string, version int64, restarted bool) {
 	a.csMu.Lock()
 	defer a.csMu.Unlock()
 	if a.csHave == nil {
 		a.csHave = map[string]csDelivered{}
 	}
-	a.csHave[a.csKey(g)] = csDelivered{version: version, restarted: restarted}
+	a.csHave[a.csKey(g)] = csDelivered{uid: uid, version: version, restarted: restarted}
 }
 
 func (a *Agent) setRestarted(g clusterSecretGroup, restarted bool) {
@@ -379,19 +432,44 @@ func (a *Agent) clusterSecretRV(name string) (int64, bool) {
 	return rv, true
 }
 
-func (a *Agent) clusterSecretVersion(name string) (int64, bool) {
+func (a *Agent) clusterSecretID(name string) (uid string, version int64, ok bool) {
 	if a.csInf == nil || !a.csInf.Synced() {
-		return 0, false
+		return "", 0, false
 	}
 	o, ok := a.csInf.Get("", name)
 	if !ok {
-		return 0, false
+		return "", 0, false
 	}
-	cs, ok := o.(*v1.ClusterSecret)
-	if !ok {
-		return 0, false
+	cs, is := o.(*v1.ClusterSecret)
+	if !is {
+		return "", 0, false
 	}
-	return cs.Status.Version, true
+	uid = o.GetObjectMeta().UID
+	if uid == "" {
+		return "", 0, false
+	}
+	return uid, cs.Status.Version, true
+}
+
+func (a *Agent) sideRefused(g clusterSecretGroup, uid string, version int64) bool {
+	a.csMu.Lock()
+	defer a.csMu.Unlock()
+	r, ok := a.csRefuse[a.csKey(g)]
+	return ok && r.uid == uid && r.version == version
+}
+
+// noteSideRefusal records the refusal. It reports whether this is the first log of it.
+func (a *Agent) noteSideRefusal(g clusterSecretGroup, uid string, version int64) bool {
+	a.csMu.Lock()
+	defer a.csMu.Unlock()
+	if a.csRefuse == nil {
+		a.csRefuse = map[string]csSideRefusal{}
+	}
+	k := a.csKey(g)
+	prev := a.csRefuse[k]
+	first := !prev.logged || prev.uid != uid || prev.version != version
+	a.csRefuse[k] = csSideRefusal{uid: uid, version: version, logged: true}
+	return first
 }
 
 // watchClusterSecretDeletes records a delete only from the watch, opened on a history this

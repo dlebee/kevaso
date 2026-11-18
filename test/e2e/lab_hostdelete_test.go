@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -13,21 +14,25 @@ import (
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/builtin/kri/cloudhypervisor"
+	"kevaso.com/core/builtin/kri/container"
 	"kevaso.com/core/internal/cli/kvoadm"
+	"kevaso.com/core/sdk/kri"
 )
 
-// TestLabHostDelete deletes a worker whose machine is stopped and checks the two outcomes:
-// a silo that can be recreated runs on the other worker, and a silo with a local volume stays
-// unschedulable. The stopped worker's old certificate is refused when kevasod starts again.
+// TestLabHostDelete deletes a worker while its kevasod is running and checks the outcomes:
+// a silo that can be recreated runs on the other worker, a silo with a local volume stays
+// unschedulable, and the deleted host's silos stop on that machine within a minute with
+// their disks and volumes still there. kvoadm host add joins it again without anyone
+// moving /var/lib/kevaso/pki aside by hand.
 //
 // Source a pair lab's env file first (testbed/lab/.labs/NAME/env.sh). Without LAB_NAME the test
 // skips, which keeps it out of a bare-metal run. It uses the two-machine cluster (metal2, the
 // same helpers as TestMetal2*), so run it on its own or with those tests, not with the
 // one-machine suite.
 //
-// The pair is left usable. Join reuses a certificate it already has, so the old
-// /var/lib/kevaso/pki host certificate is removed first; then kvoadm host add runs the way
-// setUpPair adds the worker, and the placement label is put back.
+// The pair is left usable. kvoadm host add runs the way setUpPair adds the worker, and the
+// placement label is put back.
 func TestLabHostDelete(t *testing.T) {
 	if os.Getenv("LAB_NAME") == "" {
 		t.Skip("LAB_NAME is unset: source testbed/lab/.labs/NAME/env.sh (a pair lab; this test uses metal2)")
@@ -42,7 +47,7 @@ func TestLabHostDelete(t *testing.T) {
 	p.kvoadm("host", "drain", metalHost)
 	t.Cleanup(func() { p.kvoadm("host", "uncordon", metalHost) })
 	c.apply(boxEcho(ns, "mover", 8080) + "  availability: { onHostLoss: Recreate }\n---\n" +
-		boxEcho(ns, "pin", 8080) + on(metalHost2) + "  volumes: [{ name: data, size: 1Gi, mountPath: /data }]\n")
+		vmEcho(ns, "pin", 8080) + on(metalHost2) + "  volumes: [{ name: data, size: 1Gi, mountPath: /data }]\n")
 	for _, name := range []string{"mover", "pin"} {
 		c.eventually(name+" running on "+metalHost2, 5*time.Minute, func() (bool, string) {
 			s := c.silo(ns, name)
@@ -51,8 +56,30 @@ func TestLabHostDelete(t *testing.T) {
 	}
 
 	p.kvoadm("host", "uncordon", metalHost)
-	p.c2.mustSh("systemctl stop kevasod")
+	mover := c.silo(ns, "mover")
+	pin := c.silo(ns, "pin")
+	mn := container.NamesFor(kri.ID{Namespace: mover.Namespace, Name: mover.Name, UID: mover.UID})
+	pn := cloudhypervisor.NamesFor(kri.ID{Namespace: pin.Namespace, Name: pin.Name, UID: pin.UID})
 	c.must("", "delete", "host", metalHost2, "--confirm-off")
+	c.eventually(metalHost2+" stopped its silos and kept their disks", time.Minute, func() (bool, string) {
+		out, err := p.c2.sh(fmt.Sprintf("set +e; echo unit:$(systemctl is-active %s || true); echo docker:$(docker inspect -f '{{.State.Status}}' %s 2>/dev/null || echo missing); lvs --noheadings -o lv_name kevaso; echo ---; journalctl -u kevasod --no-pager --since '-3min' | grep -F 'was removed from the cluster' || true; exit 0", pn.Unit, mn.Main))
+		if err != nil {
+			return false, err.Error()
+		}
+		unitDown := strings.Contains(out, "unit:inactive") || strings.Contains(out, "unit:failed")
+		dockerDown := strings.Contains(out, "docker:exited") || strings.Contains(out, "docker:dead") || strings.Contains(out, "docker:missing")
+		root, vol := false, false
+		for _, f := range strings.Fields(out) {
+			if f == pn.LV {
+				root = true
+			}
+			if strings.HasPrefix(f, pn.LV+"-") {
+				vol = true
+			}
+		}
+		said := strings.Contains(out, "was removed from the cluster")
+		return unitDown && dockerDown && root && vol && said, strings.TrimSpace(out)
+	})
 	c.eventually("mover running on "+metalHost, 5*time.Minute, func() (bool, string) {
 		s := c.silo(ns, "mover")
 		return s.Status.Host == metalHost && s.Status.Phase == "Running", s.Status.Host + " " + s.Status.Phase
@@ -68,17 +95,6 @@ func TestLabHostDelete(t *testing.T) {
 		return ok, msg
 	})
 
-	p.c2.mustSh("systemctl start kevasod")
-	c.eventually("the old certificate is refused", 2*time.Minute, func() (bool, string) {
-		j, err := p.c2.sh("journalctl -u kevasod --no-pager --since '-3min' | grep -F 'was removed from the cluster' || true")
-		if err != nil {
-			return false, err.Error()
-		}
-		return strings.Contains(j, "was removed from the cluster"), strings.TrimSpace(j)
-	})
-
-	// The certificate Join already stored would be reused, and the API would keep refusing it.
-	p.c2.mustSh("systemctl stop kevasod && rm -f /var/lib/kevaso/pki/host.crt /var/lib/kevaso/pki/host.key")
 	bin := p.bin
 	if bin == "" {
 		arch := p.m2.arch
