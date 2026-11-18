@@ -493,9 +493,12 @@ func removeSystemNode(ctx context.Context, c *client.Client, name string, delete
 	if err := RemovalCheck(hosts, name, time.Now(), 40*time.Second); err != nil {
 		return err
 	}
+	confirmed := false
 	if onlySystem {
 		// Asked before anything is written: a no leaves the host as it was.
-		if err := confirmHostOff(ctx, c, name, confirmOff, stdin, say); err != nil {
+		var err error
+		confirmed, err = confirmHostOff(ctx, c, name, confirmOff, false, stdin, say)
+		if err != nil {
 			return err
 		}
 	}
@@ -520,7 +523,15 @@ func removeSystemNode(ctx context.Context, c *client.Client, name string, delete
 		}
 	}
 	if onlySystem {
-		if err := c.Delete(ctx, "Host", "", name, client.Precondition{ConfirmOff: true}); err != nil && !client.IsNotFound(err) {
+		err := c.Delete(ctx, "Host", "", name, hostDeletePrecondition(confirmed))
+		if err != nil && !confirmed && client.IsConflict(err) {
+			confirmed, err = confirmHostOff(ctx, c, name, confirmOff, true, stdin, say)
+			if err != nil {
+				return err
+			}
+			err = c.Delete(ctx, "Host", "", name, hostDeletePrecondition(confirmed))
+		}
+		if err != nil && !client.IsNotFound(err) {
 			return err
 		}
 	}
@@ -551,35 +562,55 @@ func removeSystemNode(ctx context.Context, c *client.Client, name string, delete
 }
 
 func removeWorkerHost(ctx context.Context, c *client.Client, name string, confirmOff bool, stdin io.Reader, say func(string, ...any)) error {
-	if err := confirmHostOff(ctx, c, name, confirmOff, stdin, say); err != nil {
+	confirmed, err := confirmHostOff(ctx, c, name, confirmOff, false, stdin, say)
+	if err != nil {
 		return err
 	}
-	// The CLI already listed the silos and got the yes. The flag is what the API requires.
-	if err := c.Delete(ctx, "Host", "", name, client.Precondition{ConfirmOff: true}); err != nil {
+	err = c.Delete(ctx, "Host", "", name, hostDeletePrecondition(confirmed))
+	// A silo placed after the list: the server answers 409. Show the list and ask, then send the confirmation.
+	if err != nil && !confirmed && client.IsConflict(err) {
+		confirmed, err = confirmHostOff(ctx, c, name, confirmOff, true, stdin, say)
+		if err != nil {
+			return err
+		}
+		err = c.Delete(ctx, "Host", "", name, hostDeletePrecondition(confirmed))
+	}
+	if err != nil {
 		return err
 	}
 	say("host %s removed from the cluster; the machine itself is yours (stop it: systemctl disable --now kevasod)", name)
 	return nil
 }
 
+// hostDeletePrecondition sends ConfirmOff only after a yes to the question or --confirm-off.
+// With no silos on the host, the delete goes without it.
+func hostDeletePrecondition(confirmed bool) client.Precondition {
+	var pre client.Precondition
+	if confirmed { // ConfirmOff only after a yes or --confirm-off
+		pre.ConfirmOff = true
+	}
+	return pre
+}
+
 // confirmHostOff lists the silos a host delete will start elsewhere and the ones that stay
-// unschedulable, then asks that the machine is off or wiped. No such silo: nothing to ask.
-func confirmHostOff(ctx context.Context, c *client.Client, name string, confirmOff bool, stdin io.Reader, say func(string, ...any)) error {
+// unschedulable, then asks that the machine is off or wiped. confirmed is true only after a yes
+// or --confirm-off. No such silo, and the server has not just refused the delete: nothing to ask.
+func confirmHostOff(ctx context.Context, c *client.Client, name string, confirmOff, mustAsk bool, stdin io.Reader, say func(string, ...any)) (bool, error) {
 	l, err := c.List(ctx, "Silo", "")
 	if err != nil {
-		return err
+		return false, err
 	}
 	var silos []*v1.Silo
 	for _, raw := range l.Items {
 		obj, _, err := v1.Decode(raw)
 		if err != nil {
-			return err
+			return false, err
 		}
 		silos = append(silos, obj.(*v1.Silo))
 	}
 	moving, staying := hostDeleteFates(silos, name)
-	if len(moving)+len(staying) == 0 {
-		return nil
+	if len(moving)+len(staying) == 0 && !mustAsk {
+		return false, nil
 	}
 	say("deleting %s starts these silos elsewhere:", name)
 	if len(moving) == 0 {
@@ -596,21 +627,21 @@ func confirmHostOff(ctx context.Context, c *client.Client, name string, confirmO
 		say("  %s", line)
 	}
 	if confirmOff {
-		return nil
+		return true, nil
 	}
 	say("Is %s off or wiped? [y/N]", name)
 	if stdin == nil {
-		return fmt.Errorf("host %s was not removed: silos are still on it (pass --confirm-off, or answer yes)", name)
+		return false, fmt.Errorf("host %s was not removed: silos are still on it (pass --confirm-off, or answer yes)", name)
 	}
 	line, err := readLine(bufio.NewReader(stdin))
 	if err != nil && line == "" {
-		return fmt.Errorf("host %s was not removed", name)
+		return false, fmt.Errorf("host %s was not removed", name)
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":
-		return nil
+		return true, nil
 	default:
-		return fmt.Errorf("host %s was not removed", name)
+		return false, fmt.Errorf("host %s was not removed", name)
 	}
 }
 

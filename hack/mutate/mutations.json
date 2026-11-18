@@ -2388,5 +2388,53 @@
    "./internal/apiserver"
   ],
   "protects": "a removed host's certificate is never accepted because its removal record couldn't be read"
+  },
+  {
+  "id": "G-450",
+  "guard": "a host delete sends confirmOff only after a yes or --confirm-off",
+  "file": "internal/cli/kvoadm/systemnodes.go",
+  "find": "if confirmed { // ConfirmOff only after a yes or --confirm-off",
+  "replace": "if true { // ConfirmOff only after a yes or --confirm-off",
+  "mutation": "a host is deleted with confirmOff when nobody was asked",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "a host is deleted with confirmOff only after a yes or --confirm-off"
+  },
+  {
+  "id": "G-451",
+  "guard": "a host certificate is refused before its silos are counted",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if err := s.revokeHost(ctx, t.name); err != nil { // the certificate is refused before its silos are counted",
+  "replace": "if err := error(nil); err != nil { // the certificate is refused before its silos are counted",
+  "mutation": "a host's silos are counted before its certificate is refused",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host certificate is refused before its silos are counted"
+  },
+  {
+  "id": "G-452",
+  "guard": "a refused host delete puts the removal record back",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if uerr := s.restoreHostRemoval(ctx, t.name, hostPrev); uerr != nil { // a refused delete puts the removal record back",
+  "replace": "if uerr := error(nil); uerr != nil { // a refused delete puts the removal record back",
+  "mutation": "a refused host delete leaves the removal record",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a refused host delete does not leave the removal record"
+  },
+  {
+  "id": "G-453",
+  "guard": "a fresh start claim keeps a silo when its host is deleted",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "if err := moves.CheckFenced(s, moves.Request{ConfirmFenced: true}, now); err == nil { // a fresh start claim keeps the silo here",
+  "replace": "if true { // a fresh start claim keeps the silo here",
+  "mutation": "a silo with a fresh start claim is placed when its host is deleted",
+  "packages": [
+   "./internal/controllers/silo"
+  ],
+  "protects": "a silo with a fresh start claim is not placed when its host is deleted"
   }
 ]

@@ -27,6 +27,65 @@ type hostRemovalRecord struct {
 
 func hostRemovalKey(name string) store.Key { return store.Key{Kind: hostRemovalKind, Name: name} }
 
+// hostRemovalSnap is the removal record that stood before a delete, so a refused delete can put
+// it back. ok is false when there was none: the record the delete wrote is removed instead.
+type hostRemovalSnap struct {
+	data []byte
+	ok   bool
+}
+
+func (s *Server) hostRemovalSnap(ctx context.Context, name string) (hostRemovalSnap, error) {
+	o, err := s.store.Get(ctx, hostRemovalKey(name))
+	if errors.Is(err, store.ErrNotFound) {
+		return hostRemovalSnap{}, nil
+	}
+	if err != nil {
+		return hostRemovalSnap{}, err
+	}
+	return hostRemovalSnap{data: append([]byte(nil), o.Data...), ok: true}, nil
+}
+
+// restoreHostRemoval puts back the record a refused delete replaced. A host that had joined
+// again keeps the serials issued after the earlier removal.
+func (s *Server) restoreHostRemoval(ctx context.Context, name string, prev hostRemovalSnap) error {
+	key := hostRemovalKey(name)
+	for attempt := 0; attempt < 5; attempt++ {
+		o, err := s.store.Get(ctx, key)
+		if errors.Is(err, store.ErrNotFound) {
+			if !prev.ok {
+				return nil
+			}
+			if _, err := s.store.Create(ctx, key, prev.data); err != nil {
+				if errors.Is(err, store.ErrExists) {
+					continue
+				}
+				return err
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !prev.ok {
+			if _, err := s.store.Delete(ctx, key, o.Revision); err != nil {
+				if errors.Is(err, store.ErrConflict) {
+					continue
+				}
+				return err
+			}
+			return nil
+		}
+		if _, err := s.store.Update(ctx, key, prev.data, o.Revision); err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("host %s: restoring the removal record kept conflicting", name)
+}
+
 func (s *Server) hostRemoval(ctx context.Context, name string) (hostRemovalRecord, bool) {
 	o, err := s.store.Get(ctx, hostRemovalKey(name))
 	if err != nil {
