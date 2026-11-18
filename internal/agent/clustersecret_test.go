@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -656,4 +657,24 @@ func TestClusterSecretSideRefusalKeepsTheFile(t *testing.T) {
 	if units := r.restarts.units(); len(units) != 0 {
 		t.Fatalf("a side refusal restarted the plugin: %v", units)
 	}
+}
+
+// A binding taken away changes no ClusterSecret. The delivered value is still fetched again
+// now and then, and the 403 that answers removes the file.
+func TestClusterSecretBindingTakenAwayRemovesTheFile(t *testing.T) {
+	r := newCSRig(t)
+	r.a.ClusterSecretRecheck = 100 * time.Millisecond
+	r.api.set("token", 1, []byte(r.secret))
+	r.start()
+	r.wait(3*time.Second, "the file", func() bool {
+		b, err := os.ReadFile(r.path())
+		return err == nil && string(b) == r.secret
+	})
+	r.api.mu.Lock()
+	r.api.forbid = true // the binding is gone; the object is unchanged
+	r.api.mu.Unlock()
+	r.wait(3*time.Second, "the file removed", func() bool {
+		_, err := os.Stat(r.path())
+		return errors.Is(err, os.ErrNotExist)
+	})
 }

@@ -2775,5 +2775,17 @@
    "./internal/apiserver"
   ],
   "protects": "only a readable, dated removal makes a host stop its silos"
+  },
+  {
+  "id": "G-493",
+  "guard": "a delivered cluster secret is fetched again now and then",
+  "file": "internal/agent/clustersecret.go",
+  "find": "if a.csNow().Sub(d.checked) >= recheck { // fetched again now and then: access can change with no object change",
+  "replace": "if false && a.csNow().Sub(d.checked) >= recheck { // fetched again now and then: access can change with no object change",
+  "mutation": "a binding taken away never removes the host's copy",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a plugin loses a secret's value on every host once its binding is taken away"
   }
 ]

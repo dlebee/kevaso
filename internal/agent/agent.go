@@ -117,6 +117,9 @@ type Agent struct {
 	RestartUnit func(ctx context.Context, unit string) error
 	// ClusterSecretEvery is how often a failed cluster-secret fetch is tried again (default 5s).
 	ClusterSecretEvery time.Duration
+	// ClusterSecretRecheck is how often a delivered value is fetched again although its
+	// object did not change (default 30s): a binding taken away shows only on a fetch.
+	ClusterSecretRecheck time.Duration
 	// Probe looks at a mount-reach volume's folder; it's not answering while it hasn't returned
 	// (default: a lookup in it). Tests replace it.
 	Probe func(dir string) error

@@ -28,8 +28,13 @@ import (
 type csDelivered struct {
 	uid       string
 	version   int64
-	restarted bool // the unit was restarted onto these bytes (or the bytes had not changed)
+	restarted bool      // the unit was restarted onto these bytes (or the bytes had not changed)
+	checked   time.Time // the last fetch that answered with these bytes
 }
+
+// clusterSecretRecheck is how often a delivered value is fetched again although its object did
+// not change: a binding taken away changes no ClusterSecret, and only a fetch sees the 403.
+const clusterSecretRecheck = 30 * time.Second
 
 // csSideRefusal is a fetch this certificate was refused because of the side, remembered
 // so the file stays and the value is not fetched again until the object changes.
@@ -282,6 +287,7 @@ func (a *Agent) deliverOne(ctx context.Context, g clusterSecretGroup) {
 	}
 	d := a.deliveryState(g)
 	if same && d.restarted && d.version == ver && d.uid == uid && uid != "" {
+		a.rememberClusterSecret(g, uid, ver, true) // checked again: the same bytes
 		return
 	}
 	if !same || !d.restarted {
@@ -348,6 +354,13 @@ func (a *Agent) removeClusterSecret(ctx context.Context, g clusterSecretGroup) {
 
 func (a *Agent) csKey(g clusterSecretGroup) string { return g.plugin + "\x00" + g.name }
 
+func (a *Agent) csNow() time.Time {
+	if a.Clock != nil {
+		return a.Clock.Now()
+	}
+	return time.Now()
+}
+
 func (a *Agent) deliveryState(g clusterSecretGroup) csDelivered {
 	a.csMu.Lock()
 	defer a.csMu.Unlock()
@@ -357,6 +370,13 @@ func (a *Agent) deliveryState(g clusterSecretGroup) csDelivered {
 func (a *Agent) clusterSecretDelivered(g clusterSecretGroup, uid string, version int64) bool {
 	d := a.deliveryState(g)
 	if !d.restarted || d.version != version || d.uid != uid || uid == "" { // uid plus version: a re-create is delivered again
+		return false
+	}
+	recheck := a.ClusterSecretRecheck
+	if recheck <= 0 {
+		recheck = clusterSecretRecheck
+	}
+	if a.csNow().Sub(d.checked) >= recheck { // fetched again now and then: access can change with no object change
 		return false
 	}
 	_, err := os.Stat(g.path)
@@ -369,7 +389,7 @@ func (a *Agent) rememberClusterSecret(g clusterSecretGroup, uid string, version 
 	if a.csHave == nil {
 		a.csHave = map[string]csDelivered{}
 	}
-	a.csHave[a.csKey(g)] = csDelivered{uid: uid, version: version, restarted: restarted}
+	a.csHave[a.csKey(g)] = csDelivered{uid: uid, version: version, restarted: restarted, checked: a.csNow()}
 }
 
 func (a *Agent) setRestarted(g clusterSecretGroup, restarted bool) {
