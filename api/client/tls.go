@@ -17,8 +17,50 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
+
+// rotatingCert is the certificate a client presents. GetClientCertificate reads it on each
+// handshake, so a renewal replaces it for the next connection without building a new client.
+type rotatingCert struct {
+	mu   sync.Mutex
+	cert *tls.Certificate
+}
+
+func (r *rotatingCert) current() (*tls.Certificate, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cert == nil {
+		return nil, errors.New("no client certificate")
+	}
+	return r.cert, nil
+}
+
+func (r *rotatingCert) set(certPEM, keyPEM []byte) error {
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.cert = &pair
+	r.mu.Unlock()
+	return nil
+}
+
+// RenewDue reports whether a certificate should be renewed: past two thirds of its lifetime, or
+// inside the last ten days, whichever is earlier.
+func RenewDue(notBefore, notAfter, now time.Time) bool {
+	life := notAfter.Sub(notBefore)
+	if life <= 0 {
+		return false
+	}
+	at := notBefore.Add(life * 2 / 3)
+	if ten := notAfter.Add(-10 * 24 * time.Hour); ten.Before(at) {
+		at = ten
+	}
+	return !now.Before(at)
+}
 
 // NewTLS returns a client that pins the cluster CA and presents a client certificate (both PEM).
 // With empty certPEM/keyPEM it connects without one (enough for Enroll).
@@ -28,14 +70,17 @@ func NewTLS(baseURL string, caPEM, certPEM, keyPEM []byte) (*Client, error) {
 		return nil, err
 	}
 	cfg := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: pool}
+	c := New(baseURL)
 	if len(certPEM) > 0 {
-		pair, err := tls.X509KeyPair(certPEM, keyPEM)
-		if err != nil {
+		rot := &rotatingCert{}
+		if err := rot.set(certPEM, keyPEM); err != nil {
 			return nil, err
 		}
-		cfg.Certificates = []tls.Certificate{pair}
+		cfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return rot.current()
+		}
+		c.certs = rot
 	}
-	c := New(baseURL)
 	c.HTTP = &http.Client{Transport: &http.Transport{TLSClientConfig: cfg, ForceAttemptHTTP2: true,
 		DialContext: (&net.Dialer{Timeout: DialTimeout, KeepAlive: 30 * time.Second}).DialContext, TLSHandshakeTimeout: 10 * time.Second,
 		// A connection whose peer went silent (no RST: powered off, cut off) is found by its
@@ -109,6 +154,27 @@ func (c *Client) requestCert(ctx context.Context, path string, req certRequest) 
 		return Credentials{}, err
 	}
 	return Credentials{Certificate: []byte(resp.Certificate), Key: keyPEM, CA: []byte(resp.CA)}, nil
+}
+
+// Renew asks for a new certificate for whoever this client already is. The server signs that
+// identity; the CSR's names are ignored.
+func (c *Client) Renew(ctx context.Context) (Credentials, error) {
+	return c.requestCert(ctx, "/renew", certRequest{})
+}
+
+// RotateCertificate presents certPEM on the next handshake. The client keeps using the connection
+// it has until that connection is idle.
+func (c *Client) RotateCertificate(certPEM, keyPEM []byte) error {
+	if c == nil || c.certs == nil {
+		return errors.New("this client has no certificate to rotate")
+	}
+	if err := c.certs.set(certPEM, keyPEM); err != nil {
+		return err
+	}
+	if c.HTTP != nil {
+		c.HTTP.CloseIdleConnections()
+	}
+	return nil
 }
 
 // Enroll joins a host: the key never leaves this machine; the server signs a CSR for exactly the

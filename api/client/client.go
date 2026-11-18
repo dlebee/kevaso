@@ -39,6 +39,8 @@ type Client struct {
 
 	kindsMu sync.Mutex
 	kinds   []v1.APIResource // what the server serves, once asked (kinds.go)
+
+	certs *rotatingCert // the client certificate, when this client presents one; rotated in place
 }
 
 // send adds credentials and sends a request.
