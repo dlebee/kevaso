@@ -929,6 +929,9 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			if !dryRun(ctx) && s.vault != nil && (t.kind.Kind == "Secret" || t.kind.Kind == "ClusterSecret") {
 				s.vault.Forget(ctx, t.namespace, t.name)
 			}
+			if hostRevoked {
+				s.finalizeHostRemoval(ctx, t.name) // the delete committed: the removal is final
+			}
 			writeJSON(w, http.StatusOK, Status{Code: http.StatusOK, Reason: "Deleted", Message: t.key().String() + " deleted"})
 			return
 		}
@@ -950,6 +953,9 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 				return
 			}
 			cur = o
+		}
+		if hostRevoked {
+			s.finalizeHostRemoval(ctx, t.name) // marked for deletion: the removal is final
 		}
 		b, err := render(cur)
 		if err != nil {

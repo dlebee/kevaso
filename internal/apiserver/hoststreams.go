@@ -126,7 +126,7 @@ func (s *Server) trackHost(ctx context.Context, name string, cert *x509.Certific
 
 func (s *Server) closeIfRemoved(name string, data []byte) {
 	var rec hostRemovalRecord
-	if json.Unmarshal(data, &rec) != nil {
+	if json.Unmarshal(data, &rec) != nil || rec.Pending { // a pending removal may still be refused: streams stay
 		return
 	}
 	if !s.hostStreams.noteRemoval(name, rec.RemovedAt) {

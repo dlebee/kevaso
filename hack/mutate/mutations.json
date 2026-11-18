@@ -2369,8 +2369,8 @@
   "id": "G-442",
   "guard": "a certificate issued before a host was removed is refused",
   "file": "internal/apiserver/hostremoval.go",
-  "find": "if cert.NotBefore.Before(rec.RemovedAt) || !slices.Contains(rec.Serials, serial) { // a certificate issued before this host was removed is refused",
-  "replace": "if false && (cert.NotBefore.Before(rec.RemovedAt) || !slices.Contains(rec.Serials, serial)) { // a certificate issued before this host was removed is refused",
+  "find": "if !cert.NotBefore.Before(rec.RemovedAt) && slices.Contains(rec.Serials, serial) {",
+  "replace": "if true || !cert.NotBefore.Before(rec.RemovedAt) && slices.Contains(rec.Serials, serial) {",
   "mutation": "a certificate issued before the host was removed is accepted",
   "packages": [
    "./internal/apiserver"
@@ -2751,5 +2751,29 @@
    "./internal/agent"
   ],
   "protects": "a host stops its silos only on the final removal refusal, never on another refusal"
+  },
+  {
+  "id": "G-491",
+  "guard": "a removal is final only once its Host delete commits",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "if rec.Pending && !s.hostGoing(ctx, name) { // a delete is under way and may still be refused: not final",
+  "replace": "if false && rec.Pending && !s.hostGoing(ctx, name) { // a delete is under way and may still be refused: not final",
+  "mutation": "a live host gets the final removal answer during a delete that is then refused",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a refused host delete never tells the live host it was removed"
+  },
+  {
+  "id": "G-492",
+  "guard": "a removal record with no removal time is never final",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "if err == nil && rec.RemovedAt.IsZero() {",
+  "replace": "if false && err == nil && rec.RemovedAt.IsZero() {",
+  "mutation": "a removal record with no time is answered as final",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "only a readable, dated removal makes a host stop its silos"
   }
 ]
