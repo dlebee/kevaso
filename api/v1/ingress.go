@@ -31,6 +31,9 @@ type IngressClassSpec struct {
 	// DNS, when set, publishes every Ingress host name of this class through a DNS provider,
 	// pointing at the controller's public address.
 	DNS *IngressDNS `json:"dns,omitempty"`
+	// Hosts assigns host names, or one-label suffixes (*.shop.example.com), to the namespaces
+	// that may publish them on this class. A host with no assignment cannot be claimed.
+	Hosts []HostAssignment `json:"hosts,omitempty"`
 }
 
 // IngressController is a stock proxy (nginx, caddy, kong…) driven from outside (design §7.3): its

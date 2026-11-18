@@ -1,6 +1,6 @@
-// Package internalca is the built-in "internal-ca" cert-controller: certificates from the cluster's
-// own CA, for private hosts (api.payments.kevaso, a LAN name). No challenge: the cluster vouches
-// for its own names.
+// Package internalca is the built-in "internal-ca" cert-controller: certificates from a CA of its
+// own, for private hosts (api.payments.kevaso, a LAN name). That CA is not the one clients pin for
+// the API. No challenge: the cluster vouches for its own names.
 package internalca
 
 import (
@@ -18,7 +18,7 @@ type Controller struct{ Sign Sign }
 
 // Info implements kcc.CertController.
 func (c *Controller) Info() kcc.Info {
-	return kcc.Info{Name: "internal-ca", Description: "the cluster's own CA, for private hosts"}
+	return kcc.Info{Name: "internal-ca", Description: "a CA of its own, for private hosts (not the API's CA)"}
 }
 
 // Issue implements kcc.CertController.

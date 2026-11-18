@@ -66,7 +66,11 @@ func TestCertificatesInAControlPlane(t *testing.T) {
 	}
 	for _, o := range []meta.Object{
 		&v1.IngressClass{TypeMeta: tm("IngressClass"), ObjectMeta: meta.ObjectMeta{Name: "private"},
-			Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "ingress", Namespace: "kevaso-system"}}},
+			Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "ingress", Namespace: "kevaso-system"},
+				Hosts: []v1.HostAssignment{
+					{Host: "api.payments.kevaso", Namespaces: []string{"payments"}},
+					{Host: "*.example.com", Namespaces: []string{"payments"}},
+				}}},
 		&v1.Ingress{TypeMeta: tm("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "payments"},
 			Spec: v1.IngressSpec{IngressClass: "private", Hosts: []string{"api.payments.kevaso"},
 				Rules: []v1.IngressRule{{Path: "/", Service: v1.IngressTarget{Name: "api", Port: "http"}}}}},

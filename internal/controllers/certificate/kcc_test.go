@@ -76,7 +76,7 @@ func TestHTTP01Solver(t *testing.T) {
 }
 
 func TestRegistryAndACMEConfig(t *testing.T) {
-	r := BuiltinCertControllers(nil, nil, nil, time.Now, nil)
+	r := BuiltinCertControllers(nil, nil, nil, nil, time.Now, nil)
 	for _, n := range []string{"acme", "internal-ca"} {
 		if c, err := r.Get(n); err != nil || c.Info().Name != n {
 			t.Errorf("%s: %v", n, err)

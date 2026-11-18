@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +16,9 @@ import (
 	"kevaso.com/core/internal/policy"
 	"kevaso.com/core/internal/probes"
 )
+
+// hostAssignNS is a namespace name on a host assignment.
+var hostAssignNS = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 // semantic checks what CEL can't say well: addresses and ranges.
 func semantic(obj meta.Object) []string {
@@ -68,6 +72,27 @@ func semantic(obj meta.Object) []string {
 			}
 			if sec.Path != "" && (!strings.HasPrefix(sec.Path, "/run/") || !v1.CleanMountPath(sec.Path)) {
 				errs = append(errs, fmt.Sprintf("secret %s: path %q must be under /run/ (tmpfs: a secret file never reaches the silo's disk), a clean path of letters, digits, . _ - and /", sec.Name, sec.Path))
+			}
+		}
+	case *v1.IngressClass:
+		seen := map[string]bool{}
+		for _, a := range o.Spec.Hosts {
+			if !v1.ValidHostPattern(a.Host) {
+				errs = append(errs, fmt.Sprintf("spec.hosts: %q isn't a host name or a suffix (*.example.com)", a.Host))
+				continue
+			}
+			key := v1.NormalizeDNS(a.Host)
+			if seen[key] {
+				errs = append(errs, fmt.Sprintf("spec.hosts: %q is listed twice", a.Host))
+			}
+			seen[key] = true
+			if len(a.Namespaces) == 0 {
+				errs = append(errs, fmt.Sprintf("spec.hosts: %q needs the namespaces allowed to use it", a.Host))
+			}
+			for _, ns := range a.Namespaces {
+				if !hostAssignNS.MatchString(ns) {
+					errs = append(errs, fmt.Sprintf("spec.hosts: namespace %q isn't a name", ns))
+				}
 			}
 		}
 	case *v1.Ingress:

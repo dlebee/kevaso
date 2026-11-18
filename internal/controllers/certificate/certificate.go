@@ -1,6 +1,6 @@
 // Package certificate is the certificate controller (design §7.3): cert-manager style, built into
 // the control plane. An Ingress with TLS gets a Certificate for its hosts; a Certificate gets a
-// certificate from its Issuer (ACME with HTTP-01, or the cluster's own CA) into a Secret, and a new
+// certificate from its Issuer (ACME with HTTP-01, or internal-ca's own CA) into a Secret, and a new
 // one before it expires.
 //
 // HTTP-01 challenges are answered by the ingress controller silos: the controller keeps the
@@ -103,6 +103,11 @@ type Controller struct {
 	// Refused, if set, says why an Ingress isn't served as it is ("" if it is): its class's driver
 	// refuses it, or the proxy refused a configuration and blames it (design §7.3).
 	Refused func(class *v1.IngressClass, ing *v1.Ingress) (reason, msg string)
+	// APINames are this process's API server names. Hosts in the store add theirs. A certificate
+	// for one of them is not issued.
+	APINames []string
+	// Hosts, when Store is nil, is where host names and the cluster suffix are read.
+	Hosts *informer.Informer
 }
 
 func (c *Controller) log(f string, a ...any) {
@@ -378,6 +383,11 @@ func (c *Controller) reconcileCertificate(ctx context.Context, cert *v1.Certific
 	} else if err != nil && !client.IsNotFound(err) {
 		return engine.Result{}, err
 	}
+	if why, err := c.unallowedHost(ctx, cert); err != nil {
+		return engine.Result{}, err
+	} else if why != "" { // a certificate is not issued for a host the namespace may not use
+		return engine.Result{}, c.fail(ctx, cert, "HostNotAllowed", why)
+	}
 	var is v1.Issuer
 	if err := c.Client.Get(ctx, "Issuer", "", cert.Spec.Issuer, &is); err != nil {
 		return engine.Result{}, c.fail(ctx, cert, "NoIssuer", fmt.Sprintf("issuer %s: %v", cert.Spec.Issuer, err))
@@ -606,11 +616,15 @@ func (s *SealedStore) Put(ctx context.Context, issuer, k string, v []byte) error
 
 // BuiltinCertControllers are the cert-controllers every control plane has; dns are the DNS
 // providers registered on this control-plane host, for acme's dns01 solvers.
-func BuiltinCertControllers(st store.Store, k kms.KMS, ca *pki.CA, now func() time.Time, dns map[string]acme.DNSProvider) kcc.Registry {
+func BuiltinCertControllers(st store.Store, k kms.KMS, cluster, internal *pki.CA, now func() time.Time, dns map[string]acme.DNSProvider) kcc.Registry {
+	_ = cluster // the cluster CA is not what internal-ca signs with
 	return kcc.Registry{
 		"acme": &acme.Controller{HTTP01: &HTTP01Solver{Store: st, Now: now}, DNSProviders: dns, Store: &SealedStore{Store: st, KMS: k}},
 		"internal-ca": &internalca.Controller{Sign: func(csr []byte, hosts []string) ([][]byte, error) {
-			return ca.SignServerCSR(csr, hosts, now(), 90*24*time.Hour)
+			if internal == nil {
+				return nil, errors.New("internal-ca has no CA")
+			}
+			return internal.SignServerCSR(csr, hosts, now(), 90*24*time.Hour) // internal-ca is not the cluster CA
 		}},
 	}
 }

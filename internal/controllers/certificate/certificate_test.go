@@ -63,7 +63,11 @@ func TestInternalCAAndBundle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cc, err := BuiltinCertControllers(nil, nil, ca, clock.Real{}.Now, nil).Get("internal-ca")
+	cluster, err := pki.NewCA("test", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc, err := BuiltinCertControllers(nil, nil, cluster, ca, clock.Real{}.Now, nil).Get("internal-ca")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +91,10 @@ func TestInternalCAAndBundle(t *testing.T) {
 	}
 	leaf, _ := x509.ParseCertificate(pair.Certificate[0])
 	if _, err := leaf.Verify(x509.VerifyOptions{Roots: ca.Pool(), DNSName: "api.payments.kevaso"}); err != nil {
-		t.Fatalf("not valid for the host under the cluster CA: %v", err)
+		t.Fatalf("not valid for the host under the internal CA: %v", err)
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: cluster.Pool(), DNSName: "api.payments.kevaso"}); err == nil {
+		t.Fatal("internal-ca signed with the cluster CA")
 	}
 	if leaf.NotAfter.Sub(leaf.NotBefore) < 89*24*time.Hour {
 		t.Errorf("lifetime %s", leaf.NotAfter.Sub(leaf.NotBefore))

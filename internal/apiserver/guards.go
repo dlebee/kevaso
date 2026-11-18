@@ -46,6 +46,7 @@ func (s *Server) guard(ctx context.Context, t target, old, obj meta.Object) erro
 	for _, check := range []func(context.Context, target, meta.Object) error{
 		s.checkExposure,
 		s.checkPublishPublic,
+		s.checkHostAssignment,
 		s.checkSecretUse,
 		s.checkOpenShellPolicyNames,
 		s.checkImages,
