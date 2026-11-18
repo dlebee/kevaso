@@ -2909,6 +2909,30 @@
   "protects": "changing a volume's class, or disk.class, under the same name is refused"
   },
   {
+  "id": "G-507",
+  "guard": "init keeps a worker the unit already has",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "o.Worker = true // the unit already runs a worker: this init keeps it",
+  "replace": "_ = o.Worker // the unit already runs a worker: this init keeps it",
+  "mutation": "init drops a worker the unit already has",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "init again keeps the unit's worker"
+  },
+  {
+  "id": "G-508",
+  "guard": "init refuses a run that would drop the unit's flags",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if !o.ReplaceUnit && dropped != \"\" { // this run would drop a worker, a runtime, storage, or the etcd store",
+  "replace": "if false && !o.ReplaceUnit && dropped != \"\" { // this run would drop a worker, a runtime, storage, or the etcd store",
+  "mutation": "init writes a unit that drops a worker, a runtime, storage, or etcd",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "init refuses to drop a worker, a runtime, storage, or an etcd store unless --replace-unit"
+  },
+  {
   "id": "G-509",
   "guard": "a qcow2 backing file is refused",
   "file": "builtin/kri/cloudhypervisor/image.go",

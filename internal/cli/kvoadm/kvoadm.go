@@ -5,6 +5,7 @@
 //	             [--api-server URL] [--cluster NAME] [--user NAME]      the control plane, your kvo
 //	                                                                    context, the recovery key
 //	             [--store sqlite|etcd]                                  etcd: ready for more system nodes
+//	             [--replace-unit]                                       write the unit from this run's flags only
 //	             [--internal-ip IP] [--external-ip IP]                  the machine's addresses (neither:
 //	                                                                    the SSH address, as internal)
 //	kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime R]… [--loop-storage SIZE]
@@ -192,7 +193,9 @@ type InitOptions struct {
 	DryRun               bool   // look at the machine, change nothing
 	Restore              string // a backup to restore (kvoadm backup), instead of a new cluster
 	Store                string // init: sqlite (default) or etcd (the embedded member with a peer listener, ready for more system nodes)
+	ReplaceUnit          bool   // write kevasod.service from this run's flags only
 	nameGiven            bool
+	storeGiven           bool // --store was on the command line (sqlite and omitting it are otherwise the same)
 	clusterGiven         bool
 	looked               bool // the machine was already looked at (host add)
 	hardeningAsked       bool // a hardening flag was given: don't ask
@@ -201,12 +204,17 @@ type InitOptions struct {
 func parseInit(args []string) (InitOptions, error) {
 	var rest []string
 	store := ""
+	var replace, storeGiven bool
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--store" {
+		switch args[i] {
+		case "--replace-unit":
+			replace = true
+			continue
+		case "--store":
 			if i+1 >= len(args) {
 				return InitOptions{}, errors.New("--store needs a value: sqlite or etcd")
 			}
-			store = args[i+1]
+			store, storeGiven = args[i+1], true
 			i++
 			continue
 		}
@@ -216,6 +224,7 @@ func parseInit(args []string) (InitOptions, error) {
 	if err != nil {
 		return o, err
 	}
+	o.ReplaceUnit, o.storeGiven = replace, storeGiven
 	switch store {
 	case "", "sqlite":
 	case "etcd":
@@ -598,7 +607,22 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 			say("cluster %s created on this host (its record in /var/lib/kevaso)", o.Cluster)
 		}
 	}
-	if err := installUnits(ctx, conn, UnitsFor(Unit(o), o.Worker, o.Runtimes)); err != nil {
+	text, err := readInstalledUnit(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if text == "" && restore != nil && !o.ReplaceUnit {
+		next, err := o.withRestoredHost(restore)
+		if err != nil {
+			return fmt.Errorf("restore: %w", err)
+		}
+		o = next
+	}
+	o, unit, err := MergeUnit(text, o)
+	if err != nil {
+		return err
+	}
+	if err := installUnits(ctx, conn, UnitsFor(unit, o.Worker, o.Runtimes)); err != nil {
 		return err
 	}
 	say("control plane started (kevasod.service)")

@@ -122,7 +122,7 @@ func AssessWith(facts map[string]string, sup Supported) []CheckResult {
 		add("warn", "SSH password login", "unknown", "couldn't read sshd's settings")
 	}
 	if facts["kevasod"] == "running" {
-		add("warn", "kevasod", "already running", "init again reinstalls it and restarts the service (the CA and store are kept)")
+		add("warn", "kevasod", "already running", "init again restarts it and keeps the unit's worker, runtimes, storage and store (pass --replace-unit to write the unit from this run only)")
 	}
 	if facts["port_6443"] == "taken" && facts["kevasod"] != "running" {
 		add("fail", "port 6443", "taken", "the API listens on 6443: something else already does")
