@@ -5271,5 +5271,29 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a failed write does not stop the serial logger"
+ },
+ {
+  "id": "G-806",
+  "guard": "a reach address on a local interface is a peer listener",
+  "file": "internal/etcd/server.go",
+  "find": "if !local(host) {",
+  "replace": "if true {",
+  "mutation": "a reach address on this machine is not listened on",
+  "packages": [
+   "./internal/etcd"
+  ],
+  "protects": "peers can dial a reach address that is on this machine"
+ },
+ {
+  "id": "G-807",
+  "guard": "a reach address that is not local is not a peer listener",
+  "file": "internal/etcd/server.go",
+  "find": "if !local(host) {",
+  "replace": "if false {",
+  "mutation": "a reach address that is not on this machine is listened on",
+  "packages": [
+   "./internal/etcd"
+  ],
+  "protects": "under NAT the member listens on the internal address only"
  }
 ]

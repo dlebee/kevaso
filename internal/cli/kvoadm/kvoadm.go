@@ -571,9 +571,10 @@ func needIPs(o InitOptions) error {
 	return nil
 }
 
-// etcdPeers is where the member listens and where other members dial it. The listener binds the
-// internal address (the external address is not on the machine under 1:1 NAT). Other members
-// dial the reach address.
+// etcdPeers is where the unit says the member listens and where other members dial it.
+// The flag is the internal address. The member also binds the reach address when that
+// address is on one of its own interfaces (etcd.Start); under 1:1 NAT it is not, and the
+// internal listener is what answers. Other members dial the reach address.
 func etcdPeers(o InitOptions) (listen, advertise string) {
 	if o.EtcdPeerListen != "" {
 		listen = o.EtcdPeerListen
