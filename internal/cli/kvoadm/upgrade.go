@@ -41,6 +41,37 @@ func BinaryVersion(ldflags string) string {
 	return ""
 }
 
+const devVersion = "v0.0.0-dev"
+
+// binaryVersionOf reads the version stamped into bin. Empty when the build set none.
+func binaryVersionOf(bin string) string {
+	bi, err := buildinfo.ReadFile(bin)
+	if err != nil {
+		return ""
+	}
+	for _, s := range bi.Settings {
+		if s.Key == "-ldflags" {
+			if v := BinaryVersion(s.Value); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// UpgradeTarget is the version a roll waits for. stamped is the version in the binary.
+// A binary with no version is refused, including when flag names one: the binary reports
+// only the version it was built with. A flag that names a different version is refused.
+func UpgradeTarget(stamped, flag string) (string, error) {
+	if stamped == "" || stamped == devVersion {
+		return "", fmt.Errorf("this kevasod carries no version (build it with -X %s=vX.Y.Z): --version is refused", versionVar)
+	}
+	if flag != "" && flag != stamped {
+		return "", fmt.Errorf("--version %s is refused: this kevasod reports %s", flag, stamped)
+	}
+	return stamped, nil
+}
+
 // UpgradeNodes is the cluster as the planner sees it (pure).
 func UpgradeNodes(hosts []v1.Host) []upgrade.Node {
 	var out []upgrade.Node
@@ -97,17 +128,10 @@ func upgradeCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writ
 	if _, err := ElfArch(bin); err != nil {
 		return err
 	}
-	if target == "" {
-		if bi, err := buildinfo.ReadFile(bin); err == nil {
-			for _, s := range bi.Settings {
-				if s.Key == "-ldflags" {
-					target = BinaryVersion(s.Value)
-				}
-			}
-		}
-	}
-	if target == "" {
-		return fmt.Errorf("%s carries no version (built without -X %s=…): give --version", bin, versionVar)
+	stamped := binaryVersionOf(bin)
+	target, err := UpgradeTarget(stamped, target)
+	if err != nil {
+		return fmt.Errorf("%s: %w", bin, err)
 	}
 	c, _, err := adminClient(kctx)
 	if err != nil {

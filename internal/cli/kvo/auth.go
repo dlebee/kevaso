@@ -102,21 +102,26 @@ func configCommand(ctx context.Context, cmd string, o opts, stdout, stderr io.Wr
 func loginCmd(ctx context.Context, path string, cfg kvoconfig.Config, o opts, stdout, stderr io.Writer) error {
 	var server, name string
 	var caPEM []byte
+	var kept string      // the context's server list, which may name several control planes
 	if len(o.args) > 0 { // a new cluster: pin its CA by the fingerprint the admin gave
-		server = strings.TrimRight(o.args[0], "/")
-		if !strings.HasPrefix(server, "https://") {
-			server = "https://" + server
+		servers := loginServers(o.args[0])
+		for _, p := range servers {
+			if err := loginScheme(p); err != nil {
+				return err
+			}
 		}
 		if o.ca == "" {
 			return errors.New("kvo login SERVER needs --ca sha256:… (your admin has it, from kvoadm users invite)")
 		}
 		var err error
-		if caPEM, err = login.FetchCA(ctx, server, o.ca); err != nil {
+		caPEM, server, err = fetchPinnedCA(ctx, servers, o.ca, login.FetchCA)
+		if err != nil {
 			return err
 		}
+		kept = strings.Join(servers, ",")
 		name = o.context
 		if name == "" {
-			u, _ := url.Parse(server)
+			u, _ := url.Parse(servers[0])
 			name = strings.NewReplacer(".", "-", ":", "-").Replace(u.Hostname())
 			if _, port, _ := net.SplitHostPort(u.Host); port != "" && port != "6443" {
 				name += "-" + port
@@ -128,11 +133,25 @@ func loginCmd(ctx context.Context, path string, cfg kvoconfig.Config, o opts, st
 		if name, c, err = cfg.Resolve(o.context); err != nil {
 			return err
 		}
-		if server, caPEM = c.Server, nil; c.CA != "" {
+		kept = c.Server
+		parts := client.SplitServers(c.Server)
+		if len(parts) == 0 {
+			parts = []string{c.Server}
+		}
+		for _, p := range parts {
+			if err := loginScheme(p); err != nil {
+				return err
+			}
+		}
+		server = parts[0]
+		if c.CA != "" {
 			if caPEM, err = os.ReadFile(c.CA); err != nil {
 				return err
 			}
 		}
+	}
+	if kept == "" {
+		kept = server
 	}
 	open := Browser
 	if o.noBrowser {
@@ -148,7 +167,7 @@ func loginCmd(ctx context.Context, path string, cfg kvoconfig.Config, o opts, st
 	if err := login.Save(kvoconfig.Tokens(path), name, tok); err != nil {
 		return err
 	}
-	if err := kvoconfig.AddLoginContext(path, name, server, caPEM); err != nil {
+	if err := kvoconfig.AddLoginContext(path, name, kept, caPEM); err != nil {
 		return err
 	}
 	// Say who we are now.
@@ -161,8 +180,52 @@ func loginCmd(ctx context.Context, path string, cfg kvoconfig.Config, o opts, st
 	if err := c.Call(ctx, http.MethodGet, "/auth/whoami", nil, &me); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(stdout, "signed in to %s as %s (context %q)\n", server, me.Name, name)
+	_, _ = fmt.Fprintf(stdout, "signed in to %s as %s (context %q)\n", kept, me.Name, name)
 	return nil
+}
+
+// loginServers splits a server argument. An invite with several control planes prints them
+// comma-separated; each one is its own URL.
+// loginScheme refuses a server that is not https. Over plain http the CA fingerprint
+// proves nothing: anyone can serve the bytes. Loopback is refused too.
+func loginScheme(server string) error {
+	u, err := url.Parse(server)
+	if err != nil || u.Scheme != "https" || u.Host == "" { // login is https
+		return fmt.Errorf("%s: kvo login needs https", server)
+	}
+	return nil
+}
+
+func loginServers(arg string) []string {
+	var out []string
+	for _, p := range client.SplitServers(arg) {
+		if !strings.HasPrefix(p, "https://") && !strings.HasPrefix(p, "http://") {
+			p = "https://" + p
+		}
+		out = append(out, strings.TrimRight(p, "/"))
+	}
+	return out
+}
+
+// fetchPinnedCA asks each server for the cluster CA until one answers with the pinned fingerprint.
+func fetchPinnedCA(ctx context.Context, servers []string, fingerprint string, fetch func(context.Context, string, string) ([]byte, error)) ([]byte, string, error) {
+	if len(servers) == 0 {
+		return nil, "", errors.New("kvo login needs a server")
+	}
+	for _, server := range servers {
+		if err := loginScheme(server); err != nil {
+			return nil, "", err
+		}
+	}
+	var err error
+	for _, server := range servers { // each control plane, until one answers
+		var ca []byte
+		ca, err = fetch(ctx, server, fingerprint)
+		if err == nil {
+			return ca, server, nil
+		}
+	}
+	return nil, "", err
 }
 
 // auth runs kvo auth can-i / whoami. can-i exits 0 for yes and 1 for no, like kubectl.
@@ -190,11 +253,7 @@ func auth(ctx context.Context, c *client.Client, o opts, stdout io.Writer) (int,
 		if err != nil {
 			return 0, err
 		}
-		resource := k.Plural
-		switch name {
-		case "status", "exec", "token":
-			resource, name = resource+"/"+name, ""
-		}
+		resource, name := canIResource(k.Plural, name)
 		q := url.Values{"verb": {o.args[1]}, "resource": {resource}, "name": {name}}
 		if k.Scope == v1.Namespaced {
 			q.Set("namespace", defaultNS(o))
@@ -211,4 +270,14 @@ func auth(ctx context.Context, c *client.Client, o opts, stdout io.Writer) (int,
 		return 1, nil
 	}
 	return 0, fmt.Errorf("unknown auth command %q", o.args[0])
+}
+
+// canIResource reads RESOURCE/NAME. ssh, files, open, close and move (and status, exec, token)
+// are subresources, so silos/ssh is the terminal on a silo and not a silo named ssh.
+func canIResource(plural, name string) (string, string) {
+	switch name {
+	case "status", "exec", "token", "ssh", "files", "open", "close", "move":
+		return plural + "/" + name, ""
+	}
+	return plural, name
 }

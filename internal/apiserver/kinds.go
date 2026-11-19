@@ -370,13 +370,16 @@ func (s *Server) updateDefined(ctx context.Context, t target, u *v1.Unstructured
 		}
 		nm, om := &next.ObjectMeta, &old.ObjectMeta
 		nm.UID, nm.CreationTimestamp, nm.DeletionTimestamp = om.UID, om.CreationTimestamp, om.DeletionTimestamp
+		// A kevaso.com finalizer is its controller's, before the delete and during it. A write
+		// that leaves it out keeps it: the caller still cannot remove it.
+		nm.Finalizers = keepControllerFinalizers(ctx, om.Finalizers, nm.Finalizers) // a kevaso.com finalizer stays
 		if om.DeletionTimestamp != nil {
+			if !isSubset(nm.Finalizers, om.Finalizers) {
+				return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s is being deleted: finalizers can only be removed", t.key())
+			}
 			if len(nm.Finalizers) == 0 {
 				d, err := s.commitDelete(ctx, t.key(), expected)
 				return store.Object{Key: d.Key}, err
-			}
-			if !isSubset(nm.Finalizers, om.Finalizers) {
-				return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s is being deleted: finalizers can only be removed", t.key())
 			}
 		}
 		if err := s.prepareDefined(ctx, t, old, next); err != nil {

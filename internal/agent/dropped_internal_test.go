@@ -47,7 +47,7 @@ func (h *mountHost) Run(_ context.Context, c hostexec.Cmd) (int, error) {
 		delete(h.mounted, last)
 	case "blkid":
 		if c.Stdout != nil {
-			_, _ = c.Stdout.Write([]byte("ext4\n"))
+			_, _ = c.Stdout.Write([]byte("TYPE=ext4\n"))
 		}
 	}
 	return 0, nil

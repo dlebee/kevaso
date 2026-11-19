@@ -263,7 +263,7 @@ func (c *Controller) reserve(ctx context.Context, x *v1.IP, st *v1.IPStatus, d i
 				return time.Minute
 			}
 			if c.Claims != nil {
-				ok, err := c.Claims.Take(ctx, PoolAddress, addr, claims.Holder{Kind: "IP", Namespace: x.Namespace, Name: x.Name, UID: x.UID, Version: x.ResourceVersion}, UsesAddress)
+				ok, _, err := c.Claims.Take(ctx, PoolAddress, addr, claims.Holder{Kind: "IP", Namespace: x.Namespace, Name: x.Name, UID: x.UID, Version: x.ResourceVersion}, UsesAddress)
 				if err != nil {
 					cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "NoAddress", err.Error()
 					return 10 * time.Second

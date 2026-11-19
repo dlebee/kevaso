@@ -81,17 +81,39 @@ func injectRig(t *testing.T) (*egress, *brokerRig, *fakeNow, *[]string) {
 	return e, b, clock, &logged
 }
 
+func TestTwoInjectionsForOneHostAreBothKept(t *testing.T) {
+	b := &brokerRig{}
+	b.mode.Store("up")
+	b.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(client.BrokerResponse{Injections: []client.Injection{
+			{Host: "api.allowed.test", Header: "Authorization", Value: "Bearer sk-1", Secret: "key"},
+			{Host: "api.allowed.test", Header: "X-Token", Value: "second", Secret: "other"},
+		}})
+	}))
+	t.Cleanup(b.srv.Close)
+	silo := &v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "claude-1", UID: "u1"}, Status: v1.SiloStatus{Host: "hv1"}}
+	e := &egress{c: client.New(b.srv.URL), hostName: "hv1", silos: func() []*v1.Silo { return []*v1.Silo{silo} }}
+	got, err := e.injections(context.Background(), "dev/claude-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ins := got["api.allowed.test"]
+	if len(ins) != 2 || ins[0].Header != "Authorization" || ins[0].Value != "Bearer sk-1" || ins[1].Header != "X-Token" || ins[1].Value != "second" {
+		t.Fatalf("injections = %+v", ins)
+	}
+}
+
 func TestACutOffHostInjectsForAnHourThenRefuses(t *testing.T) {
 	e, b, clock, logged := injectRig(t)
 	ctx := context.Background()
-	if got, err := e.injections(ctx, "dev/claude-1"); err != nil || got["api.allowed.test"].Value != "Bearer sk-1" {
+	if got, err := e.injections(ctx, "dev/claude-1"); err != nil || got["api.allowed.test"][0].Value != "Bearer sk-1" {
 		t.Fatalf("connected: %v %v", got, err)
 	}
 	b.mode.Store("down")
 	for _, after := range []time.Duration{2 * time.Minute, 30 * time.Minute, 59 * time.Minute} {
 		clock.t = time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC).Add(after)
 		got, err := e.injections(ctx, "dev/claude-1")
-		if err != nil || got["api.allowed.test"].Value != "Bearer sk-1" {
+		if err != nil || got["api.allowed.test"][0].Value != "Bearer sk-1" {
 			t.Fatalf("cut off for %s: %v %v (the secret must be injected until the hour)", after, got, err)
 		}
 	}
@@ -110,7 +132,7 @@ func TestACutOffHostInjectsForAnHourThenRefuses(t *testing.T) {
 	}
 	// Back: injected at once from a fresh answer.
 	b.mode.Store("up")
-	if got, err := e.injections(ctx, "dev/claude-1"); err != nil || got["api.allowed.test"].Value != "Bearer sk-1" {
+	if got, err := e.injections(ctx, "dev/claude-1"); err != nil || got["api.allowed.test"][0].Value != "Bearer sk-1" {
 		t.Fatalf("reconnected: %v %v", got, err)
 	}
 }

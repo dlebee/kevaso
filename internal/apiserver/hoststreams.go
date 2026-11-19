@@ -114,7 +114,7 @@ func (s *Server) trackHost(ctx context.Context, name string, cert *x509.Certific
 	ctx, cancel := context.WithCancel(ctx)
 	id := s.hostStreams.add(name, cancel)
 	if cert != nil {
-		if err := s.removedHostCert(ctx, name, cert); err != nil { // removed between the check and the registration
+		if _, err := s.removedHostCert(ctx, name, cert); err != nil { // removed between the check and the registration
 			cancel()
 		}
 	}

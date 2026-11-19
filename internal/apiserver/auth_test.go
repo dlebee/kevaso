@@ -183,6 +183,26 @@ func TestEnrollmentWithJoinToken(t *testing.T) {
 	}
 }
 
+func TestEnrollRefusesEveryRoleButWorker(t *testing.T) {
+	e := setupAuth(t)
+	anon := e.tlsClient(t, nil)
+	for _, role := range []string{apiserver.RoleSystemNode, "control-plane"} {
+		if err := e.admin.Create(e.ctx, host("h-"+role)); err != nil {
+			t.Fatal(err)
+		}
+		tok, err := e.tokens.Create(e.ctx, "h-"+role, []string{role}, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := anon.Enroll(e.ctx, tok, "h-"+role, role); code(err) != http.StatusForbidden || !strings.Contains(err.Error(), "worker") {
+			t.Fatalf("enroll as %s: %v, want 403", role, err)
+		}
+		if err := e.tokens.Check(e.ctx, tok, "h-"+role, role); err != nil {
+			t.Fatalf("enroll as %s spent the token: %v", role, err)
+		}
+	}
+}
+
 func TestWorkerWritesOnlyItsOwnSilosStatus(t *testing.T) {
 	e := setupAuth(t)
 	_ = e.admin.Create(e.ctx, ns("dev"))

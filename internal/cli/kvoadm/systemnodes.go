@@ -133,10 +133,9 @@ func RemovalCheck(hosts []v1.Host, name string, now time.Time, lease time.Durati
 // SystemNodeUnit is the systemd unit of a joining system node (pure). servers are control planes
 // it may ask to join; worker adds the worker component (HA compact).
 func SystemNodeUnit(o HostAddOptions, servers []string, stateOnly, worker bool) string {
-	addr := o.Reach()
-	args := append(append([]string{"control-plane", "--name", o.Name}, o.ipArgs()...), "--cluster", o.Cluster,
-		"--store", "etcd", "--etcd-peer-listen", net.JoinHostPort(addr, etcd.DefaultPeerPort),
-		"--join", strings.Join(servers, ","), "--join-token-file", "/etc/kevaso/join-token", "--ca-file", "/etc/kevaso/ca.crt")
+	args := append(append([]string{"control-plane", "--name", o.Name}, o.ipArgs()...), "--cluster", o.Cluster)
+	args = append(args, etcdPeerFlags(o.InitOptions)...)
+	args = append(args, "--join", strings.Join(servers, ","), "--join-token-file", "/etc/kevaso/join-token", "--ca-file", "/etc/kevaso/ca.crt")
 	if o.ClusterDNS != "" {
 		args = append(args, "--cluster-dns", o.ClusterDNS)
 	}
@@ -169,9 +168,10 @@ WantedBy=multi-user.target
 `
 }
 
-// WithEtcd rewrites a control-plane unit to keep its state in etcd with a peer listener on
-// peerListen (pure). It says whether anything changed.
-func WithEtcd(unit, peerListen string) (string, bool, error) {
+// WithEtcd rewrites a control-plane unit to keep its state in etcd. peerListen is where the
+// member binds; advertisePeer is what other members dial (the same, when it is empty or equal).
+// It says whether anything changed.
+func WithEtcd(unit, peerListen, advertisePeer string) (string, bool, error) {
 	lines := strings.Split(unit, "\n")
 	for i, l := range lines {
 		rest, ok := strings.CutPrefix(l, "ExecStart=/usr/local/bin/kevasod ")
@@ -185,16 +185,19 @@ func WithEtcd(unit, peerListen string) (string, bool, error) {
 		var keep []string
 		for j := 0; j < len(f); j++ {
 			switch f[j] {
-			case "--store", "--etcd-peer-listen":
+			case "--store", "--etcd-peer-listen", "--etcd-advertise-peer":
 				j++
 				continue
 			}
-			if strings.HasPrefix(f[j], "--store=") || strings.HasPrefix(f[j], "--etcd-peer-listen=") {
+			if strings.HasPrefix(f[j], "--store=") || strings.HasPrefix(f[j], "--etcd-peer-listen=") || strings.HasPrefix(f[j], "--etcd-advertise-peer=") {
 				continue
 			}
 			keep = append(keep, f[j])
 		}
 		keep = append(keep, "--store", "etcd", "--etcd-peer-listen", peerListen)
+		if advertisePeer != "" && advertisePeer != peerListen {
+			keep = append(keep, "--etcd-advertise-peer", advertisePeer)
+		}
 		next := "ExecStart=/usr/local/bin/kevasod " + strings.Join(keep, " ")
 		changed := next != l
 		lines[i] = next
@@ -710,14 +713,13 @@ func storeMigrate(ctx context.Context, args []string, stdin io.Reader, out io.Wr
 		return err
 	}
 	name := unitFlag(string(unit), "--name")
-	addr := unitFlag(string(unit), "--external-ip")
-	if addr == "" {
-		addr = unitFlag(string(unit), "--internal-ip")
+	peerO := InitOptions{
+		InternalIP: unitFlag(string(unit), "--internal-ip"),
+		ExternalIP: unitFlag(string(unit), "--external-ip"),
+		Address:    o.Address,
 	}
-	if addr == "" {
-		addr = o.Address
-	}
-	updated, changed, err := WithEtcd(string(unit), net.JoinHostPort(addr, etcd.DefaultPeerPort))
+	listen, advertise := etcdPeers(peerO)
+	updated, changed, err := WithEtcd(string(unit), listen, advertise)
 	if err != nil {
 		return err
 	}

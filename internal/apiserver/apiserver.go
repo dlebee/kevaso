@@ -293,7 +293,7 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.write(ctx, w, r, t, s.create, http.StatusCreated)
 	case r.Method == http.MethodPut && t.name != "":
 		s.write(ctx, w, r, t, s.update, http.StatusOK)
-	case r.Method == http.MethodDelete && t.name != "":
+	case r.Method == http.MethodDelete && t.name != "" && !t.status: // a status subresource is not deleted
 		s.delete(ctx, w, r, t)
 	default:
 		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "%s %s", r.Method, r.URL.Path))
@@ -789,17 +789,20 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		if t.kind.HasSpec && !reflect.DeepEqual(getField(old, "Spec"), getField(next, "Spec")) {
 			nm.Generation++
 		}
+		// A kevaso.com finalizer is its controller's, before the delete and during it. A write
+		// that leaves it out keeps it: the caller still cannot remove it.
+		nm.Finalizers = keepControllerFinalizers(ctx, oldMeta.Finalizers, nm.Finalizers) // a kevaso.com finalizer stays
 		// Once deleting, finalizers may only be removed; when the last one goes, the object goes.
 		if oldMeta.DeletionTimestamp != nil {
+			if !isSubset(nm.Finalizers, oldMeta.Finalizers) {
+				return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s is being deleted: finalizers can only be removed", t.key())
+			}
 			if len(nm.Finalizers) == 0 {
 				d, err := s.commitDelete(ctx, t.key(), expected)
 				if err == nil && !dryRun(ctx) && s.vault != nil && (t.kind.Kind == "Secret" || t.kind.Kind == "ClusterSecret") {
 					s.vault.Forget(ctx, t.namespace, t.name) // the sealed value goes with the object
 				}
 				return store.Object{Key: d.Key}, err // no Data: tells write() the object is gone
-			}
-			if !isSubset(nm.Finalizers, oldMeta.Finalizers) {
-				return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s is being deleted: finalizers can only be removed", t.key())
 			}
 		}
 	}
@@ -810,11 +813,6 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 	}
 	if t.kind.Kind == "ClusterSecret" {
 		if data, err = withClusterStatus(data, old.(*v1.ClusterSecret).Status); err != nil {
-			return store.Object{}, err
-		}
-	}
-	if t.kind.Kind == "Secret" && !t.status {
-		if data, err = s.sealBeforeLoosening(ctx, old, data, cur.Revision, expected); err != nil {
 			return store.Object{}, err
 		}
 	}
@@ -835,27 +833,72 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		}
 		release = rel
 	}
+	// Seal after the checks above. A refusal from here on puts the previous value back.
+	var restoreVault func()
+	if t.kind.Kind == "Secret" && !t.status {
+		data, restoreVault, err = s.sealBeforeLoosening(ctx, old, data, cur.Revision, expected)
+		if err != nil {
+			undoUncommitted(restoreVault, release)
+			return store.Object{}, err
+		}
+	}
 	prev := bytes.Clone(cur.Data)
 	o, err := s.commitUpdate(ctx, t.key(), data, expected)
 	if err != nil {
-		if release != nil {
-			release()
-		}
+		undoUncommitted(restoreVault, release)
 		return o, err
 	}
 	if dryRun(ctx) {
 		return o, err
 	}
 	if err := s.recheckNewNames(ctx, seen); err != nil {
-		if release != nil {
-			release()
-		}
+		undoUncommitted(restoreVault, release)
 		if _, rerr := s.store.Update(ctx, t.key(), prev, o.Revision); rerr != nil && !errors.Is(rerr, store.ErrNotFound) {
 			return store.Object{}, fmt.Errorf("%s names a namespace being deleted, and restoring it failed: %w", t.key(), rerr)
 		}
 		return store.Object{}, err
 	}
 	return o, nil
+}
+
+// undoUncommitted puts back a secret value sealed for a write that did not stay, and releases a
+// host port that write claimed.
+func undoUncommitted(restoreVault, release func()) {
+	if restoreVault != nil { // the value sealed for a write that did not stay is put back
+		restoreVault()
+	}
+	if release != nil {
+		release()
+	}
+}
+
+// keepControllerFinalizers returns next with the stored kevaso.com finalizers this caller cannot
+// drop put back. kevasod and the admin socket may remove one (the admin socket is how a stuck
+// finalizer is cleared by hand). Anyone else keeps them, so a manifest that leaves them out and a
+// write that clears them both leave them on the object. kevaso.com/plugin-uninstall is the
+// uninstall command's, and that command runs as the person who invoked it. A server with no
+// authentication has no identity to tell the controller from anyone else (the unit tests).
+func keepControllerFinalizers(ctx context.Context, old, next []string) []string {
+	id, authed := IdentityFrom(ctx)
+	if !authed || id == Component || id == LocalAdmin { // a kevaso.com finalizer is removed by kevasod
+		return next
+	}
+	have := map[string]bool{}
+	for _, f := range next {
+		have[f] = true
+	}
+	var extra []string
+	for _, f := range old {
+		if have[f] || f == v1.PluginFinalizer || !strings.HasPrefix(f, "kevaso.com/") {
+			continue
+		}
+		extra = append(extra, f)
+		have[f] = true
+	}
+	if len(extra) == 0 {
+		return next
+	}
+	return append(append([]string{}, next...), extra...)
 }
 
 // letGo reports whether next is the end of a handoff by the host it is moving from having let go:
@@ -1107,7 +1150,11 @@ func (s *Server) checkExposure(ctx context.Context, t target, obj meta.Object) e
 	if err != nil {
 		return err
 	}
-	if !exposureLoosened(prev, obj, silos, svcs) { // an update that only removes or tightens outside reach needs no extra permission
+	ings, err := s.ingressesIn(ctx, t.namespace)
+	if err != nil {
+		return err
+	}
+	if !exposureLoosened(prev, obj, silos, svcs, ings) { // an update that only removes or tightens outside reach needs no extra permission
 		return nil
 	}
 	id, _ := IdentityFrom(ctx)

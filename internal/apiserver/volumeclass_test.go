@@ -1,6 +1,7 @@
 package apiserver_test
 
 import (
+	"strings"
 	"testing"
 
 	"kevaso.com/core/api/client"
@@ -93,5 +94,46 @@ func TestAVolumeClassCannotChangeInPlace(t *testing.T) {
 	got.Spec.Template.Volumes[0].Class = "local"
 	if err := c.Update(ctx, &got); !client.IsInvalid(err) {
 		t.Fatalf("set class change: %v", err)
+	}
+}
+
+// Dropping a volume and adding the name back under another class is the same refusal as
+// changing the class in place. The class recorded in status is what the name already has.
+// The same class is accepted.
+func TestAKeptNameCannotComeBackUnderAnotherClass(t *testing.T) {
+	c, ctx := setup(t)
+	db := newSilo("db")
+	db.Spec.Runtime = "docker"
+	db.Spec.VM = nil
+	db.Spec.Container = &v1.ContainerSource{Image: "nginx:1.27"}
+	db.Spec.Volumes = []v1.Volume{{Name: "data", Class: "juicefs", Size: "1Gi", MountPath: "/data"}}
+	if err := c.Create(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var cur v1.Silo
+	if err := c.Get(ctx, "Silo", "dev", "db", &cur); err != nil {
+		t.Fatal(err)
+	}
+	cur.Status.Volumes = []v1.VolumeStatus{{Name: "data", Class: "juicefs", Handle: "vol-1"}}
+	if err := c.UpdateStatus(ctx, &cur); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, "Silo", "dev", "db", &cur); err != nil {
+		t.Fatal(err)
+	}
+	cur.Spec.Volumes = nil
+	if err := c.Update(ctx, &cur); err != nil {
+		t.Fatalf("removing the volume: %v", err)
+	}
+	if err := c.Get(ctx, "Silo", "dev", "db", &cur); err != nil {
+		t.Fatal(err)
+	}
+	cur.Spec.Volumes = []v1.Volume{{Name: "data", Class: "local", Size: "1Gi", MountPath: "/data"}}
+	if err := c.Update(ctx, &cur); !client.IsInvalid(err) || !strings.Contains(err.Error(), "class can't change") {
+		t.Fatalf("kept name under another class: %v", err)
+	}
+	cur.Spec.Volumes = []v1.Volume{{Name: "data", Class: "juicefs", Size: "1Gi", MountPath: "/data"}}
+	if err := c.Update(ctx, &cur); err != nil {
+		t.Fatalf("same class: %v", err)
 	}
 }

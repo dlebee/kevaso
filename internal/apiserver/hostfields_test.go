@@ -98,8 +98,9 @@ func TestAWorkersHostStatusIsBoundedPerField(t *testing.T) {
 	}
 }
 
-// …and a silo placed on a host gets an address only inside the subnet the control plane
-// assigned that host, or the default network of a host without the mesh (ingress routes to it).
+// …and a silo placed on a host gets an address inside the subnet the control plane assigned
+// that host, or on the default network. A host with no subnet yet may use only the default
+// network. A subnet that does not parse refuses every address.
 func TestAHostsSiloIPIsInsideItsSubnet(t *testing.T) {
 	e := setupAuth(t)
 	_ = e.admin.Create(e.ctx, ns("dev"))
@@ -135,10 +136,31 @@ func TestAHostsSiloIPIsInsideItsSubnet(t *testing.T) {
 		t.Fatalf("an address in its subnet: %v", err)
 	}
 	if err := set("10.64.0.7"); err != nil {
-		t.Fatalf("an address on the default network (a host without the mesh): %v", err)
+		t.Fatalf("the default network beside this host's subnet: %v", err)
 	}
 	if err := set("10.64.9.7"); code(err) != http.StatusForbidden {
 		t.Fatalf("an address outside its subnet: %v, want 403", err)
+	}
+
+	_ = e.admin.Get(e.ctx, "Host", "", "hv2", &h)
+	h.Status.Network.SiloSubnet = ""
+	if err := e.admin.UpdateStatus(e.ctx, &h); err != nil {
+		t.Fatal(err)
+	}
+	if err := set("10.64.0.4"); err != nil {
+		t.Fatalf("the default network of a host with no subnet: %v", err)
+	}
+	if err := set("10.64.9.7"); code(err) != http.StatusForbidden {
+		t.Fatalf("an address outside the default network: %v, want 403", err)
+	}
+
+	_ = e.admin.Get(e.ctx, "Host", "", "hv2", &h)
+	h.Status.Network.SiloSubnet = "not-a-prefix"
+	if err := e.admin.UpdateStatus(e.ctx, &h); err != nil {
+		t.Fatal(err)
+	}
+	if err := set("10.64.0.8"); code(err) != http.StatusForbidden {
+		t.Fatalf("an address when the subnet does not parse: %v, want 403", err)
 	}
 	_ = client.IsConflict
 }

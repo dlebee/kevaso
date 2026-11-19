@@ -135,9 +135,10 @@ func (s *Server) moveSilo(w http.ResponseWriter, r *http.Request, t target) {
 			fromLost, _ = hostctl.Lost(from)
 		}
 		if from == nil && silo.Status.Host != "" {
-			// The Host object is gone: deleting it was the confirmation the machine is off, so
-			// `kvo move silo NAME -n NS --to HOST --recreate` does not ask for it again.
-			req.ConfirmFenced = true
+			// The Host object named by status.host is gone: deleting it confirmed that copy is
+			// off, so a move does not ask for --confirm-fenced again for that host. It does not
+			// confirm a lost status.movingFrom.
+			req.HostDeleted = true
 		}
 		fits, err := s.fits(ctx, silo, to)
 		if err != nil {
@@ -149,8 +150,14 @@ func (s *Server) moveSilo(w http.ResponseWriter, r *http.Request, t target) {
 			sourceLost, _ = hostctl.Lost(source)
 		}
 		if fromLost {
-			// A fresh start claim of its host says it is alive (review of the start claim, item 1).
-			if err := moves.CheckFenced(silo, req, s.clock.Now()); err != nil {
+			// A fresh start claim of the current host says it is alive (review of the start claim,
+			// item 1). HostDeleted is that host's confirmation, so the claim is checked the same
+			// way; the flag passed to PlanMove is not ConfirmFenced.
+			check := req
+			if req.HostDeleted {
+				check.ConfirmFenced = true
+			}
+			if err := moves.CheckFenced(silo, check, s.clock.Now()); err != nil {
 				writeErr(w, errf(http.StatusConflict, "Conflict", "move %s/%s: %v", silo.Namespace, silo.Name, err))
 				return
 			}

@@ -58,6 +58,9 @@ type Config struct {
 	PeerListen string
 	// AdvertisePeer is the host:port other members dial; "" means PeerListen.
 	AdvertisePeer string
+	// local reports whether an IP is on this machine. Nil uses the machine's interfaces.
+	// Tests set it so the bind decision does not depend on the host that runs them.
+	local func(string) bool
 	// Names are more DNS names or IPs for the member's certificate (the host's address).
 	Names []string
 	// InitialCluster is name → peer URL of every member when joining an existing cluster
@@ -127,7 +130,13 @@ func Start(ctx context.Context, c Config) (*Server, error) {
 	peer := unlistenedPeer
 	cfg.ListenPeerUrls = nil
 	if c.PeerListen != "" {
-		cfg.ListenPeerUrls = []url.URL{{Scheme: "https", Host: c.PeerListen}}
+		local := c.local
+		if local == nil {
+			local = addrIsLocal
+		}
+		for _, hp := range peerListenHosts(c.PeerListen, c.AdvertisePeer, local) {
+			cfg.ListenPeerUrls = append(cfg.ListenPeerUrls, url.URL{Scheme: "https", Host: hp})
+		}
 		peer = "https://" + c.AdvertisePeer
 	}
 	pu, err := url.Parse(peer)
@@ -188,6 +197,57 @@ func Start(ctx context.Context, c Config) (*Server, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// peerListenHosts is where the member binds for peers. listen is the internal address.
+// advertise is what other members dial. When that address is a different one and it is
+// on a local interface, bind it too: peers dial it, and the internal listener would not
+// answer. When it is not local (1:1 NAT delivers it to the internal listener), bind the
+// internal address only. Never 0.0.0.0 or ::. The peer port is mutual TLS, which limits
+// who finishes a handshake and does not keep the port off an unrelated interface.
+func peerListenHosts(listen, advertise string, local func(string) bool) []string {
+	if listen == "" {
+		return nil
+	}
+	out := []string{listen}
+	if advertise == "" || advertise == listen {
+		return out
+	}
+	host, _, err := net.SplitHostPort(advertise)
+	if err != nil || host == "" || host == "0.0.0.0" || host == "::" {
+		return out
+	}
+	if !local(host) {
+		return out
+	}
+	return append(out, advertise)
+}
+
+// addrIsLocal reports whether host is an IP on one of this machine's interfaces.
+// An error, or a name that is not an IP, is not local: an address that cannot be
+// confirmed is not bound.
+func addrIsLocal(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		var got net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			got = v.IP
+		case *net.IPAddr:
+			got = v.IP
+		}
+		if got != nil && got.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // advertise makes the member's entry carry the peer URL it now advertises: a member first started

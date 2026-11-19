@@ -11,7 +11,7 @@ About 15 minutes, most of it the worker installing its runtime (downloads, packa
 From a checkout of this repo:
 
 ```bash
-go build -o bin/kvo ./cmd/kvo && go build -o bin/kvoadm ./cmd/kvoadm && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/kevasod-linux-arm64 ./cmd/kevasod
+go build -o bin/kvo ./cmd/kvo && go build -o bin/kvoadm ./cmd/kvoadm && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "-X kevaso.com/core/internal/version.Version=v0.3.1" -o bin/kevasod-linux-arm64 ./cmd/kevasod
 ```
 
 ## 1. A machine

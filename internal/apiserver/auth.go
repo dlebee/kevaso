@@ -459,7 +459,7 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			return
 		}
 		if id.Type == "host" && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
-			if err := s.removedHostCert(r.Context(), id.Name, r.TLS.PeerCertificates[0]); err != nil {
+			if _, err := s.removedHostCert(r.Context(), id.Name, r.TLS.PeerCertificates[0]); err != nil {
 				writeErr(w, hostRefusal(err))
 				return
 			}
@@ -541,7 +541,7 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 type CertRequest struct {
 	Token string `json:"token,omitempty"` // /enroll only
 	Host  string `json:"host,omitempty"`  // /enroll: the host joining
-	Role  string `json:"role,omitempty"`  // /enroll: control-plane or worker
+	Role  string `json:"role,omitempty"`  // /enroll: worker. A system node joins at /join/system-node.
 	Name  string `json:"name,omitempty"`  // /admin/certs: the user's name
 	CSR   string `json:"csr"`             // PEM
 }
@@ -574,7 +574,9 @@ func decodeCertRequest(r *http.Request) (CertRequest, error) {
 	return req, nil
 }
 
-// enroll: a host presents its join token and a CSR, and gets a certificate for that host and role.
+// enroll: a host presents its join token and a CSR, and gets a worker certificate for that host.
+// A system node spends its token at /join/system-node, which seals the cluster identity to a key
+// the machine made. It does not get a host certificate here.
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeCertRequest(r)
 	if err != nil {
@@ -586,6 +588,10 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
 		return
 	}
+	if req.Role != "worker" { // a host certificate from /enroll is a worker's
+		writeErr(w, errf(http.StatusForbidden, "Forbidden", "enroll issues a worker certificate; role %q is refused", req.Role))
+		return
+	}
 	if err := s.auth.Tokens.Redeem(r.Context(), req.Token, req.Host, req.Role); err != nil {
 		code := http.StatusUnauthorized
 		if errors.Is(err, jointoken.ErrNotAllowed) {
@@ -594,7 +600,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errf(code, http.StatusText(code), "%s", err))
 		return
 	}
-	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
+	s.signAndReply(r.Context(), w, []byte(req.CSR), id, hostCertBound{})
 }
 
 // issueUserCert: only through the admin socket (root on a control-plane host) can a user
@@ -614,12 +620,15 @@ func (s *Server) issueUserCert(w http.ResponseWriter, r *http.Request, caller pk
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
 		return
 	}
-	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
+	s.signAndReply(r.Context(), w, []byte(req.CSR), id, hostCertBound{})
 }
 
 // renewCert signs a new certificate for the caller, and for nobody else: the name and role are
 // the authenticated certificate's, never a name in the request. A removed host is refused before
-// this runs. The new serial is recorded where a removal record exists (signAndReply).
+// this runs, and again after the body is read: a renew held open across the delete must not be
+// signed, and must not record a new serial on the removal. The check returns the removal it
+// read, and the serial is bound to that value: one read, then a compare-and-swap that refuses
+// a newer removal before the certificate is returned.
 func (s *Server) renewCert(w http.ResponseWriter, r *http.Request, caller pki.Identity) {
 	if caller.Type != "host" && caller.Type != "user" {
 		writeErr(w, errf(http.StatusForbidden, "Forbidden", "only a host or user certificate can be renewed"))
@@ -630,17 +639,36 @@ func (s *Server) renewCert(w http.ResponseWriter, r *http.Request, caller pki.Id
 		writeErr(w, err)
 		return
 	}
+	var bound hostCertBound
+	if caller.Type == "host" {
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "a host renews with its certificate"))
+			return
+		}
+		seen, err := s.removedHostCert(r.Context(), caller.Name, r.TLS.PeerCertificates[0]) // the certificate presented, after the body was read
+		if err != nil {
+			writeErr(w, hostRefusal(err))
+			return
+		}
+		bound = hostCertBound{check: true, ok: seen.ok, at: seen.rec.RemovedAt, uid: seen.rec.HostUID, rev: seen.rev, serials: seen.rec.Serials} // the removal the check read
+	}
 	id := caller // renewed for the authenticated caller only
-	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
+	s.signAndReply(r.Context(), w, []byte(req.CSR), id, bound)
 }
 
-func (s *Server) signAndReply(ctx context.Context, w http.ResponseWriter, csr []byte, id pki.Identity) {
+func (s *Server) signAndReply(ctx context.Context, w http.ResponseWriter, csr []byte, id pki.Identity, bound hostCertBound) {
 	now := s.clock.Now()
 	earliest := time.Time{}
 	if id.Type == "host" {
-		if rec, ok := s.hostRemoval(ctx, id.Name); ok {
+		if bound.check {
+			if bound.ok {
+				// The removal this renew saw. A newer one is not used to backdate the certificate.
+				earliest = bound.at.Add(time.Second)
+			}
+		} else if rec, ok := s.hostRemoval(ctx, id.Name); ok {
 			// One second after the stored removal, so NotBefore (a whole second) is after it
-			// even though SignCSR otherwise backdates by a minute.
+			// even though SignCSR otherwise backdates by a minute. Joining again records the
+			// serial on whatever removal stands now.
 			earliest = rec.RemovedAt.Add(time.Second)
 		}
 	}
@@ -650,7 +678,11 @@ func (s *Server) signAndReply(ctx context.Context, w http.ResponseWriter, csr []
 		return
 	}
 	if id.Type == "host" {
-		if err := s.noteIssuedHostCert(ctx, id.Name, cert); err != nil {
+		if err := s.noteIssuedHostCert(ctx, id.Name, cert, bound); err != nil {
+			if errors.Is(err, errHostRemoved) {
+				writeErr(w, hostRefusal(err))
+				return
+			}
 			writeErr(w, errf(http.StatusInternalServerError, "InternalError", "recording the certificate: %s", err))
 			return
 		}
@@ -666,6 +698,18 @@ func (s *Server) TLSConfig(serverCert tls.Certificate) *tls.Config {
 		Certificates: []tls.Certificate{serverCert},
 		ClientAuth:   tls.VerifyClientCertIfGiven,
 		ClientCAs:    s.auth.CA.Pool(),
+	}
+}
+
+// TLSServing is TLSConfig with GetCertificate, so the listener presents whatever the callback
+// returns now. Certificates is empty: a client that connects by address, with no server name,
+// still gets the current certificate.
+func (s *Server) TLSServing(get func(*tls.ClientHelloInfo) (*tls.Certificate, error)) *tls.Config {
+	return &tls.Config{
+		MinVersion:     tls.VersionTLS13,
+		GetCertificate: get,
+		ClientAuth:     tls.VerifyClientCertIfGiven,
+		ClientCAs:      s.auth.CA.Pool(),
 	}
 }
 

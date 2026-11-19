@@ -14,9 +14,11 @@ import (
 )
 
 // claimAddedHostPorts takes, on the silo's host, every host port the update adds or whose number
-// changes, before the write. A port another silo holds is a 409 naming the holder, and any port
-// this call just took is put back. An unplaced silo claims nothing here: placement does. The
-// version is the write's resourceVersion; an empty one would stick the claim forever.
+// changes, before the write. A port another silo holds is a 409 naming the holder. The returned
+// function puts back only a port this call newly claimed: a port the silo already held stays,
+// so a conflicting write of the same silo does not give it up. An unplaced silo claims nothing
+// here: placement does. The version is the write's resourceVersion; an empty one would stick
+// the claim forever.
 func (s *Server) claimAddedHostPorts(ctx context.Context, old, admitted meta.Object, version string) (func(), error) {
 	prev, ok1 := old.(*v1.Silo)
 	next, ok2 := admitted.(*v1.Silo)
@@ -33,7 +35,7 @@ func (s *Server) claimAddedHostPorts(ctx context.Context, old, admitted meta.Obj
 	as := *prev
 	as.ResourceVersion = version
 	cl := &claims.Claims{Store: s.store}
-	held, err := siloctl.ClaimNewHostPorts(ctx, cl, &as, prev.Status.Host, added)
+	held, fresh, err := siloctl.ClaimNewHostPorts(ctx, cl, &as, prev.Status.Host, added)
 	if err != nil {
 		if errors.Is(err, claims.ErrBusy) {
 			return nil, errf(http.StatusConflict, "Conflict", "%s/%s: a host port was changing; try again", next.Namespace, next.Name)
@@ -44,7 +46,8 @@ func (s *Server) claimAddedHostPorts(ctx context.Context, old, admitted meta.Obj
 		return nil, errf(http.StatusConflict, "Conflict", "%s/%s: %s", next.Namespace, next.Name, joinMessages(held))
 	}
 	uid, host := prev.UID, prev.Status.Host
-	return func() { siloctl.ReleaseHostPorts(ctx, cl, uid, host, added) }, nil
+	ports := fresh // only a port this call newly claimed
+	return func() { siloctl.ReleaseHostPorts(ctx, cl, uid, host, ports) }, nil
 }
 
 // checkClusterHostPorts refuses a host port whose number a host in the cluster listens on, beyond

@@ -74,7 +74,7 @@ func TestTheVMMRunsUnderItsSilosLock(t *testing.T) {
 	h, _, id := vmmHost(t, "inactive", "0", false)
 	n := NamesFor(id)
 	unit := string(h.files["/etc/systemd/system/"+n.Unit])
-	want := "ExecStart=/usr/bin/flock --no-fork -w 5 -E 75 " + n.Dir + "/vmm.lock" + " " + BinDir + "/cloud-hypervisor --api-socket " + n.Socket + " "
+	want := "/usr/bin/flock --no-fork -w 5 -E 75 " + n.Dir + "/vmm.lock" + " " + BinDir + "/cloud-hypervisor --api-socket " + n.Socket + " "
 	if !strings.Contains(unit, want) {
 		t.Fatalf("the VMM isn't started under its lock (want %q):\n%s", want, unit)
 	}

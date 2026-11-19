@@ -12,6 +12,7 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/pki"
 )
 
 func enrollHost(t *testing.T, e *authEnv, name, role string) *client.Client {
@@ -28,6 +29,25 @@ func enrollHost(t *testing.T, e *authEnv, name, role string) *client.Client {
 		t.Fatal(err)
 	}
 	return e.tlsClient(t, &cred)
+}
+
+// controlPlaneHost is a host certificate of role control-plane. /enroll does not issue one;
+// the API still accepts one, and this signs it the way the cluster CA does.
+func controlPlaneHost(t *testing.T, e *authEnv, name string) *client.Client {
+	t.Helper()
+	if err := e.admin.Create(e.ctx, host(name)); err != nil {
+		t.Fatal(err)
+	}
+	id := pki.Identity{Type: "host", Name: name, Role: "control-plane"}
+	key, csr, err := pki.NewKeyAndCSR(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := e.ca.SignCSR(csr, id, time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e.tlsClient(t, &client.Credentials{Certificate: cert, Key: key})
 }
 
 func mustCreate(t *testing.T, e *authEnv, obj meta.Object) {
@@ -80,7 +100,7 @@ func TestWorkerReadScope(t *testing.T) {
 	mustCreate(t, e, ns("idle"))
 	worker := enrollHost(t, e, "hv2", "worker")
 	_ = enrollHost(t, e, "hv3", "worker")
-	cp := enrollHost(t, e, "cp", "control-plane")
+	cp := controlPlaneHost(t, e, "cp")
 
 	mustCreate(t, e, &v1.Service{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Service"},
 		ObjectMeta: meta.ObjectMeta{Name: "far", Namespace: "idle"},

@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -68,9 +69,9 @@ func facetsOf(spec v1.SiloSpec) map[string]facet {
 }
 
 // exposureLoosened reports whether obj reaches further outside than prev (nil prev: a create).
-// Removing or tightening does not. silos and svcs are the namespace's, for selectors and Ingress
-// backends.
-func exposureLoosened(prev, obj meta.Object, silos []*v1.Silo, svcs []*v1.Service) bool {
+// Removing or tightening does not. silos, svcs and ings are the namespace's, for selectors and
+// Ingress backends.
+func exposureLoosened(prev, obj meta.Object, silos []*v1.Silo, svcs []*v1.Service, ings []*v1.Ingress) bool {
 	if spec, ok := specOf(obj); ok {
 		var old v1.SiloSpec
 		if prev != nil {
@@ -80,13 +81,16 @@ func exposureLoosened(prev, obj meta.Object, silos []*v1.Silo, svcs []*v1.Servic
 			return true
 		}
 	}
-	if siloNewlyOnBalancer(prev, obj, svcs) { // a load balancer's selector newly matches this silo
+	if siloNewlyOnBalancer(prev, obj, silos, svcs, ings) { // a load balancer's selector newly matches this silo or set
 		return true
 	}
 	if serviceLoosened(prev, obj, silos) { // a load balancer opens more, or its selector matches a new silo
 		return true
 	}
 	if ingressOnLeasedPort(prev, obj, silos, svcs) { // an Ingress backend on a port that opens only on a lease
+		return true
+	}
+	if serviceOpensLeasedIngress(prev, obj, silos, svcs, ings) { // a service an Ingress already names, on a leased port
 		return true
 	}
 	return false
@@ -198,24 +202,108 @@ func sourceHeld(old []string, np netip.Prefix) bool {
 	return false
 }
 
-func siloNewlyOnBalancer(prev, obj meta.Object, svcs []*v1.Service) bool {
-	next, ok := obj.(*v1.Silo)
+func siloNewlyOnBalancer(prev, obj meta.Object, silos []*v1.Silo, svcs []*v1.Service, ings []*v1.Ingress) bool {
+	nextLabels, ok := selectorLabels(obj)
 	if !ok {
 		return false
 	}
 	var oldLabels map[string]string
-	if p, ok := prev.(*v1.Silo); ok {
-		oldLabels = p.Labels
+	if prev != nil {
+		oldLabels, _ = selectorLabels(prev)
 	}
+	judged := silosWith(silos, obj)
 	for _, sv := range svcs {
-		if sv.Spec.Type != v1.ServiceLoadBalancer {
+		if sv.DeletionTimestamp != nil {
 			continue
 		}
-		if v1.Selects(sv.Spec.Selector, next.Labels) && !v1.Selects(sv.Spec.Selector, oldLabels) { // this silo's labels newly match a load balancer
+		if !v1.Selects(sv.Spec.Selector, nextLabels) || v1.Selects(sv.Spec.Selector, oldLabels) {
+			continue
+		}
+		if sv.Spec.Type == v1.ServiceLoadBalancer { // this silo's or set's labels newly match a load balancer
+			return true
+		}
+		if ingressNamesLeased(sv, judged, ings) { // a plain service an ingress already names, on a leased port
 			return true
 		}
 	}
 	return false
+}
+
+// silosWith is silos with the object being written in place of the stored copy, so a lease and
+// the new labels are what the check sees. A SiloSet's instances are seen with the template
+// labels being written: the stored ones still carry the previous labels.
+func silosWith(silos []*v1.Silo, obj meta.Object) []*v1.Silo {
+	switch o := obj.(type) {
+	case *v1.Silo:
+		out := append([]*v1.Silo{}, silos...)
+		for i, cur := range out {
+			if cur.Namespace == o.Namespace && cur.Name == o.Name {
+				out[i] = o
+				return out
+			}
+		}
+		return append(out, o)
+	case *v1.SiloSet:
+		return silosWithSetTemplate(silos, o)
+	default:
+		return silos
+	}
+}
+
+// silosWithSetTemplate is silos with this set's instances carrying the template labels being
+// written. A service an ingress names is judged on those labels.
+func silosWithSetTemplate(silos []*v1.Silo, set *v1.SiloSet) []*v1.Silo {
+	labels := map[string]string{}
+	for k, v := range set.Spec.Template.Labels {
+		labels[k] = v
+	}
+	labels[v1.LabelSiloSet] = set.Name
+	out := append([]*v1.Silo{}, silos...)
+	for i, cur := range out {
+		if cur.Namespace != set.Namespace || cur.Labels[v1.LabelSiloSet] != set.Name {
+			continue
+		}
+		cp := *cur
+		cp.Labels = labels // the template labels being written
+		out[i] = &cp
+	}
+	return out
+}
+
+// ingressNamesLeased reports whether an Ingress already names sv and that backend is a leased port.
+func ingressNamesLeased(sv *v1.Service, silos []*v1.Silo, ings []*v1.Ingress) bool {
+	for _, ing := range ings {
+		if ing.Namespace != sv.Namespace || ing.DeletionTimestamp != nil {
+			continue
+		}
+		for _, rule := range ing.Spec.Rules {
+			if rule.Service.Name != sv.Name {
+				continue
+			}
+			if backendLeased(sv.Namespace, rule.Service, silos, []*v1.Service{sv}) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// selectorLabels are the labels a service matches: a Silo's own, or a SiloSet's template plus
+// the set's own name (the labels its instances carry).
+func selectorLabels(obj meta.Object) (map[string]string, bool) {
+	switch o := obj.(type) {
+	case *v1.Silo:
+		return o.Labels, true
+	case *v1.SiloSet:
+		labels := map[string]string{}
+		for k, v := range o.Spec.Template.Labels { // instances carry the template's labels
+			labels[k] = v
+		}
+		labels[v1.LabelSiloSet] = o.Name
+		return labels, true
+	default:
+		return nil, false
+	}
 }
 
 func serviceLoosened(prev, obj meta.Object, silos []*v1.Silo) bool {
@@ -287,6 +375,46 @@ func ingressOnLeasedPort(prev, obj meta.Object, silos []*v1.Silo, svcs []*v1.Ser
 		}
 		if backendLeased(next.Namespace, r.Service, silos, svcs) { // a backend the stored Ingress did not already target, on a leased port
 			return true
+		}
+	}
+	return false
+}
+
+// serviceOpensLeasedIngress reports whether creating a service, or changing its selector, makes
+// an Ingress that already names it send traffic to a port that opens only on a lease. The Ingress
+// may have been written while the service did not exist yet; this is that write's check, done
+// when the service arrives or its selector changes.
+func serviceOpensLeasedIngress(prev, obj meta.Object, silos []*v1.Silo, svcs []*v1.Service, ings []*v1.Ingress) bool {
+	next, ok := obj.(*v1.Service)
+	if !ok {
+		return false
+	}
+	if old, _ := prev.(*v1.Service); old != nil && maps.Equal(old.Spec.Selector, next.Spec.Selector) {
+		return false // the selector is unchanged: an Ingress of it was judged when it was written
+	}
+	with := append([]*v1.Service{}, svcs...)
+	replaced := false
+	for i, sv := range with {
+		if sv.Namespace == next.Namespace && sv.Name == next.Name {
+			with[i] = next
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		with = append(with, next)
+	}
+	for _, ing := range ings {
+		if ing.Namespace != next.Namespace || ing.DeletionTimestamp != nil {
+			continue
+		}
+		for _, rule := range ing.Spec.Rules {
+			if rule.Service.Name != next.Name {
+				continue
+			}
+			if backendLeased(next.Namespace, rule.Service, silos, with) { // an ingress already names this service, on a leased port
+				return true
+			}
 		}
 	}
 	return false

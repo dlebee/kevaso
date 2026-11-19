@@ -192,9 +192,10 @@ func (a *Agent) mayMountHere(ctx context.Context, s *v1.Silo, vs v1.VolumeStatus
 	return false, "not mounting volume " + vs.Name + ": the control plane doesn't say it is attached here at " + vs.Device + " now", nil
 }
 
-// mount mounts dev at dir, formatting it first only if it holds no filesystem at all: a volume
-// that comes back (another host, a restart) is never wiped. class is the volume's storage class:
-// when this host has that plugin's manifest, the device must be under one of its prefixes.
+// mount mounts dev at dir, formatting it first only when it holds neither a filesystem nor a
+// partition table: a volume that comes back (another host, a restart) is never wiped. class is
+// the volume's storage class: when this host has that plugin's manifest, the device must be
+// under one of its prefixes.
 func (a *Agent) mount(ctx context.Context, class, dev, dir string) error {
 	// K-038: checked where it is used, as root: a device can reach a silo's status other than
 	// through the registry's check (K-037, K-045). Nothing runs for one that fails.
@@ -215,23 +216,43 @@ func (a *Agent) mount(ctx context.Context, class, dev, dir string) error {
 	if _, _, err := a.run(ctx, "test", "-b", dev); err != nil {
 		return errNoDevice
 	}
-	out, code, err := a.run(ctx, "blkid", "-p", "-o", "value", "-s", "TYPE", dev)
+	out, code, err := a.run(ctx, "blkid", "-p", "-o", "export", "-s", "TYPE", "-s", "PTTYPE", dev)
+	fs, pt := diskTags(out)
 	switch {
-	case code == 2: // nothing on it: a new volume
+	case code == 2 && fs == "" && pt == "": // nothing on it: a new volume
 		if _, _, err := a.run(ctx, "mkfs.ext4", "-q", "-m", "0", dev); err != nil {
 			return err
 		}
 		a.log("formatted %s (ext4): it was empty", dev)
-	case err != nil:
+	case code != 0:
 		return fmt.Errorf("probing %s (not formatting it): %w", dev, err)
-	case strings.TrimSpace(out) == "":
+	case fs == "":
 		return fmt.Errorf("%s has something on it blkid can't name: not formatting it", dev)
 	}
 	if _, _, err := a.run(ctx, "mkdir", "-p", dir); err != nil {
 		return err
 	}
-	_, _, err = a.run(ctx, "mount", "-o", "noatime", dev, dir)
+	_, _, err = a.run(ctx, "mount", "-o", "noatime,nosuid,nodev", dev, dir)
 	return err
+}
+
+// diskTags reads TYPE and PTTYPE from blkid -o export. A partition table with no filesystem
+// is not empty: formatting it would wipe the table.
+func diskTags(out string) (fs, pt string) {
+	for _, line := range strings.Split(out, "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		v = strings.Trim(v, `"`)
+		switch k {
+		case "TYPE":
+			fs = v
+		case "PTTYPE":
+			pt = v
+		}
+	}
+	return fs, pt
 }
 
 // deviceUnderPlugin refuses a device the volume's plugin does not name. A path under

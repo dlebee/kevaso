@@ -2,6 +2,7 @@ package cloudhypervisor
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -29,11 +30,28 @@ func TestCreateNeverRemovesARootVolumeItDidNotMake(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), n.LV) {
 		t.Fatalf("Create made the silo over a disk of unknown owner, or didn't say which: %v", err)
 	}
-	// A half-made silo (state saved, never started, its unit not written) is still made afresh:
-	// that disk is Create's own and held nothing.
+	// A half-made silo (state saved, Made never set, its unit not written) is still made afresh:
+	// that disk is Create's own and held nothing. A finished create keeps Made, so dropping only
+	// its unit does not make it half-made.
 	h2 := newFakeHost()
 	r2 := newRuntime(t, h2)
 	if err := r2.Create(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := h2.ReadFile(n.Dir + "/silo.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st State
+	if err := json.Unmarshal(raw, &st); err != nil {
+		t.Fatal(err)
+	}
+	st.Made = false
+	raw, err = json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h2.WriteFile(n.Dir+"/silo.json", raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_ = h2.RemoveAll("/etc/systemd/system/" + n.Unit)

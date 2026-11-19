@@ -728,6 +728,21 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		delete(c.assumed, key) // it has: from now on the cache is what's true (a lost host, a move)
 	}
 	hosts, silos := c.lists()
+	// Unschedulable/HostDeleted is decided from the store, not the cache. A silo placed on a
+	// host this cache has not seen yet is read fresh; only NotFound marks the host deleted.
+	if name := s.Status.Host; name != "" && !slices.ContainsFunc(hosts, func(h *v1.Host) bool { return h.Name == name }) && !moves.StuckOnDeletedHost(s.Status, name) {
+		var fresh v1.Host
+		err := c.Client.Get(ctx, "Host", "", name, &fresh)
+		if err != nil && !client.IsNotFound(err) {
+			return engine.Result{}, err
+		}
+		if err == nil {
+			if c.Contacts != nil {
+				c.Contacts.Observe(&fresh, c.Clock.Now())
+			}
+			hosts = append(hosts, &fresh) // a cache miss is not a delete
+		}
+	}
 	env := scheduler.Env{Hosts: hosts, Suffix: v1.ClusterSuffix(hosts)}
 	if c.Contacts != nil {
 		env.Silence = func(host string) time.Duration { return c.Contacts.Silence(host, c.Clock.Now()) }
@@ -876,7 +891,7 @@ func claimPorts(ctx context.Context, cl *claims.Claims, s *v1.Silo, st v1.SiloSt
 				return true, nil
 			}
 		}
-		ok, err := cl.Take(ctx, pool, value, h, uses)
+		ok, _, err := cl.Take(ctx, pool, value, h, uses)
 		if ok && mine != nil {
 			mine.Store(pool+"/"+value, h.UID)
 		}
@@ -909,11 +924,13 @@ func claimPorts(ctx context.Context, cl *claims.Claims, s *v1.Silo, st v1.SiloSt
 
 // ClaimNewHostPorts takes ports on host for s, and only those: a placed silo's update claims a
 // host port it is adding before the write. held names each port another silo already holds
-// ("80/TCP on the internal IP is held by ns/name"); any port this call took is put back then, so
-// a refused update leaves no claim. ErrBusy: the claim kept changing.
-func ClaimNewHostPorts(ctx context.Context, cl *claims.Claims, s *v1.Silo, host string, ports []scheduler.HostPort) ([]string, error) {
+// ("80/TCP on the internal IP is held by ns/name"); any port this call newly claimed is put back
+// then, so a refused update leaves no claim of its own. fresh is those newly claimed ports: a
+// port s already held is not among them, and a conflicting write of s must not release it.
+// ErrBusy: the claim kept changing.
+func ClaimNewHostPorts(ctx context.Context, cl *claims.Claims, s *v1.Silo, host string, ports []scheduler.HostPort) (held []string, fresh []scheduler.HostPort, err error) {
 	if cl == nil || s == nil || host == "" || len(ports) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	h := claims.Holder{Kind: "Silo", Namespace: s.Namespace, Name: s.Name, UID: s.UID, Version: s.ResourceVersion}
 	keep := map[string]bool{}
@@ -930,13 +947,12 @@ func ClaimNewHostPorts(ctx context.Context, cl *claims.Claims, s *v1.Silo, host 
 			_ = cl.Drop(ctx, pool, v, s.UID)
 		}
 	}
-	var held []string
 	for _, p := range ports {
 		value := hostPortValue(p)
-		ok, err := cl.Take(ctx, pool, value, h, usesHostPort(host))
+		ok, created, err := cl.Take(ctx, pool, value, h, usesHostPort(host))
 		if err != nil {
 			rollback()
-			return nil, err
+			return nil, nil, err
 		}
 		if !ok {
 			who := "another silo"
@@ -949,14 +965,17 @@ func ClaimNewHostPorts(ctx context.Context, cl *claims.Claims, s *v1.Silo, host 
 			held = append(held, fmt.Sprintf("%s is held by %s", p, who))
 			continue
 		}
-		taken = append(taken, value)
+		if created {
+			fresh = append(fresh, p)
+			taken = append(taken, value)
+		}
 	}
 	if len(held) > 0 {
 		rollback() // a port this update just took is put back when another is held
 		slices.Sort(held)
-		return held, nil
+		return held, nil, nil
 	}
-	return nil, nil
+	return nil, fresh, nil
 }
 
 // ReleaseHostPorts puts back ports this silo just took, when the write they were for did not

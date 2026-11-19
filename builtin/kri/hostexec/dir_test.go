@@ -3,9 +3,21 @@ package hostexec
 import (
 	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "kevaso-hostexec-parent-")
+	if err != nil {
+		panic(err)
+	}
+	commandParent = dir
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 func TestCommandsRunInAnEmptyDirectory(t *testing.T) {
 	var out bytes.Buffer

@@ -36,8 +36,9 @@ import (
 //	version, conditions, runtimes: the host's to report.
 //
 // And on a silo placed on it (moves.HostWrite for the rest): siloIP inside the subnet the control
-// plane assigned the host, or the default network of a host without the mesh (siloIPInSubnet);
-// phase is the host's to report.
+// plane assigned the host, or on the default network. A host with no subnet yet, and a host that
+// is not in the store, may use only that default network (siloIPInSubnet); phase is the host's
+// to report.
 const CondReportedChange = "ReportedChange"
 
 func boundHostWrite(oh v1.HostStatus, nh *v1.HostStatus, host string, now time.Time) error {
@@ -92,15 +93,29 @@ func largeSteps(oh, nh v1.HostStatus) []string {
 	return out
 }
 
-// siloIPInSubnet: a host gives a silo placed on it an address only inside the subnet the control
-// plane assigned it (ingress routes to it), when it has one.
+// siloIPInSubnet: a host gives a silo placed on it an address inside the subnet the control plane
+// assigned it, or on the default network (mesh.Addresses(0)). A worker that is not on the mesh
+// addresses silos there even after this host has a subnet: that network is the same on every such
+// host, and an address on it is only ever routed on that host. A host with no subnet yet, and a
+// host that is not in the store, may use only that default network. A subnet that does not parse
+// refuses the address. An address outside both ranges is refused.
 func (s *Server) siloIPInSubnet(ctx context.Context, old, next v1.SiloStatus, host string) error {
 	if next.SiloIP == "" || next.SiloIP == old.SiloIP {
 		return nil
 	}
+	ip, err := netip.ParseAddr(next.SiloIP)
+	if err != nil {
+		return errf(http.StatusForbidden, "Forbidden", "%s may not give a silo the address %q", host, next.SiloIP)
+	}
+	_, defSubnet, _ := mesh.Addresses(0)
+	defaultNet := netip.MustParsePrefix(defSubnet)
+	inDefault := defaultNet.Contains(ip)
 	o, err := s.store.Get(ctx, store.Key{Kind: "Host", Name: host})
-	if errors.Is(err, store.ErrNotFound) {
-		return nil // no Host: no subnet assigned it
+	if errors.Is(err, store.ErrNotFound) { // a missing host has no subnet
+		if !inDefault { // a missing host has no subnet: only the default network
+			return errf(http.StatusForbidden, "Forbidden", "%s has no subnet: an address only in the default %s, not %s", host, defSubnet, next.SiloIP)
+		}
+		return nil
 	}
 	if err != nil {
 		return err
@@ -110,20 +125,18 @@ func (s *Server) siloIPInSubnet(ctx context.Context, old, next v1.SiloStatus, ho
 		return err
 	}
 	subnet := obj.(*v1.Host).Status.Network.SiloSubnet
-	if subnet == "" {
+	if subnet == "" { // a host without a subnet yet: only the default network
+		if !inDefault { // a host with no subnet yet: only the default network
+			return errf(http.StatusForbidden, "Forbidden", "%s has no subnet: an address only in the default %s, not %s", host, defSubnet, next.SiloIP)
+		}
 		return nil
 	}
 	p, err := netip.ParsePrefix(subnet)
-	if err != nil {
-		return nil
+	if err != nil { // a subnet that does not parse
+		return errf(http.StatusForbidden, "Forbidden", "%s may give a silo an address only in its subnet %s, not %s", host, subnet, next.SiloIP)
 	}
-	// A host without the mesh puts its silos on the default network (mesh.Addresses(0), the same
-	// on every such host: an address there is only ever routed to on that host).
-	_, local, _ := mesh.Addresses(0)
-	lp, _ := netip.ParsePrefix(local)
-	ip, err := netip.ParseAddr(next.SiloIP)
-	if err != nil || (!p.Contains(ip) && !lp.Contains(ip)) {
-		return errf(http.StatusForbidden, "Forbidden", "%s may give a silo an address only in its subnet %s (or the default %s), not %s", host, subnet, local, next.SiloIP)
+	if !p.Contains(ip) && !inDefault { // the address is in this host's subnet, or on the default network
+		return errf(http.StatusForbidden, "Forbidden", "%s may give a silo an address only in its subnet %s (or the default %s), not %s", host, subnet, defSubnet, next.SiloIP)
 	}
 	return nil
 }

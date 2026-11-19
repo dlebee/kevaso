@@ -493,7 +493,7 @@
   "id": "G-039",
   "guard": "PlanMove: a lost source needs --confirm-fenced",
   "file": "internal/moves/moves.go",
-  "find": "if fromLost && !r.ConfirmFenced {",
+  "find": "if fromLost && !r.ConfirmFenced && !r.HostDeleted {",
   "replace": "if false {",
   "mutation": "check removed",
   "packages": [
@@ -993,7 +993,7 @@
   "id": "G-101",
   "guard": "kni: a silo address never arrives from the uplink",
   "file": "builtin/kni/rules.go",
-  "find": "w(\"    oifname %q ip saddr %s iifname != { %q, %q, %q } drop\", h.Bridge, silosAll, h.Bridge, MeshDevices[0], MeshDevices[1])",
+  "find": "w(\"    ip saddr %s iifname != { %q, %q, %q } drop\", silosAll, h.Bridge, MeshDevices[0], MeshDevices[1])",
   "replace": "_ = silosAll",
   "mutation": "rule removed",
   "packages": [
@@ -1318,8 +1318,8 @@
   "id": "G-133",
   "guard": "apiserver: an update that only removes or tightens outside reach is the exemption",
   "file": "internal/apiserver/apiserver.go",
-  "find": "if !exposureLoosened(prev, obj, silos, svcs) { // an update that only removes or tightens outside reach needs no extra permission",
-  "replace": "if !exposureLoosened(prev, obj, silos, svcs) || true { // an update that only removes or tightens outside reach needs no extra permission",
+  "find": "if !exposureLoosened(prev, obj, silos, svcs, ings) { // an update that only removes or tightens outside reach needs no extra permission",
+  "replace": "if !exposureLoosened(prev, obj, silos, svcs, ings) || true { // an update that only removes or tightens outside reach needs no extra permission",
   "mutation": "any write exempt",
   "packages": [
    "./internal/apiserver",
@@ -3068,8 +3068,8 @@
   "id": "G-526",
   "guard": "an update that only removes or tightens outside reach needs no extra permission",
   "file": "internal/apiserver/apiserver.go",
-  "find": "if !exposureLoosened(prev, obj, silos, svcs) { // an update that only removes or tightens outside reach needs no extra permission",
-  "replace": "if !exposureLoosened(prev, obj, silos, svcs) || true { // an update that only removes or tightens outside reach needs no extra permission",
+  "find": "if !exposureLoosened(prev, obj, silos, svcs, ings) { // an update that only removes or tightens outside reach needs no extra permission",
+  "replace": "if !exposureLoosened(prev, obj, silos, svcs, ings) || true { // an update that only removes or tightens outside reach needs no extra permission",
   "mutation": "widening outside reach needs no extra permission",
   "packages": [
    "./internal/apiserver"
@@ -3152,8 +3152,8 @@
   "id": "G-533",
   "guard": "labels that newly match a load balancer need the permission",
   "file": "internal/apiserver/exposure.go",
-  "find": "if v1.Selects(sv.Spec.Selector, next.Labels) && !v1.Selects(sv.Spec.Selector, oldLabels) { // this silo's labels newly match a load balancer",
-  "replace": "if false && (v1.Selects(sv.Spec.Selector, next.Labels) && !v1.Selects(sv.Spec.Selector, oldLabels)) { // this silo's labels newly match a load balancer",
+  "find": "if sv.Spec.Type == v1.ServiceLoadBalancer { // this silo's or set's labels newly match a load balancer",
+  "replace": "if false && sv.Spec.Type == v1.ServiceLoadBalancer { // this silo's or set's labels newly match a load balancer",
   "mutation": "labels that newly match a load balancer need no extra permission",
   "packages": [
    "./internal/apiserver"
@@ -3248,8 +3248,8 @@
   "id": "G-541",
   "guard": "an expired host certificate is not reused",
   "file": "internal/worker/join.go",
-  "find": "if certificateExpired(cert, time.Now()) { // an expired certificate is not reused",
-  "replace": "if false && certificateExpired(cert, time.Now()) { // an expired certificate is not reused",
+  "find": "case loadErr == nil && certificateExpired(cert, time.Now()): // an expired certificate is not reused",
+  "replace": "case false && certificateExpired(cert, time.Now()): // an expired certificate is not reused",
   "mutation": "an expired certificate is reused",
   "packages": [
    "./internal/worker"
@@ -4515,5 +4515,893 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a VM disk download is capped at disk.size, or at the default disk when none is stated; zero is that default"
+ },
+ {
+  "id": "G-700",
+  "guard": "a root disk probe that is not exit 1 writes nothing",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "err = fmt.Errorf(\"exit %d\", code)\n\t\t}\n\t\treturn false, err",
+  "replace": "err = fmt.Errorf(\"exit %d\", code)\n\t\t}\n\t\treturn true, nil",
+  "mutation": "any probe failure is taken as the root disk being absent",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a root disk is written only when the probe says it is absent"
+ },
+ {
+  "id": "G-701",
+  "guard": "a volume is formatted only when blkid names neither a filesystem nor a partition table",
+  "file": "internal/agent/volumes.go",
+  "find": "case code == 2 && fs == \"\" && pt == \"\": // nothing on it: a new volume",
+  "replace": "case code == 2 && fs == \"\" || pt != \"\": // nothing on it: a new volume",
+  "mutation": "a partition table on an otherwise empty probe is formatted",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a volume that already holds a partition table is not formatted"
+ },
+ {
+  "id": "G-702",
+  "guard": "the guest formats a disk only when the probe is empty",
+  "file": "builtin/kri/cloudhypervisor/volumes.go",
+  "find": "if [ \"$rc\" -eq 2 ] && [ -z \"$p\" ]; then mkfs.ext4 -q -m 0 \"$d\"",
+  "replace": "if [ \"$rc\" -eq 2 ]; then mkfs.ext4 -q -m 0 \"$d\"",
+  "mutation": "the guest formats a disk that has a partition table",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a guest disk that already holds a partition table is not formatted"
+ },
+ {
+  "id": "G-703",
+  "guard": "a made silo whose unit is gone is not created again",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "case st.Made || st.Started:",
+  "replace": "case st.Started:",
+  "mutation": "a finished silo whose unit is gone is made again",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a silo that was made is not created again over its disk when its unit is gone"
+ },
+ {
+  "id": "G-704",
+  "guard": "a made silo is not reported absent when its unit is gone",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if !st.Started && !st.Made && !r.made(id) {",
+  "replace": "if !st.Started && !r.made(id) {",
+  "mutation": "a finished silo whose unit is gone is reported absent",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a silo that was made stays present when its unit is gone, so it is not created again"
+ },
+ {
+  "id": "G-705",
+  "guard": "the VMM's disk chown does not follow a link",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "chown -h \"$u\" \"$p\"",
+  "replace": "chown \"$u\" \"$p\"",
+  "mutation": "chown of a disk follows a symlink",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "changing a disk's owner does not follow a link"
+ },
+ {
+  "id": "G-706",
+  "guard": "a disk link is changed only when it points at an LVM device node",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "if [ \"$ok\" -ne 1 ]; then echo \"not chowning $1: a link to $t\"",
+  "replace": "if false; then echo \"not chowning $1: a link to $t\"",
+  "mutation": "any symlink to a disk is accepted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk symlink is changed only when it points at /dev/dm-N"
+ },
+ {
+  "id": "G-707",
+  "guard": "a VMM's view of /run is empty except its own directory",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "w(\"TemporaryFileSystem=/run\")",
+  "replace": "w(\"TemporaryFileSystem=\" + SilosDir)",
+  "mutation": "the host's /run is visible to the VMM",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a VMM does not see other silos' sockets under /run"
+ },
+ {
+  "id": "G-708",
+  "guard": "a VMM keeps only its own runtime directory",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "w(\"BindPaths=/run/\" + strings.TrimSuffix(n.Unit, \".service\"))",
+  "replace": "w(\"BindPaths=\" + n.Dir)",
+  "mutation": "the VMM's own runtime directory is not mounted back",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a VMM can use its own API socket and no other silo's"
+ },
+ {
+  "id": "G-709",
+  "guard": "a container log is capped",
+  "file": "builtin/kri/container/runtime.go",
+  "find": "\"max-size=10m\"",
+  "replace": "\"max-size=10g\"",
+  "mutation": "a container log is not capped at 10MiB",
+  "packages": [
+   "./builtin/kri/container"
+  ],
+  "protects": "a container's json-file log stays within 10MiB times three files"
+ },
+ {
+  "id": "G-710",
+  "guard": "a guest serial log is capped",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "serialLogMax = 10 << 20",
+  "replace": "serialLogMax = 1 << 30",
+  "mutation": "the guest serial log is allowed to grow far past 10MiB",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a silo's serial log is kept to about 10MiB plus one older file"
+ },
+ {
+  "id": "G-711",
+  "guard": "a provider volume is mounted without special files",
+  "file": "internal/agent/volumes.go",
+  "find": "\"noatime,nosuid,nodev\"",
+  "replace": "\"noatime\"",
+  "mutation": "a provider volume is mounted with only noatime",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a provider volume is mounted nosuid,nodev"
+ },
+ {
+  "id": "G-712",
+  "guard": "host commands run under the runtime directory",
+  "file": "builtin/kri/hostexec/hostexec.go",
+  "find": "os.MkdirTemp(commandParent, \"kevaso-hostexec-\")",
+  "replace": "os.MkdirTemp(\"\", \"kevaso-hostexec-\")",
+  "mutation": "host commands run in the system temporary directory",
+  "packages": [
+   "./builtin/kri/hostexec"
+  ],
+  "protects": "host commands run in a directory under the runtime parent, not the system temporary directory"
+ },
+ {
+  "id": "G-713",
+  "guard": "the host command directory defaults to /run/kevaso",
+  "file": "builtin/kri/hostexec/hostexec.go",
+  "find": "defaultCommandParent = \"/run/kevaso\"",
+  "replace": "defaultCommandParent = \"/tmp\"",
+  "mutation": "host commands default to /tmp",
+  "packages": [
+   "./builtin/kri/hostexec"
+  ],
+  "protects": "host commands live under /run/kevaso"
+ },
+ {
+  "id": "G-714",
+  "guard": "a removed host command directory is made again",
+  "file": "builtin/kri/hostexec/hostexec.go",
+  "find": "return err == nil && st.IsDir()",
+  "replace": "return dirPath != \"\" || err == nil && st.IsDir()",
+  "mutation": "a removed command directory is reused",
+  "packages": [
+   "./builtin/kri/hostexec"
+  ],
+  "protects": "host commands keep working after their directory is removed"
+ },
+ {
+  "id": "G-715",
+  "guard": "a reset keeps the silo made",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "st.HostKey, st.Started, st.Made, st.Remake = hostPub, false, true, nil",
+  "replace": "st.HostKey, st.Started, st.Made, st.Remake = hostPub, false, false, nil",
+  "mutation": "a reset clears that the silo was made",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a finished reset is not treated as a half-made create"
+ },
+ {
+  "id": "G-716",
+  "guard": "a finished create records that the silo was made",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "st.Made = true // the unit is written: a later loss of it is not a half-made create",
+  "replace": "st.Made = st.Made // the unit is written: a later loss of it is not a half-made create",
+  "mutation": "a finished create leaves the silo looking half-made",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a create that wrote its unit is not done again over its disk"
+ },
+ {
+  "id": "G-720",
+  "guard": "enroll issues only a worker certificate",
+  "file": "internal/apiserver/auth.go",
+  "find": "if req.Role != \"worker\" { // a host certificate from /enroll is a worker's",
+  "replace": "if false && req.Role != \"worker\" { // a host certificate from /enroll is a worker's",
+  "mutation": "enroll signs whatever role the token allows",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "enroll refuses every role but worker, and does not spend the token"
+ },
+ {
+  "id": "G-721",
+  "guard": "a service-account group names its namespace",
+  "file": "internal/apiserver/nsdelete.go",
+  "find": "if ns, ok := strings.CutPrefix(s.Name, \"system:serviceaccounts:\"); ok { // the namespace a service-account token's group names",
+  "replace": "if ns, ok := strings.CutPrefix(s.Name, \"system:serviceaccounts:\"); false && ok { // the namespace a service-account token's group names",
+  "mutation": "a group subject system:serviceaccounts:NS is not counted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a binding for system:serviceaccounts:NS keeps that namespace from being deleted"
+ },
+ {
+  "id": "G-722",
+  "guard": "a pull credential stays on the spec image's registry",
+  "file": "internal/apiserver/images.go",
+  "find": "return err1 == nil && err2 == nil && want.Registry == got.Registry // same registry as the spec image",
+  "replace": "return err1 == nil && err2 == nil && want.Registry != \"\" && got.Registry != \"\" // same registry as the spec image",
+  "mutation": "a status ref on any registry is accepted as the silo's image",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a pull credential is refused for a status ref on another registry"
+ },
+ {
+  "id": "G-723",
+  "guard": "a missing host may use only the default network",
+  "file": "internal/apiserver/hostwrite.go",
+  "find": "if !inDefault { // a missing host has no subnet: only the default network",
+  "replace": "if false && !inDefault { // a missing host has no subnet: only the default network",
+  "mutation": "a missing host may be given any silo address",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a missing host may give a silo an address only in the default network"
+ },
+ {
+  "id": "G-724",
+  "guard": "a host with no subnet may use only the default network",
+  "file": "internal/apiserver/hostwrite.go",
+  "find": "if !inDefault { // a host with no subnet yet: only the default network",
+  "replace": "if false && !inDefault { // a host with no subnet yet: only the default network",
+  "mutation": "a host with no subnet may use any address",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host with no subnet may give a silo an address only in the default network"
+ },
+ {
+  "id": "G-725",
+  "guard": "a subnet that does not parse refuses a silo address",
+  "file": "internal/apiserver/hostwrite.go",
+  "find": "if err != nil { // a subnet that does not parse",
+  "replace": "if false && err != nil { // a subnet that does not parse",
+  "mutation": "an unparsable subnet is treated as no restriction",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a silo address is refused when the host's subnet does not parse"
+ },
+ {
+  "id": "G-726",
+  "guard": "renew checks the presented certificate again after the body is read",
+  "file": "internal/apiserver/auth.go",
+  "find": "seen, err := s.removedHostCert(r.Context(), caller.Name, r.TLS.PeerCertificates[0]) // the certificate presented, after the body was read\n\t\tif err != nil {",
+  "replace": "seen, err := s.removedHostCert(r.Context(), caller.Name, r.TLS.PeerCertificates[0]) // the certificate presented, after the body was read\n\t\tif false && err != nil {",
+  "mutation": "a renew held open across the host's delete is signed and its serial recorded",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a renew held open across a host delete issues nothing and records no serial"
+ },
+ {
+  "id": "G-727",
+  "guard": "a SiloSet is judged on its template labels",
+  "file": "internal/apiserver/exposure.go",
+  "find": "for k, v := range o.Spec.Template.Labels { // instances carry the template's labels",
+  "replace": "for k, v := range map[string]string(nil) { // instances carry the template's labels",
+  "mutation": "a load balancer newly matching a SiloSet's template is not a loosening",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "template labels that newly match a load balancer need expose-public"
+ },
+ {
+  "id": "G-728",
+  "guard": "a service an ingress already names is judged when it is created or its selector changes",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if backendLeased(next.Namespace, rule.Service, silos, with) { // an ingress already names this service, on a leased port",
+  "replace": "if false && backendLeased(next.Namespace, rule.Service, silos, with) { // an ingress already names this service, on a leased port",
+  "mutation": "creating or retargeting a service an ingress already names is not a loosening",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a service an ingress already names, on a leased port, needs expose-public"
+ },
+ {
+  "id": "G-729",
+  "guard": "exposure is judged with the namespace's ingresses",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if !exposureLoosened(prev, obj, silos, svcs, ings) { // an update that only removes or tightens outside reach needs no extra permission",
+  "replace": "if !exposureLoosened(prev, obj, silos, svcs, ings[:0]) { // an update that only removes or tightens outside reach needs no extra permission",
+  "mutation": "ingresses already stored are ignored when a service is written",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a service write is judged against the ingresses that already name it"
+ },
+ {
+  "id": "G-740",
+  "guard": "DELETE of a status path is refused",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "case r.Method == http.MethodDelete && t.name != \"\" && !t.status: // a status subresource is not deleted",
+  "replace": "case r.Method == http.MethodDelete && t.name != \"\": // a status subresource is not deleted",
+  "mutation": "DELETE of a status path deletes the object",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a status subresource cannot be deleted"
+ },
+ {
+  "id": "G-741",
+  "guard": "a kevaso.com finalizer on a deleting object is removed only by its controller",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if !authed || id == Component || id == LocalAdmin { // a kevaso.com finalizer is removed by kevasod",
+  "replace": "if !authed || id == Component || id == LocalAdmin || true { // a kevaso.com finalizer is removed by kevasod",
+  "mutation": "any writer may remove a kevaso.com finalizer from a deleting object",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a controller finalizer stays until its controller removes it"
+ },
+ {
+  "id": "G-742",
+  "guard": "a secret value sealed for a write that does not stay is put back",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if restoreVault != nil { // the value sealed for a write that did not stay is put back",
+  "replace": "if false && restoreVault != nil { // the value sealed for a write that did not stay is put back",
+  "mutation": "a refused loosening write leaves the new secret value in place",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a loosening write that does not commit keeps the previous value"
+ },
+ {
+  "id": "G-743",
+  "guard": "a conflicting write releases only a host port it newly claimed",
+  "file": "internal/apiserver/hostports.go",
+  "find": "ports := fresh // only a port this call newly claimed",
+  "replace": "ports := append(fresh[:0:0], added...) // only a port this call newly claimed",
+  "mutation": "a conflicting write releases a host port the silo already holds",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host port a silo holds stays when another write of that silo does not commit"
+ },
+ {
+  "id": "G-760",
+  "guard": "a removal recorded under another restore history is dropped",
+  "file": "internal/controllers/provider/trust.go",
+  "find": "if r.History != c.history() { // another history: drop the record, keep the volume",
+  "replace": "if false && r.History != c.history() { // another history: drop the record, keep the volume",
+  "mutation": "a removal from another history is resumed",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume removal recorded under another restore history is dropped and the volume is kept"
+ },
+ {
+  "id": "G-761",
+  "guard": "a cache miss is not a deleted host",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "hosts = append(hosts, &fresh) // a cache miss is not a delete",
+  "replace": "_ = fresh // a cache miss is not a delete",
+  "mutation": "a host missing from the cache is treated as deleted",
+  "packages": [
+   "./internal/controllers/silo"
+  ],
+  "protects": "Unschedulable/HostDeleted is set only when a fresh read of the Host is NotFound"
+ },
+ {
+  "id": "G-762",
+  "guard": "a host cannot change Unschedulable/HostDeleted",
+  "file": "internal/moves/moves.go",
+  "find": "if okO == okN && (!okO || o == n) {",
+  "replace": "if true || okO == okN && (!okO || o == n) {",
+  "mutation": "a host may add, drop or change Unschedulable/HostDeleted",
+  "packages": [
+   "./internal/moves"
+  ],
+  "protects": "a host's status write leaves Unschedulable/HostDeleted as the control plane wrote it"
+ },
+ {
+  "id": "G-763",
+  "guard": "a deleted current host does not confirm a lost movingFrom",
+  "file": "internal/moves/moves.go",
+  "find": "case s.Status.MovingFrom != \"\" && sourceLost && !r.ConfirmFenced:",
+  "replace": "case s.Status.MovingFrom != \"\" && sourceLost && !r.ConfirmFenced && !r.HostDeleted:",
+  "mutation": "deleting the current host confirms a lost movingFrom",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a lost movingFrom still needs --confirm-fenced when the current host was deleted"
+ },
+ {
+  "id": "G-764",
+  "guard": "a deleted current host confirms that host",
+  "file": "internal/moves/moves.go",
+  "find": "if fromLost && !r.ConfirmFenced && !r.HostDeleted {",
+  "replace": "if fromLost && !r.ConfirmFenced {",
+  "mutation": "a deleted current host still needs --confirm-fenced",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "deleting the host named by status.host confirms that copy is off"
+ },
+ {
+  "id": "G-765",
+  "guard": "a fresh start claim holds a deleted host",
+  "file": "internal/apiserver/moves.go",
+  "find": "if req.HostDeleted {",
+  "replace": "if false && req.HostDeleted {",
+  "mutation": "a fresh start claim of a deleted host does not hold the silo",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a fresh start claim of a deleted host still holds the silo"
+ },
+ {
+  "id": "G-766",
+  "guard": "a host cannot change status.service",
+  "file": "internal/moves/moves.go",
+  "find": "if old.Service.Equal(next.Service) {",
+  "replace": "if true || old.Service.Equal(next.Service) {",
+  "mutation": "a host may change status.service",
+  "packages": [
+   "./internal/moves"
+  ],
+  "protects": "a host's status write leaves status.service as the control plane wrote it"
+ },
+ {
+  "id": "G-767",
+  "guard": "a kept volume's detach is finished before it is attached again",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "finishingDetach := vs.AttachedTo == h.Name && detachStarted && !vs.Mounted",
+  "replace": "finishingDetach := false && vs.AttachedTo == h.Name && detachStarted && !vs.Mounted",
+  "mutation": "a device named during a detach is treated as attached",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume put back during a detach is detached to the end, then attached"
+ },
+ {
+  "id": "G-768",
+  "guard": "a kept volume name cannot come back under another class",
+  "file": "internal/apiserver/semantic.go",
+  "find": "if _, seen := was[v.Name]; !seen && v.Name != \"\" {",
+  "replace": "if _, seen := was[v.Name]; false && !seen && v.Name != \"\" {",
+  "mutation": "a kept volume name may be added back under another class",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a volume name kept in status cannot be added back under another class"
+ },
+ {
+  "id": "G-769",
+  "guard": "a handle is not used under another class",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "if vs.Handle != \"\" && !sameVolumeClass(vs.Class, spec.Class) { // a kept handle stays on its class",
+  "replace": "if false && vs.Handle != \"\" && !sameVolumeClass(vs.Class, spec.Class) { // a kept handle stays on its class",
+  "mutation": "a handle recorded for one class is used under another",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume's handle stays on the class it was recorded for"
+ },
+ {
+  "id": "G-780",
+  "guard": "the API serving certificate is reissued when it is due",
+  "file": "internal/apiserver/servingcert.go",
+  "find": "\tif s.cert != nil && s.cert.Leaf != nil && !client.RenewDue(s.cert.Leaf.NotBefore, s.cert.Leaf.NotAfter, now) {\n\t\treturn false, nil\n\t}",
+  "replace": "\tif s.cert != nil && s.cert.Leaf != nil && !client.RenewDue(s.cert.Leaf.NotBefore, s.cert.Leaf.NotAfter, now) && false {\n\t\treturn false, nil\n\t}",
+  "mutation": "the serving certificate is kept for its whole life",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "the API serving certificate is reissued at two thirds of its life"
+ },
+ {
+  "id": "G-781",
+  "guard": "a silo-range source is dropped whatever the output",
+  "file": "builtin/kni/rules.go",
+  "find": "\tw(\"    ip saddr %s iifname != { %q, %q, %q } drop\", silosAll, h.Bridge, MeshDevices[0], MeshDevices[1])",
+  "replace": "\tw(\"    oifname %q ip saddr %s iifname != { %q, %q, %q } drop\", h.Bridge, silosAll, h.Bridge, MeshDevices[0], MeshDevices[1])",
+  "mutation": "a silo-range source is dropped only when it would leave on the bridge",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "a packet whose source is a silo address is dropped unless it arrived from the bridge or the mesh"
+ },
+ {
+  "id": "G-782",
+  "guard": "every injected header for one host is kept",
+  "file": "internal/worker/egress.go",
+  "find": "\t\t\tslot = append(slot, gate.Injection{Header: in.Header, Value: in.Value, Approval: in.Approval, Secret: in.Secret})",
+  "replace": "\t\t\tslot = []gate.Injection{{Header: in.Header, Value: in.Value, Approval: in.Approval, Secret: in.Secret}}",
+  "mutation": "one host keeps only the last injected header",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "every injected header for one host is kept"
+ },
+ {
+  "id": "G-783",
+  "guard": "every injected header is set on the request",
+  "file": "internal/gate/gate.go",
+  "find": "func setInjectedHeaders(h http.Header, ins []Injection) {\n\tfor _, in := range ins {\n\t\th.Del(in.Header)\n\t\th.Set(in.Header, in.Value)\n\t}\n}",
+  "replace": "func setInjectedHeaders(h http.Header, ins []Injection) {\n\tif len(ins) == 0 {\n\t\treturn\n\t}\n\tin := ins[0]\n\th.Del(in.Header)\n\th.Set(in.Header, in.Value)\n}",
+  "mutation": "only the first injected header is set",
+  "packages": [
+   "./internal/gate"
+  ],
+  "protects": "every injected header for one host is set on the request"
+ },
+ {
+  "id": "G-784",
+  "guard": "an approval of a different secret counts as none",
+  "file": "internal/approvals/approvals.go",
+  "find": "\tif a == nil || a.Spec.SiloUID != siloUID || a.Spec.SecretUID != secretUID {",
+  "replace": "\tif a == nil || a.Spec.SiloUID != siloUID {",
+  "mutation": "an approval stays active after its secret is created again",
+  "packages": [
+   "./internal/approvals"
+  ],
+  "protects": "an approval of a secret that was deleted and created again counts as none"
+ },
+ {
+  "id": "G-785",
+  "guard": "the approval name includes the secret's UID",
+  "file": "internal/approvals/approvals.go",
+  "find": "\th := sha256.Sum256([]byte(siloUID + \"\\x00\" + use + \"\\x00\" + secret + \"\\x00\" + secretUID))",
+  "replace": "\th := sha256.Sum256([]byte(siloUID + \"\\x00\" + use + \"\\x00\" + secret))",
+  "mutation": "two secrets of the same name share an approval name",
+  "packages": [
+   "./internal/approvals"
+  ],
+  "protects": "an approval's name stays with the secret it was granted"
+ },
+ {
+  "id": "G-786",
+  "guard": "a new approval is named with the stored secret's UID",
+  "file": "internal/apiserver/approvals.go",
+  "find": "\t\tc.SecretUID = sec.UID",
+  "replace": "\t\tc.SecretUID = \"\"",
+  "mutation": "a new approval is not tied to the secret that is stored",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "an approval is named with the UID of the secret that is stored"
+ },
+ {
+  "id": "G-787",
+  "guard": "a kevasod with no version is refused",
+  "file": "internal/cli/kvoadm/upgrade.go",
+  "find": "\tif stamped == \"\" || stamped == devVersion {",
+  "replace": "\tif false && (stamped == \"\" || stamped == devVersion) {",
+  "mutation": "a kevasod that reports no version is rolled",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "a roll refuses a kevasod that does not report its own version"
+ },
+ {
+  "id": "G-788",
+  "guard": "a --version that is not the binary's version is refused",
+  "file": "internal/cli/kvoadm/upgrade.go",
+  "find": "\tif flag != \"\" && flag != stamped {",
+  "replace": "\tif false && flag != \"\" && flag != stamped {",
+  "mutation": "a roll waits for a version the binary does not report",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "a roll refuses --version when it is not the version the kevasod reports"
+ },
+ {
+  "id": "G-789",
+  "guard": "login tries each control plane until one answers",
+  "file": "internal/cli/kvo/auth.go",
+  "find": "\tfor _, server := range servers { // each control plane, until one answers",
+  "replace": "\tfor _, server := range servers[:1] { // each control plane, until one answers",
+  "mutation": "login asks only the first control plane",
+  "packages": [
+   "./internal/cli/kvo"
+  ],
+  "protects": "kvo login keeps every control plane an invite lists and uses the first that answers"
+ },
+ {
+  "id": "G-790",
+  "guard": "silo ssh, files, open, close and move are subresources",
+  "file": "internal/cli/kvo/auth.go",
+  "find": "\tcase \"status\", \"exec\", \"token\", \"ssh\", \"files\", \"open\", \"close\", \"move\":",
+  "replace": "\tcase \"status\", \"exec\", \"token\":",
+  "mutation": "silos/ssh is read as a silo named ssh",
+  "packages": [
+   "./internal/cli/kvo"
+  ],
+  "protects": "can-i reads ssh, files, open, close and move as silo subresources"
+ },
+ {
+  "id": "G-791",
+  "guard": "etcd peers listen on the internal address",
+  "file": "internal/cli/kvoadm/kvoadm.go",
+  "find": "\t\tif o.InternalIP != \"\" {\n\t\t\thost = o.InternalIP\n\t\t}",
+  "replace": "\t\tif false && o.InternalIP != \"\" {\n\t\t\thost = o.InternalIP\n\t\t}",
+  "mutation": "the etcd peer listener binds the reach address",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "etcd peers listen on the internal address and advertise the reach address"
+ },
+ {
+  "id": "G-792",
+  "guard": "a migrated unit advertises the reach address",
+  "file": "internal/cli/kvoadm/systemnodes.go",
+  "find": "\t\tif advertisePeer != \"\" && advertisePeer != peerListen {",
+  "replace": "\t\tif false && advertisePeer != \"\" && advertisePeer != peerListen {",
+  "mutation": "a migrated unit does not say where peers should dial",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "a unit moved onto etcd listens on the internal address and advertises the reach address"
+ },
+ {
+  "id": "G-793",
+  "guard": "a previous host key is kept until the new certificate is in place",
+  "file": "internal/worker/renew.go",
+  "find": "\t\tif _, err := os.Stat(prev); os.IsNotExist(err) {",
+  "replace": "\t\tif _, err := os.Stat(prev); true || os.IsNotExist(err) {",
+  "mutation": "a second renewal replaces the key that still matches the certificate",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "a host certificate keeps the key that matches it when renewal is interrupted"
+ },
+ {
+  "id": "G-794",
+  "guard": "an expired client certificate names kvoadm users resign",
+  "file": "internal/kvoconfig/kvoconfig.go",
+  "find": "\t\treturn nil, nil, fmt.Errorf(\"context %s certificate for %s expired on %s. Run: %s\",\n\t\t\tname, who, na.UTC().Format(time.RFC3339), CertRecovery(who, ctx.Server))",
+  "replace": "\t\treturn nil, nil, fmt.Errorf(\"context %s certificate for %s expired on %s. On a control-plane host, run: kevasod admin sign-user --name %s\",\n\t\t\tname, who, na.UTC().Format(time.RFC3339), who)",
+  "mutation": "an expired client certificate does not name kvoadm users resign",
+  "packages": [
+   "./internal/kvoconfig"
+  ],
+  "protects": "an expired client certificate names kvoadm users resign"
+ },
+ {
+  "id": "G-795",
+  "guard": "a resigned certificate must be the named user",
+  "file": "internal/cli/kvoadm/kvoadm.go",
+  "find": "\tif id.Type != \"user\" || id.Name != userName {",
+  "replace": "\tif false && (id.Type != \"user\" || id.Name != userName) {",
+  "mutation": "a certificate for someone else is stored for the named user",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm users resign refuses a certificate that is not the named user"
+ },
+ {
+  "id": "G-800",
+  "guard": "a kept volume is not a detach that has started",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "detachStarted := strings.HasPrefix(priorMessage, \"detaching from \")",
+  "replace": "detachStarted := vs.Kept || strings.HasPrefix(priorMessage, \"detaching from \")",
+  "mutation": "a volume that is only kept is detached when it is put back",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume put back before its detach has started stays attached"
+ },
+ {
+  "id": "G-801",
+  "guard": "a mounted volume is not detached to finish a detach",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "finishingDetach := vs.AttachedTo == h.Name && detachStarted && !vs.Mounted",
+  "replace": "finishingDetach := vs.AttachedTo == h.Name && detachStarted",
+  "mutation": "a detach is finished while the volume is still mounted",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume that is still mounted is not detached"
+ },
+ {
+  "id": "G-802",
+  "guard": "a percent in a unit command is written as %%",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "\"%\", \"%%\"",
+  "replace": "\"%\", \"%\"",
+  "mutation": "a percent in a unit command is a systemd specifier",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "stat -c %s reaches the shell as a percent"
+ },
+ {
+  "id": "G-803",
+  "guard": "a dollar in a unit command is written as $$",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "\"$\", \"$$\"",
+  "replace": "\"$\", \"$\"",
+  "mutation": "a dollar in a unit command is a systemd variable",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "shell variables in the unit reach the shell"
+ },
+ {
+  "id": "G-804",
+  "guard": "the VMM closes its fifo descriptor before it starts",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "done) & exec 3>&-; exec",
+  "replace": "done) & exec",
+  "mutation": "the VMM keeps a reader on the serial fifo",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a dead logger does not leave the VMM holding the fifo"
+ },
+ {
+  "id": "G-805",
+  "guard": "the serial logger stays up when a write fails",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "|| true; sz=$(stat -c %s ",
+  "replace": "|| exit 0; sz=$(stat -c %s ",
+  "mutation": "the serial logger exits when a write fails",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a failed write does not stop the serial logger"
+ },
+ {
+  "id": "G-806",
+  "guard": "a reach address on a local interface is a peer listener",
+  "file": "internal/etcd/server.go",
+  "find": "if !local(host) {",
+  "replace": "if true {",
+  "mutation": "a reach address on this machine is not listened on",
+  "packages": [
+   "./internal/etcd"
+  ],
+  "protects": "peers can dial a reach address that is on this machine"
+ },
+ {
+  "id": "G-807",
+  "guard": "a reach address that is not local is not a peer listener",
+  "file": "internal/etcd/server.go",
+  "find": "if !local(host) {",
+  "replace": "if false {",
+  "mutation": "a reach address that is not on this machine is listened on",
+  "packages": [
+   "./internal/etcd"
+  ],
+  "protects": "under NAT the member listens on the internal address only"
+ },
+ {
+  "id": "G-808",
+  "guard": "a host renew records its serial only on the removal the check read",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "if bound.check && !sameHostRemoval(bound, rec, o.Revision) { // the removal this renew saw",
+  "replace": "if false && bound.check && !sameHostRemoval(bound, rec, o.Revision) { // the removal this renew saw",
+  "mutation": "a renew records its serial on a removal that appeared after the check",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a renew in flight while its host is removed records no serial"
+ },
+ {
+  "id": "G-809",
+  "guard": "a kevaso.com finalizer stays on a write that leaves it out",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "nm.Finalizers = keepControllerFinalizers(ctx, oldMeta.Finalizers, nm.Finalizers) // a kevaso.com finalizer stays",
+  "replace": "nm.Finalizers = nm.Finalizers // a kevaso.com finalizer stays",
+  "mutation": "a write that leaves out a kevaso.com finalizer drops it",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a kevaso.com finalizer stays until its controller removes it"
+ },
+ {
+  "id": "G-810",
+  "guard": "a kevaso.com finalizer on a defined object stays on a write that leaves it out",
+  "file": "internal/apiserver/kinds.go",
+  "find": "nm.Finalizers = keepControllerFinalizers(ctx, om.Finalizers, nm.Finalizers) // a kevaso.com finalizer stays",
+  "replace": "nm.Finalizers = nm.Finalizers // a kevaso.com finalizer stays",
+  "mutation": "a write that leaves out a defined object's kevaso.com finalizer drops it",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a defined object's kevaso.com finalizer stays until its controller removes it"
+ },
+ {
+  "id": "G-811",
+  "guard": "a SiloSet's instances carry the set's name",
+  "file": "internal/apiserver/exposure.go",
+  "find": "labels[v1.LabelSiloSet] = o.Name",
+  "replace": "_ = o.Name",
+  "mutation": "a load balancer that selects a SiloSet by name is not a loosening",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a SiloSet whose name a load balancer selects needs expose-public"
+ },
+ {
+  "id": "G-812",
+  "guard": "labels that newly join a service an ingress names are a loosening",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if ingressNamesLeased(sv, judged, ings) { // a plain service an ingress already names, on a leased port",
+  "replace": "if false && ingressNamesLeased(sv, judged, ings) { // a plain service an ingress already names, on a leased port",
+  "mutation": "labels that newly join a service an ingress names need no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a silo that newly joins a service an ingress names, on a leased port, needs expose-public"
+ },
+ {
+  "id": "G-813",
+  "guard": "the silo being written is what the leased-port check sees",
+  "file": "internal/apiserver/exposure.go",
+  "find": "judged := silosWith(silos, obj)",
+  "replace": "judged := silosWith(silos, nil)",
+  "mutation": "a silo's new labels are not what the leased-port check sees",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a silo that newly joins a leased ingress backend is judged on the labels being written"
+ },
+ {
+  "id": "G-814",
+  "guard": "kvo login refuses a server that is not https",
+  "file": "internal/cli/kvo/auth.go",
+  "find": "if err != nil || u.Scheme != \"https\" || u.Host == \"\" { // login is https",
+  "replace": "if false && (err != nil || u.Scheme != \"https\" || u.Host == \"\") { // login is https",
+  "mutation": "kvo login accepts a plain http server",
+  "packages": [
+   "./internal/cli/kvo"
+  ],
+  "protects": "kvo login refuses http, including loopback"
+ },
+ {
+  "id": "G-830",
+  "guard": "a host renew binds its serial to the removal the check read",
+  "file": "internal/apiserver/auth.go",
+  "find": "bound = hostCertBound{check: true, ok: seen.ok, at: seen.rec.RemovedAt, uid: seen.rec.HostUID, rev: seen.rev, serials: seen.rec.Serials} // the removal the check read",
+  "replace": "rec, ok := s.hostRemoval(r.Context(), caller.Name); _ = seen; bound = hostCertBound{check: true, ok: ok, at: rec.RemovedAt} // the removal the check read",
+  "mutation": "a renew takes a later read as the removal it checked",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a renew in flight while its host is removed records no serial"
+ },
+ {
+  "id": "G-831",
+  "guard": "a SiloSet update is judged on its new template labels",
+  "file": "internal/apiserver/exposure.go",
+  "find": "cp.Labels = labels // the template labels being written",
+  "replace": "cp.Labels = cur.Labels; _ = labels // the template labels being written",
+  "mutation": "a SiloSet update is judged on its stored instance labels",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a SiloSet whose template labels join a service an ingress names, on a leased port, needs expose-public"
  }
 ]
