@@ -5223,5 +5223,53 @@
    "./internal/controllers/provider"
   ],
   "protects": "a volume that is still mounted is not detached"
+ },
+ {
+  "id": "G-802",
+  "guard": "a percent in a unit command is written as %%",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "\"%\", \"%%\"",
+  "replace": "\"%\", \"%\"",
+  "mutation": "a percent in a unit command is a systemd specifier",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "stat -c %s reaches the shell as a percent"
+ },
+ {
+  "id": "G-803",
+  "guard": "a dollar in a unit command is written as $$",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "\"$\", \"$$\"",
+  "replace": "\"$\", \"$\"",
+  "mutation": "a dollar in a unit command is a systemd variable",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "shell variables in the unit reach the shell"
+ },
+ {
+  "id": "G-804",
+  "guard": "the VMM closes its fifo descriptor before it starts",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "done) & exec 3>&-; exec",
+  "replace": "done) & exec",
+  "mutation": "the VMM keeps a reader on the serial fifo",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a dead logger does not leave the VMM holding the fifo"
+ },
+ {
+  "id": "G-805",
+  "guard": "the serial logger stays up when a write fails",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "|| true; sz=$(stat -c %s ",
+  "replace": "|| exit 0; sz=$(stat -c %s ",
+  "mutation": "the serial logger exits when a write fails",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a failed write does not stop the serial logger"
  }
 ]

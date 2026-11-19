@@ -199,25 +199,34 @@ ethernets:
 // file and started again. One older file is kept, so a silo holds about twice this.
 const serialLogMax = 10 << 20
 
+// systemdCommand is a command as a unit file must write it. systemd expands % specifiers
+// and $ variables before the program runs, quotes included, so a literal % is %% and a
+// literal $ is $$.
+func systemdCommand(s string) string {
+	return strings.NewReplacer("%", "%%", "$", "$$").Replace(s)
+}
+
 // chownPre makes the disk the VMM's without following a link to somewhere else. An LVM
 // volume's path is a symlink to its device node (/dev/dm-N); that node is the one the VMM
 // opens, and it is the only link target that is changed. Any other link is refused.
 func chownPre(path string) string {
 	const script = `p=$1; u=$2; if [ -L "$p" ]; then t=$(readlink -f -- "$p") || exit 1; ok=0; case "$t" in /dev/dm-*) r=${t#/dev/dm-}; case "$r" in *[!0-9]*) ;; *) ok=1; p=$t;; esac;; esac; if [ "$ok" -ne 1 ]; then echo "not chowning $1: a link to $t" >&2; exit 1; fi; fi; chown -h "$u" "$p"`
-	return "ExecStartPre=+/bin/sh -c '" + script + "' sh " + path + " " + VMMUser
+	return "ExecStartPre=+/bin/sh -c '" + systemdCommand(script) + "' sh " + systemdCommand(path) + " " + VMMUser
 }
 
 // vmmStart is the unit's ExecStart: the VMM under its lock, with the guest's serial log capped.
+// The logger keeps running when a write fails, and the VMM drops its own descriptor on the fifo
+// before it starts, so a dead logger is a lost line and not a guest that blocks on the fifo.
 func vmmStart(n Names, args []string) string {
 	fifo := n.Dir + "/serial.fifo"
 	logf := n.Dir + "/serial.log"
 	prev := logf + ".1"
 	script := "set -e; rm -f " + fifo + "; mkfifo -m 0600 " + fifo + "; exec 3<>" + fifo +
-		"; (while true; do dd bs=65536 count=16 status=none <&3 >>" + logf + " || exit 0; sz=$(stat -c %s " + logf +
+		"; (while true; do dd bs=65536 count=16 status=none <&3 >>" + logf + " || true; sz=$(stat -c %s " + logf +
 		" 2>/dev/null || echo 0); if [ \"$sz\" -ge " + strconv.Itoa(serialLogMax) + " ]; then mv -f " + logf + " " + prev +
-		"; : > " + logf + "; fi; done) & exec /usr/bin/flock --no-fork -w 5 -E " + strconv.Itoa(lockConflict) + " " +
+		" || true; : > " + logf + " || true; fi; done) & exec 3>&-; exec /usr/bin/flock --no-fork -w 5 -E " + strconv.Itoa(lockConflict) + " " +
 		LockFile(n) + " " + BinDir + "/cloud-hypervisor " + strings.Join(args, " ")
-	return "ExecStart=/bin/sh -c '" + script + "'"
+	return "ExecStart=/bin/sh -c '" + systemdCommand(script) + "'"
 }
 
 // Unit is the VMM's systemd unit for a silo with no volumes and its disk on a thin LV.

@@ -12,9 +12,9 @@ func TestTheVMMSeesOnlyItsOwnRuntimeDirectory(t *testing.T) {
 	for _, want := range []string{
 		"TemporaryFileSystem=/run\n",
 		"BindPaths=" + run + "\n",
-		`chown -h "$u" "$p"`,
+		`chown -h "$$u" "$$p"`,
 		"sh /dev/" + VG + "/" + n.LV + " " + VMMUser,
-		`if [ "$ok" -ne 1 ]; then echo "not chowning $1: a link to $t"`,
+		`if [ "$$ok" -ne 1 ]; then echo "not chowning $$1: a link to $$t"`,
 	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("unit lacks %q:\n%s", want, u)

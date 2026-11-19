@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,19 @@ func TestMetalRuntimeBounds(t *testing.T) {
 	c.expect("its own socket directory is mounted", unit, "BindPaths=/run/"+strings.TrimSuffix(n.Unit, ".service"))
 	c.expect("chown does not follow a link", unit, "chown -h")
 	c.expect("the serial log is capped", unit, "-ge 10485760")
+	execStart := c.mustSh("systemctl show -p ExecStart --value " + n.Unit)
+	c.expect("the effective serial line keeps stat -c %s", execStart, "stat -c %s")
+	c.expect("the logger stays up when a write fails", execStart, "|| true")
+	c.expect("the VMM closes its fifo descriptor", execStart, "exec 3>&-")
+	pre := c.mustSh("systemctl show -p ExecStartPre --value " + n.Unit)
+	c.expect("the effective chown line keeps the device-mapper suffix", pre, "${t#/dev/dm-}")
+	fifo := n.Dir + "/serial.fifo"
+	prev := n.Dir + "/serial.log.1"
+	c.mustSh("dd if=/dev/zero bs=1048576 count=11 status=none of=" + fifo)
+	sz, err := strconv.Atoi(strings.TrimSpace(c.mustSh("stat -c %s " + prev)))
+	if err != nil || sz < 10<<20 {
+		t.Errorf("the serial log did not rotate past 10MiB: size %d: %v", sz, err)
+	}
 	pid := strings.TrimSpace(c.mustSh("systemctl show -p MainPID --value " + n.Unit))
 	c.mustSh("mkdir -p /run/kevaso-silo-other")
 	seen := c.mustSh("nsenter -t " + pid + " -m ls /run")
