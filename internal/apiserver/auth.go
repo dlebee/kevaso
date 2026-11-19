@@ -625,7 +625,9 @@ func (s *Server) issueUserCert(w http.ResponseWriter, r *http.Request, caller pk
 
 // renewCert signs a new certificate for the caller, and for nobody else: the name and role are
 // the authenticated certificate's, never a name in the request. A removed host is refused before
-// this runs. The new serial is recorded where a removal record exists (signAndReply).
+// this runs, and again after the body is read: a renew held open across the delete must not be
+// signed, and must not record a new serial on the removal. The new serial is recorded where a
+// removal record exists (signAndReply) only once that second check has passed.
 func (s *Server) renewCert(w http.ResponseWriter, r *http.Request, caller pki.Identity) {
 	if caller.Type != "host" && caller.Type != "user" {
 		writeErr(w, errf(http.StatusForbidden, "Forbidden", "only a host or user certificate can be renewed"))
@@ -635,6 +637,16 @@ func (s *Server) renewCert(w http.ResponseWriter, r *http.Request, caller pki.Id
 	if err != nil {
 		writeErr(w, err)
 		return
+	}
+	if caller.Type == "host" {
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "a host renews with its certificate"))
+			return
+		}
+		if err := s.removedHostCert(r.Context(), caller.Name, r.TLS.PeerCertificates[0]); err != nil { // the certificate presented, after the body was read
+			writeErr(w, hostRefusal(err))
+			return
+		}
 	}
 	id := caller // renewed for the authenticated caller only
 	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
