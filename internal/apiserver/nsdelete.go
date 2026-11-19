@@ -294,18 +294,24 @@ func namespacesNamed(obj meta.Object) []string {
 	return out
 }
 
-// subjectNamespaces adds the namespaces of service-account subjects. An empty namespace is the
-// binding's own (own), which add then drops.
+// subjectNamespaces adds the namespaces a binding's subjects name. A service account's empty
+// namespace is the binding's own (own), which add then drops. A group subject
+// system:serviceaccounts:NS is that namespace too: a service account's token carries the group,
+// so the binding still applies after the namespace is created again under the same name.
 func subjectNamespaces(add func(string), own string, subs []v1.Subject) {
 	for _, s := range subs {
-		if s.Kind != "ServiceAccount" {
-			continue
+		switch s.Kind {
+		case "ServiceAccount":
+			ns := s.Namespace
+			if ns == "" {
+				ns = own
+			}
+			add(ns)
+		case "Group":
+			if ns, ok := strings.CutPrefix(s.Name, "system:serviceaccounts:"); ok { // the namespace a service-account token's group names
+				add(ns)
+			}
 		}
-		ns := s.Namespace
-		if ns == "" {
-			ns = own
-		}
-		add(ns)
 	}
 }
 

@@ -4539,5 +4539,17 @@
    "./internal/apiserver"
   ],
   "protects": "a renew held open across a host delete issues nothing and records no serial"
+ },
+ {
+  "id": "G-721",
+  "guard": "a service-account group names its namespace",
+  "file": "internal/apiserver/nsdelete.go",
+  "find": "if ns, ok := strings.CutPrefix(s.Name, \"system:serviceaccounts:\"); ok { // the namespace a service-account token's group names",
+  "replace": "if ns, ok := strings.CutPrefix(s.Name, \"system:serviceaccounts:\"); false && ok { // the namespace a service-account token's group names",
+  "mutation": "a group subject system:serviceaccounts:NS is not counted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a binding for system:serviceaccounts:NS keeps that namespace from being deleted"
  }
 ]
