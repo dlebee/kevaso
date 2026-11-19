@@ -171,19 +171,20 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 // target is what a request path names.
 type target struct {
-	kind      v1.KindInfo
-	namespace string
-	name      string
-	status    bool
-	exec      bool   // a silo's /exec
-	token     bool   // a service account's /token
-	value     bool   // a secret's /value
-	move      bool   // a silo's /move
-	planned   bool   // a write the move handler's PlanMove decided (set only by moveSilo)
-	answer    string // an approval's /approve or /deny
-	bundle    bool   // a pane's /bundle
-	stream    string // a silo's /ssh or /files (silostreams.go)
-	lease     string // a silo's /open or /close (leases.go)
+	kind          v1.KindInfo
+	namespace     string
+	name          string
+	status        bool
+	exec          bool   // a silo's /exec
+	token         bool   // a service account's /token
+	value         bool   // a secret's /value
+	move          bool   // a silo's /move
+	restoreSettle bool   // a silo's /restore-settle
+	planned       bool   // a write the move handler's PlanMove decided, or restore settle clearing a stored handoff
+	answer        string // an approval's /approve or /deny
+	bundle        bool   // a pane's /bundle
+	stream        string // a silo's /ssh or /files (silostreams.go)
+	lease         string // a silo's /open or /close (leases.go)
 
 	def   *definedKind // a kind defined by a KindDefinition (kinds.go); nil for built-ins
 	scale bool         // a defined kind's /scale (scale.go)
@@ -218,6 +219,8 @@ func parsePath(path string) (target, error) {
 		t.stream = parts[2]
 	case len(parts) == 3 && parts[2] == "move" && k.Kind == "Silo":
 		t.move = true
+	case len(parts) == 3 && parts[2] == "restore-settle" && k.Kind == "Silo":
+		t.restoreSettle = true
 	case len(parts) == 3 && (parts[2] == "open" || parts[2] == "close") && k.Kind == "Silo":
 		t.lease = parts[2]
 	case len(parts) == 3 && parts[2] == "token" && k.Kind == "ServiceAccount":
@@ -254,6 +257,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.siloFiles(w, r, t.namespace, t.name)
 	case t.move:
 		s.moveSilo(w, r, t)
+	case t.restoreSettle:
+		s.restoreSettle(w, r, t)
 	case t.lease != "":
 		s.siloLease(w, r, t)
 	case t.token:

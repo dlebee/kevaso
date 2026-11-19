@@ -3536,8 +3536,8 @@
   "id": "G-565",
   "guard": "more than one copy freezes the silo",
   "file": "internal/controllers/restore/settle.go",
-  "find": "if len(holders) > 1 { // more than one copy the records allow: frozen, placement unchanged, every disk kept",
-  "replace": "if false && len(holders) > 1 { // more than one copy the records allow: frozen, placement unchanged, every disk kept",
+  "find": "if len(reporters) >= 2 { // two or more hosts reported a copy of this silo, the stored host included",
+  "replace": "if false && len(reporters) >= 2 { // two or more hosts reported a copy of this silo, the stored host included",
   "mutation": "two copies are treated as none",
   "packages": [
    "./internal/controllers/restore"
@@ -3752,8 +3752,8 @@
   "id": "G-583",
   "guard": "a stranger's claim does not start a second copy",
   "file": "internal/controllers/restore/settle.go",
-  "find": "if len(strangers) > 0 && !listed(holders, st.Host) && storedLive(g, byName, st.Host) { // a stranger's claim does not start a second copy",
-  "replace": "if false { // a stranger's claim does not start a second copy",
+  "find": "if len(strangers) > 0 && !listed(reporters, st.Host) && storedLive(g, byName, st.Host) { // one stranger, while the stored host is live and holds nothing",
+  "replace": "if false { // one stranger, while the stored host is live and holds nothing",
   "mutation": "a stranger's claim settles the stored host",
   "packages": [
    "./internal/controllers/restore"
@@ -3939,5 +3939,245 @@
    "./internal/cli/kvoadm"
   ],
   "protects": "kvoadm ingress install records --host on the class it creates"
+ },
+ {
+  "id": "G-600",
+  "guard": "two reported copies freeze the silo",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(reporters) >= 2 { // two or more hosts reported a copy of this silo, the stored host included",
+  "replace": "if len(reporters) >= 3 { // two or more hosts reported a copy of this silo, the stored host included",
+  "mutation": "two hosts reporting a copy do not freeze the silo",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a silo two hosts report a copy of stays frozen"
+ },
+ {
+  "id": "G-601",
+  "guard": "the freeze names every host that reported a copy",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "return frozen(s, g, st, reporters)",
+  "replace": "return frozen(s, g, st, strangers)",
+  "mutation": "the stored host is left out of the freeze",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a freeze names every reporting holder, the stored host included"
+ },
+ {
+  "id": "G-602",
+  "guard": "one stranger freezes only while the stored host is live",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(strangers) > 0 && !listed(reporters, st.Host) && storedLive(g, byName, st.Host) { // one stranger, while the stored host is live and holds nothing",
+  "replace": "if len(strangers) > 0 && !listed(reporters, st.Host) && true { // one stranger, while the stored host is live and holds nothing",
+  "mutation": "a confirmed-off stored host also freezes on one copy elsewhere",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a confirmed-off stored host with exactly one copy elsewhere still settles"
+ },
+ {
+  "id": "G-603",
+  "guard": "one stranger freezes a live stored host that holds nothing",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(strangers) > 0 && !listed(reporters, st.Host) && storedLive(g, byName, st.Host) { // one stranger, while the stored host is live and holds nothing",
+  "replace": "if false { // one stranger, while the stored host is live and holds nothing",
+  "mutation": "a live stored host that holds nothing does not freeze on one copy elsewhere",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "one copy the records do not name freezes a live stored host that holds nothing"
+ },
+ {
+  "id": "G-604",
+  "guard": "one reported copy does not freeze",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(reporters) >= 2 { // two or more hosts reported a copy of this silo, the stored host included",
+  "replace": "if len(reporters) >= 1 { // two or more hosts reported a copy of this silo, the stored host included",
+  "mutation": "one copy elsewhere freezes the silo",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a confirmed-off stored host with exactly one copy elsewhere still settles"
+ },
+ {
+  "id": "G-605",
+  "guard": "the freeze condition reason is RestoreConflict",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "Reason: v1.ReasonRestoreConflict, // Frozen=True, RestoreConflict",
+  "replace": "Reason: \"Conflict\", // Frozen=True, RestoreConflict",
+  "mutation": "the Frozen condition reason is not RestoreConflict",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a frozen silo is Frozen=True with reason RestoreConflict"
+ },
+ {
+  "id": "G-606",
+  "guard": "the freeze names the settle command",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "return fmt.Sprintf(\"kvoadm restore settle %s -n %s --to %s\", name, namespace, host)",
+  "replace": "return fmt.Sprintf(\"kvoadm restore keep %s -n %s --to %s\", name, namespace, host)",
+  "mutation": "the command a freeze names is not restore settle",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a freeze tells the operator kvoadm restore settle SILO -n NS --to HOST"
+ },
+ {
+  "id": "G-607",
+  "guard": "settle refuses a host that reported no copy",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if !reportedThisCopy(found, g, s) { // a host that reported no copy of this silo is refused",
+  "replace": "if false { // a host that reported no copy of this silo is refused",
+  "mutation": "a host that reported no copy of this silo is accepted",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle refuses a host that has not reported a copy under this history"
+ },
+ {
+  "id": "G-608",
+  "guard": "settle refuses a silo that is not frozen",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if r == nil || r.Phase != v1.RestoreFrozen { // a silo that is not frozen is refused",
+  "replace": "if false { // a silo that is not frozen is refused",
+  "mutation": "a silo that is not frozen is settled",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle refuses a silo that is not frozen"
+ },
+ {
+  "id": "G-609",
+  "guard": "settle refuses a freeze from another history",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if r.History != g.Spec.History { // a freeze from another history is refused",
+  "replace": "if false && r.History != g.Spec.History { // a freeze from another history is refused",
+  "mutation": "a freeze from another history is settled",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle refuses a silo frozen under another history"
+ },
+ {
+  "id": "G-610",
+  "guard": "only a cluster-admin settles a frozen silo",
+  "file": "internal/apiserver/auth.go",
+  "find": "if t.restoreSettle { // only a cluster-admin settles a frozen silo",
+  "replace": "if false { // only a cluster-admin settles a frozen silo",
+  "mutation": "a role that is not cluster-admin settles a frozen silo",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "restore settle refuses a caller who is not a cluster-admin"
+ },
+ {
+  "id": "G-611",
+  "guard": "settle leaves no handoff",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.MovingFrom = \"\" // no handoff: the other copies stay stopped with their disks",
+  "replace": "st.MovingFrom = \"kept\" // no handoff: the other copies stay stopped with their disks",
+  "mutation": "settle leaves a handoff, which is what deletes the other disk",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle clears movingFrom so the other copies stay stopped with their disks"
+ },
+ {
+  "id": "G-612",
+  "guard": "settle is a planned write so a stored handoff can be cleared",
+  "file": "internal/apiserver/restoresettle.go",
+  "find": "status: true, planned: true}, silo) // restore settle clears a stored handoff",
+  "replace": "status: true, planned: false}, silo) // restore settle clears a stored handoff",
+  "mutation": "settle is an ordinary status write and cannot clear a stored handoff",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "restore settle clears a handoff the store already holds"
+ },
+ {
+  "id": "G-613",
+  "guard": "settle clears the old address",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.SiloIP = \"\" // the old address is not the placement's",
+  "replace": "_ = st.SiloIP // the old address is not the placement's",
+  "mutation": "settle keeps the old address",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle clears siloIP"
+ },
+ {
+  "id": "G-614",
+  "guard": "settle schedules the placement",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.Phase = \"Scheduled\"",
+  "replace": "st.Phase = \"Running\"",
+  "mutation": "settle marks the silo Running before it is placed",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle sets the phase to Scheduled"
+ },
+ {
+  "id": "G-615",
+  "guard": "settle marks this history settled",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.Restore = &v1.SiloRestore{History: history, Phase: v1.RestoreSettled, Holders: []string{host}}",
+  "replace": "st.Restore = &v1.SiloRestore{History: history, Phase: v1.RestoreFrozen, Holders: []string{host}}",
+  "mutation": "settle leaves the silo frozen",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle marks the silo settled for this history"
+ },
+ {
+  "id": "G-616",
+  "guard": "settle clears Frozen in the same write",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.Conditions = dropCondition(st.Conditions, v1.CondFrozen) // Frozen ends in the same write",
+  "replace": "_ = st.Conditions // Frozen ends in the same write",
+  "mutation": "settle leaves Frozen set",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle clears Frozen in the same write as the placement"
+ },
+ {
+  "id": "G-617",
+  "guard": "a copy placed elsewhere with no handoff is kept",
+  "file": "internal/agent/agent.go",
+  "find": "return false, fmt.Sprintf(\"placed on %q with no handoff from this host\", cur.Status.Host), nil",
+  "replace": "return true, \"placed elsewhere\", nil",
+  "mutation": "a copy placed elsewhere with no handoff is deleted",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a copy placed on another host with no handoff from this one is stopped and its disk kept"
+ },
+ {
+  "id": "G-618",
+  "guard": "the account prints one settle command per holder",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "for _, cmd := range f.cmds { // one settle command per holder",
+  "replace": "for _, cmd := range []string{} { // one settle command per holder",
+  "mutation": "the account prints no settle command",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "the restore account prints one kvoadm restore settle line per holder"
+ },
+ {
+  "id": "G-619",
+  "guard": "settle waits until every other copy is stopped",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if len(waiting) == 0 { // every other holder's report says that copy is stopped",
+  "replace": "waiting = nil\n\t\tif len(waiting) == 0 { // every other holder's report says that copy is stopped",
+  "mutation": "settle returns while another holder's copy is still running",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle waits until every other holder's report says that copy is stopped"
  }
 ]

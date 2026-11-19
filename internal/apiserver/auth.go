@@ -149,6 +149,8 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 		a.Verb, a.Resource = "create", t.kind.Plural+"/"+t.stream // ssh; files: write
 	case t.move:
 		a.Verb, a.Resource = "create", t.kind.Plural+"/move"
+	case t.restoreSettle:
+		a.Verb, a.Resource = "create", t.kind.Plural+"/restore-settle"
 	case t.lease != "":
 		a.Verb, a.Resource = v1.VerbOpen, v1.ResourceExposure // open and close
 	case t.token:
@@ -190,6 +192,16 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 // authorizeRequest decides an API request. For people it asks RBAC; a person who may not list
 // namespaces still gets the list, cut down to the ones they have a role in.
 func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups []string, r *http.Request, t target) (allowed, filterNS bool, reason string, err error) {
+	if t.restoreSettle { // only a cluster-admin settles a frozen silo
+		admin, err := s.clusterAdmin(ctx, id, groups)
+		if err != nil {
+			return false, false, "", err
+		}
+		if !admin {
+			return false, false, "only a cluster-admin may settle a frozen silo (kvoadm restore settle SILO -n NS --to HOST)", nil
+		}
+		return true, false, "cluster-admin", nil
+	}
 	if t.kind.Kind == "ClusterSecret" && id != LocalAdmin {
 		return s.authorizeClusterSecret(ctx, id, groups, r, t)
 	}
@@ -385,7 +397,7 @@ func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
 	case id.Role == "control-plane" && id.Type == "host":
 		return true
 	case id.Role == "worker" && id.Type == "host":
-		if t.exec || t.token || t.move || t.stream != "" {
+		if t.exec || t.token || t.move || t.restoreSettle || t.stream != "" {
 			return false
 		}
 		if r.Method == http.MethodGet {

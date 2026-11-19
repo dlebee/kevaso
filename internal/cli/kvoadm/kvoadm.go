@@ -137,6 +137,13 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return 0
 	}
+	if len(args) > 0 && args[0] == "restore" {
+		if err := restoreCmd(ctx, args[1:], stdout); err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) == 0 || args[0] != "init" {
 		_, _ = fmt.Fprintln(stderr, `usage:
   kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL] [--store sqlite|etcd] [--restore BACKUP (--no-hosts-added | --host-added NAME)] [--internal-ip IP] [--external-ip IP]
@@ -158,6 +165,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm plugin remove [USER@]ADDRESS --name NAME
   kvoadm ingress install [--class public] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --lb-class CLASS] [--host NAME=NAMESPACE[,NAMESPACE]]… [--image REF] [--option K=V]…
   kvoadm ingress assign CLASS --host NAME=NAMESPACE[,NAMESPACE]…
+  kvoadm restore status [--context NAME]
+  kvoadm restore settle SILO -n NS --to HOST [--context NAME]
 The step-by-step guide: https://dlebee.github.io/kevaso-docs/setup/prepare/`)
 		return 2
 	}

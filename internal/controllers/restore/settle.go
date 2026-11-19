@@ -4,19 +4,21 @@
 // already running until this controller marks that silo settled. Settlement waits until every
 // host the restored store had, and every host the operator says joined since the backup, has
 // reported the copies it holds or been confirmed off. A host with no worker component has
-// nothing to report: it holds no copies. A report counts only for a host the restored records
-// already allow to hold that silo (its stored host, a handoff end, a volume attachment, or a
-// host the operator says joined since the backup). One such copy is placed on that host, except
-// while the stored host is still live and those records do not already name the holder: then
-// the silo freezes, so the report does not move placement and the stored host does not start a
-// second copy. A claim from any other host does not count. More than one allowed copy freezes
-// the silo, and so does a stored handoff whose only copy is on neither end. The placement stays,
-// and every disk is kept. A decision is not made again.
+// nothing to report: it holds no copies.
+//
+// Every host that reports a copy of the silo is counted, the stored host included. Two or more
+// freeze it: the placement stays, every disk is kept, and the operator picks a host with
+// kvoadm restore settle. One copy on a host the restored records do not already name freezes
+// only while the stored host is live and holds nothing, so that host does not start a second
+// copy. A confirmed-off stored host with exactly one copy elsewhere still settles, and the
+// lost-host path can start the copy that worker already has. A stored handoff whose only copy
+// is on neither end freezes too. A decision is not made again.
 package restore
 
 import (
 	"reflect"
 	"sort"
+	"time"
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
@@ -145,9 +147,10 @@ func AccountOpen(g *v1.RestoreGate, silos []*v1.Silo) bool {
 // Settle returns the status this silo should have, and whether it differs.
 // A settled or frozen silo is left as it was decided. A silo created in this history is settled
 // at once. Without the operator's statement, or while a host in the account has not reported,
-// it stays pending and its placement stays. Then a copy counts only from a host the restored
-// records allow. One such copy is placed on that host when that does not start a second copy.
-// Anything else that would run it twice, or a handoff whose only copy is on neither end, freezes it.
+// it stays pending and its placement stays. Then every reported copy is counted, the stored
+// host included. Two or more freeze it. One copy is placed on that host, except while the
+// stored host is live and holds nothing and the records do not already name the holder: then
+// it freezes. A handoff whose only copy is on neither end freezes too.
 func Settle(s *v1.Silo, g *v1.RestoreGate, hosts []*v1.Host) (v1.SiloStatus, bool) {
 	st := s.Status
 	if g == nil || g.Spec.History == "" {
@@ -198,28 +201,21 @@ func Settle(s *v1.Silo, g *v1.RestoreGate, hosts []*v1.Host) (v1.SiloStatus, boo
 		st.Restore = marked(g.Spec.History, v1.RestorePending, nil)
 		return st, !restoreSame(s.Status.Restore, st.Restore)
 	}
-	// A host the records do not allow does not take the silo. While the stored host is live and
-	// does not itself hold the copy, settling here would start one on top of the copy that host
-	// reports: freeze, and leave the placement.
-	if len(strangers) > 0 && !listed(holders, st.Host) && storedLive(g, byName, st.Host) { // a stranger's claim does not start a second copy
-		sort.Strings(strangers)
-		st.Restore = marked(g.Spec.History, v1.RestoreFrozen, strangers)
-		return st, !statusSame(s.Status, st)
+	// reporters is every host that reported a copy, the stored host included when it did.
+	reporters := append(append([]string{}, holders...), strangers...)
+	if len(reporters) >= 2 { // two or more hosts reported a copy of this silo, the stored host included
+		return frozen(s, g, st, reporters)
 	}
-	if len(holders) > 1 { // more than one copy the records allow: frozen, placement unchanged, every disk kept
-		sort.Strings(holders)
-		st.Restore = marked(g.Spec.History, v1.RestoreFrozen, holders)
-		return st, !statusSame(s.Status, st)
+	if len(strangers) > 0 && !listed(reporters, st.Host) && storedLive(g, byName, st.Host) { // one stranger, while the stored host is live and holds nothing
+		return frozen(s, g, st, strangers)
 	}
 	if len(holders) == 1 {
 		holder := holders[0]
 		if moves.HandingOff(st) && holder != st.Host && holder != st.MovingFrom { // the only copy is neither end of the handoff
-			st.Restore = marked(g.Spec.History, v1.RestoreFrozen, holders)
-			return st, !statusSame(s.Status, st)
+			return frozen(s, g, st, holders)
 		}
 		if st.Host != holder && storedLive(g, byName, st.Host) && !recordsName(holder, st) { // a live stored host is not moved by a report alone
-			st.Restore = marked(g.Spec.History, v1.RestoreFrozen, holders)
-			return st, !statusSame(s.Status, st)
+			return frozen(s, g, st, holders)
 		}
 		st.Restore = marked(g.Spec.History, v1.RestoreSettled, holders)
 		if st.Host != holders[0] && !moves.HandingOff(st) { // a handoff in the backup is not cleared here
@@ -318,6 +314,19 @@ func attachedTo(vols []v1.VolumeStatus, host string) bool {
 
 func marked(history, phase string, holders []string) *v1.SiloRestore {
 	return &v1.SiloRestore{History: history, Phase: phase, Holders: holders}
+}
+
+// frozen leaves the placement where it is and names every host that reported a copy.
+// The Frozen condition tells the operator the command that picks one.
+func frozen(s *v1.Silo, g *v1.RestoreGate, st v1.SiloStatus, holders []string) (v1.SiloStatus, bool) {
+	holders = append([]string{}, holders...)
+	sort.Strings(holders)
+	st.Restore = marked(g.Spec.History, v1.RestoreFrozen, holders)
+	meta.SetCondition(&st.Conditions, meta.Condition{
+		Type: v1.CondFrozen, Status: meta.ConditionTrue, Reason: v1.ReasonRestoreConflict, // Frozen=True, RestoreConflict
+		Message: FreezeMessage(s.Namespace, s.Name, holders), ObservedGeneration: s.Generation,
+	}, time.Now().UTC().Truncate(time.Second))
+	return st, !statusSame(s.Status, st)
 }
 
 func createdSince(s *v1.Silo, g *v1.RestoreGate) bool {

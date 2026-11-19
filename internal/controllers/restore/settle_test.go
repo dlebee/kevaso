@@ -1,6 +1,8 @@
 package restore
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -173,10 +175,15 @@ func TestAReportTheRecordsDoNotAllowDoesNotMovePlacement(t *testing.T) {
 		t.Fatalf("a host the backup does not name took the silo: %+v", st)
 	}
 	g = openGate()
-	st, _ = Settle(oldSilo("hv1"), g, []*v1.Host{holding("hv1"), holding("hv2", copyOf())})
+	s := oldSilo("hv1")
+	st, _ = Settle(s, g, []*v1.Host{holding("hv1"), holding("hv2", copyOf())})
 	if st.Restore.Phase != v1.RestoreFrozen || st.Host != "hv1" || st.SiloIP != "10.64.0.2" {
 		t.Fatalf("a report moved a silo off its live host: %+v", st)
 	}
+	if len(st.Restore.Holders) != 1 || st.Restore.Holders[0] != "hv2" {
+		t.Fatalf("the live stored host, which holds nothing, was named as a holder: %+v", st.Restore.Holders)
+	}
+	assertFrozen(t, s, st, "hv2")
 	g.Spec.NoHostsAdded = false
 	g.Spec.HostsAdded = []string{"hv9"}
 	st, _ = Settle(oldSilo("hv1"), g, []*v1.Host{holding("hv1"), holding("hv2"), holding("hv9", copyOf())})
@@ -185,11 +192,18 @@ func TestAReportTheRecordsDoNotAllowDoesNotMovePlacement(t *testing.T) {
 	}
 }
 
-func TestAStrangerClaimDoesNotFreezeTheStoredHost(t *testing.T) {
-	st, changed := Settle(oldSilo("hv1"), openGate(), []*v1.Host{holding("hv1", copyOf()), holding("hv2", copyOf())})
-	if !changed || st.Restore.Phase != v1.RestoreSettled || st.Host != "hv1" || len(st.Restore.Holders) != 1 || st.Restore.Holders[0] != "hv1" {
-		t.Fatalf("a second claim froze the silo: %+v", st.Restore)
+func TestTwoReportedCopiesFreezeIncludingTheStoredHost(t *testing.T) {
+	s := oldSilo("hv1")
+	stopped := copyOf()
+	stopped.Running = false
+	st, changed := Settle(s, openGate(), []*v1.Host{holding("hv1", stopped), holding("hv2", copyOf())})
+	if !changed || st.Restore.Phase != v1.RestoreFrozen || st.Host != "hv1" || st.SiloIP != "10.64.0.2" || st.Phase != "Running" {
+		t.Fatalf("an old copy on the stored host and a newer one elsewhere settled: %+v", st)
 	}
+	if len(st.Restore.Holders) != 2 || st.Restore.Holders[0] != "hv1" || st.Restore.Holders[1] != "hv2" {
+		t.Fatalf("holders: %+v", st.Restore.Holders)
+	}
+	assertFrozen(t, s, st, "hv1", "hv2")
 }
 
 func TestSettleFollowsVolumesOntoTheHolder(t *testing.T) {
@@ -231,6 +245,124 @@ func TestAHandoffWhoseOnlyCopyIsNeitherEndFreezes(t *testing.T) {
 	}
 	if st.Volumes[0].Handle != "vol-1" {
 		t.Fatalf("volume: %+v", st.Volumes)
+	}
+}
+
+func assertFrozen(t *testing.T, s *v1.Silo, st v1.SiloStatus, holders ...string) {
+	t.Helper()
+	c := meta.FindCondition(st.Conditions, "Frozen")
+	if c == nil || c.Status != meta.ConditionTrue || c.Reason != "RestoreConflict" {
+		t.Fatalf("Frozen condition: %+v", c)
+	}
+	for _, h := range holders {
+		cmd := "kvoadm restore settle " + s.Name + " -n " + s.Namespace + " --to " + h
+		if !strings.Contains(c.Message, h) || !strings.Contains(c.Message, cmd) {
+			t.Fatalf("message %q does not name %s and %s", c.Message, h, cmd)
+		}
+	}
+}
+
+func TestSettleOnAReportedCopyClearsTheFreezeAndTheHandoff(t *testing.T) {
+	s := oldSilo("hv1")
+	s.Status.MovingFrom = "hv9"
+	s.Status.Volumes = []v1.VolumeStatus{{Name: "data", Handle: "vol-1", AttachedTo: "hv1", Mounted: true}}
+	s.Status.Restore = &v1.SiloRestore{History: "h2", Phase: v1.RestoreFrozen, Holders: []string{"hv1", "hv2"}}
+	s.Status.Conditions = []meta.Condition{
+		{Type: "Frozen", Status: meta.ConditionTrue, Reason: "RestoreConflict", Message: "frozen"},
+		{Type: "Ready", Status: meta.ConditionFalse, Reason: "Moving"},
+	}
+	st, err := DecideSettle(openGate(), s, "hv2", []*v1.Host{holding("hv1", copyOf()), holding("hv2", copyOf())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Host != "hv2" || st.SiloIP != "" || st.Phase != "Scheduled" || st.MovingFrom != "" {
+		t.Fatalf("placed: host %s ip %q phase %s movingFrom %q", st.Host, st.SiloIP, st.Phase, st.MovingFrom)
+	}
+	if st.Restore == nil || st.Restore.History != "h2" || st.Restore.Phase != v1.RestoreSettled {
+		t.Fatalf("restore: %+v", st.Restore)
+	}
+	if meta.FindCondition(st.Conditions, "Frozen") != nil {
+		t.Fatalf("Frozen stayed: %+v", st.Conditions)
+	}
+	if meta.FindCondition(st.Conditions, "Ready") == nil {
+		t.Fatal("Ready was cleared")
+	}
+	if len(st.Volumes) != 1 || st.Volumes[0].Handle != "vol-1" || st.Volumes[0].Mounted != true || st.Volumes[0].AttachedTo != "hv1" {
+		t.Fatalf("volume was handed off or destroyed: %+v", st.Volumes)
+	}
+	if moves.MayStart(&v1.Silo{Status: st}, "hv1") || !moves.MayStart(&v1.Silo{Status: st}, "hv2") {
+		t.Fatalf("may start hv1 %v hv2 %v", moves.MayStart(&v1.Silo{Status: st}, "hv1"), moves.MayStart(&v1.Silo{Status: st}, "hv2"))
+	}
+}
+
+func TestSettleRefusesWhatWasNotReported(t *testing.T) {
+	s := oldSilo("hv1")
+	s.Status.Restore = &v1.SiloRestore{History: "h2", Phase: v1.RestoreFrozen, Holders: []string{"hv2"}}
+	hosts := []*v1.Host{holding("hv1"), holding("hv2", copyOf())}
+	if _, err := DecideSettle(openGate(), s, "hv1", hosts); err == nil || !strings.Contains(err.Error(), "has not reported a copy") {
+		t.Fatalf("a host that reported nothing: %v", err)
+	}
+	plain := oldSilo("hv1")
+	plain.Status.Restore = &v1.SiloRestore{History: "h2", Phase: v1.RestoreSettled}
+	if _, err := DecideSettle(openGate(), plain, "hv2", hosts); err == nil || !strings.Contains(err.Error(), "is not frozen") {
+		t.Fatalf("a silo that is not frozen: %v", err)
+	}
+	other := oldSilo("hv1")
+	other.Status.Restore = &v1.SiloRestore{History: "h1", Phase: v1.RestoreFrozen, Holders: []string{"hv2"}}
+	if _, err := DecideSettle(openGate(), other, "hv2", hosts); err == nil || !strings.Contains(err.Error(), "not this history") {
+		t.Fatalf("another history: %v", err)
+	}
+	g := openGate()
+	g.Spec.ConfirmedOff = []string{"hv2"}
+	if _, err := DecideSettle(g, s, "hv2", hosts); err == nil || !strings.Contains(err.Error(), "confirmed off") {
+		t.Fatalf("a confirmed-off host: %v", err)
+	}
+}
+
+func TestTheAccountPrintsOneCommandPerHolder(t *testing.T) {
+	g := openGate()
+	s := oldSilo("hv1")
+	s.Status.Restore = &v1.SiloRestore{History: "h2", Phase: v1.RestoreFrozen, Holders: []string{"hv1", "hv2"}}
+	pending := oldSilo("hv1")
+	pending.Name = "db"
+	pending.Status.Restore = &v1.SiloRestore{History: "h2", Phase: v1.RestorePending}
+	text := Account(g, []*v1.Host{holding("hv1", copyOf()), holding("hv2", copyOf())}, []*v1.Silo{s, pending})
+	for _, want := range []string{
+		"unsettled silos: dev/db",
+		"dev/web (copies on hv1, hv2)",
+		"kvoadm restore settle web -n dev --to hv1",
+		"kvoadm restore settle web -n dev --to hv2",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in:\n%s", want, text)
+		}
+	}
+	g.Spec.ConfirmedOff = []string{"hv1"}
+	text = Account(g, []*v1.Host{holding("hv2", copyOf())}, []*v1.Silo{s})
+	if strings.Contains(text, "--to hv1") {
+		t.Fatalf("a confirmed-off holder was offered:\n%s", text)
+	}
+	if !strings.Contains(text, "kvoadm restore settle web -n dev --to hv2") {
+		t.Fatalf("the live holder was dropped:\n%s", text)
+	}
+}
+
+func TestSettleWaitsUntilTheOtherCopyIsStopped(t *testing.T) {
+	running := true
+	load := func() ([]*v1.Host, *v1.RestoreGate, error) {
+		c := copyOf()
+		c.Running = running
+		return []*v1.Host{holding("hv1", c), holding("hv2", copyOf())}, openGate(), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+	err := waitOthers(ctx, load, "dev", "web", "u1", "hv2", []string{"hv1", "hv2"})
+	if err == nil || !strings.Contains(err.Error(), "hv1") {
+		t.Fatalf("returned while hv1's copy was still running: %v", err)
+	}
+	running = false
+	if err := waitOthers(context.Background(), load, "dev", "web", "u1", "hv2", []string{"hv1", "hv2"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

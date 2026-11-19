@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 
 	"kevaso.com/core/api/client"
@@ -28,29 +27,83 @@ func printRestoreAccount(ctx context.Context, c *client.Client, out io.Writer) e
 	if err != nil {
 		return err
 	}
-	var unsettled, frozen []string
-	for _, s := range silos {
-		if !restore.BlocksPlacement(s, &g) {
-			continue
-		}
-		if s.Status.Restore != nil && s.Status.Restore.Phase == v1.RestoreFrozen {
-			frozen = append(frozen, fmt.Sprintf("%s/%s (copies on %s)", s.Namespace, s.Name, strings.Join(s.Status.Restore.Holders, ", ")))
-			continue
-		}
-		unsettled = append(unsettled, s.Namespace+"/"+s.Name)
-	}
-	sort.Strings(unsettled)
-	sort.Strings(frozen)
-	_, _ = fmt.Fprintf(out, "restore: history %s\nhosts that have not reported: %s\nunsettled silos: %s\nfrozen silos: %s\n",
-		g.Spec.History, orNone(restore.Unreported(&g, hosts)), orNone(unsettled), orNone(frozen))
-	return nil
+	_, err = fmt.Fprint(out, restore.Account(&g, hosts, silos))
+	return err
 }
 
-func orNone(names []string) string {
-	if len(names) == 0 {
-		return "none"
+// restoreCmd is kvoadm restore status, and kvoadm restore settle SILO -n NS --to HOST.
+func restoreCmd(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) < 1 {
+		return errors.New("restore status [--context NAME] | restore settle SILO -n NS --to HOST [--context NAME]")
 	}
-	return strings.Join(names, ", ")
+	switch args[0] {
+	case "status":
+		kctx := ""
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--context":
+				if i+1 >= len(args) {
+					return errors.New("--context needs a value")
+				}
+				i++
+				kctx = args[i]
+			default:
+				return fmt.Errorf("unknown flag %s", args[i])
+			}
+		}
+		c, _, err := adminClient(kctx)
+		if err != nil {
+			return err
+		}
+		return printRestoreAccount(ctx, c, out)
+	case "settle":
+		return restoreSettle(ctx, args[1:], out)
+	default:
+		return fmt.Errorf("unknown restore command %q", args[0])
+	}
+}
+
+func restoreSettle(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) < 1 {
+		return errors.New("restore settle SILO -n NS --to HOST [--context NAME]")
+	}
+	name, ns, host, kctx := args[0], "", "", ""
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "-n", "--namespace":
+			if i+1 >= len(args) {
+				return errors.New("-n needs a value")
+			}
+			i++
+			ns = args[i]
+		case "--to":
+			if i+1 >= len(args) {
+				return errors.New("--to needs a value")
+			}
+			i++
+			host = args[i]
+		case "--context":
+			if i+1 >= len(args) {
+				return errors.New("--context needs a value")
+			}
+			i++
+			kctx = args[i]
+		default:
+			return fmt.Errorf("unknown flag %s", args[i])
+		}
+	}
+	if ns == "" || host == "" {
+		return errors.New("restore settle SILO -n NS --to HOST [--context NAME]")
+	}
+	c, _, err := adminClient(kctx)
+	if err != nil {
+		return err
+	}
+	if err := restore.SettleCopy(ctx, c, ns, name, host); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "silo/%s settled on %s; the other copies stay stopped with their disks\n", name, host)
+	return err
 }
 
 func accountHosts(ctx context.Context, c *client.Client) ([]*v1.Host, error) {

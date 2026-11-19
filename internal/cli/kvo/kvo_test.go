@@ -50,6 +50,23 @@ func TestSummary(t *testing.T) {
 	}
 }
 
+func TestDescribeSiloShowsFrozen(t *testing.T) {
+	s := silo()
+	s.Status.Conditions = append(s.Status.Conditions, meta.Condition{
+		Type: "Frozen", Status: meta.ConditionTrue, Reason: "RestoreConflict",
+		Message: "copies on hv2; kvoadm restore settle hello -n demo --to hv2", LastTransitionTime: s.CreationTimestamp.Add(time.Minute),
+	})
+	var b bytes.Buffer
+	if err := describeObject(&b, s); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Frozen", "True", "RestoreConflict", "kvoadm restore settle hello -n demo --to hv2"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, b.String())
+		}
+	}
+}
+
 func TestDescribeSilo(t *testing.T) {
 	var b bytes.Buffer
 	if err := describeObject(&b, silo()); err != nil {

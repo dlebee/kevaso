@@ -10,7 +10,11 @@ import (
 const (
 	RestorePending = "pending" // waiting for hosts that have not reported
 	RestoreSettled = "settled" // the placement is known; a worker may start it
-	RestoreFrozen  = "frozen"  // more than one host holds a copy; placement stays
+	RestoreFrozen  = "frozen"  // two or more reported copies, or one the live stored host does not hold; placement stays until an operator settles it
+
+	// CondFrozen is set on a silo while its restore is frozen. ReasonRestoreConflict is why.
+	CondFrozen            = "Frozen"
+	ReasonRestoreConflict = "RestoreConflict"
 )
 
 // RestoreGateName is the one cluster-scoped gate a restored history opens.

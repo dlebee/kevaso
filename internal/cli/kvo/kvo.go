@@ -10,6 +10,7 @@
 //	kvo cp SRC DST [--max-size 1GiB]   copy a file or folder in or out: one side is silo/NAME:/PATH
 //	kvo ui silo NAME [--no-browser]   a small local web page for one silo: a terminal and its files
 //	kvo move silo NAME --to HOST [--recreate] [--confirm-fenced [--insist]]   move it (with its data if it can)
+//	kvo restore status | kvo restore settle SILO --to HOST [-n NS]   a frozen silo, cluster-admin only
 //	kvo login [SERVER --ca sha256:…] [--context NAME] [--no-browser]   sign in (browser + invite code)
 //	kvo logout                    forget this context's session
 //	kvo ctx [NAME]                list contexts, or switch to one
@@ -230,7 +231,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|pane|create|secret|set|ip|approve|deny|open|close|login|logout|ctx|ns|auth …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|restore|pane|create|secret|set|ip|approve|deny|open|close|login|logout|ctx|ns|auth …")
 		return 2
 	}
 	if code, ok := pluginDispatch(ctx, args, stdin, stdout, stderr); ok { // kvo plugin …, kvo NAME (plugins.go)
@@ -292,6 +293,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		err = ipCommand(ctx, c, o, stdout)
 	case "move":
 		err = move(ctx, c, o, stdout)
+	case "restore":
+		err = restoreCommand(ctx, c, o, stdout)
 	case "pane":
 		err = paneCommand(ctx, c, o, stdout)
 	case "approve", "deny":

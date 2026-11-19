@@ -19,7 +19,7 @@ var (
 	allVerbs     = []string{"get", "list", "watch", "create", "update", "patch", "delete", v1.VerbUse, v1.VerbReadValue, v1.VerbWrite, v1.VerbApprove, v1.VerbOpen}
 	allResources = []string{
 		"silos", "silosets", "services", "vmimages", "serviceaccounts", "grants", "openshellpolicies", "ingresses", "certificates",
-		"silos/status", "silos/exec", "silos/move", "silos/ssh", "silos/files", v1.ResourceExposure, "silosets/scale",
+		"silos/status", "silos/exec", "silos/move", "silos/restore-settle", "silos/ssh", "silos/files", v1.ResourceExposure, "silosets/scale",
 		"serviceaccounts/token", "services/expose-public", "ingresses/publish-public",
 		"secrets", "approvals", "panes", "leases", "ips", "roles", "rolebindings", "runs",
 		"hosts", "namespaces", "clusterroles", "clusterrolebindings", "clustersecrets", "kinddefinitions", "validationpolicies", "plugins", "issuers", "ingressclasses",

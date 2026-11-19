@@ -79,7 +79,12 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
 - backups: `kvoadm backup` writes the control plane's state sealed to the recovery key, and
   `kvoadm init --restore FILE` brings it back on a fresh machine, the master key rebuilt from the
   recovery key. The host name is checked against the backup before anything is written, so a name
-  the backup does not have leaves the machine unchanged;
+  the backup does not have leaves the machine unchanged. A silo that two hosts report a copy of,
+  or whose only copy is on a live host the backup does not already name, stays frozen (`Frozen`,
+  reason `RestoreConflict`). `kvoadm init --restore` and `kvoadm restore status` print one
+  `kvoadm restore settle SILO -n NS --to HOST` per holder once hosts have reported. That command
+  (cluster-admin only; the same through `kvo restore settle` when kvo has the context) places it
+  there with no handoff, so every other copy stays stopped with its disk;
 - providers: a plugin protocol (`sdk/kplugin`, gRPC over a unix socket, like CSI) for load-balancer classes,
   storage classes and DNS, installed with `kvoadm plugin install` as a hardened unit holding its
   cloud token alone. The first is [Linode](https://github.com/dlebee/kevaso-provider-linode):

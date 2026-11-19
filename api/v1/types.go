@@ -496,8 +496,9 @@ type SiloStatus struct {
 	// Routing is whether its own service gets traffic now (routeWhen), and why not.
 	Routing *Routing `json:"routing,omitempty"`
 	// Restore is the control plane's mark for a restored history: pending until every host has
-	// reported, settled once the placement is known, frozen when more than one host holds a copy.
-	// A worker's write of it is ignored.
+	// reported, settled once the placement is known, frozen when two or more hosts report a
+	// copy (or one does, and the stored host is live and holds nothing). A worker's write of
+	// it is ignored. The operator settles a frozen silo with kvoadm restore settle.
 	Restore *SiloRestore `json:"restore,omitempty"`
 }
 
