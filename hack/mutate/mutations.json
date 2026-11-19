@@ -493,7 +493,7 @@
   "id": "G-039",
   "guard": "PlanMove: a lost source needs --confirm-fenced",
   "file": "internal/moves/moves.go",
-  "find": "if fromLost && !r.ConfirmFenced {",
+  "find": "if fromLost && !r.ConfirmFenced && !r.HostDeleted {",
   "replace": "if false {",
   "mutation": "check removed",
   "packages": [
@@ -4539,5 +4539,41 @@
    "./internal/controllers/silo"
   ],
   "protects": "Unschedulable/HostDeleted is set only when a fresh read of the Host is NotFound"
+ },
+ {
+  "id": "G-763",
+  "guard": "a deleted current host does not confirm a lost movingFrom",
+  "file": "internal/moves/moves.go",
+  "find": "case s.Status.MovingFrom != \"\" && sourceLost && !r.ConfirmFenced:",
+  "replace": "case s.Status.MovingFrom != \"\" && sourceLost && !r.ConfirmFenced && !r.HostDeleted:",
+  "mutation": "deleting the current host confirms a lost movingFrom",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a lost movingFrom still needs --confirm-fenced when the current host was deleted"
+ },
+ {
+  "id": "G-764",
+  "guard": "a deleted current host confirms that host",
+  "file": "internal/moves/moves.go",
+  "find": "if fromLost && !r.ConfirmFenced && !r.HostDeleted {",
+  "replace": "if fromLost && !r.ConfirmFenced {",
+  "mutation": "a deleted current host still needs --confirm-fenced",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "deleting the host named by status.host confirms that copy is off"
+ },
+ {
+  "id": "G-765",
+  "guard": "a fresh start claim holds a deleted host",
+  "file": "internal/apiserver/moves.go",
+  "find": "if req.HostDeleted {",
+  "replace": "if false && req.HostDeleted {",
+  "mutation": "a fresh start claim of a deleted host does not hold the silo",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a fresh start claim of a deleted host still holds the silo"
  }
 ]

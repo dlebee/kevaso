@@ -149,6 +149,10 @@ type Request struct {
 	// Insist: move although the host just claimed its start of the silo (CheckFenced), which says
 	// it is alive. Only for a person who knows better.
 	Insist bool `json:"insist,omitempty"`
+	// HostDeleted is set by the server when the Host named by status.host is gone. That delete
+	// confirmed that copy is off. It does not confirm a lost status.movingFrom, and a client
+	// cannot set it.
+	HostDeleted bool `json:"-"`
 }
 
 // Plan is how a move goes.
@@ -177,7 +181,8 @@ var (
 //
 // A handoff under way is refused, unless its source is lost and the person confirms it is fenced
 // (K-013): that host never let go and never will, so the handoff ends here, to the same
-// destination (which never started it) or to another one.
+// destination (which never started it) or to another one. HostDeleted confirms status.host
+// only, when that Host object is gone; it does not confirm movingFrom.
 func PlanMove(s *v1.Silo, m Movability, r Request, fromLost, sourceLost bool, fits string) (Plan, error) {
 	p := Plan{From: s.Status.Host, To: r.To}
 	ending := false
@@ -211,7 +216,7 @@ func PlanMove(s *v1.Silo, m Movability, r Request, fromLost, sourceLost bool, fi
 		}
 		p.WithData = true
 	}
-	if fromLost && !r.ConfirmFenced {
+	if fromLost && !r.ConfirmFenced && !r.HostDeleted {
 		return p, ErrNeedsFenced
 	}
 	if fits != "" {
