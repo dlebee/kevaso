@@ -4539,5 +4539,17 @@
    "./internal/apiserver"
   ],
   "protects": "a controller finalizer stays until its controller removes it"
+ },
+ {
+  "id": "G-742",
+  "guard": "a secret value sealed for a write that does not stay is put back",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if restoreVault != nil { // the value sealed for a write that did not stay is put back",
+  "replace": "if false && restoreVault != nil { // the value sealed for a write that did not stay is put back",
+  "mutation": "a refused loosening write leaves the new secret value in place",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a loosening write that does not commit keeps the previous value"
  }
 ]

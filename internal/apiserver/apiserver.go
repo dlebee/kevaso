@@ -817,11 +817,6 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 			return store.Object{}, err
 		}
 	}
-	if t.kind.Kind == "Secret" && !t.status {
-		if data, err = s.sealBeforeLoosening(ctx, old, data, cur.Revision, expected); err != nil {
-			return store.Object{}, err
-		}
-	}
 	admitted, _, err := v1.Decode(data)
 	if err != nil {
 		return store.Object{}, err
@@ -839,27 +834,43 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		}
 		release = rel
 	}
+	// Seal after the checks above. A refusal from here on puts the previous value back.
+	var restoreVault func()
+	if t.kind.Kind == "Secret" && !t.status {
+		data, restoreVault, err = s.sealBeforeLoosening(ctx, old, data, cur.Revision, expected)
+		if err != nil {
+			undoUncommitted(restoreVault, release)
+			return store.Object{}, err
+		}
+	}
 	prev := bytes.Clone(cur.Data)
 	o, err := s.commitUpdate(ctx, t.key(), data, expected)
 	if err != nil {
-		if release != nil {
-			release()
-		}
+		undoUncommitted(restoreVault, release)
 		return o, err
 	}
 	if dryRun(ctx) {
 		return o, err
 	}
 	if err := s.recheckNewNames(ctx, seen); err != nil {
-		if release != nil {
-			release()
-		}
+		undoUncommitted(restoreVault, release)
 		if _, rerr := s.store.Update(ctx, t.key(), prev, o.Revision); rerr != nil && !errors.Is(rerr, store.ErrNotFound) {
 			return store.Object{}, fmt.Errorf("%s names a namespace being deleted, and restoring it failed: %w", t.key(), rerr)
 		}
 		return store.Object{}, err
 	}
 	return o, nil
+}
+
+// undoUncommitted puts back a secret value sealed for a write that did not stay, and releases a
+// host port that write claimed.
+func undoUncommitted(restoreVault, release func()) {
+	if restoreVault != nil { // the value sealed for a write that did not stay is put back
+		restoreVault()
+	}
+	if release != nil {
+		release()
+	}
 }
 
 // controllerFinalizerKept reports the kevaso.com finalizers next drops that this caller may not

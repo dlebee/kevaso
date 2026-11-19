@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -74,33 +75,81 @@ func kind(s *v1.Secret) string {
 
 // sealBeforeLoosening: a write that loosens a secret, with its new value, replaces the value before
 // the object is committed, so there is never a moment when the looser object is stored and the old
-// value is still in the vault. It returns the object to commit, with the new version in its status.
-// The vault write is skipped on a dry run, and when the write is stale (the commit would refuse it).
-func (s *Server) sealBeforeLoosening(ctx context.Context, old meta.Object, data []byte, current, expected int64) ([]byte, error) {
+// value is still in the vault. It returns the object to commit, with the new version in its status,
+// and a function that puts the previous value back when the commit does not stay. The caller runs
+// this after the checks that can refuse the write. The vault write is skipped on a dry run, and
+// when the write is stale (the commit would refuse it).
+func (s *Server) sealBeforeLoosening(ctx context.Context, old meta.Object, data []byte, current, expected int64) ([]byte, func(), error) {
 	sw := secretWriteFrom(ctx)
 	prev, _ := old.(*v1.Secret)
 	if sw == nil || sw.value == nil || prev == nil || s.vault == nil || dryRun(ctx) {
-		return data, nil
+		return data, nil, nil
 	}
 	obj, _, err := v1.Decode(data)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	next, ok := obj.(*v1.Secret)
 	if !ok || !loosens(prev, next) {
-		return data, nil
+		return data, nil, nil
 	}
 	if current != expected {
-		return nil, store.ErrConflict
+		return nil, nil, store.ErrConflict
+	}
+	key := store.Key{Kind: secrets.KindValue, Namespace: next.Namespace, Name: next.Name}
+	var prior []byte
+	had := false
+	if cur, err := s.store.Get(ctx, key); err == nil {
+		prior = bytes.Clone(cur.Data)
+		had = true
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, nil, err
 	}
 	st, err := s.vault.Put(ctx, next, sw.value)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sw.sealed = true
 	next.Status = st
 	_, data, err = toMap(next)
-	return data, err
+	restore := func() { s.restoreSecretValue(ctx, key, prior, had) }
+	if err != nil {
+		restore()
+		return nil, nil, err
+	}
+	return data, restore, nil
+}
+
+// restoreSecretValue puts back the vault record a refused loosening write replaced.
+func (s *Server) restoreSecretValue(ctx context.Context, key store.Key, prior []byte, had bool) {
+	for range 4 {
+		cur, err := s.store.Get(ctx, key)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			if !had {
+				return
+			}
+			if _, err = s.store.Create(ctx, key, prior); err == nil || errors.Is(err, store.ErrExists) {
+				return
+			}
+		case err != nil:
+			return
+		case had:
+			if _, err = s.store.Update(ctx, key, prior, cur.Revision); err == nil {
+				return
+			}
+			if !errors.Is(err, store.ErrConflict) {
+				return
+			}
+		default:
+			if _, err = s.store.Delete(ctx, key, cur.Revision); err == nil || errors.Is(err, store.ErrNotFound) {
+				return
+			}
+			if !errors.Is(err, store.ErrConflict) {
+				return
+			}
+		}
+	}
 }
 
 // prepareSecret takes the value out of a Secret being written and returns it (or a generated one)
