@@ -5,7 +5,10 @@
 //	             [--api-server URL] [--cluster NAME] [--user NAME]      the control plane, your kvo
 //	                                                                    context, the recovery key
 //	             [--store sqlite|etcd]                                  etcd: ready for more system nodes
-//	             [--replace-unit]                                       write the unit from this run's flags only
+//	             [--replace-unit]                                       write the unit from this run's flags only.
+//	                                                                    Without it, a second init keeps the installed
+//	                                                                    --name, addresses, --etcd-peer-listen and
+//	                                                                    --join, and refuses a different value.
 //	             [--internal-ip IP] [--external-ip IP]                  the machine's addresses (neither:
 //	                                                                    the SSH address, as internal)
 //	kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime R]… [--loop-storage SIZE]
@@ -153,7 +156,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm reset [USER@]ADDRESS --ssh-key PATH [--host-key SHA256:…] [--dry-run] [--yes] [--force] [--wipe-storage]
   kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--cluster-secret NAME]… [--side controller|node]
   kvoadm plugin remove [USER@]ADDRESS --name NAME
-  kvoadm ingress install [--class public] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --lb-class CLASS] [--image REF] [--option K=V]…
+  kvoadm ingress install [--class public] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --lb-class CLASS] [--host NAME=NAMESPACE[,NAMESPACE]]… [--image REF] [--option K=V]…
+  kvoadm ingress assign CLASS --host NAME=NAMESPACE[,NAMESPACE]…
 The step-by-step guide: https://dlebee.github.io/kevaso-docs/setup/prepare/`)
 		return 2
 	}
@@ -198,6 +202,14 @@ type InitOptions struct {
 	Store                string   // init: sqlite (default) or etcd (the embedded member with a peer listener, ready for more system nodes)
 	ReplaceUnit          bool     // write kevasod.service from this run's flags only
 	nameGiven            bool
+	internalGiven        bool // --internal-ip was on the command line
+	externalGiven        bool // --external-ip was on the command line
+	etcdPeerGiven        bool
+	joinGiven            bool
+	EtcdPeerListen       string // kept from an installed unit unless this run sets it
+	Join                 string // a joined system node's --join, kept the same way
+	JoinTokenFile        string
+	CAFile               string
 	storeGiven           bool // --store was on the command line (sqlite and omitting it are otherwise the same)
 	clusterGiven         bool
 	looked               bool // the machine was already looked at (host add)
@@ -322,8 +334,10 @@ func parseTarget(args []string) (InitOptions, error) {
 			o.StorageDevice, err = next()
 		case "--internal-ip":
 			o.InternalIP, err = next()
+			o.internalGiven = true
 		case "--external-ip":
 			o.ExternalIP, err = next()
+			o.externalGiven = true
 		case "--egress-extra-ca":
 			o.EgressExtraCA, err = next()
 		case "--runtime":
@@ -556,7 +570,20 @@ func Unit(o InitOptions) string {
 		args = append(args, "--extra-name", o.Address)
 	}
 	if o.Store == "etcd" {
-		args = append(args, "--store", "etcd", "--etcd-peer-listen", net.JoinHostPort(addr, etcd.DefaultPeerPort))
+		peer := o.EtcdPeerListen
+		if peer == "" {
+			peer = net.JoinHostPort(addr, etcd.DefaultPeerPort)
+		}
+		args = append(args, "--store", "etcd", "--etcd-peer-listen", peer)
+	}
+	if o.Join != "" {
+		args = append(args, "--join", o.Join)
+		if o.JoinTokenFile != "" {
+			args = append(args, "--join-token-file", o.JoinTokenFile)
+		}
+		if o.CAFile != "" {
+			args = append(args, "--ca-file", o.CAFile)
+		}
 	}
 	if o.Worker {
 		args = append(args, workerArgs(o)...)

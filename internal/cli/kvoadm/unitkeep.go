@@ -35,6 +35,9 @@ func MergeUnit(existing string, o InitOptions) (InitOptions, string, error) {
 		return o, "", errors.New("kevasod.service is installed but has no kevasod ExecStart: pass --replace-unit to write it again")
 	}
 	if old != "" && !o.ReplaceUnit {
+		if clash := flagClash(parseExec(old), o); clash != "" { // a given flag that differs from the installed unit is refused
+			return o, "", fmt.Errorf("kevasod.service on this machine has %s: pass the same value, or --replace-unit to write the unit from this run only", clash)
+		}
 		o = keepUnstated(old, o)
 	}
 	unit := Unit(o)
@@ -49,17 +52,54 @@ func MergeUnit(existing string, o InitOptions) (InitOptions, string, error) {
 }
 
 func execStart(unit string) string {
+	var parts []string
+	cont := false
 	for _, l := range strings.Split(unit, "\n") {
-		if rest, ok := strings.CutPrefix(l, "ExecStart=/usr/local/bin/kevasod "); ok {
-			return rest
+		line := strings.TrimRight(l, "\r")
+		more := strings.HasSuffix(strings.TrimRight(line, " \t"), "\\") // a continued ExecStart line is part of the command
+		if more {
+			line = strings.TrimSuffix(strings.TrimRight(line, " \t"), "\\")
+		}
+		line = strings.TrimSpace(line)
+		if !cont {
+			rest, ok := strings.CutPrefix(line, "ExecStart=/usr/local/bin/kevasod")
+			if !ok {
+				continue
+			}
+			rest = strings.TrimSpace(rest)
+			if rest != "" {
+				parts = append(parts, rest)
+			}
+			cont = more
+			if !more {
+				break
+			}
+			continue
+		}
+		if line != "" {
+			parts = append(parts, line)
+		}
+		cont = more
+		if !more {
+			break
 		}
 	}
-	return ""
+	return strings.Join(parts, " ")
 }
 
 type execFlags []string
 
-func parseExec(exec string) execFlags { return strings.Fields(exec) }
+func parseExec(exec string) execFlags {
+	var out []string
+	for _, f := range strings.Fields(exec) {
+		if name, val, ok := strings.Cut(f, "="); ok && strings.HasPrefix(name, "--") && val != "" { // --flag=value is the same flag as --flag value
+			out = append(out, name, val)
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
 
 func (f execFlags) has(name string) bool {
 	for _, a := range f {
@@ -89,8 +129,47 @@ func (f execFlags) value(name string) string {
 	return v[len(v)-1]
 }
 
+func flagClash(old execFlags, o InitOptions) string {
+	var miss []string
+	check := func(flag, oldV, newV string, given bool) {
+		if !given || oldV == "" || oldV == newV {
+			return
+		}
+		miss = append(miss, fmt.Sprintf("%s %s (the installed unit) and %s %s (this init)", flag, oldV, flag, newV))
+	}
+	check("--name", old.value("--name"), o.Name, o.nameGiven)
+	check("--internal-ip", old.value("--internal-ip"), o.InternalIP, o.internalGiven)
+	check("--external-ip", old.value("--external-ip"), o.ExternalIP, o.externalGiven)
+	check("--etcd-peer-listen", old.value("--etcd-peer-listen"), o.EtcdPeerListen, o.etcdPeerGiven)
+	check("--join", old.value("--join"), o.Join, o.joinGiven)
+	return strings.Join(miss, "; ")
+}
+
 func keepUnstated(exec string, o InitOptions) InitOptions {
 	f := parseExec(exec)
+	if !o.nameGiven { // an init that does not pass --name keeps the installed host name
+		if v := f.value("--name"); v != "" {
+			o.Name = v
+		}
+	}
+	if !o.internalGiven {
+		if v := f.value("--internal-ip"); v != "" {
+			o.InternalIP = v
+		}
+	}
+	if !o.externalGiven {
+		if v := f.value("--external-ip"); v != "" {
+			o.ExternalIP = v
+		}
+	}
+	if !o.etcdPeerGiven && o.EtcdPeerListen == "" {
+		o.EtcdPeerListen = f.value("--etcd-peer-listen")
+	}
+	if !o.joinGiven && o.Join == "" && f.value("--join") != "" { // a joined unit keeps its join flags
+		o.Join = f.value("--join")
+		o.JoinTokenFile = f.value("--join-token-file")
+		o.CAFile = f.value("--ca-file")
+	}
 	if !o.Worker && f.has("--worker") {
 		o.Worker = true // the unit already runs a worker: this init keeps it
 	}

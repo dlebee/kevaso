@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"kevaso.com/core/api/client"
+	"kevaso.com/core/api/meta"
+	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/kms"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/secrets"
@@ -65,6 +67,10 @@ func TestPrepareRestore(t *testing.T) {
 	_ = ca.Save(filepath.Join(dir, "pki"))
 	st, _ := store.OpenSQLite(filepath.Join(dir, "store.db"), 0)
 	defer func() { _ = st.Close() }()
+	host, _ := json.Marshal(&v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: "cp-1"}})
+	if _, err := st.Create(ctx, store.Key{Kind: "Host", Name: "cp-1"}, host); err != nil {
+		t.Fatal(err)
+	}
 	k, _ := kms.OpenLocal(filepath.Join(dir, "kms", "local.json"))
 	rk := kms.NewRecoveryKey()
 	pub, _ := rk.Public()
