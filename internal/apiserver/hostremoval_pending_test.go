@@ -29,7 +29,7 @@ func TestARemovalIsFinalOnlyOnceTheDeleteCommits(t *testing.T) {
 	if _, err := s.revokeHost(ctx, "hv1", "", hostRemovalSnap{}); err != nil {
 		t.Fatal(err)
 	}
-	err = s.removedHostCert(ctx, "hv1", old)
+	_, err = s.removedHostCert(ctx, "hv1", old)
 	if !errors.Is(err, errRemovalUnreadable) || errors.Is(err, errHostRemoved) {
 		t.Fatalf("a pending removal with its Host still there: want try again, got %v", err)
 	}
@@ -38,7 +38,7 @@ func TestARemovalIsFinalOnlyOnceTheDeleteCommits(t *testing.T) {
 	if _, err := mem.Delete(ctx, hostKey, o.Revision); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.removedHostCert(ctx, "hv1", old); !errors.Is(err, errHostRemoved) {
+	if _, err := s.removedHostCert(ctx, "hv1", old); !errors.Is(err, errHostRemoved) {
 		t.Fatalf("a pending removal whose Host is gone: want final, got %v", err)
 	}
 	// Finalized: final even with a Host of that name there again.
@@ -46,7 +46,7 @@ func TestARemovalIsFinalOnlyOnceTheDeleteCommits(t *testing.T) {
 	if _, err := mem.Create(ctx, hostKey, []byte(`{"apiVersion":"kevaso/v1","kind":"Host","metadata":{"name":"hv1"}}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.removedHostCert(ctx, "hv1", old); !errors.Is(err, errHostRemoved) {
+	if _, err := s.removedHostCert(ctx, "hv1", old); !errors.Is(err, errHostRemoved) {
 		t.Fatalf("a finalized removal: want final, got %v", err)
 	}
 	// A record with no removal time is unreadable, never final.
@@ -54,7 +54,7 @@ func TestARemovalIsFinalOnlyOnceTheDeleteCommits(t *testing.T) {
 	if _, err := mem.Update(ctx, hostRemovalKey("hv1"), []byte(`{}`), o.Revision); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.removedHostCert(ctx, "hv1", old); !errors.Is(err, errRemovalUnreadable) {
+	if _, err := s.removedHostCert(ctx, "hv1", old); !errors.Is(err, errRemovalUnreadable) {
 		t.Fatalf("a record with no removal time: want try again, got %v", err)
 	}
 }
@@ -92,7 +92,7 @@ func TestAPendingRemovalLeftBehindIsSettled(t *testing.T) {
 	}
 	dropHost()
 	mkHost("uid-2")
-	if err := s.removedHostCert(ctx, "hv1", old); !errors.Is(err, errHostRemoved) {
+	if _, err := s.removedHostCert(ctx, "hv1", old); !errors.Is(err, errHostRemoved) {
 		t.Fatalf("a Host made again after the delete: want the old certificate's final refusal, got %v", err)
 	}
 	s.sweepHostRemovalsOnce(ctx)
@@ -118,7 +118,7 @@ func TestAPendingRemovalLeftBehindIsSettled(t *testing.T) {
 	if _, err := mem.Get(ctx, hostRemovalKey("hv1")); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("a stale pending removal with its Host unchanged was not put back: %v", err)
 	}
-	if err := s.removedHostCert(ctx, "hv1", old); err != nil {
+	if _, err := s.removedHostCert(ctx, "hv1", old); err != nil {
 		t.Fatalf("after a delete that never committed, the host's certificate: %v", err)
 	}
 }

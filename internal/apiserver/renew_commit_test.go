@@ -68,8 +68,8 @@ func (g *removalOnGet) Get(ctx context.Context, key store.Key) (store.Object, er
 }
 
 // A renew that is in flight while the host is deleted does not finish with a certificate
-// auth would accept. The removal is written after the renew's check and before the serial
-// is recorded. Repeated, because that gap used to land on some of the runs.
+// auth would accept. The removal is written on the read that would record the serial, after
+// the check has already read none. Repeated, so a removal between those reads cannot pass.
 func TestRenewDuringHostDeleteIssuesNothing(t *testing.T) {
 	ctx := context.Background()
 	ca, err := pki.NewCA("test", time.Now())
@@ -117,12 +117,12 @@ func TestRenewDuringHostDeleteIssuesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const runs = 30
+	const runs = 200
 	for i := 0; i < runs; i++ {
 		if _, err := inner.Delete(ctx, hostRemovalKey("hv1"), 0); err != nil && !errors.Is(err, store.ErrNotFound) {
 			t.Fatal(err)
 		}
-		gate.arm(3) // removedHostCert, the removal this renew saw, then the serial record
+		gate.arm(2) // the check read, then the serial record
 		r := httptest.NewRequest(http.MethodPost, "/renew", bytes.NewReader(payload))
 		r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}}
 		out := httptest.NewRecorder()

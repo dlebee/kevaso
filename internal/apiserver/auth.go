@@ -459,7 +459,7 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 			return
 		}
 		if id.Type == "host" && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
-			if err := s.removedHostCert(r.Context(), id.Name, r.TLS.PeerCertificates[0]); err != nil {
+			if _, err := s.removedHostCert(r.Context(), id.Name, r.TLS.PeerCertificates[0]); err != nil {
 				writeErr(w, hostRefusal(err))
 				return
 			}
@@ -626,9 +626,9 @@ func (s *Server) issueUserCert(w http.ResponseWriter, r *http.Request, caller pk
 // renewCert signs a new certificate for the caller, and for nobody else: the name and role are
 // the authenticated certificate's, never a name in the request. A removed host is refused before
 // this runs, and again after the body is read: a renew held open across the delete must not be
-// signed, and must not record a new serial on the removal. The removal this renew saw, the
-// signing and the serial record are one step: a removal that appears or changes before the
-// serial is recorded refuses the certificate and records nothing.
+// signed, and must not record a new serial on the removal. The check returns the removal it
+// read, and the serial is bound to that value: one read, then a compare-and-swap that refuses
+// a newer removal before the certificate is returned.
 func (s *Server) renewCert(w http.ResponseWriter, r *http.Request, caller pki.Identity) {
 	if caller.Type != "host" && caller.Type != "user" {
 		writeErr(w, errf(http.StatusForbidden, "Forbidden", "only a host or user certificate can be renewed"))
@@ -645,12 +645,12 @@ func (s *Server) renewCert(w http.ResponseWriter, r *http.Request, caller pki.Id
 			writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "a host renews with its certificate"))
 			return
 		}
-		if err := s.removedHostCert(r.Context(), caller.Name, r.TLS.PeerCertificates[0]); err != nil { // the certificate presented, after the body was read
+		seen, err := s.removedHostCert(r.Context(), caller.Name, r.TLS.PeerCertificates[0]) // the certificate presented, after the body was read
+		if err != nil {
 			writeErr(w, hostRefusal(err))
 			return
 		}
-		rec, ok := s.hostRemoval(r.Context(), caller.Name)
-		bound = hostCertBound{check: true, ok: ok, at: rec.RemovedAt}
+		bound = hostCertBound{check: true, ok: seen.ok, at: seen.rec.RemovedAt, uid: seen.rec.HostUID, rev: seen.rev, serials: seen.rec.Serials} // the removal the check read
 	}
 	id := caller // renewed for the authenticated caller only
 	s.signAndReply(r.Context(), w, []byte(req.CSR), id, bound)

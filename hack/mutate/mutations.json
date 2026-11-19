@@ -5298,10 +5298,10 @@
  },
  {
   "id": "G-808",
-  "guard": "a host renew records its serial only on the removal it saw",
+  "guard": "a host renew records its serial only on the removal the check read",
   "file": "internal/apiserver/hostremoval.go",
-  "find": "if bound.check && (!bound.ok || !rec.RemovedAt.Equal(bound.at)) { // the removal this renew saw",
-  "replace": "if false && bound.check && (!bound.ok || !rec.RemovedAt.Equal(bound.at)) { // the removal this renew saw",
+  "find": "if bound.check && !sameHostRemoval(bound, rec, o.Revision) { // the removal this renew saw",
+  "replace": "if false && bound.check && !sameHostRemoval(bound, rec, o.Revision) { // the removal this renew saw",
   "mutation": "a renew records its serial on a removal that appeared after the check",
   "packages": [
    "./internal/apiserver"
@@ -5379,5 +5379,17 @@
    "./internal/cli/kvo"
   ],
   "protects": "kvo login refuses http, including loopback"
+ },
+ {
+  "id": "G-830",
+  "guard": "a host renew binds its serial to the removal the check read",
+  "file": "internal/apiserver/auth.go",
+  "find": "bound = hostCertBound{check: true, ok: seen.ok, at: seen.rec.RemovedAt, uid: seen.rec.HostUID, rev: seen.rev, serials: seen.rec.Serials} // the removal the check read",
+  "replace": "rec, ok := s.hostRemoval(r.Context(), caller.Name); _ = seen; bound = hostCertBound{check: true, ok: ok, at: rec.RemovedAt} // the removal the check read",
+  "mutation": "a renew takes a later read as the removal it checked",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a renew in flight while its host is removed records no serial"
  }
 ]
