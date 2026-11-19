@@ -132,7 +132,7 @@ func Desire(in Inputs) Desired {
 			if out.Refused == nil {
 				out.Refused = map[string]string{}
 			}
-			out.Refused[who] = fmt.Sprintf("no host is assigned to namespace %s on ingress class %s: ask a cluster admin to assign it", ing.Namespace, c.Name)
+			out.Refused[who] = v1.IngressHostProblem(ing.Spec.Hosts[0], ing.Namespace, c, nil)
 			continue
 		}
 		for _, r := range ing.Spec.Rules {

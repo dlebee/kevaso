@@ -32,11 +32,13 @@ func TestMetalIngressUnknownHold(t *testing.T) {
 			_, _ = c.kvo("", a...)
 		}
 	})
+	name := "held." + strings.ReplaceAll(c.cfg.ExternalIP, ".", "-") + ".sslip.io"
+	long := strings.Repeat("a", 60) + "." + strings.Repeat("b", 60) + "." + name
 	var o strings.Builder
-	if code := kvoadm.Run(c.ctx, []string{"ingress", "install", "--host-port", "external", "--context", metalCluster}, strings.NewReader(""), &o, &o); code != 0 {
+	if code := kvoadm.Run(c.ctx, []string{"ingress", "install", "--host-port", "external", "--context", metalCluster,
+		"--host", name + "=" + ns, "--host", long + "=" + other}, strings.NewReader(""), &o, &o); code != 0 {
 		t.Fatalf("kvoadm ingress install: exit %d\n%s", code, o.String())
 	}
-	name := "held." + strings.ReplaceAll(c.cfg.ExternalIP, ".", "-") + ".sslip.io"
 	c.apply(boxEcho(ns, "app", 8080) + `  ports: [{ name: http, port: 8080 }]
   service:
     ports: [{ port: http }]
@@ -76,7 +78,6 @@ spec:
 	// (server_names_hash_bucket_size 128; nginx -t: "could not build server_names_hash").
 	// It is in place before the hand edit. A pass that sees the edit with nothing left out
 	// writes its render back, and the unknown hold never starts.
-	long := strings.Repeat("a", 60) + "." + strings.Repeat("b", 60) + "." + name
 	out, rc := c.kvo(`apiVersion: kevaso/v1
 kind: Ingress
 metadata:

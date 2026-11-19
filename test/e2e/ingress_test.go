@@ -250,6 +250,11 @@ metadata: { name: public }
 spec:
   controller: { driver: nginx, silo: ingress-public, namespace: kevaso-system }
   public: true
+  hosts:
+    - host: "*.` + mzone + `"
+      namespaces: [payments, shop]
+    - host: "` + wildHost + `"
+      namespaces: [shop]
 ` + app("api", "payments", "8080", "hello from the api") + app("web", "shop", "3000", "hello from the shop") + `---
 apiVersion: kevaso/v1
 kind: Ingress

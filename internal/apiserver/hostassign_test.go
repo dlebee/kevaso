@@ -51,7 +51,7 @@ func TestAHostMustBeAssignedToItsNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = c.Create(ctx, ing("payments", "steal", "shop.example.com"))
-	if code(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "public") || !strings.Contains(err.Error(), "cluster admin") {
+	if code(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "IngressClass.spec.hosts") || !strings.Contains(err.Error(), "kvoadm ingress assign public --host shop.example.com=payments") {
 		t.Fatalf("unassigned ingress: %v", err)
 	}
 	cert := func(ns, name, host string) *v1.Certificate {

@@ -73,7 +73,7 @@ func TestDesire(t *testing.T) {
 	now := time.Now()
 	gone.DeletionTimestamp = &now
 	d := Desire(inputs(steal, shop, api, other, gone))
-	if d.Problem != "" || len(d.Refused) != 1 || !strings.Contains(d.Refused["zoo/steal"], "cluster admin") {
+	if d.Problem != "" || len(d.Refused) != 1 || !strings.Contains(d.Refused["zoo/steal"], "IngressClass.spec.hosts") {
 		t.Fatalf("problem %q, refused %v", d.Problem, d.Refused)
 	}
 	got := []string{}
@@ -121,7 +121,7 @@ func TestAnUnassignedLongerPathIsNotServed(t *testing.T) {
 			t.Fatalf("an unassigned longer path was served: %+v", r)
 		}
 	}
-	if !strings.Contains(d.Refused["shop/login"], "cluster admin") {
+	if !strings.Contains(d.Refused["shop/login"], "IngressClass.spec.hosts") {
 		t.Fatalf("refused %v", d.Refused)
 	}
 	found := false

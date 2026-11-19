@@ -44,12 +44,17 @@ func TestMetalIngress(t *testing.T) {
 		}
 	})
 	since := strings.TrimSpace(c.mustSh("date -u '+%Y-%m-%d %H:%M:%S'"))
+	name := "site." + strings.ReplaceAll(c.cfg.ExternalIP, ".", "-") + ".sslip.io" // a name; the test sends it as Host, no DNS needed
+	args := []string{"ingress", "install", "--host-port", "external", "--context", metalCluster,
+		"--host", name + "=" + ns, "--host", "tls." + name + "=" + ns, "--host", "broken." + name + "=" + ns}
+	if c.cfg.Hostname != "" {
+		args = append(args, "--host", c.cfg.Hostname+"="+ns)
+	}
 	var o strings.Builder
-	if code := kvoadm.Run(c.ctx, []string{"ingress", "install", "--host-port", "external", "--context", metalCluster}, strings.NewReader(""), &o, &o); code != 0 {
+	if code := kvoadm.Run(c.ctx, args, strings.NewReader(""), &o, &o); code != 0 {
 		t.Fatalf("kvoadm ingress install: exit %d\n%s", code, o.String())
 	}
 	t.Logf("kvoadm ingress install:\n%s", o.String())
-	name := "site." + strings.ReplaceAll(c.cfg.ExternalIP, ".", "-") + ".sslip.io" // a name; the test sends it as Host, no DNS needed
 	c.apply(boxEcho(ns, "app", 8080) + `  ports: [{ name: http, port: 8080 }]
   service:
     ports: [{ port: http }]

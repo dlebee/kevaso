@@ -11,7 +11,9 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
 - setup in explicit steps ([guide](https://dlebee.github.io/kevaso-docs/setup/prepare/)): you make Kevaso's SSH key and
   check the machine's fingerprint, `kvoadm init` first looks without changing anything (`--dry-run` stops there), then
   installs the control plane (signed `kevasod` verified on the host) and gives you `kvo` access, and
-  `kvoadm host enable-worker` lets the same machine run silos;
+  `kvoadm host enable-worker` lets the same machine run silos. Running `kvoadm init` again keeps
+  the installed host name, addresses, etcd peer listen and join flags; a value you pass that
+  differs is refused unless `--replace-unit`;
 - `kevasod control-plane`: the API over TLS with client certificates from the cluster's private CA,
   a root-only admin socket, one-time join tokens for hosts, SQLite storage, a Ready heartbeat;
 - `kvoadm init … --worker`: the same host also runs silos. The worker installs pinned, digest-checked
@@ -65,7 +67,9 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   vendor ships it, driven from outside: an **ingress driver** (`sdk/kic`) renders the routes,
   certificates and ACME challenges into that proxy's config, and the host's agent writes it in,
   runs the proxy's own check and only then reloads (`kvoadm ingress install` makes a class with a
-  stock nginx behind a load balancer); `IngressClass` and `Ingress` route
+  stock nginx behind a load balancer). A host name is published only when the class assigns it
+  to that namespace (`--host NAME=NAMESPACE`, repeatable, or `kvoadm ingress assign`, or
+  `IngressClass.spec.hosts`; `NAME` may be a one-label suffix `*.example.com`). `IngressClass` and `Ingress` route
   host names and paths to private silos, each Ingress opening exactly one path through the
   firewall. Certificates are automatic and renewed: Kevaso makes the key and keeps the lifecycle,
   and a **cert-controller** (`sdk/kcc`) turns a CSR into a chain. Built in: `acme` (Let's Encrypt or
@@ -74,7 +78,8 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   control-plane host that Issuers can only name;
 - backups: `kvoadm backup` writes the control plane's state sealed to the recovery key, and
   `kvoadm init --restore FILE` brings it back on a fresh machine, the master key rebuilt from the
-  recovery key;
+  recovery key. The host name is checked against the backup before anything is written, so a name
+  the backup does not have leaves the machine unchanged;
 - providers: a plugin protocol (`sdk/kplugin`, gRPC over a unix socket, like CSI) for load-balancer classes,
   storage classes and DNS, installed with `kvoadm plugin install` as a hardened unit holding its
   cloud token alone. The first is [Linode](https://github.com/dlebee/kevaso-provider-linode):

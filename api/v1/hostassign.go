@@ -194,7 +194,13 @@ func IngressHostProblem(host, namespace string, class *IngressClass, apiNames []
 	if class != nil {
 		name = class.Name
 	}
-	return fmt.Sprintf("host %q is not assigned to namespace %s on ingress class %s: ask a cluster admin to assign it", NormalizeDNS(host), namespace, name)
+	shown := NormalizeDNS(host)
+	className := name
+	if className == "" {
+		className = "CLASS"
+	}
+	return fmt.Sprintf("host %q is not assigned to namespace %s on ingress class %s: set IngressClass.spec.hosts, or add one with: kvoadm ingress assign %s --host %s=%s",
+		shown, namespace, name, className, shown, namespace)
 }
 
 // CertificateHostProblem is why namespace may not have a certificate for host: it is an API server

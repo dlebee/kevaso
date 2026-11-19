@@ -62,4 +62,24 @@ func TestIngressObjects(t *testing.T) {
 	if _, err := parseIngress([]string{"install", "--nope"}); err == nil {
 		t.Fatal("an unknown flag")
 	}
+	o, err = parseIngress([]string{"install", "--host", "api.example.com=payments,shop", "--host", "*.shop.example.com=shop", "--host", "api.example.com=billing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, class, err = IngressObjects(o, kicdrivers.Builtin())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(class.Spec.Hosts) != 2 || class.Spec.Hosts[0].Host != "api.example.com" || !reflect.DeepEqual(class.Spec.Hosts[0].Namespaces, []string{"payments", "shop", "billing"}) {
+		t.Fatalf("hosts: %+v", class.Spec.Hosts)
+	}
+	if class.Spec.Hosts[1].Host != "*.shop.example.com" || !reflect.DeepEqual(class.Spec.Hosts[1].Namespaces, []string{"shop"}) {
+		t.Fatalf("suffix: %+v", class.Spec.Hosts[1])
+	}
+	if _, err := parseIngress([]string{"install", "--host", "not a host=shop"}); err == nil {
+		t.Fatal("a bad host pattern was accepted")
+	}
+	if _, err := parseIngress([]string{"install", "--host", "api.example.com"}); err == nil {
+		t.Fatal("--host without a namespace was accepted")
+	}
 }

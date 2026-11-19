@@ -1,6 +1,11 @@
 package v1
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"kevaso.com/core/api/meta"
+)
 
 func TestHostAssignmentMatchesOneLabel(t *testing.T) {
 	a := HostAssignment{Host: "*.shop.example.com", Namespaces: []string{"shop"}}
@@ -38,6 +43,12 @@ func TestAnAPINameIsRefusedEvenWhenAssigned(t *testing.T) {
 	}
 	if why := IngressHostProblem("api.example.com", "payments", class, []string{"api.example.com"}); why == "" {
 		t.Fatal("an ingress for an API server name was allowed")
+	}
+	why := IngressHostProblem("shop.example.com", "shop", &IngressClass{ObjectMeta: meta.ObjectMeta{Name: "public"}}, nil)
+	for _, want := range []string{"IngressClass.spec.hosts", "kvoadm ingress assign public --host shop.example.com=shop"} {
+		if !strings.Contains(why, want) {
+			t.Fatalf("refusal %q does not name %s", why, want)
+		}
 	}
 }
 

@@ -3536,8 +3536,8 @@
   "id": "G-565",
   "guard": "more than one copy freezes the silo",
   "file": "internal/controllers/restore/settle.go",
-  "find": "if len(holders) > 1 { // more than one copy: frozen, placement unchanged, every disk kept",
-  "replace": "if false && len(holders) > 1 { // more than one copy: frozen, placement unchanged, every disk kept",
+  "find": "if len(holders) > 1 { // more than one copy the records allow: frozen, placement unchanged, every disk kept",
+  "replace": "if false && len(holders) > 1 { // more than one copy the records allow: frozen, placement unchanged, every disk kept",
   "mutation": "two copies are treated as none",
   "packages": [
    "./internal/controllers/restore"
@@ -3548,8 +3548,8 @@
   "id": "G-566",
   "guard": "no copy leaves the stored placement",
   "file": "internal/controllers/restore/settle.go",
-  "find": "st.Restore = marked(g.Spec.History, v1.RestoreSettled, nil) // no copy anywhere: the stored placement stands",
-  "replace": "st.Restore = marked(g.Spec.History, v1.RestoreSettled, nil); st.Host = \"\" // no copy anywhere: the stored placement stands",
+  "find": "st.Restore = marked(g.Spec.History, v1.RestoreSettled, nil) // no counted copy: the stored placement stands",
+  "replace": "st.Restore = marked(g.Spec.History, v1.RestoreSettled, nil); st.Host = \"\" // no counted copy: the stored placement stands",
   "mutation": "no copy clears the stored placement",
   "packages": [
    "./internal/controllers/restore"
@@ -3560,8 +3560,8 @@
   "id": "G-567",
   "guard": "the one copy is the placement",
   "file": "internal/controllers/restore/settle.go",
-  "find": "st.Host, st.MovingFrom, st.SiloIP, st.Phase = holders[0], \"\", \"\", \"Scheduled\" // the one copy is the placement",
-  "replace": "st.Host, st.MovingFrom, st.SiloIP, st.Phase = st.Host, st.MovingFrom, st.SiloIP, st.Phase // the one copy is the placement",
+  "find": "st.Host, st.SiloIP, st.Phase = holders[0], \"\", \"Scheduled\" // the one copy is the placement",
+  "replace": "st.Host, st.SiloIP, st.Phase = st.Host, st.SiloIP, st.Phase // the one copy is the placement",
   "mutation": "the one host that holds the copy is not where it is placed",
   "packages": [
    "./internal/controllers/restore"
@@ -3711,5 +3711,233 @@
    "./internal/cli/kvoadm"
   ],
   "protects": "kvoadm init --restore takes one statement about hosts, not both"
+ },
+ {
+  "id": "G-580",
+  "guard": "a host with no worker holds no copies",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "return h != nil && h.Spec.Components.Worker == nil // a host with no worker holds no copies",
+  "replace": "return false // a host with no worker holds no copies",
+  "mutation": "a control-plane host with no worker is still waited on",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a host with no worker component counts as reported and holds no copies"
+ },
+ {
+  "id": "G-581",
+  "guard": "a report counts only where the restored records allow the host",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if possibleHolder(name, st, g) { // a report counts only where the restored records allow this host",
+  "replace": "if true { // a report counts only where the restored records allow this host",
+  "mutation": "any reported copy takes the placement",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "during an unsettled restore a copy counts only from a host the restored records allow"
+ },
+ {
+  "id": "G-582",
+  "guard": "a live stored host is not moved by a report alone",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if st.Host != holder && storedLive(g, byName, st.Host) && !recordsName(holder, st) { // a live stored host is not moved by a report alone",
+  "replace": "if false { // a live stored host is not moved by a report alone",
+  "mutation": "a report moves a live stored host",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a single report does not move a silo off a live stored host unless the records already name that holder"
+ },
+ {
+  "id": "G-583",
+  "guard": "a stranger's claim does not start a second copy",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(strangers) > 0 && !listed(holders, st.Host) && storedLive(g, byName, st.Host) { // a stranger's claim does not start a second copy",
+  "replace": "if false { // a stranger's claim does not start a second copy",
+  "mutation": "a stranger's claim settles the stored host",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a claim from a host the records do not allow does not start a second copy on a live stored host"
+ },
+ {
+  "id": "G-584",
+  "guard": "the only copy is neither end of the handoff",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if moves.HandingOff(st) && holder != st.Host && holder != st.MovingFrom { // the only copy is neither end of the handoff",
+  "replace": "if false { // the only copy is neither end of the handoff",
+  "mutation": "a handoff settles when the only copy is a third host",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a stored handoff whose only copy is neither end stays frozen, so two copies are not started"
+ },
+ {
+  "id": "G-585",
+  "guard": "a stale mount is cleared and the handle stays",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "st.Volumes[i].Mounted = false // stale mount: the handle stays, the controller detaches and attaches",
+  "replace": "st.Volumes[i].Mounted = true // stale mount: the handle stays, the controller detaches and attaches",
+  "mutation": "a stale mount is left mounted",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "when placement moves off a host that will not report, the mount is cleared and the volume handle is kept"
+ },
+ {
+  "id": "G-586",
+  "guard": "a live old host is left a handoff so it can let go",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "st.MovingFrom = from // the old host unmounts and lets go; the volumes controller then detaches and attaches",
+  "replace": "st.MovingFrom = \"\" // the old host unmounts and lets go; the volumes controller then detaches and attaches",
+  "mutation": "placement moves and the old host is not asked to let go",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "when placement moves off a live host, that host is left a handoff so it unmounts before the volume is detached"
+ },
+ {
+  "id": "G-587",
+  "guard": "a new history does not keep who was confirmed off",
+  "file": "internal/controlplane/restoregate.go",
+  "find": "cur.Spec.ConfirmedOff = nil // a new history does not keep who was confirmed off",
+  "replace": "cur.Spec.ConfirmedOff = cur.Spec.ConfirmedOff // a new history does not keep who was confirmed off",
+  "mutation": "a new restore keeps confirmed off",
+  "packages": [
+   "./internal/controlplane"
+  ],
+  "protects": "a new restore's history does not keep hosts confirmed off for an earlier history"
+ },
+ {
+  "id": "G-588",
+  "guard": "the host name is checked before anything is written",
+  "file": "internal/cli/kvoadm/backup.go",
+  "find": "if err != nil { // the host name is checked before anything is written",
+  "replace": "if false { // the host name is checked before anything is written",
+  "mutation": "a restore names a host the backup does not have",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init --restore refuses a host name the backup does not have before anything is written"
+ },
+ {
+  "id": "G-589",
+  "guard": "a given flag that differs from the installed unit is refused",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if clash := flagClash(parseExec(old), o); clash != \"\" { // a given flag that differs from the installed unit is refused",
+  "replace": "if clash := flagClash(parseExec(old), o); false { // a given flag that differs from the installed unit is refused",
+  "mutation": "a different name or address replaces the installed unit",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init refuses a host name, address, peer listen or join that differs from the installed unit unless --replace-unit"
+ },
+ {
+  "id": "G-590",
+  "guard": "an init that does not pass --name keeps the installed host name",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if !o.nameGiven { // an init that does not pass --name keeps the installed host name",
+  "replace": "if false { // an init that does not pass --name keeps the installed host name",
+  "mutation": "a second init replaces the installed host name",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init without --name keeps the installed host name"
+ },
+ {
+  "id": "G-591",
+  "guard": "an init that does not pass --internal-ip keeps the installed address",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if !o.internalGiven {",
+  "replace": "if false {",
+  "mutation": "a second init replaces the installed internal address",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init without --internal-ip keeps the installed internal address"
+ },
+ {
+  "id": "G-592",
+  "guard": "an init that does not pass --external-ip keeps the installed address",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if !o.externalGiven {",
+  "replace": "if false {",
+  "mutation": "a second init replaces the installed external address",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init without --external-ip keeps the installed external address"
+ },
+ {
+  "id": "G-593",
+  "guard": "an init that does not set the peer listen keeps the installed one",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if !o.etcdPeerGiven && o.EtcdPeerListen == \"\" {",
+  "replace": "if false {",
+  "mutation": "a second init replaces the installed etcd peer listen",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init keeps the installed etcd peer listen unless that flag is given"
+ },
+ {
+  "id": "G-594",
+  "guard": "a joined unit keeps its join flags",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if !o.joinGiven && o.Join == \"\" && f.value(\"--join\") != \"\" { // a joined unit keeps its join flags",
+  "replace": "if false { // a joined unit keeps its join flags",
+  "mutation": "a second init drops the installed join flags",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init keeps a joined unit's --join, --join-token-file and --ca-file"
+ },
+ {
+  "id": "G-595",
+  "guard": "--flag=value is the same flag as --flag value",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if name, val, ok := strings.Cut(f, \"=\"); ok && strings.HasPrefix(name, \"--\") && val != \"\" { // --flag=value is the same flag as --flag value",
+  "replace": "if name, val, ok := strings.Cut(f, \"=\"); ok && false { // --flag=value is the same flag as --flag value",
+  "mutation": "an equals-form flag in the unit is not read",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "the installed unit's --flag=value forms are read as that flag"
+ },
+ {
+  "id": "G-596",
+  "guard": "a continued ExecStart line is part of the command",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "more := strings.HasSuffix(strings.TrimRight(line, \" \\t\"), \"\\\\\") // a continued ExecStart line is part of the command",
+  "replace": "more := false // a continued ExecStart line is part of the command",
+  "mutation": "a continued ExecStart line is dropped",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "a backslash-continued ExecStart line is part of the installed command"
+ },
+ {
+  "id": "G-597",
+  "guard": "an unassigned ingress host names the field and the command",
+  "file": "api/v1/hostassign.go",
+  "find": "set IngressClass.spec.hosts, or add one with:",
+  "replace": "set the class hosts, or add one with:",
+  "mutation": "the refusal does not name IngressClass.spec.hosts",
+  "packages": [
+   "kevaso.com/core/api/v1"
+  ],
+  "protects": "a refused ingress host names IngressClass.spec.hosts and kvoadm ingress assign"
+ },
+ {
+  "id": "G-598",
+  "guard": "ingress install writes the hosts it was given",
+  "file": "internal/cli/kvoadm/ingress.go",
+  "find": "Public: o.Public, Hosts: o.Hosts, Controller:",
+  "replace": "Public: o.Public, Controller:",
+  "mutation": "ingress install drops the hosts it was given",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm ingress install records --host on the class it creates"
  }
 ]
