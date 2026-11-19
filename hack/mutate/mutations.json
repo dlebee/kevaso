@@ -4551,5 +4551,17 @@
    "./internal/apiserver"
   ],
   "protects": "a binding for system:serviceaccounts:NS keeps that namespace from being deleted"
+ },
+ {
+  "id": "G-722",
+  "guard": "a pull credential stays on the spec image's registry",
+  "file": "internal/apiserver/images.go",
+  "find": "return err1 == nil && err2 == nil && want.Registry == got.Registry // same registry as the spec image",
+  "replace": "return err1 == nil && err2 == nil && want.Registry != \"\" && got.Registry != \"\" // same registry as the spec image",
+  "mutation": "a status ref on any registry is accepted as the silo's image",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a pull credential is refused for a status ref on another registry"
  }
 ]
