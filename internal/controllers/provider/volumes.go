@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -361,6 +362,7 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 		vs.Message = fmt.Sprintf("volume %s stays on class %s: its handle is not used under %s", vs.Name, volumeClassName(vs.Class), volumeClassName(spec.Class))
 		return vs, 0, nil
 	}
+	wasKept, priorMessage := vs.Kept, vs.Message
 	vs.Kept = false
 	vs.Class, vs.Message = spec.Class, ""
 	p, cls, ok := c.Plugins.Storage(spec.Class)
@@ -410,8 +412,23 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 		vs.Message = fmt.Sprintf("the volume is in %s and %s in %s: it can't attach there", vs.Region, h.Name, hi.Region)
 		return vs, time.Minute, nil
 	}
-	if vs.AttachedTo == h.Name && vs.Device != "" {
+	// A volume put back while detachKept is still detaching it from this host still names the
+	// host and a device. That device is going away: finish the detach, then attach.
+	finishingDetach := vs.AttachedTo == h.Name && (wasKept || strings.HasPrefix(priorMessage, "detaching from "))
+	if vs.AttachedTo == h.Name && vs.Device != "" && !finishingDetach {
 		return vs, 0, nil
+	}
+	if finishingDetach {
+		err := p.Conn.DetachVolume(ctx, kplugin.Attachment{Class: spec.Class, Handle: vs.Handle, Host: hi})
+		if errors.Is(err, kplugin.ErrInProgress) {
+			vs.Device = ""
+			vs.Message = "detaching from " + vs.AttachedTo
+			return vs, c.poll(), nil
+		}
+		if err != nil && !errors.Is(err, kplugin.ErrNotFound) {
+			return vs, 0, err
+		}
+		vs.AttachedTo, vs.Device = "", ""
 	}
 	if vs.AttachedTo != "" && vs.AttachedTo != h.Name {
 		// It moved: the old host must let go first, unless that host is lost and the silo was

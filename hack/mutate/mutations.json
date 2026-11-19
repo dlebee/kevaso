@@ -4601,6 +4601,18 @@
   "protects": "a host's status write leaves status.service as the control plane wrote it"
  },
  {
+  "id": "G-767",
+  "guard": "a kept volume's detach is finished before it is attached again",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "finishingDetach := vs.AttachedTo == h.Name && (wasKept || strings.HasPrefix(priorMessage, \"detaching from \"))",
+  "replace": "finishingDetach := false && vs.AttachedTo == h.Name && (wasKept || strings.HasPrefix(priorMessage, \"detaching from \"))",
+  "mutation": "a device named during a detach is treated as attached",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume put back during a detach is detached to the end, then attached"
+ },
+ {
   "id": "G-768",
   "guard": "a kept volume name cannot come back under another class",
   "file": "internal/apiserver/semantic.go",
