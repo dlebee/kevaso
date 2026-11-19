@@ -50,7 +50,7 @@ func TestApprovalIsBoundToTheFullDigest(t *testing.T) {
 		a.CreationTimestamp, a.Generation = &now, 1
 		return a
 	}
-	first, second := ask("1m", 0x811429), ask("12h", 0x5ac42c)
+	first, second := ask("1m", 0x12a00be), ask("12h", 0xd1d704)
 	idFirst, idSecond := approvals.RequestID(first), approvals.RequestID(second)
 	if first.Name != second.Name || idFirst == idSecond || idFirst[:12] != idSecond[:12] {
 		t.Fatalf("the pair: names %s/%s, 48-bit forms %s/%s", first.Name, second.Name, idFirst[:12], idSecond[:12])

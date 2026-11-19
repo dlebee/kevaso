@@ -53,10 +53,11 @@ func (l Limits) WithDefaults() Limits {
 	return l
 }
 
-// Name is the Approval's name for a silo, a use and a secret: the same three always give the same
-// name, which is how asking again replaces the pending request.
-func Name(silo, siloUID, use, secret string) string {
-	h := sha256.Sum256([]byte(siloUID + "\x00" + use + "\x00" + secret))
+// Name is the Approval's name for a silo, a use, a secret and that secret's UID: the same four
+// always give the same name, which is how asking again replaces the pending request. A secret
+// created again has a new UID and so a new approval.
+func Name(silo, siloUID, use, secret, secretUID string) string {
+	h := sha256.Sum256([]byte(siloUID + "\x00" + use + "\x00" + secret + "\x00" + secretUID))
 	if len(silo) > 54 {
 		silo = silo[:54]
 	}
@@ -78,10 +79,11 @@ func (s State) String() string {
 	return [...]string{"None", "Active", "Pending", "Denied", "Expired"}[s]
 }
 
-// StateOf reads an existing approval for the silo with uid siloUID. An approval of an earlier silo
-// of the same name counts as none.
-func StateOf(a *v1.Approval, siloUID string, now time.Time) State {
-	if a == nil || a.Spec.SiloUID != siloUID {
+// StateOf reads an existing approval for the silo with uid siloUID and the secret with uid
+// secretUID. An approval of an earlier silo of the same name, or of an earlier secret of the
+// same name, counts as none. An expose approval has an empty secret UID.
+func StateOf(a *v1.Approval, siloUID, secretUID string, now time.Time) State {
+	if a == nil || a.Spec.SiloUID != siloUID || a.Spec.SecretUID != secretUID {
 		return None
 	}
 	switch a.Status.Phase {
@@ -105,7 +107,8 @@ func StateOf(a *v1.Approval, siloUID string, now time.Time) State {
 // Call is one use asking.
 type Call struct {
 	Namespace, Silo, SiloUID string
-	Secret, Use, Grant       string
+	Secret, SecretUID        string
+	Use, Grant               string
 	For                      string // access wanted once approved ("" → the default)
 	Wait                     string // how long to wait for an answer ("" → the default)
 	Poll                     string // the approval this call is waiting on; "" for a new ask
@@ -131,7 +134,7 @@ var (
 // Decide answers one call, given the silo's current approval for this use and secret (nil: none).
 func Decide(c Call, existing *v1.Approval, l Limits, now time.Time) Outcome {
 	l = l.WithDefaults()
-	st := StateOf(existing, c.SiloUID, now)
+	st := StateOf(existing, c.SiloUID, c.SecretUID, now)
 	if st == Active {
 		return Outcome{Allow: true}
 	}
@@ -172,9 +175,9 @@ func newRequest(c Call, l Limits, now time.Time) (*v1.Approval, error) {
 	}
 	return &v1.Approval{
 		TypeMeta:   meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Approval"},
-		ObjectMeta: meta.ObjectMeta{Namespace: c.Namespace, Name: Name(c.Silo, c.SiloUID, c.Use, c.Secret)},
+		ObjectMeta: meta.ObjectMeta{Namespace: c.Namespace, Name: Name(c.Silo, c.SiloUID, c.Use, c.Secret, c.SecretUID)},
 		Spec: v1.ApprovalSpec{
-			Silo: c.Silo, SiloUID: c.SiloUID, Secret: c.Secret, Use: c.Use, Grant: c.Grant,
+			Silo: c.Silo, SiloUID: c.SiloUID, Secret: c.Secret, SecretUID: c.SecretUID, Use: c.Use, Grant: c.Grant,
 			Destination: c.Destination, PayloadHash: c.PayloadHash, Summary: c.Summary,
 			For: access.String(), RequestedAt: now, ExpiresAt: now.Add(wait),
 		},
@@ -214,7 +217,7 @@ func expire(a *v1.Approval) *v1.Approval {
 // to read.
 func RequestID(a *v1.Approval) string {
 	sp := a.Spec
-	b, _ := json.Marshal([]any{sp.Silo, sp.SiloUID, sp.Secret, sp.Port, sp.Use, sp.Grant, sp.Destination, sp.PayloadHash, sp.Summary, sp.For})
+	b, _ := json.Marshal([]any{sp.Silo, sp.SiloUID, sp.Secret, sp.SecretUID, sp.Port, sp.Use, sp.Grant, sp.Destination, sp.PayloadHash, sp.Summary, sp.For})
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }

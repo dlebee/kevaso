@@ -365,5 +365,5 @@ func TestPortLeases(t *testing.T) {
 }
 
 func approvalsName(siloUID string) string {
-	return approvals.Name("api", siloUID, v1.ApprovalForExpose, "debug")
+	return approvals.Name("api", siloUID, v1.ApprovalForExpose, "debug", "")
 }

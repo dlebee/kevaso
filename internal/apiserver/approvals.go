@@ -82,7 +82,10 @@ func (s *Server) auditApproval(event, user, typ string, a *v1.Approval, allowed 
 // needsYes runs a use that its grant says needs a person's yes. allow: go ahead; otherwise resp
 // is the answer (pending, or the reason it failed).
 func (s *Server) needsYes(ctx context.Context, c approvals.Call) (allow bool, resp client.BrokerResponse, reason string) {
-	name := approvals.Name(c.Silo, c.SiloUID, c.Use, c.Secret)
+	if sec := s.secretNamed(ctx, c.Namespace, c.Secret); sec != nil {
+		c.SecretUID = sec.UID
+	}
+	name := approvals.Name(c.Silo, c.SiloUID, c.Use, c.Secret, c.SecretUID)
 	existing, rev, err := s.getApproval(ctx, c.Namespace, name)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return false, client.BrokerResponse{Error: "approval: try again"}, err.Error()
@@ -100,7 +103,7 @@ func (s *Server) needsYes(ctx context.Context, c approvals.Call) (allow bool, re
 		switch {
 		case out.Store.Status.Phase == v1.ApprovalExpired:
 			s.auditApproval("approval-expired", silo, "silo", out.Store, false, "nobody answered")
-		case existing != nil && approvals.StateOf(existing, c.SiloUID, now) == approvals.Pending:
+		case existing != nil && approvals.StateOf(existing, c.SiloUID, c.SecretUID, now) == approvals.Pending:
 			s.auditApproval("approval-replaced", silo, "silo", out.Store, true, "asked again: "+out.Store.Spec.Summary)
 		default:
 			s.auditApproval("approval-requested", silo, "silo", out.Store, true, "asked: "+out.Store.Spec.Summary)

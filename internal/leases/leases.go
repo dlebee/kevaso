@@ -288,7 +288,7 @@ func Decide(a Ask, silo *v1.Silo, existing *v1.Lease, appr *v1.Approval, l Limit
 		// The approval it waited on is gone: ask again.
 	}
 	lease := newLease(a, existing)
-	pendingNow := appr != nil && appr.Spec.SiloUID == a.SiloUID && approvals.StateOf(appr, a.SiloUID, now) == approvals.Pending
+	pendingNow := appr != nil && appr.Spec.SiloUID == a.SiloUID && approvals.StateOf(appr, a.SiloUID, "", now) == approvals.Pending
 	required := pl.Approval != nil && pl.Approval.Required
 	if !required || a.MayApprove {
 		approvedBy := ""
@@ -324,7 +324,7 @@ func Decide(a Ask, silo *v1.Silo, existing *v1.Lease, appr *v1.Approval, l Limit
 	}
 	req := &v1.Approval{
 		TypeMeta:   meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Approval"},
-		ObjectMeta: meta.ObjectMeta{Namespace: a.Namespace, Name: approvals.Name(a.Silo, a.SiloUID, v1.ApprovalForExpose, a.Port)},
+		ObjectMeta: meta.ObjectMeta{Namespace: a.Namespace, Name: approvals.Name(a.Silo, a.SiloUID, v1.ApprovalForExpose, a.Port, "")},
 		Spec: v1.ApprovalSpec{Silo: a.Silo, SiloUID: a.SiloUID, Port: a.Port, Use: v1.ApprovalForExpose,
 			Summary: fmt.Sprintf("open port %s (%d/%s) to the outside %s for %s (this port's max %s), asked by %s",
 				a.Port, port, proto, from, d, MaxOf(pl, l), a.By),
@@ -422,7 +422,7 @@ func Close(l *v1.Lease, appr *v1.Approval, siloUID, by string, now time.Time) (*
 	}
 	c.Status.Phase, c.Status.Pending, c.Status.Reason = v1.LeaseClosed, nil, "closed by "+by
 	var ended *v1.Approval
-	if appr != nil && l.Status.Pending != nil && appr.Name == l.Status.Pending.Approval && approvals.StateOf(appr, siloUID, now) == approvals.Pending {
+	if appr != nil && l.Status.Pending != nil && appr.Name == l.Status.Pending.Approval && approvals.StateOf(appr, siloUID, "", now) == approvals.Pending {
 		e := *appr
 		e.Status = v1.ApprovalStatus{Phase: v1.ApprovalExpired, Reason: "closed by " + by}
 		ended = &e

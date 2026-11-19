@@ -129,7 +129,7 @@ func (s *Server) leaseAsk(ctx context.Context, silo *v1.Silo, a leases.Ask, byTy
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return leases.Outcome{Err: fmt.Errorf("lease: try again")}
 	}
-	aname := approvals.Name(silo.Name, silo.UID, v1.ApprovalForExpose, a.Port)
+	aname := approvals.Name(silo.Name, silo.UID, v1.ApprovalForExpose, a.Port, "")
 	appr, arev, err := s.getApproval(ctx, silo.Namespace, aname)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return leases.Outcome{Err: fmt.Errorf("approval: try again")}
@@ -186,7 +186,7 @@ func (s *Server) leaseClose(ctx context.Context, silo *v1.Silo, port, by, byType
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
-	appr, arev, err := s.getApproval(ctx, silo.Namespace, approvals.Name(silo.Name, silo.UID, v1.ApprovalForExpose, port))
+	appr, arev, err := s.getApproval(ctx, silo.Namespace, approvals.Name(silo.Name, silo.UID, v1.ApprovalForExpose, port, ""))
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
