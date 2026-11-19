@@ -4541,6 +4541,18 @@
   "protects": "Unschedulable/HostDeleted is set only when a fresh read of the Host is NotFound"
  },
  {
+  "id": "G-762",
+  "guard": "a host cannot change Unschedulable/HostDeleted",
+  "file": "internal/moves/moves.go",
+  "find": "if okO == okN && (!okO || o == n) {",
+  "replace": "if true || okO == okN && (!okO || o == n) {",
+  "mutation": "a host may add, drop or change Unschedulable/HostDeleted",
+  "packages": [
+   "./internal/moves"
+  ],
+  "protects": "a host's status write leaves Unschedulable/HostDeleted as the control plane wrote it"
+ },
+ {
   "id": "G-763",
   "guard": "a deleted current host does not confirm a lost movingFrom",
   "file": "internal/moves/moves.go",

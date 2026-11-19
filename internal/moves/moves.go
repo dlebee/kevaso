@@ -381,6 +381,9 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 			return fmt.Errorf("%w: volume %s is attached to %s: only that host says whether it is mounted", ErrHostWrite, o.Name, to)
 		}
 	}
+	if err := hostDeletedWrite(old, next); err != nil {
+		return err
+	}
 	if err := armedWrite(old, next, host); err != nil {
 		return err
 	}
@@ -388,6 +391,26 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 		return err
 	}
 	return claimWrite(old, next, host)
+}
+
+// hostDeletedWrite refuses a host's add, drop or change of Unschedulable/HostDeleted. The
+// control plane sets it when the host is gone, and a move clears it. A host that writes the
+// silo back as it read it leaves the condition as it stood.
+func hostDeletedWrite(old, next v1.SiloStatus) error {
+	o, okO := hostDeletedSeen(old)
+	n, okN := hostDeletedSeen(next)
+	if okO == okN && (!okO || o == n) {
+		return nil
+	}
+	return fmt.Errorf("%w: Unschedulable/HostDeleted is the control plane's to write", ErrHostWrite)
+}
+
+func hostDeletedSeen(st v1.SiloStatus) (meta.Condition, bool) {
+	c := meta.FindCondition(st.Conditions, CondUnschedulable)
+	if c == nil || c.Reason != ReasonHostDeleted {
+		return meta.Condition{}, false
+	}
+	return *c, true
 }
 
 // armedWrite judges a host's write of a silo's FenceArmed condition (K-082): a new or changed one
