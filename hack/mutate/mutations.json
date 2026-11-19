@@ -1318,8 +1318,8 @@
   "id": "G-133",
   "guard": "apiserver: an update that only removes or tightens outside reach is the exemption",
   "file": "internal/apiserver/apiserver.go",
-  "find": "if !exposureLoosened(prev, obj, silos, svcs) { // an update that only removes or tightens outside reach needs no extra permission",
-  "replace": "if !exposureLoosened(prev, obj, silos, svcs) || true { // an update that only removes or tightens outside reach needs no extra permission",
+  "find": "if !exposureLoosened(prev, obj, silos, svcs, ings) { // an update that only removes or tightens outside reach needs no extra permission",
+  "replace": "if !exposureLoosened(prev, obj, silos, svcs, ings) || true { // an update that only removes or tightens outside reach needs no extra permission",
   "mutation": "any write exempt",
   "packages": [
    "./internal/apiserver",
@@ -3068,8 +3068,8 @@
   "id": "G-526",
   "guard": "an update that only removes or tightens outside reach needs no extra permission",
   "file": "internal/apiserver/apiserver.go",
-  "find": "if !exposureLoosened(prev, obj, silos, svcs) { // an update that only removes or tightens outside reach needs no extra permission",
-  "replace": "if !exposureLoosened(prev, obj, silos, svcs) || true { // an update that only removes or tightens outside reach needs no extra permission",
+  "find": "if !exposureLoosened(prev, obj, silos, svcs, ings) { // an update that only removes or tightens outside reach needs no extra permission",
+  "replace": "if !exposureLoosened(prev, obj, silos, svcs, ings) || true { // an update that only removes or tightens outside reach needs no extra permission",
   "mutation": "widening outside reach needs no extra permission",
   "packages": [
    "./internal/apiserver"
@@ -3152,8 +3152,8 @@
   "id": "G-533",
   "guard": "labels that newly match a load balancer need the permission",
   "file": "internal/apiserver/exposure.go",
-  "find": "if v1.Selects(sv.Spec.Selector, next.Labels) && !v1.Selects(sv.Spec.Selector, oldLabels) { // this silo's labels newly match a load balancer",
-  "replace": "if false && (v1.Selects(sv.Spec.Selector, next.Labels) && !v1.Selects(sv.Spec.Selector, oldLabels)) { // this silo's labels newly match a load balancer",
+  "find": "if v1.Selects(sv.Spec.Selector, nextLabels) && !v1.Selects(sv.Spec.Selector, oldLabels) { // this silo's or set's labels newly match a load balancer",
+  "replace": "if false && (v1.Selects(sv.Spec.Selector, nextLabels) && !v1.Selects(sv.Spec.Selector, oldLabels)) { // this silo's or set's labels newly match a load balancer",
   "mutation": "labels that newly match a load balancer need no extra permission",
   "packages": [
    "./internal/apiserver"
@@ -4719,5 +4719,125 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a create that wrote its unit is not done again over its disk"
+ },
+ {
+  "id": "G-720",
+  "guard": "enroll issues only a worker certificate",
+  "file": "internal/apiserver/auth.go",
+  "find": "if req.Role != \"worker\" { // a host certificate from /enroll is a worker's",
+  "replace": "if false && req.Role != \"worker\" { // a host certificate from /enroll is a worker's",
+  "mutation": "enroll signs whatever role the token allows",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "enroll refuses every role but worker, and does not spend the token"
+ },
+ {
+  "id": "G-721",
+  "guard": "a service-account group names its namespace",
+  "file": "internal/apiserver/nsdelete.go",
+  "find": "if ns, ok := strings.CutPrefix(s.Name, \"system:serviceaccounts:\"); ok { // the namespace a service-account token's group names",
+  "replace": "if ns, ok := strings.CutPrefix(s.Name, \"system:serviceaccounts:\"); false && ok { // the namespace a service-account token's group names",
+  "mutation": "a group subject system:serviceaccounts:NS is not counted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a binding for system:serviceaccounts:NS keeps that namespace from being deleted"
+ },
+ {
+  "id": "G-722",
+  "guard": "a pull credential stays on the spec image's registry",
+  "file": "internal/apiserver/images.go",
+  "find": "return err1 == nil && err2 == nil && want.Registry == got.Registry // same registry as the spec image",
+  "replace": "return err1 == nil && err2 == nil && want.Registry != \"\" && got.Registry != \"\" // same registry as the spec image",
+  "mutation": "a status ref on any registry is accepted as the silo's image",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a pull credential is refused for a status ref on another registry"
+ },
+ {
+  "id": "G-723",
+  "guard": "a missing host may use only the default network",
+  "file": "internal/apiserver/hostwrite.go",
+  "find": "if !inDefault { // a missing host has no subnet: only the default network",
+  "replace": "if false && !inDefault { // a missing host has no subnet: only the default network",
+  "mutation": "a missing host may be given any silo address",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a missing host may give a silo an address only in the default network"
+ },
+ {
+  "id": "G-724",
+  "guard": "a host with no subnet may use only the default network",
+  "file": "internal/apiserver/hostwrite.go",
+  "find": "if !inDefault { // a host with no subnet yet: only the default network",
+  "replace": "if false && !inDefault { // a host with no subnet yet: only the default network",
+  "mutation": "a host with no subnet may use any address",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host with no subnet may give a silo an address only in the default network"
+ },
+ {
+  "id": "G-725",
+  "guard": "a subnet that does not parse refuses a silo address",
+  "file": "internal/apiserver/hostwrite.go",
+  "find": "if err != nil { // a subnet that does not parse",
+  "replace": "if false && err != nil { // a subnet that does not parse",
+  "mutation": "an unparsable subnet is treated as no restriction",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a silo address is refused when the host's subnet does not parse"
+ },
+ {
+  "id": "G-726",
+  "guard": "renew checks the presented certificate again after the body is read",
+  "file": "internal/apiserver/auth.go",
+  "find": "if err := s.removedHostCert(r.Context(), caller.Name, r.TLS.PeerCertificates[0]); err != nil { // the certificate presented, after the body was read",
+  "replace": "if err := s.removedHostCert(r.Context(), caller.Name, r.TLS.PeerCertificates[0]); false && err != nil { // the certificate presented, after the body was read",
+  "mutation": "a renew held open across the host's delete is signed and its serial recorded",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a renew held open across a host delete issues nothing and records no serial"
+ },
+ {
+  "id": "G-727",
+  "guard": "a SiloSet is judged on its template labels",
+  "file": "internal/apiserver/exposure.go",
+  "find": "return o.Spec.Template.Labels, true // instances carry the template's labels",
+  "replace": "return nil, false // instances carry the template's labels",
+  "mutation": "a load balancer newly matching a SiloSet's template is not a loosening",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "template labels that newly match a load balancer need expose-public"
+ },
+ {
+  "id": "G-728",
+  "guard": "a service an ingress already names is judged when it is created or its selector changes",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if backendLeased(next.Namespace, rule.Service, silos, with) { // an ingress already names this service, on a leased port",
+  "replace": "if false && backendLeased(next.Namespace, rule.Service, silos, with) { // an ingress already names this service, on a leased port",
+  "mutation": "creating or retargeting a service an ingress already names is not a loosening",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a service an ingress already names, on a leased port, needs expose-public"
+ },
+ {
+  "id": "G-729",
+  "guard": "exposure is judged with the namespace's ingresses",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if !exposureLoosened(prev, obj, silos, svcs, ings) { // an update that only removes or tightens outside reach needs no extra permission",
+  "replace": "if !exposureLoosened(prev, obj, silos, svcs, ings[:0]) { // an update that only removes or tightens outside reach needs no extra permission",
+  "mutation": "ingresses already stored are ignored when a service is written",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a service write is judged against the ingresses that already name it"
  }
 ]

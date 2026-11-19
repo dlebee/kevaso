@@ -138,11 +138,14 @@ func (s *Server) checkDefaultPull(ctx context.Context, t target, sec *v1.Secret)
 }
 
 // brokerPull answers a host's agent asking for the credential to pull one of its silos' images
-// (OpPullCredential, never forwarded from a silo). op.Name is the image; it must be the silo's.
-// No credential applies: an empty answer.
+// (OpPullCredential, never forwarded from a silo). op.Name is the image. It must be the spec's
+// image, or the status ref when that ref is on the same registry (a runtime may rebuild the
+// reference it was given). A status ref on another registry is not this silo's image, so the
+// namespace's default pull secret for that registry is not handed out. No credential applies:
+// an empty answer.
 func (s *Server) brokerPull(ctx context.Context, call *brokerCall, op client.BrokerRequest) (client.BrokerResponse, string, bool) {
 	silo := call.silo
-	if op.Name == "" || (op.Name != silo.Spec.From() && (silo.Status.Image == nil || op.Name != silo.Status.Image.Ref)) {
+	if !pullImageOf(silo, op.Name) {
 		return client.BrokerResponse{Error: "not this silo's image"}, "pull of " + op.Name + ": not the silo's image", false
 	}
 	if !v1.PullRuntime(silo.Spec.Runtime) {
@@ -188,6 +191,24 @@ func (s *Server) brokerPull(ctx context.Context, call *brokerCall, op client.Bro
 	}
 	return client.BrokerResponse{Registry: &client.RegistryCredential{Secret: name, Server: host, Username: sec.Spec.Username, Password: value}, Version: ver},
 		fmt.Sprintf("pull credential %s (version %d) for %s", name, ver, op.Name), true
+}
+
+// pullImageOf reports whether name is the image this silo pulls. The spec's image always is.
+// The status ref is, only when it names the same registry as the spec: a runtime may rebuild
+// the reference it was given, and that rebuild stays on the registry the spec named.
+func pullImageOf(silo *v1.Silo, name string) bool {
+	if name == "" || silo == nil {
+		return false
+	}
+	if name == silo.Spec.From() { // the image the spec names
+		return true
+	}
+	if silo.Status.Image == nil || name != silo.Status.Image.Ref {
+		return false
+	}
+	want, err1 := v1.ParseImageRef(v1.PullRef(silo.Spec.From()))
+	got, err2 := v1.ParseImageRef(v1.PullRef(name))
+	return err1 == nil && err2 == nil && want.Registry == got.Registry // same registry as the spec image
 }
 
 func dash(v, def string) string {

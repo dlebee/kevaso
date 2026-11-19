@@ -541,7 +541,7 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 type CertRequest struct {
 	Token string `json:"token,omitempty"` // /enroll only
 	Host  string `json:"host,omitempty"`  // /enroll: the host joining
-	Role  string `json:"role,omitempty"`  // /enroll: control-plane or worker
+	Role  string `json:"role,omitempty"`  // /enroll: worker. A system node joins at /join/system-node.
 	Name  string `json:"name,omitempty"`  // /admin/certs: the user's name
 	CSR   string `json:"csr"`             // PEM
 }
@@ -574,7 +574,9 @@ func decodeCertRequest(r *http.Request) (CertRequest, error) {
 	return req, nil
 }
 
-// enroll: a host presents its join token and a CSR, and gets a certificate for that host and role.
+// enroll: a host presents its join token and a CSR, and gets a worker certificate for that host.
+// A system node spends its token at /join/system-node, which seals the cluster identity to a key
+// the machine made. It does not get a host certificate here.
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeCertRequest(r)
 	if err != nil {
@@ -584,6 +586,10 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	id := pki.Identity{Type: "host", Name: req.Host, Role: req.Role}
 	if err := id.Validate(); err != nil {
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
+		return
+	}
+	if req.Role != "worker" { // a host certificate from /enroll is a worker's
+		writeErr(w, errf(http.StatusForbidden, "Forbidden", "enroll issues a worker certificate; role %q is refused", req.Role))
 		return
 	}
 	if err := s.auth.Tokens.Redeem(r.Context(), req.Token, req.Host, req.Role); err != nil {
@@ -619,7 +625,9 @@ func (s *Server) issueUserCert(w http.ResponseWriter, r *http.Request, caller pk
 
 // renewCert signs a new certificate for the caller, and for nobody else: the name and role are
 // the authenticated certificate's, never a name in the request. A removed host is refused before
-// this runs. The new serial is recorded where a removal record exists (signAndReply).
+// this runs, and again after the body is read: a renew held open across the delete must not be
+// signed, and must not record a new serial on the removal. The new serial is recorded where a
+// removal record exists (signAndReply) only once that second check has passed.
 func (s *Server) renewCert(w http.ResponseWriter, r *http.Request, caller pki.Identity) {
 	if caller.Type != "host" && caller.Type != "user" {
 		writeErr(w, errf(http.StatusForbidden, "Forbidden", "only a host or user certificate can be renewed"))
@@ -629,6 +637,16 @@ func (s *Server) renewCert(w http.ResponseWriter, r *http.Request, caller pki.Id
 	if err != nil {
 		writeErr(w, err)
 		return
+	}
+	if caller.Type == "host" {
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "a host renews with its certificate"))
+			return
+		}
+		if err := s.removedHostCert(r.Context(), caller.Name, r.TLS.PeerCertificates[0]); err != nil { // the certificate presented, after the body was read
+			writeErr(w, hostRefusal(err))
+			return
+		}
 	}
 	id := caller // renewed for the authenticated caller only
 	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
