@@ -33,16 +33,18 @@ kind: Silo
 metadata: { name: box, namespace: %s }
 spec:
   runtime: docker
-  container: { image: docker.io/library/ubuntu:24.04, command: ["sleep", "infinity"] }
+  container: { image: %s, command: ["python3", "-c", "import time; time.sleep(10**9)"] }
   resources: { cpu: 1, memory: 256Mi }
-`, labCapNS), "apply", "--context", admin, "-f", "-")
+`, labCapNS, labImage), "apply", "--context", admin, "-f", "-")
 	s := labWaitRunning(t, ctx, admin, labCapNS, "box", 15*time.Minute)
-	gw := siloGateway(s.Status.SiloIP)
-	out, code := labExec(ctx, admin, labCapNS, "box", "ping", "-c", "1", "-W", "2", gw)
-	if code == 0 || !strings.Contains(strings.ToLower(out), "not permitted") {
-		t.Fatalf("ping %s from a container: exit %d, want it refused (no NET_RAW)\n%s", gw, code, out)
+	_ = s
+	// A raw ICMP socket is what ping opens; without NET_RAW the kernel refuses it.
+	raw := "import socket\ntry:\n    socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)\n    print('opened')\nexcept PermissionError as e:\n    print('refused', e)"
+	out, code := labExec(ctx, admin, labCapNS, "box", "python3", "-c", raw)
+	if code != 0 || !strings.Contains(out, "refused") {
+		t.Fatalf("a raw socket in a container: exit %d, want it refused (no NET_RAW)\n%s", code, out)
 	}
-	t.Logf("ping %s: %s", gw, oneLine(out))
+	t.Logf("raw socket: %s", oneLine(out))
 }
 
 func siloGateway(ip string) string {
