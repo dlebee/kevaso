@@ -105,6 +105,11 @@ func loginCmd(ctx context.Context, path string, cfg kvoconfig.Config, o opts, st
 	var kept string      // the context's server list, which may name several control planes
 	if len(o.args) > 0 { // a new cluster: pin its CA by the fingerprint the admin gave
 		servers := loginServers(o.args[0])
+		for _, p := range servers {
+			if err := loginScheme(p); err != nil {
+				return err
+			}
+		}
 		if o.ca == "" {
 			return errors.New("kvo login SERVER needs --ca sha256:… (your admin has it, from kvoadm users invite)")
 		}
@@ -129,10 +134,16 @@ func loginCmd(ctx context.Context, path string, cfg kvoconfig.Config, o opts, st
 			return err
 		}
 		kept = c.Server
-		server = c.Server
-		if parts := client.SplitServers(c.Server); len(parts) > 0 {
-			server = parts[0]
+		parts := client.SplitServers(c.Server)
+		if len(parts) == 0 {
+			parts = []string{c.Server}
 		}
+		for _, p := range parts {
+			if err := loginScheme(p); err != nil {
+				return err
+			}
+		}
+		server = parts[0]
 		if c.CA != "" {
 			if caPEM, err = os.ReadFile(c.CA); err != nil {
 				return err
@@ -175,6 +186,16 @@ func loginCmd(ctx context.Context, path string, cfg kvoconfig.Config, o opts, st
 
 // loginServers splits a server argument. An invite with several control planes prints them
 // comma-separated; each one is its own URL.
+// loginScheme refuses a server that is not https. Over plain http the CA fingerprint
+// proves nothing: anyone can serve the bytes. Loopback is refused too.
+func loginScheme(server string) error {
+	u, err := url.Parse(server)
+	if err != nil || u.Scheme != "https" || u.Host == "" { // login is https
+		return fmt.Errorf("%s: kvo login needs https", server)
+	}
+	return nil
+}
+
 func loginServers(arg string) []string {
 	var out []string
 	for _, p := range client.SplitServers(arg) {
@@ -190,6 +211,11 @@ func loginServers(arg string) []string {
 func fetchPinnedCA(ctx context.Context, servers []string, fingerprint string, fetch func(context.Context, string, string) ([]byte, error)) ([]byte, string, error) {
 	if len(servers) == 0 {
 		return nil, "", errors.New("kvo login needs a server")
+	}
+	for _, server := range servers {
+		if err := loginScheme(server); err != nil {
+			return nil, "", err
+		}
 	}
 	var err error
 	for _, server := range servers { // each control plane, until one answers

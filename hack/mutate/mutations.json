@@ -5367,5 +5367,17 @@
    "./internal/apiserver"
   ],
   "protects": "a silo that newly joins a leased ingress backend is judged on the labels being written"
+ },
+ {
+  "id": "G-814",
+  "guard": "kvo login refuses a server that is not https",
+  "file": "internal/cli/kvo/auth.go",
+  "find": "if err != nil || u.Scheme != \"https\" || u.Host == \"\" { // login is https",
+  "replace": "if false && (err != nil || u.Scheme != \"https\" || u.Host == \"\") { // login is https",
+  "mutation": "kvo login accepts a plain http server",
+  "packages": [
+   "./internal/cli/kvo"
+  ],
+  "protects": "kvo login refuses http, including loopback"
  }
 ]

@@ -3,7 +3,10 @@ package kvo
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
+
+	"kevaso.com/core/internal/kvoconfig"
 )
 
 func TestLoginSplitsACommaServerList(t *testing.T) {
@@ -24,6 +27,37 @@ func TestLoginSplitsACommaServerList(t *testing.T) {
 	}
 	if len(asked) != 2 {
 		t.Fatalf("asked %v, want both control planes", asked)
+	}
+}
+
+func TestLoginRefusesPlainHTTP(t *testing.T) {
+	for _, s := range []string{
+		"http://cluster.example:6443",
+		"http://127.0.0.1:8080",
+		"http://localhost:8080",
+		"http://[::1]:8080",
+	} {
+		if err := loginScheme(s); err == nil {
+			t.Errorf("%s was accepted", s)
+		}
+	}
+	if err := loginScheme("https://cluster.example:6443"); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	_, _, err := fetchPinnedCA(context.Background(), []string{"https://a.example:6443", "http://b.example:6443"}, "fp",
+		func(context.Context, string, string) ([]byte, error) {
+			called = true
+			return []byte("ca"), nil
+		})
+	if err == nil || called {
+		t.Fatalf("a list with plain http: err %v, fetch called %v", err, called)
+	}
+	cfg := kvoconfig.Config{CurrentContext: "c", Contexts: map[string]kvoconfig.Context{
+		"c": {Server: "http://cluster.example:6443", Login: true},
+	}}
+	if err := loginCmd(context.Background(), t.TempDir(), cfg, opts{}, io.Discard, io.Discard); err == nil {
+		t.Fatal("signing in again to a stored http server was accepted")
 	}
 }
 
