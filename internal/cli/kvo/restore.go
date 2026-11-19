@@ -13,7 +13,8 @@ import (
 
 // restoreCommand is kvo restore status, and kvo restore settle SILO --to HOST [-n NS].
 // Settle is the same write as kvoadm restore settle: cluster-admin only, on a host that
-// reported a copy. It waits until every other holder's report says that copy is stopped.
+// reported a copy. The mark stays frozen until every other holder's report says that copy
+// is stopped; the command waits between the placement and that, and says which host to bring back.
 func restoreCommand(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error {
 	if len(o.args) < 1 {
 		return errors.New("restore status | restore settle SILO --to HOST [-n NS]")
@@ -26,7 +27,7 @@ func restoreCommand(ctx context.Context, c *client.Client, o opts, stdout io.Wri
 			return errors.New("restore settle SILO --to HOST [-n NS]")
 		}
 		ns := defaultNS(o)
-		if err := restore.SettleCopy(ctx, c, ns, o.args[1], o.moveTo); err != nil {
+		if err := restore.SettleCopy(ctx, c, ns, o.args[1], o.moveTo, stdout); err != nil {
 			return err
 		}
 		_, err := fmt.Fprintf(stdout, "silo/%s settled on %s; the other copies stay stopped with their disks\n", o.args[1], o.moveTo)

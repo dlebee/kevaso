@@ -3,9 +3,11 @@ package restore
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,7 +35,8 @@ func FreezeMessage(namespace, name string, holders []string) string {
 // DecideSettle is the status a cluster-admin settle writes, or why it is refused.
 // host must have reported a copy of s under the gate's history, and s must be frozen
 // under that same history. The placement has no handoff and does not follow volumes:
-// a handoff is what lets another host delete its disk.
+// a handoff is what lets another host delete its disk. The mark stays frozen, settling
+// to host, so the chosen host starts nothing until the controller sees the other copies stopped.
 func DecideSettle(g *v1.RestoreGate, s *v1.Silo, host string, hosts []*v1.Host) (v1.SiloStatus, error) {
 	if s == nil {
 		return v1.SiloStatus{}, fmt.Errorf("no silo")
@@ -79,15 +82,42 @@ func reportedThisCopy(h *v1.Host, g *v1.RestoreGate, s *v1.Silo) bool {
 	return false
 }
 
-// placeOn is the one status write: on host, no address, scheduled, no handoff, settled
-// for this history, Frozen cleared. Volumes are left as stored.
+// placeOn is write 1: on host, no address, scheduled, no handoff. The restore mark stays
+// frozen, settling to host, so the chosen host starts nothing and every other holder stops
+// its copy and keeps its disk. Volumes are left as stored. The route records the revision
+// of this write; the controller's later write is what marks the silo settled.
 func placeOn(st v1.SiloStatus, history, host string) v1.SiloStatus {
 	st.Host = host
 	st.SiloIP = "" // the old address is not the placement's
 	st.Phase = "Scheduled"
 	st.MovingFrom = "" // no handoff: the other copies stay stopped with their disks
+
+	st.Restore = &v1.SiloRestore{History: history, Phase: v1.RestoreFrozen, Holders: holdersOf(st, host), SettlingTo: host} // stays frozen: the chosen host starts nothing until the other copies stop
+	return st
+}
+
+func holdersOf(st v1.SiloStatus, host string) []string {
+	var holders []string
+	if st.Restore != nil {
+		holders = append(holders, st.Restore.Holders...)
+	}
+	for _, h := range holders {
+		if h == host {
+			return holders
+		}
+	}
+	if host != "" {
+		holders = append(holders, host)
+	}
+	return holders
+}
+
+// settledOn is write 2: every other copy has stopped, so the chosen host may start.
+func settledOn(st v1.SiloStatus, history, host string) v1.SiloStatus {
 	st.Restore = &v1.SiloRestore{History: history, Phase: v1.RestoreSettled, Holders: []string{host}}
 	st.Conditions = dropCondition(st.Conditions, v1.CondFrozen) // Frozen ends in the same write
+
+	st.MovingFrom = "" // settling never hands off: a handoff is what deletes the other disk
 	return st
 }
 
@@ -117,6 +147,13 @@ func Account(g *v1.RestoreGate, hosts []*v1.Host, silos []*v1.Silo) string {
 			continue
 		}
 		if s.Status.Restore != nil && s.Status.Restore.Phase == v1.RestoreFrozen {
+			if s.Status.Restore.SettlingTo != "" {
+				frozenSilos = append(frozenSilos, frozen{
+					line: fmt.Sprintf("%s/%s (settling to %s)", s.Namespace, s.Name, s.Status.Restore.SettlingTo),
+					cmds: waitingLines(s, g, hosts),
+				})
+				continue
+			}
 			frozenSilos = append(frozenSilos, frozen{
 				line: fmt.Sprintf("%s/%s (copies on %s)", s.Namespace, s.Name, orList(s.Status.Restore.Holders)),
 				cmds: settleCommands(s, g),
@@ -144,6 +181,24 @@ func Account(g *v1.RestoreGate, hosts []*v1.Host, silos []*v1.Silo) string {
 	return b.String()
 }
 
+// waitingFor is what restore status and restore settle say while a silo is placed and still frozen.
+func waitingFor(host string) string {
+	return "waiting for " + host + " to stop its copy"
+}
+
+func waitingLines(s *v1.Silo, g *v1.RestoreGate, hosts []*v1.Host) []string {
+	r := s.Status.Restore
+	if r == nil {
+		return nil
+	}
+	waiting := OtherCopiesRunning(hosts, g, s.Namespace, s.Name, s.UID, r.SettlingTo, r.Holders, r.Since)
+	lines := make([]string, 0, len(waiting))
+	for _, h := range waiting {
+		lines = append(lines, waitingFor(h))
+	}
+	return lines
+}
+
 func settleCommands(s *v1.Silo, g *v1.RestoreGate) []string {
 	if s.Status.Restore == nil {
 		return nil
@@ -165,9 +220,10 @@ func orList(names []string) string {
 	return strings.Join(names, ", ")
 }
 
-// OtherCopiesRunning is every holder except chosen whose report does not yet say this
-// copy is stopped. A confirmed-off holder is skipped: it starts nothing and will not report.
-func OtherCopiesRunning(hosts []*v1.Host, g *v1.RestoreGate, namespace, name, uid, chosen string, holders []string) []string {
+// OtherCopiesRunning is every holder except chosen whose report for this history does not yet
+// say this copy is stopped. A report at or before since does not count: that holder has not
+// reported since the placement. A confirmed-off holder is skipped: it starts nothing and will not report.
+func OtherCopiesRunning(hosts []*v1.Host, g *v1.RestoreGate, namespace, name, uid, chosen string, holders []string, since string) []string {
 	byName := map[string]*v1.Host{}
 	for _, h := range hosts {
 		if h != nil {
@@ -176,23 +232,43 @@ func OtherCopiesRunning(hosts []*v1.Host, g *v1.RestoreGate, namespace, name, ui
 	}
 	var waiting []string
 	for _, h := range holders {
-		if h == chosen || ConfirmedOff(g, h) {
+		if h == chosen { // the chosen host is the one that will start; its copy is not required to be stopped
 			continue
 		}
-		if !copyStopped(byName[h], g, namespace, name, uid) {
+		if ConfirmedOff(g, h) { // a confirmed-off holder starts nothing and will not report
+			continue
+		}
+		if !copyStopped(byName[h], g, namespace, name, uid, since) {
 			waiting = append(waiting, h)
 		}
 	}
+	sort.Strings(waiting)
 	return waiting
 }
 
-func copyStopped(h *v1.Host, g *v1.RestoreGate, namespace, name, uid string) bool {
+// reportSince reports whether h's inventory was written after since, the placement's revision.
+func reportSince(h *v1.Host, since string) bool {
+	if h == nil || since == "" { // no revision recorded for the placement: nothing has reported since
+		return false
+	}
+	bound, err1 := strconv.ParseInt(since, 10, 64)
+	rv, err2 := strconv.ParseInt(h.ResourceVersion, 10, 64)
+	if err1 != nil || err2 != nil || rv <= bound { // a holder that has not reported since write 1 has not stopped
+		return false
+	}
+	return true
+}
+
+func copyStopped(h *v1.Host, g *v1.RestoreGate, namespace, name, uid, since string) bool {
 	if h == nil || g == nil || h.Status.Copies == nil || !h.Status.Copies.Reported || h.Status.Copies.History != g.Spec.History {
+		return false
+	}
+	if !reportSince(h, since) {
 		return false
 	}
 	for _, c := range h.Status.Copies.Held {
 		if c.Namespace == namespace && c.Name == name && c.UID == uid {
-			return !c.Running
+			return !c.Running // the report's Running flag: a copy still running has not stopped
 		}
 	}
 	return false
@@ -200,32 +276,49 @@ func copyStopped(h *v1.Host, g *v1.RestoreGate, namespace, name, uid string) boo
 
 // WaitOthers blocks until every holder but chosen reports this copy stopped.
 func WaitOthers(ctx context.Context, c *client.Client, namespace, name, uid, chosen string, holders []string) error {
-	return waitOthers(ctx, func() ([]*v1.Host, *v1.RestoreGate, error) {
+	return waitOthers(ctx, func() ([]*v1.Host, *v1.RestoreGate, string, error) {
 		var g v1.RestoreGate
 		if err := c.Get(ctx, "RestoreGate", "", v1.RestoreGateName, &g); err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
+		}
+		var s v1.Silo
+		if err := c.Get(ctx, "Silo", namespace, name, &s); err != nil {
+			return nil, nil, "", err
+		}
+		since := ""
+		if s.Status.Restore != nil {
+			since = s.Status.Restore.Since
 		}
 		hosts, err := listHosts(ctx, c)
-		return hosts, &g, err
+		return hosts, &g, since, err
 	}, namespace, name, uid, chosen, holders)
 }
 
-func waitOthers(ctx context.Context, load func() ([]*v1.Host, *v1.RestoreGate, error), namespace, name, uid, chosen string, holders []string) error {
+func waitOthers(ctx context.Context, load func() ([]*v1.Host, *v1.RestoreGate, string, error), namespace, name, uid, chosen string, holders []string) error {
 	for {
-		hosts, g, err := load()
+		hosts, g, since, err := load()
 		if err != nil {
 			return err
 		}
-		waiting := OtherCopiesRunning(hosts, g, namespace, name, uid, chosen, holders)
+		waiting := OtherCopiesRunning(hosts, g, namespace, name, uid, chosen, holders, since)
 		if len(waiting) == 0 { // every other holder's report says that copy is stopped
 			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%s/%s is on %s, and still running on %s", namespace, name, chosen, strings.Join(waiting, ", "))
+			return othersStillRunning(namespace, name, waiting)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+func othersStillRunning(namespace, name string, waiting []string) error {
+	lines := make([]string, len(waiting))
+	for i, h := range waiting {
+		lines[i] = waitingFor(h)
+	}
+	who := strings.Join(waiting, " ")
+	return fmt.Errorf("%s/%s: %s: bring %s back, or run kvoadm host confirm-off %s", namespace, name, strings.Join(lines, "; "), who, who)
 }
 
 func listHosts(ctx context.Context, c *client.Client) ([]*v1.Host, error) {
@@ -244,21 +337,39 @@ func listHosts(ctx context.Context, c *client.Client) ([]*v1.Host, error) {
 	return out, nil
 }
 
-// SettleCopy asks the API to settle silo on host, then waits until every other holder's
-// report says that copy is stopped. The copy already running on host stays running.
-func SettleCopy(ctx context.Context, c *client.Client, namespace, name, host string) error {
+// SettleCopy asks the API to place silo on host (the mark stays frozen), tells out which other
+// copies it is waiting on, then waits until every other holder's report says that copy is stopped.
+// The controller marks the silo settled when that is true. On timeout the error says to bring
+// the host back or confirm it off.
+func SettleCopy(ctx context.Context, c *client.Client, namespace, name, host string, out io.Writer) error {
 	var before v1.Silo
 	if err := c.Get(ctx, "Silo", namespace, name, &before); err != nil {
 		return err
-	}
-	var holders []string
-	if before.Status.Restore != nil {
-		holders = append(holders, before.Status.Restore.Holders...)
 	}
 	path := "/apis/kevaso/v1/namespaces/" + url.PathEscape(namespace) + "/silos/" + url.PathEscape(name) + "/restore-settle"
 	var after v1.Silo
 	if err := c.Call(ctx, http.MethodPost, path, map[string]string{"to": host}, &after); err != nil {
 		return err
+	}
+	holders := holdersOf(after.Status, host)
+	since := ""
+	if after.Status.Restore != nil {
+		since = after.Status.Restore.Since
+	}
+	if out != nil {
+		var g v1.RestoreGate
+		if err := c.Get(ctx, "RestoreGate", "", v1.RestoreGateName, &g); err != nil {
+			return err
+		}
+		hosts, err := listHosts(ctx, c)
+		if err != nil {
+			return err
+		}
+		for _, h := range OtherCopiesRunning(hosts, &g, namespace, name, before.UID, host, holders, since) {
+			if _, err := fmt.Fprintf(out, "%s\n", waitingFor(h)); err != nil {
+				return err
+			}
+		}
 	}
 	return WaitOthers(ctx, c, namespace, name, before.UID, host, holders)
 }

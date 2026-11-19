@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -106,14 +107,31 @@ func TestRestoreSettlePlacesTheReportedCopyAndKeepsTheOtherDisk(t *testing.T) {
 	if out.Status.Host != "hv2" || out.Status.SiloIP != "" || out.Status.Phase != "Scheduled" || out.Status.MovingFrom != "" {
 		t.Fatalf("placed: %+v", out.Status)
 	}
-	if out.Status.Restore == nil || out.Status.Restore.History != "h2" || out.Status.Restore.Phase != v1.RestoreSettled {
+	if out.Status.Restore == nil || out.Status.Restore.History != "h2" || out.Status.Restore.Phase != v1.RestoreFrozen || out.Status.Restore.SettlingTo != "hv2" {
 		t.Fatalf("restore: %+v", out.Status.Restore)
 	}
-	if meta.FindCondition(out.Status.Conditions, "Frozen") != nil {
-		t.Fatalf("Frozen stayed: %+v", out.Status.Conditions)
+	if meta.FindCondition(out.Status.Conditions, "Frozen") == nil {
+		t.Fatalf("Frozen was cleared before the other copy stopped: %+v", out.Status.Conditions)
 	}
 	if len(out.Status.Volumes) != 1 || !out.Status.Volumes[0].Mounted || out.Status.Volumes[0].Handle != "vol-1" {
 		t.Fatalf("the other disk was not kept: %+v", out.Status.Volumes)
+	}
+	since, err := strconv.ParseInt(out.Status.Restore.Since, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"hv1", "hv2"} {
+		var h v1.Host
+		if err := c.Get(ctx, "Host", "", name, &h); err != nil {
+			t.Fatal(err)
+		}
+		rv, err := strconv.ParseInt(h.ResourceVersion, 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if since <= rv {
+			t.Fatalf("since %d is not after %s's report %d", since, name, rv)
+		}
 	}
 }
 

@@ -278,11 +278,14 @@ func TestSettleOnAReportedCopyClearsTheFreezeAndTheHandoff(t *testing.T) {
 	if st.Host != "hv2" || st.SiloIP != "" || st.Phase != "Scheduled" || st.MovingFrom != "" {
 		t.Fatalf("placed: host %s ip %q phase %s movingFrom %q", st.Host, st.SiloIP, st.Phase, st.MovingFrom)
 	}
-	if st.Restore == nil || st.Restore.History != "h2" || st.Restore.Phase != v1.RestoreSettled {
+	if st.Restore == nil || st.Restore.History != "h2" || st.Restore.Phase != v1.RestoreFrozen || st.Restore.SettlingTo != "hv2" {
 		t.Fatalf("restore: %+v", st.Restore)
 	}
-	if meta.FindCondition(st.Conditions, "Frozen") != nil {
-		t.Fatalf("Frozen stayed: %+v", st.Conditions)
+	if len(st.Restore.Holders) != 2 || st.Restore.Holders[0] != "hv1" || st.Restore.Holders[1] != "hv2" {
+		t.Fatalf("holders: %+v", st.Restore.Holders)
+	}
+	if meta.FindCondition(st.Conditions, "Frozen") == nil {
+		t.Fatal("Frozen was cleared before the other copy stopped")
 	}
 	if meta.FindCondition(st.Conditions, "Ready") == nil {
 		t.Fatal("Ready was cleared")
@@ -349,20 +352,125 @@ func TestTheAccountPrintsOneCommandPerHolder(t *testing.T) {
 
 func TestSettleWaitsUntilTheOtherCopyIsStopped(t *testing.T) {
 	running := true
-	load := func() ([]*v1.Host, *v1.RestoreGate, error) {
+	load := func() ([]*v1.Host, *v1.RestoreGate, string, error) {
 		c := copyOf()
 		c.Running = running
-		return []*v1.Host{holding("hv1", c), holding("hv2", copyOf())}, openGate(), nil
+		h := holding("hv1", c)
+		h.ResourceVersion = "4"
+		return []*v1.Host{h, holding("hv2", copyOf())}, openGate(), "1", nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
 	defer cancel()
 	err := waitOthers(ctx, load, "dev", "web", "u1", "hv2", []string{"hv1", "hv2"})
-	if err == nil || !strings.Contains(err.Error(), "hv1") {
+	if err == nil || !strings.Contains(err.Error(), "waiting for hv1 to stop its copy") || !strings.Contains(err.Error(), "kvoadm host confirm-off hv1") {
 		t.Fatalf("returned while hv1's copy was still running: %v", err)
 	}
 	running = false
-	if err := waitOthers(context.Background(), load, "dev", "web", "u1", "hv2", []string{"hv1", "hv2"}); err != nil {
+	done, stop := context.WithTimeout(context.Background(), time.Second)
+	defer stop()
+	if err := waitOthers(done, load, "dev", "web", "u1", "hv2", []string{"hv1", "hv2"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func settlingSilo(host, since string) *v1.Silo {
+	s := oldSilo("hv1")
+	s.Status.Host = host
+	s.Status.Phase = "Scheduled"
+	s.Status.SiloIP = ""
+	s.Status.MovingFrom = ""
+	s.Status.Volumes = []v1.VolumeStatus{{Name: "data", Handle: "vol-1", AttachedTo: "hv1", Mounted: true}}
+	s.Status.Restore = &v1.SiloRestore{History: "h2", Phase: v1.RestoreFrozen, Holders: []string{"hv1", "hv2"}, SettlingTo: host, Since: since}
+	s.Status.Conditions = []meta.Condition{
+		{Type: "Frozen", Status: meta.ConditionTrue, Reason: "RestoreConflict", Message: "frozen"},
+		{Type: "Ready", Status: meta.ConditionFalse, Reason: "Moving"},
+	}
+	return s
+}
+
+func atRev(h *v1.Host, rv string, running bool) *v1.Host {
+	c := copyOf()
+	c.Running = running
+	h.Status.Copies.Held = []v1.HostHeldCopy{c}
+	h.ResourceVersion = rv
+	return h
+}
+
+func settledClean(t *testing.T, st v1.SiloStatus, changed bool) {
+	t.Helper()
+	if !changed || st.Restore == nil || st.Restore.Phase != v1.RestoreSettled || st.Host != "hv2" || st.MovingFrom != "" {
+		t.Fatalf("settled: changed=%v host %s movingFrom %q restore %+v", changed, st.Host, st.MovingFrom, st.Restore)
+	}
+	if meta.FindCondition(st.Conditions, "Frozen") != nil {
+		t.Fatalf("Frozen stayed: %+v", st.Conditions)
+	}
+	if meta.FindCondition(st.Conditions, "Ready") == nil {
+		t.Fatal("Ready was cleared")
+	}
+	if len(st.Volumes) != 1 || st.Volumes[0].Handle != "vol-1" || !st.Volumes[0].Mounted || st.Volumes[0].AttachedTo != "hv1" {
+		t.Fatalf("volume was handed off or destroyed: %+v", st.Volumes)
+	}
+}
+
+func TestARunningHolderBlocksSettlementUntilItsCopyStops(t *testing.T) {
+	s := settlingSilo("hv2", "5")
+	hosts := []*v1.Host{atRev(holding("hv1"), "9", true), atRev(holding("hv2"), "9", false)}
+	st, changed := Settle(s, openGate(), hosts)
+	if changed || st.Restore.Phase != v1.RestoreFrozen || st.Host != "hv2" {
+		t.Fatalf("a running holder let the chosen host start: changed=%v %+v", changed, st.Restore)
+	}
+	hosts[0] = atRev(holding("hv1"), "9", false)
+	st, changed = Settle(s, openGate(), hosts)
+	settledClean(t, st, changed)
+}
+
+func TestAReportFromBeforeThePlacementDoesNotCountAsStopped(t *testing.T) {
+	s := settlingSilo("hv2", "8")
+	hosts := []*v1.Host{atRev(holding("hv1"), "8", false), atRev(holding("hv2"), "8", false)}
+	st, changed := Settle(s, openGate(), hosts)
+	if changed || st.Restore.Phase != v1.RestoreFrozen {
+		t.Fatalf("a report from before the placement counted as stopped: changed=%v %+v", changed, st.Restore)
+	}
+	hosts[0] = atRev(holding("hv1"), "9", false)
+	st, changed = Settle(s, openGate(), hosts)
+	settledClean(t, st, changed)
+}
+
+func TestAConfirmedOffHolderUnfreezesWithoutANewReport(t *testing.T) {
+	s := settlingSilo("hv2", "5")
+	hosts := []*v1.Host{atRev(holding("hv1"), "3", true), holding("hv2")}
+	st, changed := Settle(s, openGate(), hosts)
+	if changed || st.Restore.Phase != v1.RestoreFrozen {
+		t.Fatalf("a cut-off holder was treated as stopped: changed=%v %+v", changed, st.Restore)
+	}
+	g := openGate()
+	g.Spec.ConfirmedOff = []string{"hv1"}
+	st, changed = Settle(s, g, hosts)
+	settledClean(t, st, changed)
+}
+
+func TestTheChosenHostsCopyDoesNotHaveToBeStopped(t *testing.T) {
+	s := settlingSilo("hv2", "5")
+	hosts := []*v1.Host{atRev(holding("hv1"), "9", false), atRev(holding("hv2"), "4", true)}
+	st, changed := Settle(s, openGate(), hosts)
+	settledClean(t, st, changed)
+}
+
+func TestRestoreStatusNamesTheHostItIsWaitingOn(t *testing.T) {
+	g := openGate()
+	s := settlingSilo("hv2", "5")
+	text := Account(g, []*v1.Host{atRev(holding("hv1"), "4", true), atRev(holding("hv2"), "4", false)}, []*v1.Silo{s})
+	for _, want := range []string{"dev/web (settling to hv2)", "waiting for hv1 to stop its copy"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "--to hv1") {
+		t.Fatalf("a settle command was offered while already settling:\n%s", text)
+	}
+	text = Account(g, []*v1.Host{atRev(holding("hv1"), "9", false), atRev(holding("hv2"), "9", false)}, []*v1.Silo{s})
+	if strings.Contains(text, "waiting for hv1 to stop its copy") {
+		t.Fatalf("still waiting after the copy stopped:\n%s", text)
 	}
 }
 

@@ -21,10 +21,15 @@ const (
 const RestoreGateName = "current"
 
 // SiloRestore is the control plane's decision for one silo in one history.
+// SettlingTo, while Phase stays frozen, is the host an operator placed the silo on.
+// The chosen host starts nothing until Phase is settled. Since is the store revision
+// of that placement: a holder's report counts only when its resourceVersion is newer.
 type SiloRestore struct {
-	History string   `json:"history,omitempty"`
-	Phase   string   `json:"phase,omitempty"` // pending | settled | frozen
-	Holders []string `json:"holders,omitempty"`
+	History    string   `json:"history,omitempty"`
+	Phase      string   `json:"phase,omitempty"` // pending | settled | frozen
+	Holders    []string `json:"holders,omitempty"`
+	SettlingTo string   `json:"settlingTo,omitempty"`
+	Since      string   `json:"since,omitempty"`
 }
 
 // HostCopies is a host's report of the copies it holds in one history. Reported is set only

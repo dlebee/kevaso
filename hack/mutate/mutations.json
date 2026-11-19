@@ -4179,5 +4179,125 @@
    "./internal/controllers/restore"
   ],
   "protects": "restore settle waits until every other holder's report says that copy is stopped"
+ },
+ {
+  "id": "G-620",
+  "guard": "restore settle stays frozen until the other copies stop",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.Restore = &v1.SiloRestore{History: history, Phase: v1.RestoreFrozen, Holders: holdersOf(st, host), SettlingTo: host} // stays frozen: the chosen host starts nothing until the other copies stop",
+  "replace": "st.Restore = &v1.SiloRestore{History: history, Phase: v1.RestoreSettled, Holders: holdersOf(st, host), SettlingTo: host} // stays frozen: the chosen host starts nothing until the other copies stop",
+  "mutation": "restore settle marks the silo settled while another copy may still be running",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle does not mark the silo settled while another copy may still be running"
+ },
+ {
+  "id": "G-621",
+  "guard": "a report from before the placement does not count as stopped",
+  "file": "internal/apiserver/restoresettle.go",
+  "find": "silo.Status.Restore.Since = strconv.FormatInt(cur.Revision, 10) // a report at or before this write has not been made since",
+  "replace": "silo.Status.Restore.Since = \"0\" // a report at or before this write has not been made since",
+  "mutation": "the placement's revision is zero, so a report from before it counts as stopped",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a holder's report counts only when it was written after the placement"
+ },
+ {
+  "id": "G-622",
+  "guard": "a holder that has not reported since the placement has not stopped",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if err1 != nil || err2 != nil || rv <= bound { // a holder that has not reported since write 1 has not stopped",
+  "replace": "if err1 != nil || err2 != nil || rv <= bound-bound { // a holder that has not reported since write 1 has not stopped",
+  "mutation": "a report from before the placement counts as stopped",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a holder that has not reported since the placement is still running"
+ },
+ {
+  "id": "G-623",
+  "guard": "a copy still running has not stopped",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "return !c.Running // the report's Running flag: a copy still running has not stopped",
+  "replace": "return true // the report's Running flag: a copy still running has not stopped",
+  "mutation": "a copy the report says is running counts as stopped",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a holder whose report says the copy is running blocks settlement"
+ },
+ {
+  "id": "G-624",
+  "guard": "a confirmed-off holder does not have to report",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if ConfirmedOff(g, h) { // a confirmed-off holder starts nothing and will not report",
+  "replace": "if false { // a confirmed-off holder starts nothing and will not report",
+  "mutation": "a confirmed-off holder still has to report its copy stopped",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a holder confirmed off does not block settlement"
+ },
+ {
+  "id": "G-625",
+  "guard": "a settling silo becomes settled only after the other copies stop",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if r.Phase == v1.RestoreFrozen && r.SettlingTo != \"\" { // write 1 placed it; settled only once every other copy has stopped",
+  "replace": "if false { // write 1 placed it; settled only once every other copy has stopped",
+  "mutation": "a silo placed by restore settle never becomes settled",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "the controller marks a settling silo settled once every other copy has stopped"
+ },
+ {
+  "id": "G-626",
+  "guard": "the chosen host's own copy does not have to be stopped",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if h == chosen { // the chosen host is the one that will start; its copy is not required to be stopped",
+  "replace": "if false { // the chosen host is the one that will start; its copy is not required to be stopped",
+  "mutation": "the chosen host has to report its own copy stopped before it may start",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "settlement does not wait for the chosen host to stop the copy it is about to run"
+ },
+ {
+  "id": "G-627",
+  "guard": "settling never hands the disk off",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.MovingFrom = \"\" // settling never hands off: a handoff is what deletes the other disk",
+  "replace": "st.MovingFrom = host // settling never hands off: a handoff is what deletes the other disk",
+  "mutation": "settlement leaves a handoff, which is what deletes the other disk",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "settlement leaves no handoff, so the other disks stay"
+ },
+ {
+  "id": "G-628",
+  "guard": "status names the host whose copy has not stopped",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "return \"waiting for \" + host + \" to stop its copy\"",
+  "replace": "return \"pending \" + host",
+  "mutation": "status does not say which host it is waiting on",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore status says it is waiting for a host to stop its copy"
+ },
+ {
+  "id": "G-629",
+  "guard": "the settle wait tells the operator to confirm a cut-off host off",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "return fmt.Errorf(\"%s/%s: %s: bring %s back, or run kvoadm host confirm-off %s\", namespace, name, strings.Join(lines, \"; \"), who, who)",
+  "replace": "return fmt.Errorf(\"%s/%s: %s: bring %s back\", namespace, name, strings.Join(lines, \"; \"), who)",
+  "mutation": "the settle wait does not say to confirm the host off",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "when the wait times out it says to bring that host back or confirm it off"
  }
 ]

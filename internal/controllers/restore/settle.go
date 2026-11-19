@@ -145,7 +145,9 @@ func AccountOpen(g *v1.RestoreGate, silos []*v1.Silo) bool {
 }
 
 // Settle returns the status this silo should have, and whether it differs.
-// A settled or frozen silo is left as it was decided. A silo created in this history is settled
+// A settled silo, or a frozen one nobody is settling, is left as it was decided. A frozen silo
+// an operator placed (SettlingTo) becomes settled once every other holder's report says its copy
+// is stopped, or that host is confirmed off. A silo created in this history is settled
 // at once. Without the operator's statement, or while a host in the account has not reported,
 // it stays pending and its placement stays. Then every reported copy is counted, the stored
 // host included. Two or more freeze it. One copy is placed on that host, except while the
@@ -157,6 +159,9 @@ func Settle(s *v1.Silo, g *v1.RestoreGate, hosts []*v1.Host) (v1.SiloStatus, boo
 		return st, false
 	}
 	if r := st.Restore; r != nil && r.History == g.Spec.History && (r.Phase == v1.RestoreSettled || r.Phase == v1.RestoreFrozen) {
+		if r.Phase == v1.RestoreFrozen && r.SettlingTo != "" { // write 1 placed it; settled only once every other copy has stopped
+			return finishSettling(s, g, hosts, st)
+		}
 		return st, false // decided once: a later report does not move it or unfreeze it
 	}
 	if createdSince(s, g) { // made in this history: no earlier copy to find
@@ -228,6 +233,22 @@ func Settle(s *v1.Silo, g *v1.RestoreGate, hosts []*v1.Host) (v1.SiloStatus, boo
 	}
 	st.Restore = marked(g.Spec.History, v1.RestoreSettled, nil) // no counted copy: the stored placement stands
 	return st, !statusSame(s.Status, st)
+}
+
+// finishSettling is write 2. The placement is already on the chosen host and the mark is still
+// frozen. It becomes settled when every other holder has reported this copy stopped since that
+// placement, or is confirmed off. Until then the chosen host starts nothing.
+func finishSettling(s *v1.Silo, g *v1.RestoreGate, hosts []*v1.Host, st v1.SiloStatus) (v1.SiloStatus, bool) {
+	r := st.Restore
+	if s == nil || r == nil || r.SettlingTo == "" {
+		return st, false
+	}
+	waiting := OtherCopiesRunning(hosts, g, s.Namespace, s.Name, s.UID, r.SettlingTo, r.Holders, r.Since)
+	if len(waiting) > 0 { // an other holder is still running, or has not reported since the placement
+		return st, false
+	}
+	next := settledOn(st, r.History, r.SettlingTo)
+	return next, !statusSame(s.Status, next)
 }
 
 // possibleHolder reports whether the restored records already allow name to hold this silo:

@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -79,10 +80,15 @@ func (s *Server) restoreSettle(w http.ResponseWriter, r *http.Request, t target)
 		}
 		silo.Status = next
 		silo.ResourceVersion = strconv.FormatInt(cur.Revision, 10)
-		o, err := s.update(ctx, target{kind: t.kind, namespace: t.namespace, name: t.name, status: true, planned: true}, silo) // restore settle clears a stored handoff
+		_, err = s.update(ctx, target{kind: t.kind, namespace: t.namespace, name: t.name, status: true, planned: true}, silo) // restore settle clears a stored handoff
 		if errors.Is(err, store.ErrConflict) {
 			continue
 		}
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		o, err := s.stampSettling(ctx, t)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -96,4 +102,38 @@ func (s *Server) restoreSettle(w http.ResponseWriter, r *http.Request, t target)
 		return
 	}
 	writeErr(w, errf(http.StatusConflict, "Conflict", "the silo kept changing; try again"))
+}
+
+// stampSettling records the revision of the placement on the silo. A holder's report counts
+// only when that host's resourceVersion is newer, so a report from before the placement
+// does not say the copy has stopped.
+func (s *Server) stampSettling(ctx context.Context, t target) (store.Object, error) {
+	var err error
+	for range 5 {
+		var cur store.Object
+		cur, err = s.store.Get(ctx, t.key())
+		if err != nil {
+			return store.Object{}, err
+		}
+		obj, _, derr := v1.Decode(cur.Data)
+		if derr != nil {
+			return store.Object{}, derr
+		}
+		silo := obj.(*v1.Silo)
+		if silo.Status.Restore == nil || silo.Status.Restore.SettlingTo == "" || silo.Status.Restore.Since != "" {
+			return cur, nil
+		}
+		silo.Status.Restore.Since = strconv.FormatInt(cur.Revision, 10) // a report at or before this write has not been made since
+		silo.ResourceVersion = strconv.FormatInt(cur.Revision, 10)
+		var o store.Object
+		o, err = s.update(ctx, target{kind: t.kind, namespace: t.namespace, name: t.name, status: true, planned: true}, silo)
+		if errors.Is(err, store.ErrConflict) {
+			continue
+		}
+		return o, err
+	}
+	if err == nil {
+		err = store.ErrConflict
+	}
+	return store.Object{}, err
 }

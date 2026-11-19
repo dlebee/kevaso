@@ -99,7 +99,7 @@ func restoreSettle(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := restore.SettleCopy(ctx, c, ns, name, host); err != nil {
+	if err := restore.SettleCopy(ctx, c, ns, name, host, out); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(out, "silo/%s settled on %s; the other copies stay stopped with their disks\n", name, host)
