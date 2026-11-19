@@ -326,10 +326,10 @@ func (s *Server) removedHostCert(ctx context.Context, name string, cert *x509.Ce
 		return seen, nil // issued after the removal, by joining again
 	}
 	if rec.Pending && !s.hostGoing(ctx, name, rec.HostUID) { // a delete is under way and may still be refused: not final
-		return hostRemovalSeen{}, fmt.Errorf("%w: host %s: a delete of this host is under way; try again", errRemovalUnreadable, name)
+		return seen, fmt.Errorf("%w: host %s: a delete of this host is under way; try again", errRemovalUnreadable, name)
 	}
 	// a certificate issued before this host was removed is refused
-	return hostRemovalSeen{}, fmt.Errorf("%w: host %s was removed from the cluster; join it again with kvoadm host add", errHostRemoved, name)
+	return seen, fmt.Errorf("%w: host %s was removed from the cluster; join it again with kvoadm host add", errHostRemoved, name)
 }
 
 // hostGoing reports whether Host name is gone, marked for deletion, or another Host than uid

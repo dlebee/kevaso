@@ -4796,8 +4796,8 @@
   "id": "G-726",
   "guard": "renew checks the presented certificate again after the body is read",
   "file": "internal/apiserver/auth.go",
-  "find": "if err := s.removedHostCert(r.Context(), caller.Name, r.TLS.PeerCertificates[0]); err != nil { // the certificate presented, after the body was read",
-  "replace": "if err := s.removedHostCert(r.Context(), caller.Name, r.TLS.PeerCertificates[0]); false && err != nil { // the certificate presented, after the body was read",
+  "find": "seen, err := s.removedHostCert(r.Context(), caller.Name, r.TLS.PeerCertificates[0]) // the certificate presented, after the body was read\n\t\tif err != nil {",
+  "replace": "seen, err := s.removedHostCert(r.Context(), caller.Name, r.TLS.PeerCertificates[0]) // the certificate presented, after the body was read\n\t\tif false && err != nil {",
   "mutation": "a renew held open across the host's delete is signed and its serial recorded",
   "packages": [
    "./internal/apiserver"
