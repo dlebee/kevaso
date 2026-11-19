@@ -61,7 +61,7 @@ func TestTakeIsUniqueAndTakesOverOnlyWhatIsNoLongerUsed(t *testing.T) {
 			b := Holder{Kind: "Thing", Name: "b", UID: "ub", Version: put(t, st, "b", "ub", "")}
 			take := func(h Holder, v string) bool {
 				t.Helper()
-				ok, err := c.Take(ctx, "p", v, h, uses)
+				ok, _, err := c.Take(ctx, "p", v, h, uses)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -128,7 +128,7 @@ func TestTakeHasOneWinner(t *testing.T) {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					ok, err := c.Take(ctx, "p", "x", h, uses)
+					ok, _, err := c.Take(ctx, "p", "x", h, uses)
 					if err != nil && err != ErrBusy {
 						t.Error(err)
 					}

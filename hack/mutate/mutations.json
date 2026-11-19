@@ -4551,5 +4551,17 @@
    "./internal/apiserver"
   ],
   "protects": "a loosening write that does not commit keeps the previous value"
+ },
+ {
+  "id": "G-743",
+  "guard": "a conflicting write releases only a host port it newly claimed",
+  "file": "internal/apiserver/hostports.go",
+  "find": "ports := fresh // only a port this call newly claimed",
+  "replace": "ports := append(fresh[:0:0], added...) // only a port this call newly claimed",
+  "mutation": "a conflicting write releases a host port the silo already holds",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host port a silo holds stays when another write of that silo does not commit"
  }
 ]

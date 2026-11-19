@@ -49,57 +49,58 @@ var ErrBusy = errors.New("claim kept changing")
 func key(pool, value string) store.Key { return store.Key{Kind: Kind, Namespace: pool, Name: value} }
 
 // Take claims value in pool for h. It reports false when someone else holds it (pick another).
-// Taking a value h already holds succeeds, and records h.Version as the write it is for. Take
-// before the write that uses the value, with the version that write is conditional on.
-func (c *Claims) Take(ctx context.Context, pool, value string, h Holder, uses Uses) (bool, error) {
+// created is true when this call stored a new claim. Taking a value h already holds succeeds
+// with created false, and records h.Version as the write it is for. Take before the write that
+// uses the value, with the version that write is conditional on.
+func (c *Claims) Take(ctx context.Context, pool, value string, h Holder, uses Uses) (ok, created bool, err error) {
 	data, err := json.Marshal(h)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	k := key(pool, value)
 	for range 4 {
 		_, err := c.Store.Create(ctx, k, data)
 		if err == nil {
-			return true, nil
+			return true, true, nil
 		}
 		if !errors.Is(err, store.ErrExists) {
-			return false, err
+			return false, false, err
 		}
 		cur, err := c.Store.Get(ctx, k)
 		if errors.Is(err, store.ErrNotFound) {
 			continue // let go meanwhile: try again
 		}
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		var other Holder
 		if err := json.Unmarshal(cur.Data, &other); err != nil {
-			return false, fmt.Errorf("claim %s: %w", k, err)
+			return false, false, fmt.Errorf("claim %s: %w", k, err)
 		}
 		if other.UID == h.UID {
 			if other.Version == h.Version {
-				return true, nil
+				return true, false, nil
 			}
 			// Ours, made against an older version: say which write it is for now, or a holder
 			// written since (by anyone) would look as if it had stopped using it.
 			if _, err := c.Store.Update(ctx, k, data, cur.Revision); err == nil {
-				return true, nil
+				return true, false, nil
 			} else if !errors.Is(err, store.ErrConflict) && !errors.Is(err, store.ErrNotFound) {
-				return false, err
+				return false, false, err
 			}
 			continue
 		}
 		held, err := c.holds(ctx, other, value, uses)
 		if err != nil || held {
-			return false, err
+			return false, false, err
 		}
 		// Stale: its holder is gone or uses something else now. Take it over, conditionally on
 		// the claim being the one judged.
 		if _, err := c.Store.Delete(ctx, k, cur.Revision); err != nil && !errors.Is(err, store.ErrConflict) && !errors.Is(err, store.ErrNotFound) {
-			return false, err
+			return false, false, err
 		}
 	}
-	return false, ErrBusy
+	return false, false, ErrBusy
 }
 
 // holds reports whether h, as the store has it now, still holds value.

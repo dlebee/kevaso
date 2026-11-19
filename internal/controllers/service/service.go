@@ -307,7 +307,7 @@ func (c *Controller) allocate(ctx context.Context, cur *v1.Service, all []*v1.Se
 		if u, ok := c.mine.Load(pool + "/" + value); has && ok && u == h.UID {
 			return true, nil
 		}
-		ok, err := c.Claims.Take(ctx, pool, value, h, uses)
+		ok, _, err := c.Claims.Take(ctx, pool, value, h, uses)
 		if ok {
 			c.mine.Store(pool+"/"+value, h.UID)
 		}
