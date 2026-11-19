@@ -4299,5 +4299,17 @@
    "./internal/controllers/restore"
   ],
   "protects": "when the wait times out it says to bring that host back or confirm it off"
+ },
+ {
+  "id": "G-630",
+  "guard": "an image convert never starts kevasod",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "\"--property=Requisite=kevasod.service\", // refuse to start without kevasod; never start it",
+  "replace": "\"--property=BindsTo=kevasod.service\", // refuse to start without kevasod; never start it",
+  "mutation": "a convert started during a reset brings kevasod back",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a stopped kevasod stays stopped: a confined convert never pulls it in"
  }
 ]

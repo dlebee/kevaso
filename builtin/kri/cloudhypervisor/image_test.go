@@ -178,7 +178,8 @@ func TestConvertPinsTheFormatAndSeesOnlyTheImage(t *testing.T) {
 	for _, want := range []string{
 		"User=" + ImgUser,
 		"BindReadOnlyPaths=" + img,
-		"BindsTo=kevasod.service",
+		"Requisite=kevasod.service",
+		"PartOf=kevasod.service",
 		"PrivateDevices=yes",
 		"DevicePolicy=closed",
 	} {
@@ -188,6 +189,9 @@ func TestConvertPinsTheFormatAndSeesOnlyTheImage(t *testing.T) {
 	}
 	if strings.Contains(c, "--slice=system.slice") {
 		t.Errorf("convert is in the pool scope: %s", c)
+	}
+	if strings.Contains(c, "BindsTo=") || strings.Contains(c, "Requires=") || strings.Contains(c, "Wants=") {
+		t.Errorf("starting a convert must never start kevasod (BindsTo, Requires and Wants pull it in): %s", c)
 	}
 	if !strings.Contains(c, "DeviceAllow=/dev/"+VG+"/") {
 		t.Errorf("the target device is not the one device allowed: %s", c)

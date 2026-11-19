@@ -293,7 +293,8 @@ func (r *Runtime) runConfined(ctx context.Context, img, dst string, argv []strin
 		"--property=BindReadOnlyPaths=" + img,
 		"--property=BindPaths=" + dst,
 		"--property=InaccessiblePaths=/etc/kevaso /etc/ssh /root",
-		"--property=BindsTo=kevasod.service",
+		"--property=Requisite=kevasod.service", // refuse to start without kevasod; never start it
+		"--property=PartOf=kevasod.service",    // stopping kevasod stops a convert in progress
 		"--property=After=kevasod.service",
 	}
 	if strings.HasPrefix(dst, "/dev/") {

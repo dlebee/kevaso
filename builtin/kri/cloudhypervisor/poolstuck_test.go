@@ -43,7 +43,7 @@ func TestPoolCommandsAreNotInKevasosCgroup(t *testing.T) {
 		if !strings.HasPrefix(hostCmd(c), "qemu-img convert ") {
 			continue
 		}
-		if !strings.Contains(c, "User="+ImgUser) || !strings.Contains(c, "BindsTo=kevasod.service") || strings.Contains(c, "--slice=system.slice") {
+		if !strings.Contains(c, "User="+ImgUser) || !(strings.Contains(c, "Requisite=kevasod.service") && strings.Contains(c, "PartOf=kevasod.service") && !strings.Contains(c, "BindsTo=")) || strings.Contains(c, "--slice=system.slice") {
 			t.Errorf("qemu-img convert must be a unit bound to kevasod, shown only the image and the target: %s", c)
 		}
 	}
@@ -60,7 +60,7 @@ func outsideCgroup(cmds []string) error {
 			// qemu-img convert is a transient unit bound to kevasod, not the pool's scope: a
 			// restart stops it, and it is not outside the cgroup the way lvcreate is.
 			if strings.HasPrefix(c, "systemd-run ") && strings.HasPrefix(inner, "qemu-img convert ") &&
-				strings.Contains(c, "User="+ImgUser) && strings.Contains(c, "BindsTo=kevasod.service") &&
+				strings.Contains(c, "User="+ImgUser) && strings.Contains(c, "Requisite=kevasod.service") && strings.Contains(c, "PartOf=kevasod.service") && !strings.Contains(c, "BindsTo=") &&
 				!strings.Contains(c, "--slice=system.slice") {
 				continue
 			}
