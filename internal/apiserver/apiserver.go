@@ -1107,7 +1107,11 @@ func (s *Server) checkExposure(ctx context.Context, t target, obj meta.Object) e
 	if err != nil {
 		return err
 	}
-	if !exposureLoosened(prev, obj, silos, svcs) { // an update that only removes or tightens outside reach needs no extra permission
+	ings, err := s.ingressesIn(ctx, t.namespace)
+	if err != nil {
+		return err
+	}
+	if !exposureLoosened(prev, obj, silos, svcs, ings) { // an update that only removes or tightens outside reach needs no extra permission
 		return nil
 	}
 	id, _ := IdentityFrom(ctx)

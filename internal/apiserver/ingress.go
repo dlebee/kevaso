@@ -173,6 +173,25 @@ func (s *Server) ingressDesired(ctx context.Context, silo *v1.Silo) (ingress.Des
 	return ingress.Desire(in), nil
 }
 
+// ingressesIn are the Ingresses in namespace.
+func (s *Server) ingressesIn(ctx context.Context, namespace string) ([]*v1.Ingress, error) {
+	objs, _, err := s.store.List(ctx, store.Selector{Kind: "Ingress", Namespace: namespace})
+	if err != nil {
+		return nil, err
+	}
+	var out []*v1.Ingress
+	for _, o := range objs {
+		obj, _, err := v1.Decode(o.Data)
+		if err != nil {
+			continue
+		}
+		if ing, ok := obj.(*v1.Ingress); ok {
+			out = append(out, ing)
+		}
+	}
+	return out, nil
+}
+
 // silosAndServices are the silos and standalone Services in namespace ("": all).
 func (s *Server) silosAndServices(ctx context.Context, namespace string) ([]*v1.Silo, []*v1.Service, error) {
 	var silos []*v1.Silo
