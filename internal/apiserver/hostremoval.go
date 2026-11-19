@@ -162,9 +162,21 @@ func (s *Server) revokeHost(ctx context.Context, name, hostUID string, prev host
 	return 0, fmt.Errorf("host %s: recording the removal kept conflicting", name)
 }
 
+// hostCertBound is the removal a host renew saw. check is set for a renew and not for an
+// enroll: joining again records the serial on whatever removal stands now. ok and at are that
+// removal (ok false: there was none). The serial is recorded only while the record is still
+// that one.
+type hostCertBound struct {
+	check bool
+	ok    bool
+	at    time.Time
+}
+
 // noteIssuedHostCert records the serial of a host certificate issued after a removal, so auth
-// accepts it. A name that was never removed has no record and nothing is written.
-func (s *Server) noteIssuedHostCert(ctx context.Context, name string, certPEM []byte) error {
+// accepts it. A name that was never removed has no record and nothing is written. A renew
+// (bound.check) records it only when the removal is still the one the renew saw, and reads it
+// back before the certificate is returned.
+func (s *Server) noteIssuedHostCert(ctx context.Context, name string, certPEM []byte, bound hostCertBound) error {
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
 		return errors.New("issued certificate: not PEM")
@@ -178,6 +190,9 @@ func (s *Server) noteIssuedHostCert(ctx context.Context, name string, certPEM []
 	for attempt := 0; attempt < 5; attempt++ {
 		o, err := s.store.Get(ctx, key)
 		if errors.Is(err, store.ErrNotFound) {
+			if bound.check && bound.ok { // the removal this renew saw is gone
+				return fmt.Errorf("%w: host %s was removed", errHostRemoved, name)
+			}
 			return nil
 		}
 		if err != nil {
@@ -187,7 +202,13 @@ func (s *Server) noteIssuedHostCert(ctx context.Context, name string, certPEM []
 		if err := json.Unmarshal(o.Data, &rec); err != nil {
 			return err
 		}
+		if bound.check && (!bound.ok || !rec.RemovedAt.Equal(bound.at)) { // the removal this renew saw
+			return fmt.Errorf("%w: host %s was removed", errHostRemoved, name)
+		}
 		if slices.Contains(rec.Serials, serial) {
+			if err := s.issuedHostCertStill(ctx, name, serial, bound); err != nil {
+				return err
+			}
 			return nil
 		}
 		rec.Serials = append(rec.Serials, serial)
@@ -201,9 +222,27 @@ func (s *Server) noteIssuedHostCert(ctx context.Context, name string, certPEM []
 			}
 			return err
 		}
+		if err := s.issuedHostCertStill(ctx, name, serial, bound); err != nil {
+			return err
+		}
 		return nil
 	}
 	return fmt.Errorf("host %s: recording the new certificate kept conflicting", name)
+}
+
+// issuedHostCertStill re-reads the removal after the serial was recorded. A renew is refused
+// when that record is no longer the one it saw, or the serial is not on it. The serial is left
+// where it was written: a replacement already dropped it, and deleting it here would hide a
+// record that was not the one this renew saw.
+func (s *Server) issuedHostCertStill(ctx context.Context, name, serial string, bound hostCertBound) error {
+	if !bound.check {
+		return nil
+	}
+	again, ok := s.hostRemoval(ctx, name)
+	if !ok || !again.RemovedAt.Equal(bound.at) || !slices.Contains(again.Serials, serial) {
+		return fmt.Errorf("%w: host %s was removed", errHostRemoved, name)
+	}
+	return nil
 }
 
 // errHostRemoved is the final refusal of a removed host's certificate (reason HostRemoved, which

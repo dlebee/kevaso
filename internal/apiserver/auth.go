@@ -600,7 +600,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errf(code, http.StatusText(code), "%s", err))
 		return
 	}
-	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
+	s.signAndReply(r.Context(), w, []byte(req.CSR), id, hostCertBound{})
 }
 
 // issueUserCert: only through the admin socket (root on a control-plane host) can a user
@@ -620,14 +620,15 @@ func (s *Server) issueUserCert(w http.ResponseWriter, r *http.Request, caller pk
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
 		return
 	}
-	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
+	s.signAndReply(r.Context(), w, []byte(req.CSR), id, hostCertBound{})
 }
 
 // renewCert signs a new certificate for the caller, and for nobody else: the name and role are
 // the authenticated certificate's, never a name in the request. A removed host is refused before
 // this runs, and again after the body is read: a renew held open across the delete must not be
-// signed, and must not record a new serial on the removal. The new serial is recorded where a
-// removal record exists (signAndReply) only once that second check has passed.
+// signed, and must not record a new serial on the removal. The removal this renew saw, the
+// signing and the serial record are one step: a removal that appears or changes before the
+// serial is recorded refuses the certificate and records nothing.
 func (s *Server) renewCert(w http.ResponseWriter, r *http.Request, caller pki.Identity) {
 	if caller.Type != "host" && caller.Type != "user" {
 		writeErr(w, errf(http.StatusForbidden, "Forbidden", "only a host or user certificate can be renewed"))
@@ -638,6 +639,7 @@ func (s *Server) renewCert(w http.ResponseWriter, r *http.Request, caller pki.Id
 		writeErr(w, err)
 		return
 	}
+	var bound hostCertBound
 	if caller.Type == "host" {
 		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 			writeErr(w, errf(http.StatusUnauthorized, "Unauthorized", "a host renews with its certificate"))
@@ -647,18 +649,26 @@ func (s *Server) renewCert(w http.ResponseWriter, r *http.Request, caller pki.Id
 			writeErr(w, hostRefusal(err))
 			return
 		}
+		rec, ok := s.hostRemoval(r.Context(), caller.Name)
+		bound = hostCertBound{check: true, ok: ok, at: rec.RemovedAt}
 	}
 	id := caller // renewed for the authenticated caller only
-	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
+	s.signAndReply(r.Context(), w, []byte(req.CSR), id, bound)
 }
 
-func (s *Server) signAndReply(ctx context.Context, w http.ResponseWriter, csr []byte, id pki.Identity) {
+func (s *Server) signAndReply(ctx context.Context, w http.ResponseWriter, csr []byte, id pki.Identity, bound hostCertBound) {
 	now := s.clock.Now()
 	earliest := time.Time{}
 	if id.Type == "host" {
-		if rec, ok := s.hostRemoval(ctx, id.Name); ok {
+		if bound.check {
+			if bound.ok {
+				// The removal this renew saw. A newer one is not used to backdate the certificate.
+				earliest = bound.at.Add(time.Second)
+			}
+		} else if rec, ok := s.hostRemoval(ctx, id.Name); ok {
 			// One second after the stored removal, so NotBefore (a whole second) is after it
-			// even though SignCSR otherwise backdates by a minute.
+			// even though SignCSR otherwise backdates by a minute. Joining again records the
+			// serial on whatever removal stands now.
 			earliest = rec.RemovedAt.Add(time.Second)
 		}
 	}
@@ -668,7 +678,11 @@ func (s *Server) signAndReply(ctx context.Context, w http.ResponseWriter, csr []
 		return
 	}
 	if id.Type == "host" {
-		if err := s.noteIssuedHostCert(ctx, id.Name, cert); err != nil {
+		if err := s.noteIssuedHostCert(ctx, id.Name, cert, bound); err != nil {
+			if errors.Is(err, errHostRemoved) {
+				writeErr(w, hostRefusal(err))
+				return
+			}
 			writeErr(w, errf(http.StatusInternalServerError, "InternalError", "recording the certificate: %s", err))
 			return
 		}

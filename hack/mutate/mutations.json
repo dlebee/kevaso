@@ -5295,5 +5295,17 @@
    "./internal/etcd"
   ],
   "protects": "under NAT the member listens on the internal address only"
+ },
+ {
+  "id": "G-808",
+  "guard": "a host renew records its serial only on the removal it saw",
+  "file": "internal/apiserver/hostremoval.go",
+  "find": "if bound.check && (!bound.ok || !rec.RemovedAt.Equal(bound.at)) { // the removal this renew saw",
+  "replace": "if false && bound.check && (!bound.ok || !rec.RemovedAt.Equal(bound.at)) { // the removal this renew saw",
+  "mutation": "a renew records its serial on a removal that appeared after the check",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a renew in flight while its host is removed records no serial"
  }
 ]
