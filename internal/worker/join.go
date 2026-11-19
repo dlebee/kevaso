@@ -42,35 +42,38 @@ func Join(ctx context.Context, cfg JoinConfig) (*client.Client, error) {
 	}
 	dir := filepath.Join(cfg.DataDir, "pki")
 	certPath, keyPath := filepath.Join(dir, "host.crt"), filepath.Join(dir, "host.key")
-	cert, cerr := os.ReadFile(certPath)
-	key, kerr := os.ReadFile(keyPath)
-	if cerr == nil && kerr == nil {
-		if certificateExpired(cert, time.Now()) { // an expired certificate is not reused
-			if _, err := os.Stat(cfg.TokenFile); err != nil {
-				return nil, fmt.Errorf("host %s certificate in %s has expired. Join again with kvoadm host add", cfg.HostName, dir)
-			}
-			if err := movePKIAside(dir, "expired"); err != nil { // never deleted: the old key stays under a dated name
-				return nil, fmt.Errorf("moving %s aside: %w", dir, err)
-			}
-			cerr, kerr = os.ErrNotExist, os.ErrNotExist
-		} else {
-			c, err := client.NewTLSEndpoints(Servers(cfg.Server, cfg.DataDir), ca, cert, key)
-			if err != nil {
-				return nil, err
-			}
-			if !certificateRemoved(ctx, c, cfg.HostName) { // any other error keeps the stored certificate
-				return c, nil
-			}
-			if _, err := os.Stat(cfg.TokenFile); err != nil {
-				return nil, fmt.Errorf("host %s was removed from the cluster; its certificate in %s is refused. Move %s aside and join again with kvoadm host add", cfg.HostName, dir, dir)
-			}
-			if err := movePKIAside(dir, "removed"); err != nil { // never deleted: the old key stays under a dated name
-				return nil, fmt.Errorf("moving %s aside: %w", dir, err)
-			}
-			cerr, kerr = os.ErrNotExist, os.ErrNotExist
+	cert, key, loadErr := loadHostPair(certPath, keyPath)
+	needEnroll := false
+	switch {
+	case loadErr == nil && certificateExpired(cert, time.Now()): // an expired certificate is not reused
+		if _, err := os.Stat(cfg.TokenFile); err != nil {
+			return nil, fmt.Errorf("host %s certificate in %s has expired. Join again with kvoadm host add", cfg.HostName, dir)
 		}
+		if err := movePKIAside(dir, "expired"); err != nil { // never deleted: the old key stays under a dated name
+			return nil, fmt.Errorf("moving %s aside: %w", dir, err)
+		}
+		needEnroll = true
+	case loadErr == nil:
+		c, err := client.NewTLSEndpoints(Servers(cfg.Server, cfg.DataDir), ca, cert, key)
+		if err != nil {
+			return nil, err
+		}
+		if !certificateRemoved(ctx, c, cfg.HostName) { // any other error keeps the stored certificate
+			return c, nil
+		}
+		if _, err := os.Stat(cfg.TokenFile); err != nil {
+			return nil, fmt.Errorf("host %s was removed from the cluster; its certificate in %s is refused. Move %s aside and join again with kvoadm host add", cfg.HostName, dir, dir)
+		}
+		if err := movePKIAside(dir, "removed"); err != nil { // never deleted: the old key stays under a dated name
+			return nil, fmt.Errorf("moving %s aside: %w", dir, err)
+		}
+		needEnroll = true
+	case os.IsNotExist(loadErr):
+		needEnroll = true
+	default:
+		return nil, loadErr
 	}
-	if cerr != nil || kerr != nil {
+	if needEnroll {
 		tok, err := os.ReadFile(cfg.TokenFile)
 		if err != nil {
 			return nil, fmt.Errorf("not joined yet, and no join token: %w", err)
