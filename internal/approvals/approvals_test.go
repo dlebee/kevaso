@@ -17,14 +17,15 @@ func call() Call {
 }
 
 func TestNameIsStablePerSiloUseAndSecret(t *testing.T) {
-	a := Name("claude-1", "uid-1", "get-secret", "gh")
-	if a != Name("claude-1", "uid-1", "get-secret", "gh") {
+	a := Name("claude-1", "uid-1", "get-secret", "gh", "sec-1")
+	if a != Name("claude-1", "uid-1", "get-secret", "gh", "sec-1") {
 		t.Fatal("same ask, different name")
 	}
 	for _, other := range []string{
-		Name("claude-1", "uid-2", "get-secret", "gh"), // a new silo of the same name
-		Name("claude-1", "uid-1", "sign", "gh"),
-		Name("claude-1", "uid-1", "get-secret", "other"),
+		Name("claude-1", "uid-2", "get-secret", "gh", "sec-1"), // a new silo of the same name
+		Name("claude-1", "uid-1", "sign", "gh", "sec-1"),
+		Name("claude-1", "uid-1", "get-secret", "other", "sec-1"),
+		Name("claude-1", "uid-1", "get-secret", "gh", "sec-2"), // the secret deleted and created again
 	} {
 		if other == a {
 			t.Fatalf("different asks share the name %s", a)
@@ -33,7 +34,7 @@ func TestNameIsStablePerSiloUseAndSecret(t *testing.T) {
 	if !strings.HasPrefix(a, "claude-1-") {
 		t.Fatalf("name %q should start with the silo", a)
 	}
-	if n := Name(strings.Repeat("s", 80), "u", "sign", "k"); len(n) > 63 {
+	if n := Name(strings.Repeat("s", 80), "u", "sign", "k", "sec"); len(n) > 63 {
 		t.Fatalf("name is %d characters", len(n))
 	}
 }
@@ -131,6 +132,24 @@ func TestApprovedAccessLastsItsTime(t *testing.T) {
 	c.Poll = a.Name
 	if out := Decide(c, ok, Limits{}, t0.Add(20*time.Minute)); out.Store == nil {
 		t.Fatal("a poll after the access ended should ask again")
+	}
+}
+
+func TestApprovalOfARecreatedSecretDoesNothing(t *testing.T) {
+	c := call()
+	c.SecretUID = "sec-1"
+	p := Decide(c, nil, Limits{}, t0).Store
+	ok, err := Answer(p, true, RequestID(p), "alice", "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again := call()
+	again.SecretUID = "sec-2" // the secret was deleted and created again
+	if out := Decide(again, ok, Limits{}, t0.Add(time.Minute)); out.Allow {
+		t.Fatal("a new secret used the old secret's approval")
+	}
+	if Name(c.Silo, c.SiloUID, c.Use, c.Secret, "sec-1") == Name(c.Silo, c.SiloUID, c.Use, c.Secret, "sec-2") {
+		t.Fatal("the two secrets share an approval name")
 	}
 }
 
@@ -246,8 +265,8 @@ func TestK017AnswerIsBoundToTheRequest(t *testing.T) {
 func collidingAsks() (short, long Call) {
 	c := Call{Namespace: "dev", Silo: "s", SiloUID: "u1", Secret: "key", Use: v1.ApprovalForSign, Grant: "g", Summary: "sign 32 bytes"}
 	short, long = c, c
-	short.For, short.PayloadHash = "1m", fmt.Sprintf("%016x", 0x811429)
-	long.For, long.PayloadHash = "12h", fmt.Sprintf("%016x", 0x5ac42c)
+	short.For, short.PayloadHash = "1m", fmt.Sprintf("%016x", 0x12a00be)
+	long.For, long.PayloadHash = "12h", fmt.Sprintf("%016x", 0xd1d704)
 	return short, long
 }
 

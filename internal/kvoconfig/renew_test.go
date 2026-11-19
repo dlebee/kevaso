@@ -3,6 +3,7 @@ package kvoconfig
 import (
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -42,7 +43,7 @@ func TestAnExpiredContextCertificateNamesTheRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := cfg.Client(path, "home"); err == nil || !strings.Contains(err.Error(), "sign-user") || !strings.Contains(err.Error(), "ada") {
+	if _, _, err := cfg.Client(path, "home"); err == nil || !strings.Contains(err.Error(), "kvoadm users resign root@127.0.0.1 --name ada") {
 		t.Fatalf("expired certificate: %v", err)
 	}
 }
@@ -169,12 +170,12 @@ func TestACertificateInsideTenDaysWarnsWhenRenewalFails(t *testing.T) {
 	}
 	var warned string
 	prev := warnCert
-	warnCert = func(format string, args ...any) { warned = format }
+	warnCert = func(format string, args ...any) { warned = fmt.Sprintf(format, args...) }
 	t.Cleanup(func() { warnCert = prev })
 	if _, _, err := cfg.Client(path, "home"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(warned, "sign-user") {
+	if !strings.Contains(warned, "kvoadm users resign root@127.0.0.1 --name ada") {
 		t.Fatalf("warning %q", warned)
 	}
 }

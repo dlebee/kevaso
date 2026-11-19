@@ -132,13 +132,13 @@ func setup(t *testing.T, cidrPort string) *env {
 		Silo: func(ip netip.Addr) (Policy, bool) {
 			return pol, ip.IsLoopback()
 		},
-		Injections: func(context.Context, string) (map[string]Injection, error) {
+		Injections: func(context.Context, string) (map[string][]Injection, error) {
 			e.dstMu.Lock()
 			defer e.dstMu.Unlock()
 			if e.injErr != nil {
 				return nil, e.injErr
 			}
-			return map[string]Injection{"api.allowed.test": {Header: "Authorization", Value: "Bearer sk-test-123", Approval: e.approval, Secret: "key"}}, nil
+			return map[string][]Injection{"api.allowed.test": {{Header: "Authorization", Value: "Bearer sk-test-123", Approval: e.approval, Secret: "key"}}}, nil
 		},
 		Ask: func(_ context.Context, key, secret, host, method, path string) error {
 			if key != "dev/claude-1" {
@@ -385,5 +385,18 @@ func TestGateAsksBeforeAGatedInjection(t *testing.T) {
 	e.dstMu.Unlock()
 	if !strings.Contains(log, "denied by bob") || strings.Contains(log, "sk-test-123") {
 		t.Fatalf("log:\n%s", log)
+	}
+}
+
+// Every header for one host is set. A later injection of the same header replaces that one.
+func TestSetInjectedHeadersKeepsEveryHeader(t *testing.T) {
+	h := make(http.Header)
+	h.Set("Authorization", "from-the-silo")
+	setInjectedHeaders(h, []Injection{
+		{Header: "Authorization", Value: "Bearer one"},
+		{Header: "X-Token", Value: "two"},
+	})
+	if h.Get("Authorization") != "Bearer one" || h.Get("X-Token") != "two" {
+		t.Fatalf("headers = %v", h)
 	}
 }

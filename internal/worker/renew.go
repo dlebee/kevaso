@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -73,10 +74,7 @@ func RenewHostCertificate(ctx context.Context, c *client.Client, dataDir string,
 		if newID != oldID { // a renewed host certificate is the same host
 			return false, fmt.Errorf("renewed certificate is for %s %s, not %s %s", newID.Type, newID.Name, oldID.Type, oldID.Name)
 		}
-		if err := writeFileAtomic(keyPath, cred.Key, 0o600); err != nil {
-			return false, err
-		}
-		if err := writeFileAtomic(certPath, cred.Certificate, 0o644); err != nil {
+		if err := commitRenewedPair(keyPath, certPath, cred.Key, cred.Certificate); err != nil {
 			return false, err
 		}
 		if err := c.RotateCertificate(cred.Certificate, cred.Key); err != nil { // the live client presents the new certificate
@@ -93,4 +91,79 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// commitRenewedPair installs a renewed key and certificate. The previous key is kept as
+// path.prev until the certificate is renamed, so a crash between the two leaves a key that
+// still matches the certificate on disk.
+func commitRenewedPair(keyPath, certPath string, key, cert []byte) error {
+	if err := stageRenewedKey(keyPath, key); err != nil {
+		return err
+	}
+	return finishRenewedCert(keyPath, certPath, cert)
+}
+
+// stageRenewedKey puts key in place and keeps the previous key as .prev. A .prev already
+// there is the key from before this renewal and is not replaced.
+func stageRenewedKey(keyPath string, key []byte) error {
+	next := keyPath + ".next"
+	if err := writeFileAtomic(next, key, 0o600); err != nil {
+		return err
+	}
+	prev := keyPath + ".prev"
+	if _, err := os.Stat(keyPath); err == nil {
+		if _, err := os.Stat(prev); os.IsNotExist(err) {
+			if err := os.Rename(keyPath, prev); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		} else if err := os.Remove(keyPath); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(next, keyPath)
+}
+
+// finishRenewedCert writes the certificate, then drops the previous key. The previous key
+// stays if this write fails.
+func finishRenewedCert(keyPath, certPath string, cert []byte) error {
+	if err := writeFileAtomic(certPath, cert, 0o644); err != nil {
+		return err
+	}
+	if err := os.Remove(keyPath + ".prev"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// loadHostPair reads the host certificate and the key that matches it: the current key, or
+// the previous key when a renewal stopped between the two renames. The matching previous key
+// is put back as the current key.
+func loadHostPair(certPath, keyPath string) (cert, key []byte, err error) {
+	cert, err = os.ReadFile(certPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if key, err = os.ReadFile(keyPath); err == nil && keyMatches(cert, key) {
+		return cert, key, nil
+	}
+	prev, perr := os.ReadFile(keyPath + ".prev")
+	if perr == nil && keyMatches(cert, prev) {
+		if err := writeFileAtomic(keyPath, prev, 0o600); err != nil {
+			return nil, nil, err
+		}
+		return cert, prev, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return nil, nil, fmt.Errorf("%s does not match %s", keyPath, certPath)
+}
+
+func keyMatches(cert, key []byte) bool {
+	_, err := tls.X509KeyPair(cert, key)
+	return err == nil
 }

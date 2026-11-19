@@ -8,8 +8,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	yaml "go.yaml.in/yaml/v3"
@@ -209,8 +211,8 @@ func renewContextCert(name string, ctx Context, ca, cert, key []byte) ([]byte, [
 		who = name
 	}
 	if !now.Before(na) {
-		return nil, nil, fmt.Errorf("context %s certificate for %s expired on %s. On a control-plane host, run: kevasod admin sign-user --name %s",
-			name, who, na.UTC().Format(time.RFC3339), who)
+		return nil, nil, fmt.Errorf("context %s certificate for %s expired on %s. Run: %s",
+			name, who, na.UTC().Format(time.RFC3339), CertRecovery(who, ctx.Server))
 	}
 	if client.RenewDue(nb, na, now) { // renew a certificate past two thirds of its life
 		cl, err := client.NewTLSEndpoints(client.SplitServers(ctx.Server), ca, cert, key)
@@ -223,8 +225,8 @@ func renewContextCert(name string, ctx Context, ca, cert, key []byte) ([]byte, [
 		within10 := !now.Before(na.Add(-10 * 24 * time.Hour))
 		if rerr != nil {
 			if within10 {
-				warnCert("kvo: context %s certificate for %s expires on %s and could not be renewed (%v). On a control-plane host, run: kevasod admin sign-user --name %s\n",
-					name, who, na.UTC().Format(time.RFC3339), rerr, who)
+				warnCert("kvo: context %s certificate for %s expires on %s and could not be renewed (%v). Run: %s\n",
+					name, who, na.UTC().Format(time.RFC3339), rerr, CertRecovery(who, ctx.Server))
 			}
 			return cert, key, nil
 		}
@@ -247,6 +249,31 @@ func renewContextCert(name string, ctx Context, ca, cert, key []byte) ([]byte, [
 		return cred.Certificate, cred.Key, nil
 	}
 	return cert, key, nil
+}
+
+// CertRecovery is the command that signs a new client certificate over SSH, the way
+// kvoadm init does: the key stays here, and only the request goes to the control plane.
+func CertRecovery(user, server string) string {
+	return "kvoadm users resign root@" + serverHost(server) + " --name " + user
+}
+
+func serverHost(server string) string {
+	first := server
+	if i := strings.Index(server, ","); i >= 0 {
+		first = strings.TrimSpace(server[:i])
+	}
+	u, err := url.Parse(first)
+	if err != nil || u.Hostname() == "" {
+		first = strings.TrimPrefix(strings.TrimPrefix(first, "https://"), "http://")
+		if h, _, ok := strings.Cut(first, ":"); ok {
+			return h
+		}
+		if first == "" {
+			return "CONTROL-PLANE"
+		}
+		return first
+	}
+	return u.Hostname()
 }
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {

@@ -50,6 +50,9 @@ type ApprovalSpec struct {
 	Silo    string `json:"silo"`
 	SiloUID string `json:"siloUID"`
 	Secret  string `json:"secret"`
+	// SecretUID is the secret object this request is for. A secret deleted and created again
+	// has another UID, and this approval does not cover it.
+	SecretUID string `json:"secretUID,omitempty"`
 	// Port: an expose approval's leased port (its Secret is empty).
 	Port  string `json:"port,omitempty"`
 	Use   string `json:"use"`   // get-secret | sign | inject | expose

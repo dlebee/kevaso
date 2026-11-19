@@ -16,7 +16,7 @@
 //	kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker …   another machine
 //	             [--internal-ip IP] [--external-ip IP]
 //	kvoadm host list | drain NAME | uncordon NAME                     list: both IPs of every host
-//	kvoadm users invite NAME [--namespace NS [--role editor]] | list | disable NAME
+//	kvoadm users invite NAME [--namespace NS [--role editor]] | list | disable NAME | resign [USER@]ADDRESS --name USER
 //	kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
 //	kvoadm reset [USER@]ADDRESS --ssh-key PATH [--yes] [--force] [--wipe-storage]
 //	                                                                    take Kevaso off a machine again
@@ -131,7 +131,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return 0
 	}
 	if len(args) > 0 && args[0] == "users" {
-		if err := usersCmd(ctx, args[1:], stdout); err != nil {
+		if err := usersCmd(ctx, args[1:], stdin, stdout); err != nil {
 			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
 			return 1
 		}
@@ -158,7 +158,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm host list | drain NAME | uncordon NAME
   kvoadm store migrate [USER@]ADDRESS --ssh-key PATH
   kvoadm upgrade --kevasod PATH [--ssh-key PATH] [--batch N] [--version V] [--dry-run]
-  kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME
+  kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME | resign [USER@]ADDRESS --name USER
   kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
   kvoadm reset [USER@]ADDRESS --ssh-key PATH [--host-key SHA256:…] [--dry-run] [--yes] [--force] [--wipe-storage]
   kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--cluster-secret NAME]… [--side controller|node]
@@ -571,19 +571,44 @@ func needIPs(o InitOptions) error {
 	return nil
 }
 
+// etcdPeers is where the member listens and where other members dial it. The listener binds the
+// internal address (the external address is not on the machine under 1:1 NAT). Other members
+// dial the reach address.
+func etcdPeers(o InitOptions) (listen, advertise string) {
+	if o.EtcdPeerListen != "" {
+		listen = o.EtcdPeerListen
+	} else {
+		host := o.Reach()
+		if o.InternalIP != "" {
+			host = o.InternalIP
+		}
+		listen = net.JoinHostPort(host, etcd.DefaultPeerPort)
+	}
+	advertise = listen
+	if o.Reach() != "" {
+		advertise = net.JoinHostPort(o.Reach(), etcd.DefaultPeerPort)
+	}
+	return listen, advertise
+}
+
+// etcdPeerFlags are kevasod's store flags for o.
+func etcdPeerFlags(o InitOptions) []string {
+	listen, advertise := etcdPeers(o)
+	args := []string{"--store", "etcd", "--etcd-peer-listen", listen}
+	if advertise != listen {
+		args = append(args, "--etcd-advertise-peer", advertise)
+	}
+	return args
+}
+
 // Unit is the control plane's systemd unit.
 func Unit(o InitOptions) string {
-	addr := o.Reach()
 	args := append(append([]string{"control-plane", "--name", o.Name}, o.ipArgs()...), "--cluster", o.Cluster)
 	if o.Address != o.InternalIP && o.Address != o.ExternalIP {
 		args = append(args, "--extra-name", o.Address)
 	}
 	if o.Store == "etcd" {
-		peer := o.EtcdPeerListen
-		if peer == "" {
-			peer = net.JoinHostPort(addr, etcd.DefaultPeerPort)
-		}
-		args = append(args, "--store", "etcd", "--etcd-peer-listen", peer)
+		args = append(args, etcdPeerFlags(o)...)
 	}
 	if o.Join != "" {
 		args = append(args, "--join", o.Join)
@@ -690,18 +715,11 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	}
 
 	// 5. Your credentials: the key is made here, only the CSR goes to the host.
-	keyPEM, csrPEM, err := client.NewKeyAndCSR(o.UserName)
+	keyPEM, certPEM, caPEM, err := signUserOverSSH(ctx, conn, o.UserName)
 	if err != nil {
 		return err
 	}
-	resp, err := conn.Run(ctx, "kevasod admin sign-user --name "+sshboot.Quote(o.UserName), csrPEM)
-	if err != nil {
-		return err
-	}
-	var cred struct{ Certificate, CA string }
-	if err := json.Unmarshal(lastLine(resp), &cred); err != nil {
-		return fmt.Errorf("sign-user answer: %w", err)
-	}
+	cred := struct{ Certificate, CA string }{Certificate: string(certPEM), CA: string(caPEM)}
 	server := o.APIServer
 	if server == "" {
 		server = "https://" + net.JoinHostPort(o.Address, "6443")
@@ -715,8 +733,8 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	}
 	say("kvo context %q written to %s (server %s)", o.Cluster, cfgPath, server)
 	if cert, err := pki.ParseCertificatePEM([]byte(cred.Certificate)); err == nil {
-		say("certificate for %s is valid until %s. After that, on a control-plane host: kevasod admin sign-user --name %s",
-			o.UserName, cert.NotAfter.UTC().Format("2006-01-02"), o.UserName)
+		say("certificate for %s is valid until %s. After that, run: %s",
+			o.UserName, cert.NotAfter.UTC().Format("2006-01-02"), kvoconfig.CertRecovery(o.UserName, server))
 	}
 
 	// 6. Check it from here, over TLS, the way kvo will.
@@ -868,6 +886,36 @@ func clusterExists(out []byte) bool {
 		return false
 	}
 	return r.State != "" && r.State != "new"
+}
+
+// runner is a host kvoadm has logged in to.
+type runner interface {
+	Run(ctx context.Context, cmd string, stdin []byte) ([]byte, error)
+}
+
+// signUserOverSSH makes a key here and has the control plane sign a certificate for userName.
+// Only the request crosses SSH. The signed certificate is for that user.
+func signUserOverSSH(ctx context.Context, run runner, userName string) (keyPEM, certPEM, caPEM []byte, err error) {
+	keyPEM, csrPEM, err := client.NewKeyAndCSR(userName)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	resp, err := run.Run(ctx, "kevasod admin sign-user --name "+sshboot.Quote(userName), csrPEM)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var cred struct{ Certificate, CA string }
+	if err := json.Unmarshal(lastLine(resp), &cred); err != nil {
+		return nil, nil, nil, fmt.Errorf("sign-user answer: %w", err)
+	}
+	id, err := pki.IdentityOfPEM([]byte(cred.Certificate))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if id.Type != "user" || id.Name != userName {
+		return nil, nil, nil, fmt.Errorf("the signed certificate is for %s %s, not user %s", id.Type, id.Name, userName)
+	}
+	return keyPEM, []byte(cred.Certificate), []byte(cred.CA), nil
 }
 
 func lastLine(b []byte) []byte {

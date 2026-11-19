@@ -223,6 +223,16 @@ func TestInitWithEtcdStore(t *testing.T) {
 	}
 }
 
+func TestUnitListensForPeersOnTheInternalAddress(t *testing.T) {
+	u := Unit(InitOptions{Name: "cp-1", Address: "203.0.113.10", InternalIP: "10.0.0.5", ExternalIP: "203.0.113.10", Cluster: "c", Store: "etcd"})
+	if !strings.Contains(u, "--etcd-peer-listen 10.0.0.5:2380") || !strings.Contains(u, "--etcd-advertise-peer 203.0.113.10:2380") {
+		t.Fatalf("unit:\n%s", u)
+	}
+	if strings.Contains(u, "--etcd-peer-listen 203.0.113.10:2380") {
+		t.Fatalf("the peer listener is the external address:\n%s", u)
+	}
+}
+
 func TestUnitAdvertisesAnotherAddress(t *testing.T) {
 	u := Unit(InitOptions{Name: "cp-1", Address: "127.0.0.1", InternalIP: "192.168.105.2", Cluster: "c"})
 	if !strings.Contains(u, "--internal-ip 192.168.105.2 --cluster c --extra-name 127.0.0.1") {

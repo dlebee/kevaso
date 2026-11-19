@@ -96,21 +96,36 @@ func TestSystemNodeUnit(t *testing.T) {
 	}
 }
 
+func TestSystemNodeUnitListensOnTheInternalAddress(t *testing.T) {
+	o := kvoadm.HostAddOptions{InitOptions: kvoadm.InitOptions{Name: "hv2", Cluster: "home", InternalIP: "10.0.0.5", ExternalIP: "203.0.113.10"}}
+	u := kvoadm.SystemNodeUnit(o, []string{"https://203.0.113.10:6443"}, false, false)
+	if !strings.Contains(u, "--etcd-peer-listen 10.0.0.5:2380") || !strings.Contains(u, "--etcd-advertise-peer 203.0.113.10:2380") {
+		t.Fatalf("unit:\n%s", u)
+	}
+	if strings.Contains(u, "--etcd-peer-listen 203.0.113.10:2380") {
+		t.Fatal(u)
+	}
+}
+
 func TestWithEtcd(t *testing.T) {
 	unit := "[Service]\nExecStart=/usr/local/bin/kevasod control-plane --name hv1 --address 203.0.113.10 --store sqlite --worker\nRestart=always\n"
-	got, changed, err := kvoadm.WithEtcd(unit, "203.0.113.10:2380")
+	got, changed, err := kvoadm.WithEtcd(unit, "203.0.113.10:2380", "203.0.113.10:2380")
 	if err != nil || !changed {
 		t.Fatal(err)
 	}
 	if !strings.Contains(got, "--name hv1 --address 203.0.113.10 --worker --store etcd --etcd-peer-listen 203.0.113.10:2380\n") || strings.Contains(got, "sqlite") {
 		t.Fatal(got)
 	}
-	again, changed, err := kvoadm.WithEtcd(got, "203.0.113.10:2380")
+	again, changed, err := kvoadm.WithEtcd(got, "203.0.113.10:2380", "203.0.113.10:2380")
 	if err != nil || changed || again != got {
 		t.Fatalf("not idempotent: %v %v\n%s", changed, err, again)
 	}
-	if _, _, err := kvoadm.WithEtcd("ExecStart=/usr/local/bin/kevasod worker --name w", "x:2380"); err == nil {
+	if _, _, err := kvoadm.WithEtcd("ExecStart=/usr/local/bin/kevasod worker --name w", "x:2380", ""); err == nil {
 		t.Fatal("rewrote a worker unit")
+	}
+	nat, _, err := kvoadm.WithEtcd(unit, "10.0.0.5:2380", "203.0.113.10:2380")
+	if err != nil || !strings.Contains(nat, "--etcd-peer-listen 10.0.0.5:2380") || !strings.Contains(nat, "--etcd-advertise-peer 203.0.113.10:2380") {
+		t.Fatalf("peers dial the reach address: %v\n%s", err, nat)
 	}
 }
 
