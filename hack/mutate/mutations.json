@@ -3152,8 +3152,8 @@
   "id": "G-533",
   "guard": "labels that newly match a load balancer need the permission",
   "file": "internal/apiserver/exposure.go",
-  "find": "if v1.Selects(sv.Spec.Selector, nextLabels) && !v1.Selects(sv.Spec.Selector, oldLabels) { // this silo's or set's labels newly match a load balancer",
-  "replace": "if false && (v1.Selects(sv.Spec.Selector, nextLabels) && !v1.Selects(sv.Spec.Selector, oldLabels)) { // this silo's or set's labels newly match a load balancer",
+  "find": "if sv.Spec.Type == v1.ServiceLoadBalancer { // this silo's or set's labels newly match a load balancer",
+  "replace": "if false && sv.Spec.Type == v1.ServiceLoadBalancer { // this silo's or set's labels newly match a load balancer",
   "mutation": "labels that newly match a load balancer need no extra permission",
   "packages": [
    "./internal/apiserver"
@@ -4808,8 +4808,8 @@
   "id": "G-727",
   "guard": "a SiloSet is judged on its template labels",
   "file": "internal/apiserver/exposure.go",
-  "find": "return o.Spec.Template.Labels, true // instances carry the template's labels",
-  "replace": "return nil, false // instances carry the template's labels",
+  "find": "for k, v := range o.Spec.Template.Labels { // instances carry the template's labels",
+  "replace": "for k, v := range map[string]string(nil) { // instances carry the template's labels",
   "mutation": "a load balancer newly matching a SiloSet's template is not a loosening",
   "packages": [
    "./internal/apiserver"
@@ -5331,5 +5331,41 @@
    "./internal/apiserver"
   ],
   "protects": "a defined object's kevaso.com finalizer stays until its controller removes it"
+ },
+ {
+  "id": "G-811",
+  "guard": "a SiloSet's instances carry the set's name",
+  "file": "internal/apiserver/exposure.go",
+  "find": "labels[v1.LabelSiloSet] = o.Name",
+  "replace": "_ = o.Name",
+  "mutation": "a load balancer that selects a SiloSet by name is not a loosening",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a SiloSet whose name a load balancer selects needs expose-public"
+ },
+ {
+  "id": "G-812",
+  "guard": "labels that newly join a service an ingress names are a loosening",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if ingressNamesLeased(sv, judged, ings) { // a plain service an ingress already names, on a leased port",
+  "replace": "if false && ingressNamesLeased(sv, judged, ings) { // a plain service an ingress already names, on a leased port",
+  "mutation": "labels that newly join a service an ingress names need no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a silo that newly joins a service an ingress names, on a leased port, needs expose-public"
+ },
+ {
+  "id": "G-813",
+  "guard": "the silo being written is what the leased-port check sees",
+  "file": "internal/apiserver/exposure.go",
+  "find": "judged := silosWith(silos, obj)",
+  "replace": "judged := silosWith(silos, nil)",
+  "mutation": "a silo's new labels are not what the leased-port check sees",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a silo that newly joins a leased ingress backend is judged on the labels being written"
  }
 ]

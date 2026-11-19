@@ -218,6 +218,31 @@ func TestASelectorOrIngressBackendCanLoosen(t *testing.T) {
 	if exposureLoosened(opened, retargetedPort, silos, []*v1.Service{opened}, []*v1.Ingress{early}) {
 		t.Fatal("a service whose selector is unchanged is not judged again for the Ingress")
 	}
+
+	bySet := cloneOf(t, lb)
+	bySet.Spec.Selector = map[string]string{v1.LabelSiloSet: "pool"}
+	named := &v1.SiloSet{ObjectMeta: meta.ObjectMeta{Name: "pool", Namespace: "d"},
+		Spec: v1.SiloSetSpec{Template: v1.SiloTemplate{Labels: map[string]string{"app": "web"}}}}
+	if !exposureLoosened(nil, named, nil, []*v1.Service{bySet}, nil) {
+		t.Fatal("a SiloSet whose name a load balancer selects is a loosening")
+	}
+	otherSet := cloneOf(t, named)
+	otherSet.Name = "other"
+	if exposureLoosened(nil, otherSet, nil, []*v1.Service{bySet}, nil) {
+		t.Fatal("a SiloSet a load balancer does not name needs no extra permission")
+	}
+
+	plainSvc := &v1.Service{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "d"},
+		Spec: v1.ServiceSpec{Type: v1.ServiceClusterIP, Selector: map[string]string{"app": "pay"},
+			Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "debug"}}}}
+	namedIng := &v1.Ingress{ObjectMeta: meta.ObjectMeta{Name: "named", Namespace: "d"},
+		Spec: v1.IngressSpec{Rules: []v1.IngressRule{{Path: "/", Service: v1.IngressTarget{Name: "api", Port: "http"}}}}}
+	if !exposureLoosened(web, joined, silos, []*v1.Service{plainSvc}, []*v1.Ingress{namedIng}) {
+		t.Fatal("labels that newly join a service an Ingress names, on a leased port, are a loosening")
+	}
+	if exposureLoosened(web, joined, silos, []*v1.Service{plainSvc}, nil) {
+		t.Fatal("joining a ClusterIP service an Ingress does not name needs no extra permission")
+	}
 }
 
 func TestAnEditorNeedsExposePublicToLoosenOutsideReach(t *testing.T) {
@@ -380,6 +405,31 @@ func TestAnEditorNeedsExposePublicToLoosenOutsideReach(t *testing.T) {
 	gotSvc.Spec.Selector = map[string]string{"app": "hook"}
 	if err := ed.Update(ctx, &gotSvc); codeOf(err) != http.StatusForbidden || !strings.Contains(err.Error(), "expose-public") {
 		t.Fatalf("a selector change onto a leased port an Ingress names: %v, want 403", err)
+	}
+
+	must(comp.Create(ctx, &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "by-set", Namespace: "web3"},
+		Spec: v1.ServiceSpec{Type: v1.ServiceLoadBalancer, LoadBalancerClass: "linode-nodebalancer",
+			Selector: map[string]string{v1.LabelSiloSet: "byname"}, Ports: []v1.ServicePortSpec{{Name: "http", Port: 80}}}}))
+	byName := &v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: "byname", Namespace: "web3"},
+		Spec: v1.SiloSetSpec{Instances: 1, Template: v1.SiloTemplate{
+			Labels:   map[string]string{"app": "web"},
+			SiloSpec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}},
+		}}}
+	if err := ed.Create(ctx, byName); codeOf(err) != http.StatusForbidden || !strings.Contains(err.Error(), "expose-public") {
+		t.Fatalf("a SiloSet whose name a load balancer selects: %v, want 403", err)
+	}
+
+	must(comp.Create(ctx, &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "plain", Namespace: "web3"},
+		Spec: v1.ServiceSpec{Type: v1.ServiceClusterIP, Selector: map[string]string{"app": "joined"},
+			Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "debug"}}}}))
+	must(comp.Create(ctx, &v1.Ingress{TypeMeta: tm("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "plain-in", Namespace: "web3"},
+		Spec: v1.IngressSpec{IngressClass: "office", Hosts: []string{"app.example.com"}, TLS: v1.IngressTLS{None: true},
+			Rules: []v1.IngressRule{{Path: "/plain", Service: v1.IngressTarget{Name: "plain", Port: "http"}}}}}))
+	var hook v1.Silo
+	must(ed.Get(ctx, "Silo", "web3", "hook", &hook))
+	hook.Labels = map[string]string{"app": "joined"}
+	if err := ed.Update(ctx, &hook); codeOf(err) != http.StatusForbidden || !strings.Contains(err.Error(), "expose-public") {
+		t.Fatalf("labels that newly join a service an Ingress names: %v, want 403", err)
 	}
 }
 

@@ -81,7 +81,7 @@ func exposureLoosened(prev, obj meta.Object, silos []*v1.Silo, svcs []*v1.Servic
 			return true
 		}
 	}
-	if siloNewlyOnBalancer(prev, obj, svcs) { // a load balancer's selector newly matches this silo or set
+	if siloNewlyOnBalancer(prev, obj, silos, svcs, ings) { // a load balancer's selector newly matches this silo or set
 		return true
 	}
 	if serviceLoosened(prev, obj, silos) { // a load balancer opens more, or its selector matches a new silo
@@ -202,7 +202,7 @@ func sourceHeld(old []string, np netip.Prefix) bool {
 	return false
 }
 
-func siloNewlyOnBalancer(prev, obj meta.Object, svcs []*v1.Service) bool {
+func siloNewlyOnBalancer(prev, obj meta.Object, silos []*v1.Silo, svcs []*v1.Service, ings []*v1.Ingress) bool {
 	nextLabels, ok := selectorLabels(obj)
 	if !ok {
 		return false
@@ -211,25 +211,72 @@ func siloNewlyOnBalancer(prev, obj meta.Object, svcs []*v1.Service) bool {
 	if prev != nil {
 		oldLabels, _ = selectorLabels(prev)
 	}
+	judged := silosWith(silos, obj)
 	for _, sv := range svcs {
-		if sv.Spec.Type != v1.ServiceLoadBalancer {
+		if sv.DeletionTimestamp != nil {
 			continue
 		}
-		if v1.Selects(sv.Spec.Selector, nextLabels) && !v1.Selects(sv.Spec.Selector, oldLabels) { // this silo's or set's labels newly match a load balancer
+		if !(v1.Selects(sv.Spec.Selector, nextLabels) && !v1.Selects(sv.Spec.Selector, oldLabels)) {
+			continue
+		}
+		if sv.Spec.Type == v1.ServiceLoadBalancer { // this silo's or set's labels newly match a load balancer
+			return true
+		}
+		if ingressNamesLeased(sv, judged, ings) { // a plain service an ingress already names, on a leased port
 			return true
 		}
 	}
 	return false
 }
 
-// selectorLabels are the labels a load balancer matches: a Silo's own, or a SiloSet's template
-// (the labels its instances carry).
+// silosWith is silos with the silo being written in place of the stored copy, so a lease and
+// the new labels are what the check sees.
+func silosWith(silos []*v1.Silo, obj meta.Object) []*v1.Silo {
+	s, ok := obj.(*v1.Silo)
+	if !ok {
+		return silos
+	}
+	out := append([]*v1.Silo{}, silos...)
+	for i, cur := range out {
+		if cur.Namespace == s.Namespace && cur.Name == s.Name {
+			out[i] = s
+			return out
+		}
+	}
+	return append(out, s)
+}
+
+// ingressNamesLeased reports whether an Ingress already names sv and that backend is a leased port.
+func ingressNamesLeased(sv *v1.Service, silos []*v1.Silo, ings []*v1.Ingress) bool {
+	for _, ing := range ings {
+		if ing.Namespace != sv.Namespace || ing.DeletionTimestamp != nil {
+			continue
+		}
+		for _, rule := range ing.Spec.Rules {
+			if rule.Service.Name != sv.Name {
+				continue
+			}
+			if backendLeased(sv.Namespace, rule.Service, silos, []*v1.Service{sv}) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// selectorLabels are the labels a service matches: a Silo's own, or a SiloSet's template plus
+// the set's own name (the labels its instances carry).
 func selectorLabels(obj meta.Object) (map[string]string, bool) {
 	switch o := obj.(type) {
 	case *v1.Silo:
 		return o.Labels, true
 	case *v1.SiloSet:
-		return o.Spec.Template.Labels, true // instances carry the template's labels
+		labels := map[string]string{}
+		for k, v := range o.Spec.Template.Labels { // instances carry the template's labels
+			labels[k] = v
+		}
+		labels[v1.LabelSiloSet] = o.Name
+		return labels, true
 	default:
 		return nil, false
 	}
