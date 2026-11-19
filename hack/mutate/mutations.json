@@ -4976,8 +4976,8 @@
   "id": "G-767",
   "guard": "a kept volume's detach is finished before it is attached again",
   "file": "internal/controllers/provider/volumes.go",
-  "find": "finishingDetach := vs.AttachedTo == h.Name && (wasKept || strings.HasPrefix(priorMessage, \"detaching from \"))",
-  "replace": "finishingDetach := false && vs.AttachedTo == h.Name && (wasKept || strings.HasPrefix(priorMessage, \"detaching from \"))",
+  "find": "finishingDetach := vs.AttachedTo == h.Name && detachStarted && !vs.Mounted",
+  "replace": "finishingDetach := false && vs.AttachedTo == h.Name && detachStarted && !vs.Mounted",
   "mutation": "a device named during a detach is treated as attached",
   "packages": [
    "./internal/controllers/provider"
