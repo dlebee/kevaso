@@ -310,7 +310,15 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 		}
 		dnsOn.keep(ctx, DNSListeners(me), func(addr string, from names.Asker) *DNS {
 			return &DNS{Listen: addr, From: from, View: nameView, Log: log,
-				SiloNamespace: func(a netip.Addr) (string, bool) { return boundNamespace(hostName, current(), loaded, a) }}
+				SiloNamespace: func(a netip.Addr) (string, bool) { return boundNamespace(hostName, current(), loaded, a) },
+				HasGrant: func(a netip.Addr) bool {
+					for _, s := range current() {
+						if s.Status.SiloIP == a.String() && s.DeletionTimestamp == nil {
+							return len(v1.GrantsFor(s, currentGrants())) > 0
+						}
+					}
+					return false
+				}}
 		})
 		if !isHeld { // no address added or removed either
 			syncHostAddresses(ctx, hostName, me, all, log)

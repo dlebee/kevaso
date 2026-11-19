@@ -100,7 +100,8 @@ The resolver is `internal/names.Resolve` (pure, table-tested); `internal/worker/
 
 - Grammar, under the cluster's suffix: `SERVICE.NAMESPACE` (the plain name),
   `SERVICE.NAMESPACE.NETWORK`, `HOST.NETWORK`; short names `SERVICE` and `SERVICE.NAMESPACE` from a
-  silo only, and only when they name a service (so `example.com` is still forwarded). `mesh`,
+  silo only, and only when they name a service (so `example.com` is still forwarded, when that silo
+  has a grant). `mesh`,
   `internal` and `external` can't be namespace names (admission), which keeps the grammar
   unambiguous.
 - Answers: mesh, the silo IP (a `Service`: its cluster IP); internal/external, the host's address
@@ -113,7 +114,9 @@ The resolver is `internal/names.Resolve` (pure, table-tested); `internal/worker/
   DNS plugin's job.
 - Who may resolve what (refused names get REFUSED, saying nothing about existence): a silo, plain
   and short service names; a host (the mesh), everything; a machine on the network, internal and
-  external names; anyone else, external names. Only silos' other names are forwarded upstream.
+  external names; anyone else, external names. A silo's name outside the cluster's zone is
+  forwarded upstream only when that silo has a grant. A silo with no grant is refused the forward;
+  names in the zone (silos, services) are still answered.
 - **Where it listens.** The asker is known by where the question arrives: the silos' gateway
   (`10.64.0.1:53`, the asking silo's namespace from its source address; a source that isn't a
   silo is refused), the host's mesh IP (hosts), and, **off unless the operator lists them in
