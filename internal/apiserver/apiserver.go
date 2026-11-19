@@ -293,7 +293,7 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.write(ctx, w, r, t, s.create, http.StatusCreated)
 	case r.Method == http.MethodPut && t.name != "":
 		s.write(ctx, w, r, t, s.update, http.StatusOK)
-	case r.Method == http.MethodDelete && t.name != "":
+	case r.Method == http.MethodDelete && t.name != "" && !t.status: // a status subresource is not deleted
 		s.delete(ctx, w, r, t)
 	default:
 		writeErr(w, errf(http.StatusMethodNotAllowed, "MethodNotAllowed", "%s %s", r.Method, r.URL.Path))

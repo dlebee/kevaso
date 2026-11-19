@@ -4515,5 +4515,17 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a VM disk download is capped at disk.size, or at the default disk when none is stated; zero is that default"
+ },
+ {
+  "id": "G-740",
+  "guard": "DELETE of a status path is refused",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "case r.Method == http.MethodDelete && t.name != \"\" && !t.status: // a status subresource is not deleted",
+  "replace": "case r.Method == http.MethodDelete && t.name != \"\": // a status subresource is not deleted",
+  "mutation": "DELETE of a status path deletes the object",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a status subresource cannot be deleted"
  }
 ]
