@@ -243,6 +243,22 @@ func TestASelectorOrIngressBackendCanLoosen(t *testing.T) {
 	if exposureLoosened(web, joined, silos, []*v1.Service{plainSvc}, nil) {
 		t.Fatal("joining a ClusterIP service an Ingress does not name needs no extra permission")
 	}
+
+	lease := v1.SiloSpec{Ports: []v1.SiloPort{{Name: "debug", Port: 9229}},
+		Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "debug", HostPort: []string{v1.NetworkExternal}, Lease: &v1.PortLease{}}}}}
+	inst := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "pool-0", Namespace: "d", Labels: map[string]string{"app": "web", v1.LabelSiloSet: "pool"}}, Spec: lease}
+	setJoin := &v1.SiloSet{ObjectMeta: meta.ObjectMeta{Name: "pool", Namespace: "d"},
+		Spec: v1.SiloSetSpec{Template: v1.SiloTemplate{Labels: map[string]string{"app": "web"}, SiloSpec: lease}}}
+	setJoined := cloneOf(t, setJoin)
+	setJoined.Spec.Template.Labels = map[string]string{"app": "pay"}
+	if !exposureLoosened(setJoin, setJoined, []*v1.Silo{inst}, []*v1.Service{plainSvc}, []*v1.Ingress{namedIng}) {
+		t.Fatal("a SiloSet whose template labels newly join a service an Ingress names, on a leased port, is a loosening")
+	}
+	setOther := cloneOf(t, setJoin)
+	setOther.Spec.Template.Labels = map[string]string{"app": "other"}
+	if exposureLoosened(setJoin, setOther, []*v1.Silo{inst}, []*v1.Service{plainSvc}, []*v1.Ingress{namedIng}) {
+		t.Fatal("template labels that join no service an Ingress names need no extra permission")
+	}
 }
 
 func TestAnEditorNeedsExposePublicToLoosenOutsideReach(t *testing.T) {
@@ -430,6 +446,32 @@ func TestAnEditorNeedsExposePublicToLoosenOutsideReach(t *testing.T) {
 	hook.Labels = map[string]string{"app": "joined"}
 	if err := ed.Update(ctx, &hook); codeOf(err) != http.StatusForbidden || !strings.Contains(err.Error(), "expose-public") {
 		t.Fatalf("labels that newly join a service an Ingress names: %v, want 403", err)
+	}
+
+	// The set's stored instance still has the old labels. The template labels being written
+	// are what join the service.
+	leasedSpec := v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
+		Ports:   []v1.SiloPort{{Name: "debug", Port: 9229}},
+		Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "debug", HostPort: []string{v1.NetworkExternal}, Lease: &v1.PortLease{}}}}}
+	must(comp.Create(ctx, &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "leased-0", Namespace: "web3", Labels: map[string]string{"app": "web", v1.LabelSiloSet: "leased"}}, Spec: leasedSpec}))
+	must(comp.Create(ctx, &v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: "leased", Namespace: "web3"},
+		Spec: v1.SiloSetSpec{Instances: 1, Template: v1.SiloTemplate{Labels: map[string]string{"app": "web"}, SiloSpec: leasedSpec}}}))
+	must(comp.Create(ctx, &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "setplain", Namespace: "web3"},
+		Spec: v1.ServiceSpec{Type: v1.ServiceClusterIP, Selector: map[string]string{"app": "setjoin"},
+			Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "debug"}}}}))
+	must(comp.Create(ctx, &v1.Ingress{TypeMeta: tm("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "setplain-in", Namespace: "web3"},
+		Spec: v1.IngressSpec{IngressClass: "office", Hosts: []string{"app.example.com"}, TLS: v1.IngressTLS{None: true},
+			Rules: []v1.IngressRule{{Path: "/set", Service: v1.IngressTarget{Name: "setplain", Port: "http"}}}}}))
+	var gotLeased v1.SiloSet
+	must(ed.Get(ctx, "SiloSet", "web3", "leased", &gotLeased))
+	gotLeased.Spec.Template.Labels = map[string]string{"app": "quiet"}
+	if err := ed.Update(ctx, &gotLeased); err != nil {
+		t.Fatalf("template labels that join no service an ingress names: %v", err)
+	}
+	must(ed.Get(ctx, "SiloSet", "web3", "leased", &gotLeased))
+	gotLeased.Spec.Template.Labels = map[string]string{"app": "setjoin"}
+	if err := ed.Update(ctx, &gotLeased); codeOf(err) != http.StatusForbidden || !strings.Contains(err.Error(), "expose-public") {
+		t.Fatalf("a SiloSet whose template labels newly join a service an Ingress names: %v, want 403", err)
 	}
 }
 

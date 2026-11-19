@@ -229,21 +229,45 @@ func siloNewlyOnBalancer(prev, obj meta.Object, silos []*v1.Silo, svcs []*v1.Ser
 	return false
 }
 
-// silosWith is silos with the silo being written in place of the stored copy, so a lease and
-// the new labels are what the check sees.
+// silosWith is silos with the object being written in place of the stored copy, so a lease and
+// the new labels are what the check sees. A SiloSet's instances are seen with the template
+// labels being written: the stored ones still carry the previous labels.
 func silosWith(silos []*v1.Silo, obj meta.Object) []*v1.Silo {
-	s, ok := obj.(*v1.Silo)
-	if !ok {
+	switch o := obj.(type) {
+	case *v1.Silo:
+		out := append([]*v1.Silo{}, silos...)
+		for i, cur := range out {
+			if cur.Namespace == o.Namespace && cur.Name == o.Name {
+				out[i] = o
+				return out
+			}
+		}
+		return append(out, o)
+	case *v1.SiloSet:
+		return silosWithSetTemplate(silos, o)
+	default:
 		return silos
 	}
+}
+
+// silosWithSetTemplate is silos with this set's instances carrying the template labels being
+// written. A service an ingress names is judged on those labels.
+func silosWithSetTemplate(silos []*v1.Silo, set *v1.SiloSet) []*v1.Silo {
+	labels := map[string]string{}
+	for k, v := range set.Spec.Template.Labels {
+		labels[k] = v
+	}
+	labels[v1.LabelSiloSet] = set.Name
 	out := append([]*v1.Silo{}, silos...)
 	for i, cur := range out {
-		if cur.Namespace == s.Namespace && cur.Name == s.Name {
-			out[i] = s
-			return out
+		if cur.Namespace != set.Namespace || cur.Labels[v1.LabelSiloSet] != set.Name {
+			continue
 		}
+		cp := *cur
+		cp.Labels = labels // the template labels being written
+		out[i] = &cp
 	}
-	return append(out, s)
+	return out
 }
 
 // ingressNamesLeased reports whether an Ingress already names sv and that backend is a leased port.
