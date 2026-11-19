@@ -4,7 +4,9 @@
 //
 // Nothing is replaced to "heal": an instance that breaks is restarted in place by its host's
 // agent. Scale-in follows the set's policy (NewestFirst or OldestFirst, the ones not Ready first)
-// and never removes a protected instance (kevaso.com/protected=true). Standby instances are booted
+// and never removes a protected instance (kevaso.com/protected=true). A template with volumes
+// keeps the data on a not-Ready instance: the surge instances, the newest beyond the desired
+// count, are removed first. Standby instances are booted
 // and idle; when the set needs more instances it takes a standby one first (a warm pool), then
 // refills it.
 //
@@ -157,12 +159,42 @@ func Decide(set *v1.SiloSet, instances []*v1.Silo) Plan {
 		spare = append(spare, inst)
 	}
 
-	// Too many: by policy, the ones not Ready first, never protected ones.
+	// Too many: by policy, the ones not Ready first, never protected ones. A template with
+	// volumes keeps the data on a not-Ready instance: the surge instances, the newest beyond
+	// the desired count, go first, and a standby trim stays not-Ready-first.
 	blocked := 0
-	order := func(l []*v1.Silo) {
+	volumes := len(set.Spec.Template.Volumes) > 0
+	later := func(a, b *v1.Silo) bool {
+		ta, tb := created(a), created(b)
+		if !ta.Equal(tb) {
+			return ta.After(tb)
+		}
+		return v1.InstanceIndex(set.Name, a.Name) > v1.InstanceIndex(set.Name, b.Name)
+	}
+	beyond := func(s *v1.Silo, l []*v1.Silo) bool {
+		extras := len(l) - set.Spec.Instances
+		if extras <= 0 {
+			return false
+		}
+		newer := 0
+		for _, o := range l {
+			if o.Name == s.Name {
+				continue
+			}
+			if later(o, s) {
+				newer++
+			}
+		}
+		return newer < extras
+	}
+	order := func(l []*v1.Silo, keepData bool) {
 		sort.SliceStable(l, func(i, j int) bool {
 			a, b := l[i], l[j]
-			if Ready(a) != Ready(b) {
+			if keepData {
+				if ba, bb := beyond(a, l), beyond(b, l); ba != bb {
+					return ba
+				}
+			} else if Ready(a) != Ready(b) {
 				return !Ready(a)
 			}
 			ta, tb := created(a), created(b)
@@ -179,12 +211,12 @@ func Decide(set *v1.SiloSet, instances []*v1.Silo) Plan {
 			return ia > ib
 		})
 	}
-	trim := func(l []*v1.Silo, keep int) []*v1.Silo {
+	trim := func(l []*v1.Silo, keep int, keepData bool) []*v1.Silo {
 		if len(l) <= keep {
 			return l
 		}
 		cands := append([]*v1.Silo(nil), l...)
-		order(cands)
+		order(cands, keepData)
 		gone := map[string]bool{}
 		for _, s := range cands {
 			if len(l)-len(gone) <= keep {
@@ -205,8 +237,8 @@ func Decide(set *v1.SiloSet, instances []*v1.Silo) Plan {
 		}
 		return out
 	}
-	active = trim(active, want)
-	spare = trim(spare, set.Spec.Standby)
+	active = trim(active, want, volumes)
+	spare = trim(spare, set.Spec.Standby, false)
 
 	// Rolling out: instances not Ready already can go at once; Ready ones while enough stay Ready.
 	minReady := set.Spec.Instances - unavailable
