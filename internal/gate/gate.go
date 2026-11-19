@@ -151,7 +151,8 @@ type Gate struct {
 	// Silo finds the policy of the local silo with this address (false: not one of ours).
 	Silo func(ip netip.Addr) (Policy, bool)
 	// Injections gives the headers to add for a silo, by host (fetched from the control plane).
-	Injections func(ctx context.Context, siloKey string) (map[string]Injection, error)
+	// One host can carry several headers.
+	Injections func(ctx context.Context, siloKey string) (map[string][]Injection, error)
 	// Ask, for an injection that needs a person's yes, waits until this request may have the
 	// secret: nil once approved, an error when denied, expired or not possible.
 	Ask func(ctx context.Context, siloKey, secret, host, method, path string) error
@@ -398,6 +399,14 @@ func closeWrite(c net.Conn) {
 	}
 }
 
+// setInjectedHeaders replaces each injected header. The silo's own value for that header never goes out.
+func setInjectedHeaders(h http.Header, ins []Injection) {
+	for _, in := range ins {
+		h.Del(in.Header)
+		h.Set(in.Header, in.Value)
+	}
+}
+
 // inject ends TLS for sni and proxies each request to the real host with the secret added.
 func (g *Gate) inject(ctx context.Context, c net.Conn, hello []byte, p Policy, sni string, dst netip.AddrPort) {
 	inj, failed := g.Injections(ctx, p.Key)
@@ -406,8 +415,8 @@ func (g *Gate) inject(ctx context.Context, c net.Conn, hello []byte, p Policy, s
 		// answered with why there is no secret, instead of a connection closed with nothing said.
 		g.log("gate: BLOCKED %s → %s: the secret can't be injected: %v", p.Key, sni, failed)
 	}
-	in, ok := inj[sni]
-	if failed == nil && !ok { // the grant names it, but the secret isn't there (no value yet, or not allowed)
+	ins := inj[sni]
+	if failed == nil && len(ins) == 0 { // the grant names it, but the secret isn't there (no value yet, or not allowed)
 		g.log("gate: BLOCKED %s → %s: no secret to inject", p.Key, sni)
 		return
 	}
@@ -437,8 +446,7 @@ func (g *Gate) inject(ctx context.Context, c net.Conn, hello []byte, p Policy, s
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.Out.URL.Scheme, r.Out.URL.Host, r.Out.Host = "https", target, sni
-			r.Out.Header.Del(in.Header) // the silo's own never goes out
-			r.Out.Header.Set(in.Header, in.Value)
+			setInjectedHeaders(r.Out.Header, ins)
 		},
 		Transport: transport,
 		ErrorLog:  nil,
@@ -462,7 +470,10 @@ func (g *Gate) inject(ctx context.Context, c net.Conn, hello []byte, p Policy, s
 			http.Error(w, "egress gate: the secret for "+sni+" can't be injected: "+failed.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		if in.Approval {
+		for _, in := range ins {
+			if !in.Approval {
+				continue
+			}
 			var err error
 			if g.Ask == nil {
 				err = errors.New("this gate can't ask for approvals")
@@ -475,7 +486,11 @@ func (g *Gate) inject(ctx context.Context, c net.Conn, hello []byte, p Policy, s
 				return
 			}
 		}
-		g.log("gate: ALLOWED %s %s %s%s (%s injected)", p.Key, r.Method, sni, r.URL.Path, in.Header)
+		var headers []string
+		for _, in := range ins {
+			headers = append(headers, in.Header)
+		}
+		g.log("gate: ALLOWED %s %s %s%s (%s injected)", p.Key, r.Method, sni, r.URL.Path, strings.Join(headers, ", "))
 		proxy.ServeHTTP(w, r)
 	})
 	srv := &http.Server{Handler: h, ReadHeaderTimeout: 30 * time.Second}

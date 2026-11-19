@@ -26,7 +26,7 @@ func TestAHeldHostInjectsOnlyWhatItWasGivenBefore(t *testing.T) {
 	clock.add(5 * time.Minute)
 	e.invalidate() // a Secret or Grant "changed" in the older control plane's lists
 	got, err := e.injections(ctx, "dev/claude-1")
-	if err != nil || got["api.allowed.test"].Value != "Bearer sk-1" {
+	if err != nil || got["api.allowed.test"][0].Value != "Bearer sk-1" {
 		t.Fatalf("held: %v %v, want what was given before the hold", got, err)
 	}
 	if b.calls.Load() != calls {
@@ -47,7 +47,7 @@ func TestAHeldHostInjectsOnlyWhatItWasGivenBefore(t *testing.T) {
 	}
 	held.Store(false)
 	b.mode.Store("up")
-	if got, err := e.injections(ctx, "dev/claude-1"); err != nil || got["api.allowed.test"].Value != "Bearer sk-1" {
+	if got, err := e.injections(ctx, "dev/claude-1"); err != nil || got["api.allowed.test"][0].Value != "Bearer sk-1" {
 		t.Fatalf("the hold ended: %v %v", got, err)
 	}
 }

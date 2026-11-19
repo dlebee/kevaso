@@ -44,7 +44,7 @@ type egress struct {
 type cachedInjections struct {
 	uid    string
 	at     time.Time // when the control plane gave them
-	byHost map[string]gate.Injection
+	byHost map[string][]gate.Injection
 	said   bool // the log has said they are injected without the control plane
 }
 
@@ -174,7 +174,7 @@ func (e *egress) invalidate() {
 	e.mu.Unlock()
 }
 
-func (e *egress) injections(ctx context.Context, key string) (map[string]gate.Injection, error) {
+func (e *egress) injections(ctx context.Context, key string) (map[string][]gate.Injection, error) {
 	var silo *v1.Silo
 	for _, s := range e.silos() {
 		if s.Namespace+"/"+s.Name == key && s.Status.Host == e.hostName {
@@ -234,9 +234,21 @@ func (e *egress) injections(ctx context.Context, key string) (map[string]gate.In
 		}
 		return nil, fmt.Errorf("%s", resp.Error)
 	}
-	byHost := map[string]gate.Injection{}
+	byHost := map[string][]gate.Injection{}
 	for _, in := range resp.Injections {
-		byHost[in.Host] = gate.Injection{Header: in.Header, Value: in.Value, Approval: in.Approval, Secret: in.Secret}
+		slot := byHost[in.Host]
+		replaced := false
+		for i := range slot {
+			if slot[i].Header == in.Header {
+				slot[i] = gate.Injection{Header: in.Header, Value: in.Value, Approval: in.Approval, Secret: in.Secret}
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			slot = append(slot, gate.Injection{Header: in.Header, Value: in.Value, Approval: in.Approval, Secret: in.Secret})
+		}
+		byHost[in.Host] = slot
 	}
 	e.mu.Lock()
 	if e.injected == nil {

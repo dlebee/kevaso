@@ -56,8 +56,8 @@ func newNameRig(t *testing.T, own []netip.Prefix, egress ...v1.EgressRule) *name
 		CA:       ca,
 		Silo:     func(ip netip.Addr) (Policy, bool) { return pol, ip.IsLoopback() },
 		Internal: func() []netip.Prefix { return own },
-		Injections: func(context.Context, string) (map[string]Injection, error) {
-			return map[string]Injection{"api.allowed.test": {Header: "Authorization", Value: "Bearer sk-test-123", Secret: "key"}}, nil
+		Injections: func(context.Context, string) (map[string][]Injection, error) {
+			return map[string][]Injection{"api.allowed.test": {{Header: "Authorization", Value: "Bearer sk-test-123", Secret: "key"}}}, nil
 		},
 		OrigDst: func(net.Conn) (netip.AddrPort, error) { return netip.MustParseAddrPort("203.0.113.9:443"), nil },
 		Resolve: func(context.Context, string) ([]netip.Addr, error) {
