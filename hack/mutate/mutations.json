@@ -5310,23 +5310,23 @@
  },
  {
   "id": "G-809",
-  "guard": "a kevaso.com finalizer is kept before the object is deleted",
+  "guard": "a kevaso.com finalizer stays on a write that leaves it out",
   "file": "internal/apiserver/apiserver.go",
-  "find": "if why := controllerFinalizerKept(ctx, oldMeta.Finalizers, nm.Finalizers); why != \"\" { // a kevaso.com finalizer, before or during delete",
-  "replace": "if oldMeta.DeletionTimestamp == nil || false { /* not before delete */ } else if why := controllerFinalizerKept(ctx, oldMeta.Finalizers, nm.Finalizers); why != \"\" { // a kevaso.com finalizer, before or during delete",
-  "mutation": "a kevaso.com finalizer can be removed before the object is deleted",
+  "find": "nm.Finalizers = keepControllerFinalizers(ctx, oldMeta.Finalizers, nm.Finalizers) // a kevaso.com finalizer stays",
+  "replace": "nm.Finalizers = nm.Finalizers // a kevaso.com finalizer stays",
+  "mutation": "a write that leaves out a kevaso.com finalizer drops it",
   "packages": [
    "./internal/apiserver"
   ],
-  "protects": "a kevaso.com finalizer stays until its controller removes it, before the delete too"
+  "protects": "a kevaso.com finalizer stays until its controller removes it"
  },
  {
   "id": "G-810",
-  "guard": "a kevaso.com finalizer on a defined object is kept before it is deleted",
+  "guard": "a kevaso.com finalizer on a defined object stays on a write that leaves it out",
   "file": "internal/apiserver/kinds.go",
-  "find": "if why := controllerFinalizerKept(ctx, om.Finalizers, nm.Finalizers); why != \"\" { // a kevaso.com finalizer, before or during delete",
-  "replace": "if om.DeletionTimestamp == nil || false { /* not before delete */ } else if why := controllerFinalizerKept(ctx, om.Finalizers, nm.Finalizers); why != \"\" { // a kevaso.com finalizer, before or during delete",
-  "mutation": "a kevaso.com finalizer on a defined object can be removed before it is deleted",
+  "find": "nm.Finalizers = keepControllerFinalizers(ctx, om.Finalizers, nm.Finalizers) // a kevaso.com finalizer stays",
+  "replace": "nm.Finalizers = nm.Finalizers // a kevaso.com finalizer stays",
+  "mutation": "a write that leaves out a defined object's kevaso.com finalizer drops it",
   "packages": [
    "./internal/apiserver"
   ],

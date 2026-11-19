@@ -3,9 +3,7 @@ package apiserver
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,8 +16,8 @@ import (
 )
 
 // A kevaso.com finalizer stays until kevasod removes it, before the delete and during it.
-// The admin socket may clear a stuck one. A cluster-admin user may not. A finalizer that is
-// not the controller's, and kevaso.com/plugin-uninstall, still go when that user removes them.
+// A write that leaves it out keeps it. The admin socket may clear a stuck one. A finalizer
+// that is not the controller's, and kevaso.com/plugin-uninstall, still go when a user removes them.
 func TestAControllerFinalizerStaysUntilItsControllerRemovesIt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -75,11 +73,11 @@ func TestAControllerFinalizerStaysUntilItsControllerRemovesIt(t *testing.T) {
 	if err := comp.Get(ctx, "Silo", "d", "early", early); err != nil {
 		t.Fatal(err)
 	}
-	if err := clear(user, early); codeOf(err) != http.StatusForbidden || !strings.Contains(err.Error(), "kevaso.com/volumes") {
-		t.Fatalf("before delete: %v, want 403", err)
+	if err := clear(user, early); err != nil {
+		t.Fatalf("a write that leaves out the finalizer, before delete: %v", err)
 	}
-	if err := comp.Get(ctx, "Silo", "d", "early", early); err != nil || len(early.Finalizers) != 1 || early.DeletionTimestamp != nil {
-		t.Fatalf("still held before delete: %v %+v", err, early.Finalizers)
+	if err := comp.Get(ctx, "Silo", "d", "early", early); err != nil || len(early.Finalizers) != 1 || early.Finalizers[0] != "kevaso.com/volumes" || early.DeletionTimestamp != nil {
+		t.Fatalf("kept before delete: %v finalizers %v timestamp %v", err, early.Finalizers, early.DeletionTimestamp)
 	}
 	if err := clear(admin, early); err != nil {
 		t.Fatalf("admin socket before delete: %v", err)
@@ -89,11 +87,11 @@ func TestAControllerFinalizerStaysUntilItsControllerRemovesIt(t *testing.T) {
 	}
 
 	volumes := hold("db", "kevaso.com/volumes")
-	if err := clear(user, volumes); codeOf(err) != http.StatusForbidden || !strings.Contains(err.Error(), "kevaso.com/volumes") {
-		t.Fatalf("cluster-admin removing kevaso.com/volumes: %v, want 403", err)
+	if err := clear(user, volumes); err != nil {
+		t.Fatalf("a write that leaves out the finalizer, during delete: %v", err)
 	}
-	if err := comp.Get(ctx, "Silo", "d", "db", volumes); err != nil || len(volumes.Finalizers) != 1 || volumes.Finalizers[0] != "kevaso.com/volumes" {
-		t.Fatalf("after the refused removal: %v %+v", err, volumes.Finalizers)
+	if err := comp.Get(ctx, "Silo", "d", "db", volumes); err != nil || len(volumes.Finalizers) != 1 || volumes.Finalizers[0] != "kevaso.com/volumes" || volumes.DeletionTimestamp == nil {
+		t.Fatalf("kept during delete: %v finalizers %v timestamp %v", err, volumes.Finalizers, volumes.DeletionTimestamp)
 	}
 	if err := clear(admin, volumes); err != nil {
 		t.Fatalf("admin socket during delete: %v", err)
@@ -116,6 +114,73 @@ func TestAControllerFinalizerStaysUntilItsControllerRemovesIt(t *testing.T) {
 	}
 	if err := comp.Get(ctx, "Silo", "d", "plug", plug); !client.IsNotFound(err) {
 		t.Fatalf("after removing %s: %v", v1.PluginFinalizer, err)
+	}
+
+	gone := hold("gone", "kevaso.com/volumes")
+	if err := clear(comp, gone); err != nil {
+		t.Fatalf("the controller removing its finalizer: %v", err)
+	}
+	if err := comp.Get(ctx, "Silo", "d", "gone", gone); !client.IsNotFound(err) {
+		t.Fatalf("after the controller removed it: %v", err)
+	}
+}
+
+// A second apply, after a controller has added its finalizer, changes the field and keeps the
+// finalizer. The manifest carries none. The dry run, which apply sends first, does the same.
+func TestASecondApplyKeepsAControllerFinalizer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ca, err := pki.NewCA("test", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewWithAuth(store.NewMemory(0), clock.Real{}, &Auth{CA: ca})
+	if err != nil {
+		t.Fatal(err)
+	}
+	comp, done := srv.InProcess()
+	defer done()
+	user, doneUser := srv.InProcessAs(pki.Identity{Type: "user", Name: "ada", Role: "cluster-admin"})
+	defer doneUser()
+	tm := func(k string) meta.TypeMeta { return meta.TypeMeta{APIVersion: v1.APIVersion, Kind: k} }
+	if err := comp.Create(ctx, &v1.Namespace{TypeMeta: tm("Namespace"), ObjectMeta: meta.ObjectMeta{Name: "d"}}); err != nil {
+		t.Fatal(err)
+	}
+	s := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "d"},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
+	if err := comp.Create(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	s.Finalizers = []string{"kevaso.com/volumes"}
+	if err := comp.Update(ctx, s); err != nil {
+		t.Fatalf("the controller adding its finalizer: %v", err)
+	}
+	apply := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "d", ResourceVersion: s.ResourceVersion},
+		Spec: s.Spec}
+	apply.Spec.Resources.Memory = "2Gi"
+	b, err := json.Marshal(apply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trial v1.Silo
+	if err := json.Unmarshal(b, &trial); err != nil {
+		t.Fatal(err)
+	}
+	if err := user.DryRunUpdate(ctx, &trial); err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if len(trial.Finalizers) != 1 || trial.Finalizers[0] != "kevaso.com/volumes" || trial.Spec.Resources.Memory != "2Gi" {
+		t.Fatalf("dry run answer: finalizers %v memory %s", trial.Finalizers, trial.Spec.Resources.Memory)
+	}
+	var stored v1.Silo
+	if err := comp.Get(ctx, "Silo", "d", "web", &stored); err != nil || stored.Spec.Resources.Memory != "1Gi" || len(stored.Finalizers) != 1 {
+		t.Fatalf("stored after the dry run: %v memory %s finalizers %v", err, stored.Spec.Resources.Memory, stored.Finalizers)
+	}
+	if err := user.Update(ctx, apply); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if err := comp.Get(ctx, "Silo", "d", "web", &stored); err != nil || stored.Spec.Resources.Memory != "2Gi" || len(stored.Finalizers) != 1 || stored.Finalizers[0] != "kevaso.com/volumes" {
+		t.Fatalf("after apply: %v memory %s finalizers %v", err, stored.Spec.Resources.Memory, stored.Finalizers)
 	}
 }
 
@@ -157,10 +222,34 @@ func TestADefinedKindFinalizerStaysUntilItsControllerRemovesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.Finalizers = nil
-	if err := user.Update(ctx, o); codeOf(err) != http.StatusForbidden || !strings.Contains(err.Error(), "kevaso.com/db") {
-		t.Fatalf("before delete: %v, want 403", err)
+	if err := user.Update(ctx, o); err != nil {
+		t.Fatalf("a write that leaves out the finalizer: %v", err)
 	}
 	if err := comp.Get(ctx, "Database", "d", "main", o); err != nil || len(o.Finalizers) != 1 || o.Finalizers[0] != "kevaso.com/db" {
-		t.Fatalf("still held: %v %+v", err, o.Finalizers)
+		t.Fatalf("kept: %v %+v", err, o.Finalizers)
+	}
+
+	again := &v1.Unstructured{TypeMeta: meta.TypeMeta{APIVersion: "acme.dev/v1", Kind: "Database"},
+		ObjectMeta: meta.ObjectMeta{Name: "main", Namespace: "d", ResourceVersion: o.ResourceVersion, Labels: map[string]string{"tier": "a"}},
+		Fields:     map[string]any{"spec": map[string]any{}}}
+	b, err := json.Marshal(again)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trial v1.Unstructured
+	if err := json.Unmarshal(b, &trial); err != nil {
+		t.Fatal(err)
+	}
+	if err := user.DryRunUpdate(ctx, &trial); err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if len(trial.Finalizers) != 1 || trial.Finalizers[0] != "kevaso.com/db" {
+		t.Fatalf("dry run dropped the finalizer: %v", trial.Finalizers)
+	}
+	if err := user.Update(ctx, again); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if err := comp.Get(ctx, "Database", "d", "main", o); err != nil || len(o.Finalizers) != 1 || o.Finalizers[0] != "kevaso.com/db" || o.Labels["tier"] != "a" {
+		t.Fatalf("after apply: %v finalizers %v labels %v", err, o.Finalizers, o.Labels)
 	}
 }

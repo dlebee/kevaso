@@ -789,10 +789,9 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		if t.kind.HasSpec && !reflect.DeepEqual(getField(old, "Spec"), getField(next, "Spec")) {
 			nm.Generation++
 		}
-		// A kevaso.com finalizer is its controller's, before the delete and during it.
-		if why := controllerFinalizerKept(ctx, oldMeta.Finalizers, nm.Finalizers); why != "" { // a kevaso.com finalizer, before or during delete
-			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s: %s is removed only by its controller", t.key(), why)
-		}
+		// A kevaso.com finalizer is its controller's, before the delete and during it. A write
+		// that leaves it out keeps it: the caller still cannot remove it.
+		nm.Finalizers = keepControllerFinalizers(ctx, oldMeta.Finalizers, nm.Finalizers) // a kevaso.com finalizer stays
 		// Once deleting, finalizers may only be removed; when the last one goes, the object goes.
 		if oldMeta.DeletionTimestamp != nil {
 			if !isSubset(nm.Finalizers, oldMeta.Finalizers) {
@@ -873,29 +872,33 @@ func undoUncommitted(restoreVault, release func()) {
 	}
 }
 
-// controllerFinalizerKept reports the kevaso.com finalizers next drops that this caller may not
-// remove. Empty when none are dropped, or the caller is kevasod's own controllers, or the admin
-// socket (root on the control-plane host, the way a stuck finalizer is cleared by hand). A server
-// with no authentication has no identity to tell the controller from anyone else (the unit tests).
-// kevaso.com/plugin-uninstall is the uninstall command's, and that command runs as the person
-// who invoked it.
-func controllerFinalizerKept(ctx context.Context, old, next []string) string {
+// keepControllerFinalizers returns next with the stored kevaso.com finalizers this caller cannot
+// drop put back. kevasod and the admin socket may remove one (the admin socket is how a stuck
+// finalizer is cleared by hand). Anyone else keeps them, so a manifest that leaves them out and a
+// write that clears them both leave them on the object. kevaso.com/plugin-uninstall is the
+// uninstall command's, and that command runs as the person who invoked it. A server with no
+// authentication has no identity to tell the controller from anyone else (the unit tests).
+func keepControllerFinalizers(ctx context.Context, old, next []string) []string {
 	id, authed := IdentityFrom(ctx)
 	if !authed || id == Component || id == LocalAdmin { // a kevaso.com finalizer is removed by kevasod
-		return ""
+		return next
 	}
-	kept := map[string]bool{}
+	have := map[string]bool{}
 	for _, f := range next {
-		kept[f] = true
+		have[f] = true
 	}
-	var blocked []string
+	var extra []string
 	for _, f := range old {
-		if kept[f] || f == v1.PluginFinalizer || !strings.HasPrefix(f, "kevaso.com/") {
+		if have[f] || f == v1.PluginFinalizer || !strings.HasPrefix(f, "kevaso.com/") {
 			continue
 		}
-		blocked = append(blocked, f)
+		extra = append(extra, f)
+		have[f] = true
 	}
-	return strings.Join(blocked, ", ")
+	if len(extra) == 0 {
+		return next
+	}
+	return append(append([]string{}, next...), extra...)
 }
 
 // letGo reports whether next is the end of a handoff by the host it is moving from having let go:
