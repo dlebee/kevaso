@@ -131,7 +131,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return 0
 	}
 	if len(args) > 0 && args[0] == "users" {
-		if err := usersCmd(ctx, args[1:], stdout); err != nil {
+		if err := usersCmd(ctx, args[1:], stdin, stdout); err != nil {
 			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
 			return 1
 		}
@@ -571,19 +571,44 @@ func needIPs(o InitOptions) error {
 	return nil
 }
 
+// etcdPeers is where the member listens and where other members dial it. The listener binds the
+// internal address (the external address is not on the machine under 1:1 NAT). Other members
+// dial the reach address.
+func etcdPeers(o InitOptions) (listen, advertise string) {
+	if o.EtcdPeerListen != "" {
+		listen = o.EtcdPeerListen
+	} else {
+		host := o.Reach()
+		if o.InternalIP != "" {
+			host = o.InternalIP
+		}
+		listen = net.JoinHostPort(host, etcd.DefaultPeerPort)
+	}
+	advertise = listen
+	if o.Reach() != "" {
+		advertise = net.JoinHostPort(o.Reach(), etcd.DefaultPeerPort)
+	}
+	return listen, advertise
+}
+
+// etcdPeerFlags are kevasod's store flags for o.
+func etcdPeerFlags(o InitOptions) []string {
+	listen, advertise := etcdPeers(o)
+	args := []string{"--store", "etcd", "--etcd-peer-listen", listen}
+	if advertise != listen {
+		args = append(args, "--etcd-advertise-peer", advertise)
+	}
+	return args
+}
+
 // Unit is the control plane's systemd unit.
 func Unit(o InitOptions) string {
-	addr := o.Reach()
 	args := append(append([]string{"control-plane", "--name", o.Name}, o.ipArgs()...), "--cluster", o.Cluster)
 	if o.Address != o.InternalIP && o.Address != o.ExternalIP {
 		args = append(args, "--extra-name", o.Address)
 	}
 	if o.Store == "etcd" {
-		peer := o.EtcdPeerListen
-		if peer == "" {
-			peer = net.JoinHostPort(addr, etcd.DefaultPeerPort)
-		}
-		args = append(args, "--store", "etcd", "--etcd-peer-listen", peer)
+		args = append(args, etcdPeerFlags(o)...)
 	}
 	if o.Join != "" {
 		args = append(args, "--join", o.Join)

@@ -227,11 +227,7 @@ func auth(ctx context.Context, c *client.Client, o opts, stdout io.Writer) (int,
 		if err != nil {
 			return 0, err
 		}
-		resource := k.Plural
-		switch name {
-		case "status", "exec", "token":
-			resource, name = resource+"/"+name, ""
-		}
+		resource, name := canIResource(k.Plural, name)
 		q := url.Values{"verb": {o.args[1]}, "resource": {resource}, "name": {name}}
 		if k.Scope == v1.Namespaced {
 			q.Set("namespace", defaultNS(o))
@@ -250,3 +246,12 @@ func auth(ctx context.Context, c *client.Client, o opts, stdout io.Writer) (int,
 	return 0, fmt.Errorf("unknown auth command %q", o.args[0])
 }
 
+// canIResource reads RESOURCE/NAME. ssh, files, open, close and move (and status, exec, token)
+// are subresources, so silos/ssh is the terminal on a silo and not a silo named ssh.
+func canIResource(plural, name string) (string, string) {
+	switch name {
+	case "status", "exec", "token", "ssh", "files", "open", "close", "move":
+		return plural + "/" + name, ""
+	}
+	return plural, name
+}

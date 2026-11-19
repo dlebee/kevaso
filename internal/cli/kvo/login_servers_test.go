@@ -27,3 +27,19 @@ func TestLoginSplitsACommaServerList(t *testing.T) {
 	}
 }
 
+func TestCanITreatsSiloSubresources(t *testing.T) {
+	k, err := kindOf("silos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{"ssh", "files", "open", "close", "move"} {
+		res, name := canIResource(k.Plural, sub)
+		if res != k.Plural+"/"+sub || name != "" {
+			t.Fatalf("%s: resource %q name %q", sub, res, name)
+		}
+	}
+	res, name := canIResource(k.Plural, "web")
+	if res != k.Plural || name != "web" {
+		t.Fatalf("a silo name became %q %q", res, name)
+	}
+}
