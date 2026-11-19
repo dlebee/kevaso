@@ -59,7 +59,7 @@ func (g *removalOnGet) Get(ctx context.Context, key store.Key) (store.Object, er
 			if err != nil {
 				return store.Object{}, err
 			}
-			if _, err := g.Store.Create(ctx, key, data); err != nil && !errors.Is(err, store.ErrExists) {
+			if _, err := g.Create(ctx, key, data); err != nil && !errors.Is(err, store.ErrExists) {
 				return store.Object{}, err
 			}
 		}

@@ -216,7 +216,7 @@ func siloNewlyOnBalancer(prev, obj meta.Object, silos []*v1.Silo, svcs []*v1.Ser
 		if sv.DeletionTimestamp != nil {
 			continue
 		}
-		if !(v1.Selects(sv.Spec.Selector, nextLabels) && !v1.Selects(sv.Spec.Selector, oldLabels)) {
+		if !v1.Selects(sv.Spec.Selector, nextLabels) || v1.Selects(sv.Spec.Selector, oldLabels) {
 			continue
 		}
 		if sv.Spec.Type == v1.ServiceLoadBalancer { // this silo's or set's labels newly match a load balancer
