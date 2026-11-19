@@ -230,7 +230,7 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	if done, err := r.created(spec.ID); done || err != nil {
 		return err
 	}
-	img, err := r.image(ctx, spec.Image) // before the lock: a first fetch takes a while
+	img, err := r.image(ctx, spec.Image, spec.DiskBytes) // before the lock: a first fetch takes a while
 	if err != nil {
 		return err
 	}
@@ -952,13 +952,15 @@ func dialSSH(ctx context.Context, addr string, cfg *ssh.ClientConfig) (*ssh.Clie
 
 // image is the local file of an image: a built-in name's (fetched at install), or an Image
 // version's disk (URL#sha256=HEX: fetched once, checked against its hash).
-func (r *Runtime) image(ctx context.Context, image string) (string, error) {
+func (r *Runtime) image(ctx context.Context, image string, diskBytes int64) (string, error) {
 	url, sum, ok := kri.ParseDiskImage(image)
 	if !ok {
 		return imagePath(image, r.Arch)
 	}
 	dst := filepath.Join(ImagesDir, "sha256-"+sum+".img")
-	if err := Fetch(ctx, r.Host, Asset{URL: url, SHA256: sum, File: filepath.Base(dst)}, dst, 0o600); err != nil {
+	// diskBytes is the silo's disk size. A body larger than that is refused, and so is an address
+	// the disk must not be fetched from. Zero is a disk with no size: the body is not capped.
+	if err := Fetch(ctx, r.Host, Asset{URL: url, SHA256: sum, File: filepath.Base(dst), MaxBytes: diskBytes}, dst, 0o600); err != nil {
 		return "", fmt.Errorf("image %s: %w", url, err)
 	}
 	return dst, nil
@@ -974,7 +976,7 @@ func (r *Runtime) Reset(ctx context.Context, spec kri.Spec) error {
 // root disk is made afresh: the last thing before lvremove. An error from gate ends the reset with
 // the disk as it was, and is returned as is.
 func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(context.Context) error) error {
-	img, err := r.image(ctx, spec.Image)
+	img, err := r.image(ctx, spec.Image, spec.DiskBytes)
 	if err != nil {
 		return err
 	}
@@ -1037,7 +1039,7 @@ func (r *Runtime) finishRemake(ctx context.Context, id kri.ID) error {
 	if !ok || st.Remake == nil {
 		return nil
 	}
-	img, err := r.image(ctx, st.Remake.Image)
+	img, err := r.image(ctx, st.Remake.Image, st.Remake.DiskBytes)
 	if err != nil {
 		return err
 	}
