@@ -25,10 +25,14 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   agent's dial-out tunnel (hosts need no inbound port);
 - people: `kvoadm users invite bob --namespace payments` gives a one-time code; bob runs
   `kvo login SERVER --ca sha256:…` (browser sign-in; the control plane is its own OIDC issuer behind
-  its private CA, pinned by fingerprint), and tokens go to the macOS Keychain. RBAC copied from
+  its private CA, pinned by fingerprint), and tokens go to the macOS Keychain. A refresh token
+  presented again within a minute of being replaced is a race between two commands, and the session
+  stays; after that minute the session ends, and a new invite comes from an admin. RBAC copied from
   Kubernetes (Roles, ClusterRoles, bindings; built-in cluster-admin / admin / editor / viewer /
   runner), `kvo ctx`, `kvo ns`, `kvo auth can-i`, ServiceAccount tokens for CI (`kvo create token`),
-  and an audit log of every decision;
+  and an audit log of every decision. `kvo move --confirm-fenced` (and `--insist` with it) asserts
+  that the old copy is off: that needs `create` on `hosts/confirm-off`, which is cluster-scoped and
+  only cluster-admin has by default. editor and admin keep a plain move (`create` on `silos/move`);
 - many hosts: `kvoadm host add … --install worker [--region R] [--behind-nat]` sets up a worker-only
   machine that joins with a one-time token and only dials out. Hosts are on a WireGuard mesh run
   by the control plane (each its own silo subnet; boxes behind NAT reach each other through a relay,
@@ -44,7 +48,10 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   address and balancer on their own ports unless they name an `IP` or ask for a `dedicated` one.
   Its outbound address can be the host's, the service's (where the address is on the host; never a
   balancer's), or an IP of its own; `kvo describe silo` says whether in and out match, and why not. Silo-to-silo traffic is denied
-  until the receiving silo's service port names the caller in `allowFrom`; exposing publicly needs its own permission;
+  until the receiving silo's service port names the caller in `allowFrom`. Removing a grant, or an
+  `allowFrom` entry, resets the connections that entry allowed; other flows stay. A silo with no
+  grant is not forwarded names outside the cluster (silos and services in the cluster's zone still
+  resolve). Exposing publicly needs its own permission;
 - secrets: `Secret` values sealed with envelope encryption under a local KMS (a recovery key printed
   once by `kvoadm init`), never returned by reads; `Grant`s say what a silo may reach and use.
   Silos reach nothing outside the cluster without one. API keys are **injected** at the host's
@@ -62,7 +69,8 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
 - container runtimes: `runtime: docker` / `podman` on the same silo bridge as the VMs (firewall,
   default-deny egress, exposure and the egress gate apply unchanged), init steps as init containers,
   volumes that persist, the same local endpoint as VMs, and a tmpfs `/run` for the secrets the
-  host writes;
+  host writes. The silo's own process drops `MKNOD`, `NET_RAW` and `SYS_CHROOT` (no new devices,
+  no raw sockets, no chroot), on top of `no-new-privileges` and the pid limit;
 - HTTPS: an ingress controller is a silo running a stock proxy (nginx, Caddy, Kong) exactly as its
   vendor ships it, driven from outside: an **ingress driver** (`sdk/kic`) renders the routes,
   certificates and ACME challenges into that proxy's config, and the host's agent writes it in,
@@ -95,10 +103,14 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   registry reference, pulled from a private registry with a `registry` secret only its host's agent
   ever gets; `vm: { image }` or `vm: { disk: { url, sha256 } }` for cloud-hypervisor, where a
   `VMImage` is a bootable disk with versions that never change (a URL and its SHA-256, checked by
-  every host). A `SiloSet` is a scale set of stateful
+  every host). A `vm.disk` fetch is capped at the silo's `disk.size`: a larger body is refused and
+  the partial file removed, and a redirect to a private, loopback, link-local or cluster address is
+  refused. A `SiloSet` is a scale set of stateful
   silos with stable names (`rpc-0`, `rpc-1`, …), spread over hosts, with booted standby instances,
   protected ones scale-in never removes (`kvo protect`), and rollouts that reset instances onto a new
-  image a few at a time (or start extra ones first), volumes kept. `exclusive: true` guarantees one
+  image a few at a time (or start extra ones first), volumes kept. When the template has volumes,
+  scale-in removes the newest instance past the desired count before a not-Ready one that holds
+  data. `exclusive: true` guarantees one
   copy only. A standalone `Service` puts a virtual IP and a name in front of a set, on every worker,
   sending to the instances its `routeWhen` says (`ready`: while their readiness probe passes;
   `running`: as soon as they run; probes are startup, readiness and liveness), and can take an outside address from a
