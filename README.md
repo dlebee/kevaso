@@ -104,7 +104,8 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   registry reference, pulled from a private registry with a `registry` secret only its host's agent
   ever gets; `vm: { image }` or `vm: { disk: { url, sha256 } }` for cloud-hypervisor, where a
   `VMImage` is a bootable disk with versions that never change (a URL and its SHA-256, checked by
-  every host). A `vm.disk` fetch is capped at the silo's `disk.size`: a larger body is refused and
+  every host). A `vm.disk` fetch is capped at the silo's `disk.size`, or at the runtime's default
+  disk (20 GiB) when none is stated: a larger body is refused and
   the partial file removed, and a redirect to a private, loopback, link-local or cluster address is
   refused. A `SiloSet` is a scale set of stateful
   silos with stable names (`rpc-0`, `rpc-1`, …), spread over hosts, with booted standby instances,

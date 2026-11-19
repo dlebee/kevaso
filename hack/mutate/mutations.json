@@ -4503,5 +4503,17 @@
    "./internal/agent"
   ],
   "protects": "a delete from a control plane this worker does not trust removes nothing, and a restart does not record it"
+ },
+ {
+  "id": "G-657",
+  "guard": "a VM disk with no size is capped at the default disk",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if n <= 0 {\n\t\treturn defaultDiskBytes",
+  "replace": "if false && n <= 0 {\n\t\treturn defaultDiskBytes",
+  "mutation": "a silo that states no disk.size is fetched with no cap",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a VM disk download is capped at disk.size, or at the default disk when none is stated; zero is that default"
  }
 ]

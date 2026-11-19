@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -85,6 +86,24 @@ func TestDiskDownloadRefusesABodyLargerThanTheDisk(t *testing.T) {
 	exact := filepath.Join(t.TempDir(), "exact.download")
 	if err := download(context.Background(), base+"/disk", exact, int64(len(body))); err != nil {
 		t.Fatalf("a body the size of the disk: %v", err)
+	}
+}
+
+// An empty disk.size reaches the runtime as 0. That is the default disk, and a body larger
+// than the default is refused. Zero is not an uncapped fetch.
+func TestNoDiskSizeRefusesABodyBiggerThanTheDefault(t *testing.T) {
+	base, _ := publicDisk(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.FormatInt(defaultDiskBytes+1, 10))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(bytesRepeat(8))
+	}))
+	dst := filepath.Join(t.TempDir(), "disk.download")
+	err := download(context.Background(), base+"/disk", dst, diskBytesOrDefault(0))
+	if err == nil || !strings.Contains(err.Error(), "larger than the disk") {
+		t.Fatalf("no disk.size, body past the default disk: %v", err)
+	}
+	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
+		t.Fatalf("partial file: %v", statErr)
 	}
 }
 
