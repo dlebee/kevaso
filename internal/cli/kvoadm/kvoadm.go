@@ -5,6 +5,10 @@
 //	             [--api-server URL] [--cluster NAME] [--user NAME]      the control plane, your kvo
 //	                                                                    context, the recovery key
 //	             [--store sqlite|etcd]                                  etcd: ready for more system nodes
+//	             [--replace-unit]                                       write the unit from this run's flags only.
+//	                                                                    Without it, a second init keeps the installed
+//	                                                                    --name, addresses, --etcd-peer-listen and
+//	                                                                    --join, and refuses a different value.
 //	             [--internal-ip IP] [--external-ip IP]                  the machine's addresses (neither:
 //	                                                                    the SSH address, as internal)
 //	kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime R]… [--loop-storage SIZE]
@@ -59,6 +63,7 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/etcd"
 	"kevaso.com/core/internal/kvoconfig"
+	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/sshboot"
 )
 
@@ -132,9 +137,16 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return 0
 	}
+	if len(args) > 0 && args[0] == "restore" {
+		if err := restoreCmd(ctx, args[1:], stdout); err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) == 0 || args[0] != "init" {
 		_, _ = fmt.Fprintln(stderr, `usage:
-  kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL] [--store sqlite|etcd] [--restore BACKUP] [--internal-ip IP] [--external-ip IP]
+  kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL] [--store sqlite|etcd] [--restore BACKUP (--no-hosts-added | --host-added NAME)] [--internal-ip IP] [--external-ip IP]
   kvoadm backup [USER@]ADDRESS --output FILE [--ssh-key PATH]
   kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime NAME]… [--loop-storage SIZE | --storage-device /dev/DISK]
   kvoadm host reconnect [USER@]ADDRESS --ssh-key PATH [--server URL]
@@ -142,7 +154,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm host kept [USER@]ADDRESS --ssh-key PATH [--data DIR] [--remove NAMESPACE/NAME/UID [--yes]]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker [--runtime NAME]… [--internal-ip IP] [--external-ip IP]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install control-plane [--state-only] [--internal-ip IP] [--external-ip IP]
-  kvoadm host install HOST control-plane [--state-only] | uninstall HOST control-plane | remove HOST
+  kvoadm host install HOST control-plane [--state-only] | uninstall HOST control-plane | remove HOST | confirm-off NAME
   kvoadm host list | drain NAME | uncordon NAME
   kvoadm store migrate [USER@]ADDRESS --ssh-key PATH
   kvoadm upgrade --kevasod PATH [--ssh-key PATH] [--batch N] [--version V] [--dry-run]
@@ -151,7 +163,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm reset [USER@]ADDRESS --ssh-key PATH [--host-key SHA256:…] [--dry-run] [--yes] [--force] [--wipe-storage]
   kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--cluster-secret NAME]… [--side controller|node]
   kvoadm plugin remove [USER@]ADDRESS --name NAME
-  kvoadm ingress install [--class public] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --lb-class CLASS] [--image REF] [--option K=V]…
+  kvoadm ingress install [--class public] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --lb-class CLASS] [--host NAME=NAMESPACE[,NAMESPACE]]… [--image REF] [--option K=V]…
+  kvoadm ingress assign CLASS --host NAME=NAMESPACE[,NAMESPACE]…
+  kvoadm restore status [--context NAME]
+  kvoadm restore settle SILO -n NS --to HOST [--context NAME]
 The step-by-step guide: https://dlebee.github.io/kevaso-docs/setup/prepare/`)
 		return 2
 	}
@@ -189,10 +204,22 @@ type InitOptions struct {
 	// Extra hardening, only when asked for (flags, or a question in a terminal).
 	DisablePasswordLogin bool
 	ChangeRootPassword   bool
-	DryRun               bool   // look at the machine, change nothing
-	Restore              string // a backup to restore (kvoadm backup), instead of a new cluster
-	Store                string // init: sqlite (default) or etcd (the embedded member with a peer listener, ready for more system nodes)
+	DryRun               bool     // look at the machine, change nothing
+	Restore              string   // a backup to restore (kvoadm backup), instead of a new cluster
+	NoHostsAdded         bool     // restore: no host joined since the backup
+	HostsAdded           []string // restore: a host that joined since the backup (repeatable)
+	Store                string   // init: sqlite (default) or etcd (the embedded member with a peer listener, ready for more system nodes)
+	ReplaceUnit          bool     // write kevasod.service from this run's flags only
 	nameGiven            bool
+	internalGiven        bool // --internal-ip was on the command line
+	externalGiven        bool // --external-ip was on the command line
+	etcdPeerGiven        bool
+	joinGiven            bool
+	EtcdPeerListen       string // kept from an installed unit unless this run sets it
+	Join                 string // a joined system node's --join, kept the same way
+	JoinTokenFile        string
+	CAFile               string
+	storeGiven           bool // --store was on the command line (sqlite and omitting it are otherwise the same)
 	clusterGiven         bool
 	looked               bool // the machine was already looked at (host add)
 	hardeningAsked       bool // a hardening flag was given: don't ask
@@ -201,20 +228,46 @@ type InitOptions struct {
 func parseInit(args []string) (InitOptions, error) {
 	var rest []string
 	store := ""
+	var replace, storeGiven bool
+	var noHosts bool
+	var added []string
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--store" {
+		switch args[i] {
+		case "--replace-unit":
+			replace = true
+			continue
+		case "--store":
 			if i+1 >= len(args) {
 				return InitOptions{}, errors.New("--store needs a value: sqlite or etcd")
 			}
-			store = args[i+1]
+			store, storeGiven = args[i+1], true
 			i++
-			continue
+		case "--no-hosts-added":
+			noHosts = true
+		case "--host-added":
+			if i+1 >= len(args) {
+				return InitOptions{}, errors.New("--host-added needs a host name")
+			}
+			i++
+			added = append(added, args[i])
+		default:
+			rest = append(rest, args[i])
 		}
-		rest = append(rest, args[i])
 	}
 	o, err := parseTarget(rest)
 	if err != nil {
 		return o, err
+	}
+	o.ReplaceUnit, o.storeGiven = replace, storeGiven
+	o.NoHostsAdded, o.HostsAdded = noHosts, added
+	if o.Restore != "" && !o.NoHostsAdded && len(o.HostsAdded) == 0 { // a restore names the hosts the backup cannot know
+		return o, errors.New("kvoadm init --restore needs --no-hosts-added, or --host-added NAME for each host joined since the backup")
+	}
+	if o.NoHostsAdded && len(o.HostsAdded) > 0 { // one statement, not both
+		return o, errors.New("kvoadm init --restore takes --no-hosts-added or --host-added, not both")
+	}
+	if o.Restore == "" && (o.NoHostsAdded || len(o.HostsAdded) > 0) {
+		return o, errors.New("--no-hosts-added and --host-added are only for kvoadm init --restore")
 	}
 	switch store {
 	case "", "sqlite":
@@ -290,8 +343,10 @@ func parseTarget(args []string) (InitOptions, error) {
 			o.StorageDevice, err = next()
 		case "--internal-ip":
 			o.InternalIP, err = next()
+			o.internalGiven = true
 		case "--external-ip":
 			o.ExternalIP, err = next()
+			o.externalGiven = true
 		case "--egress-extra-ca":
 			o.EgressExtraCA, err = next()
 		case "--runtime":
@@ -524,7 +579,20 @@ func Unit(o InitOptions) string {
 		args = append(args, "--extra-name", o.Address)
 	}
 	if o.Store == "etcd" {
-		args = append(args, "--store", "etcd", "--etcd-peer-listen", net.JoinHostPort(addr, etcd.DefaultPeerPort))
+		peer := o.EtcdPeerListen
+		if peer == "" {
+			peer = net.JoinHostPort(addr, etcd.DefaultPeerPort)
+		}
+		args = append(args, "--store", "etcd", "--etcd-peer-listen", peer)
+	}
+	if o.Join != "" {
+		args = append(args, "--join", o.Join)
+		if o.JoinTokenFile != "" {
+			args = append(args, "--join-token-file", o.JoinTokenFile)
+		}
+		if o.CAFile != "" {
+			args = append(args, "--ca-file", o.CAFile)
+		}
 	}
 	if o.Worker {
 		args = append(args, workerArgs(o)...)
@@ -598,7 +666,22 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 			say("cluster %s created on this host (its record in /var/lib/kevaso)", o.Cluster)
 		}
 	}
-	if err := installUnits(ctx, conn, UnitsFor(Unit(o), o.Worker, o.Runtimes)); err != nil {
+	text, err := readInstalledUnit(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if text == "" && restore != nil && !o.ReplaceUnit {
+		next, err := o.withRestoredHost(restore)
+		if err != nil {
+			return fmt.Errorf("restore: %w", err)
+		}
+		o = next
+	}
+	o, unit, err := MergeUnit(text, o)
+	if err != nil {
+		return err
+	}
+	if err := installUnits(ctx, conn, UnitsFor(unit, o.Worker, o.Runtimes)); err != nil {
 		return err
 	}
 	say("control plane started (kevasod.service)")
@@ -631,6 +714,10 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 		return err
 	}
 	say("kvo context %q written to %s (server %s)", o.Cluster, cfgPath, server)
+	if cert, err := pki.ParseCertificatePEM([]byte(cred.Certificate)); err == nil {
+		say("certificate for %s is valid until %s. After that, on a control-plane host: kevasod admin sign-user --name %s",
+			o.UserName, cert.NotAfter.UTC().Format("2006-01-02"), o.UserName)
+	}
 
 	// 6. Check it from here, over TLS, the way kvo will.
 	c, err := client.NewTLS(server, []byte(cred.CA), []byte(cred.Certificate), keyPEM)
@@ -664,6 +751,11 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	if restore != nil || existing {
 		if err := reconnectWorkers(ctx, o, c, "https://"+net.JoinHostPort(o.Reach(), "6443"), stdin, out); err != nil {
 			return fmt.Errorf("reconnecting workers: %w", err)
+		}
+	}
+	if restore != nil {
+		if err := printRestoreAccount(ctx, c, out); err != nil {
+			return fmt.Errorf("restore: %w", err)
 		}
 	}
 	return nil

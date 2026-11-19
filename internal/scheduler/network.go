@@ -34,6 +34,25 @@ func HostPorts(s *v1.Silo) []HostPort {
 	return out
 }
 
+// AddedHostPorts are the host ports in next that old does not already open, in next's order,
+// without duplicates. A placed silo's update claims these before it is stored.
+func AddedHostPorts(old, next v1.SiloSpec) []HostPort {
+	have := map[HostPort]bool{}
+	for _, p := range HostPorts(&v1.Silo{Spec: old}) {
+		have[p] = true
+	}
+	var out []HostPort
+	seen := map[HostPort]bool{}
+	for _, p := range HostPorts(&v1.Silo{Spec: next}) {
+		if have[p] || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
 // netFilter: the network rules a host must meet for the silo (empty: fine). A port with
 // hostPort needs the host to have that address, and no other silo there holding the same address
 // and number.

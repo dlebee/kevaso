@@ -1316,10 +1316,10 @@
  },
  {
   "id": "G-133",
-  "guard": "apiserver: already-exposed-the-same-way is the only exemption",
+  "guard": "apiserver: an update that only removes or tightens outside reach is the exemption",
   "file": "internal/apiserver/apiserver.go",
-  "find": "exposure(prev) == how {",
-  "replace": "exposure(prev) == how || true {",
+  "find": "if !exposureLoosened(prev, obj, silos, svcs) { // an update that only removes or tightens outside reach needs no extra permission",
+  "replace": "if !exposureLoosened(prev, obj, silos, svcs) || true { // an update that only removes or tightens outside reach needs no extra permission",
   "mutation": "any write exempt",
   "packages": [
    "./internal/apiserver",
@@ -2146,8 +2146,8 @@
    "./internal/apiserver"
   ],
   "protects": "a namespace being deleted takes nothing new"
-  },
-  {
+ },
+ {
   "id": "G-400",
   "guard": "a worker may not read a kind it does not need",
   "file": "internal/apiserver/auth.go",
@@ -2158,8 +2158,8 @@
    "./internal/apiserver"
   ],
   "protects": "a worker is refused kinds it does not run from"
-  },
-  {
+ },
+ {
   "id": "G-401",
   "guard": "a worker's list leaves out objects that are not on it",
   "file": "internal/apiserver/hostread.go",
@@ -2170,8 +2170,8 @@
    "./internal/apiserver"
   ],
   "protects": "a worker's list omits objects that are not on it"
-  },
-  {
+ },
+ {
   "id": "G-402",
   "guard": "a worker may not get an object that is not on it",
   "file": "internal/apiserver/auth.go",
@@ -2182,8 +2182,8 @@
    "./internal/apiserver"
   ],
   "protects": "a worker is refused one object that is not on it"
-  },
-  {
+ },
+ {
   "id": "G-403",
   "guard": "a worker's watch does not replay an object from before it was on the host",
   "file": "internal/apiserver/hostread.go",
@@ -2194,8 +2194,8 @@
    "./internal/apiserver"
   ],
   "protects": "a watch does not send an object's state from before it was on this host"
-  },
-  {
+ },
+ {
   "id": "G-404",
   "guard": "a worker's watch drops an object that leaves the host",
   "file": "internal/apiserver/hostread.go",
@@ -2206,8 +2206,8 @@
    "./internal/apiserver"
   ],
   "protects": "a watch reports an object deleted when it is no longer on this host"
-  },
-  {
+ },
+ {
   "id": "G-405",
   "guard": "a worker reads for a silo moving to or from it",
   "file": "internal/apiserver/hostread.go",
@@ -2218,8 +2218,8 @@
    "./internal/apiserver"
   ],
   "protects": "the host a silo is leaving still reads what that silo needs"
-  },
-  {
+ },
+ {
   "id": "G-420",
   "guard": "an OpenShell sandbox is created with the policy file staged from its grants",
   "file": "internal/agent/agent.go",
@@ -2230,8 +2230,8 @@
    "./builtin/kri/openshell"
   ],
   "protects": "a sandbox is created with its silo's grants"
-  },
-  {
+ },
+ {
   "id": "G-421",
   "guard": "a saved policy hash skips a push only after this process pushed it",
   "file": "builtin/kri/openshell/runtime.go",
@@ -2242,8 +2242,8 @@
    "./builtin/kri/openshell"
   ],
   "protects": "a kevasod start pushes a running sandbox's policy once"
-  },
-  {
+ },
+ {
   "id": "G-422",
   "guard": "a gateway that came up is a new generation for the policy push",
   "file": "builtin/kri/openshell/runtime.go",
@@ -2254,8 +2254,8 @@
    "./builtin/kri/openshell"
   ],
   "protects": "a gateway that came up is pushed once more"
-  },
-  {
+ },
+ {
   "id": "G-423",
   "guard": "a failed policy set does not record the hash",
   "file": "builtin/kri/openshell/runtime.go",
@@ -2266,8 +2266,8 @@
    "./builtin/kri/openshell"
   ],
   "protects": "the saved hash changes only after a push succeeds"
-  },
-  {
+ },
+ {
   "id": "G-424",
   "guard": "starting an existing sandbox applies the policy file",
   "file": "builtin/kri/openshell/runtime.go",
@@ -2278,8 +2278,8 @@
    "./builtin/kri/openshell"
   ],
   "protects": "a policy pending while the gateway was down is applied when the sandbox starts"
-  },
-  {
+ },
+ {
   "id": "G-425",
   "guard": "a failed policy push is not reported as applied",
   "file": "internal/agent/agent.go",
@@ -2290,8 +2290,8 @@
    "./builtin/kri/openshell"
   ],
   "protects": "a silo's grants are reported applied only after a push succeeds"
-  },
-  {
+ },
+ {
   "id": "G-430",
   "guard": "admission: an OpenShellPolicy host in a closed range is refused",
   "file": "api/v1/openshellpolicy.go",
@@ -2303,8 +2303,8 @@
    "./internal/apiserver"
   ],
   "protects": "an OpenShellPolicy never opens a silo, service, mesh, loopback or link-local range"
-  },
-  {
+ },
+ {
   "id": "G-431",
   "guard": "admission: openshellPolicies only on an openshell runtime",
   "file": "internal/apiserver/semantic.go",
@@ -2315,8 +2315,8 @@
    "./internal/apiserver"
   ],
   "protects": "only openshell and openshell-container may name an OpenShellPolicy"
-  },
-  {
+ },
+ {
   "id": "G-432",
   "guard": "a worker reads an OpenShellPolicy only when a silo on it names it",
   "file": "internal/apiserver/hostread.go",
@@ -2327,8 +2327,8 @@
    "./internal/apiserver"
   ],
   "protects": "a worker reads an OpenShellPolicy only when a silo on that host names it"
-  },
-  {
+ },
+ {
   "id": "G-433",
   "guard": "an inspected endpoint enforces its protocol, path and access limits",
   "file": "builtin/kri/openshell/render.go",
@@ -2340,8 +2340,8 @@
    "./internal/policy"
   ],
   "protects": "a read-only or path-limited OpenShell endpoint blocks the request instead of only logging it"
-  },
-  {
+ },
+ {
   "id": "G-440",
   "guard": "deleting a host that still has silos needs confirmOff",
   "file": "internal/apiserver/hostdelete.go",
@@ -2352,8 +2352,8 @@
    "./internal/apiserver"
   ],
   "protects": "a host with silos is not deleted without ?confirmOff=true"
-  },
-  {
+ },
+ {
   "id": "G-441",
   "guard": "a silo that cannot move stays unplaced when its host is deleted",
   "file": "internal/controllers/silo/silo.go",
@@ -2364,8 +2364,8 @@
    "./internal/controllers/silo"
   ],
   "protects": "a silo that cannot move stays in the store, unplaced, when its host is deleted"
-  },
-  {
+ },
+ {
   "id": "G-442",
   "guard": "a certificate issued before a host was removed is refused",
   "file": "internal/apiserver/hostremoval.go",
@@ -2376,8 +2376,8 @@
    "./internal/apiserver"
   ],
   "protects": "a host certificate issued before that host was removed is refused"
-  },
-  {
+ },
+ {
   "id": "G-443",
   "guard": "an unreadable host-removal record refuses the certificate",
   "file": "internal/apiserver/hostremoval.go",
@@ -2388,8 +2388,8 @@
    "./internal/apiserver"
   ],
   "protects": "a removed host's certificate is never accepted because its removal record couldn't be read"
-  },
-  {
+ },
+ {
   "id": "G-450",
   "guard": "a host delete sends confirmOff only after a yes or --confirm-off",
   "file": "internal/cli/kvoadm/systemnodes.go",
@@ -2400,8 +2400,8 @@
    "./internal/cli/kvoadm"
   ],
   "protects": "a host is deleted with confirmOff only after a yes or --confirm-off"
-  },
-  {
+ },
+ {
   "id": "G-451",
   "guard": "a host certificate is refused before its silos are counted",
   "file": "internal/apiserver/apiserver.go",
@@ -2412,8 +2412,8 @@
    "./internal/apiserver"
   ],
   "protects": "a host certificate is refused before its silos are counted"
-  },
-  {
+ },
+ {
   "id": "G-452",
   "guard": "a refused host delete puts the removal record back",
   "file": "internal/apiserver/apiserver.go",
@@ -2424,8 +2424,8 @@
    "./internal/apiserver"
   ],
   "protects": "a refused host delete does not leave the removal record"
-  },
-  {
+ },
+ {
   "id": "G-453",
   "guard": "a fresh start claim keeps a silo when its host is deleted",
   "file": "internal/controllers/silo/silo.go",
@@ -2436,8 +2436,8 @@
    "./internal/controllers/silo"
   ],
   "protects": "a silo with a fresh start claim is not placed when its host is deleted"
-  },
-  {
+ },
+ {
   "id": "G-454",
   "guard": "this-network, multicast and reserved addresses are never opened",
   "file": "api/v1/network.go",
@@ -2449,8 +2449,8 @@
    "./internal/apiserver"
   ],
   "protects": "a grant never opens this-network, multicast, or reserved addresses"
-  },
-  {
+ },
+ {
   "id": "G-455",
   "guard": "a CIDR rule never opens a closed range or this host",
   "file": "internal/gate/gate.go",
@@ -2461,8 +2461,8 @@
    "./internal/gate"
   ],
   "protects": "a CIDR rule never dials a closed range or this host's own address"
-  },
-  {
+ },
+ {
   "id": "G-456",
   "guard": "silo egress to a closed range is dropped before a grant",
   "file": "builtin/kni/rules.go",
@@ -2473,8 +2473,8 @@
    "./builtin/kni"
   ],
   "protects": "silo traffic to a closed range is dropped before a grant's accept"
-  },
-  {
+ },
+ {
   "id": "G-457",
   "guard": "silo egress to this host's own addresses is dropped before a grant",
   "file": "builtin/kni/rules.go",
@@ -2485,8 +2485,8 @@
    "./builtin/kni"
   ],
   "protects": "silo traffic to this host's own addresses is dropped before a grant's accept"
-  },
-  {
+ },
+ {
   "id": "G-458",
   "guard": "a plugin renews only its own token",
   "file": "internal/apiserver/auth.go",
@@ -2497,8 +2497,8 @@
    "./test/integration"
   ],
   "protects": "a plugin's service account renews only its own token in kevaso-system"
-  },
-  {
+ },
+ {
   "id": "G-459",
   "guard": "a plugin package never grants a cluster secret's value",
   "file": "internal/operators/package.go",
@@ -2509,8 +2509,8 @@
    "./internal/operators"
   ],
   "protects": "a plugin package cannot grant a cluster secret's value"
-  },
-  {
+ },
+ {
   "id": "G-460",
   "guard": "a refused host delete undoes only the removal record it wrote",
   "file": "internal/apiserver/hostremoval.go",
@@ -2521,8 +2521,8 @@
    "./internal/apiserver"
   ],
   "protects": "a host deleted with confirmation keeps its removal record when an overlapping delete is refused"
-  },
-  {
+ },
+ {
   "id": "G-470",
   "guard": "a worker certificate asks only for a plugin's node side",
   "file": "internal/apiserver/clustersecret.go",
@@ -2534,8 +2534,8 @@
    "./internal/apiserver"
   ],
   "protects": "a worker certificate reads a cluster secret only for a plugin's node side"
-  },
-  {
+ },
+ {
   "id": "G-471",
   "guard": "a host value read names side=node or side=controller",
   "file": "internal/apiserver/clustersecret.go",
@@ -2546,8 +2546,8 @@
    "./test/integration"
   ],
   "protects": "a host reads a cluster secret value only with side=node or side=controller"
-  },
-  {
+ },
+ {
   "id": "G-472",
   "guard": "the node side's service account is plugin-NAME-node",
   "file": "internal/operators/package.go",
@@ -2558,8 +2558,8 @@
    "./test/integration"
   ],
   "protects": "a node-side read is the service account plugin-NAME-node"
-  },
-  {
+ },
+ {
   "id": "G-473",
   "guard": "a host may read clustersecret metadata and status",
   "file": "internal/apiserver/auth.go",
@@ -2571,8 +2571,8 @@
    "./internal/apiserver"
   ],
   "protects": "a host certificate gets, lists and watches a clustersecret's metadata and status"
-  },
-  {
+ },
+ {
   "id": "G-474",
   "guard": "a delivered cluster secret is remembered by uid and version",
   "file": "internal/agent/clustersecret.go",
@@ -2583,8 +2583,8 @@
    "./internal/agent"
   ],
   "protects": "a deleted and re-created cluster secret is delivered again"
-  },
-  {
+ },
+ {
   "id": "G-475",
   "guard": "a side refusal keeps the cached cluster secret",
   "file": "internal/agent/clustersecret.go",
@@ -2595,8 +2595,8 @@
    "./internal/agent"
   ],
   "protects": "a side refusal leaves the credential file for the certificate that may read it"
-  },
-  {
+ },
+ {
   "id": "G-476",
   "guard": "a recorded host removal closes that host's streams",
   "file": "internal/apiserver/hoststreams.go",
@@ -2607,8 +2607,8 @@
    "./internal/apiserver"
   ],
   "protects": "a removed host's watches and tunnel close on every control-plane member"
-  },
-  {
+ },
+ {
   "id": "G-477",
   "guard": "the removal 401 stops the host's silos",
   "file": "internal/agent/agent.go",
@@ -2619,8 +2619,8 @@
    "./internal/agent"
   ],
   "protects": "a removed host stops its silos and does not reconcile until it joins again"
-  },
-  {
+ },
+ {
   "id": "G-478",
   "guard": "a removed host stops every silo it runs",
   "file": "internal/agent/agent.go",
@@ -2631,8 +2631,8 @@
    "./internal/agent"
   ],
   "protects": "a removed host stops every silo and keeps every disk and volume"
-  },
-  {
+ },
+ {
   "id": "G-479",
   "guard": "a stored certificate is replaced only after the removal 401",
   "file": "internal/worker/join.go",
@@ -2643,8 +2643,8 @@
    "./internal/worker"
   ],
   "protects": "a stored host certificate is kept until the control plane says the host was removed"
-  },
-  {
+ },
+ {
   "id": "G-480",
   "guard": "a removed host's pki directory is renamed, not deleted",
   "file": "internal/worker/join.go",
@@ -2655,8 +2655,8 @@
    "./internal/worker"
   ],
   "protects": "re-enrolling a removed host keeps the old key under a dated name"
-  },
-  {
+ },
+ {
   "id": "G-481",
   "guard": "a removal ends the heartbeat",
   "file": "internal/worker/join.go",
@@ -2667,8 +2667,8 @@
    "./internal/worker"
   ],
   "protects": "the removal 401 ends the heartbeat"
-  },
-  {
+ },
+ {
   "id": "G-482",
   "guard": "a removed host without a token is told how to join again",
   "file": "internal/worker/join.go",
@@ -2679,8 +2679,8 @@
    "./internal/worker"
   ],
   "protects": "without a join token, a removed host is told which pki directory to move aside"
-  },
-  {
+ },
+ {
   "id": "G-483",
   "guard": "lvs is absent only on a clean not-found",
   "file": "builtin/kri/cloudhypervisor/volumes.go",
@@ -2691,8 +2691,8 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a failed lvs is an error, never an absent volume"
-  },
-  {
+ },
+ {
   "id": "G-484",
   "guard": "empty lvs output is an error",
   "file": "builtin/kri/cloudhypervisor/volumes.go",
@@ -2703,8 +2703,8 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "empty lvs output is an error, never an absent volume"
-  },
-  {
+ },
+ {
   "id": "G-485",
   "guard": "Create returns when the root volume cannot be checked",
   "file": "builtin/kri/cloudhypervisor/runtime.go",
@@ -2715,8 +2715,8 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "Create returns before saving state when lvs fails, and removes nothing"
-  },
-  {
+ },
+ {
   "id": "G-486",
   "guard": "the group listing refuses the root LV's own name",
   "file": "builtin/kri/cloudhypervisor/runtime.go",
@@ -2727,8 +2727,8 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "Create refuses a root LV that is already there, including under its own name"
-  },
-  {
+ },
+ {
   "id": "G-487",
   "guard": "a step failure removes the root LV only when this Create made it",
   "file": "builtin/kri/cloudhypervisor/runtime.go",
@@ -2739,8 +2739,8 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a failed Create removes the root LV only when this Create made it"
-  },
-  {
+ },
+ {
   "id": "G-490",
   "guard": "only the HostRemoved reason makes a host stop its silos",
   "file": "api/client/client.go",
@@ -2751,8 +2751,8 @@
    "./internal/agent"
   ],
   "protects": "a host stops its silos only on the final removal refusal, never on another refusal"
-  },
-  {
+ },
+ {
   "id": "G-491",
   "guard": "a removal is final only once its Host delete commits",
   "file": "internal/apiserver/hostremoval.go",
@@ -2763,8 +2763,8 @@
    "./internal/apiserver"
   ],
   "protects": "a refused host delete never tells the live host it was removed"
-  },
-  {
+ },
+ {
   "id": "G-492",
   "guard": "a removal record with no removal time is never final",
   "file": "internal/apiserver/hostremoval.go",
@@ -2775,8 +2775,8 @@
    "./internal/apiserver"
   ],
   "protects": "only a readable, dated removal makes a host stop its silos"
-  },
-  {
+ },
+ {
   "id": "G-493",
   "guard": "a delivered cluster secret is fetched again now and then",
   "file": "internal/agent/clustersecret.go",
@@ -2787,8 +2787,8 @@
    "./internal/agent"
   ],
   "protects": "a plugin loses a secret's value on every host once its binding is taken away"
-  },
-  {
+ },
+ {
   "id": "G-494",
   "guard": "a Host made again after a delete makes a pending removal final",
   "file": "internal/apiserver/hostremoval.go",
@@ -2799,8 +2799,8 @@
    "./internal/apiserver"
   ],
   "protects": "a removed host's old certificate gets the final refusal after the name is added again"
-  },
-  {
+ },
+ {
   "id": "G-495",
   "guard": "the sweep settles a pending removal whose delete committed",
   "file": "internal/apiserver/hostremoval.go",
@@ -2811,8 +2811,8 @@
    "./internal/apiserver"
   ],
   "protects": "a removal left pending by a member that stopped is made final"
-  },
-  {
+ },
+ {
   "id": "G-496",
   "guard": "the member that commits a host delete closes its streams",
   "file": "internal/apiserver/apiserver.go",
@@ -2823,5 +2823,1493 @@
    "./internal/apiserver"
   ],
   "protects": "a removed host's streams close when its delete commits"
-  }
+ },
+ {
+  "id": "G-500",
+  "guard": "a refused disk image is not converted",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "if err != nil { // refused: not raw, or a qcow2 with a backing file, an external data file, or encryption",
+  "replace": "if false && err != nil { // refused: not raw, or a qcow2 with a backing file, an external data file, or encryption",
+  "mutation": "a refused disk image is converted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk image that is not raw or a plain qcow2 is refused"
+ },
+ {
+  "id": "G-501",
+  "guard": "qemu-img is told the format",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "argv := []string{\"convert\", \"-f\", format}",
+  "replace": "argv := []string{\"convert\", format}",
+  "mutation": "qemu-img converts without a format",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "conversion is pinned to raw or qcow2"
+ },
+ {
+  "id": "G-502",
+  "guard": "conversion runs as kevaso-img, bound to kevasod",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "return r.runConfined(ctx, img, dst, argv)",
+  "replace": "_, err = r.Host.Run(ctx, \"qemu-img\", argv...); return err",
+  "mutation": "qemu-img convert runs as root over the host",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "conversion sees only the image and the target, and stops when kevasod stops"
+ },
+ {
+  "id": "G-503",
+  "guard": "the root disk's volume counts as wanted",
+  "file": "internal/agent/dropped.go",
+  "find": "for _, v := range v1.PluginVolumes(s) { // the root disk's volume counts as wanted",
+  "replace": "for _, v := range s.Spec.Volumes { // the root disk's volume counts as wanted",
+  "mutation": "disk.root is treated as dropped from the spec",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a microVM's root-disk volume stays mounted"
+ },
+ {
+  "id": "G-504",
+  "guard": "a root disk is written only on the volume's mount",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if err := r.mustBeMounted(ctx, filepath.Dir(l.RootFile)); err != nil { // a root disk is written only on the volume's mount",
+  "replace": "if err := r.mustBeMounted(ctx, filepath.Dir(l.RootFile)); err == nil && false { // a root disk is written only on the volume's mount",
+  "mutation": "a root disk is written when the folder is not a mount",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a root disk is not written beside its volume"
+ },
+ {
+  "id": "G-505",
+  "guard": "a volume taken out of the spec is kept",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "case !wanted && s.DeletionTimestamp == nil: // taken out of the spec: kept until the silo is deleted",
+  "replace": "case false && s.DeletionTimestamp == nil: // taken out of the spec: kept until the silo is deleted",
+  "mutation": "a volume taken out of the spec is deleted while the silo lives",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a provider volume stays until the silo is deleted"
+ },
+ {
+  "id": "G-506",
+  "guard": "a volume's class cannot change in place",
+  "file": "internal/apiserver/semantic.go",
+  "find": "errs = append(errs, volumeClassChanges(old, next)...)",
+  "replace": "errs = append(errs, volumeClassChanges(old, old)...)",
+  "mutation": "a volume's class changes in place",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "changing a volume's class, or disk.class, under the same name is refused"
+ },
+ {
+  "id": "G-507",
+  "guard": "init keeps a worker the unit already has",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "o.Worker = true // the unit already runs a worker: this init keeps it",
+  "replace": "_ = o.Worker // the unit already runs a worker: this init keeps it",
+  "mutation": "init drops a worker the unit already has",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "init again keeps the unit's worker"
+ },
+ {
+  "id": "G-508",
+  "guard": "init refuses a run that would drop the unit's flags",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if !o.ReplaceUnit && dropped != \"\" { // this run would drop a worker, a runtime, storage, or the etcd store",
+  "replace": "if false && !o.ReplaceUnit && dropped != \"\" { // this run would drop a worker, a runtime, storage, or the etcd store",
+  "mutation": "init writes a unit that drops a worker, a runtime, storage, or etcd",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "init refuses to drop a worker, a runtime, storage, or an etcd store unless --replace-unit"
+ },
+ {
+  "id": "G-509",
+  "guard": "a qcow2 backing file is refused",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "if backingOff != 0 || backingSize != 0 { // a backing file is refused",
+  "replace": "if false && (backingOff != 0 || backingSize != 0) { // a backing file is refused",
+  "mutation": "a qcow2 that names a backing file is accepted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a qcow2 that names a backing file is refused"
+ },
+ {
+  "id": "G-510",
+  "guard": "an image larger than the disk is refused",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "if dstSize > 0 && virt > uint64(dstSize) { // the image does not fit the disk",
+  "replace": "if false && dstSize > 0 && virt > uint64(dstSize) { // the image does not fit the disk",
+  "mutation": "an image larger than the disk is converted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "an image that does not fit the disk is refused"
+ },
+ {
+  "id": "G-511",
+  "guard": "an external data file is refused",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "allowed := qcow2Dirty | qcow2Compression | qcow2ExtendedL2",
+  "replace": "allowed := qcow2Dirty | qcow2Compression | qcow2ExtendedL2 | qcow2ExternalData",
+  "mutation": "a qcow2 with an external data file is accepted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a qcow2 that names an external data file is refused"
+ },
+ {
+  "id": "G-512",
+  "guard": "an encrypted disk image is refused",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "if crypt := binary.BigEndian.Uint32(b[32:36]); crypt != 0 { // encryption is refused",
+  "replace": "if crypt := binary.BigEndian.Uint32(b[32:36]); false && crypt != 0 { // encryption is refused",
+  "mutation": "an encrypted disk image is accepted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "an encrypted disk image is refused"
+ },
+ {
+  "id": "G-513",
+  "guard": "VMDK, VHD and the other disk formats are refused",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "if why := foreignDisk(b); why != \"\" { // VMDK, VHD, VHDX, VDI and the rest are refused",
+  "replace": "if why := foreignDisk(b); false && why != \"\" { // VMDK, VHD, VHDX, VDI and the rest are refused",
+  "mutation": "VMDK and the other disk formats are accepted as raw",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "VMDK, VHD, VHDX, VDI and the other disk formats are refused"
+ },
+ {
+  "id": "G-520",
+  "guard": "a placed silo's new host port is claimed before the write",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "rel, err = s.claimAddedHostPorts(ctx, old, admitted, version) // a placed silo's new host port is claimed before the write",
+  "replace": "rel, err = func() (func(), error) { return nil, nil }() // a placed silo's new host port is claimed before the write",
+  "mutation": "a placed silo's new host port is written without a claim",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host port another silo holds is refused on update"
+ },
+ {
+  "id": "G-521",
+  "guard": "a silo whose HostPorts condition is false opens no host port",
+  "file": "builtin/kni/rules.go",
+  "find": "if len(p.HostPort) > 0 && s.HostPortsRefused { // its HostPorts condition is false: it does not hold the port",
+  "replace": "if false && len(p.HostPort) > 0 && s.HostPortsRefused { // its HostPorts condition is false: it does not hold the port",
+  "mutation": "a silo that does not hold its host port is still translated",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "a host port is opened only for the silo that holds it"
+ },
+ {
+  "id": "G-522",
+  "guard": "a host port two local silos both ask for is opened for neither",
+  "file": "builtin/kni/rules.go",
+  "find": "if !claimed || owner != s.Key { // two silos ask and it is not settled which one holds it",
+  "replace": "if false && (!claimed || owner != s.Key) { // two silos ask and it is not settled which one holds it",
+  "mutation": "a host port is translated for every silo that asks",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "an unsettled host port is not opened"
+ },
+ {
+  "id": "G-523",
+  "guard": "a number the platform listens on is not translated",
+  "file": "builtin/kni/rules.go",
+  "find": "if why := reservedWhy(h, at); why != \"\" { // a number the platform listens on is not opened, whatever the spec says",
+  "replace": "if why := reservedWhy(h, at); false && why != \"\" { // a number the platform listens on is not opened, whatever the spec says",
+  "mutation": "a platform listener's number is translated to a silo",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "a host port the platform listens on is not opened"
+ },
+ {
+  "id": "G-524",
+  "guard": "a host port on a platform listener's number is refused",
+  "file": "internal/apiserver/ports.go",
+  "find": "if why := v1.ReservedHostPort(at); len(p.HostPort) > 0 && why != \"\" { // a number the platform listens on",
+  "replace": "if why := v1.ReservedHostPort(at); false && len(p.HostPort) > 0 && why != \"\" { // a number the platform listens on",
+  "mutation": "a host port on a platform listener's number is accepted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a silo cannot take a host port the platform listens on"
+ },
+ {
+  "id": "G-525",
+  "guard": "a host port a host in the cluster listens on is refused",
+  "file": "internal/apiserver/hostports.go",
+  "find": "if why, ok := extra[p.HostNumber()]; ok { // a host in the cluster listens here",
+  "replace": "if why, ok := extra[p.HostNumber()]; false && ok { // a host in the cluster listens here",
+  "mutation": "a host port a host listens on beyond the fixed set is accepted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a silo cannot take a host's own SSH, mesh, API, or etcd port"
+ },
+ {
+  "id": "G-526",
+  "guard": "an update that only removes or tightens outside reach needs no extra permission",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if !exposureLoosened(prev, obj, silos, svcs) { // an update that only removes or tightens outside reach needs no extra permission",
+  "replace": "if !exposureLoosened(prev, obj, silos, svcs) || true { // an update that only removes or tightens outside reach needs no extra permission",
+  "mutation": "widening outside reach needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "expose-public is required when a write adds or loosens outside reach"
+ },
+ {
+  "id": "G-527",
+  "guard": "an outside port the stored object does not open needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if !ok { // an outside port the stored object does not open",
+  "replace": "if !ok && false { // an outside port the stored object does not open",
+  "mutation": "a new outside port needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a new outside port needs expose-public"
+ },
+ {
+  "id": "G-528",
+  "guard": "a changed protocol or host number needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if o.proto != n.proto || o.number != n.number { // protocol or the number on the host changed",
+  "replace": "if false && (o.proto != n.proto || o.number != n.number) { // protocol or the number on the host changed",
+  "mutation": "a changed protocol or host number needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "changing a port's protocol or host number needs expose-public"
+ },
+ {
+  "id": "G-529",
+  "guard": "a new host network needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if facetNetworkAdded(o, n) { // a host network the stored port did not open on",
+  "replace": "if false && facetNetworkAdded(o, n) { // a host network the stored port did not open on",
+  "mutation": "a new host network needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "opening a port on another host network needs expose-public"
+ },
+ {
+  "id": "G-530",
+  "guard": "wider sources need the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if sourcesWider(o.sources, n.sources) { // a source removed, or a wider one added",
+  "replace": "if false && sourcesWider(o.sources, n.sources) { // a source removed, or a wider one added",
+  "mutation": "wider sources need no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "widening who can reach an open port needs expose-public"
+ },
+ {
+  "id": "G-531",
+  "guard": "removing a lease or its approval needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if o.lease && !n.lease || o.approval && !n.approval { // a lease removed, or one that needed a yes made automatic",
+  "replace": "if false && (o.lease && !n.lease || o.approval && !n.approval) { // a lease removed, or one that needed a yes made automatic",
+  "mutation": "removing a lease or its approval needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "removing a lease, or making it automatic, needs expose-public"
+ },
+ {
+  "id": "G-532",
+  "guard": "a new load balancer or a changed class needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if facetBalancerAdded(o, n) { // load balancer newly set, or its class changed",
+  "replace": "if false && facetBalancerAdded(o, n) { // load balancer newly set, or its class changed",
+  "mutation": "a new load balancer or a changed class needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "adding a load balancer, or changing its class, needs expose-public"
+ },
+ {
+  "id": "G-533",
+  "guard": "labels that newly match a load balancer need the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if v1.Selects(sv.Spec.Selector, next.Labels) && !v1.Selects(sv.Spec.Selector, oldLabels) { // this silo's labels newly match a load balancer",
+  "replace": "if false && (v1.Selects(sv.Spec.Selector, next.Labels) && !v1.Selects(sv.Spec.Selector, oldLabels)) { // this silo's labels newly match a load balancer",
+  "mutation": "labels that newly match a load balancer need no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a silo newly selected by a load balancer needs expose-public"
+ },
+ {
+  "id": "G-534",
+  "guard": "a load balancer that opens more, or selects a new silo, needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if serviceSelectorLoosened(old, next, silos) || servicePortsLoosened(old, next) || old.Spec.LoadBalancerClass != next.Spec.LoadBalancerClass { // a load balancer opens more, or its selector matches a new silo",
+  "replace": "if false && (serviceSelectorLoosened(old, next, silos) || servicePortsLoosened(old, next) || old.Spec.LoadBalancerClass != next.Spec.LoadBalancerClass) { // a load balancer opens more, or its selector matches a new silo",
+  "mutation": "a load balancer that opens more needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a load balancer that opens more, or selects a new silo, needs expose-public"
+ },
+ {
+  "id": "G-535",
+  "guard": "a port this update just took is put back when another is held",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "rollback() // a port this update just took is put back when another is held",
+  "replace": "_ = held // a port this update just took is put back when another is held",
+  "mutation": "a refused update keeps a host port it took alongside one it could not",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a refused update leaves no host-port claim behind"
+ },
+ {
+  "id": "G-536",
+  "guard": "an Ingress backend on a leased port needs the permission",
+  "file": "internal/apiserver/exposure.go",
+  "find": "if backendLeased(next.Namespace, r.Service, silos, svcs) { // a backend the stored Ingress did not already target, on a leased port",
+  "replace": "if false && backendLeased(next.Namespace, r.Service, silos, svcs) { // a backend the stored Ingress did not already target, on a leased port",
+  "mutation": "an Ingress backend on a leased port needs no extra permission",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "an Ingress backend on a leased port needs expose-public"
+ },
+ {
+  "id": "G-537",
+  "guard": "a packet from a silo that arrives over the mesh reaches nothing of this host",
+  "file": "builtin/kni/rules.go",
+  "find": "w(\"    iifname { %q, %q } ip saddr %s drop\", MeshDevices[0], MeshDevices[1], silosAll) // a silo on another host reaches nothing of this one",
+  "replace": "_ = silosAll // a silo on another host reaches nothing of this one",
+  "mutation": "a silo on another host reaches this host's own listeners",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "a silo reaches nothing of another host"
+ },
+ {
+  "id": "G-538",
+  "guard": "a silo reaches no host's own address on the silo network",
+  "file": "builtin/kni/rules.go",
+  "find": "w(\"    iifname %q ip daddr %s drop\", h.Bridge, siloGatewaySet()) // a silo reaches no host's own address on the silo network",
+  "replace": "_ = siloGatewaySet() // a silo reaches no host's own address on the silo network",
+  "mutation": "a silo reaches a host's address on the silo network",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "a silo reaches no host's own address on the silo network"
+ },
+ {
+  "id": "G-539",
+  "guard": "a false HostPorts condition is carried into the firewall view",
+  "file": "internal/worker/network.go",
+  "find": "if c := meta.FindCondition(s.Status.Conditions, \"HostPorts\"); c != nil && c.Status == meta.ConditionFalse { // the controller says this silo does not hold a host port it asks for",
+  "replace": "if c := meta.FindCondition(s.Status.Conditions, \"HostPorts\"); c != nil && false && c.Status == meta.ConditionFalse { // the controller says this silo does not hold a host port it asks for",
+  "mutation": "a silo that does not hold its host port is still opened",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "the firewall view records that a silo does not hold its host port"
+ },
+ {
+  "id": "G-540",
+  "guard": "a renewal is the caller's own certificate",
+  "file": "internal/apiserver/auth.go",
+  "find": "id := caller // renewed for the authenticated caller only",
+  "replace": "id := pki.Identity{Type: caller.Type, Name: req.Host + req.Name, Role: req.Role} // renewed for the authenticated caller only",
+  "mutation": "a renewal signs the name in the request",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "renewing a certificate keeps the authenticated host or user"
+ },
+ {
+  "id": "G-541",
+  "guard": "an expired host certificate is not reused",
+  "file": "internal/worker/join.go",
+  "find": "if certificateExpired(cert, time.Now()) { // an expired certificate is not reused",
+  "replace": "if false && certificateExpired(cert, time.Now()) { // an expired certificate is not reused",
+  "mutation": "an expired certificate is reused",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "an expired worker certificate is replaced when a join token is present, and refused when it isn't"
+ },
+ {
+  "id": "G-542",
+  "guard": "a class grants a host only by assignment",
+  "file": "api/v1/hostassign.go",
+  "find": "return false // no assignment grants this host to the namespace",
+  "replace": "return true // no assignment grants this host to the namespace",
+  "mutation": "every host is granted",
+  "packages": [
+   "./internal/ingress"
+  ],
+  "protects": "a namespace publishes a host only when its ingress class assigns it"
+ },
+ {
+  "id": "G-543",
+  "guard": "an unassigned host is left out of what is served",
+  "file": "internal/ingress/desired.go",
+  "find": "if !c.AllowsHost(ing.Namespace, h) { // a host not assigned to this namespace is not served",
+  "replace": "if false { // a host not assigned to this namespace is not served",
+  "mutation": "an unassigned host is served",
+  "packages": [
+   "./internal/ingress"
+  ],
+  "protects": "a host not assigned to the namespace is not published, including one already stored"
+ },
+ {
+  "id": "G-544",
+  "guard": "admission refuses an ingress host the namespace is not assigned",
+  "file": "internal/apiserver/hostassign.go",
+  "find": "if why := v1.IngressHostProblem(h, t.namespace, class, names); why != \"\" { // an ingress host must be assigned to its namespace",
+  "replace": "if why := v1.IngressHostProblem(h, t.namespace, class, names); false { // an ingress host must be assigned to its namespace",
+  "mutation": "an unassigned ingress host is admitted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "an ingress host is admitted only when the class assigns it to the namespace"
+ },
+ {
+  "id": "G-545",
+  "guard": "admission refuses a certificate host the namespace may not use",
+  "file": "internal/apiserver/hostassign.go",
+  "find": "if why := v1.CertificateHostProblem(h, t.namespace, suffix, classes, names); why != \"\" { // a certificate host must be one this namespace may use",
+  "replace": "if why := v1.CertificateHostProblem(h, t.namespace, suffix, classes, names); false { // a certificate host must be one this namespace may use",
+  "mutation": "a certificate host the namespace may not use is admitted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a certificate host is admitted only when it is assigned to the namespace or is one of that namespace's service names"
+ },
+ {
+  "id": "G-546",
+  "guard": "an API server name is never signed",
+  "file": "api/v1/hostassign.go",
+  "find": "if IsAPIName(host, names) { // an API server name is never signed",
+  "replace": "if false && IsAPIName(host, names) { // an API server name is never signed",
+  "mutation": "an API server name is signed",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a name of the API server is not signed, even when an ingress class assigns it"
+ },
+ {
+  "id": "G-547",
+  "guard": "a service name is only the namespace's own",
+  "file": "api/v1/hostassign.go",
+  "find": "if parts[1] != namespace { // a service name is only the namespace's own",
+  "replace": "if false && parts[1] != namespace { // a service name is only the namespace's own",
+  "mutation": "another namespace's service name is accepted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a certificate for a service name is only the namespace's own"
+ },
+ {
+  "id": "G-548",
+  "guard": "internal-ca signs with its own CA",
+  "file": "internal/controllers/certificate/certificate.go",
+  "find": "return internal.SignServerCSR(csr, hosts, now(), 90*24*time.Hour) // internal-ca is not the cluster CA",
+  "replace": "return cluster.SignServerCSR(csr, hosts, now(), 90*24*time.Hour) // internal-ca is not the cluster CA",
+  "mutation": "internal-ca signs with the cluster CA",
+  "packages": [
+   "./internal/controllers/certificate"
+  ],
+  "protects": "internal-ca is a CA of its own, not the one API clients pin"
+ },
+ {
+  "id": "G-549",
+  "guard": "a registry server or username change is a loosening",
+  "file": "internal/apiserver/secrets.go",
+  "find": "if registryBindingLoosens(old, next) { // a registry secret's server or username",
+  "replace": "if false && registryBindingLoosens(old, next) { // a registry secret's server or username",
+  "mutation": "a registry server or username changes without a new value",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "changing a registry secret's server or username requires a new value in the same write"
+ },
+ {
+  "id": "G-550",
+  "guard": "a sealed registry value opens only for its server",
+  "file": "internal/secrets/vault.go",
+  "find": "if registry != \"\" { // the sealed value opens only for this registry",
+  "replace": "if false && registry != \"\" { // the sealed value opens only for this registry",
+  "mutation": "a sealed registry value opens for any server",
+  "packages": [
+   "./internal/secrets"
+  ],
+  "protects": "a registry secret's stored value opens only for the registry it was written for"
+ },
+ {
+  "id": "G-551",
+  "guard": "an OpenShell image is the rebuilt reference",
+  "file": "builtin/kri/openshell/runtime.go",
+  "find": "return ref.String(), nil // the reference, not the string as written",
+  "replace": "return image, nil // the reference, not the string as written",
+  "mutation": "the image string is passed through as written",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "an OpenShell image is the registry reference, rebuilt, never the string as written"
+ },
+ {
+  "id": "G-552",
+  "guard": "a rootfs archive name is not an image",
+  "file": "api/v1/registry.go",
+  "find": "return true // a rootfs archive is not an image",
+  "replace": "return false // a rootfs archive is not an image",
+  "mutation": "a rootfs archive name is an image",
+  "packages": [
+   "./builtin/kri/openshell"
+  ],
+  "protects": "an OpenShell image whose last part is a rootfs archive is refused"
+ },
+ {
+  "id": "G-553",
+  "guard": "a host command runs in an empty directory",
+  "file": "builtin/kri/hostexec/hostexec.go",
+  "find": "cmd.Dir = dir // no relative path resolves against the host's root",
+  "replace": "_ = dir // no relative path resolves against the host's root",
+  "mutation": "a host command runs in the process's directory",
+  "packages": [
+   "./builtin/kri/hostexec"
+  ],
+  "protects": "a relative path in a host command is not resolved against the host's root"
+ },
+ {
+  "id": "G-554",
+  "guard": "a host certificate renews past two thirds of its life",
+  "file": "internal/worker/renew.go",
+  "find": "if ok && client.RenewDue(nb, na, now) { // renew at two thirds of the lifetime",
+  "replace": "if ok && now.Before(time.Time{}) && client.RenewDue(nb, na, now) { // renew at two thirds of the lifetime",
+  "mutation": "a host certificate is not renewed",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "a worker renews its certificate once it is past two thirds of its life"
+ },
+ {
+  "id": "G-555",
+  "guard": "a renewed context certificate is the same person",
+  "file": "internal/kvoconfig/kvoconfig.go",
+  "find": "if newID != id { // a renewal is the same identity",
+  "replace": "if false && newID != id { // a renewal is the same identity",
+  "mutation": "a renewed certificate for someone else is stored",
+  "packages": [
+   "./internal/kvoconfig"
+  ],
+  "protects": "a context stores a renewed certificate only when it is the same identity"
+ },
+ {
+  "id": "G-556",
+  "guard": "a certificate is not issued for a host the namespace may not use",
+  "file": "internal/controllers/certificate/certificate.go",
+  "find": "} else if why != \"\" { // a certificate is not issued for a host the namespace may not use",
+  "replace": "} else if false && why != \"\" { // a certificate is not issued for a host the namespace may not use",
+  "mutation": "an unassigned host is issued",
+  "packages": [
+   "./internal/controllers/certificate"
+  ],
+  "protects": "a certificate already stored is not signed for a host the namespace may not use"
+ },
+ {
+  "id": "G-557",
+  "guard": "a context certificate renews past two thirds of its life",
+  "file": "internal/kvoconfig/kvoconfig.go",
+  "find": "if client.RenewDue(nb, na, now) { // renew a certificate past two thirds of its life",
+  "replace": "if false && client.RenewDue(nb, na, now) { // renew a certificate past two thirds of its life",
+  "mutation": "a context certificate is not renewed",
+  "packages": [
+   "./internal/kvoconfig"
+  ],
+  "protects": "kvo and kvoadm renew a certificate user's certificate once it is past two thirds of its life"
+ },
+ {
+  "id": "G-558",
+  "guard": "a renewed host certificate is the same host",
+  "file": "internal/worker/renew.go",
+  "find": "if newID != oldID { // a renewed host certificate is the same host",
+  "replace": "if false && newID != oldID { // a renewed host certificate is the same host",
+  "mutation": "a renewed certificate for another host is stored",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "a worker stores a renewed certificate only when it is the same host"
+ },
+ {
+  "id": "G-559",
+  "guard": "the live client presents the renewed certificate",
+  "file": "internal/worker/renew.go",
+  "find": "if err := c.RotateCertificate(cred.Certificate, cred.Key); err != nil { // the live client presents the new certificate",
+  "replace": "if err := error(nil); err != nil { // the live client presents the new certificate",
+  "mutation": "the renewed certificate is written and not presented",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "a worker presents its renewed certificate on the next handshake"
+ },
+ {
+  "id": "G-560",
+  "guard": "a restored history starts nothing this worker is not already running",
+  "file": "internal/agent/agent.go",
+  "find": "if a.restoreBlocksStart(&cur) { // a restored history starts nothing this worker is not already running",
+  "replace": "if false { // a restored history starts nothing this worker is not already running",
+  "mutation": "a restored history starts a silo before it is settled",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a silo is not started on a restored history until the control plane settles it"
+ },
+ {
+  "id": "G-561",
+  "guard": "only a silo settled for this history may start",
+  "file": "internal/agent/agent.go",
+  "find": "if r := s.Status.Restore; r != nil && r.History == history && r.Phase == v1.RestoreSettled { // settled for this history: it may start",
+  "replace": "if true || history == \"\" { // settled for this history: it may start",
+  "mutation": "any mark, or none, counts as settled",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a silo starts on a restored history only once it is settled for that history"
+ },
+ {
+  "id": "G-562",
+  "guard": "an unsettled silo is not placed or moved",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "if restore.BlocksPlacement(s, env.Restore) { // an unsettled silo is not placed or moved",
+  "replace": "if false && restore.BlocksPlacement(s, env.Restore) { // an unsettled silo is not placed or moved",
+  "mutation": "an unsettled silo is scheduled",
+  "packages": [
+   "./internal/controllers/silo"
+  ],
+  "protects": "a restored history does not place a silo until it is settled"
+ },
+ {
+  "id": "G-563",
+  "guard": "an unsettled silo does not attach a volume",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "if s.DeletionTimestamp == nil && restore.BlocksPlacement(s, c.restoreGate()) { // restored history: do not attach until the silo is settled",
+  "replace": "if false && restore.BlocksPlacement(s, c.restoreGate()) { // restored history: do not attach until the silo is settled",
+  "mutation": "an unsettled silo attaches a volume",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a restored history does not attach a volume until the silo is settled"
+ },
+ {
+  "id": "G-564",
+  "guard": "a worker cannot mark a silo settled",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "obj.(*v1.Silo).Status.Restore = old.(*v1.Silo).Status.Restore // a worker cannot mark a silo settled",
+  "replace": "_ = old.(*v1.Silo).Status.Restore // a worker cannot mark a silo settled",
+  "mutation": "a worker's restore mark is stored",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "only the control plane marks a silo settled"
+ },
+ {
+  "id": "G-565",
+  "guard": "more than one copy freezes the silo",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(reporters) >= 2 { // two or more hosts reported a copy of this silo, the stored host included",
+  "replace": "if false && len(reporters) >= 2 { // two or more hosts reported a copy of this silo, the stored host included",
+  "mutation": "two copies are treated as none",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a silo held on more than one host stays frozen and keeps its placement"
+ },
+ {
+  "id": "G-566",
+  "guard": "no copy leaves the stored placement",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "st.Restore = marked(g.Spec.History, v1.RestoreSettled, nil) // no counted copy: the stored placement stands",
+  "replace": "st.Restore = marked(g.Spec.History, v1.RestoreSettled, nil); st.Host = \"\" // no counted copy: the stored placement stands",
+  "mutation": "no copy clears the stored placement",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a silo nobody holds keeps the placement the backup stored"
+ },
+ {
+  "id": "G-567",
+  "guard": "the one copy is the placement",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "st.Host, st.SiloIP, st.Phase = holders[0], \"\", \"Scheduled\" // the one copy is the placement",
+  "replace": "st.Host, st.SiloIP, st.Phase = st.Host, st.SiloIP, st.Phase // the one copy is the placement",
+  "mutation": "the one host that holds the copy is not where it is placed",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a silo held on one host is placed on that host"
+ },
+ {
+  "id": "G-568",
+  "guard": "a host that has not reported still decides nothing",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(waiting) > 0 { // a host that has not reported still decides nothing",
+  "replace": "if false && len(waiting) > 0 { // a host that has not reported still decides nothing",
+  "mutation": "a missing report is treated as no copy",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a silo stays pending until every host in the account has reported"
+ },
+ {
+  "id": "G-569",
+  "guard": "a confirmed-off host holds nothing",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if ConfirmedOff(g, name) { // confirmed off: it holds nothing this history will start",
+  "replace": "if false { // confirmed off: it holds nothing this history will start",
+  "mutation": "a confirmed-off host is still waited on",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a host confirmed off is not waited on and contributes no copy"
+ },
+ {
+  "id": "G-570",
+  "guard": "a host joined since the backup is part of the account",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "for _, n := range g.Spec.HostsAdded { // a host joined since the backup is part of the account",
+  "replace": "for _, n := range []string(nil) { // a host joined since the backup is part of the account",
+  "mutation": "a host added since the backup is not waited on",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "every host the operator says joined since the backup reports before a silo settles"
+ },
+ {
+  "id": "G-571",
+  "guard": "a required host during an open restore is deleted only when confirmed off",
+  "file": "internal/apiserver/restorehost.go",
+  "find": "if !confirmOff { // a required host during an open restore is deleted only when confirmed off",
+  "replace": "if false { // a required host during an open restore is deleted only when confirmed off",
+  "mutation": "a required host is deleted with no confirmation",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host the restored history is waiting on is deleted only when confirmed off"
+ },
+ {
+  "id": "G-572",
+  "guard": "a confirmed-off host is accounted in the restored history",
+  "file": "internal/apiserver/restorehost.go",
+  "find": "s.noteConfirmedOff(ctx, name) // a confirmed-off host is accounted in the restored history",
+  "replace": "_ = name // a confirmed-off host is accounted in the restored history",
+  "mutation": "a confirmed-off delete is not recorded",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "deleting a host with confirmation records that it is off"
+ },
+ {
+  "id": "G-573",
+  "guard": "no statement settles nothing",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if !HasStatement(g) { // no statement: nothing this history can settle",
+  "replace": "if false { // no statement: nothing this history can settle",
+  "mutation": "a restore with no statement settles silos",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "without the operator's statement about hosts, no silo from before the history settles"
+ },
+ {
+  "id": "G-574",
+  "guard": "a silo made in this history is settled at once",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if createdSince(s, g) { // made in this history: no earlier copy to find",
+  "replace": "if false { // made in this history: no earlier copy to find",
+  "mutation": "a new silo waits on hosts that cannot hold its copy",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a silo created after the history began is settled without waiting for older hosts"
+ },
+ {
+  "id": "G-575",
+  "guard": "a handoff in the backup is not cleared",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if st.Host != holders[0] && !moves.HandingOff(st) { // a handoff in the backup is not cleared here",
+  "replace": "if st.Host != holders[0] { // a handoff in the backup is not cleared here",
+  "mutation": "settlement rewrites a handoff",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a handoff recorded in the backup is left for the host that still has to let go"
+ },
+ {
+  "id": "G-576",
+  "guard": "a settled or frozen silo is not decided again",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "return st, false // decided once: a later report does not move it or unfreeze it",
+  "replace": "st.Phase = st.Phase // decided once: a later report does not move it or unfreeze it",
+  "mutation": "a later report moves or unfreezes a silo",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "once a silo is settled or frozen, a later report does not move it or unfreeze it"
+ },
+ {
+  "id": "G-577",
+  "guard": "the scheduler reads the open restore",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "env.Restore = c.openGate() // an unsettled silo is not scheduled",
+  "replace": "env.Restore = nil // an unsettled silo is not scheduled",
+  "mutation": "the scheduler ignores the open restore",
+  "packages": [
+   "./internal/controllers/silo"
+  ],
+  "protects": "the silo controller does not schedule an unsettled silo"
+ },
+ {
+  "id": "G-578",
+  "guard": "a restore names the hosts the backup cannot know",
+  "file": "internal/cli/kvoadm/kvoadm.go",
+  "find": "if o.Restore != \"\" && !o.NoHostsAdded && len(o.HostsAdded) == 0 { // a restore names the hosts the backup cannot know",
+  "replace": "if false { // a restore names the hosts the backup cannot know",
+  "mutation": "a restore with no statement about hosts is accepted",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init --restore requires a statement about hosts joined since the backup"
+ },
+ {
+  "id": "G-579",
+  "guard": "one statement about hosts, not both",
+  "file": "internal/cli/kvoadm/kvoadm.go",
+  "find": "if o.NoHostsAdded && len(o.HostsAdded) > 0 { // one statement, not both",
+  "replace": "if false { // one statement, not both",
+  "mutation": "both statements about hosts are accepted",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init --restore takes one statement about hosts, not both"
+ },
+ {
+  "id": "G-580",
+  "guard": "a host with no worker holds no copies",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "return h != nil && h.Spec.Components.Worker == nil // a host with no worker holds no copies",
+  "replace": "return false // a host with no worker holds no copies",
+  "mutation": "a control-plane host with no worker is still waited on",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a host with no worker component counts as reported and holds no copies"
+ },
+ {
+  "id": "G-581",
+  "guard": "a report counts only where the restored records allow the host",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if possibleHolder(name, st, g) { // a report counts only where the restored records allow this host",
+  "replace": "if true { // a report counts only where the restored records allow this host",
+  "mutation": "any reported copy takes the placement",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "during an unsettled restore a copy counts only from a host the restored records allow"
+ },
+ {
+  "id": "G-582",
+  "guard": "a live stored host is not moved by a report alone",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if st.Host != holder && storedLive(g, byName, st.Host) && !recordsName(holder, st) { // a live stored host is not moved by a report alone",
+  "replace": "if false { // a live stored host is not moved by a report alone",
+  "mutation": "a report moves a live stored host",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a single report does not move a silo off a live stored host unless the records already name that holder"
+ },
+ {
+  "id": "G-583",
+  "guard": "a stranger's claim does not start a second copy",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(strangers) > 0 && !listed(reporters, st.Host) && storedLive(g, byName, st.Host) { // one stranger, while the stored host is live and holds nothing",
+  "replace": "if false { // one stranger, while the stored host is live and holds nothing",
+  "mutation": "a stranger's claim settles the stored host",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a claim from a host the records do not allow does not start a second copy on a live stored host"
+ },
+ {
+  "id": "G-584",
+  "guard": "the only copy is neither end of the handoff",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if moves.HandingOff(st) && holder != st.Host && holder != st.MovingFrom { // the only copy is neither end of the handoff",
+  "replace": "if false { // the only copy is neither end of the handoff",
+  "mutation": "a handoff settles when the only copy is a third host",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a stored handoff whose only copy is neither end stays frozen, so two copies are not started"
+ },
+ {
+  "id": "G-585",
+  "guard": "a stale mount is cleared and the handle stays",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "st.Volumes[i].Mounted = false // stale mount: the handle stays, the controller detaches and attaches",
+  "replace": "st.Volumes[i].Mounted = true // stale mount: the handle stays, the controller detaches and attaches",
+  "mutation": "a stale mount is left mounted",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "when placement moves off a host that will not report, the mount is cleared and the volume handle is kept"
+ },
+ {
+  "id": "G-586",
+  "guard": "a live old host is left a handoff so it can let go",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "st.MovingFrom = from // the old host unmounts and lets go; the volumes controller then detaches and attaches",
+  "replace": "st.MovingFrom = \"\" // the old host unmounts and lets go; the volumes controller then detaches and attaches",
+  "mutation": "placement moves and the old host is not asked to let go",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "when placement moves off a live host, that host is left a handoff so it unmounts before the volume is detached"
+ },
+ {
+  "id": "G-587",
+  "guard": "a new history does not keep who was confirmed off",
+  "file": "internal/controlplane/restoregate.go",
+  "find": "cur.Spec.ConfirmedOff = nil // a new history does not keep who was confirmed off",
+  "replace": "cur.Spec.ConfirmedOff = cur.Spec.ConfirmedOff // a new history does not keep who was confirmed off",
+  "mutation": "a new restore keeps confirmed off",
+  "packages": [
+   "./internal/controlplane"
+  ],
+  "protects": "a new restore's history does not keep hosts confirmed off for an earlier history"
+ },
+ {
+  "id": "G-588",
+  "guard": "the host name is checked before anything is written",
+  "file": "internal/cli/kvoadm/backup.go",
+  "find": "if err != nil { // the host name is checked before anything is written",
+  "replace": "if false { // the host name is checked before anything is written",
+  "mutation": "a restore names a host the backup does not have",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init --restore refuses a host name the backup does not have before anything is written"
+ },
+ {
+  "id": "G-589",
+  "guard": "a given flag that differs from the installed unit is refused",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if clash := flagClash(parseExec(old), o); clash != \"\" { // a given flag that differs from the installed unit is refused",
+  "replace": "if clash := flagClash(parseExec(old), o); false { // a given flag that differs from the installed unit is refused",
+  "mutation": "a different name or address replaces the installed unit",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init refuses a host name, address, peer listen or join that differs from the installed unit unless --replace-unit"
+ },
+ {
+  "id": "G-590",
+  "guard": "an init that does not pass --name keeps the installed host name",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if !o.nameGiven { // an init that does not pass --name keeps the installed host name",
+  "replace": "if false { // an init that does not pass --name keeps the installed host name",
+  "mutation": "a second init replaces the installed host name",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init without --name keeps the installed host name"
+ },
+ {
+  "id": "G-591",
+  "guard": "an init that does not pass --internal-ip keeps the installed address",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if !o.internalGiven {",
+  "replace": "if false {",
+  "mutation": "a second init replaces the installed internal address",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init without --internal-ip keeps the installed internal address"
+ },
+ {
+  "id": "G-592",
+  "guard": "an init that does not pass --external-ip keeps the installed address",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if !o.externalGiven {",
+  "replace": "if false {",
+  "mutation": "a second init replaces the installed external address",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init without --external-ip keeps the installed external address"
+ },
+ {
+  "id": "G-593",
+  "guard": "an init that does not set the peer listen keeps the installed one",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if !o.etcdPeerGiven && o.EtcdPeerListen == \"\" {",
+  "replace": "if false {",
+  "mutation": "a second init replaces the installed etcd peer listen",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init keeps the installed etcd peer listen unless that flag is given"
+ },
+ {
+  "id": "G-594",
+  "guard": "a joined unit keeps its join flags",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if !o.joinGiven && o.Join == \"\" && f.value(\"--join\") != \"\" { // a joined unit keeps its join flags",
+  "replace": "if false { // a joined unit keeps its join flags",
+  "mutation": "a second init drops the installed join flags",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm init keeps a joined unit's --join, --join-token-file and --ca-file"
+ },
+ {
+  "id": "G-595",
+  "guard": "--flag=value is the same flag as --flag value",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "if name, val, ok := strings.Cut(f, \"=\"); ok && strings.HasPrefix(name, \"--\") && val != \"\" { // --flag=value is the same flag as --flag value",
+  "replace": "if name, val, ok := strings.Cut(f, \"=\"); ok && false { // --flag=value is the same flag as --flag value",
+  "mutation": "an equals-form flag in the unit is not read",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "the installed unit's --flag=value forms are read as that flag"
+ },
+ {
+  "id": "G-596",
+  "guard": "a continued ExecStart line is part of the command",
+  "file": "internal/cli/kvoadm/unitkeep.go",
+  "find": "more := strings.HasSuffix(strings.TrimRight(line, \" \\t\"), \"\\\\\") // a continued ExecStart line is part of the command",
+  "replace": "more := false // a continued ExecStart line is part of the command",
+  "mutation": "a continued ExecStart line is dropped",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "a backslash-continued ExecStart line is part of the installed command"
+ },
+ {
+  "id": "G-597",
+  "guard": "an unassigned ingress host names the field and the command",
+  "file": "api/v1/hostassign.go",
+  "find": "set IngressClass.spec.hosts, or add one with:",
+  "replace": "set the class hosts, or add one with:",
+  "mutation": "the refusal does not name IngressClass.spec.hosts",
+  "packages": [
+   "kevaso.com/core/api/v1"
+  ],
+  "protects": "a refused ingress host names IngressClass.spec.hosts and kvoadm ingress assign"
+ },
+ {
+  "id": "G-598",
+  "guard": "ingress install writes the hosts it was given",
+  "file": "internal/cli/kvoadm/ingress.go",
+  "find": "Public: o.Public, Hosts: o.Hosts, Controller:",
+  "replace": "Public: o.Public, Controller:",
+  "mutation": "ingress install drops the hosts it was given",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm ingress install records --host on the class it creates"
+ },
+ {
+  "id": "G-600",
+  "guard": "two reported copies freeze the silo",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(reporters) >= 2 { // two or more hosts reported a copy of this silo, the stored host included",
+  "replace": "if len(reporters) >= 3 { // two or more hosts reported a copy of this silo, the stored host included",
+  "mutation": "two hosts reporting a copy do not freeze the silo",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a silo two hosts report a copy of stays frozen"
+ },
+ {
+  "id": "G-601",
+  "guard": "the freeze names every host that reported a copy",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "return frozen(s, g, st, reporters)",
+  "replace": "return frozen(s, g, st, strangers)",
+  "mutation": "the stored host is left out of the freeze",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a freeze names every reporting holder, the stored host included"
+ },
+ {
+  "id": "G-602",
+  "guard": "one stranger freezes only while the stored host is live",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(strangers) > 0 && !listed(reporters, st.Host) && storedLive(g, byName, st.Host) { // one stranger, while the stored host is live and holds nothing",
+  "replace": "if len(strangers) > 0 && !listed(reporters, st.Host) && true { // one stranger, while the stored host is live and holds nothing",
+  "mutation": "a confirmed-off stored host also freezes on one copy elsewhere",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a confirmed-off stored host with exactly one copy elsewhere still settles"
+ },
+ {
+  "id": "G-603",
+  "guard": "one stranger freezes a live stored host that holds nothing",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(strangers) > 0 && !listed(reporters, st.Host) && storedLive(g, byName, st.Host) { // one stranger, while the stored host is live and holds nothing",
+  "replace": "if false { // one stranger, while the stored host is live and holds nothing",
+  "mutation": "a live stored host that holds nothing does not freeze on one copy elsewhere",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "one copy the records do not name freezes a live stored host that holds nothing"
+ },
+ {
+  "id": "G-604",
+  "guard": "one reported copy does not freeze",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if len(reporters) >= 2 { // two or more hosts reported a copy of this silo, the stored host included",
+  "replace": "if len(reporters) >= 1 { // two or more hosts reported a copy of this silo, the stored host included",
+  "mutation": "one copy elsewhere freezes the silo",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a confirmed-off stored host with exactly one copy elsewhere still settles"
+ },
+ {
+  "id": "G-605",
+  "guard": "the freeze condition reason is RestoreConflict",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "Reason: v1.ReasonRestoreConflict, // Frozen=True, RestoreConflict",
+  "replace": "Reason: \"Conflict\", // Frozen=True, RestoreConflict",
+  "mutation": "the Frozen condition reason is not RestoreConflict",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a frozen silo is Frozen=True with reason RestoreConflict"
+ },
+ {
+  "id": "G-606",
+  "guard": "the freeze names the settle command",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "return fmt.Sprintf(\"kvoadm restore settle %s -n %s --to %s\", name, namespace, host)",
+  "replace": "return fmt.Sprintf(\"kvoadm restore keep %s -n %s --to %s\", name, namespace, host)",
+  "mutation": "the command a freeze names is not restore settle",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a freeze tells the operator kvoadm restore settle SILO -n NS --to HOST"
+ },
+ {
+  "id": "G-607",
+  "guard": "settle refuses a host that reported no copy",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if !reportedThisCopy(found, g, s) { // a host that reported no copy of this silo is refused",
+  "replace": "if false { // a host that reported no copy of this silo is refused",
+  "mutation": "a host that reported no copy of this silo is accepted",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle refuses a host that has not reported a copy under this history"
+ },
+ {
+  "id": "G-608",
+  "guard": "settle refuses a silo that is not frozen",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if r == nil || r.Phase != v1.RestoreFrozen { // a silo that is not frozen is refused",
+  "replace": "if false { // a silo that is not frozen is refused",
+  "mutation": "a silo that is not frozen is settled",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle refuses a silo that is not frozen"
+ },
+ {
+  "id": "G-609",
+  "guard": "settle refuses a freeze from another history",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if r.History != g.Spec.History { // a freeze from another history is refused",
+  "replace": "if false && r.History != g.Spec.History { // a freeze from another history is refused",
+  "mutation": "a freeze from another history is settled",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle refuses a silo frozen under another history"
+ },
+ {
+  "id": "G-610",
+  "guard": "only a cluster-admin settles a frozen silo",
+  "file": "internal/apiserver/auth.go",
+  "find": "if t.restoreSettle { // only a cluster-admin settles a frozen silo",
+  "replace": "if false { // only a cluster-admin settles a frozen silo",
+  "mutation": "a role that is not cluster-admin settles a frozen silo",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "restore settle refuses a caller who is not a cluster-admin"
+ },
+ {
+  "id": "G-611",
+  "guard": "settle leaves no handoff",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.MovingFrom = \"\" // no handoff: the other copies stay stopped with their disks",
+  "replace": "st.MovingFrom = \"kept\" // no handoff: the other copies stay stopped with their disks",
+  "mutation": "settle leaves a handoff, which is what deletes the other disk",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle clears movingFrom so the other copies stay stopped with their disks"
+ },
+ {
+  "id": "G-612",
+  "guard": "settle is a planned write so a stored handoff can be cleared",
+  "file": "internal/apiserver/restoresettle.go",
+  "find": "status: true, planned: true}, silo) // restore settle clears a stored handoff",
+  "replace": "status: true, planned: false}, silo) // restore settle clears a stored handoff",
+  "mutation": "settle is an ordinary status write and cannot clear a stored handoff",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "restore settle clears a handoff the store already holds"
+ },
+ {
+  "id": "G-613",
+  "guard": "settle clears the old address",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.SiloIP = \"\" // the old address is not the placement's",
+  "replace": "_ = st.SiloIP // the old address is not the placement's",
+  "mutation": "settle keeps the old address",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle clears siloIP"
+ },
+ {
+  "id": "G-614",
+  "guard": "settle schedules the placement",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.Phase = \"Scheduled\"",
+  "replace": "st.Phase = \"Running\"",
+  "mutation": "settle marks the silo Running before it is placed",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle sets the phase to Scheduled"
+ },
+ {
+  "id": "G-615",
+  "guard": "settle marks this history settled",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.Restore = &v1.SiloRestore{History: history, Phase: v1.RestoreSettled, Holders: []string{host}}",
+  "replace": "st.Restore = &v1.SiloRestore{History: history, Phase: v1.RestoreFrozen, Holders: []string{host}}",
+  "mutation": "settle leaves the silo frozen",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle marks the silo settled for this history"
+ },
+ {
+  "id": "G-616",
+  "guard": "settle clears Frozen in the same write",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.Conditions = dropCondition(st.Conditions, v1.CondFrozen) // Frozen ends in the same write",
+  "replace": "_ = st.Conditions // Frozen ends in the same write",
+  "mutation": "settle leaves Frozen set",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle clears Frozen in the same write as the placement"
+ },
+ {
+  "id": "G-617",
+  "guard": "a copy placed elsewhere with no handoff is kept",
+  "file": "internal/agent/agent.go",
+  "find": "return false, fmt.Sprintf(\"placed on %q with no handoff from this host\", cur.Status.Host), nil",
+  "replace": "return true, \"placed elsewhere\", nil",
+  "mutation": "a copy placed elsewhere with no handoff is deleted",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a copy placed on another host with no handoff from this one is stopped and its disk kept"
+ },
+ {
+  "id": "G-618",
+  "guard": "the account prints one settle command per holder",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "for _, cmd := range f.cmds { // one settle command per holder",
+  "replace": "for _, cmd := range []string{} { // one settle command per holder",
+  "mutation": "the account prints no settle command",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "the restore account prints one kvoadm restore settle line per holder"
+ },
+ {
+  "id": "G-619",
+  "guard": "settle waits until every other copy is stopped",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if len(waiting) == 0 { // every other holder's report says that copy is stopped",
+  "replace": "waiting = nil\n\t\tif len(waiting) == 0 { // every other holder's report says that copy is stopped",
+  "mutation": "settle returns while another holder's copy is still running",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle waits until every other holder's report says that copy is stopped"
+ },
+ {
+  "id": "G-620",
+  "guard": "restore settle stays frozen until the other copies stop",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.Restore = &v1.SiloRestore{History: history, Phase: v1.RestoreFrozen, Holders: holdersOf(st, host), SettlingTo: host} // stays frozen: the chosen host starts nothing until the other copies stop",
+  "replace": "st.Restore = &v1.SiloRestore{History: history, Phase: v1.RestoreSettled, Holders: holdersOf(st, host), SettlingTo: host} // stays frozen: the chosen host starts nothing until the other copies stop",
+  "mutation": "restore settle marks the silo settled while another copy may still be running",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore settle does not mark the silo settled while another copy may still be running"
+ },
+ {
+  "id": "G-621",
+  "guard": "a report from before the placement does not count as stopped",
+  "file": "internal/apiserver/restoresettle.go",
+  "find": "silo.Status.Restore.Since = strconv.FormatInt(cur.Revision, 10) // a report at or before this write has not been made since",
+  "replace": "silo.Status.Restore.Since = \"0\" // a report at or before this write has not been made since",
+  "mutation": "the placement's revision is zero, so a report from before it counts as stopped",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a holder's report counts only when it was written after the placement"
+ },
+ {
+  "id": "G-622",
+  "guard": "a holder that has not reported since the placement has not stopped",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if err1 != nil || err2 != nil || rv <= bound { // a holder that has not reported since write 1 has not stopped",
+  "replace": "if err1 != nil || err2 != nil || rv <= bound-bound { // a holder that has not reported since write 1 has not stopped",
+  "mutation": "a report from before the placement counts as stopped",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a holder that has not reported since the placement is still running"
+ },
+ {
+  "id": "G-623",
+  "guard": "a copy still running has not stopped",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "return !c.Running // the report's Running flag: a copy still running has not stopped",
+  "replace": "return true // the report's Running flag: a copy still running has not stopped",
+  "mutation": "a copy the report says is running counts as stopped",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a holder whose report says the copy is running blocks settlement"
+ },
+ {
+  "id": "G-624",
+  "guard": "a confirmed-off holder does not have to report",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if ConfirmedOff(g, h) { // a confirmed-off holder starts nothing and will not report",
+  "replace": "if false { // a confirmed-off holder starts nothing and will not report",
+  "mutation": "a confirmed-off holder still has to report its copy stopped",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "a holder confirmed off does not block settlement"
+ },
+ {
+  "id": "G-625",
+  "guard": "a settling silo becomes settled only after the other copies stop",
+  "file": "internal/controllers/restore/settle.go",
+  "find": "if r.Phase == v1.RestoreFrozen && r.SettlingTo != \"\" { // write 1 placed it; settled only once every other copy has stopped",
+  "replace": "if false { // write 1 placed it; settled only once every other copy has stopped",
+  "mutation": "a silo placed by restore settle never becomes settled",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "the controller marks a settling silo settled once every other copy has stopped"
+ },
+ {
+  "id": "G-626",
+  "guard": "the chosen host's own copy does not have to be stopped",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "if h == chosen { // the chosen host is the one that will start; its copy is not required to be stopped",
+  "replace": "if false { // the chosen host is the one that will start; its copy is not required to be stopped",
+  "mutation": "the chosen host has to report its own copy stopped before it may start",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "settlement does not wait for the chosen host to stop the copy it is about to run"
+ },
+ {
+  "id": "G-627",
+  "guard": "settling never hands the disk off",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "st.MovingFrom = \"\" // settling never hands off: a handoff is what deletes the other disk",
+  "replace": "st.MovingFrom = host // settling never hands off: a handoff is what deletes the other disk",
+  "mutation": "settlement leaves a handoff, which is what deletes the other disk",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "settlement leaves no handoff, so the other disks stay"
+ },
+ {
+  "id": "G-628",
+  "guard": "status names the host whose copy has not stopped",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "return \"waiting for \" + host + \" to stop its copy\"",
+  "replace": "return \"pending \" + host",
+  "mutation": "status does not say which host it is waiting on",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "restore status says it is waiting for a host to stop its copy"
+ },
+ {
+  "id": "G-629",
+  "guard": "the settle wait tells the operator to confirm a cut-off host off",
+  "file": "internal/controllers/restore/operator.go",
+  "find": "return fmt.Errorf(\"%s/%s: %s: bring %s back, or run kvoadm host confirm-off %s\", namespace, name, strings.Join(lines, \"; \"), who, who)",
+  "replace": "return fmt.Errorf(\"%s/%s: %s: bring %s back\", namespace, name, strings.Join(lines, \"; \"), who)",
+  "mutation": "the settle wait does not say to confirm the host off",
+  "packages": [
+   "./internal/controllers/restore"
+  ],
+  "protects": "when the wait times out it says to bring that host back or confirm it off"
+ },
+ {
+  "id": "G-630",
+  "guard": "an image convert never starts kevasod",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "\"--property=Requisite=kevasod.service\", // refuse to start without kevasod; never start it",
+  "replace": "\"--property=BindsTo=kevasod.service\", // refuse to start without kevasod; never start it",
+  "mutation": "a convert started during a reset brings kevasod back",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a stopped kevasod stays stopped: a confined convert never pulls it in"
+ }
 ]

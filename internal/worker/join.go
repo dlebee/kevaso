@@ -16,6 +16,7 @@ import (
 	"kevaso.com/core/internal/boottime"
 	"kevaso.com/core/internal/clock"
 	hostctl "kevaso.com/core/internal/controllers/host"
+	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/version"
 )
 
@@ -44,20 +45,30 @@ func Join(ctx context.Context, cfg JoinConfig) (*client.Client, error) {
 	cert, cerr := os.ReadFile(certPath)
 	key, kerr := os.ReadFile(keyPath)
 	if cerr == nil && kerr == nil {
-		c, err := client.NewTLSEndpoints(Servers(cfg.Server, cfg.DataDir), ca, cert, key)
-		if err != nil {
-			return nil, err
+		if certificateExpired(cert, time.Now()) { // an expired certificate is not reused
+			if _, err := os.Stat(cfg.TokenFile); err != nil {
+				return nil, fmt.Errorf("host %s certificate in %s has expired. Join again with kvoadm host add", cfg.HostName, dir)
+			}
+			if err := movePKIAside(dir, "expired"); err != nil { // never deleted: the old key stays under a dated name
+				return nil, fmt.Errorf("moving %s aside: %w", dir, err)
+			}
+			cerr, kerr = os.ErrNotExist, os.ErrNotExist
+		} else {
+			c, err := client.NewTLSEndpoints(Servers(cfg.Server, cfg.DataDir), ca, cert, key)
+			if err != nil {
+				return nil, err
+			}
+			if !certificateRemoved(ctx, c, cfg.HostName) { // any other error keeps the stored certificate
+				return c, nil
+			}
+			if _, err := os.Stat(cfg.TokenFile); err != nil {
+				return nil, fmt.Errorf("host %s was removed from the cluster; its certificate in %s is refused. Move %s aside and join again with kvoadm host add", cfg.HostName, dir, dir)
+			}
+			if err := movePKIAside(dir, "removed"); err != nil { // never deleted: the old key stays under a dated name
+				return nil, fmt.Errorf("moving %s aside: %w", dir, err)
+			}
+			cerr, kerr = os.ErrNotExist, os.ErrNotExist
 		}
-		if !certificateRemoved(ctx, c, cfg.HostName) { // any other error keeps the stored certificate
-			return c, nil
-		}
-		if _, err := os.Stat(cfg.TokenFile); err != nil {
-			return nil, fmt.Errorf("host %s was removed from the cluster; its certificate in %s is refused. Move %s aside and join again with kvoadm host add", cfg.HostName, dir, dir)
-		}
-		if err := movePKIAside(dir); err != nil { // never deleted: the old key stays under a dated name
-			return nil, fmt.Errorf("moving %s aside: %w", dir, err)
-		}
-		cerr, kerr = os.ErrNotExist, os.ErrNotExist
 	}
 	if cerr != nil || kerr != nil {
 		tok, err := os.ReadFile(cfg.TokenFile)
@@ -94,12 +105,22 @@ func certificateRemoved(ctx context.Context, c *client.Client, host string) bool
 	return client.HostWasRemoved(c.Get(ctx, "Host", "", host, &h))
 }
 
-// movePKIAside renames dir to a dated sibling. It does not delete it.
-func movePKIAside(dir string) error {
+// certificateExpired reports whether the stored certificate is past its NotAfter. A PEM that
+// isn't a certificate is not this: Join reports the parse error instead of moving it aside.
+func certificateExpired(pemBytes []byte, now time.Time) bool {
+	_, na, ok := pki.CertificateLifetime(pemBytes)
+	return ok && !now.Before(na)
+}
+
+// movePKIAside renames dir to a dated sibling (pki.removed-…, pki.expired-…). It does not delete it.
+func movePKIAside(dir, why string) error {
+	if why == "" {
+		why = "removed"
+	}
 	stamp := time.Now().UTC().Format("20060102T150405Z")
-	aside := dir + ".removed-" + stamp
+	aside := dir + "." + why + "-" + stamp
 	if _, err := os.Stat(aside); err == nil {
-		aside = dir + ".removed-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+		aside = dir + "." + why + "-" + time.Now().UTC().Format("20060102T150405.000000000Z")
 	}
 	return os.Rename(dir, aside)
 }

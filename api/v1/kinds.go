@@ -51,6 +51,7 @@ func init() {
 	register(KindInfo{Kind: "MutationPolicy", Plural: "mutationpolicies", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &MutationPolicy{} }})
 	register(KindInfo{Kind: "Plugin", Plural: "plugins", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &Plugin{} }})
 	register(KindInfo{Kind: "ServiceAccount", Plural: "serviceaccounts", ShortNames: []string{"sa"}, Scope: Namespaced, New: func() meta.Object { return &ServiceAccount{} }})
+	register(KindInfo{Kind: "RestoreGate", Plural: "restoregates", Scope: Cluster, HasSpec: true, New: func() meta.Object { return &RestoreGate{} }})
 }
 
 // Lookup finds a kind by its name ("Silo") or plural ("silos").

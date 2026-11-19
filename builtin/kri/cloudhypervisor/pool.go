@@ -19,8 +19,9 @@ import (
 //
 // The command runs in its own transient scope in system.slice, outside kevasod's cgroup, so
 // the restart's cgroup kill does not reach it. A scope, rather than KillMode=process on
-// kevasod: that would spare every child, and a restart is supposed to kill qemu-img convert so
-// a half-made disk is made again and never booted. KillMode would also not cover systemctl
+// kevasod: that would spare every child. qemu-img convert runs in its own transient unit, bound
+// to kevasod and shown only the image and the target, so a restart stops a half-made disk and it
+// is made again and never booted. That unit is not this scope. KillMode would also not cover systemctl
 // kill, which signals the whole cgroup whatever KillMode says, and it lives in the unit file,
 // which an already-installed host does not pick up until that file is rewritten. A scope is one
 // command, it inherits this process's environment (LVM's errors stay what run reports), and

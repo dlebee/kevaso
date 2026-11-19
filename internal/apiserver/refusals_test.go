@@ -104,6 +104,8 @@ var refusals = []refusal{
 	{"Silo", []string{`spec.ports=[{"name":"web","port":80}]`, `spec.service={"ports":[{"port":"web","as":443}]}`}, "service.ports[web].as: only with hostPort or loadBalancer"},
 	{"Silo", []string{`spec.ports=[{"name":"web","port":80}]`, `spec.service={"ports":[{"port":"web","sources":["10.0.0.0/8"]}]}`}, "service.ports[web].sources: only with hostPort or loadBalancer"},
 	{"Silo", []string{`spec.ports=[{"name":"web","port":80}]`, `spec.service={"ports":[{"port":"web","hostPort":["external"],"as":70000}]}`}, "service.ports[web].as: 70000 isn't from 1 to 65535"},
+	{"Silo", []string{`spec.ports=[{"name":"web","port":80}]`, `spec.service={"ports":[{"port":"web","hostPort":["external"],"as":6443}]}`}, "6443 is the API, which a silo may not take"},
+	{"SiloSet", []string{`spec.template.ports=[{"name":"web","port":80}]`, `spec.template.service={"ports":[{"port":"web","hostPort":["external"],"as":6443}]}`}, "6443 is the API, which a silo may not take"},
 	{"Silo", []string{`spec.ports=[{"name":"web","port":80}]`, `spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":["10.0.0.0/33"]}]}`}, `service.ports[web].sources: "10.0.0.0/33" isn't an address or CIDR`},
 	{"Silo", []string{`spec.ports=[{"name":"web","port":80}]`, `spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":["2001:db8::/32"]}]}`}, `service.ports[web].sources: "2001:db8::/32"`},
 	{"Silo", []string{`spec.ports=[{"name":"web","port":80}]`, `spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":["2001:db8::1"]}]}`}, `service.ports[web].sources: "2001:db8::1"`},

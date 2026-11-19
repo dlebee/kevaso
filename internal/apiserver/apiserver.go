@@ -37,6 +37,7 @@ import (
 	"kevaso.com/core/internal/ingress"
 	"kevaso.com/core/internal/leases"
 	"kevaso.com/core/internal/moves"
+	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/rbac"
 	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/internal/secrets"
@@ -71,7 +72,18 @@ type Server struct {
 	policies policyCache // the admission policies (policies.go)
 	logf     func(string, ...any)
 	drain    time.Duration // silo streams' drain (default streamDrain): tests shorten it
+
+	apiNames   []string // this process's API names (cluster DNS, extra names, its own); hosts add theirs
+	internalCA *pki.CA  // signs internal-ca certificates; not the CA clients pin for the API
 }
+
+// SetAPINames records names of this API server (its host name, addresses, cluster DNS, extra
+// names). A certificate for one of them is refused. Other system nodes' names are read from Hosts.
+func (s *Server) SetAPINames(names []string) { s.apiNames = append([]string(nil), names...) }
+
+// SetInternalCA is the CA internal-ca signs with. Its certificate is served at /internal-ca.crt.
+// It is not added to the pool API clients pin.
+func (s *Server) SetInternalCA(ca *pki.CA) { s.internalCA = ca }
 
 // SetLog is where the server logs what no client hears of (a silo stream that broke).
 func (s *Server) SetLog(f func(string, ...any)) { s.logf = f }
@@ -159,19 +171,20 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 // target is what a request path names.
 type target struct {
-	kind      v1.KindInfo
-	namespace string
-	name      string
-	status    bool
-	exec      bool   // a silo's /exec
-	token     bool   // a service account's /token
-	value     bool   // a secret's /value
-	move      bool   // a silo's /move
-	planned   bool   // a write the move handler's PlanMove decided (set only by moveSilo)
-	answer    string // an approval's /approve or /deny
-	bundle    bool   // a pane's /bundle
-	stream    string // a silo's /ssh or /files (silostreams.go)
-	lease     string // a silo's /open or /close (leases.go)
+	kind          v1.KindInfo
+	namespace     string
+	name          string
+	status        bool
+	exec          bool   // a silo's /exec
+	token         bool   // a service account's /token
+	value         bool   // a secret's /value
+	move          bool   // a silo's /move
+	restoreSettle bool   // a silo's /restore-settle
+	planned       bool   // a write the move handler's PlanMove decided, or restore settle clearing a stored handoff
+	answer        string // an approval's /approve or /deny
+	bundle        bool   // a pane's /bundle
+	stream        string // a silo's /ssh or /files (silostreams.go)
+	lease         string // a silo's /open or /close (leases.go)
 
 	def   *definedKind // a kind defined by a KindDefinition (kinds.go); nil for built-ins
 	scale bool         // a defined kind's /scale (scale.go)
@@ -206,6 +219,8 @@ func parsePath(path string) (target, error) {
 		t.stream = parts[2]
 	case len(parts) == 3 && parts[2] == "move" && k.Kind == "Silo":
 		t.move = true
+	case len(parts) == 3 && parts[2] == "restore-settle" && k.Kind == "Silo":
+		t.restoreSettle = true
 	case len(parts) == 3 && (parts[2] == "open" || parts[2] == "close") && k.Kind == "Silo":
 		t.lease = parts[2]
 	case len(parts) == 3 && parts[2] == "token" && k.Kind == "ServiceAccount":
@@ -242,6 +257,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.siloFiles(w, r, t.namespace, t.name)
 	case t.move:
 		s.moveSilo(w, r, t)
+	case t.restoreSettle:
+		s.restoreSettle(w, r, t)
 	case t.lease != "":
 		s.siloLease(w, r, t)
 	case t.token:
@@ -638,7 +655,8 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "ClusterSecret %s: status is set by the server when the value changes", t.name)
 	}
 	om := obj.GetObjectMeta()
-	if om.ResourceVersion == "" {
+	version := om.ResourceVersion // admit clears it on the object; the claim needs the write's version
+	if version == "" {
 		return store.Object{}, errf(http.StatusBadRequest, "BadRequest", "metadata.resourceVersion is required on update (read the object first)")
 	}
 	expected, err := strconv.ParseInt(om.ResourceVersion, 10, 64)
@@ -667,6 +685,7 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		if err := s.siloIPInSubnet(ctx, old.(*v1.Silo).Status, obj.(*v1.Silo).Status, id.Name); err != nil {
 			return store.Object{}, err
 		}
+		obj.(*v1.Silo).Status.Restore = old.(*v1.Silo).Status.Restore // a worker cannot mark a silo settled
 	}
 	if id, ok := IdentityFrom(ctx); (!ok || id.Type != "host" || id.Role != "worker") && t.kind.Kind == "Silo" && t.status && !t.planned {
 		// K-070: whatever the caller does, a handoff under way is not replaced or dropped. The
@@ -807,12 +826,30 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 	if err != nil {
 		return store.Object{}, err
 	}
+	var release func()
+	if !t.status && !dryRun(ctx) {
+		var rel func()
+		rel, err = s.claimAddedHostPorts(ctx, old, admitted, version) // a placed silo's new host port is claimed before the write
+		if err != nil {
+			return store.Object{}, err
+		}
+		release = rel
+	}
 	prev := bytes.Clone(cur.Data)
 	o, err := s.commitUpdate(ctx, t.key(), data, expected)
-	if err != nil || dryRun(ctx) {
+	if err != nil {
+		if release != nil {
+			release()
+		}
+		return o, err
+	}
+	if dryRun(ctx) {
 		return o, err
 	}
 	if err := s.recheckNewNames(ctx, seen); err != nil {
+		if release != nil {
+			release()
+		}
 		if _, rerr := s.store.Update(ctx, t.key(), prev, o.Revision); rerr != nil && !errors.Is(rerr, store.ErrNotFound) {
 			return store.Object{}, fmt.Errorf("%s names a namespace being deleted, and restoring it failed: %w", t.key(), rerr)
 		}
@@ -918,6 +955,17 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 				writeErr(w, err)
 				return
 			}
+			if err := s.guardRestoreHost(ctx, t.name, r.URL.Query().Get("confirmOff") == "true"); err != nil {
+				if hostRevoked {
+					if uerr := s.restoreHostRemoval(ctx, t.name, hostPrev); uerr != nil {
+						writeErr(w, uerr)
+						return
+					}
+					hostRevoked = false
+				}
+				writeErr(w, err)
+				return
+			}
 		}
 		if len(om.Finalizers) == 0 {
 			if _, err := s.commitDelete(ctx, t.key(), cur.Revision); errors.Is(err, store.ErrConflict) {
@@ -933,6 +981,9 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			if hostRevoked {
 				s.finalizeHostRemoval(ctx, t.name) // the delete committed: the removal is final
 				s.closeHostStreams(t.name)         // on this member now, whether or not that write held
+			}
+			if t.kind.Kind == "Host" {
+				s.accountedHostDelete(ctx, t.name, r.URL.Query().Get("confirmOff") == "true")
 			}
 			writeJSON(w, http.StatusOK, Status{Code: http.StatusOK, Reason: "Deleted", Message: t.key().String() + " deleted"})
 			return
@@ -959,6 +1010,9 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		if hostRevoked {
 			s.finalizeHostRemoval(ctx, t.name) // marked for deletion: the removal is final
 			s.closeHostStreams(t.name)
+		}
+		if t.kind.Kind == "Host" {
+			s.accountedHostDelete(ctx, t.name, r.URL.Query().Get("confirmOff") == "true")
 		}
 		b, err := render(cur)
 		if err != nil {
@@ -1031,22 +1085,30 @@ func (s *Server) ensureBuiltins(ctx context.Context) error {
 }
 
 // checkExposure: making silos reachable from outside is its own permission, create on
-// services/expose-public in the namespace (design §7.2a), on top of writing the object: a silo
-// exposed with hostPort or loadBalancer, a SiloSet whose instances would be (its controller makes
-// them, so the check is here), and a Service of type LoadBalancer. Status writes don't change the
-// spec, so they don't need it.
+// services/expose-public in the namespace (design §7.2a), on top of writing the object. It is
+// judged field by field. An update that only removes or tightens what is already open needs
+// nothing extra. Adding an outside port, a network, or a load balancer, changing the number or
+// the class, widening sources, dropping a lease or its approval, a selector that newly matches a
+// silo, or an Ingress backend on a leased port, does. A SiloSet is judged on its template. Status
+// writes don't change the spec, so they don't need it.
 func (s *Server) checkExposure(ctx context.Context, t target, obj meta.Object) error {
-	if t.status || s.auth == nil {
+	if t.status || s.auth == nil || !exposureRelevant(obj) {
 		return nil
 	}
-	how := exposure(obj)
-	if how == "" {
-		return nil
-	}
-	if old, err := s.store.Get(ctx, t.key()); err == nil { // already exposed the same way: nothing new
-		if prev, _, err := v1.Decode(old.Data); err == nil && exposure(prev) == how {
-			return nil
+	var prev meta.Object
+	if old, err := s.store.Get(ctx, t.key()); err == nil {
+		if p, _, derr := v1.Decode(old.Data); derr == nil {
+			prev = p
 		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	silos, svcs, err := s.silosAndServices(ctx, t.namespace)
+	if err != nil {
+		return err
+	}
+	if !exposureLoosened(prev, obj, silos, svcs) { // an update that only removes or tightens outside reach needs no extra permission
+		return nil
 	}
 	id, _ := IdentityFrom(ctx)
 	if id == LocalAdmin || id == Component || id.Type == "host" {

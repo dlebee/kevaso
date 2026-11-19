@@ -54,7 +54,7 @@ func TestK019OnlyTheCertificatesOwnSecretIsWrittenOrDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	ca, _ := pki.NewCA("test", time.Now())
-	builtin, _ := BuiltinCertControllers(nil, nil, ca, time.Now, nil).Get(IssuerInternal)
+	builtin, _ := BuiltinCertControllers(nil, nil, nil, ca, time.Now, nil).Get(IssuerInternal)
 	cc := &countingCC{CertController: builtin}
 	certs, ings := informer.New(c, "Certificate"), informer.New(c, "Ingress")
 	go certs.Run(ctx)
@@ -87,7 +87,7 @@ func TestK019OnlyTheCertificatesOwnSecretIsWrittenOrDeleted(t *testing.T) {
 	}
 	// A label is anyone's to write: it proves nothing.
 	bad := &v1.Certificate{TypeMeta: tm("Certificate"), ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "shop", Labels: map[string]string{LabelIngress: "web"}},
-		Spec: v1.CertificateSpec{Hosts: []string{"shop.example"}, Issuer: IssuerInternal, SecretName: "db"}}
+		Spec: v1.CertificateSpec{Hosts: []string{"web.shop.kevaso"}, Issuer: IssuerInternal, SecretName: "db"}}
 	if err := c.Create(ctx, bad); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestK019OnlyTheCertificatesOwnSecretIsWrittenOrDeleted(t *testing.T) {
 
 	// Its own Secret: made with the marker, written again on renewal.
 	own := &v1.Certificate{TypeMeta: tm("Certificate"), ObjectMeta: meta.ObjectMeta{Name: "site", Namespace: "shop", Labels: map[string]string{LabelIngress: "site"}},
-		Spec: v1.CertificateSpec{Hosts: []string{"site.example"}, Issuer: IssuerInternal, SecretName: "site-tls"}}
+		Spec: v1.CertificateSpec{Hosts: []string{"site.shop.kevaso"}, Issuer: IssuerInternal, SecretName: "site-tls"}}
 	if err := c.Create(ctx, own); err != nil {
 		t.Fatal(err)
 	}

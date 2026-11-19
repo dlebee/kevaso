@@ -89,15 +89,18 @@ func TestMetal2LongSoakSetup(t *testing.T) {
 	p.ensureTwoWorkers()
 	c := p.c1
 	c.apply("apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: " + longSoakNS + " }\n")
+	ns := longSoakNS
+	n1 := "soak." + strings.ReplaceAll(p.m1.cfg.ExternalIP, ".", "-") + ".sslip.io"
+	n2 := "soak." + strings.ReplaceAll(p.m2.cfg.ExternalIP, ".", "-") + ".sslip.io"
 	var o strings.Builder
-	if code := kvoadm.Run(c.ctx, []string{"ingress", "install", "--host-port", "external", "--context", "metal2"}, strings.NewReader(""), &o, &o); code != 0 {
+	if code := kvoadm.Run(c.ctx, []string{"ingress", "install", "--host-port", "external", "--context", "metal2",
+		"--host", n1 + "=" + ns, "--host", n2 + "=" + ns}, strings.NewReader(""), &o, &o); code != 0 {
 		t.Fatalf("kvoadm ingress install: exit %d\n%s", code, o.String())
 	}
 	c.waitRunning("kevaso-system", 10*time.Minute, "ingress-public")
 	edge := c.silo("kevaso-system", "ingress-public").Status.Host
 	ip := map[string]string{metalHost: p.m1.cfg.ExternalIP, metalHost2: p.m2.cfg.ExternalIP}[edge]
 	name := "soak." + strings.ReplaceAll(ip, ".", "-") + ".sslip.io"
-	ns := longSoakNS
 	c.apply(vmEcho(ns, "vm", 8080) + on(metalHost2) + "  volumes: [{ name: data, size: 1Gi, mountPath: /data }]\n---\n" +
 		boxEcho(ns, "app", 8080) + on(metalHost) + "  ports: [{ name: http, port: 8080 }]\n  service:\n    ports: [{ port: http }]\n---\n" +
 		boxEcho(ns, "stops", 8080) + on(metalHost2) + "  availability: { onControlPlaneLoss: Stop, after: 2m }\n---\n" +

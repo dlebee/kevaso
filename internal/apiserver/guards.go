@@ -45,7 +45,9 @@ func (s *Server) guard(ctx context.Context, t target, old, obj meta.Object) erro
 	}
 	for _, check := range []func(context.Context, target, meta.Object) error{
 		s.checkExposure,
+		s.checkClusterHostPorts,
 		s.checkPublishPublic,
+		s.checkHostAssignment,
 		s.checkSecretUse,
 		s.checkOpenShellPolicyNames,
 		s.checkImages,
@@ -69,6 +71,9 @@ func (s *Server) guard(ctx context.Context, t target, old, obj meta.Object) erro
 // class it's on, which grants a silo has and which secrets a grant names.
 func privileges(obj meta.Object) string {
 	p := exposure(obj)
+	if f := exposureFacts(obj); f != "" {
+		p += "|" + f
+	}
 	switch o := obj.(type) {
 	case *v1.Silo:
 		g := slices.Clone(o.Spec.Grants)

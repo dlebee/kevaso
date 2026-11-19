@@ -53,7 +53,8 @@ func testEachOutsideNameBlocksNamespaceDelete(t *testing.T) {
 		Spec: v1.ServiceSpec{Selector: map[string]string{"app": "front"}, Ports: []v1.ServicePortSpec{{Name: "http", Port: 80}}}}))
 	// The class names shop, where its controller would live, not web3.
 	must(e.admin.Create(e.ctx, &v1.IngressClass{TypeMeta: tm("IngressClass"), ObjectMeta: meta.ObjectMeta{Name: "office"},
-		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Namespace: "shop", Silo: "edge"}}}))
+		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Namespace: "shop", Silo: "edge"},
+			Hosts: []v1.HostAssignment{{Host: "shop.example.com", Namespaces: []string{"shop"}}}}}))
 	must(e.admin.Create(e.ctx, &v1.Ingress{TypeMeta: tm("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "shop"},
 		Spec: v1.IngressSpec{IngressClass: "office", Hosts: []string{"shop.example.com"},
 			Rules: []v1.IngressRule{{Service: v1.IngressTarget{Name: "front", Port: "http"}}}}}))

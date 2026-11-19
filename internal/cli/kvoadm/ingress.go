@@ -28,13 +28,14 @@ type IngressOptions struct {
 	Image    string            // default: the driver's vendor image
 	Runtime  string            // default docker
 	Options  map[string]string // the driver's options
+	Hosts    []v1.HostAssignment
 	Context  string
 }
 
 func parseIngress(args []string) (IngressOptions, error) {
 	o := IngressOptions{Class: "public", Driver: "nginx", Runtime: "docker"}
 	if len(args) == 0 || args[0] != "install" {
-		return o, errors.New("ingress install [--class NAME] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --lb-class CLASS] [--image REF] [--runtime NAME] [--option K=V]…")
+		return o, errors.New("ingress install [--class NAME] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --lb-class CLASS] [--host NAME=NAMESPACE[,NAMESPACE]]… [--image REF] [--runtime NAME] [--option K=V]…")
 	}
 	for i := 1; i < len(args); i++ {
 		a := args[i]
@@ -66,6 +67,10 @@ func parseIngress(args []string) (IngressOptions, error) {
 			o.Runtime, err = val()
 		case "--context":
 			o.Context, err = val()
+		case "--host":
+			if v, err = val(); err == nil {
+				err = o.addHost(v)
+			}
 		case "--option":
 			if v, err = val(); err == nil {
 				k, value, ok := strings.Cut(v, "=")
@@ -91,6 +96,52 @@ func parseIngress(args []string) (IngressOptions, error) {
 		o.HostPort = v1.NetworkExternal
 	}
 	return o, nil
+}
+
+// addHost records one --host NAME=NAMESPACE[,NAMESPACE]. NAME may be a suffix (*.example.com).
+func (o *IngressOptions) addHost(v string) error {
+	host, ns, ok := strings.Cut(v, "=")
+	if !ok || strings.TrimSpace(host) == "" || strings.TrimSpace(ns) == "" {
+		return fmt.Errorf("--host %s: want NAME=NAMESPACE[,NAMESPACE] (NAME may be a suffix *.example.com)", v)
+	}
+	host = v1.NormalizeDNS(host)
+	if !v1.ValidHostPattern(host) {
+		return fmt.Errorf("--host %s: %q is not a host name or a suffix *.example.com", v, host)
+	}
+	var nss []string
+	seen := map[string]bool{}
+	for _, n := range strings.Split(ns, ",") {
+		n = strings.TrimSpace(n)
+		if n == "" || strings.ContainsAny(n, " \t=") {
+			return fmt.Errorf("--host %s: namespace %q is not a name", v, n)
+		}
+		if !seen[n] {
+			seen[n] = true
+			nss = append(nss, n)
+		}
+	}
+	o.Hosts = addAssignment(o.Hosts, v1.HostAssignment{Host: host, Namespaces: nss})
+	return nil
+}
+
+func addAssignment(hosts []v1.HostAssignment, a v1.HostAssignment) []v1.HostAssignment {
+	for i := range hosts {
+		if hosts[i].Host != a.Host {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, n := range hosts[i].Namespaces {
+			seen[n] = true
+		}
+		for _, n := range a.Namespaces {
+			if !seen[n] {
+				seen[n] = true
+				hosts[i].Namespaces = append(hosts[i].Namespaces, n)
+			}
+		}
+		return hosts
+	}
+	return append(hosts, a)
 }
 
 // IngressObjects are what kvoadm ingress install creates: the controller silo (the driver's
@@ -139,13 +190,16 @@ func IngressObjects(o IngressOptions, drivers kic.Registry) (*v1.Silo, *v1.Ingre
 		Spec: v1.SiloSpec{Runtime: o.Runtime, Container: &v1.ContainerSource{Image: image}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
 			Ports: declared, Service: svc}}
 	class := &v1.IngressClass{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IngressClass"}, ObjectMeta: meta.ObjectMeta{Name: o.Class},
-		Spec: v1.IngressClassSpec{Public: o.Public, Controller: v1.IngressController{Driver: o.Driver, Options: o.Options, Namespace: "kevaso-system", Silo: name}}}
+		Spec: v1.IngressClassSpec{Public: o.Public, Hosts: o.Hosts, Controller: v1.IngressController{Driver: o.Driver, Options: o.Options, Namespace: "kevaso-system", Silo: name}}}
 	return silo, class, nil
 }
 
 // ingressCmd runs kvoadm ingress install, as a cluster-admin of the current kvo context: one
 // command for an ingress class served by a stock proxy (design §7.3).
 func ingressCmd(ctx context.Context, args []string, stdout io.Writer) error {
+	if len(args) > 0 && args[0] == "assign" {
+		return ingressAssign(ctx, args[1:], stdout)
+	}
 	o, err := parseIngress(args)
 	if err != nil {
 		return err
@@ -171,7 +225,12 @@ func ingressCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		if err := c.Create(ctx, obj); err != nil && !client.IsAlreadyExists(err) {
 			return fmt.Errorf("%s %s: %w", obj.GetTypeMeta().Kind, obj.GetObjectMeta().Name, err)
 		} else if client.IsAlreadyExists(err) {
-			_, _ = fmt.Fprintf(stdout, "→ %s %s is already there: left as it is\n", obj.GetTypeMeta().Kind, obj.GetObjectMeta().Name)
+			if _, ok := obj.(*v1.IngressClass); ok && len(o.Hosts) > 0 {
+				_, _ = fmt.Fprintf(stdout, "→ IngressClass %s is already there: left as it is. Add a host with: kvoadm ingress assign %s --host NAME=%s\n",
+					obj.GetObjectMeta().Name, obj.GetObjectMeta().Name, o.Hosts[0].Namespaces[0])
+			} else {
+				_, _ = fmt.Fprintf(stdout, "→ %s %s is already there: left as it is\n", obj.GetTypeMeta().Kind, obj.GetObjectMeta().Name)
+			}
 			continue
 		}
 		_, _ = fmt.Fprintf(stdout, "→ %s %s\n", obj.GetTypeMeta().Kind, obj.GetObjectMeta().Name)
@@ -183,5 +242,74 @@ func ingressCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	_, _ = fmt.Fprintf(stdout, "Ingress class %s: %s (%s) in silo kevaso-system/%s, %s. Kevaso writes its config from outside;\n",
 		class.Name, o.Driver, silo.Spec.From(), silo.Name, where)
 	_, _ = fmt.Fprintf(stdout, "see it with: kvo get ingressclass %s -o yaml\n", class.Name)
+	if len(o.Hosts) == 0 {
+		_, _ = fmt.Fprintf(stdout, "No host is assigned yet. An Ingress is refused until one is: kvoadm ingress assign %s --host NAME=NAMESPACE\n", class.Name)
+		_, _ = fmt.Fprintf(stdout, "(NAME may be a suffix *.example.com), or set IngressClass.spec.hosts.\n")
+	}
+	return nil
+}
+
+// ingressAssign adds host assignments to an IngressClass that is already there.
+func ingressAssign(ctx context.Context, args []string, stdout io.Writer) error {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return errors.New("ingress assign CLASS --host NAME=NAMESPACE[,NAMESPACE]… [--context NAME]")
+	}
+	var o IngressOptions
+	o.Class = args[0]
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		switch a {
+		case "--host":
+			if i+1 >= len(args) {
+				return errors.New("--host needs NAME=NAMESPACE[,NAMESPACE]")
+			}
+			i++
+			if err := o.addHost(args[i]); err != nil {
+				return err
+			}
+		case "--context":
+			if i+1 >= len(args) {
+				return errors.New("--context needs a value")
+			}
+			i++
+			o.Context = args[i]
+		default:
+			if name, value, ok := strings.Cut(a, "="); ok && name == "--host" {
+				if err := o.addHost(value); err != nil {
+					return err
+				}
+				continue
+			}
+			return fmt.Errorf("unknown flag %s", a)
+		}
+	}
+	if len(o.Hosts) == 0 {
+		return errors.New("ingress assign CLASS --host NAME=NAMESPACE[,NAMESPACE]… [--context NAME]")
+	}
+	path, err := kvoconfig.Path()
+	if err != nil {
+		return err
+	}
+	cfg, err := kvoconfig.Load(path)
+	if err != nil {
+		return err
+	}
+	c, _, err := cfg.Client(path, o.Context)
+	if err != nil {
+		return err
+	}
+	var class v1.IngressClass
+	if err := c.Get(ctx, "IngressClass", "", o.Class, &class); err != nil {
+		return fmt.Errorf("IngressClass %s: %w", o.Class, err)
+	}
+	for _, h := range o.Hosts {
+		class.Spec.Hosts = addAssignment(class.Spec.Hosts, h)
+	}
+	if err := c.Update(ctx, &class); err != nil {
+		return fmt.Errorf("IngressClass %s: %w", o.Class, err)
+	}
+	for _, h := range o.Hosts {
+		_, _ = fmt.Fprintf(stdout, "→ IngressClass %s assigns %s to %s\n", class.Name, h.Host, strings.Join(h.Namespaces, ", "))
+	}
 	return nil
 }

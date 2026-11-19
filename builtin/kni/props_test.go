@@ -113,8 +113,13 @@ func genClusterOf(r *rand.Rand) genCluster {
 				for _, n := range sp.HostPort {
 					ok = ok && !held[fmt.Sprintf("%s %s %d", n, d.Proto(), at)]
 				}
-				if !ok { // another silo on this host has it: the scheduler wouldn't put this one here
-					sp.HostPort, sp.As, sp.Sources, sp.LoadBalancer = nil, 0, nil, false
+				if !ok || (len(sp.HostPort) > 0 && v1.ReservedHostPort(at) != "") {
+					// Another silo on this host has it, or the number is one the platform listens
+					// on: the scheduler would not put this silo here with that host port.
+					sp.HostPort = nil
+					if !ok || !sp.LoadBalancer {
+						sp.As, sp.Sources, sp.LoadBalancer = 0, nil, false
+					}
 				}
 				if !remote {
 					for _, n := range sp.HostPort {

@@ -625,7 +625,35 @@ func TestACopyOfASiloHandedOverToAnotherHostIsRemovedFromThisHost(t *testing.T) 
 
 // Placed elsewhere with no handoff from this host: nothing here says the other host has it
 // legitimately, so the copy is kept, stopped, never deleted (nothing is removed without a delete
-// or a handoff from here).
+// or a handoff from here). A copy that is still running is stopped, and its disk stays.
+func TestARunningCopyPlacedElsewhereWithNoHandoffIsStoppedAndItsDiskKept(t *testing.T) {
+	g := newGuardRig(t, nil, nil)
+	s := g.create(guardSilo("web", nil), "hv1", "")
+	g.runtimeCopy(s, "")
+	if err := g.rt.Start(g.ctx, idOf(s)); err != nil {
+		t.Fatal(err)
+	}
+	g.setPlacement(s, "hv2", "")
+	g.cacheIs(g.stored("web"))
+	g.rt.Calls = nil
+	if _, err := g.reconcile("web"); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.calls("delete"); len(got) != 0 {
+		t.Fatalf("a copy placed elsewhere with no handoff was deleted: %v", g.rt.Calls)
+	}
+	if got := g.calls("stop"); len(got) != 1 {
+		t.Fatalf("the running copy was not stopped: %v", g.rt.Calls)
+	}
+	st, err := g.rt.Status(g.ctx, idOf(s))
+	if err != nil || st.State != kri.Stopped {
+		t.Fatalf("kept copy: %+v %v", st, err)
+	}
+	if ids, _ := g.rt.List(g.ctx); len(ids) != 1 {
+		t.Fatalf("the disk is gone: %v", ids)
+	}
+}
+
 func TestACopyOfASiloPlacedElsewhereWithoutAHandoffIsKept(t *testing.T) {
 	g := newGuardRig(t, nil, nil)
 	s := g.create(guardSilo("web", nil), "hv1", "")

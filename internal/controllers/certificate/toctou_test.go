@@ -37,11 +37,12 @@ func TestAnIngressRecreatedSinceTheReadKeepsItsCertificate(t *testing.T) {
 		}
 	}
 	must(c.Create(ctx, &v1.Namespace{TypeMeta: tm("Namespace"), ObjectMeta: meta.ObjectMeta{Name: "shop"}}))
+	must(c.Create(ctx, &v1.IngressClass{TypeMeta: tm("IngressClass"), ObjectMeta: meta.ObjectMeta{Name: "public"},
+		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "edge", Namespace: "shop"},
+			Hosts: []v1.HostAssignment{{Host: "shop.example", Namespaces: []string{"shop"}}}}}))
 	cert := &v1.Certificate{TypeMeta: tm("Certificate"), ObjectMeta: meta.ObjectMeta{Name: "web-tls", Namespace: "shop", Labels: map[string]string{LabelIngress: "web"}},
 		Spec: v1.CertificateSpec{Hosts: []string{"shop.example"}, Issuer: IssuerInternal, SecretName: "web-tls"}}
 	must(c.Create(ctx, cert))
-	must(c.Create(ctx, &v1.IngressClass{TypeMeta: tm("IngressClass"), ObjectMeta: meta.ObjectMeta{Name: "public"},
-		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "edge", Namespace: "shop"}}}))
 	frozen := func(kind string) *informer.Informer {
 		ictx, stop := context.WithCancel(ctx)
 		inf := informer.New(c, kind)

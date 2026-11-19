@@ -67,13 +67,14 @@ func TestOutsideRulesPerCase(t *testing.T) {
 		}(), a("198.51.100.17"),
 			[]string{"ip daddr 198.51.100.17 tcp dport 30000 dnat ip to 10.64.2.2:30303"},
 			[]string{"ip daddr 198.51.100.10", "ip daddr 10.0.0.5"}},
+		// 5353, not 53: 53 is the platform's DNS, which a host port may not take.
 		{"on the host and the load balancer", host(), func() v1.SiloSpec {
-			s := opens(53, v1.ServicePort{LoadBalancer: true, HostPort: []string{"internal"}})
+			s := opens(5353, v1.ServicePort{LoadBalancer: true, HostPort: []string{"internal"}})
 			s.Ports[0].Protocol = "UDP"
 			s.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: v1.LBIPPool}
 			return s
 		}(), a("198.51.100.17"),
-			[]string{"ip daddr { 10.0.0.5, 198.51.100.17 } udp dport 53 dnat ip to 10.64.2.2:53"}, nil},
+			[]string{"ip daddr { 10.0.0.5, 198.51.100.17 } udp dport 5353 dnat ip to 10.64.2.2:5353"}, nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

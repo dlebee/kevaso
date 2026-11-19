@@ -35,7 +35,14 @@ type fakeHost struct {
 	lvs    map[string]bool                  // logical volumes in VG, as lvcreate and lvremove leave them
 }
 
-func newFakeHost() *fakeHost { return &fakeHost{files: map[string][]byte{}, lvs: map[string]bool{}} }
+func newFakeHost() *fakeHost {
+	h := &fakeHost{files: map[string][]byte{}, lvs: map[string]bool{}}
+	// A raw image, so a create's convert has a disk it can accept.
+	raw := []byte("raw-disk-bytes-for-tests\n")
+	h.files[path.Join(ImagesDir, "ubuntu-24.04-x86_64.img")] = raw
+	h.files[path.Join(ImagesDir, "ubuntu-24.04-aarch64.img")] = raw
+	return h
+}
 
 // bigPool is a thin pool of 1 TiB with nothing promised (lvs, as PoolSize asks).
 const bigPool = "  silos 1099511627776 \n"
@@ -284,7 +291,7 @@ func TestCreateDoesItInOrderAndOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmds := h.commands()
-	order := []string{"install -d", "lvcreate -q -T kevaso/silos -V 20480m", "qemu-img convert -n --target-is-zero -O raw /var/lib/kevaso-images/ubuntu-24.04-aarch64.img",
+	order := []string{"install -d", "lvcreate -q -T kevaso/silos -V 20480m", "qemu-img convert -f raw -n --target-is-zero -O raw /var/lib/kevaso-images/ubuntu-24.04-aarch64.img",
 		"cloud-localds", "rm -f", "chown kevaso-vmm", "ip tuntap add", "ip link set", "systemctl daemon-reload"}
 	last := -1
 	for _, step := range order {

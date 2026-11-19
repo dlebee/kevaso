@@ -409,6 +409,9 @@ kind: IngressClass
 metadata: { name: edge }
 spec:
   controller: { driver: nginx, silo: ingress-edge, namespace: kevaso-system }
+  hosts:
+    - host: "` + name + `"
+      namespaces: [` + ns + `]
 ---
 ` + boxEcho(ns, "app", 8080) + on(metalHost2) + `  ports: [{ name: http, port: 8080 }]
   service:

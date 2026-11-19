@@ -58,7 +58,8 @@ func TestIngress(t *testing.T) {
 	}
 	if err := c.admin.Create(c.ctx, &v1.IngressClass{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IngressClass"},
 		ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{Public: true,
-			Controller: v1.IngressController{Driver: "nginx", Silo: "ingress-public", Namespace: "kevaso-system"}}}); err != nil {
+			Controller: v1.IngressController{Driver: "nginx", Silo: "ingress-public", Namespace: "kevaso-system"},
+			Hosts:      []v1.HostAssignment{{Host: "*.example.com", Namespaces: []string{"payments"}}}}}); err != nil {
 		t.Fatal(err)
 	}
 	ing := func(name string) *v1.Ingress {

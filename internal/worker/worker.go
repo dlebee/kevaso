@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -70,6 +71,9 @@ type Config struct {
 	// PluginsEtc is where kvoadm records cluster-secret names (DIR/PLUGIN/cluster-secrets.json).
 	// Empty: the agent delivers none. kevasod sets plugins.DefaultManifests.
 	PluginsEtc string
+	// InternalCA is the PEM of the CA that signs private certificates (internal-ca). Silos trust
+	// it. Empty: Run fetches /internal-ca.crt. It is not the cluster CA the API client pins.
+	InternalCA []byte
 }
 
 // Installer is a runtime that needs setting up on the host first.
@@ -163,6 +167,27 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	if cfg.Log == nil {
 		cfg.Log = func(string, ...any) {}
 	}
+	if cfg.DataDir != "" {
+		go KeepCertificate(ctx, c, cfg.DataDir, cfg.Log)
+	}
+	internal := append([]byte(nil), cfg.InternalCA...)
+	if len(internal) == 0 && wantsInternalCA(rts) {
+		internal = fetchInternalCA(ctx, c)
+	}
+	for _, rt := range rts {
+		o, ok := rt.(*openshell.Runtime)
+		if !ok || cfg.DataDir == "" {
+			continue
+		}
+		path, err := upstreamCAFile(upstreamCADir, o.ExtraCA, internal)
+		if err != nil {
+			cfg.Log("internal CA: %v", err)
+			continue
+		}
+		if path != "" {
+			o.ExtraCA = path
+		}
+	}
 	var mu sync.Mutex
 	states := map[string]v1.RuntimeStatus{}
 	for name, rt := range rts {
@@ -232,7 +257,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	}
 	for _, rt := range rts { // container silos trust the host's CAs plus its egress CA
 		if cr, ok := rt.(*container.Runtime); ok {
-			cr.CABundle = caBundle(egressCA)
+			cr.CABundle = caBundle(egressCA, internal)
 		}
 	}
 	var networkOnce sync.Once
@@ -345,13 +370,83 @@ func usesBridge(rt Installer) bool {
 	return false
 }
 
-// caBundle is the host's system CAs plus its egress CA, for container silos.
-func caBundle(egress *gate.CA) []byte {
+// caBundle is the host's system CAs, its egress CA, and the internal CA, for container silos.
+func caBundle(egress *gate.CA, internal []byte) []byte {
 	b, _ := os.ReadFile("/etc/ssl/certs/ca-certificates.crt")
 	if egress != nil {
 		b = append(append(b, '\n'), egress.PEM...)
 	}
+	if len(internal) > 0 {
+		b = append(append(b, '\n'), internal...)
+	}
 	return b
+}
+
+// fetchInternalCA reads the public internal CA certificate. A worker that already has it in its
+// config doesn't call this.
+func wantsInternalCA(rts map[string]Installer) bool {
+	for _, rt := range rts {
+		switch rt.(type) {
+		case *openshell.Runtime, *container.Runtime:
+			return true
+		}
+	}
+	return false
+}
+
+func fetchInternalCA(ctx context.Context, c *client.Client) []byte {
+	if c == nil {
+		return nil
+	}
+	for i := 0; i < 5; i++ {
+		b, err := c.Raw(ctx, http.MethodGet, "/internal-ca.crt")
+		if err == nil && len(b) > 0 {
+			return b
+		}
+		// Join already reached the API. A missing certificate isn't going to appear by waiting,
+		// and a test server that doesn't serve one shouldn't be retried for seconds.
+		if err == nil || client.IsNotFound(err) || ctx.Err() != nil || i == 4 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return nil
+}
+
+// upstreamCAFile is the PEM the OpenShell gateway trusts upstream: the egress extra CA, if any,
+// and the internal CA. The gateway has one bundle path.
+// upstreamCADir holds the CA bundle OpenShell's gateway reads. Not kevasod's data folder: that is
+// root-only (0700), and the gateway runs as its own user. The bundle is public certificates only.
+var upstreamCADir = "/etc/kevaso"
+
+func upstreamCAFile(dir, extra string, internal []byte) (string, error) {
+	if len(internal) == 0 {
+		return extra, nil
+	}
+	var b []byte
+	if extra != "" {
+		got, err := os.ReadFile(extra)
+		if err != nil {
+			return "", err
+		}
+		b = append(b, got...)
+		if len(got) == 0 || got[len(got)-1] != '\n' {
+			b = append(b, '\n')
+		}
+	}
+	b = append(b, internal...)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "openshell-upstream-cas.pem") // readable by the gateway's own user
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // updateHost makes sure the Host declares the worker component and reports its runtimes and

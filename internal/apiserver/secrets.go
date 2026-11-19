@@ -62,7 +62,7 @@ func checkLoosening(ctx context.Context, old, obj meta.Object) error {
 	if sw := secretWriteFrom(ctx); sw != nil && sw.value != nil {
 		return nil
 	}
-	return errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.valueReadable and spec.allowedDelivery can't be loosened without a new spec.value in the same write (a value made write-only, or kept to some deliveries, stays so)", next.Name)
+	return errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.valueReadable, spec.allowedDelivery, and a registry secret's spec.server or spec.username can't be changed without a new spec.value in the same write (a value made write-only, or kept to one registry, stays so)", next.Name)
 }
 
 func kind(s *v1.Secret) string {
@@ -146,6 +146,9 @@ func (s *Server) prepareSecret(ctx context.Context, t target, obj meta.Object) (
 // loosens reports whether next lets more of the stored value out than old does: a person can read
 // it, or a delivery mode is allowed that wasn't.
 func loosens(old, next *v1.Secret) bool {
+	if registryBindingLoosens(old, next) { // a registry secret's server or username
+		return true
+	}
 	if !old.Readable() && next.Readable() {
 		return true
 	}
@@ -155,6 +158,16 @@ func loosens(old, next *v1.Secret) bool {
 		}
 	}
 	return false
+}
+
+// registryBindingLoosens reports whether a registry secret's server or username changed. The
+// stored password is for that server: pointing it somewhere else, or at another user, is a new
+// value's write.
+func registryBindingLoosens(old, next *v1.Secret) bool {
+	if kind(old) != v1.SecretRegistry || kind(next) != v1.SecretRegistry {
+		return false
+	}
+	return v1.RegistryBinding(old.Spec.Server) != v1.RegistryBinding(next.Spec.Server) || old.Spec.Username != next.Spec.Username
 }
 
 // storeSecretValue seals value for the stored secret and records the new version in its status.

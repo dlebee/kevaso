@@ -42,7 +42,7 @@ func workerReadableKind(kind string) bool { return workerReadScope(kind) != work
 
 // workerObjectRead is a GET of an object (or its status), not a subresource.
 func workerObjectRead(t target) bool {
-	return !t.value && !t.exec && !t.token && !t.move && t.stream == "" && t.lease == "" && t.answer == "" && !t.bundle && !t.scale
+	return !t.value && !t.exec && !t.token && !t.move && !t.restoreSettle && t.stream == "" && t.lease == "" && t.answer == "" && !t.bundle && !t.scale
 }
 
 // workerRuns reports whether host is running silo: it is placed there, or a move is taking it

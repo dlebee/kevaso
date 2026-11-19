@@ -97,6 +97,8 @@ type Env struct {
 	// carries now (controllers/host.Contacts; K-015), on its own clock: 0 for one not seen yet.
 	// Nil: unknown, so a start claim of the silo's host always stands.
 	StartClaimAge func(s *v1.Silo) time.Duration
+	// Restore is the open restored history, when there is one. An unsettled silo is not placed.
+	Restore *v1.RestoreGate
 }
 
 // Claimed are values held on one host.

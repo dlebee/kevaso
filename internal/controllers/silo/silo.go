@@ -32,6 +32,7 @@ import (
 	"kevaso.com/core/internal/claims"
 	"kevaso.com/core/internal/clock"
 	hostctl "kevaso.com/core/internal/controllers/host"
+	"kevaso.com/core/internal/controllers/restore"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/fence"
 	"kevaso.com/core/internal/moves"
@@ -443,6 +444,9 @@ func Decide(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, ips .
 
 // DecideIn is Decide with plugins' classes.
 func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env scheduler.Env) (v1.SiloStatus, bool, time.Duration, error) {
+	if restore.BlocksPlacement(s, env.Restore) { // an unsettled silo is not placed or moved
+		return s.Status, false, 0, nil
+	}
 	st := s.Status
 	st.Conditions = append([]meta.Condition(nil), st.Conditions...)
 	if s.DeletionTimestamp != nil {
@@ -641,6 +645,7 @@ type Controller struct {
 	Hosts  *informer.Informer
 	IPs    *informer.Informer // IP objects; nil: none
 	Images *informer.Informer // VMImages; nil: none
+	Gates  *informer.Informer // the restore gate; nil: no restored history
 	Clock  clock.Clock
 	// Classes returns the plugins' classes now (nil: none).
 	Classes func() map[string]scheduler.Class
@@ -660,6 +665,19 @@ func (c *Controller) Name() string { return "silo-scheduler" }
 
 // Kind implements engine.Controller.
 func (c *Controller) Kind() string { return "Silo" }
+
+// openGate is the restored history's account, when this control plane has one.
+func (c *Controller) openGate() *v1.RestoreGate {
+	if c.Gates == nil {
+		return nil
+	}
+	o, ok := c.Gates.Get("", v1.RestoreGateName)
+	if !ok {
+		return nil
+	}
+	g, _ := o.(*v1.RestoreGate)
+	return g
+}
 
 // lists returns hosts and silos, with assumed placements applied. Called with c.mu held.
 func (c *Controller) lists() ([]*v1.Host, []*v1.Silo) {
@@ -731,6 +749,7 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	if c.Classes != nil {
 		env.Classes = c.Classes()
 	}
+	env.Restore = c.openGate() // an unsettled silo is not scheduled
 	now := c.Clock.Now().UTC().Truncate(time.Second)
 	st, changed, again, err := DecideIn(s, hosts, silos, now, env)
 	// A placement change is decided from the host cache, and its write is conditional on the
@@ -886,6 +905,70 @@ func claimPorts(ctx context.Context, cl *claims.Claims, s *v1.Silo, st v1.SiloSt
 		return nil, nil
 	}
 	return &held, nil
+}
+
+// ClaimNewHostPorts takes ports on host for s, and only those: a placed silo's update claims a
+// host port it is adding before the write. held names each port another silo already holds
+// ("80/TCP on the internal IP is held by ns/name"); any port this call took is put back then, so
+// a refused update leaves no claim. ErrBusy: the claim kept changing.
+func ClaimNewHostPorts(ctx context.Context, cl *claims.Claims, s *v1.Silo, host string, ports []scheduler.HostPort) ([]string, error) {
+	if cl == nil || s == nil || host == "" || len(ports) == 0 {
+		return nil, nil
+	}
+	h := claims.Holder{Kind: "Silo", Namespace: s.Namespace, Name: s.Name, UID: s.UID, Version: s.ResourceVersion}
+	keep := map[string]bool{}
+	for _, p := range scheduler.HostPorts(s) {
+		keep[hostPortValue(p)] = true
+	}
+	pool := poolHostPort(host)
+	var taken []string
+	rollback := func() {
+		for _, v := range taken {
+			if keep[v] {
+				continue
+			}
+			_ = cl.Drop(ctx, pool, v, s.UID)
+		}
+	}
+	var held []string
+	for _, p := range ports {
+		value := hostPortValue(p)
+		ok, err := cl.Take(ctx, pool, value, h, usesHostPort(host))
+		if err != nil {
+			rollback()
+			return nil, err
+		}
+		if !ok {
+			who := "another silo"
+			if holder, ok := cl.Who(ctx, pool, value); ok && holder.Name != "" {
+				who = holder.Name
+				if holder.Namespace != "" {
+					who = holder.Namespace + "/" + holder.Name
+				}
+			}
+			held = append(held, fmt.Sprintf("%s is held by %s", p, who))
+			continue
+		}
+		taken = append(taken, value)
+	}
+	if len(held) > 0 {
+		rollback() // a port this update just took is put back when another is held
+		slices.Sort(held)
+		return held, nil
+	}
+	return nil, nil
+}
+
+// ReleaseHostPorts puts back ports this silo just took, when the write they were for did not
+// commit. A port someone else holds now is left alone.
+func ReleaseHostPorts(ctx context.Context, cl *claims.Claims, uid, host string, ports []scheduler.HostPort) {
+	if cl == nil || uid == "" || host == "" {
+		return
+	}
+	pool := poolHostPort(host)
+	for _, p := range ports {
+		_ = cl.Drop(ctx, pool, hostPortValue(p), uid)
+	}
 }
 
 // CondHostPorts says a silo placed on its host by a path that didn't claim (K-029) has host ports

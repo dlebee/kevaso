@@ -13,7 +13,15 @@ import (
 )
 
 func class() *v1.IngressClass {
-	return &v1.IngressClass{ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "edge", Namespace: "kevaso-system"}}}
+	return &v1.IngressClass{ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{
+		Controller: v1.IngressController{Driver: "nginx", Silo: "edge", Namespace: "kevaso-system"},
+		Hosts: []v1.HostAssignment{
+			{Host: "api.example.com", Namespaces: []string{"payments"}},
+			{Host: "shop.example.com", Namespaces: []string{"shop"}},
+			{Host: "ok.example.com", Namespaces: []string{"shop"}},
+			{Host: "a.example.com", Namespaces: []string{"payments"}},
+		},
+	}}
 }
 
 func ing(ns, name string, hosts []string, rules ...v1.IngressRule) *v1.Ingress {
@@ -65,7 +73,7 @@ func TestDesire(t *testing.T) {
 	now := time.Now()
 	gone.DeletionTimestamp = &now
 	d := Desire(inputs(steal, shop, api, other, gone))
-	if d.Problem != "" || len(d.Refused) != 0 {
+	if d.Problem != "" || len(d.Refused) != 1 || !strings.Contains(d.Refused["zoo/steal"], "IngressClass.spec.hosts") {
 		t.Fatalf("problem %q, refused %v", d.Problem, d.Refused)
 	}
 	got := []string{}
@@ -101,6 +109,29 @@ func TestDesire(t *testing.T) {
 	in.Routed = func(s *v1.Silo) bool { return s.Name != "ws" }
 	if d := Desire(in); len(d.State.Routes) != 1 || d.State.Routes[0].Path != "/" {
 		t.Fatalf("routed: %+v", d.State.Routes)
+	}
+}
+
+func TestAnUnassignedLongerPathIsNotServed(t *testing.T) {
+	victim := ing("payments", "api", []string{"api.example.com"}, rule("/", "api"))
+	longer := ing("shop", "login", []string{"api.example.com"}, rule("/login", "web"))
+	d := Desire(inputs(victim, longer))
+	for _, r := range d.State.Routes {
+		if r.Host == "api.example.com" && r.Path == "/login" {
+			t.Fatalf("an unassigned longer path was served: %+v", r)
+		}
+	}
+	if !strings.Contains(d.Refused["shop/login"], "IngressClass.spec.hosts") {
+		t.Fatalf("refused %v", d.Refused)
+	}
+	found := false
+	for _, r := range d.State.Routes {
+		if r.Ingress == "payments/api" && r.Path == "/" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the assigned route was dropped: %+v", d.State.Routes)
 	}
 }
 

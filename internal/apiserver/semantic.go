@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +16,9 @@ import (
 	"kevaso.com/core/internal/policy"
 	"kevaso.com/core/internal/probes"
 )
+
+// hostAssignNS is a namespace name on a host assignment.
+var hostAssignNS = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 // semantic checks what CEL can't say well: addresses and ranges.
 func semantic(obj meta.Object) []string {
@@ -68,6 +72,27 @@ func semantic(obj meta.Object) []string {
 			}
 			if sec.Path != "" && (!strings.HasPrefix(sec.Path, "/run/") || !v1.CleanMountPath(sec.Path)) {
 				errs = append(errs, fmt.Sprintf("secret %s: path %q must be under /run/ (tmpfs: a secret file never reaches the silo's disk), a clean path of letters, digits, . _ - and /", sec.Name, sec.Path))
+			}
+		}
+	case *v1.IngressClass:
+		seen := map[string]bool{}
+		for _, a := range o.Spec.Hosts {
+			if !v1.ValidHostPattern(a.Host) {
+				errs = append(errs, fmt.Sprintf("spec.hosts: %q isn't a host name or a suffix (*.example.com)", a.Host))
+				continue
+			}
+			key := v1.NormalizeDNS(a.Host)
+			if seen[key] {
+				errs = append(errs, fmt.Sprintf("spec.hosts: %q is listed twice", a.Host))
+			}
+			seen[key] = true
+			if len(a.Namespaces) == 0 {
+				errs = append(errs, fmt.Sprintf("spec.hosts: %q needs the namespaces allowed to use it", a.Host))
+			}
+			for _, ns := range a.Namespaces {
+				if !hostAssignNS.MatchString(ns) {
+					errs = append(errs, fmt.Sprintf("spec.hosts: namespace %q isn't a name", ns))
+				}
 			}
 		}
 	case *v1.Ingress:
@@ -206,5 +231,46 @@ func transition(old, next meta.Object) []string {
 			}
 		}
 	}
+	errs = append(errs, volumeClassChanges(old, next)...)
 	return errs
+}
+
+// volumeClassChanges refuses a new class for a volume name, or for spec.disk.class, that the
+// silo already has. Empty and local are the same class. Taking a name out of the spec is not a
+// class change: the volume stays until the silo is deleted.
+func volumeClassChanges(old, next meta.Object) []string {
+	var a, b v1.SiloSpec
+	switch o := old.(type) {
+	case *v1.Silo:
+		a, b = o.Spec, next.(*v1.Silo).Spec
+	case *v1.SiloSet:
+		a, b = o.Spec.Template.SiloSpec, next.(*v1.SiloSet).Spec.Template.SiloSpec
+	default:
+		return nil
+	}
+	return classChanges(a, b)
+}
+
+func classChanges(old, next v1.SiloSpec) []string {
+	was := map[string]string{}
+	for _, v := range old.Volumes {
+		was[v.Name] = volumeClass(v.Class)
+	}
+	var errs []string
+	for _, v := range next.Volumes {
+		if prev, ok := was[v.Name]; ok && prev != volumeClass(v.Class) {
+			errs = append(errs, fmt.Sprintf("volume %s: class can't change in place (%s to %s); delete the silo to drop the volume", v.Name, prev, volumeClass(v.Class)))
+		}
+	}
+	if old.Runtime == "cloud-hypervisor" && next.Runtime == "cloud-hypervisor" && volumeClass(old.Disk.Class) != volumeClass(next.Disk.Class) {
+		errs = append(errs, fmt.Sprintf("disk.class can't change in place (%s to %s); delete the silo to drop the disk", volumeClass(old.Disk.Class), volumeClass(next.Disk.Class)))
+	}
+	return errs
+}
+
+func volumeClass(c string) string {
+	if c == "" || c == v1.VolumeLocal {
+		return v1.VolumeLocal
+	}
+	return c
 }

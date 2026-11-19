@@ -34,7 +34,8 @@ func TestIngressClassHoldsBackOnlyTheBrokenIngress(t *testing.T) {
 	}
 	if err := c.admin.Create(c.ctx, &v1.IngressClass{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IngressClass"},
 		ObjectMeta: meta.ObjectMeta{Name: "web"}, Spec: v1.IngressClassSpec{
-			Controller: v1.IngressController{Driver: "nginx", Silo: "ingress-web", Namespace: "kevaso-system"}}}); err != nil {
+			Controller: v1.IngressController{Driver: "nginx", Silo: "ingress-web", Namespace: "kevaso-system"},
+			Hosts:      []v1.HostAssignment{{Host: "*.example.com", Namespaces: []string{"shop"}}}}}); err != nil {
 		t.Fatal(err)
 	}
 	ing := func(name, host string) *v1.Ingress {

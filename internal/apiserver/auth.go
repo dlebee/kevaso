@@ -149,6 +149,8 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 		a.Verb, a.Resource = "create", t.kind.Plural+"/"+t.stream // ssh; files: write
 	case t.move:
 		a.Verb, a.Resource = "create", t.kind.Plural+"/move"
+	case t.restoreSettle:
+		a.Verb, a.Resource = "create", t.kind.Plural+"/restore-settle"
 	case t.lease != "":
 		a.Verb, a.Resource = v1.VerbOpen, v1.ResourceExposure // open and close
 	case t.token:
@@ -190,6 +192,16 @@ func attributes(id pki.Identity, groups []string, r *http.Request, t target) rba
 // authorizeRequest decides an API request. For people it asks RBAC; a person who may not list
 // namespaces still gets the list, cut down to the ones they have a role in.
 func (s *Server) authorizeRequest(ctx context.Context, id pki.Identity, groups []string, r *http.Request, t target) (allowed, filterNS bool, reason string, err error) {
+	if t.restoreSettle { // only a cluster-admin settles a frozen silo
+		admin, err := s.clusterAdmin(ctx, id, groups)
+		if err != nil {
+			return false, false, "", err
+		}
+		if !admin {
+			return false, false, "only a cluster-admin may settle a frozen silo (kvoadm restore settle SILO -n NS --to HOST)", nil
+		}
+		return true, false, "cluster-admin", nil
+	}
 	if t.kind.Kind == "ClusterSecret" && id != LocalAdmin {
 		return s.authorizeClusterSecret(ctx, id, groups, r, t)
 	}
@@ -385,7 +397,7 @@ func hostAuthorize(id pki.Identity, r *http.Request, t target) bool {
 	case id.Role == "control-plane" && id.Type == "host":
 		return true
 	case id.Role == "worker" && id.Type == "host":
-		if t.exec || t.token || t.move || t.stream != "" {
+		if t.exec || t.token || t.move || t.restoreSettle || t.stream != "" {
 			return false
 		}
 		if r.Method == http.MethodGet {
@@ -425,6 +437,10 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 		case r.URL.Path == "/ca.crt": // public: kvo login checks it against the fingerprint it was given
 			w.Header().Set("Content-Type", "application/x-pem-file")
 			_, _ = w.Write(s.auth.CA.PEM)
+			return
+		case r.URL.Path == "/internal-ca.crt" && s.internalCA != nil: // public certificate only; not a client pin
+			w.Header().Set("Content-Type", "application/x-pem-file")
+			_, _ = w.Write(s.internalCA.PEM)
 			return
 		case s.auth.Issuer != nil && (r.URL.Path == issuer.PathDiscovery || strings.HasPrefix(r.URL.Path, "/oidc/")):
 			s.auth.Issuer.Handler().ServeHTTP(w, r)
@@ -481,6 +497,10 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 		}
 		if r.URL.Path == "/auth/whoami" {
 			writeJSON(w, http.StatusOK, client.WhoAmI{Type: id.Type, Name: id.Name, Role: id.Role, Groups: groups})
+			return
+		}
+		if r.URL.Path == "/renew" {
+			s.renewCert(w, r, id)
 			return
 		}
 		t, err := s.parseAny(ctx, r.URL.Path)
@@ -594,6 +614,23 @@ func (s *Server) issueUserCert(w http.ResponseWriter, r *http.Request, caller pk
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
 		return
 	}
+	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
+}
+
+// renewCert signs a new certificate for the caller, and for nobody else: the name and role are
+// the authenticated certificate's, never a name in the request. A removed host is refused before
+// this runs. The new serial is recorded where a removal record exists (signAndReply).
+func (s *Server) renewCert(w http.ResponseWriter, r *http.Request, caller pki.Identity) {
+	if caller.Type != "host" && caller.Type != "user" {
+		writeErr(w, errf(http.StatusForbidden, "Forbidden", "only a host or user certificate can be renewed"))
+		return
+	}
+	req, err := decodeCertRequest(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	id := caller // renewed for the authenticated caller only
 	s.signAndReply(r.Context(), w, []byte(req.CSR), id)
 }
 

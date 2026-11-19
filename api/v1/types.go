@@ -142,6 +142,9 @@ type HostStatus struct {
 	Version string `json:"version,omitempty"`
 	// ControlPlane is what a system node reports about its control-plane component.
 	ControlPlane *ControlPlaneStatus `json:"controlPlane,omitempty"`
+	// Copies is this host's inventory of the silos it holds, for the history it names. The
+	// control plane settles a restored history only from inventories that name that history.
+	Copies *HostCopies `json:"copies,omitempty"`
 }
 
 // ControlPlaneStatus is a system node's control-plane component as it reports itself (APIURL,
@@ -492,6 +495,11 @@ type SiloStatus struct {
 	Restarts  *LivenessRestarts `json:"restarts,omitempty"`
 	// Routing is whether its own service gets traffic now (routeWhen), and why not.
 	Routing *Routing `json:"routing,omitempty"`
+	// Restore is the control plane's mark for a restored history: pending until every host has
+	// reported, settled once the placement is known, frozen when two or more hosts report a
+	// copy (or one does, and the stored host is live and holds nothing). A worker's write of
+	// it is ignored. The operator settles a frozen silo with kvoadm restore settle.
+	Restore *SiloRestore `json:"restore,omitempty"`
 }
 
 // SiloImage is a silo's image: resolved by the control plane (a VMImage's version, an inline
@@ -523,4 +531,7 @@ type VolumeStatus struct {
 	// SizeNotEnforced: the class can't hold the volume to its size (a folder with no quota): it can
 	// fill whatever backs it.
 	SizeNotEnforced bool `json:"sizeNotEnforced,omitempty"`
+	// Kept: the volume was taken out of the spec. It is detached and stays, with this handle,
+	// until the silo is deleted. The same name and class in the spec attaches it again.
+	Kept bool `json:"kept,omitempty"`
 }

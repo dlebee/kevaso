@@ -151,6 +151,9 @@ func (r *Runtime) Info() kri.Info {
 }
 
 func (r *Runtime) run(ctx context.Context, name string, args ...string) error {
+	if name == "qemu-img" && len(args) > 0 && args[0] == "convert" {
+		return r.convertImage(ctx, args[1:])
+	}
 	out, err := r.Host.Run(ctx, name, args...)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -646,6 +649,9 @@ func (r *Runtime) deleteLockedRoot(ctx context.Context, id kri.ID, dropRoot bool
 // rootDisk reports whether it made the root LV. made is true only after lvcreate succeeded,
 // including when a later step of the disk fails: the caller may then remove that LV.
 func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, size int64, fresh bool) (made bool, err error) {
+	if _, err := r.imageFormat(img, size); err != nil {
+		return false, err
+	}
 	if l.RootFile == "" {
 		present, err := r.lvExists(ctx, n.LV)
 		if err != nil { // a failed lvs is never "no volume"
@@ -670,6 +676,9 @@ func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, s
 			return true, err // this Create made the LV
 		}
 		return true, nil
+	}
+	if err := r.mustBeMounted(ctx, filepath.Dir(l.RootFile)); err != nil { // a root disk is written only on the volume's mount
+		return false, err
 	}
 	if _, err := r.Host.Run(ctx, "test", "-e", l.RootFile); err == nil && !fresh {
 		return false, nil // moved here with its data
@@ -699,7 +708,8 @@ var errRootKept = errors.New("the root disk was kept as it was")
 func RootFilePlan(img, tmp, file string, size int64) [][]string {
 	return [][]string{
 		{"rm", "-f", tmp},
-		{"qemu-img", "convert", "-O", "raw", img, tmp},
+		{"truncate", "-s", strconv.FormatInt(size, 10), tmp},
+		{"qemu-img", "convert", "-n", "--target-is-zero", "-O", "raw", img, tmp},
 		{"qemu-img", "resize", "-f", "raw", tmp, strconv.FormatInt(size, 10)},
 		{"chown", VMMUser + ":" + VMMUser, tmp},
 		{"chmod", "0600", tmp},

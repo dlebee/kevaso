@@ -37,6 +37,7 @@ import (
 	hostcontroller "kevaso.com/core/internal/controllers/host"
 	ipcontroller "kevaso.com/core/internal/controllers/ip"
 	"kevaso.com/core/internal/controllers/provider"
+	restorecontroller "kevaso.com/core/internal/controllers/restore"
 	servicecontroller "kevaso.com/core/internal/controllers/service"
 	silocontroller "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/controllers/siloset"
@@ -159,6 +160,17 @@ func (cfg Config) Reach() string {
 	return cfg.InternalIP
 }
 
+// apiNames are the names of the API on this process: its host name, its addresses, loopback,
+// extra names, and the cluster DNS name. Other system nodes' names are read from Hosts.
+func (cfg Config) apiNames() []string {
+	names := append(append([]string{cfg.HostName}, cfg.ips()...), "127.0.0.1", "localhost")
+	names = append(names, cfg.ExtraNames...)
+	if cfg.ClusterDNS != "" {
+		names = append(names, cfg.ClusterDNS)
+	}
+	return names
+}
+
 // ips are the host's addresses, internal first.
 func (cfg Config) ips() []string {
 	var out []string
@@ -196,11 +208,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	if err := checkBeforeOpen(cfg, rec); err != nil {
 		return nil, err
 	}
-	names := append(append([]string{cfg.HostName}, cfg.ips()...), "127.0.0.1", "localhost")
-	names = append(names, cfg.ExtraNames...)
-	if cfg.ClusterDNS != "" {
-		names = append(names, cfg.ClusterDNS)
-	}
+	names := cfg.apiNames()
 	serverCert, err := ca.ServerCert(names, cfg.Clock.Now(), 365*24*time.Hour)
 	if err != nil {
 		return nil, err
@@ -255,6 +263,13 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("kms: %w", err)
 	}
+	internalCA, err := loadOrCreateInternalCA(cfg)
+	if err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	srv.SetAPINames(names)
+	srv.SetInternalCA(internalCA)
 	srv.SetLog(cfg.Log)
 	srv.SetApprovalLimits(cfg.Approvals)
 	srv.SetLeaseLimits(cfg.Leases)
@@ -325,7 +340,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		if st.etcd != nil {
 			go runMembers(ctx, admin, st, cfg, cfg.MemberEvery)
 		}
-		runControllers(ctx, admin, cfg, certDeps{store: st, kms: localKMS, ca: ca})
+		runControllers(ctx, admin, cfg, certDeps{store: st, kms: localKMS, ca: ca, internal: internalCA})
 	})
 	if cfg.Mesh {
 		m := &mesh.Agent{Client: admin, HostName: cfg.HostName, Dir: filepath.Join(cfg.DataDir, "mesh"), Log: cfg.Log}
@@ -338,6 +353,9 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	if cfg.Worker != nil {
 		wc := *cfg.Worker
 		wc.HostName, wc.Clock, wc.Log, wc.MeshSubnet, wc.Contact = cfg.HostName, cfg.Clock, cfg.Log, cfg.Mesh, contact
+		if len(wc.InternalCA) == 0 && internalCA != nil {
+			wc.InternalCA = internalCA.PEM
+		}
 		if wc.DataDir == "" {
 			wc.DataDir = cfg.DataDir
 		}
@@ -431,7 +449,7 @@ func expireApprovals(ctx context.Context, srv *apiserver.Server, cfg Config) {
 // certControllers are the built-in cert-controllers plus the ones registered on this host (which
 // can't replace a built-in one).
 func certControllers(cfg Config, cd certDeps) kcc.Registry {
-	r := certificate.BuiltinCertControllers(cd.store, cd.kms, cd.ca, cfg.Clock.Now, cfg.DNSProviders)
+	r := certificate.BuiltinCertControllers(cd.store, cd.kms, cd.ca, cd.internal, cfg.Clock.Now, cfg.DNSProviders)
 	if a, ok := r["acme"].(*acme.Controller); ok && cfg.Plugins != nil {
 		a.DNSLookup = func(name string) acme.DNSProvider {
 			if _, ok := cfg.Plugins.DNS(name); !ok {
@@ -456,9 +474,10 @@ func certControllers(cfg Config, cd certDeps) kcc.Registry {
 
 // certDeps are what the certificate controller needs beyond the API.
 type certDeps struct {
-	store store.Store
-	kms   kms.KMS
-	ca    *pki.CA
+	store    store.Store
+	kms      kms.KMS
+	ca       *pki.CA
+	internal *pki.CA // what internal-ca signs with; not ca
 }
 
 func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDeps) {
@@ -486,7 +505,10 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	}
 	// How long each host has been silent, on this leader's clock, from its own start (K-014).
 	contacts := hostcontroller.NewContacts(cfg.Clock.Now())
-	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, IPs: ipInf, Images: images, Clock: cfg.Clock, Claims: uniq, Contacts: contacts}
+	gates := newInf("RestoreGate")
+	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, IPs: ipInf, Images: images, Gates: gates, Clock: cfg.Clock, Claims: uniq, Contacts: contacts}
+	e.Register(&restorecontroller.Controller{Client: c, Silos: silos, Hosts: hosts, Gates: gates}, engine.Options{Workers: 1})
+	gates.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "RestoreGate", Name: k.Name}) })
 	if cfg.Plugins != nil {
 		reg := cfg.Plugins
 		sc.Classes = func() map[string]scheduler.Class { return provider.Classes(reg) }
@@ -504,7 +526,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	images.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "VMImage", Namespace: k.Namespace, Name: k.Name}) })
 	sets.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "SiloSet", Namespace: k.Namespace, Name: k.Name}) })
 	services.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Service", Namespace: k.Namespace, Name: k.Name}) })
-	cc := &certificate.Controller{Client: c, Store: cd.store, KMS: cd.kms, Clock: cfg.Clock, Defaults: cfg.DefaultIssuers,
+	cc := &certificate.Controller{Client: c, Store: cd.store, KMS: cd.kms, Clock: cfg.Clock, Defaults: cfg.DefaultIssuers, APINames: cfg.apiNames(),
 		CertControllers: certControllers(cfg, cd),
 		Certificates:    certs, Ingresses: ingresses, Classes: classes, Issuers: issuers, Log: cfg.Log, Silos: silos,
 		Refused: func(class *v1.IngressClass, ing *v1.Ingress) (string, string) {
@@ -557,7 +579,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 		})
 		go leaseInf.Run(ctx)
 		e.Register(&provider.Balancers{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Leases: leaseInf, Plugins: reg, Clock: cfg.Clock, Providers: known}, engine.Options{Workers: 2})
-		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg, Records: cd.store, Providers: known}, engine.Options{Workers: 2})
+		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg, Records: cd.store, Providers: known, Gates: gates}, engine.Options{Workers: 2})
 		e.Register(&provider.IngressDNS{Client: c, Ingresses: ingresses, Classes: classes, Plugins: reg, Cluster: cfg.ClusterName, Clock: cfg.Clock}, engine.Options{Workers: 1})
 		classes.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IngressClass", Name: k.Name}) })
 		// A plugin came or went: everything that may use it looks again.
@@ -585,6 +607,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	}
 	go silos.Run(ctx)
 	go hosts.Run(ctx)
+	go gates.Run(ctx)
 	go ipInf.Run(ctx)
 	go images.Run(ctx)
 	go sets.Run(ctx)

@@ -21,14 +21,15 @@ const reasonVolumeRemovalWaits = "VolumeRemovalWaits"
 
 // releaseDropped lets go of the provider volumes dropped from the silo's spec that are mounted
 // here (linode-3.md, core finding 6: one stayed mounted for good, and the control plane waited
-// for ever to detach and delete it). A volume change is stop-first: once the silo's copy no
-// longer uses one (a VM's SetVolumes after its stop, a container made again by a reset, or no copy
-// at all), it is unmounted here and reported unmounted, so the control plane detaches and deletes
-// it. One the copy still uses (a container's mounts can't change: only a reset makes it again)
-// stays mounted, and the silo says why (Updated: VolumeRemovalWaits), never silently.
+// for ever to detach it). A volume change is stop-first: once the silo's copy no longer uses one
+// (a VM's SetVolumes after its stop, a container made again by a reset, or no copy at all), it is
+// unmounted here and reported unmounted. The control plane detaches it and keeps it until the silo
+// is deleted. One the copy still uses (a container's mounts can't change: only a reset makes it
+// again) stays mounted, and the silo says why (Updated: VolumeRemovalWaits), never silently.
+// The root disk's volume (disk.root) is part of the spec for as long as spec.disk.class names it.
 func (a *Agent) releaseDropped(ctx context.Context, rt kri.Runtime, s *v1.Silo, state kri.State) error {
 	inSpec := map[string]bool{}
-	for _, v := range s.Spec.Volumes {
+	for _, v := range v1.PluginVolumes(s) { // the root disk's volume counts as wanted
 		inSpec[v.Name] = true
 	}
 	var dropped []v1.VolumeStatus
@@ -80,7 +81,7 @@ func (a *Agent) releaseDropped(ctx context.Context, rt kri.Runtime, s *v1.Silo, 
 		}); err != nil {
 			return err
 		}
-		a.log("silo %s/%s: volume %s was removed from its spec: unmounted here, the control plane detaches and deletes it", s.Namespace, s.Name, vs.Name)
+		a.log("silo %s/%s: volume %s was removed from its spec: unmounted here; it stays until the silo is deleted", s.Namespace, s.Name, vs.Name)
 	}
 	if len(still) == 0 {
 		return nil

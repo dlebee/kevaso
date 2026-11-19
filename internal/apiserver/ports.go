@@ -104,6 +104,9 @@ func checkPorts(spec v1.SiloSpec) []string {
 		if at == 0 {
 			at = d.Port
 		}
+		if why := v1.ReservedHostPort(at); len(p.HostPort) > 0 && why != "" { // a number the platform listens on
+			add("%s: %d is %s, which a silo may not take", f, at, why)
+		}
 		for _, n := range p.HostPort {
 			k := fmt.Sprintf("%s %d/%s", n, at, d.Proto())
 			if other, ok := held[k]; ok {

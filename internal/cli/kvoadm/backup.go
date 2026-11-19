@@ -115,7 +115,18 @@ func prepareRestore(o *InitOptions, stdin io.Reader, out io.Writer) ([]byte, err
 	}
 	_, _ = fmt.Fprintf(out, "→ backup of cluster %q (control plane %s), taken %s: the recovery key opens it\n",
 		m.Cluster, m.Host, m.Created.Local().Format(time.DateTime))
-	return json.Marshal(client.RestoreRequest{Backup: blob, RecoveryKey: rk.String()})
+	req, err := json.Marshal(client.RestoreRequest{Backup: blob, RecoveryKey: rk.String(), NoHostsAdded: o.NoHostsAdded, HostsAdded: o.HostsAdded})
+	if err != nil {
+		return nil, err
+	}
+	if !o.ReplaceUnit {
+		next, err := o.withRestoredHost(req)
+		if err != nil { // the host name is checked before anything is written
+			return nil, err
+		}
+		*o = next
+	}
+	return req, nil
 }
 
 // parseBackup reads kvoadm backup's arguments: the target (its login, root by default), the

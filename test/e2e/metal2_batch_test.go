@@ -355,6 +355,9 @@ kind: IngressClass
 metadata: { name: ib }
 spec:
   controller: { driver: nginx, silo: ingress-ib, namespace: kevaso-system }
+  hosts:
+    - host: "*.ib.test"
+      namespaces: [` + ns + `]
 ---
 ` + boxEcho(ns, "app", 8080) + `  ports: [{ name: http, port: 8080 }]
   service:

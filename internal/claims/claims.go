@@ -128,6 +128,43 @@ func (c *Claims) holds(ctx context.Context, h Holder, value string, uses Uses) (
 	return uses(o.Data, value), nil
 }
 
+// Drop removes pool/value when uid holds it. A refused update uses it to put back a port it just
+// took. A value someone else holds, or that is already gone, is left as it is.
+func (c *Claims) Drop(ctx context.Context, pool, value, uid string) error {
+	if c == nil || uid == "" {
+		return nil
+	}
+	k := key(pool, value)
+	cur, err := c.Store.Get(ctx, k)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var h Holder
+	if json.Unmarshal(cur.Data, &h) != nil || h.UID != uid {
+		return nil
+	}
+	if _, err = c.Store.Delete(ctx, k, cur.Revision); errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrConflict) {
+		return nil
+	}
+	return err
+}
+
+// Who reads the holder of value in pool.
+func (c *Claims) Who(ctx context.Context, pool, value string) (Holder, bool) {
+	cur, err := c.Store.Get(ctx, key(pool, value))
+	if err != nil {
+		return Holder{}, false
+	}
+	var h Holder
+	if json.Unmarshal(cur.Data, &h) != nil || h.UID == "" {
+		return Holder{}, false
+	}
+	return h, true
+}
+
 // LetGo removes every claim h holds in pool except those on keep: the values it no longer uses.
 func (c *Claims) LetGo(ctx context.Context, pool string, uid string, keep ...string) error {
 	objs, _, err := c.Store.List(ctx, store.Selector{Kind: Kind, Namespace: pool})
