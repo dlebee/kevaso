@@ -4527,5 +4527,17 @@
    "./internal/controllers/provider"
   ],
   "protects": "a volume removal recorded under another restore history is dropped and the volume is kept"
+ },
+ {
+  "id": "G-761",
+  "guard": "a cache miss is not a deleted host",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "hosts = append(hosts, &fresh) // a cache miss is not a delete",
+  "replace": "_ = fresh // a cache miss is not a delete",
+  "mutation": "a host missing from the cache is treated as deleted",
+  "packages": [
+   "./internal/controllers/silo"
+  ],
+  "protects": "Unschedulable/HostDeleted is set only when a fresh read of the Host is NotFound"
  }
 ]
