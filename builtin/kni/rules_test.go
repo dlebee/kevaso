@@ -87,6 +87,19 @@ func TestOutsideRulesPerCase(t *testing.T) {
 	}
 }
 
+// A silo-range source is dropped on the way out of the host unless it arrived from the bridge or
+// the mesh, whichever interface it would leave on.
+func TestSiloSourceFromTheUplinkIsDroppedWhateverTheOutput(t *testing.T) {
+	r := Rules(host())
+	want := `    ip saddr 10.64.0.0/16 iifname != { "kvbr0", "kevaso0", "kevaso1" } drop`
+	if !strings.Contains(r, "\n"+want+"\n") {
+		t.Fatalf("missing the drop of a silo-range source from any other interface:\n%s", r)
+	}
+	if strings.Contains(r, `oifname "kvbr0" `+strings.TrimSpace(want)) {
+		t.Fatal("the drop still names the bridge as the only output")
+	}
+}
+
 func host(local ...Silo) Host {
 	return Host{Bridge: "kvbr0", Subnet: netip.MustParsePrefix("10.64.2.0/24"), Gateway: a("10.64.2.1"), InternalIP: a("10.0.0.5"), ExternalIP: a("198.51.100.10"), Local: local}
 }
