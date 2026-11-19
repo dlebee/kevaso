@@ -4599,5 +4599,29 @@
    "./internal/moves"
   ],
   "protects": "a host's status write leaves status.service as the control plane wrote it"
+ },
+ {
+  "id": "G-768",
+  "guard": "a kept volume name cannot come back under another class",
+  "file": "internal/apiserver/semantic.go",
+  "find": "if _, seen := was[v.Name]; !seen && v.Name != \"\" {",
+  "replace": "if _, seen := was[v.Name]; false && !seen && v.Name != \"\" {",
+  "mutation": "a kept volume name may be added back under another class",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a volume name kept in status cannot be added back under another class"
+ },
+ {
+  "id": "G-769",
+  "guard": "a handle is not used under another class",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "if vs.Handle != \"\" && !sameVolumeClass(vs.Class, spec.Class) { // a kept handle stays on its class",
+  "replace": "if false && vs.Handle != \"\" && !sameVolumeClass(vs.Class, spec.Class) { // a kept handle stays on its class",
+  "mutation": "a handle recorded for one class is used under another",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume's handle stays on the class it was recorded for"
  }
 ]

@@ -236,25 +236,33 @@ func transition(old, next meta.Object) []string {
 }
 
 // volumeClassChanges refuses a new class for a volume name, or for spec.disk.class, that the
-// silo already has. Empty and local are the same class. Taking a name out of the spec is not a
-// class change: the volume stays until the silo is deleted.
+// silo already has. A name kept in status (taken out of the spec, or not yet marked kept) is
+// the same: it cannot come back under another class. Empty and local are the same class.
+// Taking a name out of the spec is not a class change: the volume stays until the silo is deleted.
 func volumeClassChanges(old, next meta.Object) []string {
 	var a, b v1.SiloSpec
+	var kept []v1.VolumeStatus
 	switch o := old.(type) {
 	case *v1.Silo:
 		a, b = o.Spec, next.(*v1.Silo).Spec
+		kept = o.Status.Volumes
 	case *v1.SiloSet:
 		a, b = o.Spec.Template.SiloSpec, next.(*v1.SiloSet).Spec.Template.SiloSpec
 	default:
 		return nil
 	}
-	return classChanges(a, b)
+	return classChanges(a, b, kept)
 }
 
-func classChanges(old, next v1.SiloSpec) []string {
+func classChanges(old, next v1.SiloSpec, kept []v1.VolumeStatus) []string {
 	was := map[string]string{}
 	for _, v := range old.Volumes {
 		was[v.Name] = volumeClass(v.Class)
+	}
+	for _, v := range kept {
+		if _, seen := was[v.Name]; !seen && v.Name != "" {
+			was[v.Name] = volumeClass(v.Class)
+		}
 	}
 	var errs []string
 	for _, v := range next.Volumes {

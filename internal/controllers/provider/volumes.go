@@ -332,6 +332,16 @@ func placesOf(vs []v1.VolumeStatus) string {
 	return fmt.Sprintf("%+v", out)
 }
 
+// sameVolumeClass reports whether a and b are one class. Empty and local are the same class.
+func sameVolumeClass(a, b string) bool { return volumeClassName(a) == volumeClassName(b) }
+
+func volumeClassName(c string) string {
+	if c == "" || c == v1.VolumeLocal {
+		return v1.VolumeLocal
+	}
+	return c
+}
+
 func find(vs []v1.VolumeStatus, name string) int {
 	for i, v := range vs {
 		if v.Name == name {
@@ -346,6 +356,10 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 	if s.DeletionTimestamp == nil && restore.BlocksPlacement(s, c.restoreGate()) { // restored history: do not attach until the silo is settled
 		vs.Message = "waiting until the restored history settles this silo"
 		return vs, c.poll(), nil
+	}
+	if vs.Handle != "" && !sameVolumeClass(vs.Class, spec.Class) { // a kept handle stays on its class
+		vs.Message = fmt.Sprintf("volume %s stays on class %s: its handle is not used under %s", vs.Name, volumeClassName(vs.Class), volumeClassName(spec.Class))
+		return vs, 0, nil
 	}
 	vs.Kept = false
 	vs.Class, vs.Message = spec.Class, ""
