@@ -182,9 +182,13 @@ func (c *Volumes) dropRecords(ctx context.Context, have map[string]store.Object,
 // silo's status (no host can mount it, or say it is mounted, once it is gone); only then is the
 // record marked removing, and the detach and delete are made from the record (review of
 // check-then-act, item 1).
+//
+// History is the restore gate's history when the removal was recorded. A record from another
+// history is dropped and the volume is kept: this history did not decide that delete.
 type volumeRecord struct {
 	v1.VolumeStatus
-	Removing bool `json:"removing,omitempty"`
+	Removing bool   `json:"removing,omitempty"`
+	History  string `json:"history,omitempty"`
 }
 
 func decodeRecord(o store.Object) (volumeRecord, error) {
@@ -208,6 +212,7 @@ func (c *Volumes) markRemoving(ctx context.Context, s *v1.Silo, name string) err
 			return err
 		}
 		r.Removing = true
+		r.History = c.history()
 		data, _ := json.Marshal(r)
 		if _, err = c.Records.Update(ctx, o.Key, data, o.Revision); !errors.Is(err, store.ErrConflict) {
 			return err
@@ -224,6 +229,15 @@ func (c *Volumes) removals(ctx context.Context, s *v1.Silo, have map[string]stor
 	for name, o := range have {
 		r, derr := decodeRecord(o)
 		if derr != nil || !r.Removing {
+			continue
+		}
+		if r.History != c.history() { // another history: drop the record, keep the volume
+			if _, err := c.Records.Delete(ctx, o.Key, o.Revision); err != nil && !errors.Is(err, store.ErrNotFound) {
+				errs = append(errs, err)
+				pending[name] = true
+			} else {
+				delete(have, name)
+			}
 			continue
 		}
 		vs := r.VolumeStatus
@@ -267,6 +281,15 @@ func (c *Volumes) lostNow(ctx context.Context, host string) (bool, error) {
 	}
 	lost, _ := hostctl.Lost(&h)
 	return lost, nil
+}
+
+// history is the restore gate's history, or "" when there is none. A removal record stores it
+// (markRemoving); removals drops a record from any other history.
+func (c *Volumes) history() string {
+	if g := c.restoreGate(); g != nil {
+		return g.Spec.History
+	}
+	return ""
 }
 
 // removalsUnderWay reports whether any record of s remains (a removal under way, or a volume to

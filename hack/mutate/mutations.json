@@ -4515,5 +4515,17 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a VM disk download is capped at disk.size, or at the default disk when none is stated; zero is that default"
+ },
+ {
+  "id": "G-760",
+  "guard": "a removal recorded under another restore history is dropped",
+  "file": "internal/controllers/provider/trust.go",
+  "find": "if r.History != c.history() { // another history: drop the record, keep the volume",
+  "replace": "if false && r.History != c.history() { // another history: drop the record, keep the volume",
+  "mutation": "a removal from another history is resumed",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume removal recorded under another restore history is dropped and the volume is kept"
  }
 ]
