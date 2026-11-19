@@ -119,7 +119,7 @@ func (c *Controller) assignIndex(ctx context.Context, h *v1.Host) (bool, error) 
 		if c.Claims == nil {
 			break
 		}
-		ok, err = c.Claims.Take(ctx, PoolMeshIndex, strconv.Itoa(i), claims.Holder{Kind: "Host", Name: h.Name, UID: h.UID, Version: h.ResourceVersion}, UsesMeshIndex)
+		ok, _, err = c.Claims.Take(ctx, PoolMeshIndex, strconv.Itoa(i), claims.Holder{Kind: "Host", Name: h.Name, UID: h.UID, Version: h.ResourceVersion}, UsesMeshIndex)
 		if err != nil {
 			return false, err
 		}

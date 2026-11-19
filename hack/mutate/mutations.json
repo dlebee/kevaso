@@ -4839,5 +4839,53 @@
    "./internal/apiserver"
   ],
   "protects": "a service write is judged against the ingresses that already name it"
+ },
+ {
+  "id": "G-740",
+  "guard": "DELETE of a status path is refused",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "case r.Method == http.MethodDelete && t.name != \"\" && !t.status: // a status subresource is not deleted",
+  "replace": "case r.Method == http.MethodDelete && t.name != \"\": // a status subresource is not deleted",
+  "mutation": "DELETE of a status path deletes the object",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a status subresource cannot be deleted"
+ },
+ {
+  "id": "G-741",
+  "guard": "a kevaso.com finalizer on a deleting object is removed only by its controller",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if !authed || id == Component { // a kevaso.com finalizer is removed by kevasod",
+  "replace": "if !authed || id == Component || true { // a kevaso.com finalizer is removed by kevasod",
+  "mutation": "any writer may remove a kevaso.com finalizer from a deleting object",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a controller finalizer stays until its controller removes it"
+ },
+ {
+  "id": "G-742",
+  "guard": "a secret value sealed for a write that does not stay is put back",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if restoreVault != nil { // the value sealed for a write that did not stay is put back",
+  "replace": "if false && restoreVault != nil { // the value sealed for a write that did not stay is put back",
+  "mutation": "a refused loosening write leaves the new secret value in place",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a loosening write that does not commit keeps the previous value"
+ },
+ {
+  "id": "G-743",
+  "guard": "a conflicting write releases only a host port it newly claimed",
+  "file": "internal/apiserver/hostports.go",
+  "find": "ports := fresh // only a port this call newly claimed",
+  "replace": "ports := append(fresh[:0:0], added...) // only a port this call newly claimed",
+  "mutation": "a conflicting write releases a host port the silo already holds",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host port a silo holds stays when another write of that silo does not commit"
  }
 ]

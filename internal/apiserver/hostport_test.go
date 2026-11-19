@@ -11,6 +11,7 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/claims"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/store"
 )
@@ -209,6 +210,112 @@ func TestAHostPortAHostListensOnIsRefused(t *testing.T) {
 	if err := c.Create(ctx, open("web", 443)); err != nil {
 		t.Fatalf("443 stays available: %v", err)
 	}
+}
+
+// A silo that already holds a host port keeps it when a second write of that silo, which still
+// sees the port as new, does not commit. The release puts back only a port that write claimed.
+func TestAConflictingUpdateKeepsAHostPortTheSiloAlreadyHolds(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	st := store.NewMemory(0)
+	srv, c, done := hostPortServer(t, st)
+	defer done()
+	held := placeHostPort(t, ctx, c, "a", 8080)
+	stale := *held
+	stale.Spec.Ports = nil
+	stale.Spec.Service = nil
+	rel, err := srv.claimAddedHostPorts(ctx, &stale, held, held.ResourceVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel != nil {
+		rel()
+	}
+	who, ok := (&claims.Claims{Store: st}).Who(ctx, "host-port.hv1", "internal-tcp-8080")
+	if !ok || who.UID != held.UID {
+		t.Fatalf("claim after the conflicting write: %+v present=%v", who, ok)
+	}
+	b := placeHostPort(t, ctx, c, "b", 0)
+	b.Spec.Ports = []v1.SiloPort{{Name: "web", Port: 8080}}
+	b.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", HostPort: []string{v1.NetworkInternal}}}}
+	if err := c.Update(ctx, b); codeOf(err) != http.StatusConflict || !strings.Contains(err.Error(), "held by d/a") {
+		t.Fatalf("another silo taking the port: %v, want 409 naming d/a", err)
+	}
+}
+
+// A write that claims a host port and then does not commit puts that port back, so the next silo
+// can take it.
+func TestARefusedHostPortUpdateReleasesThePortItClaimed(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	st := store.NewMemory(0)
+	srv, c, done := hostPortServer(t, st)
+	defer done()
+	cur := placeHostPort(t, ctx, c, "a", 0)
+	next := *cur
+	next.Spec.Ports = []v1.SiloPort{{Name: "web", Port: 8080}}
+	next.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", HostPort: []string{v1.NetworkInternal}}}}
+	rel, err := srv.claimAddedHostPorts(ctx, cur, &next, cur.ResourceVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel == nil {
+		t.Fatal("the new port was not claimed")
+	}
+	rel()
+	if who, ok := (&claims.Claims{Store: st}).Who(ctx, "host-port.hv1", "internal-tcp-8080"); ok {
+		t.Fatalf("a refused update left the claim: %+v", who)
+	}
+	if err := c.Update(ctx, &next); err != nil {
+		t.Fatalf("the port after the refused update: %v", err)
+	}
+}
+
+func hostPortServer(t *testing.T, st store.Store) (*Server, *client.Client, func()) {
+	t.Helper()
+	srv, err := New(st, clock.Real{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, done := srv.InProcess()
+	return srv, c, done
+}
+
+// placeHostPort creates a silo on hv1. port 0 leaves it with no host port; any other number is
+// opened on the host's internal address after placement, which is what claims it.
+func placeHostPort(t *testing.T, ctx context.Context, c *client.Client, name string, port int) *v1.Silo {
+	t.Helper()
+	tm := func(k string) meta.TypeMeta { return meta.TypeMeta{APIVersion: v1.APIVersion, Kind: k} }
+	if err := c.Create(ctx, &v1.Namespace{TypeMeta: tm("Namespace"), ObjectMeta: meta.ObjectMeta{Name: "d"}}); err != nil && !client.IsAlreadyExists(err) {
+		t.Fatal(err)
+	}
+	s := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "d"},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}}}
+	if err := c.Create(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, "Silo", "d", name, s); err != nil {
+		t.Fatal(err)
+	}
+	s.Status.Host, s.Status.Phase = "hv1", "Running"
+	if err := c.UpdateStatus(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, "Silo", "d", name, s); err != nil {
+		t.Fatal(err)
+	}
+	if port == 0 {
+		return s
+	}
+	s.Spec.Ports = []v1.SiloPort{{Name: "web", Port: port}}
+	s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", HostPort: []string{v1.NetworkInternal}}}}
+	if err := c.Update(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, "Silo", "d", name, s); err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
 
 func codeOf(err error) int {
