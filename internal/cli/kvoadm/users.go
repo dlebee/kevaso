@@ -1,11 +1,13 @@
 package kvoadm
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"text/tabwriter"
 
@@ -20,9 +22,13 @@ import (
 //	kvoadm users invite NAME [--group G]… [--namespace NS [--role editor]] [--ttl 15m] [--context C]
 //	kvoadm users list
 //	kvoadm users disable NAME
-func usersCmd(ctx context.Context, args []string, stdout io.Writer) error {
+//	kvoadm users resign [USER@]ADDRESS --name USER [--context C] [--ssh-key PATH]
+func usersCmd(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("users needs invite, list or disable")
+		return errors.New("users needs invite, list, disable or resign")
+	}
+	if args[0] == "resign" {
+		return usersResign(ctx, args[1:], stdin, stdout)
 	}
 	var groups, rest []string
 	var namespace, role, ttl, kctx string
@@ -131,4 +137,80 @@ func usersCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		return nil
 	}
 	return fmt.Errorf("unknown users command %q", args[0])
+}
+
+// usersResign signs a new client certificate over SSH and stores it on the named context.
+// The key is made here. The control plane only sees the request.
+func usersResign(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
+	var name, kctx string
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--name":
+			if i+1 >= len(args) {
+				return errors.New("--name needs a value")
+			}
+			i++
+			name = args[i]
+		case "--context":
+			if i+1 >= len(args) {
+				return errors.New("--context needs a value")
+			}
+			i++
+			kctx = args[i]
+		default:
+			rest = append(rest, args[i])
+		}
+	}
+	if name == "" {
+		return errors.New("users resign needs --name USER")
+	}
+	o, err := parseTarget(rest)
+	if err != nil {
+		return err
+	}
+	defaultSSHKey(&o)
+	if err := needCredential(o); err != nil {
+		return err
+	}
+	path := os.Getenv("KVO_CONFIG")
+	if path == "" {
+		path, err = kvoconfig.Path()
+		if err != nil {
+			return err
+		}
+	}
+	cfg, err := kvoconfig.Load(path)
+	if err != nil {
+		return err
+	}
+	n, c, err := cfg.Resolve(kctx)
+	if err != nil {
+		return err
+	}
+	if c.Certificate == "" || c.Key == "" {
+		return fmt.Errorf("context %s has no certificate to replace", n)
+	}
+	conn, _, err := dialHost(ctx, o, bufio.NewReader(stdin), stdin, stdout)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	keyPEM, certPEM, _, err := signUserOverSSH(ctx, conn, name)
+	if err != nil {
+		return err
+	}
+	if err := installResignedCert(c.Key, c.Certificate, keyPEM, certPEM); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "certificate for %s written to context %s\n", name, n)
+	return nil
+}
+
+// installResignedCert writes the new key and certificate where the context reads them.
+func installResignedCert(keyPath, certPath string, keyPEM, certPEM []byte) error {
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		return err
+	}
+	return os.WriteFile(certPath, certPEM, 0o644)
 }
