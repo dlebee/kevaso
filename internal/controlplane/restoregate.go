@@ -101,6 +101,9 @@ func openRestoreGate(ctx context.Context, st store.Store, cfg Config, id Cluster
 	if err := json.Unmarshal(o.Data, &cur); err != nil {
 		return fmt.Errorf("the restore gate: %w", err)
 	}
+	if cur.Spec.History != spec.History {
+		cur.Spec.ConfirmedOff = nil // a new history does not keep who was confirmed off
+	}
 	cur.Spec.History, cur.Spec.Started = spec.History, spec.Started
 	cur.Spec.NoHostsAdded, cur.Spec.HostsAdded, cur.Spec.Required = spec.NoHostsAdded, spec.HostsAdded, spec.Required
 	cur.ResourceVersion = ""
