@@ -43,7 +43,7 @@ func TestPoolCommandsAreNotInKevasosCgroup(t *testing.T) {
 		if !strings.HasPrefix(hostCmd(c), "qemu-img convert ") {
 			continue
 		}
-		if !strings.Contains(c, "User="+ImgUser) || !(strings.Contains(c, "Requisite=kevasod.service") && strings.Contains(c, "PartOf=kevasod.service") && !strings.Contains(c, "BindsTo=")) || strings.Contains(c, "--slice=system.slice") {
+		if !strings.Contains(c, "User="+ImgUser) || !strings.Contains(c, "Requisite=kevasod.service") || !strings.Contains(c, "PartOf=kevasod.service") || strings.Contains(c, "BindsTo=") || strings.Contains(c, "--slice=system.slice") {
 			t.Errorf("qemu-img convert must be a unit bound to kevasod, shown only the image and the target: %s", c)
 		}
 	}
