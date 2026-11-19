@@ -4856,8 +4856,8 @@
   "id": "G-741",
   "guard": "a kevaso.com finalizer on a deleting object is removed only by its controller",
   "file": "internal/apiserver/apiserver.go",
-  "find": "if !authed || id == Component { // a kevaso.com finalizer is removed by kevasod",
-  "replace": "if !authed || id == Component || true { // a kevaso.com finalizer is removed by kevasod",
+  "find": "if !authed || id == Component || id == LocalAdmin { // a kevaso.com finalizer is removed by kevasod",
+  "replace": "if !authed || id == Component || id == LocalAdmin || true { // a kevaso.com finalizer is removed by kevasod",
   "mutation": "any writer may remove a kevaso.com finalizer from a deleting object",
   "packages": [
    "./internal/apiserver"
@@ -5307,5 +5307,29 @@
    "./internal/apiserver"
   ],
   "protects": "a renew in flight while its host is removed records no serial"
+ },
+ {
+  "id": "G-809",
+  "guard": "a kevaso.com finalizer is kept before the object is deleted",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if why := controllerFinalizerKept(ctx, oldMeta.Finalizers, nm.Finalizers); why != \"\" { // a kevaso.com finalizer, before or during delete",
+  "replace": "if oldMeta.DeletionTimestamp == nil || false { /* not before delete */ } else if why := controllerFinalizerKept(ctx, oldMeta.Finalizers, nm.Finalizers); why != \"\" { // a kevaso.com finalizer, before or during delete",
+  "mutation": "a kevaso.com finalizer can be removed before the object is deleted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a kevaso.com finalizer stays until its controller removes it, before the delete too"
+ },
+ {
+  "id": "G-810",
+  "guard": "a kevaso.com finalizer on a defined object is kept before it is deleted",
+  "file": "internal/apiserver/kinds.go",
+  "find": "if why := controllerFinalizerKept(ctx, om.Finalizers, nm.Finalizers); why != \"\" { // a kevaso.com finalizer, before or during delete",
+  "replace": "if om.DeletionTimestamp == nil || false { /* not before delete */ } else if why := controllerFinalizerKept(ctx, om.Finalizers, nm.Finalizers); why != \"\" { // a kevaso.com finalizer, before or during delete",
+  "mutation": "a kevaso.com finalizer on a defined object can be removed before it is deleted",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a defined object's kevaso.com finalizer stays until its controller removes it"
  }
 ]

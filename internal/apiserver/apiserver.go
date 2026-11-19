@@ -789,14 +789,14 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		if t.kind.HasSpec && !reflect.DeepEqual(getField(old, "Spec"), getField(next, "Spec")) {
 			nm.Generation++
 		}
+		// A kevaso.com finalizer is its controller's, before the delete and during it.
+		if why := controllerFinalizerKept(ctx, oldMeta.Finalizers, nm.Finalizers); why != "" { // a kevaso.com finalizer, before or during delete
+			return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s: %s is removed only by its controller", t.key(), why)
+		}
 		// Once deleting, finalizers may only be removed; when the last one goes, the object goes.
-		// A kevaso.com finalizer is its controller's: another writer cannot take it off.
 		if oldMeta.DeletionTimestamp != nil {
 			if !isSubset(nm.Finalizers, oldMeta.Finalizers) {
 				return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s is being deleted: finalizers can only be removed", t.key())
-			}
-			if why := controllerFinalizerKept(ctx, oldMeta.Finalizers, nm.Finalizers); why != "" {
-				return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s is being deleted: %s is removed only by its controller", t.key(), why)
 			}
 			if len(nm.Finalizers) == 0 {
 				d, err := s.commitDelete(ctx, t.key(), expected)
@@ -874,13 +874,14 @@ func undoUncommitted(restoreVault, release func()) {
 }
 
 // controllerFinalizerKept reports the kevaso.com finalizers next drops that this caller may not
-// remove. Empty when none are dropped, or the caller is kevasod's own controllers. A server with
-// no authentication has no identity to tell the controller from anyone else (the unit tests).
+// remove. Empty when none are dropped, or the caller is kevasod's own controllers, or the admin
+// socket (root on the control-plane host, the way a stuck finalizer is cleared by hand). A server
+// with no authentication has no identity to tell the controller from anyone else (the unit tests).
 // kevaso.com/plugin-uninstall is the uninstall command's, and that command runs as the person
 // who invoked it.
 func controllerFinalizerKept(ctx context.Context, old, next []string) string {
 	id, authed := IdentityFrom(ctx)
-	if !authed || id == Component { // a kevaso.com finalizer is removed by kevasod
+	if !authed || id == Component || id == LocalAdmin { // a kevaso.com finalizer is removed by kevasod
 		return ""
 	}
 	kept := map[string]bool{}
