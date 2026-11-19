@@ -49,8 +49,12 @@ type State struct {
 	MAC     string `json:"mac"`
 	HostKey string `json:"hostKey"` // the guest's SSH host key (public), pinned for Exec
 	Started bool   `json:"started"` // started at least once (Stopped vs Created)
-	CPUs    int    `json:"cpus,omitempty"`
-	MemMiB  int64  `json:"memMiB,omitempty"`
+	// Made is set once the unit file is written, and a reset keeps it. Started is cleared by a
+	// finished reset, so it cannot say whether this silo was ever finished: a missing unit after
+	// that is not a half-made create, and the disk stays.
+	Made   bool  `json:"made,omitempty"`
+	CPUs   int   `json:"cpus,omitempty"`
+	MemMiB int64 `json:"memMiB,omitempty"`
 	// Volumes are what its VMM gets (local disks, shared folders); RootDir, if set, is the mount
 	// class's folder holding its root disk image (spec.disk.class).
 	Volumes []kri.Volume `json:"volumes,omitempty"`
@@ -239,9 +243,10 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	if done, err := r.created(spec.ID); done || err != nil {
 		return err
 	}
-	// A Create killed halfway (its state saved, its unit never written) made a silo that never
-	// ran: nothing in it is anyone's data. Take it apart and make it afresh.
-	if st, ok, _ := r.readState(spec.ID); ok && !st.Started {
+	// A Create killed halfway (its state saved, its unit never written, Made never set) made a
+	// silo that never ran: nothing in it is anyone's data. Take it apart and make it afresh.
+	// A silo that was made, including one a reset has stopped calling started, is left as it is.
+	if st, ok, _ := r.readState(spec.ID); ok && !st.Made && !st.Started {
 		if err := r.deleteLocked(ctx, spec.ID); err != nil {
 			return fmt.Errorf("redo a half-made %s: %w", spec.ID, err)
 		}
@@ -350,6 +355,10 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 			return fmt.Errorf("create %s: %w", spec.ID, err)
 		}
 	}
+	st.Made = true // the unit is written: a later loss of it is not a half-made create
+	if err := r.saveState(st); err != nil {
+		return fmt.Errorf("create %s: %w", spec.ID, err)
+	}
 	return nil
 }
 
@@ -364,8 +373,8 @@ func (r *Runtime) created(id kri.ID) (bool, error) {
 		return false, nil
 	case r.made(id):
 		return true, nil
-	case st.Started:
-		return false, fmt.Errorf("%s ran but its unit is gone: not making it again over its disk (delete the silo to start over)", id)
+	case st.Made || st.Started:
+		return false, fmt.Errorf("%s was made but its unit is gone: not making it again over its disk (delete the silo to start over)", id)
 	}
 	return false, nil // half-made: Create redoes it
 }
@@ -422,8 +431,8 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 			}
 		}
 	}
-	if !st.Started {
-		st.Started = true
+	if !st.Started || !st.Made {
+		st.Started, st.Made = true, true
 		return r.saveState(st)
 	}
 	return nil
@@ -677,7 +686,12 @@ func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, s
 	if err := r.mustBeMounted(ctx, filepath.Dir(l.RootFile)); err != nil { // a root disk is written only on the volume's mount
 		return false, err
 	}
-	if _, err := r.Host.Run(ctx, "test", "-e", l.RootFile); err == nil && !fresh {
+	_, probeErr := r.Host.Run(ctx, "test", "-e", l.RootFile)
+	missing, err := probeMissing(probeErr)
+	if err != nil {
+		return false, fmt.Errorf("root disk %s could not be checked (%w): not writing it", l.RootFile, err)
+	}
+	if !missing && !fresh {
 		return false, nil // moved here with its data
 	}
 	tmp := l.RootFile + ".new"
@@ -691,6 +705,39 @@ func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, s
 		}
 	}
 	return false, nil
+}
+
+// probeMissing says whether test -e found the path absent. Exit 1 is absent. Any other
+// failure is not: the path may be there, and nothing is written over it.
+func probeMissing(err error) (bool, error) {
+	code, ok := commandExit(err)
+	switch {
+	case ok && code == 0:
+		return false, nil
+	case ok && code == 1:
+		return true, nil
+	default:
+		if err == nil {
+			err = fmt.Errorf("exit %d", code)
+		}
+		return false, err
+	}
+}
+
+// commandExit is a command's exit status. The real host returns exec.ExitError; tests say "exit N".
+func commandExit(err error) (int, bool) {
+	if err == nil {
+		return 0, true
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode(), true
+	}
+	var n int
+	if _, scanErr := fmt.Sscanf(err.Error(), "exit %d", &n); scanErr == nil {
+		return n, true
+	}
+	return 0, false
 }
 
 // errRootKept: making a root disk afresh failed before the old one was touched (its lvremove
@@ -728,7 +775,7 @@ func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 	if !ok {
 		return kri.Status{State: kri.Absent}, nil
 	}
-	if !st.Started && !r.made(id) {
+	if !st.Started && !st.Made && !r.made(id) {
 		// Half-made (kevasod killed in Create, before the unit): absent, so it's created again
 		// (Create redoes it); never started, so there's no disk of a running silo to keep.
 		return kri.Status{State: kri.Absent}, nil
@@ -1107,7 +1154,7 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 			return err
 		}
 	}
-	st.HostKey, st.Started, st.Remake = hostPub, false, nil
+	st.HostKey, st.Started, st.Made, st.Remake = hostPub, false, true, nil
 	return r.saveState(st)
 }
 

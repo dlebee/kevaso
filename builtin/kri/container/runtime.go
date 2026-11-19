@@ -330,8 +330,11 @@ func (r *Runtime) ensurePause(ctx context.Context, s state) error {
 		if err != nil {
 			return err
 		}
-		if _, err := r.eng(ctx, nil, "run", "-d", "--name", n.Pause, "--hostname", s.ID.Name, "--network", "none", "--read-only", "--cap-drop", "ALL",
-			"--security-opt", "no-new-privileges", "--label", "kevaso.com/uid="+s.ID.UID, img); err != nil {
+		args := []string{"run", "-d", "--name", n.Pause, "--hostname", s.ID.Name, "--network", "none", "--read-only", "--cap-drop", "ALL",
+			"--security-opt", "no-new-privileges", "--label", "kevaso.com/uid=" + s.ID.UID}
+		args = append(args, containerLogArgs()...)
+		args = append(args, img)
+		if _, err := r.eng(ctx, nil, args...); err != nil {
 			return err
 		}
 	default:
@@ -438,6 +441,12 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	return r.ensurePause(ctx, s)
 }
 
+// containerLogArgs caps a container's json-file log and keeps three files. One silo cannot
+// fill the host's disk by writing to its own stdout. Docker and podman both take these.
+func containerLogArgs() []string {
+	return []string{"--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=3"}
+}
+
 // runArgs are a silo container's settings: the pause container's network, the volumes, a tmpfs at
 // /run, the CA bundle, its secrets (read-only folders from the host's tmpfs, an env file), limits,
 // no new privileges.
@@ -445,15 +454,17 @@ func (r *Runtime) runArgs(s state, name string) ([]string, error) {
 	n := NamesFor(s.ID)
 	// --pull never: every pull is the agent's (Pull, with the silo's credential), never the
 	// engine's own on a run.
-	args := []string{"--name", name, "--pull", "never", "--network", "container:" + n.Pause,
+	args := []string{"--name", name, "--pull", "never"}
+	args = append(args, containerLogArgs()...)
+	args = append(args, "--network", "container:"+n.Pause,
 		"--security-opt", "no-new-privileges", "--pids-limit", "4096",
 		// The silo's root is the host's uid 0. These three are the ones a container does not
 		// need to run and that reach the host kernel: devices, raw sockets (ping), a chroot.
 		// A user namespace is a later opt-in. Docker and podman both take --cap-drop.
 		"--cap-drop", "MKNOD", "--cap-drop", "NET_RAW", "--cap-drop", "SYS_CHROOT",
-		"--label", "kevaso.com/namespace=" + s.ID.Namespace, "--label", "kevaso.com/name=" + s.ID.Name, "--label", "kevaso.com/uid=" + s.ID.UID,
-		"-v", n.Dir + "/resolv.conf:/etc/resolv.conf:ro",
-		"--tmpfs", "/run:rw,nosuid,nodev,mode=0755"}
+		"--label", "kevaso.com/namespace="+s.ID.Namespace, "--label", "kevaso.com/name="+s.ID.Name, "--label", "kevaso.com/uid="+s.ID.UID,
+		"-v", n.Dir+"/resolv.conf:/etc/resolv.conf:ro",
+		"--tmpfs", "/run:rw,nosuid,nodev,mode=0755")
 	if r.engine() == "podman" { // docker shares the hostname with the network; podman needs asking
 		args = append(args, "--uts", "container:"+n.Pause)
 	}

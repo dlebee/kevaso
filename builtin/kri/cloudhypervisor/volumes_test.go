@@ -60,7 +60,7 @@ func TestVMMUnitWithVolumes(t *testing.T) {
 	u := UnitFor(n, 2, 4096, BinDir+"/CLOUDHV_EFI.fd", MAC(id("web")), l)
 	for _, want := range []string{
 		"DeviceAllow=/dev/kevaso/" + n.LV + " rw\n", "DeviceAllow=" + l.Disks[0].Device() + " rw\n",
-		"ExecStartPre=+/bin/chown " + VMMUser + " " + l.Disks[0].Device() + "\n",
+		"sh " + l.Disks[0].Device() + " " + VMMUser,
 		"--fs tag=" + l.Shares[0].Tag, "InaccessiblePaths=/var/lib/kevaso /root", "CapabilityBoundingSet=\n",
 	} {
 		if !strings.Contains(u, want) {
@@ -78,7 +78,7 @@ func TestVMMUnitWithVolumes(t *testing.T) {
 	for _, want := range []string{
 		"--disk path=/var/lib/kevaso/volumes/uid-web/disk.root/root.raw,image_type=raw",
 		"TemporaryFileSystem=/var/lib/kevaso:ro\n", "BindPaths=/var/lib/kevaso/volumes/uid-web/disk.root\n",
-		"ExecStartPre=+/bin/chown " + VMMUser + " /var/lib/kevaso/volumes/uid-web/disk.root/root.raw\n",
+		"sh /var/lib/kevaso/volumes/uid-web/disk.root/root.raw " + VMMUser,
 	} {
 		if !strings.Contains(rf, want) {
 			t.Errorf("root-file unit lacks %q:\n%s", want, rf)

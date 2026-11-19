@@ -4515,5 +4515,209 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a VM disk download is capped at disk.size, or at the default disk when none is stated; zero is that default"
+ },
+ {
+  "id": "G-700",
+  "guard": "a root disk probe that is not exit 1 writes nothing",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "err = fmt.Errorf(\"exit %d\", code)\n\t\t}\n\t\treturn false, err",
+  "replace": "err = fmt.Errorf(\"exit %d\", code)\n\t\t}\n\t\treturn true, nil",
+  "mutation": "any probe failure is taken as the root disk being absent",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a root disk is written only when the probe says it is absent"
+ },
+ {
+  "id": "G-701",
+  "guard": "a volume is formatted only when blkid names neither a filesystem nor a partition table",
+  "file": "internal/agent/volumes.go",
+  "find": "case code == 2 && fs == \"\" && pt == \"\": // nothing on it: a new volume",
+  "replace": "case code == 2 && fs == \"\" || pt != \"\": // nothing on it: a new volume",
+  "mutation": "a partition table on an otherwise empty probe is formatted",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a volume that already holds a partition table is not formatted"
+ },
+ {
+  "id": "G-702",
+  "guard": "the guest formats a disk only when the probe is empty",
+  "file": "builtin/kri/cloudhypervisor/volumes.go",
+  "find": "if [ \"$rc\" -eq 2 ] && [ -z \"$p\" ]; then mkfs.ext4 -q -m 0 \"$d\"",
+  "replace": "if [ \"$rc\" -eq 2 ]; then mkfs.ext4 -q -m 0 \"$d\"",
+  "mutation": "the guest formats a disk that has a partition table",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a guest disk that already holds a partition table is not formatted"
+ },
+ {
+  "id": "G-703",
+  "guard": "a made silo whose unit is gone is not created again",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "case st.Made || st.Started:",
+  "replace": "case st.Started:",
+  "mutation": "a finished silo whose unit is gone is made again",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a silo that was made is not created again over its disk when its unit is gone"
+ },
+ {
+  "id": "G-704",
+  "guard": "a made silo is not reported absent when its unit is gone",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if !st.Started && !st.Made && !r.made(id) {",
+  "replace": "if !st.Started && !r.made(id) {",
+  "mutation": "a finished silo whose unit is gone is reported absent",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a silo that was made stays present when its unit is gone, so it is not created again"
+ },
+ {
+  "id": "G-705",
+  "guard": "the VMM's disk chown does not follow a link",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "chown -h \"$u\" \"$p\"",
+  "replace": "chown \"$u\" \"$p\"",
+  "mutation": "chown of a disk follows a symlink",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "changing a disk's owner does not follow a link"
+ },
+ {
+  "id": "G-706",
+  "guard": "a disk link is changed only when it points at an LVM device node",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "if [ \"$ok\" -ne 1 ]; then echo \"not chowning $1: a link to $t\"",
+  "replace": "if false; then echo \"not chowning $1: a link to $t\"",
+  "mutation": "any symlink to a disk is accepted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk symlink is changed only when it points at /dev/dm-N"
+ },
+ {
+  "id": "G-707",
+  "guard": "a VMM's view of /run is empty except its own directory",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "w(\"TemporaryFileSystem=/run\")",
+  "replace": "w(\"TemporaryFileSystem=\" + SilosDir)",
+  "mutation": "the host's /run is visible to the VMM",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a VMM does not see other silos' sockets under /run"
+ },
+ {
+  "id": "G-708",
+  "guard": "a VMM keeps only its own runtime directory",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "w(\"BindPaths=/run/\" + strings.TrimSuffix(n.Unit, \".service\"))",
+  "replace": "w(\"BindPaths=\" + n.Dir)",
+  "mutation": "the VMM's own runtime directory is not mounted back",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a VMM can use its own API socket and no other silo's"
+ },
+ {
+  "id": "G-709",
+  "guard": "a container log is capped",
+  "file": "builtin/kri/container/runtime.go",
+  "find": "\"max-size=10m\"",
+  "replace": "\"max-size=10g\"",
+  "mutation": "a container log is not capped at 10MiB",
+  "packages": [
+   "./builtin/kri/container"
+  ],
+  "protects": "a container's json-file log stays within 10MiB times three files"
+ },
+ {
+  "id": "G-710",
+  "guard": "a guest serial log is capped",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "serialLogMax = 10 << 20",
+  "replace": "serialLogMax = 1 << 30",
+  "mutation": "the guest serial log is allowed to grow far past 10MiB",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a silo's serial log is kept to about 10MiB plus one older file"
+ },
+ {
+  "id": "G-711",
+  "guard": "a provider volume is mounted without special files",
+  "file": "internal/agent/volumes.go",
+  "find": "\"noatime,nosuid,nodev\"",
+  "replace": "\"noatime\"",
+  "mutation": "a provider volume is mounted with only noatime",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a provider volume is mounted nosuid,nodev"
+ },
+ {
+  "id": "G-712",
+  "guard": "host commands run under the runtime directory",
+  "file": "builtin/kri/hostexec/hostexec.go",
+  "find": "os.MkdirTemp(commandParent, \"kevaso-hostexec-\")",
+  "replace": "os.MkdirTemp(\"\", \"kevaso-hostexec-\")",
+  "mutation": "host commands run in the system temporary directory",
+  "packages": [
+   "./builtin/kri/hostexec"
+  ],
+  "protects": "host commands run in a directory under the runtime parent, not the system temporary directory"
+ },
+ {
+  "id": "G-713",
+  "guard": "the host command directory defaults to /run/kevaso",
+  "file": "builtin/kri/hostexec/hostexec.go",
+  "find": "defaultCommandParent = \"/run/kevaso\"",
+  "replace": "defaultCommandParent = \"/tmp\"",
+  "mutation": "host commands default to /tmp",
+  "packages": [
+   "./builtin/kri/hostexec"
+  ],
+  "protects": "host commands live under /run/kevaso"
+ },
+ {
+  "id": "G-714",
+  "guard": "a removed host command directory is made again",
+  "file": "builtin/kri/hostexec/hostexec.go",
+  "find": "return err == nil && st.IsDir()",
+  "replace": "return dirPath != \"\" || err == nil && st.IsDir()",
+  "mutation": "a removed command directory is reused",
+  "packages": [
+   "./builtin/kri/hostexec"
+  ],
+  "protects": "host commands keep working after their directory is removed"
+ },
+ {
+  "id": "G-715",
+  "guard": "a reset keeps the silo made",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "st.HostKey, st.Started, st.Made, st.Remake = hostPub, false, true, nil",
+  "replace": "st.HostKey, st.Started, st.Made, st.Remake = hostPub, false, false, nil",
+  "mutation": "a reset clears that the silo was made",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a finished reset is not treated as a half-made create"
+ },
+ {
+  "id": "G-716",
+  "guard": "a finished create records that the silo was made",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "st.Made = true // the unit is written: a later loss of it is not a half-made create",
+  "replace": "st.Made = st.Made // the unit is written: a later loss of it is not a half-made create",
+  "mutation": "a finished create leaves the silo looking half-made",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a create that wrote its unit is not done again over its disk"
  }
 ]

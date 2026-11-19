@@ -47,17 +47,51 @@ type Local struct{}
 // ends; kevasod's stop then waits for it too.
 const WaitDelay = 5 * time.Second
 
+// defaultCommandParent is the unit's runtime directory (RuntimeDirectory=kevaso on kevasod).
+// A directory under /tmp is removed by tmpfiles while kevasod still runs; the next host
+// command then cannot start or stop a silo. Tests point commandParent elsewhere.
+const defaultCommandParent = "/run/kevaso"
+
+// SetCommandParent points later host commands at dir and drops any directory already made.
+// kevasod leaves the default. Tests on a machine that cannot create /run/kevaso use it.
+func SetCommandParent(dir string) {
+	dirMu.Lock()
+	defer dirMu.Unlock()
+	commandParent = dir
+	dirPath = ""
+}
+
 var (
-	dirOnce sync.Once
-	dirPath string
-	dirErr  error
+	commandParent = defaultCommandParent
+	dirMu         sync.Mutex
+	dirPath       string
 )
 
 func commandDir() (string, error) {
-	dirOnce.Do(func() {
-		dirPath, dirErr = os.MkdirTemp("", "kevaso-hostexec-")
-	})
-	return dirPath, dirErr
+	dirMu.Lock()
+	defer dirMu.Unlock()
+	if commandDirReady() {
+		return dirPath, nil
+	}
+	if err := os.MkdirAll(commandParent, 0o700); err != nil {
+		return "", err
+	}
+	p, err := os.MkdirTemp(commandParent, "kevaso-hostexec-")
+	if err != nil {
+		return "", err
+	}
+	dirPath = p
+	return dirPath, nil
+}
+
+// commandDirReady reports whether the directory made for this process is still there.
+// A missing one is made again: a cleaner may remove it without restarting kevasod.
+func commandDirReady() bool {
+	if dirPath == "" {
+		return false
+	}
+	st, err := os.Stat(dirPath)
+	return err == nil && st.IsDir()
 }
 
 // SetCommandDir runs cmd in an empty directory. A relative path in its arguments is that

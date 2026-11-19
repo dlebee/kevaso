@@ -311,8 +311,10 @@ func GuestMountScript(l Layout) string {
 		dev := "/dev/disk/by-id/virtio-" + d.Serial
 		fmt.Fprintf(&b, `d=%s
 i=0; while [ ! -b "$d" ]; do i=$((i+1)); [ $i -le 30 ] || { echo "no disk $d for volume %s" >&2; exit 1; }; sleep 1; done
-set +e; t=$(blkid -p -o value -s TYPE "$d"); rc=$?; set -e
-if [ $rc -eq 2 ]; then mkfs.ext4 -q -m 0 "$d"; elif [ $rc -ne 0 ] || [ -z "$t" ]; then echo "$d holds something blkid can't name: not formatting it" >&2; exit 1; fi
+set +e; probe=$(blkid -p -o export -s TYPE -s PTTYPE "$d"); rc=$?; set -e
+t=$(printf '%%s\n' "$probe" | sed -n 's/^TYPE=//p')
+p=$(printf '%%s\n' "$probe" | sed -n 's/^PTTYPE=//p')
+if [ "$rc" -eq 2 ] && [ -z "$p" ]; then mkfs.ext4 -q -m 0 "$d"; elif [ "$rc" -ne 0 ] || [ -z "$t" ]; then echo "$d holds something blkid can't name: not formatting it" >&2; exit 1; fi
 `, shellQuote([]string{dev}), d.Name)
 	}
 	fmt.Fprintf(&b, `tmp=$(mktemp)

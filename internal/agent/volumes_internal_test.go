@@ -48,8 +48,8 @@ func TestMountFormatsOnlyAnEmptyVolume(t *testing.T) {
 		wantErr    string
 	}{
 		{"empty: formatted, then mounted", 2, "", true, ""},
-		{"ext4 already: mounted as it is", 0, "ext4\n", false, ""},
-		{"xfs from elsewhere: mounted as it is", 0, "xfs\n", false, ""},
+		{"ext4 already: mounted as it is", 0, "TYPE=ext4\n", false, ""},
+		{"xfs from elsewhere: mounted as it is", 0, "TYPE=xfs\n", false, ""},
 		{"blkid fails otherwise: left alone", 4, "", false, "not formatting"},
 		{"something unnamed: left alone", 0, "\n", false, "not formatting"},
 	} {
@@ -67,7 +67,7 @@ func TestMountFormatsOnlyAnEmptyVolume(t *testing.T) {
 			if got := h.did("mkfs"); got != tc.wantFormat {
 				t.Fatalf("formatted: %v, want %v (%v)", got, tc.wantFormat, h.ran)
 			}
-			if tc.wantErr == "" && !h.did("mount -o noatime "+dev+" "+dir) {
+			if tc.wantErr == "" && !h.did("mount -o noatime,nosuid,nodev "+dev+" "+dir) {
 				t.Fatalf("not mounted: %v", h.ran)
 			}
 		})

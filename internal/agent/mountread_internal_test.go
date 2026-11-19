@@ -58,7 +58,7 @@ func TestAStaleCacheMountsAndFormatsNothing(t *testing.T) {
 	if err := c.Get(ctx, "Silo", "dev", "db", &cached); err != nil {
 		t.Fatal(err)
 	}
-	if _, ready, msg, err := a.mountVolumes(ctx, &cached); !ready || err != nil || !h.did("mkfs") || !h.did("mount -o noatime "+dev) {
+	if _, ready, msg, err := a.mountVolumes(ctx, &cached); !ready || err != nil || !h.did("mkfs") || !h.did("mount -o noatime,nosuid,nodev "+dev) {
 		t.Fatalf("placed here: ready %v %q %v, ran %v", ready, msg, err, h.ran)
 	}
 }
