@@ -5199,5 +5199,29 @@
    "./internal/cli/kvoadm"
   ],
   "protects": "kvoadm users resign refuses a certificate that is not the named user"
+ },
+ {
+  "id": "G-800",
+  "guard": "a kept volume is not a detach that has started",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "detachStarted := strings.HasPrefix(priorMessage, \"detaching from \")",
+  "replace": "detachStarted := vs.Kept || strings.HasPrefix(priorMessage, \"detaching from \")",
+  "mutation": "a volume that is only kept is detached when it is put back",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume put back before its detach has started stays attached"
+ },
+ {
+  "id": "G-801",
+  "guard": "a mounted volume is not detached to finish a detach",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "finishingDetach := vs.AttachedTo == h.Name && detachStarted && !vs.Mounted",
+  "replace": "finishingDetach := vs.AttachedTo == h.Name && detachStarted",
+  "mutation": "a detach is finished while the volume is still mounted",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume that is still mounted is not detached"
  }
 ]

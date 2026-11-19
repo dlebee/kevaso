@@ -362,7 +362,10 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 		vs.Message = fmt.Sprintf("volume %s stays on class %s: its handle is not used under %s", vs.Name, volumeClassName(vs.Class), volumeClassName(spec.Class))
 		return vs, 0, nil
 	}
-	wasKept, priorMessage := vs.Kept, vs.Message
+	priorMessage := vs.Message
+	// A detach was started only once status says so. Being kept is not that: the volume was taken
+	// out of the spec and is waiting, still attached.
+	detachStarted := strings.HasPrefix(priorMessage, "detaching from ")
 	vs.Kept = false
 	vs.Class, vs.Message = spec.Class, ""
 	p, cls, ok := c.Plugins.Storage(spec.Class)
@@ -412,9 +415,10 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 		vs.Message = fmt.Sprintf("the volume is in %s and %s in %s: it can't attach there", vs.Region, h.Name, hi.Region)
 		return vs, time.Minute, nil
 	}
-	// A volume put back while detachKept is still detaching it from this host still names the
-	// host and a device. That device is going away: finish the detach, then attach.
-	finishingDetach := vs.AttachedTo == h.Name && (wasKept || strings.HasPrefix(priorMessage, "detaching from "))
+	// A volume put back while a detach is in progress still names this host. Finish that detach,
+	// then attach. Never while it is mounted: the device is still the guest's filesystem.
+	// A volume that is only kept, and comes back, stays attached as it is.
+	finishingDetach := vs.AttachedTo == h.Name && detachStarted && !vs.Mounted
 	if vs.AttachedTo == h.Name && vs.Device != "" && !finishingDetach {
 		return vs, 0, nil
 	}
