@@ -541,7 +541,7 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 type CertRequest struct {
 	Token string `json:"token,omitempty"` // /enroll only
 	Host  string `json:"host,omitempty"`  // /enroll: the host joining
-	Role  string `json:"role,omitempty"`  // /enroll: control-plane or worker
+	Role  string `json:"role,omitempty"`  // /enroll: worker. A system node joins at /join/system-node.
 	Name  string `json:"name,omitempty"`  // /admin/certs: the user's name
 	CSR   string `json:"csr"`             // PEM
 }
@@ -574,7 +574,9 @@ func decodeCertRequest(r *http.Request) (CertRequest, error) {
 	return req, nil
 }
 
-// enroll: a host presents its join token and a CSR, and gets a certificate for that host and role.
+// enroll: a host presents its join token and a CSR, and gets a worker certificate for that host.
+// A system node spends its token at /join/system-node, which seals the cluster identity to a key
+// the machine made. It does not get a host certificate here.
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeCertRequest(r)
 	if err != nil {
@@ -584,6 +586,10 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	id := pki.Identity{Type: "host", Name: req.Host, Role: req.Role}
 	if err := id.Validate(); err != nil {
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
+		return
+	}
+	if req.Role != "worker" { // a host certificate from /enroll is a worker's
+		writeErr(w, errf(http.StatusForbidden, "Forbidden", "enroll issues a worker certificate; role %q is refused", req.Role))
 		return
 	}
 	if err := s.auth.Tokens.Redeem(r.Context(), req.Token, req.Host, req.Role); err != nil {

@@ -4515,5 +4515,17 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a VM disk download is capped at disk.size, or at the default disk when none is stated; zero is that default"
+ },
+ {
+  "id": "G-720",
+  "guard": "enroll issues only a worker certificate",
+  "file": "internal/apiserver/auth.go",
+  "find": "if req.Role != \"worker\" { // a host certificate from /enroll is a worker's",
+  "replace": "if false && req.Role != \"worker\" { // a host certificate from /enroll is a worker's",
+  "mutation": "enroll signs whatever role the token allows",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "enroll refuses every role but worker, and does not spend the token"
  }
 ]
