@@ -4563,5 +4563,41 @@
    "./internal/apiserver"
   ],
   "protects": "a pull credential is refused for a status ref on another registry"
+ },
+ {
+  "id": "G-723",
+  "guard": "a missing host may use only the default network",
+  "file": "internal/apiserver/hostwrite.go",
+  "find": "if !inDefault { // a missing host has no subnet: only the default network",
+  "replace": "if false && !inDefault { // a missing host has no subnet: only the default network",
+  "mutation": "a missing host may be given any silo address",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a missing host may give a silo an address only in the default network"
+ },
+ {
+  "id": "G-724",
+  "guard": "a host with no subnet may use only the default network",
+  "file": "internal/apiserver/hostwrite.go",
+  "find": "if !inDefault { // a host with no subnet yet: only the default network",
+  "replace": "if false && !inDefault { // a host with no subnet yet: only the default network",
+  "mutation": "a host with no subnet may use any address",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a host with no subnet may give a silo an address only in the default network"
+ },
+ {
+  "id": "G-725",
+  "guard": "a subnet that does not parse refuses a silo address",
+  "file": "internal/apiserver/hostwrite.go",
+  "find": "if err != nil { // a subnet that does not parse",
+  "replace": "if false && err != nil { // a subnet that does not parse",
+  "mutation": "an unparsable subnet is treated as no restriction",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a silo address is refused when the host's subnet does not parse"
  }
 ]
