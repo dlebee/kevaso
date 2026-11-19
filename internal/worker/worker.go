@@ -179,7 +179,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 		if !ok || cfg.DataDir == "" {
 			continue
 		}
-		path, err := upstreamCAFile(cfg.DataDir, o.ExtraCA, internal)
+		path, err := upstreamCAFile(upstreamCADir, o.ExtraCA, internal)
 		if err != nil {
 			cfg.Log("internal CA: %v", err)
 			continue
@@ -419,6 +419,10 @@ func fetchInternalCA(ctx context.Context, c *client.Client) []byte {
 
 // upstreamCAFile is the PEM the OpenShell gateway trusts upstream: the egress extra CA, if any,
 // and the internal CA. The gateway has one bundle path.
+// upstreamCADir holds the CA bundle OpenShell's gateway reads. Not kevasod's data folder: that is
+// root-only (0700), and the gateway runs as its own user. The bundle is public certificates only.
+var upstreamCADir = "/etc/kevaso"
+
 func upstreamCAFile(dir, extra string, internal []byte) (string, error) {
 	if len(internal) == 0 {
 		return extra, nil
@@ -435,10 +439,10 @@ func upstreamCAFile(dir, extra string, internal []byte) (string, error) {
 		}
 	}
 	b = append(b, internal...)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, "upstream-cas.pem")
+	path := filepath.Join(dir, "openshell-upstream-cas.pem") // readable by the gateway's own user
 	if err := os.WriteFile(path, b, 0o644); err != nil {
 		return "", err
 	}
