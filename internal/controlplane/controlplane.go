@@ -7,6 +7,7 @@ package controlplane
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -209,10 +210,15 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		return nil, err
 	}
 	names := cfg.apiNames()
-	serverCert, err := ca.ServerCert(names, cfg.Clock.Now(), 365*24*time.Hour)
+	issueCert := func(now time.Time) (tls.Certificate, error) {
+		return ca.ServerCert(names, now, apiserver.APICertTTL)
+	}
+	serverCert, err := issueCert(cfg.Clock.Now())
 	if err != nil {
 		return nil, err
 	}
+	serving := apiserver.NewServingCert(serverCert, issueCert, cfg.Clock.Now)
+	serving.SetLog(cfg.Log)
 	st, err := openStore(ctx, cfg, ca)
 	if err != nil {
 		return nil, err
@@ -305,7 +311,8 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 		return nil, err
 	}
 	apiSrv := srv.HTTPServer(false)
-	apiSrv.TLSConfig = srv.TLSConfig(serverCert)
+	apiSrv.TLSConfig = srv.TLSServing(serving.GetCertificate)
+	go serving.Run(ctx, time.Hour)
 	adminSrv := srv.HTTPServer(true)
 	apiSrv.Handler = withControlPlane(apiSrv.Handler, st, true)
 	adminSrv.Handler = withControlPlane(adminSrv.Handler, st, false)

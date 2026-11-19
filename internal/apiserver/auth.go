@@ -669,6 +669,18 @@ func (s *Server) TLSConfig(serverCert tls.Certificate) *tls.Config {
 	}
 }
 
+// TLSServing is TLSConfig with GetCertificate, so the listener presents whatever the callback
+// returns now. Certificates is empty: a client that connects by address, with no server name,
+// still gets the current certificate.
+func (s *Server) TLSServing(get func(*tls.ClientHelloInfo) (*tls.Certificate, error)) *tls.Config {
+	return &tls.Config{
+		MinVersion:     tls.VersionTLS13,
+		GetCertificate: get,
+		ClientAuth:     tls.VerifyClientCertIfGiven,
+		ClientCAs:      s.auth.CA.Pool(),
+	}
+}
+
 // ListenAdminSocket opens the admin unix socket at path, readable and writable by its owner only.
 func ListenAdminSocket(path string) (net.Listener, error) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
