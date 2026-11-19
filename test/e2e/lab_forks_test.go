@@ -161,6 +161,8 @@ spec:
   container: { image: %s, command: ["python3", "-c", "import time; time.sleep(10**9)"] }
   resources: { cpu: 1, memory: 256Mi }
   ports: [{ name: http, port: 80 }]
+  service:
+    ports: [{ port: http }]
 `, labDNSNS, labImage), "apply", "--context", admin, "-f", "-")
 	labKvo(t, ctx, fmt.Sprintf(`apiVersion: kevaso/v1
 kind: Silo
@@ -177,7 +179,7 @@ def ask(name):
     try:
         return socket.getaddrinfo(name, 80)[0][4][0]
     except Exception as e:
-        return "REFUSED " + type(e).__name__
+        return "REFUSED " + type(e).__name__ + " " + str(e)
 print("out", ask("example.com"))
 print("in", ask("target.%s.kevaso"))
 `, labDNSNS)
