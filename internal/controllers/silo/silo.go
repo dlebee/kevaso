@@ -728,6 +728,21 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		delete(c.assumed, key) // it has: from now on the cache is what's true (a lost host, a move)
 	}
 	hosts, silos := c.lists()
+	// Unschedulable/HostDeleted is decided from the store, not the cache. A silo placed on a
+	// host this cache has not seen yet is read fresh; only NotFound marks the host deleted.
+	if name := s.Status.Host; name != "" && !slices.ContainsFunc(hosts, func(h *v1.Host) bool { return h.Name == name }) && !moves.StuckOnDeletedHost(s.Status, name) {
+		var fresh v1.Host
+		err := c.Client.Get(ctx, "Host", "", name, &fresh)
+		if err != nil && !client.IsNotFound(err) {
+			return engine.Result{}, err
+		}
+		if err == nil {
+			if c.Contacts != nil {
+				c.Contacts.Observe(&fresh, c.Clock.Now())
+			}
+			hosts = append(hosts, &fresh) // a cache miss is not a delete
+		}
+	}
 	env := scheduler.Env{Hosts: hosts, Suffix: v1.ClusterSuffix(hosts)}
 	if c.Contacts != nil {
 		env.Silence = func(host string) time.Duration { return c.Contacts.Silence(host, c.Clock.Now()) }

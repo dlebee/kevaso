@@ -493,7 +493,7 @@
   "id": "G-039",
   "guard": "PlanMove: a lost source needs --confirm-fenced",
   "file": "internal/moves/moves.go",
-  "find": "if fromLost && !r.ConfirmFenced {",
+  "find": "if fromLost && !r.ConfirmFenced && !r.HostDeleted {",
   "replace": "if false {",
   "mutation": "check removed",
   "packages": [
@@ -4887,5 +4887,125 @@
    "./internal/apiserver"
   ],
   "protects": "a host port a silo holds stays when another write of that silo does not commit"
+ },
+ {
+  "id": "G-760",
+  "guard": "a removal recorded under another restore history is dropped",
+  "file": "internal/controllers/provider/trust.go",
+  "find": "if r.History != c.history() { // another history: drop the record, keep the volume",
+  "replace": "if false && r.History != c.history() { // another history: drop the record, keep the volume",
+  "mutation": "a removal from another history is resumed",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume removal recorded under another restore history is dropped and the volume is kept"
+ },
+ {
+  "id": "G-761",
+  "guard": "a cache miss is not a deleted host",
+  "file": "internal/controllers/silo/silo.go",
+  "find": "hosts = append(hosts, &fresh) // a cache miss is not a delete",
+  "replace": "_ = fresh // a cache miss is not a delete",
+  "mutation": "a host missing from the cache is treated as deleted",
+  "packages": [
+   "./internal/controllers/silo"
+  ],
+  "protects": "Unschedulable/HostDeleted is set only when a fresh read of the Host is NotFound"
+ },
+ {
+  "id": "G-762",
+  "guard": "a host cannot change Unschedulable/HostDeleted",
+  "file": "internal/moves/moves.go",
+  "find": "if okO == okN && (!okO || o == n) {",
+  "replace": "if true || okO == okN && (!okO || o == n) {",
+  "mutation": "a host may add, drop or change Unschedulable/HostDeleted",
+  "packages": [
+   "./internal/moves"
+  ],
+  "protects": "a host's status write leaves Unschedulable/HostDeleted as the control plane wrote it"
+ },
+ {
+  "id": "G-763",
+  "guard": "a deleted current host does not confirm a lost movingFrom",
+  "file": "internal/moves/moves.go",
+  "find": "case s.Status.MovingFrom != \"\" && sourceLost && !r.ConfirmFenced:",
+  "replace": "case s.Status.MovingFrom != \"\" && sourceLost && !r.ConfirmFenced && !r.HostDeleted:",
+  "mutation": "deleting the current host confirms a lost movingFrom",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a lost movingFrom still needs --confirm-fenced when the current host was deleted"
+ },
+ {
+  "id": "G-764",
+  "guard": "a deleted current host confirms that host",
+  "file": "internal/moves/moves.go",
+  "find": "if fromLost && !r.ConfirmFenced && !r.HostDeleted {",
+  "replace": "if fromLost && !r.ConfirmFenced {",
+  "mutation": "a deleted current host still needs --confirm-fenced",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "deleting the host named by status.host confirms that copy is off"
+ },
+ {
+  "id": "G-765",
+  "guard": "a fresh start claim holds a deleted host",
+  "file": "internal/apiserver/moves.go",
+  "find": "if req.HostDeleted {",
+  "replace": "if false && req.HostDeleted {",
+  "mutation": "a fresh start claim of a deleted host does not hold the silo",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a fresh start claim of a deleted host still holds the silo"
+ },
+ {
+  "id": "G-766",
+  "guard": "a host cannot change status.service",
+  "file": "internal/moves/moves.go",
+  "find": "if old.Service.Equal(next.Service) {",
+  "replace": "if true || old.Service.Equal(next.Service) {",
+  "mutation": "a host may change status.service",
+  "packages": [
+   "./internal/moves"
+  ],
+  "protects": "a host's status write leaves status.service as the control plane wrote it"
+ },
+ {
+  "id": "G-767",
+  "guard": "a kept volume's detach is finished before it is attached again",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "finishingDetach := vs.AttachedTo == h.Name && (wasKept || strings.HasPrefix(priorMessage, \"detaching from \"))",
+  "replace": "finishingDetach := false && vs.AttachedTo == h.Name && (wasKept || strings.HasPrefix(priorMessage, \"detaching from \"))",
+  "mutation": "a device named during a detach is treated as attached",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume put back during a detach is detached to the end, then attached"
+ },
+ {
+  "id": "G-768",
+  "guard": "a kept volume name cannot come back under another class",
+  "file": "internal/apiserver/semantic.go",
+  "find": "if _, seen := was[v.Name]; !seen && v.Name != \"\" {",
+  "replace": "if _, seen := was[v.Name]; false && !seen && v.Name != \"\" {",
+  "mutation": "a kept volume name may be added back under another class",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a volume name kept in status cannot be added back under another class"
+ },
+ {
+  "id": "G-769",
+  "guard": "a handle is not used under another class",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "if vs.Handle != \"\" && !sameVolumeClass(vs.Class, spec.Class) { // a kept handle stays on its class",
+  "replace": "if false && vs.Handle != \"\" && !sameVolumeClass(vs.Class, spec.Class) { // a kept handle stays on its class",
+  "mutation": "a handle recorded for one class is used under another",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume's handle stays on the class it was recorded for"
  }
 ]
