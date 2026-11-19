@@ -384,6 +384,9 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 	if err := hostDeletedWrite(old, next); err != nil {
 		return err
 	}
+	if err := serviceWrite(old, next, host); err != nil {
+		return err
+	}
 	if err := armedWrite(old, next, host); err != nil {
 		return err
 	}
@@ -411,6 +414,15 @@ func hostDeletedSeen(st v1.SiloStatus) (meta.Condition, bool) {
 		return meta.Condition{}, false
 	}
 	return *c, true
+}
+
+// serviceWrite refuses a host's change to status.service. The control plane writes it
+// (scheduler.ServiceStatus). A host that writes the silo back as it read it leaves it as it stood.
+func serviceWrite(old, next v1.SiloStatus, host string) error {
+	if old.Service.Equal(next.Service) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s may not change status.service", ErrHostWrite, host)
 }
 
 // armedWrite judges a host's write of a silo's FenceArmed condition (K-082): a new or changed one

@@ -4587,5 +4587,17 @@
    "./internal/apiserver"
   ],
   "protects": "a fresh start claim of a deleted host still holds the silo"
+ },
+ {
+  "id": "G-766",
+  "guard": "a host cannot change status.service",
+  "file": "internal/moves/moves.go",
+  "find": "if old.Service.Equal(next.Service) {",
+  "replace": "if true || old.Service.Equal(next.Service) {",
+  "mutation": "a host may change status.service",
+  "packages": [
+   "./internal/moves"
+  ],
+  "protects": "a host's status write leaves status.service as the control plane wrote it"
  }
 ]
