@@ -790,16 +790,20 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 			nm.Generation++
 		}
 		// Once deleting, finalizers may only be removed; when the last one goes, the object goes.
+		// A kevaso.com finalizer is its controller's: another writer cannot take it off.
 		if oldMeta.DeletionTimestamp != nil {
+			if !isSubset(nm.Finalizers, oldMeta.Finalizers) {
+				return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s is being deleted: finalizers can only be removed", t.key())
+			}
+			if why := controllerFinalizerKept(ctx, oldMeta.Finalizers, nm.Finalizers); why != "" {
+				return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s is being deleted: %s is removed only by its controller", t.key(), why)
+			}
 			if len(nm.Finalizers) == 0 {
 				d, err := s.commitDelete(ctx, t.key(), expected)
 				if err == nil && !dryRun(ctx) && s.vault != nil && (t.kind.Kind == "Secret" || t.kind.Kind == "ClusterSecret") {
 					s.vault.Forget(ctx, t.namespace, t.name) // the sealed value goes with the object
 				}
 				return store.Object{Key: d.Key}, err // no Data: tells write() the object is gone
-			}
-			if !isSubset(nm.Finalizers, oldMeta.Finalizers) {
-				return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s is being deleted: finalizers can only be removed", t.key())
 			}
 		}
 	}
@@ -856,6 +860,30 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		return store.Object{}, err
 	}
 	return o, nil
+}
+
+// controllerFinalizerKept reports the kevaso.com finalizers next drops that this caller may not
+// remove. Empty when none are dropped, or the caller is kevasod's own controllers. A server with
+// no authentication has no identity to tell the controller from anyone else (the unit tests).
+// kevaso.com/plugin-uninstall is the uninstall command's, and that command runs as the person
+// who invoked it.
+func controllerFinalizerKept(ctx context.Context, old, next []string) string {
+	id, authed := IdentityFrom(ctx)
+	if !authed || id == Component { // a kevaso.com finalizer is removed by kevasod
+		return ""
+	}
+	kept := map[string]bool{}
+	for _, f := range next {
+		kept[f] = true
+	}
+	var blocked []string
+	for _, f := range old {
+		if kept[f] || f == v1.PluginFinalizer || !strings.HasPrefix(f, "kevaso.com/") {
+			continue
+		}
+		blocked = append(blocked, f)
+	}
+	return strings.Join(blocked, ", ")
 }
 
 // letGo reports whether next is the end of a handoff by the host it is moving from having let go:

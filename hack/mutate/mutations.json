@@ -4527,5 +4527,17 @@
    "./internal/apiserver"
   ],
   "protects": "a status subresource cannot be deleted"
+ },
+ {
+  "id": "G-741",
+  "guard": "a kevaso.com finalizer on a deleting object is removed only by its controller",
+  "file": "internal/apiserver/apiserver.go",
+  "find": "if !authed || id == Component { // a kevaso.com finalizer is removed by kevasod",
+  "replace": "if !authed || id == Component || true { // a kevaso.com finalizer is removed by kevasod",
+  "mutation": "any writer may remove a kevaso.com finalizer from a deleting object",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "a controller finalizer stays until its controller removes it"
  }
 ]

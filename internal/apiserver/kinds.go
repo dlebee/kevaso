@@ -371,12 +371,15 @@ func (s *Server) updateDefined(ctx context.Context, t target, u *v1.Unstructured
 		nm, om := &next.ObjectMeta, &old.ObjectMeta
 		nm.UID, nm.CreationTimestamp, nm.DeletionTimestamp = om.UID, om.CreationTimestamp, om.DeletionTimestamp
 		if om.DeletionTimestamp != nil {
+			if !isSubset(nm.Finalizers, om.Finalizers) {
+				return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s is being deleted: finalizers can only be removed", t.key())
+			}
+			if why := controllerFinalizerKept(ctx, om.Finalizers, nm.Finalizers); why != "" {
+				return store.Object{}, errf(http.StatusForbidden, "Forbidden", "%s is being deleted: %s is removed only by its controller", t.key(), why)
+			}
 			if len(nm.Finalizers) == 0 {
 				d, err := s.commitDelete(ctx, t.key(), expected)
 				return store.Object{Key: d.Key}, err
-			}
-			if !isSubset(nm.Finalizers, om.Finalizers) {
-				return store.Object{}, errf(http.StatusUnprocessableEntity, "Invalid", "%s is being deleted: finalizers can only be removed", t.key())
 			}
 		}
 		if err := s.prepareDefined(ctx, t, old, next); err != nil {
