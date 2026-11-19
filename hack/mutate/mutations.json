@@ -993,7 +993,7 @@
   "id": "G-101",
   "guard": "kni: a silo address never arrives from the uplink",
   "file": "builtin/kni/rules.go",
-  "find": "w(\"    oifname %q ip saddr %s iifname != { %q, %q, %q } drop\", h.Bridge, silosAll, h.Bridge, MeshDevices[0], MeshDevices[1])",
+  "find": "w(\"    ip saddr %s iifname != { %q, %q, %q } drop\", silosAll, h.Bridge, MeshDevices[0], MeshDevices[1])",
   "replace": "_ = silosAll",
   "mutation": "rule removed",
   "packages": [
@@ -3248,8 +3248,8 @@
   "id": "G-541",
   "guard": "an expired host certificate is not reused",
   "file": "internal/worker/join.go",
-  "find": "if certificateExpired(cert, time.Now()) { // an expired certificate is not reused",
-  "replace": "if false && certificateExpired(cert, time.Now()) { // an expired certificate is not reused",
+  "find": "case loadErr == nil && certificateExpired(cert, time.Now()): // an expired certificate is not reused",
+  "replace": "case false && certificateExpired(cert, time.Now()): // an expired certificate is not reused",
   "mutation": "an expired certificate is reused",
   "packages": [
    "./internal/worker"
@@ -4515,5 +4515,197 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a VM disk download is capped at disk.size, or at the default disk when none is stated; zero is that default"
+ },
+ {
+  "id": "G-780",
+  "guard": "the API serving certificate is reissued when it is due",
+  "file": "internal/apiserver/servingcert.go",
+  "find": "\tif s.cert != nil && s.cert.Leaf != nil && !client.RenewDue(s.cert.Leaf.NotBefore, s.cert.Leaf.NotAfter, now) {\n\t\treturn false, nil\n\t}",
+  "replace": "\tif s.cert != nil && s.cert.Leaf != nil && !client.RenewDue(s.cert.Leaf.NotBefore, s.cert.Leaf.NotAfter, now) && false {\n\t\treturn false, nil\n\t}",
+  "mutation": "the serving certificate is kept for its whole life",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "the API serving certificate is reissued at two thirds of its life"
+ },
+ {
+  "id": "G-781",
+  "guard": "a silo-range source is dropped whatever the output",
+  "file": "builtin/kni/rules.go",
+  "find": "\tw(\"    ip saddr %s iifname != { %q, %q, %q } drop\", silosAll, h.Bridge, MeshDevices[0], MeshDevices[1])",
+  "replace": "\tw(\"    oifname %q ip saddr %s iifname != { %q, %q, %q } drop\", h.Bridge, silosAll, h.Bridge, MeshDevices[0], MeshDevices[1])",
+  "mutation": "a silo-range source is dropped only when it would leave on the bridge",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "a packet whose source is a silo address is dropped unless it arrived from the bridge or the mesh"
+ },
+ {
+  "id": "G-782",
+  "guard": "every injected header for one host is kept",
+  "file": "internal/worker/egress.go",
+  "find": "\t\t\tslot = append(slot, gate.Injection{Header: in.Header, Value: in.Value, Approval: in.Approval, Secret: in.Secret})",
+  "replace": "\t\t\tslot = []gate.Injection{{Header: in.Header, Value: in.Value, Approval: in.Approval, Secret: in.Secret}}",
+  "mutation": "one host keeps only the last injected header",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "every injected header for one host is kept"
+ },
+ {
+  "id": "G-783",
+  "guard": "every injected header is set on the request",
+  "file": "internal/gate/gate.go",
+  "find": "func setInjectedHeaders(h http.Header, ins []Injection) {\n\tfor _, in := range ins {\n\t\th.Del(in.Header)\n\t\th.Set(in.Header, in.Value)\n\t}\n}",
+  "replace": "func setInjectedHeaders(h http.Header, ins []Injection) {\n\tif len(ins) == 0 {\n\t\treturn\n\t}\n\tin := ins[0]\n\th.Del(in.Header)\n\th.Set(in.Header, in.Value)\n}",
+  "mutation": "only the first injected header is set",
+  "packages": [
+   "./internal/gate"
+  ],
+  "protects": "every injected header for one host is set on the request"
+ },
+ {
+  "id": "G-784",
+  "guard": "an approval of a different secret counts as none",
+  "file": "internal/approvals/approvals.go",
+  "find": "\tif a == nil || a.Spec.SiloUID != siloUID || a.Spec.SecretUID != secretUID {",
+  "replace": "\tif a == nil || a.Spec.SiloUID != siloUID {",
+  "mutation": "an approval stays active after its secret is created again",
+  "packages": [
+   "./internal/approvals"
+  ],
+  "protects": "an approval of a secret that was deleted and created again counts as none"
+ },
+ {
+  "id": "G-785",
+  "guard": "the approval name includes the secret's UID",
+  "file": "internal/approvals/approvals.go",
+  "find": "\th := sha256.Sum256([]byte(siloUID + \"\\x00\" + use + \"\\x00\" + secret + \"\\x00\" + secretUID))",
+  "replace": "\th := sha256.Sum256([]byte(siloUID + \"\\x00\" + use + \"\\x00\" + secret))",
+  "mutation": "two secrets of the same name share an approval name",
+  "packages": [
+   "./internal/approvals"
+  ],
+  "protects": "an approval's name stays with the secret it was granted"
+ },
+ {
+  "id": "G-786",
+  "guard": "a new approval is named with the stored secret's UID",
+  "file": "internal/apiserver/approvals.go",
+  "find": "\t\tc.SecretUID = sec.UID",
+  "replace": "\t\tc.SecretUID = \"\"",
+  "mutation": "a new approval is not tied to the secret that is stored",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "an approval is named with the UID of the secret that is stored"
+ },
+ {
+  "id": "G-787",
+  "guard": "a kevasod with no version is refused",
+  "file": "internal/cli/kvoadm/upgrade.go",
+  "find": "\tif stamped == \"\" || stamped == devVersion {",
+  "replace": "\tif false && (stamped == \"\" || stamped == devVersion) {",
+  "mutation": "a kevasod that reports no version is rolled",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "a roll refuses a kevasod that does not report its own version"
+ },
+ {
+  "id": "G-788",
+  "guard": "a --version that is not the binary's version is refused",
+  "file": "internal/cli/kvoadm/upgrade.go",
+  "find": "\tif flag != \"\" && flag != stamped {",
+  "replace": "\tif false && flag != \"\" && flag != stamped {",
+  "mutation": "a roll waits for a version the binary does not report",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "a roll refuses --version when it is not the version the kevasod reports"
+ },
+ {
+  "id": "G-789",
+  "guard": "login tries each control plane until one answers",
+  "file": "internal/cli/kvo/auth.go",
+  "find": "\tfor _, server := range servers { // each control plane, until one answers",
+  "replace": "\tfor _, server := range servers[:1] { // each control plane, until one answers",
+  "mutation": "login asks only the first control plane",
+  "packages": [
+   "./internal/cli/kvo"
+  ],
+  "protects": "kvo login keeps every control plane an invite lists and uses the first that answers"
+ },
+ {
+  "id": "G-790",
+  "guard": "silo ssh, files, open, close and move are subresources",
+  "file": "internal/cli/kvo/auth.go",
+  "find": "\tcase \"status\", \"exec\", \"token\", \"ssh\", \"files\", \"open\", \"close\", \"move\":",
+  "replace": "\tcase \"status\", \"exec\", \"token\":",
+  "mutation": "silos/ssh is read as a silo named ssh",
+  "packages": [
+   "./internal/cli/kvo"
+  ],
+  "protects": "can-i reads ssh, files, open, close and move as silo subresources"
+ },
+ {
+  "id": "G-791",
+  "guard": "etcd peers listen on the internal address",
+  "file": "internal/cli/kvoadm/kvoadm.go",
+  "find": "\t\tif o.InternalIP != \"\" {\n\t\t\thost = o.InternalIP\n\t\t}",
+  "replace": "\t\tif false && o.InternalIP != \"\" {\n\t\t\thost = o.InternalIP\n\t\t}",
+  "mutation": "the etcd peer listener binds the reach address",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "etcd peers listen on the internal address and advertise the reach address"
+ },
+ {
+  "id": "G-792",
+  "guard": "a migrated unit advertises the reach address",
+  "file": "internal/cli/kvoadm/systemnodes.go",
+  "find": "\t\tif advertisePeer != \"\" && advertisePeer != peerListen {",
+  "replace": "\t\tif false && advertisePeer != \"\" && advertisePeer != peerListen {",
+  "mutation": "a migrated unit does not say where peers should dial",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "a unit moved onto etcd listens on the internal address and advertises the reach address"
+ },
+ {
+  "id": "G-793",
+  "guard": "a previous host key is kept until the new certificate is in place",
+  "file": "internal/worker/renew.go",
+  "find": "\t\tif _, err := os.Stat(prev); os.IsNotExist(err) {",
+  "replace": "\t\tif _, err := os.Stat(prev); true || os.IsNotExist(err) {",
+  "mutation": "a second renewal replaces the key that still matches the certificate",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "a host certificate keeps the key that matches it when renewal is interrupted"
+ },
+ {
+  "id": "G-794",
+  "guard": "an expired client certificate names kvoadm users resign",
+  "file": "internal/kvoconfig/kvoconfig.go",
+  "find": "\t\treturn nil, nil, fmt.Errorf(\"context %s certificate for %s expired on %s. Run: %s\",\n\t\t\tname, who, na.UTC().Format(time.RFC3339), CertRecovery(who, ctx.Server))",
+  "replace": "\t\treturn nil, nil, fmt.Errorf(\"context %s certificate for %s expired on %s. On a control-plane host, run: kevasod admin sign-user --name %s\",\n\t\t\tname, who, na.UTC().Format(time.RFC3339), who)",
+  "mutation": "an expired client certificate does not name kvoadm users resign",
+  "packages": [
+   "./internal/kvoconfig"
+  ],
+  "protects": "an expired client certificate names kvoadm users resign"
+ },
+ {
+  "id": "G-795",
+  "guard": "a resigned certificate must be the named user",
+  "file": "internal/cli/kvoadm/kvoadm.go",
+  "find": "\tif id.Type != \"user\" || id.Name != userName {",
+  "replace": "\tif false && (id.Type != \"user\" || id.Name != userName) {",
+  "mutation": "a certificate for someone else is stored for the named user",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "kvoadm users resign refuses a certificate that is not the named user"
  }
 ]
