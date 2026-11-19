@@ -22,7 +22,7 @@ var (
 		"silos/status", "silos/exec", "silos/move", "silos/restore-settle", "silos/ssh", "silos/files", v1.ResourceExposure, "silosets/scale",
 		"serviceaccounts/token", "services/expose-public", "ingresses/publish-public",
 		"secrets", "approvals", "panes", "leases", "ips", "roles", "rolebindings", "runs",
-		"hosts", "namespaces", "clusterroles", "clusterrolebindings", "clustersecrets", "kinddefinitions", "validationpolicies", "plugins", "issuers", "ingressclasses",
+		"hosts", "hosts/confirm-off", "namespaces", "clusterroles", "clusterrolebindings", "clustersecrets", "kinddefinitions", "validationpolicies", "plugins", "issuers", "ingressclasses",
 	}
 	rw        = []string{"get", "list", "watch", "create", "update", "patch", "delete"}
 	ro        = []string{"get", "list", "watch"}
