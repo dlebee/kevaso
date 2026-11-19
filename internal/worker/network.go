@@ -266,7 +266,7 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 		base.Revoke = nil
 		if haveOpened {
 			prev := opened
-			view.Revoke = &prev // a grant or allowFrom the last loaded table had, and this one does not, is reset
+			view.Revoke = &prev // an allowFrom the last loaded table had, and this one does not, is reset
 		}
 		rules, problems := kni.Generate(view)
 		load := func() { // the rules, and once nft took them, their bindings
@@ -274,9 +274,9 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 				log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
 			} else if ok {
 				loaded.set(kni.Bindings(view.Local))
-				// Remember every grant and allowFrom this host has loaded, not only the latest
-				// table. The next table still resets a flow that is no longer allowed; a reload
-				// that dropped the reset would let the established connection resume.
+				// Remember every allowFrom this host has loaded, not only the latest table. The
+				// next table still resets a flow that is no longer allowed; a reload that dropped
+				// the reset would let the established connection resume. Grants are not remembered.
 				opened = kni.Remember(opened, base)
 				haveOpened = true
 			}

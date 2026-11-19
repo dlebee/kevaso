@@ -4433,28 +4433,16 @@
   "protects": "removing an allowFrom entry resets only that flow"
  },
  {
-  "id": "G-650",
-  "guard": "a removed grant is reset",
-  "file": "builtin/kni/revoke.go",
-  "find": "if !full {",
-  "replace": "if false && !full {",
-  "mutation": "removing a grant leaves its connections established",
-  "packages": [
-   "./builtin/kni"
-  ],
-  "protects": "removing a grant resets that prefix and leaves a narrower grant that remains"
- },
- {
   "id": "G-651",
-  "guard": "resets are emitted from the previously loaded grants",
+  "guard": "resets are emitted from the previously loaded allowFrom entries",
   "file": "builtin/kni/rules.go",
   "find": "if h.Revoke != nil {",
   "replace": "if false && h.Revoke != nil {",
-  "mutation": "a removed grant or allowFrom entry changes nothing about connections already open",
+  "mutation": "a removed allowFrom entry changes nothing about connections already open",
   "packages": [
    "./builtin/kni"
   ],
-  "protects": "the rules reset flows the previous table allowed and this one does not"
+  "protects": "the rules reset an allowFrom flow the previous table allowed and this one does not"
  },
  {
   "id": "G-652",

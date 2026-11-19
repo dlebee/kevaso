@@ -1,7 +1,6 @@
 package kni
 
 import (
-	"net/netip"
 	"strings"
 	"testing"
 
@@ -37,41 +36,58 @@ func TestRemovingAllowFromResetsOnlyThatFlow(t *testing.T) {
 	}
 }
 
-func TestRemovingAGrantResetsOnlyThatPrefix(t *testing.T) {
-	api := siloAt("dev/api", "10.64.2.2", v1.SiloSpec{},
-		v1.ParsedEgress{Prefix: netip.MustParsePrefix("1.1.1.1/32"), Protocols: []string{"tcp"}, Ports: []v1.PortRange{{From: 443, To: 443}}},
-		v1.ParsedEgress{Prefix: netip.MustParsePrefix("9.9.9.9/32"), Protocols: []string{"tcp"}, Ports: []v1.PortRange{{From: 443, To: 443}}},
-	)
-	prev := host(api)
-	cur := prev
-	cur.Local = []Silo{siloAt("dev/api", "10.64.2.2", v1.SiloSpec{},
-		v1.ParsedEgress{Prefix: netip.MustParsePrefix("9.9.9.9/32"), Protocols: []string{"tcp"}, Ports: []v1.PortRange{{From: 443, To: 443}}},
-	)}
+// A grant of every port, then only 443, still accepts 443. The previous table's grant is what
+// the rules are asked to reset. It adds no cut: a new connection on 443 follows the grant loaded
+// now, and a port that grant no longer names does not.
+func TestNarrowingAGrantTo443StillAcceptsPort443(t *testing.T) {
+	wide, err := v1.EgressRule{To: "203.0.113.0/24"}.Parse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := v1.EgressRule{To: "203.0.113.0/24", Ports: []string{"443"}}.Parse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	silo := func(e v1.ParsedEgress) Silo {
+		return Silo{Key: "dev/api", IP: a("10.64.2.2"), Tap: "kvt02", MAC: "02:00:00:00:00:02", Egress: []v1.ParsedEgress{e}}
+	}
+	prev := host(silo(wide))
+	cur := host(silo(left))
 	cur.Revoke = &prev
-	rules := Rules(cur)
-	if !strings.Contains(rules, `iifname "kvbr0" ip saddr 10.64.2.2 ip daddr 1.1.1.1/32 tcp dport 443 reject with tcp reset`) {
-		t.Fatalf("1.1.1.1 was not reset:\n%s", rules)
+	rs := parseNFT(t, Rules(cur))
+	pktTo := func(port int) pkt {
+		s := silo(left)
+		return pkt{iif: s.Tap, oif: "eth0", ether: s.MAC, saddr: s.IP, daddr: a("203.0.113.9"), proto: "tcp", dport: port}
 	}
-	if strings.Contains(rules, "ip daddr 9.9.9.9/32 tcp dport 443 reject") {
-		t.Fatalf("9.9.9.9 is still granted and was reset:\n%s", rules)
+	if out, gate := rs.outFrom(t, cur, pktTo(443)); !out || gate {
+		t.Fatalf("port 443 after the grant was narrowed to it: out %v gate %v", out, gate)
 	}
-	if !strings.Contains(rules, "ip daddr 9.9.9.9/32 tcp dport 443 accept") {
-		t.Fatalf("9.9.9.9's accept is gone:\n%s", rules)
+	if out, gate := rs.outFrom(t, cur, pktTo(80)); out || gate {
+		t.Fatalf("port 80 is no longer granted and was accepted: out %v gate %v", out, gate)
 	}
 }
 
-func TestNarrowingAGrantDoesNotResetTheRemainder(t *testing.T) {
-	wide := v1.ParsedEgress{Prefix: netip.MustParsePrefix("0.0.0.0/0"), Protocols: []string{"tcp"}, Ports: []v1.PortRange{{From: 443, To: 443}}}
-	left := v1.ParsedEgress{Prefix: netip.MustParsePrefix("1.1.1.1/32"), Protocols: []string{"tcp"}, Ports: []v1.PortRange{{From: 443, To: 443}}}
-	prev := host(siloAt("dev/api", "10.64.2.2", v1.SiloSpec{}, wide))
-	cur := prev
-	cur.Local = []Silo{siloAt("dev/api", "10.64.2.2", v1.SiloSpec{}, left)}
-	cur.Revoke = &prev
-	rules := Rules(cur)
-	if !strings.Contains(rules, "ip daddr 0.0.0.0/0 ip daddr != 1.1.1.1/32 tcp dport 443 reject with tcp reset") {
-		t.Fatalf("the wide grant was not cut around the remainder:\n%s", rules)
+// The memory used to reset a later table keeps an allowFrom entry that was removed, and does not
+// keep a grant.
+func TestRememberKeepsAllowFromAndDropsGrants(t *testing.T) {
+	wide, err := v1.EgressRule{To: "203.0.113.0/24"}.Parse()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(rules, "ip daddr 1.1.1.1/32 tcp dport 443 reject") {
-		t.Fatalf("the remainder was reset:\n%s", rules)
+	spec := opens(8080, v1.ServicePort{AllowFrom: []string{"worker"}})
+	prev := host(siloAt("dev/api", "10.64.2.2", spec, wide), siloAt("dev/worker", "10.64.2.3", v1.SiloSpec{}))
+	cur := prev
+	cur.Local = []Silo{
+		siloAt("dev/api", "10.64.2.2", opens(8080, v1.ServicePort{}), wide),
+		siloAt("dev/worker", "10.64.2.3", v1.SiloSpec{}),
+	}
+	got := Remember(prev, cur)
+	api := got.Local[0]
+	if len(api.Egress) != 0 {
+		t.Fatalf("a grant was remembered: %+v", api.Egress)
+	}
+	open := api.Spec.Open()
+	if len(open) != 1 || len(open[0].AllowFrom) != 1 || open[0].AllowFrom[0] != "worker" {
+		t.Fatalf("the removed allowFrom was not kept: %+v", api.Spec)
 	}
 }

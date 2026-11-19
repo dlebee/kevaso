@@ -54,42 +54,44 @@ func siloGateway(ip string) string {
 	return strings.Join(parts, ".")
 }
 
-func TestLabDeletingAGrantResetsItsConnection(t *testing.T) {
+func TestLabRemovingAllowFromResetsItsConnection(t *testing.T) {
 	admin := labAdmin(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	t.Cleanup(cancel)
 	t.Cleanup(func() {
-		labSweep(ctx, t, admin, [][2]string{{labCutNS, "probe"}}, [][3]string{
-			{"grant", labCutNS, "cf1"}, {"grant", labCutNS, "cf2"},
-		}, []string{labCutNS})
+		labSweep(ctx, t, admin, [][2]string{{labCutNS, "target"}, {labCutNS, "caller"}, {labCutNS, "other"}}, nil, []string{labCutNS})
 	})
 	labNamespace(t, ctx, admin, labCutNS)
-	for _, g := range []struct{ name, to string }{{"cf1", "1.1.1.1/32"}, {"cf2", "1.0.0.1/32"}} {
-		labKvo(t, ctx, fmt.Sprintf(`apiVersion: kevaso/v1
-kind: Grant
-metadata: { name: %s, namespace: %s }
-spec:
-  egress:
-    - { to: %s, ports: ["443"] }
-`, g.name, labCutNS, g.to), "apply", "--context", admin, "-f", "-")
+	targetSpec := func(allow string) string {
+		return boxEcho(labCutNS, "target", labListenPort) + fmt.Sprintf(`  ports: [{ name: http, port: %d }]
+  service:
+    ports: [{ port: http, allowFrom: [%s] }]
+`, labListenPort, allow)
 	}
-	labKvo(t, ctx, fmt.Sprintf(`apiVersion: kevaso/v1
+	labKvo(t, ctx, targetSpec("caller, other"), "apply", "--context", admin, "-f", "-")
+	for _, name := range []string{"caller", "other"} {
+		labKvo(t, ctx, fmt.Sprintf(`apiVersion: kevaso/v1
 kind: Silo
-metadata: { name: probe, namespace: %s }
+metadata: { name: %s, namespace: %s }
 spec:
   runtime: docker
   container: { image: %s, command: ["python3", "-c", "import time; time.sleep(10**9)"] }
   resources: { cpu: 1, memory: 256Mi }
-  grants: [cf1, cf2]
-`, labCutNS, labImage), "apply", "--context", admin, "-f", "-")
-	labWaitRunning(t, ctx, admin, labCutNS, "probe", 15*time.Minute)
+`, name, labCutNS, labImage), "apply", "--context", admin, "-f", "-")
+	}
+	target := labWaitRunning(t, ctx, admin, labCutNS, "target", 15*time.Minute)
+	labWaitRunning(t, ctx, admin, labCutNS, "caller", 15*time.Minute)
+	labWaitRunning(t, ctx, admin, labCutNS, "other", 15*time.Minute)
+	if heard := labAwaitListen(t, ctx, admin, labCutNS, "target"); !strings.Contains(heard, "target") {
+		t.Fatalf("target listening on %d: %s", labListenPort, heard)
+	}
 	hold := `import os, socket, sys, time
-dest, path = sys.argv[1], sys.argv[2]
+dest, port, path = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 if os.fork() > 0:
     os._exit(0)
 os.setsid()
 try:
-    s = socket.create_connection((dest, 443), 20)
+    s = socket.create_connection((dest, port), 20)
 except Exception as e:
     open(path, "w").write("connect " + type(e).__name__)
     os._exit(0)
@@ -106,36 +108,38 @@ try:
 except Exception as e:
     open(path, "w").write(type(e).__name__)
 `
-	if out, code := labExec(ctx, admin, labCutNS, "probe", "python3", "-c", hold, "1.1.1.1", "/tmp/cf1"); code != 0 {
-		t.Fatalf("start 1.1.1.1: exit %d\n%s", code, out)
+	start := func(name string) {
+		t.Helper()
+		if out, code := labExec(ctx, admin, labCutNS, name, "python3", "-c", hold, target.Status.SiloIP, fmt.Sprint(labListenPort), "/tmp/hold"); code != 0 {
+			t.Fatalf("start %s: exit %d\n%s", name, code, out)
+		}
 	}
-	if out, code := labExec(ctx, admin, labCutNS, "probe", "python3", "-c", hold, "1.0.0.1", "/tmp/cf2"); code != 0 {
-		t.Fatalf("start 1.0.0.1: exit %d\n%s", code, out)
-	}
-	waitFile := func(path, want string) string {
+	start("caller")
+	start("other")
+	waitFile := func(silo, path, want string) string {
 		t.Helper()
 		deadline := time.Now().Add(45 * time.Second)
 		var last string
 		for {
-			last, _ = labExec(ctx, admin, labCutNS, "probe", "cat", path)
+			last, _ = labExec(ctx, admin, labCutNS, silo, "cat", path)
 			if strings.Contains(last, want) {
 				return last
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("%s never said %q, last %q", path, want, last)
+				t.Fatalf("%s %s never said %q, last %q", silo, path, want, last)
 			}
 			time.Sleep(time.Second)
 		}
 	}
-	waitFile("/tmp/cf1", "open")
-	waitFile("/tmp/cf2", "open")
-	labKvo(t, ctx, "", "delete", "--context", admin, "grant", "cf1", "-n", labCutNS)
-	got := waitFile("/tmp/cf1", "ConnectionResetError")
-	t.Logf("cf1 after the grant was deleted: %s", oneLine(got))
+	waitFile("caller", "/tmp/hold", "open")
+	waitFile("other", "/tmp/hold", "open")
+	labKvo(t, ctx, targetSpec("other"), "apply", "--context", admin, "-f", "-")
+	got := waitFile("caller", "/tmp/hold", "ConnectionResetError")
+	t.Logf("caller after allowFrom dropped it: %s", oneLine(got))
 	time.Sleep(3 * time.Second)
-	other, _ := labExec(ctx, admin, labCutNS, "probe", "cat", "/tmp/cf2")
-	if strings.TrimSpace(other) != "open" {
-		t.Fatalf("1.0.0.1's grant is still there and its connection changed: %q", other)
+	kept, _ := labExec(ctx, admin, labCutNS, "other", "cat", "/tmp/hold")
+	if strings.TrimSpace(kept) != "open" {
+		t.Fatalf("other is still named in allowFrom and its connection changed: %q", kept)
 	}
 }
 

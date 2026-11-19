@@ -183,9 +183,10 @@ type Host struct {
 	// Reserved: host-port numbers this host listens on beyond ReservedHostPort, and why. A silo's
 	// host-port DNAT for one of them is left out. Nil means this host adds none.
 	Reserved map[int]string
-	// Revoke is the grants and allowFrom entries previously loaded (nil on the first load). A flow
-	// that was allowed then and is not allowed now is reset, the same way a lease's connections
-	// are when the lease ends. Flows that are still allowed are not.
+	// Revoke is the allowFrom entries previously loaded (nil on the first load). A flow that was
+	// allowed then and is not allowed now is reset, the same way a lease's connections are when
+	// the lease ends. Flows that are still allowed are not. A grant is not remembered and adds no
+	// cut: new connections follow the grants loaded now.
 	Revoke *Host
 }
 
@@ -266,8 +267,8 @@ func set(items []string) string {
 // lease ended): both directions of a translated connection whose original destination matched
 // (orig: the host's or load balancer's address, or the node port), placed before the rules that let established
 // traffic through. TCP is reset, so both ends learn at once; UDP is dropped. These lease cuts match
-// only translated connections. A removed allowFrom entry or grant is cut on its own match, without
-// ct status dnat, and only for the flows that entry allowed.
+// only translated connections. A removed allowFrom entry is cut on its own match, without
+// ct status dnat, and only for the flow that entry allowed. A grant is not cut.
 func cutRules(bridge string, ip netip.Addr, proto string, port int, orig string) []string {
 	verdict := "drop"
 	if proto == "tcp" {

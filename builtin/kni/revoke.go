@@ -9,9 +9,10 @@ import (
 	v1 "kevaso.com/core/api/v1"
 )
 
-// Remember unions the grants and allowFrom entries of prev and cur. A later table still resets a
-// flow that was loaded once and is not allowed now; replacing the memory with only the latest
-// table would drop that reset on the next reload and the established connection would resume.
+// Remember unions the allowFrom entries of prev and cur. A later table still resets a flow that
+// was loaded once and is not allowed now; replacing the memory with only the latest table would
+// drop that reset on the next reload and the established connection would resume. Grants are not
+// kept: a removed or narrowed grant adds no cut, and new connections follow the grants loaded now.
 func Remember(prev, cur Host) Host {
 	out := cur
 	out.Revoke = nil
@@ -24,6 +25,7 @@ func unionSilos(a, b []Silo) []Silo {
 	by := map[string]Silo{}
 	var order []string
 	add := func(s Silo) {
+		s.Egress = nil
 		old, ok := by[s.Key]
 		if !ok {
 			order = append(order, s.Key)
@@ -54,26 +56,8 @@ func mergeSilo(old, cur Silo) Silo {
 	if !out.IP.IsValid() {
 		out.IP = old.IP
 	}
-	out.Egress = unionEgress(old.Egress, cur.Egress)
 	out.Spec = unionAllow(old.Spec, cur.Spec)
 	out.Paths = unionPaths(old.Paths, cur.Paths)
-	return out
-}
-
-func unionEgress(a, b []v1.ParsedEgress) []v1.ParsedEgress {
-	seen := map[string]bool{}
-	var out []v1.ParsedEgress
-	for _, e := range append(append([]v1.ParsedEgress(nil), a...), b...) {
-		k := e.Prefix.String() + " " + e.Host + " " + strings.Join(e.Protocols, ",")
-		for _, p := range e.Ports {
-			k += " " + p.String()
-		}
-		if seen[k] {
-			continue
-		}
-		seen[k] = true
-		out = append(out, e)
-	}
 	return out
 }
 
@@ -206,74 +190,6 @@ func flowsOf(h Host) map[flow]bool {
 	return out
 }
 
-type egUnit struct {
-	ip     netip.Addr
-	prefix netip.Prefix
-	proto  string
-	all    bool
-	ports  v1.PortRange
-}
-
-func (u egUnit) key() string {
-	ps := "*"
-	if !u.all {
-		ps = u.ports.String()
-	}
-	return u.ip.String() + " " + u.prefix.String() + " " + u.proto + " " + ps
-}
-
-func egressUnits(h Host) []egUnit {
-	var out []egUnit
-	for _, s := range h.Local {
-		if !s.IP.Is4() {
-			continue
-		}
-		for _, e := range s.Egress {
-			if !e.Prefix.IsValid() || !e.Prefix.Addr().Is4() {
-				continue // a host name is spliced by the gate; these rules have no address to reset
-			}
-			protos := e.Protocols
-			if len(protos) == 0 {
-				protos = []string{"tcp"}
-			}
-			for _, proto := range protos {
-				proto = lower(proto)
-				if !okProto(proto) {
-					continue
-				}
-				if len(e.Ports) == 0 {
-					out = append(out, egUnit{ip: s.IP, prefix: e.Prefix.Masked(), proto: proto, all: true})
-					continue
-				}
-				for _, p := range e.Ports {
-					if !okPort(p.From) || !okPort(p.To) || p.From > p.To {
-						continue
-					}
-					out = append(out, egUnit{ip: s.IP, prefix: e.Prefix.Masked(), proto: proto, ports: p})
-				}
-			}
-		}
-	}
-	return out
-}
-
-func coversPrefix(wider, inner netip.Prefix) bool {
-	return wider.IsValid() && inner.IsValid() && wider.Contains(inner.Addr()) && wider.Bits() <= inner.Bits()
-}
-
-func coversUnit(have egUnit, want egUnit) bool {
-	if have.ip != want.ip || have.proto != want.proto || !coversPrefix(have.prefix, want.prefix) {
-		return false
-	}
-	if want.all {
-		return have.all
-	}
-	if have.all {
-		return true
-	}
-	return have.ports.From <= want.ports.From && have.ports.To >= want.ports.To
-}
-
 func verdict(proto string) string {
 	if proto == "tcp" {
 		return "reject with tcp reset"
@@ -281,31 +197,9 @@ func verdict(proto string) string {
 	return "drop"
 }
 
-func portExpr(proto string, all bool, ports v1.PortRange, dir string) string {
-	if all {
-		return "meta l4proto " + proto
-	}
-	if ports.From == ports.To {
-		return fmt.Sprintf("%s %s %d", proto, dir, ports.From)
-	}
-	return fmt.Sprintf("%s %s %s", proto, dir, ports.String())
-}
-
-func notSet(field string, addrs []string) string {
-	if len(addrs) == 0 {
-		return ""
-	}
-	sort.Strings(addrs)
-	if len(addrs) == 1 {
-		return field + " != " + addrs[0] + " "
-	}
-	return field + " != { " + strings.Join(addrs, ", ") + " } "
-}
-
-// revokeCuts are the resets for flows prev allowed and cur does not. inet is both directions of
-// a routed flow (and an allowFrom flow); bridge is a same-host allowFrom flow, which never enters
-// the inet forward chain. Neither matches ct status dnat: a translated outside connection is not
-// one of these flows.
+// revokeCuts are the resets for allowFrom flows prev allowed and cur does not. inet is both
+// directions of a routed flow; bridge is a same-host flow, which never enters the inet forward
+// chain. Neither matches ct status dnat: a translated outside connection is not one of these flows.
 func revokeCuts(cur, prev Host) (inet, bridge []string) {
 	now := flowsOf(cur)
 	var gone []flow
@@ -328,65 +222,5 @@ func revokeCuts(cur, prev Host) (inet, bridge []string) {
 			)
 		}
 	}
-
-	current := egressUnits(cur)
-	var units []egUnit
-	seen := map[string]bool{}
-	for _, u := range egressUnits(prev) {
-		if seen[u.key()] {
-			continue
-		}
-		seen[u.key()] = true
-		full := false
-		for _, c := range current {
-			if coversUnit(c, u) && c.prefix.Bits() <= u.prefix.Bits() && coversPrefix(c.prefix, u.prefix) {
-				full = true
-				break
-			}
-		}
-		if !full {
-			units = append(units, u)
-		}
-	}
-	sort.Slice(units, func(i, j int) bool { return units[i].key() < units[j].key() })
-	for _, u := range units {
-		var excl []string
-		have := map[string]bool{}
-		for _, c := range current {
-			if c.ip != u.ip || c.proto != u.proto || !coversUnit(c, egUnit{ip: u.ip, prefix: c.prefix, proto: u.proto, all: u.all, ports: u.ports}) {
-				continue
-			}
-			if !u.prefix.Contains(c.prefix.Addr()) || u.prefix.Bits() > c.prefix.Bits() {
-				continue // not inside the range being cut
-			}
-			if c.prefix.Bits() == u.prefix.Bits() {
-				continue // the same range: it would have fully covered the unit
-			}
-			s := c.prefix.String()
-			if !have[s] {
-				have[s] = true
-				excl = append(excl, s)
-			}
-		}
-		v := verdict(u.proto)
-		inet = append(inet,
-			cutLine("iifname", cur.Bridge, "ip saddr "+u.ip.String(), "ip daddr "+u.prefix.String(), notSet("ip daddr", excl), portExpr(u.proto, u.all, u.ports, "dport"), v),
-			cutLine("oifname", cur.Bridge, "ip daddr "+u.ip.String(), "ip saddr "+u.prefix.String(), notSet("ip saddr", excl), portExpr(u.proto, u.all, u.ports, "sport"), v),
-		)
-	}
 	return inet, bridge
-}
-
-func cutLine(dir, bridge string, parts ...string) string {
-	b := strings.Builder{}
-	fmt.Fprintf(&b, "%s %q", dir, bridge)
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		b.WriteByte(' ')
-		b.WriteString(p)
-	}
-	return b.String()
 }

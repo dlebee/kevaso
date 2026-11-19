@@ -48,8 +48,9 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   address and balancer on their own ports unless they name an `IP` or ask for a `dedicated` one.
   Its outbound address can be the host's, the service's (where the address is on the host; never a
   balancer's), or an IP of its own; `kvo describe silo` says whether in and out match, and why not. Silo-to-silo traffic is denied
-  until the receiving silo's service port names the caller in `allowFrom`. Removing a grant, or an
-  `allowFrom` entry, resets the connections that entry allowed; other flows stay. A silo with no
+  until the receiving silo's service port names the caller in `allowFrom`. Removing an `allowFrom`
+  entry resets the connections that entry allowed; other callers stay. A removed or narrowed grant
+  does not cut traffic that is still allowed. A silo with no
   grant is not forwarded names outside the cluster (silos and services in the cluster's zone still
   resolve). Exposing publicly needs its own permission;
 - secrets: `Secret` values sealed with envelope encryption under a local KMS (a recovery key printed
