@@ -447,6 +447,10 @@ func (r *Runtime) runArgs(s state, name string) ([]string, error) {
 	// engine's own on a run.
 	args := []string{"--name", name, "--pull", "never", "--network", "container:" + n.Pause,
 		"--security-opt", "no-new-privileges", "--pids-limit", "4096",
+		// The silo's root is the host's uid 0. These three are the ones a container does not
+		// need to run and that reach the host kernel: devices, raw sockets (ping), a chroot.
+		// A user namespace is a later opt-in. Docker and podman both take --cap-drop.
+		"--cap-drop", "MKNOD", "--cap-drop", "NET_RAW", "--cap-drop", "SYS_CHROOT",
 		"--label", "kevaso.com/namespace=" + s.ID.Namespace, "--label", "kevaso.com/name=" + s.ID.Name, "--label", "kevaso.com/uid=" + s.ID.UID,
 		"-v", n.Dir + "/resolv.conf:/etc/resolv.conf:ro",
 		"--tmpfs", "/run:rw,nosuid,nodev,mode=0755"}

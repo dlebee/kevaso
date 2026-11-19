@@ -37,8 +37,9 @@ const ClientID = client.OIDCClientID
 const Audience = client.OIDCAudience
 
 // raceGrace: a just-replaced refresh token coming back this soon is a race between two local
-// commands, not theft.
-const raceGrace = 10 * time.Second
+// commands (a lost answer on a dropped connection looks the same), not theft. A minute is still
+// a short replay window; after it, the session ends and a new invite comes from an admin.
+const raceGrace = 60 * time.Second
 
 var loopback = regexp.MustCompile(`^http://127\.0\.0\.1:[0-9]{1,5}/callback$`)
 

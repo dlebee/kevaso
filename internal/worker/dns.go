@@ -15,10 +15,12 @@ import (
 )
 
 // DNS answers Kevaso's names (design §7.0, internal/names) on one address, for one kind of
-// asker: the silos' gateway (silos: their services by plain or short name; everything else is
-// forwarded to the host's resolvers), the host's mesh IP (hosts: everything), and, only where the
-// operator turns them on (Host spec.network.dns), its internal IP (machines on its network) and
-// external IP (anyone). Only silos get names forwarded: a Kevaso host is never an open resolver.
+// asker: the silos' gateway (silos: their services by plain or short name; a name outside the
+// cluster's zone is forwarded to the host's resolvers only when that silo has a grant), the
+// host's mesh IP (hosts: everything), and, only where the operator turns them on (Host
+// spec.network.dns), its internal IP (machines on its network) and external IP (anyone). Only
+// silos get names forwarded, and only a silo that has a grant: a Kevaso host is never an open
+// resolver, and a silo with nothing to reach outside the cluster is not one either.
 type DNS struct {
 	Listen string      // e.g. 10.64.3.1:53
 	From   names.Asker // who asks on Listen
@@ -26,8 +28,12 @@ type DNS struct {
 	// SiloNamespace is the namespace of the silo with this silo IP (ok false: none): a silo's
 	// short names are in its namespace, and an address that isn't a silo's gets no answer.
 	SiloNamespace func(netip.Addr) (string, bool)
-	Upstream      []string             // default: the host's resolvers
-	Log           func(string, ...any) //
+	// HasGrant reports whether the silo at this address lists a grant that exists. Nil refuses
+	// every forward: a silo with no grant does not get the host's resolvers. In-zone names are
+	// answered either way.
+	HasGrant func(netip.Addr) bool
+	Upstream []string             // default: the host's resolvers
+	Log      func(string, ...any) //
 
 	once sync.Once
 }
@@ -108,6 +114,15 @@ func (d *DNS) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 				}
 			}
 		}
+		_ = w.WriteMsg(m)
+		return
+	}
+	// Outside the cluster's zone. A silo with no grant is not forwarded: the name is refused,
+	// and the host's resolvers are not asked. In-zone names were answered above.
+	src := addrOf(w.RemoteAddr())
+	if d.HasGrant == nil || !src.IsValid() || !d.HasGrant(src) {
+		m := new(dns.Msg)
+		m.SetRcode(req, dns.RcodeRefused)
 		_ = w.WriteMsg(m)
 		return
 	}

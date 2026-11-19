@@ -4311,5 +4311,209 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a stopped kevasod stays stopped: a confined convert never pulls it in"
+ },
+ {
+  "id": "G-640",
+  "guard": "asserting the old copy is off needs its own permission",
+  "file": "internal/apiserver/moves.go",
+  "find": "if req.ConfirmFenced || req.Insist {",
+  "replace": "if false && (req.ConfirmFenced || req.Insist) {",
+  "mutation": "confirm-fenced and insist are allowed to anyone who can move a silo",
+  "packages": [
+   "./internal/apiserver"
+  ],
+  "protects": "saying the old copy is off needs create on hosts/confirm-off"
+ },
+ {
+  "id": "G-641",
+  "guard": "the delete watch resumes from the revision this host stored",
+  "file": "internal/agent/agent.go",
+  "find": "from = saved.Revision // a delete since this revision, while this host was away, is still in the log",
+  "replace": "from = listed // a delete since this revision, while this host was away, is still in the log",
+  "mutation": "the delete watch starts at the list, so a delete while this host was away is not seen",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a delete while this host was away is seen when its revision is still in the log"
+ },
+ {
+  "id": "G-642",
+  "guard": "a compacted delete watch starts at the list, not from nothing",
+  "file": "internal/agent/agent.go",
+  "find": "ch, err = a.Client.Watch(wctx, \"Silo\", \"\", l.Metadata.ResourceVersion)",
+  "replace": "ch, err = a.Client.Watch(wctx, \"Silo\", \"\", \"\")",
+  "mutation": "a compacted revision makes the watch replay from the beginning, including deletes this host never reached",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a compacted gap is not replayed: those copies stay"
+ },
+ {
+  "id": "G-643",
+  "guard": "a container silo cannot make devices",
+  "file": "builtin/kri/container/runtime.go",
+  "find": "\"--cap-drop\", \"MKNOD\"",
+  "replace": "\"--cap-drop\", \"AUDIT_WRITE\"",
+  "mutation": "the silo container keeps MKNOD",
+  "packages": [
+   "./builtin/kri/container"
+  ],
+  "protects": "a container silo drops MKNOD"
+ },
+ {
+  "id": "G-644",
+  "guard": "a container silo cannot open raw sockets",
+  "file": "builtin/kri/container/runtime.go",
+  "find": "\"--cap-drop\", \"NET_RAW\"",
+  "replace": "\"--cap-drop\", \"AUDIT_WRITE\"",
+  "mutation": "the silo container keeps NET_RAW",
+  "packages": [
+   "./builtin/kri/container"
+  ],
+  "protects": "a container silo drops NET_RAW, so it cannot ping"
+ },
+ {
+  "id": "G-645",
+  "guard": "a container silo cannot chroot",
+  "file": "builtin/kri/container/runtime.go",
+  "find": "\"--cap-drop\", \"SYS_CHROOT\"",
+  "replace": "\"--cap-drop\", \"AUDIT_WRITE\"",
+  "mutation": "the silo container keeps SYS_CHROOT",
+  "packages": [
+   "./builtin/kri/container"
+  ],
+  "protects": "a container silo drops SYS_CHROOT"
+ },
+ {
+  "id": "G-646",
+  "guard": "a disk body is capped at the disk's size",
+  "file": "builtin/kri/cloudhypervisor/fetch.go",
+  "find": "body = &maxReader{r: resp.Body, n: limit}",
+  "replace": "body = resp.Body",
+  "mutation": "a body with no Content-Length is copied whole, past the disk's size",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk download larger than the disk's size is refused and the partial file removed"
+ },
+ {
+  "id": "G-647",
+  "guard": "a disk is not fetched from a cluster, loopback or link-local address",
+  "file": "builtin/kri/cloudhypervisor/fetch.go",
+  "find": "if _, why := v1.ClosedRange(netip.PrefixFrom(ip, ip.BitLen())); why != \"\" {",
+  "replace": "if _, why := v1.ClosedRange(netip.PrefixFrom(ip, ip.BitLen())); false && why != \"\" {",
+  "mutation": "a disk may be fetched from a cluster, loopback or link-local address",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk fetch refuses a cluster, loopback or link-local address"
+ },
+ {
+  "id": "G-648",
+  "guard": "a disk is not fetched from a private address",
+  "file": "builtin/kri/cloudhypervisor/fetch.go",
+  "find": "if _, why := v1.Special(ip); why != \"\" {",
+  "replace": "if _, why := v1.Special(ip); false && why != \"\" {",
+  "mutation": "a disk may be fetched from a private address",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk fetch refuses a private address"
+ },
+ {
+  "id": "G-649",
+  "guard": "a removed allowFrom flow is reset",
+  "file": "builtin/kni/revoke.go",
+  "find": "if !now[f] {",
+  "replace": "if false && !now[f] {",
+  "mutation": "removing an allowFrom entry leaves its connections established",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "removing an allowFrom entry resets only that flow"
+ },
+ {
+  "id": "G-651",
+  "guard": "resets are emitted from the previously loaded allowFrom entries",
+  "file": "builtin/kni/rules.go",
+  "find": "if h.Revoke != nil {",
+  "replace": "if false && h.Revoke != nil {",
+  "mutation": "a removed allowFrom entry changes nothing about connections already open",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "the rules reset an allowFrom flow the previous table allowed and this one does not"
+ },
+ {
+  "id": "G-652",
+  "guard": "a silo with no grant is not forwarded names",
+  "file": "internal/worker/dns.go",
+  "find": "if d.HasGrant == nil || !src.IsValid() || !d.HasGrant(src) {",
+  "replace": "if false && (d.HasGrant == nil || !src.IsValid() || !d.HasGrant(src)) {",
+  "mutation": "a silo with no grant is forwarded names outside the cluster",
+  "packages": [
+   "./internal/worker"
+  ],
+  "protects": "a silo with no grant is refused a forward; a name in the cluster's zone is still answered"
+ },
+ {
+  "id": "G-653",
+  "guard": "a replaced refresh token is a race for a minute",
+  "file": "internal/issuer/issuer.go",
+  "find": "const raceGrace = 60 * time.Second",
+  "replace": "const raceGrace = 10 * time.Second",
+  "mutation": "a refresh token presented again after ten seconds ends the session",
+  "packages": [
+   "./internal/issuer"
+  ],
+  "protects": "a lost refresh within a minute is a race, and the session stays"
+ },
+ {
+  "id": "G-654",
+  "guard": "scale-in with volumes removes the surge instance",
+  "file": "internal/controllers/siloset/siloset.go",
+  "find": "if keepData {",
+  "replace": "if false && keepData {",
+  "mutation": "a not-Ready instance that holds a volume is removed before the surge instance",
+  "packages": [
+   "./internal/controllers/siloset"
+  ],
+  "protects": "when the template has volumes, scale-in removes the newest instance past the desired count"
+ },
+ {
+  "id": "G-655",
+  "guard": "an oversized disk body leaves no partial file",
+  "file": "builtin/kri/cloudhypervisor/fetch.go",
+  "find": "if errors.Is(copyErr, errDiskTooBig) {\n\t\t_ = os.Remove(dst)",
+  "replace": "if errors.Is(copyErr, errDiskTooBig) {\n\t\t_ = dst",
+  "mutation": "a body past the disk's size is refused and the partial file is left behind",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk download larger than the disk's size removes the partial file"
+ },
+ {
+  "id": "G-656",
+  "guard": "a delete while the control plane is held is not replayed",
+  "file": "internal/agent/agent.go",
+  "find": "case a.ControlPlaneHeld(): // an event from a control plane this worker does not trust",
+  "replace": "case false && a.ControlPlaneHeld(): // an event from a control plane this worker does not trust",
+  "mutation": "a delete that arrived while the control plane was held is recorded once this host trusts it again",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a delete from a control plane this worker does not trust removes nothing, and a restart does not record it"
+ },
+ {
+  "id": "G-657",
+  "guard": "a VM disk with no size is capped at the default disk",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if n <= 0 {\n\t\treturn defaultDiskBytes",
+  "replace": "if false && n <= 0 {\n\t\treturn defaultDiskBytes",
+  "mutation": "a silo that states no disk.size is fetched with no cap",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a VM disk download is capped at disk.size, or at the default disk when none is stated; zero is that default"
  }
 ]

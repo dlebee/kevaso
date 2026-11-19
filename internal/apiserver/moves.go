@@ -17,6 +17,7 @@ import (
 	hostctl "kevaso.com/core/internal/controllers/host"
 	siloctl "kevaso.com/core/internal/controllers/silo"
 	"kevaso.com/core/internal/moves"
+	"kevaso.com/core/internal/rbac"
 	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/internal/store"
 )
@@ -84,6 +85,16 @@ func (s *Server) moveSilo(w http.ResponseWriter, r *http.Request, t target) {
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil || req.To == "" {
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "move: want {\"to\": HOST}"))
 		return
+	}
+	// The person is asserting a fact about a machine: the old copy is off. That is separate
+	// from moving the silo, and it is cluster-scoped. A plain move (neither flag) is unchanged.
+	// The server may set ConfirmFenced itself later, when the Host object is already gone;
+	// that is the deletion's confirmation, not this request's.
+	if req.ConfirmFenced || req.Insist {
+		if err := s.allowConfirmOff(r); err != nil {
+			writeErr(w, err)
+			return
+		}
 	}
 	ctx := r.Context()
 	for range 5 {
@@ -183,6 +194,42 @@ func (s *Server) moveSilo(w http.ResponseWriter, r *http.Request, t target) {
 		return
 	}
 	writeErr(w, errf(http.StatusConflict, "Conflict", "the silo kept changing; try again"))
+}
+
+// confirmOffDenied is the 403 for a move that asserts the old copy is off. It names the
+// permission, so a person who can move a silo can see why --confirm-fenced was refused.
+const confirmOffDenied = "saying the old copy is off (--confirm-fenced, and --insist with it) needs create on hosts/confirm-off. That permission is cluster-scoped and only cluster-admin has it by default. editor and admin keep plain moves (create on silos/move)"
+
+// allowConfirmOff is the extra check for ConfirmFenced and Insist. A server with authentication
+// off has no identity, and the existing move tests run that way: the flags are allowed. The admin
+// socket and kevasod itself are allowed. A host is not. Everyone else needs create on
+// hosts/confirm-off in the cluster (an empty namespace), which a namespace RoleBinding cannot grant.
+func (s *Server) allowConfirmOff(r *http.Request) error {
+	if s.auth == nil {
+		return nil
+	}
+	id, ok := IdentityFrom(r.Context())
+	if !ok {
+		return errf(http.StatusForbidden, "Forbidden", "%s", confirmOffDenied)
+	}
+	if id == LocalAdmin || id == Component {
+		return nil
+	}
+	if id.Type == "host" || s.policy == nil {
+		return errf(http.StatusForbidden, "Forbidden", "%s", confirmOffDenied)
+	}
+	p, err := s.policy.Policy(r.Context())
+	if err != nil {
+		return err
+	}
+	d := p.Authorize(rbac.Attributes{
+		User: id.Name, Groups: GroupsFrom(r.Context()),
+		Verb: "create", Resource: rbac.ConfirmOffResource,
+	})
+	if !d.Allowed {
+		return errf(http.StatusForbidden, "Forbidden", "%s", confirmOffDenied)
+	}
+	return nil
 }
 
 // placement is what the scheduler judges a silo's placement by: the other placed silos, and the

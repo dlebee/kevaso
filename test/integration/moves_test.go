@@ -207,7 +207,10 @@ func TestMoves(t *testing.T) {
 	if _, err := mv(ed, "web", moves.Request{To: "hv1", Recreate: true}); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "--confirm-fenced") {
 		t.Fatalf("from a lost host, unconfirmed: %v", err)
 	}
-	back, err := mv(ed, "web", moves.Request{To: "hv1", ConfirmFenced: true, Recreate: true})
+	if _, err := mv(ed, "web", moves.Request{To: "hv1", ConfirmFenced: true, Recreate: true}); status(err) != http.StatusForbidden || !strings.Contains(err.Error(), "hosts/confirm-off") {
+		t.Fatalf("editor saying the old copy is off: %v", err)
+	}
+	back, err := mv(c.admin, "web", moves.Request{To: "hv1", ConfirmFenced: true, Recreate: true})
 	if err != nil || back.Status.Host != "hv1" || back.Status.MovingFrom != "" {
 		t.Fatalf("confirmed: %+v %v", back.Status, err)
 	}

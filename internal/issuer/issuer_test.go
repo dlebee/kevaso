@@ -202,8 +202,16 @@ func TestRefreshRotatesAndCatchesReuse(t *testing.T) {
 	if _, err := e.iss.Verify(e.ctx, t2.AccessToken); err != nil {
 		t.Fatalf("race ended the session: %v", err)
 	}
-	// Later, the old one coming back means a stolen copy: the whole session ends.
-	e.clk.Step(time.Minute)
+	// Inside the minute, the old one is still a race: a lost answer on a dropped connection
+	// looks the same, and the session stays. Past the minute it means a stolen copy.
+	e.clk.Step(30 * time.Second)
+	if _, err := e.refresh(t1.RefreshToken); err == nil || !strings.Contains(err.Error(), "raced") {
+		t.Fatalf("30s later the old refresh token is still a race: %v", err)
+	}
+	if _, err := e.iss.Verify(e.ctx, t2.AccessToken); err != nil {
+		t.Fatalf("a race inside the minute ended the session: %v", err)
+	}
+	e.clk.Step(31 * time.Second) // 61s from the rotation
 	if _, err := e.refresh(t1.RefreshToken); err == nil || !strings.Contains(err.Error(), "revoked") {
 		t.Fatalf("reused refresh: %v", err)
 	}

@@ -183,6 +183,11 @@ type Host struct {
 	// Reserved: host-port numbers this host listens on beyond ReservedHostPort, and why. A silo's
 	// host-port DNAT for one of them is left out. Nil means this host adds none.
 	Reserved map[int]string
+	// Revoke is the allowFrom entries previously loaded (nil on the first load). A flow that was
+	// allowed then and is not allowed now is reset, the same way a lease's connections are when
+	// the lease ends. Flows that are still allowed are not. A grant is not remembered and adds no
+	// cut: new connections follow the grants loaded now.
+	Revoke *Host
 }
 
 // Prefixes no silo may reach directly: the mesh's host addresses.
@@ -261,9 +266,9 @@ func set(items []string) string {
 // cutRules end the connections an outside rule let in to a silo's port, once that rule is gone (a
 // lease ended): both directions of a translated connection whose original destination matched
 // (orig: the host's or load balancer's address, or the node port), placed before the rules that let established
-// traffic through. TCP is reset, so both ends learn at once; UDP is dropped. Connections to the
-// same port that weren't translated (silo to silo, allowFrom) are untouched. They're harmless while
-// the port stays closed (nothing new is translated) and go when it opens again.
+// traffic through. TCP is reset, so both ends learn at once; UDP is dropped. These lease cuts match
+// only translated connections. A removed allowFrom entry is cut on its own match, without
+// ct status dnat, and only for the flow that entry allowed. A grant is not cut.
 func cutRules(bridge string, ip netip.Addr, proto string, port int, orig string) []string {
 	verdict := "drop"
 	if proto == "tcp" {
@@ -403,7 +408,7 @@ func Generate(h Host) (string, []Problem) {
 	for _, s := range local {
 		byKey[s.Key] = s
 	}
-	var redirect, dnat, snat, fwd, br, egress, cut []string
+	var redirect, dnat, snat, fwd, br, egress, cut, brCut []string
 	for _, s := range local {
 		if !s.IP.IsValid() {
 			continue
@@ -631,6 +636,12 @@ func Generate(h Host) (string, []Problem) {
 		}
 	}
 
+	if h.Revoke != nil {
+		inet, bridge := revokeCuts(h, *h.Revoke)
+		cut = append(cut, inet...)
+		brCut = append(brCut, bridge...)
+	}
+
 	var b strings.Builder
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
 	w("table inet kevaso")
@@ -740,6 +751,9 @@ func Generate(h Host) (string, []Problem) {
 	w("  chain forward {")
 	w("    type filter hook forward priority filter; policy accept;")
 	w("    ether type arp accept") // silos must find each other's MAC before allowFrom can matter
+	for _, r := range brCut {      // a same-host allowFrom flow, before established keeps it
+		w("    %s", r)
+	}
 	w("    ct state established,related accept")
 	for _, r := range br {
 		w("    %s", r)

@@ -259,7 +259,8 @@ func TestLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	main := f.last("docker run -d --name " + n.Main)
-	for _, want := range []string{"--network container:" + n.Pause, "--security-opt no-new-privileges", "--tmpfs /run:rw,nosuid,nodev,mode=0755",
+	for _, want := range []string{"--network container:" + n.Pause, "--security-opt no-new-privileges",
+		"--cap-drop MKNOD", "--cap-drop NET_RAW", "--cap-drop SYS_CHROOT", "--tmpfs /run:rw,nosuid,nodev,mode=0755",
 		"SSL_CERT_FILE=/etc/ssl/certs/kevaso-ca-bundle.crt", "--cpus 2", "--memory 536870912",
 		"-v " + n.Dir + "/resolv.conf:/etc/resolv.conf:ro", "--init docker.io/library/ubuntu:24.04 sleep infinity"} {
 		if !strings.Contains(main, want) {

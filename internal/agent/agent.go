@@ -2074,12 +2074,13 @@ func firstLineOf(s string) string {
 
 // watchDeletes records every silo delete the control plane announces while this agent is
 // watching (its UID), then looks at the silo again: only a delete seen here removes a silo's data.
-// A delete made while the watch was down is never seen, and that silo is kept (design §0.7).
+// The watch resumes from the last revision this host persisted, so a delete made while it was
+// away is seen. A watch from nothing is never opened: that would replay deletes from before this
+// host was watching. If the persisted revision was compacted, the watch starts at the list's
+// revision, the same as a host that has no persisted revision, and the copies in that gap stay
+// (design §0.7: a disk is destroyed only on a delete the system saw).
 func (a *Agent) watchDeletes(ctx context.Context, e *engine.Engine) {
 	for ctx.Err() == nil {
-		// From now on only (a list's revision): a watch from nothing replays deletes made before
-		// this agent was watching, which it never saw.
-		//
 		// The stream is of the history accepted when it opened (its list and its answer judged,
 		// neither refused): its deletes are recorded under that history, and once another is
 		// accepted (a restore) it is opened anew, so a delete of the old history is never taken
@@ -2088,9 +2089,28 @@ func (a *Agent) watchDeletes(ctx context.Context, e *engine.Engine) {
 		wctx, stopWatch := context.WithCancel(ctx)
 		wm := a.watermark()
 		m0 := wm.mark()
+		var resumed bool
+		var listed string
 		l, err := a.Client.List(wctx, "Silo", "")
 		if err == nil {
-			ch, err = a.Client.Watch(wctx, "Silo", "", l.Metadata.ResourceVersion)
+			listed = l.Metadata.ResourceVersion
+			from := listed
+			histNow := wm.history()
+			if saved, ok := a.savedDeleteWatch(); ok && saved.History == histNow && revLess(saved.Revision, from) {
+				from = saved.Revision // a delete since this revision, while this host was away, is still in the log
+				resumed = true
+			}
+			ch, err = a.Client.Watch(wctx, "Silo", "", from)
+			if watchCompacted(err) && from != l.Metadata.ResourceVersion {
+				// The log no longer has that revision. The deletes in the gap were not seen, so
+				// those copies stay. The next watch starts at the list, and that revision is what
+				// a later restart resumes from: retrying the compacted one would loop.
+				a.log("delete watch: revision %s was compacted; a delete since then was not seen, and that copy is kept", from)
+				if wm.acceptedSince(m0) {
+					a.saveDeleteWatch(histNow, l.Metadata.ResourceVersion)
+				}
+				ch, err = a.Client.Watch(wctx, "Silo", "", l.Metadata.ResourceVersion)
+			}
 		}
 		hist := wm.history()
 		if err == nil && !wm.acceptedSince(m0) {
@@ -2105,12 +2125,25 @@ func (a *Agent) watchDeletes(ctx context.Context, e *engine.Engine) {
 			ch, err = nil, errors.New("the delete watch opened on an answer this worker doesn't act on")
 		}
 		if err == nil {
+			// A watch that started at the list has no backlog. Recording that revision now means a
+			// host that then stops still resumes there. A resumed backlog is not recorded until its
+			// events are handled, so a crash replays them instead of skipping them.
+			if !resumed && listed != "" {
+				a.saveDeleteWatch(hist, listed)
+			}
 			for ev := range ch {
 				if wm.mark().histories != m0.histories {
 					break // another history accepted: this stream's deletes are of the old one
 				}
-				if ev.Type != "DELETED" || a.ControlPlaneHeld() {
-					continue // a delete from a control plane this worker doesn't trust removes nothing
+				switch {
+				case a.ControlPlaneHeld(): // an event from a control plane this worker does not trust
+					// It removes nothing. The revision moves past it, so a restart does not record
+					// it as a delete this host saw.
+					a.noteDeleteWatch(hist, ev.Object)
+					continue
+				case ev.Type != "DELETED":
+					a.noteDeleteWatch(hist, ev.Object) // a non-delete is behind this host
+					continue
 				}
 				o, _, err := v1.Decode(ev.Object)
 				if err != nil {
@@ -2119,6 +2152,7 @@ func (a *Agent) watchDeletes(ctx context.Context, e *engine.Engine) {
 				m := o.GetObjectMeta()
 				s, _ := o.(*v1.Silo)
 				a.sawDelete(kri.ID{Namespace: m.Namespace, Name: m.Name, UID: m.UID}, s != nil && a.mayHaveHere(ctx, s), hist)
+				a.noteDeleteWatch(hist, ev.Object) // after the delete is recorded: a crash before this replays it
 				a.interrupt(engine.Key{Kind: "Silo", Namespace: m.Namespace, Name: m.Name}, m.UID)
 				e.Changed(engine.Key{Kind: "Silo", Namespace: m.Namespace, Name: m.Name})
 			}

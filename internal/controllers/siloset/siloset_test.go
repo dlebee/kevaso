@@ -257,4 +257,19 @@ func TestInstanceSpec(t *testing.T) {
 	}
 }
 
+// A set whose template has volumes keeps a not-Ready instance: it holds data. The instance past
+// the desired count, the newest, is the one removed.
+func TestScaleInWithVolumesRemovesTheSurgeNotTheNotReady(t *testing.T) {
+	set := newSet(3, func(s *v1.SiloSet) {
+		s.Spec.Template.Volumes = []v1.Volume{{Name: "data", MountPath: "/data", Size: "1Gi"}}
+	})
+	insts := materialize(set, siloset.Decide(set, nil), nil, true)
+	set.Spec.Instances = 2
+	insts[0].Status.Conditions = nil // rpc-0, the oldest, not Ready
+	p := siloset.Decide(set, insts)
+	if len(p.Delete) != 1 || p.Delete[0] != "rpc-2" {
+		t.Fatalf("removed %v, want rpc-2: rpc-0 is not Ready and holds the volume", p.Delete)
+	}
+}
+
 func ptr(i int) *int { return &i }

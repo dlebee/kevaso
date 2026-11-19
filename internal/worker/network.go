@@ -248,6 +248,8 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	fw := &firewall{apply: func(ctx context.Context, text string) error { return applyRules(ctx, text) }}
+	var opened kni.Host
+	var haveOpened bool
 	for {
 		synced := informer.AllSynced(kept...) // before the lists: once listed, never a seed again
 		st := sv.state()
@@ -260,12 +262,23 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 		now := time.Now()
 		view = WithLeases(view, all, st.leases, now)
 		leaseEnd, stopLeaseEnd := leaseTimer(st.leases, now)
+		base := view
+		base.Revoke = nil
+		if haveOpened {
+			prev := opened
+			view.Revoke = &prev // an allowFrom the last loaded table had, and this one does not, is reset
+		}
 		rules, problems := kni.Generate(view)
 		load := func() { // the rules, and once nft took them, their bindings
 			if ok, err := fw.load(ctx, rules); err != nil {
 				log("silo firewall: %v (the last one loaded stays; trying again in %s)", err, fw.retryAfter())
 			} else if ok {
 				loaded.set(kni.Bindings(view.Local))
+				// Remember every allowFrom this host has loaded, not only the latest table. The
+				// next table still resets a flow that is no longer allowed; a reload that dropped
+				// the reset would let the established connection resume. Grants are not remembered.
+				opened = kni.Remember(opened, base)
+				haveOpened = true
 			}
 		}
 		var retry <-chan time.Time
@@ -297,7 +310,15 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 		}
 		dnsOn.keep(ctx, DNSListeners(me), func(addr string, from names.Asker) *DNS {
 			return &DNS{Listen: addr, From: from, View: nameView, Log: log,
-				SiloNamespace: func(a netip.Addr) (string, bool) { return boundNamespace(hostName, current(), loaded, a) }}
+				SiloNamespace: func(a netip.Addr) (string, bool) { return boundNamespace(hostName, current(), loaded, a) },
+				HasGrant: func(a netip.Addr) bool {
+					for _, s := range current() {
+						if s.Status.SiloIP == a.String() && s.DeletionTimestamp == nil {
+							return len(v1.GrantsFor(s, currentGrants())) > 0
+						}
+					}
+					return false
+				}}
 		})
 		if !isHeld { // no address added or removed either
 			syncHostAddresses(ctx, hostName, me, all, log)

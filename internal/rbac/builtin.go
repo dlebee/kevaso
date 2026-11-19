@@ -10,6 +10,13 @@ import (
 // BuiltinLabel marks the roles and bindings the control plane creates (and keeps).
 const BuiltinLabel = "kevaso.com/builtin"
 
+// ConfirmOffResource is the cluster-scoped permission to assert that a host's old copy of a
+// silo is off: create on it. kvo move --confirm-fenced and --insist need it. cluster-admin has
+// it (the role grants every resource); the built-in editor and admin do not, and they keep
+// plain moves (create on silos/move). A check uses an empty namespace, so a RoleBinding in the
+// silo's namespace does not grant it.
+const ConfirmOffResource = "hosts/confirm-off"
+
 var (
 	read  = []string{"get", "list", "watch"}
 	write = []string{"get", "list", "watch", "create", "update", "patch", "delete"}
@@ -56,9 +63,10 @@ var (
 	siloFiles = v1.PolicyRule{Verbs: []string{"get", "create"}, Resources: []string{"silos/files"}}
 )
 
-// BuiltinRoles are the roles of design §9.3: cluster-admin (everything), admin (a namespace, its
-// roles included, service-account tokens, and exposing silos publicly), editor (workloads, exec;
-// not public exposure, not service-account tokens),
+// BuiltinRoles are the roles of design §9.3: cluster-admin (everything, including create on
+// hosts/confirm-off), admin (a namespace, its roles included, service-account tokens, and
+// exposing silos publicly; plain moves, not confirm-fenced), editor (workloads, exec, plain
+// moves; not public exposure, not service-account tokens, not hosts/confirm-off),
 // viewer (read workloads), runner (runs).
 func BuiltinRoles() []*v1.ClusterRole {
 	mk := func(name string, rules ...v1.PolicyRule) *v1.ClusterRole {

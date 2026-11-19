@@ -30,6 +30,8 @@ type Asset struct {
 	File   string // name in its directory
 	// SumsURL is a SHA256SUMS file to check against (for images whose "current" build changes).
 	SumsURL string
+	// MaxBytes caps the body (a VM disk's size). Zero does not: a release asset has no disk size.
+	MaxBytes int64
 }
 
 // Version pins what the runtime installs (research E008, E036: v54.1 and edk2 ch-97eeb7b09).
@@ -425,7 +427,7 @@ func Fetch(ctx context.Context, h Host, a Asset, dst string, mode os.FileMode) e
 		return nil
 	}
 	tmp := dst + ".download"
-	if err := download(ctx, a.URL, tmp); err != nil {
+	if err := download(ctx, a.URL, tmp, a.MaxBytes); err != nil {
 		return err
 	}
 	got, err := fileSHA256(h, tmp)
@@ -480,30 +482,6 @@ func httpGet(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-}
-
-func download(ctx context.Context, url, dst string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: %s", url, resp.Status)
-	}
-	f, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		_ = f.Close()
-		return err
-	}
-	return f.Close()
 }
 
 // Local is the real Host: commands via os/exec, files via os.

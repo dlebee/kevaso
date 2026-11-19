@@ -27,6 +27,10 @@ func viewForDNS() names.View {
 
 // serve runs a DNS server for from on a free loopback port, with a fake upstream, and returns ask.
 func serve(t *testing.T, from names.Asker, silos bool) func(string) *dns.Msg {
+	return serveGrant(t, from, silos, false)
+}
+
+func serveGrant(t *testing.T, from names.Asker, silos, grant bool) func(string) *dns.Msg {
 	up, _ := net.ListenPacket("udp", "127.0.0.1:0")
 	upSrv := &dns.Server{PacketConn: up, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
 		m := new(dns.Msg)
@@ -47,6 +51,9 @@ func serve(t *testing.T, from names.Asker, silos bool) func(string) *dns.Msg {
 		d.SiloNamespace = SiloNamespaces(v.Silos)
 	} else {
 		d.SiloNamespace = func(netip.Addr) (string, bool) { return "", false }
+	}
+	if grant {
+		d.HasGrant = func(netip.Addr) bool { return true }
 	}
 	go d.Run(ctx)
 	return func(name string) *dns.Msg {
@@ -84,8 +91,11 @@ func TestDNSServerForSilos(t *testing.T) {
 	if r := ask("hv1.external.kevaso"); r.Rcode != dns.RcodeRefused {
 		t.Fatalf("a host's name from a silo: %v", r)
 	}
-	if r := ask("ubuntu.com"); a(r) != "203.0.113.9" {
-		t.Fatalf("forwarded: %v", r)
+	if r := ask("ubuntu.com"); r.Rcode != dns.RcodeRefused || len(r.Answer) != 0 {
+		t.Fatalf("a silo with no grant was forwarded: %v", r)
+	}
+	if r := serveGrant(t, names.FromSilo, true, true)("ubuntu.com"); a(r) != "203.0.113.9" {
+		t.Fatalf("a silo with a grant was not forwarded: %v", r)
 	}
 	// An asker that isn't a silo gets nothing on the silos' listener.
 	if r := serve(t, names.FromSilo, false)("api.payments.kevaso"); r.Rcode != dns.RcodeRefused {
