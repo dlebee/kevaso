@@ -5727,5 +5727,17 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a guest fstab replaced by rename is readable as the old one was"
+ },
+ {
+  "id": "G-884",
+  "guard": "a host recording its volume unmounted leaves routing as stored",
+  "file": "internal/moves/moves.go",
+  "find": "return reflect.DeepEqual(want, next) // only the mounted flag; routing stays as stored",
+  "replace": "want.Routing = next.Routing\n\treturn reflect.DeepEqual(want, next) // only the mounted flag; routing stays as stored",
+  "mutation": "a host recording its volume unmounted may rewrite routing",
+  "packages": [
+   "./internal/moves"
+  ],
+  "protects": "recording a volume unmounted changes only the mounted flag"
  }
 ]

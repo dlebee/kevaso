@@ -402,7 +402,7 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 }
 
 // clearedOwnMount reports that next only records volumes attached to host as unmounted
-// (true to false), and changes nothing else except routing, which a status write recomputes.
+// (true to false). The stored routing stays as it was.
 func clearedOwnMount(old, next v1.SiloStatus, host string) bool {
 	if next.Host != old.Host || next.MovingFrom != old.MovingFrom || len(next.Volumes) != len(old.Volumes) {
 		return false
@@ -429,8 +429,7 @@ func clearedOwnMount(old, next v1.SiloStatus, host string) bool {
 	for i := range want.Volumes {
 		want.Volumes[i].Mounted = next.Volumes[i].Mounted
 	}
-	want.Routing = next.Routing
-	return reflect.DeepEqual(want, next)
+	return reflect.DeepEqual(want, next) // only the mounted flag; routing stays as stored
 }
 
 // hostDeletedWrite refuses a host's add, drop or change of Unschedulable/HostDeleted. The
