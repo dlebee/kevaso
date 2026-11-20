@@ -304,6 +304,13 @@ func FstabBlock(l Layout) string {
 // GuestMountScript mounts a layout's volumes inside the guest (run as root through Exec): each new
 // disk formatted once (only if it holds nothing at all), the fstab block replaced, then everything
 // mounted, parents first. Idempotent.
+//
+// The fstab rewrite is crash-safe. The guest's root is ext4 with a delayed commit, and a truncate
+// of /etc/fstab that never reaches disk leaves the file empty: the next boot stays read-only,
+// and this script cannot repair it. The new file is written in the same directory, synced, and
+// renamed over the old one. An empty or missing fstab is given a root line from the live mount
+// first, and / is remounted read-write before any of that (a remount does not read fstab).
+// KEVASO_GUEST_ETC overrides /etc so a test can point the script at a temporary root.
 func GuestMountScript(l Layout) string {
 	var b strings.Builder
 	b.WriteString("set -e\n")
@@ -317,10 +324,38 @@ p=$(printf '%%s\n' "$probe" | sed -n 's/^PTTYPE=//p')
 if [ "$rc" -eq 2 ] && [ -z "$p" ]; then mkfs.ext4 -q -m 0 "$d"; elif [ "$rc" -ne 0 ] || [ -z "$t" ]; then echo "$d holds something blkid can't name: not formatting it" >&2; exit 1; fi
 `, shellQuote([]string{dev}), d.Name)
 	}
-	fmt.Fprintf(&b, `tmp=$(mktemp)
-sed '/^%s$/,/^%s$/d' /etc/fstab > "$tmp"
+	fmt.Fprintf(&b, `etcdir=${KEVASO_GUEST_ETC:-/etc}
+fstab=$etcdir/fstab
+# A root left read-only (an empty fstab) is remounted before any write. mount -o remount does not read fstab.
+if findmnt -n -o OPTIONS / | tr ',' '\n' | grep -qx ro; then
+  mount -o remount,rw /
+fi
+tmp=$(mktemp "$etcdir/fstab.XXXXXX")
+if [ -s "$fstab" ]; then
+  sed '/^%s$/,/^%s$/d' "$fstab" > "$tmp" || : > "$tmp"
+else
+  : > "$tmp"
+fi
+if ! grep -Eq '^[^#][^[:space:]]+[[:space:]]+/[[:space:]]' "$tmp"; then
+  src=$(findmnt -n -o SOURCE /)
+  typ=$(findmnt -n -o FSTYPE /)
+  spec=$src
+  label=$(blkid -s LABEL -o value "$src" 2>/dev/null || true)
+  uuid=$(blkid -s UUID -o value "$src" 2>/dev/null || true)
+  if [ -n "$label" ]; then spec="LABEL=$label"; elif [ -n "$uuid" ]; then spec="UUID=$uuid"; fi
+  opts=defaults
+  if [ "$typ" = ext4 ]; then opts=discard,commit=30,errors=remount-ro; fi
+  { printf '%%s / %%s %%s 0 1\n' "$spec" "$typ" "$opts"; cat "$tmp"; } > "$tmp.n" && mv -f "$tmp.n" "$tmp"
+fi
 printf '%%s\n' %s >> "$tmp"
-cat "$tmp" > /etc/fstab; rm -f "$tmp"
+if [ -f "$fstab" ] && cmp -s "$tmp" "$fstab"; then
+  rm -f "$tmp"
+else
+  # kevaso fstab: rename into place, never truncate /etc/fstab
+  sync "$tmp"
+  mv -f "$tmp" "$fstab"
+  sync -f "$etcdir"
+fi
 systemctl daemon-reload
 `, sedQuote(fstabBegin), sedQuote(fstabEnd), shellQuote([]string{FstabBlock(l)}))
 	var paths []string

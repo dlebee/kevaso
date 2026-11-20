@@ -254,10 +254,14 @@ func TestGuestMountScript(t *testing.T) {
 		}
 	}
 	sc := GuestMountScript(l)
-	for _, want := range []string{"mkfs.ext4 -q -m 0", "blkid -p", "systemctl daemon-reload", "mountpoint -q '/srv/my data' || mount '/srv/my data'"} {
+	for _, want := range []string{"mkfs.ext4 -q -m 0", "blkid -p", "systemctl daemon-reload", "mountpoint -q '/srv/my data' || mount '/srv/my data'",
+		`mktemp "$etcdir/fstab.XXXXXX"`, `sync "$tmp"`, `mv -f "$tmp" "$fstab"`, `sync -f "$etcdir"`} {
 		if !strings.Contains(sc, want) {
 			t.Errorf("script lacks %q:\n%s", want, sc)
 		}
+	}
+	if strings.Contains(sc, "> /etc/fstab") || strings.Contains(sc, `> "$fstab"`) || strings.Contains(sc, `cat "$tmp" >`) {
+		t.Errorf("fstab is written in place:\n%s", sc)
 	}
 	// Parents first.
 	if strings.Index(sc, "mount '/home/me'") > strings.Index(sc, "mount '/home/me/inner'") {

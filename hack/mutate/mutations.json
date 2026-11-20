@@ -5403,5 +5403,29 @@
    "./internal/apiserver"
   ],
   "protects": "a SiloSet whose template labels join a service an ingress names, on a leased port, needs expose-public"
+ },
+ {
+  "id": "G-850",
+  "guard": "the guest fstab is renamed into place",
+  "file": "builtin/kri/cloudhypervisor/volumes.go",
+  "find": "mv -f \"$tmp\" \"$fstab\"",
+  "replace": "cat \"$tmp\" > \"$fstab\"",
+  "mutation": "fstab is truncated in place",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a guest fstab is replaced by a rename, so a crash cannot leave it empty"
+ },
+ {
+  "id": "G-851",
+  "guard": "an fstab with no root line is given one",
+  "file": "builtin/kri/cloudhypervisor/volumes.go",
+  "find": "if ! grep -Eq '^[^#][^[:space:]]+[[:space:]]+/[[:space:]]' \"$tmp\"; then",
+  "replace": "if false; then",
+  "mutation": "an empty fstab is left without a root line",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "an empty fstab gets the guest's own root line so the next boot can mount / read-write"
  }
 ]
