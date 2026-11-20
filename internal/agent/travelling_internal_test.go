@@ -2,6 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -175,6 +179,49 @@ func TestAKeptLocalVolumeAdoptsTheReportedGuestKey(t *testing.T) {
 	if rt.adopted != reported {
 		t.Fatalf("adopted %q, want %q", rt.adopted, reported)
 	}
+}
+
+func TestRemovingAKeptCopyOfATravellingDiskLeavesTheVolumes(t *testing.T) {
+	g := newGuardRig(t, nil, nil)
+	g.create(travellingSilo("web", ""), "hv2", "")
+	g.cacheIs(g.stored("web"))
+	id := idOf(g.stored("web"))
+	g.a.keptNoted.Store(id.UID, keptCopy{runtime: "cloud-hypervisor", id: id, name: keptName(id, `cloud-hypervisor, stopped`)})
+	dir := t.TempDir()
+	g.a.DeletesFile = filepath.Join(dir, "seen-deletes.json")
+	if err := os.Mkdir(filepath.Join(dir, KeptRemoveDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, KeptRemoveDir, id.UID), []byte("remove\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	g.a.Log = func(f string, args ...any) { lines = append(lines, fmt.Sprintf(f, args...)) }
+	g.a.writeKeptFile()
+	var list []KeptEntry
+	if err := json.Unmarshal(mustReadFile(t, filepath.Join(dir, KeptFile)), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Shared != kplugintest.ClassShare {
+		t.Fatalf("kept list: %+v", list)
+	}
+	g.a.takeKeptRemovals()
+	got := strings.Join(lines, "\n")
+	if !strings.Contains(got, "only this host's copy") || !strings.Contains(got, "the volumes on "+kplugintest.ClassShare+" stay") {
+		t.Fatalf("log:\n%s", got)
+	}
+	if strings.Contains(got, "its disk and volumes go") {
+		t.Fatalf("the log says the travelling volumes go:\n%s", got)
+	}
+}
+
+func mustReadFile(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 func travellingSilo(name, localVolume string) *v1.Silo {

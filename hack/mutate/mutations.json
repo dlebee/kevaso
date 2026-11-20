@@ -5547,5 +5547,17 @@
    "./internal/agent"
   ],
   "protects": "a host-local disk is not given a guest host key from a silo whose disk did not travel"
+ },
+ {
+  "id": "G-862",
+  "guard": "removing a kept copy of a travelling disk does not say those volumes go",
+  "file": "internal/agent/keptcmd.go",
+  "find": "if shared != \"\" { // a travelling class is not this host's to delete",
+  "replace": "if false && shared != \"\" { // a travelling class is not this host's to delete",
+  "mutation": "a kept-copy removal says a travelling volume is deleted",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "removing a kept copy leaves the volumes on a travelling class where they are"
  }
 ]

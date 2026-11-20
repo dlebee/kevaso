@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/sdk/kri"
 )
@@ -31,6 +32,25 @@ type KeptEntry struct {
 	Name      string `json:"name"`
 	Runtime   string `json:"runtime"`
 	What      string `json:"what"` // how KeptSilos lists it
+	// Shared is the storage class of a disk or volume that travels with the silo.
+	// Empty when this copy's disks are on this host.
+	Shared string `json:"shared,omitempty"`
+}
+
+// siloCached is the silo of id as this host's cache has it, or nil.
+func (a *Agent) siloCached(id kri.ID) *v1.Silo {
+	if a.silos == nil {
+		return nil
+	}
+	o, ok := a.silos.Get(id.Namespace, id.Name)
+	if !ok {
+		return nil
+	}
+	s, ok := o.(*v1.Silo)
+	if !ok || s.UID != id.UID {
+		return nil
+	}
+	return s
 }
 
 func (a *Agent) dataDir() string {
@@ -49,7 +69,11 @@ func (a *Agent) writeKeptFile() {
 	list := []KeptEntry{}
 	a.keptNoted.Range(func(k, v any) bool {
 		if c, ok := v.(keptCopy); ok && c.id.UID != "" {
-			list = append(list, KeptEntry{UID: c.id.UID, Namespace: c.id.Namespace, Name: c.id.Name, Runtime: c.runtime, What: c.name})
+			e := KeptEntry{UID: c.id.UID, Namespace: c.id.Namespace, Name: c.id.Name, Runtime: c.runtime, What: c.name}
+			if s := a.siloCached(c.id); s != nil {
+				e.Shared = sharedClasses(s)
+			}
+			list = append(list, e)
 		}
 		return true
 	})
@@ -87,8 +111,16 @@ func (a *Agent) takeKeptRemovals() {
 			_ = os.Remove(filepath.Join(dir, KeptRemoveDir, uid))
 			continue
 		}
+		shared := ""
+		if s := a.siloCached(c.id); s != nil {
+			shared = sharedClasses(s)
+		}
 		if _, again := a.removeConfirmed.LoadOrStore(uid, c.id); !again {
-			a.log("removing %s on a person's confirmation (kvoadm host kept --remove): its disk and volumes go", c.name)
+			if shared != "" { // a travelling class is not this host's to delete
+				a.log("removing %s on a person's confirmation (kvoadm host kept --remove): only this host's copy; the volumes on %s stay", c.name, shared)
+			} else {
+				a.log("removing %s on a person's confirmation (kvoadm host kept --remove): its disk and volumes go", c.name)
+			}
 		}
 		// Placed here again while this was read: the confirmation is already void.
 		if _, still := a.keptNoted.Load(uid); !still {
