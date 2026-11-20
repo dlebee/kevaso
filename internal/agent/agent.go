@@ -1809,7 +1809,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			// (design §0.3): admission never lets such a silo be recreated elsewhere, so this
 			// shouldn't happen; if it does, stop the copy and keep it.
 			if why == whyHandoff {
-				own, err := a.hostStorage(ctx, rt, id, s)
+				own, err := a.hostVolume(ctx, rt, id, s) // a handoff holds back a volume LV, not the root disk
 				if err != nil {
 					return err
 				}
@@ -1987,6 +1987,16 @@ func (a *Agent) travelsWithoutLocalDisk(ctx context.Context, rt kri.Runtime, s *
 func (a *Agent) hostStorage(ctx context.Context, rt kri.Runtime, id kri.ID, s *v1.Silo) (bool, error) {
 	if d, ok := rt.(kri.HostStorage); ok { // what this copy holds on this host, not the spec
 		return d.HasHostStorage(ctx, id)
+	}
+	return len(hostLocalVolumes(s)) > 0, nil
+}
+
+// hostVolume reports whether this host holds a volume LV of id (a name kv-…-), not its root
+// disk. A handoff keeps the copy for that volume and removes a root disk with the copy. A
+// runtime that cannot say is answered from the spec's host-local volumes.
+func (a *Agent) hostVolume(ctx context.Context, rt kri.Runtime, id kri.ID, s *v1.Silo) (bool, error) {
+	if d, ok := rt.(kri.HostVolume); ok { // a volume LV, not the root disk
+		return d.HasHostVolume(ctx, id)
 	}
 	return len(hostLocalVolumes(s)) > 0, nil
 }

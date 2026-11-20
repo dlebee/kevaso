@@ -748,6 +748,23 @@ func (r *Runtime) HasHostStorage(ctx context.Context, id kri.ID) (bool, error) {
 	return false, nil
 }
 
+// HasHostVolume implements kri.HostVolume. True when this host holds a volume LV for id
+// (a name kv-…-). The root LV is not one: a handoff of a host-local root removes that disk.
+// applyLayout never removes a volume LV, so one taken out of the spec is still here.
+func (r *Runtime) HasHostVolume(ctx context.Context, id kri.ID) (bool, error) {
+	n := NamesFor(id)
+	out, err := r.Host.Run(ctx, "lvs", "--noheadings", "-o", "lv_name", VG)
+	if err != nil { // a failed list is not "no volume"
+		return false, fmt.Errorf("%s: logical volumes in %s could not be listed (%w): not treating this copy as without a volume", id, VG, err)
+	}
+	for _, f := range strings.Fields(string(out)) {
+		if strings.HasPrefix(f, n.LV+"-") { // a volume LV, not the root disk
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // rootDisk makes the silo's root disk from its image: a thin LV, or an image file on a mount
 // class's folder. An image file already there is the silo's disk come from another host: it's
 // kept, unless fresh (a reset) asks for a new one.
@@ -1277,4 +1294,5 @@ var (
 	_ kri.GuestHostKeySource = (*Runtime)(nil)
 	_ kri.GuestHostKeySetter = (*Runtime)(nil)
 	_ kri.HostStorage        = (*Runtime)(nil)
+	_ kri.HostVolume         = (*Runtime)(nil)
 )

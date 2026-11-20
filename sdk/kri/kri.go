@@ -106,6 +106,13 @@ type HostStorage interface {
 	HasHostStorage(ctx context.Context, id ID) (bool, error)
 }
 
+// HostVolume is a runtime that can say whether a copy holds a volume logical volume on this
+// host (a name kv-…-), apart from its root disk. A handoff keeps the copy for that volume.
+// The root disk is not one: a recreate removes it with the copy.
+type HostVolume interface {
+	HasHostVolume(ctx context.Context, id ID) (bool, error)
+}
+
 // InitStep is one init step (design §0.2): a script run by a shell or any interpreter.
 type InitStep struct {
 	Name  string

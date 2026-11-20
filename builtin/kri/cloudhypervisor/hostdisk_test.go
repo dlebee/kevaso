@@ -54,6 +54,35 @@ func TestHasHostStorageSeesAVolumeLeftOutOfTheSpec(t *testing.T) {
 	t.Fatal("Delete did not lvremove the volume left out of the spec: the copy must be kept instead")
 }
 
+// A root LV is this host's disk, and it is not a volume LV. A handoff removes it. A volume
+// LV, including one no longer in the spec, is.
+func TestHasHostVolumeIgnoresTheRootDisk(t *testing.T) {
+	ctx := context.Background()
+	h := newFakeHost()
+	r := newRuntime(t, h)
+	sp := spec("web")
+	if err := r.Create(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	n := NamesFor(sp.ID)
+	if !h.lvs[n.LV] {
+		t.Fatal("the root LV was not made")
+	}
+	own, err := r.HasHostVolume(ctx, sp.ID)
+	if err != nil || own {
+		t.Fatalf("HasHostVolume %v %v, want the root LV left out", own, err)
+	}
+	stored, err := r.HasHostStorage(ctx, sp.ID)
+	if err != nil || !stored {
+		t.Fatalf("HasHostStorage %v %v, want the root LV", stored, err)
+	}
+	h.lvs[n.LV+"-data"] = true
+	own, err = r.HasHostVolume(ctx, sp.ID)
+	if err != nil || !own {
+		t.Fatalf("HasHostVolume %v %v, want the volume LV", own, err)
+	}
+}
+
 func TestHasHostStorageDoesNotTreatAFailedListAsNoDisk(t *testing.T) {
 	h := newFakeHost()
 	h.answer = func(cmd string) (string, error) {

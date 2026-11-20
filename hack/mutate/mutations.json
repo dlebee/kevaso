@@ -5739,5 +5739,29 @@
    "./internal/moves"
   ],
   "protects": "recording a volume unmounted changes only the mounted flag"
+ },
+ {
+  "id": "G-890",
+  "guard": "a handoff holds a copy back for a volume LV and not the root disk",
+  "file": "internal/agent/agent.go",
+  "find": "own, err := a.hostVolume(ctx, rt, id, s) // a handoff holds back a volume LV, not the root disk",
+  "replace": "own, err := a.hostStorage(ctx, rt, id, s) // a handoff holds back a volume LV, not the root disk",
+  "mutation": "a handed-off root disk is kept on the old host",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a recreate of a host-local root removes the old copy"
+ },
+ {
+  "id": "G-891",
+  "guard": "a volume LV is counted and the root LV is not",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if strings.HasPrefix(f, n.LV+\"-\") { // a volume LV, not the root disk",
+  "replace": "if f == n.LV || strings.HasPrefix(f, n.LV+\"-\") { // a volume LV, not the root disk",
+  "mutation": "a root disk counts as a volume left on this host",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a handoff removes a root disk and keeps a volume LV"
  }
 ]

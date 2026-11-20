@@ -12,6 +12,7 @@ import (
 
 	"kevaso.com/core/api/client"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/sdk/kplugin"
 	"kevaso.com/core/sdk/kplugin/kplugintest"
@@ -53,6 +54,14 @@ func (d *diskRT) HasHostStorage(context.Context, kri.ID) (bool, error) {
 		return false, d.err
 	}
 	return d.lv != "", nil
+}
+
+// HasHostVolume is a volume LV (kv-<id>-<name>), not the root LV (kv-<id>).
+func (d *diskRT) HasHostVolume(context.Context, kri.ID) (bool, error) {
+	if d.err != nil {
+		return false, d.err
+	}
+	return strings.Count(d.lv, "-") >= 2, nil
 }
 
 func (d *diskRT) Delete(ctx context.Context, id kri.ID) error {
@@ -109,6 +118,33 @@ func TestAVolumeTakenOutOfTheSpecIsKeptWhenTheCopyIsHandedOff(t *testing.T) {
 	}
 	if ids, _ := inner.List(g.ctx); len(ids) != 1 {
 		t.Fatalf("the copy was not kept: %v", ids)
+	}
+}
+
+// A recreate hands the silo off and makes it afresh on the other host. The old root disk is
+// this host's, and it goes with the copy: nothing of it is kept.
+func TestARecreateHandoffOfAHostLocalRootRemovesTheCopy(t *testing.T) {
+	inner := fake.New()
+	rt := &diskRT{Runtime: inner}
+	g := newGuardRig(t, rt, func(a *Agent) {
+		a.Runtimes = map[string]kri.Runtime{"cloud-hypervisor": rt}
+	})
+	g.rt = inner
+	s := g.create(hostLocalVM("web"), "hv2", "hv1")
+	rt.lv = cloudhypervisor.NamesFor(idOf(s)).LV
+	g.runtimeCopy(s, kri.Created)
+	g.cacheIs(g.stored("web"))
+	if _, err := g.reconcile("web"); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.calls("delete")) != 1 {
+		t.Fatalf("the old copy was kept: calls %v removed %v", g.rt.Calls, rt.removed)
+	}
+	if len(rt.removed) != 1 || rt.removed[0] != "lvremove "+rt.lv {
+		t.Fatalf("root LV %s: %v", rt.lv, rt.removed)
+	}
+	if ids, _ := inner.List(g.ctx); len(ids) != 0 {
+		t.Fatalf("the copy stayed: %v", ids)
 	}
 }
 
@@ -440,6 +476,15 @@ func mixedSilo(name string) *v1.Silo {
 			{Name: "data", MountPath: "/data"},
 			{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"},
 		}
+	})
+}
+
+func hostLocalVM(name string) *v1.Silo {
+	return guardSilo(name, func(s *v1.Silo) {
+		s.Spec.Runtime = "cloud-hypervisor"
+		s.Spec.Container = nil
+		s.Spec.VM = &v1.VMSource{Image: "ubuntu-24.04"}
+		s.Spec.Disk = v1.Disk{Size: "20Gi"}
 	})
 }
 
