@@ -263,6 +263,10 @@ func TestGuestMountScript(t *testing.T) {
 	if strings.Contains(sc, "> /etc/fstab") || strings.Contains(sc, `> "$fstab"`) || strings.Contains(sc, `cat "$tmp" >`) {
 		t.Errorf("fstab is written in place:\n%s", sc)
 	}
+	chmodAt, mvAt := strings.Index(sc, `chmod 0644 "$tmp"`), strings.Index(sc, `mv -f "$tmp" "$fstab"`)
+	if chmodAt < 0 || chmodAt > mvAt {
+		t.Errorf("fstab is not mode 0644 before the rename:\n%s", sc)
+	}
 	// Parents first.
 	if strings.Index(sc, "mount '/home/me'") > strings.Index(sc, "mount '/home/me/inner'") {
 		t.Errorf("a share inside another mounted first:\n%s", sc)

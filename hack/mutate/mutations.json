@@ -5715,5 +5715,17 @@
    "./internal/agent"
   ],
   "protects": "a removal does not say only the copy goes when this host's disks could not be listed"
+ },
+ {
+  "id": "G-883",
+  "guard": "a replaced guest fstab is mode 0644",
+  "file": "builtin/kri/cloudhypervisor/volumes.go",
+  "find": "chmod 0644 \"$tmp\"",
+  "replace": "chmod 0600 \"$tmp\"",
+  "mutation": "a replaced guest fstab stays the mode mktemp made",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a guest fstab replaced by rename is readable as the old one was"
  }
 ]

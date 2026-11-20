@@ -353,6 +353,7 @@ if [ -f "$fstab" ] && cmp -s "$tmp" "$fstab"; then
 else
   # kevaso fstab: rename into place, never truncate /etc/fstab
   sync "$tmp"
+  chmod 0644 "$tmp"
   mv -f "$tmp" "$fstab"
   sync -f "$etcdir"
 fi
