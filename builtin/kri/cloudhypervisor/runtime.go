@@ -715,6 +715,23 @@ func (r *Runtime) deleteLockedRoot(ctx context.Context, id kri.ID, dropRoot bool
 	return r.Host.RemoveAll(n.Dir)
 }
 
+// HasHostStorage implements kri.HostStorage. True when this host holds a root LV or any volume
+// LV for id (a name kv-…-). applyLayout never removes a volume LV, so one taken out of the spec
+// is still here until a delete of the silo removes it.
+func (r *Runtime) HasHostStorage(ctx context.Context, id kri.ID) (bool, error) {
+	n := NamesFor(id)
+	out, err := r.Host.Run(ctx, "lvs", "--noheadings", "-o", "lv_name", VG)
+	if err != nil { // a failed list is not "no disk"
+		return false, fmt.Errorf("%s: logical volumes in %s could not be listed (%w): not treating this copy as without a disk", id, VG, err)
+	}
+	for _, f := range strings.Fields(string(out)) {
+		if f == n.LV || strings.HasPrefix(f, n.LV+"-") { // root LV, or a volume LV kept after it left the spec
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // rootDisk makes the silo's root disk from its image: a thin LV, or an image file on a mount
 // class's folder. An image file already there is the silo's disk come from another host: it's
 // kept, unless fresh (a reset) asks for a new one.
@@ -1241,4 +1258,5 @@ var (
 	_ kri.Runtime            = (*Runtime)(nil)
 	_ kri.GuestHostKeySource = (*Runtime)(nil)
 	_ kri.GuestHostKeySetter = (*Runtime)(nil)
+	_ kri.HostStorage        = (*Runtime)(nil)
 )

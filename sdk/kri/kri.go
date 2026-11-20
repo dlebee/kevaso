@@ -99,6 +99,13 @@ type GuestHostKeySetter interface {
 	SetGuestHostKey(ctx context.Context, id ID, pub string) error
 }
 
+// HostStorage is a runtime that can say whether a copy holds storage of its own on this host:
+// a root logical volume, or any volume logical volume of that silo. A volume taken out of the
+// spec keeps its volume until the silo is deleted, so the spec is not the answer.
+type HostStorage interface {
+	HasHostStorage(ctx context.Context, id ID) (bool, error)
+}
+
 // InitStep is one init step (design §0.2): a script run by a shell or any interpreter.
 type InitStep struct {
 	Name  string

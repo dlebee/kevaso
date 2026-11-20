@@ -212,8 +212,8 @@
   "id": "G-017",
   "guard": "removeEverywhere stops, never removes, a moved silo that keeps local volumes",
   "file": "internal/agent/agent.go",
-  "find": "if local := hostLocalVolumes(s); why == whyHandoff && len(local) > 0 {",
-  "replace": "if local := hostLocalVolumes(s); false && why == whyHandoff && len(local) > 0 {",
+  "find": "if own { // a disk on this host stays until the silo is deleted",
+  "replace": "if false && own { // a disk on this host stays until the silo is deleted",
   "mutation": "copy and its volumes deleted",
   "packages": [
    "./internal/agent",
@@ -225,8 +225,8 @@
   "id": "G-018",
   "guard": "removeEverywhere never removes the silo it is reconciling",
   "file": "internal/agent/agent.go",
-  "find": "if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {\n\t\t\t\tif _, kept := a.keptNoted.Load(id.UID); kept && travelsWithoutLocalDisk(s) { // a kept copy of a disk that travelled",
-  "replace": "if false {\n\t\t\t\tif _, kept := a.keptNoted.Load(id.UID); kept && travelsWithoutLocalDisk(s) { // a kept copy of a disk that travelled",
+  "find": "if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {",
+  "replace": "if false {",
   "mutation": "own copy removed",
   "packages": [
    "./internal/agent",
@@ -5432,8 +5432,8 @@
   "id": "G-852",
   "guard": "a travelling disk is dropped only when this host holds no volume of its own",
   "file": "internal/agent/agent.go",
-  "find": "return len(hostLocalVolumes(s)) == 0 // a host-local volume is a disk this host owns",
-  "replace": "return true // a host-local volume is a disk this host owns",
+  "find": "return !own, nil // a host-local volume is a disk this host owns",
+  "replace": "return true || !own, nil // a host-local volume is a disk this host owns",
   "mutation": "a kept copy is dropped even when it holds a host-local volume",
   "packages": [
    "./internal/agent"
@@ -5444,8 +5444,8 @@
   "id": "G-853",
   "guard": "a kept travelling copy is not resumed when the silo returns",
   "file": "internal/agent/agent.go",
-  "find": "if _, kept := a.keptNoted.Load(id.UID); kept && travelsWithoutLocalDisk(s) { // a kept copy of a disk that travelled",
-  "replace": "if _, kept := a.keptNoted.Load(id.UID); false && kept && travelsWithoutLocalDisk(s) { // a kept copy of a disk that travelled",
+  "find": "if _, kept := a.keptNoted.Load(id.UID); kept && drop { // a kept copy of a disk that travelled",
+  "replace": "if _, kept := a.keptNoted.Load(id.UID); false && kept && drop { // a kept copy of a disk that travelled",
   "mutation": "a kept copy is started again when the silo comes back",
   "packages": [
    "./internal/agent"
@@ -5559,5 +5559,41 @@
    "./internal/agent"
   ],
   "protects": "removing a kept copy leaves the volumes on a travelling class where they are"
+ },
+ {
+  "id": "G-870",
+  "guard": "whether a copy holds a disk is read from the host, not the spec",
+  "file": "internal/agent/agent.go",
+  "find": "if d, ok := rt.(kri.HostStorage); ok { // what this copy holds on this host, not the spec",
+  "replace": "if d, ok := rt.(kri.HostStorage); false && ok { // what this copy holds on this host, not the spec",
+  "mutation": "a volume taken out of the spec is treated as gone",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a local volume that has left the spec stays until the silo is deleted"
+ },
+ {
+  "id": "G-871",
+  "guard": "a volume LV left out of the spec is still this host's disk",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if f == n.LV || strings.HasPrefix(f, n.LV+\"-\") { // root LV, or a volume LV kept after it left the spec",
+  "replace": "if f == n.LV { // root LV, or a volume LV kept after it left the spec",
+  "mutation": "a volume LV is not counted as this host's disk",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a local volume that has left the spec is still storage this host holds"
+ },
+ {
+  "id": "G-872",
+  "guard": "a failed volume list is not taken as no disk",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if err != nil { // a failed list is not \"no disk\"",
+  "replace": "if false { // a failed list is not \"no disk\"",
+  "mutation": "a failed list of logical volumes is treated as no disk",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a copy is not dropped because its volumes could not be listed"
  }
 ]

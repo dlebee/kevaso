@@ -38,6 +38,75 @@ func TestATravellingDiskIsDroppedWhenTheSiloIsPlacedElsewhere(t *testing.T) {
 	}
 }
 
+// diskRT is a runtime whose copy still holds a logical volume after that volume left the spec.
+// Delete is what would lvremove it.
+type diskRT struct {
+	*fake.Runtime
+	lv      string
+	removed []string
+}
+
+func (d *diskRT) HasHostStorage(context.Context, kri.ID) (bool, error) {
+	return d.lv != "", nil
+}
+
+func (d *diskRT) Delete(ctx context.Context, id kri.ID) error {
+	if d.lv != "" {
+		d.removed = append(d.removed, "lvremove "+d.lv)
+	}
+	return d.Runtime.Delete(ctx, id)
+}
+
+// A local volume taken out of the spec is still on this host. Placing the silo elsewhere,
+// with no handoff, must not lvremove it, and the copy stays.
+func TestAVolumeTakenOutOfTheSpecIsKeptWhenTheCopyIsDropped(t *testing.T) {
+	inner := fake.New()
+	const lv = "kv-web-data"
+	rt := &diskRT{Runtime: inner, lv: lv}
+	g := newGuardRig(t, rt, func(a *Agent) {
+		a.Runtimes = map[string]kri.Runtime{"cloud-hypervisor": rt}
+	})
+	g.rt = inner
+	s := g.create(travellingSilo("web", ""), "hv2", "")
+	g.runtimeCopy(s, kri.Created)
+	g.cacheIs(g.stored("web"))
+	if _, err := g.reconcile("web"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rt.removed) != 0 || len(g.calls("delete")) != 0 {
+		t.Fatalf("lvremove of %s, a volume taken out of the spec: %v calls %v", lv, rt.removed, g.rt.Calls)
+	}
+	if ids, _ := inner.List(g.ctx); len(ids) != 1 {
+		t.Fatalf("the copy was not kept: %v", ids)
+	}
+	if _, kept := g.a.keptNoted.Load(s.UID); !kept {
+		t.Fatal("the copy was not kept")
+	}
+}
+
+// The same volume, handed off: the copy stays and that LV is not removed.
+func TestAVolumeTakenOutOfTheSpecIsKeptWhenTheCopyIsHandedOff(t *testing.T) {
+	inner := fake.New()
+	const lv = "kv-web-data"
+	rt := &diskRT{Runtime: inner, lv: lv}
+	g := newGuardRig(t, rt, func(a *Agent) {
+		a.Runtimes = map[string]kri.Runtime{"cloud-hypervisor": rt}
+	})
+	g.rt = inner
+	s := g.create(travellingSilo("web", ""), "hv2", "hv1")
+	g.runtimeCopy(s, kri.Created)
+	g.cacheIs(g.stored("web"))
+	if _, err := g.reconcile("web"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rt.removed) != 0 || len(g.calls("delete")) != 0 {
+		t.Fatalf("lvremove of %s, a volume taken out of the spec: %v calls %v", lv, rt.removed, g.rt.Calls)
+	}
+	if ids, _ := inner.List(g.ctx); len(ids) != 1 {
+		t.Fatalf("the copy was not kept: %v", ids)
+	}
+}
+
 func TestATravellingDiskWithAHostLocalVolumeIsKept(t *testing.T) {
 	g := newGuardRig(t, nil, func(a *Agent) {
 		a.Runtimes = map[string]kri.Runtime{"cloud-hypervisor": a.Runtimes["docker"]}
