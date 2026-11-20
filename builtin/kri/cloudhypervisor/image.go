@@ -304,7 +304,9 @@ func (r *Runtime) runConfined(ctx context.Context, img, dst string, argv []strin
 	args = append(args, argv...)
 	out, err := r.Host.Run(ctx, "systemd-run", args...)
 	if err != nil {
-		return fmt.Errorf("qemu-img %s: %w: %s", strings.Join(argv, " "), err, strings.TrimSpace(string(out)))
+		// systemd-run failed. That is not qemu-img writing the target: a full /run fails here
+		// with "No space left on device" before the convert runs.
+		return &cmdError{name: "systemd-run", args: args, out: string(out), err: err}
 	}
 	return nil
 }

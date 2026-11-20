@@ -16,11 +16,13 @@ import (
 // rootFolder is a disk.root the tests can fill. quota means creating any new file in
 // dir fails while root.raw is there: the folder's quota is the disk's size, and the
 // real truncate reports that as text (exit 1), not as a Go errno. failConvert makes
-// qemu-img convert fail, the way a killed convert does.
+// qemu-img convert fail, the way a killed convert does. convertNoSpace makes that
+// failure the text systemd-run prints when /run is full.
 type rootFolder struct {
-	quota       bool
-	failConvert bool
-	fullMessage string
+	quota          bool
+	failConvert    bool
+	convertNoSpace bool
+	fullMessage    string
 }
 
 func (f *rootFolder) script(h *fakeHost, dir, file string) {
@@ -60,6 +62,9 @@ func (f *rootFolder) script(h *fakeHost, dir, file string) {
 				}
 			}
 			if f.failConvert {
+				if f.convertNoSpace {
+					return "Failed to start transient service unit: No space left on device", errors.New("exit 1")
+				}
 				return "", errors.New("signal: killed")
 			}
 			return "", nil
@@ -381,6 +386,64 @@ func TestAStaleResetMarkLeavesAnotherHostsImage(t *testing.T) {
 	st, _ = r.state(sp.ID)
 	if st.Remake != nil {
 		t.Fatalf("the stale mark was kept: %+v", st.Remake)
+	}
+}
+
+// systemd-run failing because /run is full says "No space left on device". That is not the
+// folder that holds the root image. The old image stays, and the reset's mark goes.
+func TestANoSpaceFailureFromAnotherStepKeepsTheOldImage(t *testing.T) {
+	ctx := context.Background()
+	dir := "/var/lib/kevaso/volumes/uid-web/disk.root"
+	file := dir + "/" + RootImage
+	h := newFakeHost()
+	folder := &rootFolder{failConvert: true, convertNoSpace: true}
+	folder.script(h, dir, file)
+	r, sp := newTravellingRoot(t, h, dir, file)
+	n := NamesFor(sp.ID)
+	err := r.Reset(ctx, sp)
+	if err == nil || !errors.Is(err, errRootKept) {
+		t.Fatalf("reset: %v", err)
+	}
+	got, rerr := h.ReadFile(file)
+	if rerr != nil || string(got) != "old-disk" {
+		t.Fatalf("root image %q %v", got, rerr)
+	}
+	if b, _ := h.ReadFile(n.Dir + "/silo.json"); strings.Contains(string(b), `"remake"`) {
+		t.Fatalf("a reset that removed nothing left its mark: %s", b)
+	}
+	if cmdExact(h.commands(), "rm -f "+file) >= 0 {
+		t.Fatalf("the old image was removed: %v", h.commands())
+	}
+}
+
+func TestNewRootBlockedIsOnlyTheWriteOfTheNewImage(t *testing.T) {
+	tmp := "/var/lib/kevaso/volumes/uid-web/disk.root/" + RootImage + ".new"
+	noSpace := func(name string, args ...string) error {
+		return &cmdError{name: name, args: args, out: "No space left on device", err: errors.New("exit 1")}
+	}
+	if newRootBlocked(noSpace("systemd-run", "--wait", "--", "qemu-img", "convert", tmp), tmp) {
+		t.Fatal("systemd-run out of space gave up the old image")
+	}
+	if newRootBlocked(noSpace("chown", "kevaso:kevaso", tmp), tmp) {
+		t.Fatal("chown out of space gave up the old image")
+	}
+	if newRootBlocked(noSpace("truncate", "-s", "10", "/run/systemd"), tmp) {
+		t.Fatal("truncate of another file gave up the old image")
+	}
+	if newRootBlocked(noSpace("qemu-img", "resize", "-f", "raw", tmp), tmp) {
+		t.Fatal("resize gave up the old image")
+	}
+	if !newRootBlocked(noSpace("truncate", "-s", "10", tmp), tmp) {
+		t.Fatal("truncate of the new image was not a full folder")
+	}
+	if !newRootBlocked(noSpace("qemu-img", "convert", "-n", "-O", "raw", "img", tmp), tmp) {
+		t.Fatal("convert into the new image was not a full folder")
+	}
+	if newRootBlocked(errors.New("systemd-run: No space left on device"), tmp) {
+		t.Fatal("a no-space phrase with no command gave up the old image")
+	}
+	if !newRootBlocked(fmt.Errorf("write: %w", syscall.ENOSPC), tmp) {
+		t.Fatal("the errno itself was not a full folder")
 	}
 }
 

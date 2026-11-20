@@ -5912,7 +5912,7 @@
   "id": "G-921",
   "guard": "only a full folder gives up the image already there",
   "file": "builtin/kri/cloudhypervisor/runtime.go",
-  "find": "if !spaceExhausted(err) { // only a full folder gives up the image already there",
+  "find": "if !newRootBlocked(err, tmp) { // only a full folder gives up the image already there",
   "replace": "if false { // only a full folder gives up the image already there",
   "mutation": "any failure removes the old image",
   "packages": [
@@ -5924,7 +5924,7 @@
   "id": "G-922",
   "guard": "a full folder gives up the old image so the new one can be written",
   "file": "builtin/kri/cloudhypervisor/runtime.go",
-  "find": "if !spaceExhausted(err) { // only a full folder gives up the image already there",
+  "find": "if !newRootBlocked(err, tmp) { // only a full folder gives up the image already there",
   "replace": "if true { // only a full folder gives up the image already there",
   "mutation": "a full folder keeps the old image and the reset cannot finish",
   "packages": [
@@ -6063,5 +6063,53 @@
    "./internal/agent"
   ],
   "protects": "a reset mark can be bound to the request kvo reset asked for"
+ },
+ {
+  "id": "G-936",
+  "guard": "only the write of the new root image gives up the old one",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if !writesNewRoot(ce.name, ce.args, tmp) { // only the write of root.raw.new",
+  "replace": "if false { // only the write of root.raw.new",
+  "mutation": "any command's no-space text gives up the old image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a no-space failure from another step keeps the old root image"
+ },
+ {
+  "id": "G-937",
+  "guard": "a failure to start the convert is systemd-run, not the write",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "return &cmdError{name: \"systemd-run\", args: args, out: string(out), err: err}",
+  "replace": "return &cmdError{name: \"qemu-img\", args: argv, out: string(out), err: err}",
+  "mutation": "systemd-run failing is reported as qemu-img writing the new image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "systemd-run failing on a full /run does not give up the old root image"
+ },
+ {
+  "id": "G-938",
+  "guard": "truncate gives up the old image only when it is writing the new one",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "return len(args) > 0 && args[len(args)-1] == tmp // the new image, not another file",
+  "replace": "return len(args) > 0 // the new image, not another file",
+  "mutation": "truncate of any file gives up the old image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a no-space failure while truncating another file keeps the old root image"
+ },
+ {
+  "id": "G-939",
+  "guard": "a no-space phrase that names no command does not give up the old image",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if !errors.As(err, &ce) {\n\t\treturn errors.Is(err, syscall.EDQUOT) || errors.Is(err, syscall.ENOSPC)\n\t}",
+  "replace": "if !errors.As(err, &ce) {\n\t\treturn spaceExhausted(err)\n\t}",
+  "mutation": "text anywhere in an error gives up the old image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a no-space message that is not the write of the new image keeps the old one"
  }
 ]

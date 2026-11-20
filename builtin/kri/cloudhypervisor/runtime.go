@@ -184,10 +184,26 @@ func (r *Runtime) run(ctx context.Context, name string, args ...string) error {
 	}
 	out, err := r.Host.Run(ctx, name, args...)
 	if err != nil {
-		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return &cmdError{name: name, args: args, out: string(out), err: err}
 	}
 	return nil
 }
+
+// cmdError is one host command that failed. name is the program that was run, so a caller can
+// tell a truncate of the new root image from systemd-run failing to start, without reading a
+// no-space phrase out of whatever text the error happens to carry.
+type cmdError struct {
+	name string
+	args []string
+	out  string
+	err  error
+}
+
+func (e *cmdError) Error() string {
+	return fmt.Sprintf("%s %s: %v: %s", e.name, strings.Join(e.args, " "), e.err, strings.TrimSpace(e.out))
+}
+
+func (e *cmdError) Unwrap() error { return e.err }
 
 func (r *Runtime) states() ([]State, error) {
 	paths, err := r.Host.Glob(SilosDir + "/*/silo.json")
@@ -946,7 +962,7 @@ func (r *Runtime) replaceRootFile(ctx context.Context, img, file string, size in
 		if perr != nil || missing { // not confirmed still there: the mark stays, nothing boots on a guess
 			return err
 		}
-		if !spaceExhausted(err) { // only a full folder gives up the image already there
+		if !newRootBlocked(err, tmp) { // only a full folder gives up the image already there
 			return fmt.Errorf("%w: %v", errRootKept, err)
 		}
 		if err := r.dropRootImage(ctx, file, err); err != nil {
@@ -987,9 +1003,40 @@ func (r *Runtime) rootImageMissing(ctx context.Context, file string) (bool, erro
 	return probeMissing(err)
 }
 
-// spaceExhausted reports EDQUOT or ENOSPC. truncate and qemu-img are children: they print
-// "Disk quota exceeded" or "No space left on device" (LC_ALL=C) and exit, and that text is the
-// errno. A Go error that wraps the errno counts as well.
+// newRootBlocked reports that err is the write of tmp (root.raw.new) failing because the folder
+// cannot hold it. That write is truncate of tmp, or qemu-img convert into tmp. Which command
+// failed decides it. A no-space phrase anywhere else in an error does not: systemd-run failing
+// because /run is full says "No space left on device" and is not this write.
+func newRootBlocked(err error, tmp string) bool {
+	var ce *cmdError
+	if !errors.As(err, &ce) {
+		return errors.Is(err, syscall.EDQUOT) || errors.Is(err, syscall.ENOSPC)
+	}
+	if !writesNewRoot(ce.name, ce.args, tmp) { // only the write of root.raw.new
+		return false
+	}
+	return spaceExhausted(ce)
+}
+
+// writesNewRoot reports whether name args is the command that writes tmp, the new root image.
+func writesNewRoot(name string, args []string, tmp string) bool {
+	switch name {
+	case "truncate":
+		return len(args) > 0 && args[len(args)-1] == tmp // the new image, not another file
+	case "qemu-img":
+		if len(args) < 2 || args[0] != "convert" { // convert into the new image, not resize
+			return false
+		}
+		return args[len(args)-1] == tmp
+	default:
+		return false
+	}
+}
+
+// spaceExhausted reports EDQUOT or ENOSPC on err itself. truncate and qemu-img are children: they
+// print "Disk quota exceeded" or "No space left on device" (LC_ALL=C) and exit, and that text is
+// the errno. A Go error that wraps the errno counts as well. newRootBlocked chooses the command
+// this is asked about; the text of some other command does not count.
 func spaceExhausted(err error) bool {
 	if err == nil {
 		return false
