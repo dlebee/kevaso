@@ -183,10 +183,11 @@ func yamlQuote(s string) string {
 
 // MetaData is cloud-init's instance identity. Each new seed (a create, a reset, a create on
 // another host for a disk that moved) is a new instance, so cloud-init applies this host's keys,
-// address and host key to a disk that has booted before. hostNet is this host's address on the
-// bridge: a disk that arrives already carrying hostPub is still a new instance here.
-func MetaData(id kri.ID, hostPub, hostNet string) string {
-	h := sha256.Sum256([]byte(hostPub + "\n" + hostNet)) // this host's network, not only the guest key
+// address and host key to a disk that has booted before. hostName is this machine's own name.
+// The bridge gateway is 10.64.0.1 on every host that is not on the mesh, so it cannot tell two
+// hosts apart; the name can. A reboot keeps the name, and the id with it.
+func MetaData(id kri.ID, hostPub, hostName string) string {
+	h := sha256.Sum256([]byte(hostPub + "\n" + hostName)) // this host's name, not only the guest key
 	return "instance-id: " + id.UID + "-" + hex.EncodeToString(h[:4]) + "\nlocal-hostname: " + id.Name + "\n"
 }
 

@@ -103,6 +103,10 @@ type Runtime struct {
 	ExecPub string // authorized_keys line for ExecKey
 	DialSSH func(ctx context.Context, addr string, cfg *ssh.ClientConfig) (*ssh.Client, error)
 	Version string
+	// HostName is this machine's own name. It is part of a guest's instance id, so a disk that
+	// arrives here is a new instance even when every host's bridge gateway is the same. A reboot
+	// keeps the name.
+	HostName string
 	// ExecCheck, if set, replaces ExecCheckEvery (tests).
 	ExecCheck time.Duration
 	mu        sync.Mutex // allocations (IP) and create/delete
@@ -354,7 +358,7 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
 		},
 		func() error {
-			return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID, hostPub, Gateway.String())), 0o600)
+			return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID, hostPub, r.HostName)), 0o600)
 		},
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, spec.ID.Namespace)), 0o600)
@@ -454,7 +458,7 @@ func (r *Runtime) SetGuestHostKey(ctx context.Context, id kri.ID, pub string) er
 	if err := r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, "", pub)), 0o600); err != nil {
 		return err
 	}
-	if err := r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(id, pub, Gateway.String())), 0o600); err != nil {
+	if err := r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(id, pub, r.HostName)), 0o600); err != nil {
 		return err
 	}
 	if err := r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, id.Namespace)), 0o600); err != nil {
@@ -1234,7 +1238,7 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
 		},
 		func() error {
-			return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(st.ID, hostPub, Gateway.String())), 0o600)
+			return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(st.ID, hostPub, r.HostName)), 0o600)
 		},
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, st.ID.Namespace)), 0o600)

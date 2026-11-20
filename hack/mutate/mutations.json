@@ -5598,15 +5598,15 @@
  },
  {
   "id": "G-873",
-  "guard": "the instance id changes with this host's network",
+  "guard": "the instance id changes with this host's name",
   "file": "builtin/kri/cloudhypervisor/render.go",
-  "find": "h := sha256.Sum256([]byte(hostPub + \"\\n\" + hostNet)) // this host's network, not only the guest key",
-  "replace": "h := sha256.Sum256([]byte(hostPub)) // this host's network, not only the guest key",
+  "find": "h := sha256.Sum256([]byte(hostPub + \"\\n\" + hostName)) // this host's name, not only the guest key",
+  "replace": "h := sha256.Sum256([]byte(hostPub)) // this host's name, not only the guest key",
   "mutation": "a moved guest keeps the last host's instance id",
   "packages": [
    "./builtin/kri/cloudhypervisor"
   ],
-  "protects": "a disk that arrives with the same guest host key still takes this host's address"
+  "protects": "a disk that arrives with the same guest host key still takes this host's address, even when every gateway is the same"
  },
  {
   "id": "G-874",
