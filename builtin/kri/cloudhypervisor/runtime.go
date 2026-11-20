@@ -312,6 +312,18 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	if err != nil {
 		return err
 	}
+	if spec.GuestHostKey != "" && spec.DiskHostPath != "" { // trust a reported key only for a disk that travels
+		file := filepath.Join(spec.DiskHostPath, RootImage)
+		_, probeErr := r.Host.Run(ctx, "test", "-e", file)
+		missing, merr := probeMissing(probeErr)
+		if merr == nil && !missing { // the image is already the guest's
+			pub := strings.TrimSpace(spec.GuestHostKey)
+			if _, _, _, _, perr := ssh.ParseAuthorizedKey([]byte(pub)); perr != nil {
+				return fmt.Errorf("guest host key: %w", perr)
+			}
+			hostPub, hostPriv = pub, ""
+		}
+	}
 	st := State{ID: spec.ID, IP: ip.String(), MAC: MAC(spec.ID), HostKey: hostPub, CPUs: cpus, MemMiB: mem >> 20,
 		Volumes: spec.Volumes, RootDir: spec.DiskHostPath}
 	layout := st.layout()
@@ -393,6 +405,60 @@ func newHostKey() (pub, privPEM string, err error) {
 		return "", "", err
 	}
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sp))), string(pem.EncodeToMemory(blk)), nil
+}
+
+// GuestHostKey implements kri.GuestHostKeySource.
+func (r *Runtime) GuestHostKey(id kri.ID) (string, bool) {
+	st, ok := r.state(id)
+	key := strings.TrimSpace(st.HostKey)
+	if !ok || key == "" {
+		return "", false
+	}
+	return key, true
+}
+
+// SetGuestHostKey implements kri.GuestHostKeySetter. A disk that travelled keeps the guest's
+// host key; this host pins the one the silo reports and rebuilds the seed so cloud-init does
+// not replace it. A host-local disk is left alone, and nothing of the disk is removed.
+func (r *Runtime) SetGuestHostKey(ctx context.Context, id kri.ID, pub string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st, ok := r.state(id)
+	pub = strings.TrimSpace(pub)
+	if !ok || pub == "" || pub == strings.TrimSpace(st.HostKey) {
+		return nil
+	}
+	if st.RootDir == "" { // a host-local disk did not travel; its key stays
+		return nil
+	}
+	if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(pub)); err != nil {
+		return fmt.Errorf("guest host key: %w", err)
+	}
+	ip, err := netip.ParseAddr(st.IP)
+	if err != nil {
+		return err
+	}
+	n := NamesFor(id)
+	if err := r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, "", pub)), 0o600); err != nil {
+		return err
+	}
+	if err := r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(id, pub)), 0o600); err != nil {
+		return err
+	}
+	if err := r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, id.Namespace)), 0o600); err != nil {
+		return err
+	}
+	if err := r.run(ctx, "cloud-localds", "--network-config="+n.Dir+"/network-config", n.Dir+"/seed.img", n.Dir+"/user-data", n.Dir+"/meta-data"); err != nil {
+		return err
+	}
+	if err := r.run(ctx, "rm", "-f", n.Dir+"/user-data"); err != nil {
+		return err
+	}
+	if err := r.run(ctx, "chown", VMMUser+":"+VMMUser, n.Dir+"/seed.img"); err != nil {
+		return err
+	}
+	st.HostKey = pub
+	return r.saveState(st)
 }
 
 // Start implements kri.Runtime.
@@ -1171,4 +1237,8 @@ func imagePath(image, arch string) (string, error) {
 	return filepath.Join(ImagesDir, f.File), nil
 }
 
-var _ kri.Runtime = (*Runtime)(nil)
+var (
+	_ kri.Runtime            = (*Runtime)(nil)
+	_ kri.GuestHostKeySource = (*Runtime)(nil)
+	_ kri.GuestHostKeySetter = (*Runtime)(nil)
+)

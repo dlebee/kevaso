@@ -128,17 +128,23 @@ func UserData(execPub, hostPriv, hostPub string) string {
 	indent := func(s string) string {
 		return "      " + strings.ReplaceAll(strings.TrimSpace(s), "\n", "\n      ")
 	}
-	return `#cloud-config
-users: []
-disable_root: false
-ssh_pwauth: false
-ssh_deletekeys: true
+	// An empty private key means the guest already has hostPub (a disk that travelled).
+	// Leaving the keys out keeps cloud-init from replacing them.
+	keys := ""
+	if strings.TrimSpace(hostPriv) != "" {
+		keys = `ssh_deletekeys: true
 ssh_genkeytypes: []
 ssh_keys:
   ed25519_private: |
 ` + indent(hostPriv) + `
   ed25519_public: ` + strings.TrimSpace(hostPub) + `
-growpart: { mode: auto, devices: ["/"] }
+`
+	}
+	return `#cloud-config
+users: []
+disable_root: false
+ssh_pwauth: false
+` + keys + `growpart: { mode: auto, devices: ["/"] }
 # A disk that moved here holds the last host's exec key: replace it at every boot, before ssh lets
 # anyone in, instead of only in the final stage (write_files below, deferred).
 bootcmd:

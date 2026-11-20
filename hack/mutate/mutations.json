@@ -225,8 +225,8 @@
   "id": "G-018",
   "guard": "removeEverywhere never removes the silo it is reconciling",
   "file": "internal/agent/agent.go",
-  "find": "if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {\n\t\t\t\ta.keptNoted.Delete(id.UID)",
-  "replace": "if false {\n\t\t\t\ta.keptNoted.Delete(id.UID)",
+  "find": "if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {\n\t\t\t\tif _, kept := a.keptNoted.Load(id.UID); kept && travelsWithoutLocalDisk(s) { // a kept copy of a disk that travelled",
+  "replace": "if false {\n\t\t\t\tif _, kept := a.keptNoted.Load(id.UID); kept && travelsWithoutLocalDisk(s) { // a kept copy of a disk that travelled",
   "mutation": "own copy removed",
   "packages": [
    "./internal/agent",
@@ -5427,5 +5427,125 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "an empty fstab gets the guest's own root line so the next boot can mount / read-write"
+ },
+ {
+  "id": "G-852",
+  "guard": "a travelling disk is dropped only when this host holds no volume of its own",
+  "file": "internal/agent/agent.go",
+  "find": "return len(hostLocalVolumes(s)) == 0 // a host-local volume is a disk this host owns",
+  "replace": "return true // a host-local volume is a disk this host owns",
+  "mutation": "a kept copy is dropped even when it holds a host-local volume",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a host-local disk is kept until a delete the system saw"
+ },
+ {
+  "id": "G-853",
+  "guard": "a kept travelling copy is not resumed when the silo returns",
+  "file": "internal/agent/agent.go",
+  "find": "if _, kept := a.keptNoted.Load(id.UID); kept && travelsWithoutLocalDisk(s) { // a kept copy of a disk that travelled",
+  "replace": "if _, kept := a.keptNoted.Load(id.UID); false && kept && travelsWithoutLocalDisk(s) { // a kept copy of a disk that travelled",
+  "mutation": "a kept copy is started again when the silo comes back",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a silo that comes back starts from its current state, not a copy kept from before"
+ },
+ {
+  "id": "G-854",
+  "guard": "a host the silo has left may record its own volume unmounted",
+  "file": "internal/moves/moves.go",
+  "find": "if old.Host != host && old.MovingFrom == \"\" && clearedOwnMount(old, next, host) {",
+  "replace": "if false && old.Host != host && old.MovingFrom == \"\" && clearedOwnMount(old, next, host) {",
+  "mutation": "a host that has let go cannot record that its volume is unmounted",
+  "packages": [
+   "./internal/moves"
+  ],
+  "protects": "a volume stops saying a host still has it mounted once that host has let the silo go and unmounted it"
+ },
+ {
+  "id": "G-855",
+  "guard": "that record only clears volumes attached to the host writing it",
+  "file": "internal/moves/moves.go",
+  "find": "if o.AttachedTo != host || !o.Mounted || n.Mounted { // only this host, and only true to false",
+  "replace": "if false { // only this host, and only true to false",
+  "mutation": "any host can clear any volume's mounted flag",
+  "packages": [
+   "./internal/moves"
+  ],
+  "protects": "only the host a volume is attached to can say it is unmounted"
+ },
+ {
+  "id": "G-856",
+  "guard": "the unmount wait names a handoff only while that host is handing off",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "if s.Status.MovingFrom != \"\" && s.Status.MovingFrom == vs.AttachedTo {",
+  "replace": "if true {",
+  "mutation": "a host that has let go is still said to be unmounting",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume does not say it is waiting for a host to unmount it after that host has let the silo go"
+ },
+ {
+  "id": "G-857",
+  "guard": "a reported guest host key is trusted only for a travelling disk",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if spec.GuestHostKey != \"\" && spec.DiskHostPath != \"\" { // trust a reported key only for a disk that travels",
+  "replace": "if false && spec.GuestHostKey != \"\" && spec.DiskHostPath != \"\" { // trust a reported key only for a disk that travels",
+  "mutation": "a reported guest host key is ignored",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a host trusts the guest host key the silo reports, not one it saved earlier"
+ },
+ {
+  "id": "G-858",
+  "guard": "a reported guest host key is trusted only when the disk image is already there",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if merr == nil && !missing { // the image is already the guest's",
+  "replace": "if merr == nil && (!missing || true) { // the image is already the guest's",
+  "mutation": "a new disk is given a key the guest does not have",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a new disk gets a host key installed into the guest"
+ },
+ {
+  "id": "G-859",
+  "guard": "adopting a guest host key leaves a host-local disk alone",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if st.RootDir == \"\" { // a host-local disk did not travel; its key stays",
+  "replace": "if false { // a host-local disk did not travel; its key stays",
+  "mutation": "a host-local disk's guest host key is replaced",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a host-local disk keeps the guest host key stored with it"
+ },
+ {
+  "id": "G-860",
+  "guard": "creating a silo passes the guest host key it reports",
+  "file": "internal/agent/agent.go",
+  "find": "GuestHostKey: guestHostKeyFor(s)",
+  "replace": "GuestHostKey: \"\"",
+  "mutation": "a create ignores the guest host key the silo reports",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a silo that comes back is created trusting the guest host key it reports"
+ },
+ {
+  "id": "G-861",
+  "guard": "a reported guest host key is used only when the disk travels",
+  "file": "internal/agent/agent.go",
+  "find": "if _, ok := v1.DiskVolume(s); !ok { // a host-local disk did not travel",
+  "replace": "if _, ok := v1.DiskVolume(s); false && !ok { // a host-local disk did not travel",
+  "mutation": "a host-local disk is created with a reported guest host key",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a host-local disk is not given a guest host key from a silo whose disk did not travel"
  }
 ]

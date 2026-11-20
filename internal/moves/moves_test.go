@@ -273,6 +273,22 @@ func TestHostWrite(t *testing.T) {
 		{"host marks an unattached volume mounted", placed, with(placed, mount(2, true)), "hv2", false},
 		{"host moves its silo", placed, with(placed, func(st *v1.SiloStatus) { st.Host = "hv9" }), "hv2", false},
 		{"host starts a move", placed, with(placed, func(st *v1.SiloStatus) { st.MovingFrom = "hv2" }), "hv2", false},
+		{"a host the silo left records its volume unmounted",
+			v1.SiloStatus{Host: "hv2", Phase: "Running", Volumes: []v1.VolumeStatus{{Name: "data", AttachedTo: "hv1", Mounted: true}}},
+			v1.SiloStatus{Host: "hv2", Phase: "Running", Volumes: []v1.VolumeStatus{{Name: "data", AttachedTo: "hv1", Mounted: false}}},
+			"hv1", true},
+		{"a third host records that unmount",
+			v1.SiloStatus{Host: "hv2", Phase: "Running", Volumes: []v1.VolumeStatus{{Name: "data", AttachedTo: "hv1", Mounted: true}}},
+			v1.SiloStatus{Host: "hv2", Phase: "Running", Volumes: []v1.VolumeStatus{{Name: "data", AttachedTo: "hv1", Mounted: false}}},
+			"hv3", false},
+		{"a host clears a volume attached to someone else",
+			v1.SiloStatus{Host: "hv2", Volumes: []v1.VolumeStatus{{Name: "data", AttachedTo: "hv2", Mounted: true}}},
+			v1.SiloStatus{Host: "hv2", Volumes: []v1.VolumeStatus{{Name: "data", AttachedTo: "hv2", Mounted: false}}},
+			"hv1", false},
+		{"that host changes the phase while recording the unmount",
+			v1.SiloStatus{Host: "hv2", Phase: "Running", Volumes: []v1.VolumeStatus{{Name: "data", AttachedTo: "hv1", Mounted: true}}},
+			v1.SiloStatus{Host: "hv2", Phase: "Failed", Volumes: []v1.VolumeStatus{{Name: "data", AttachedTo: "hv1", Mounted: false}}},
+			"hv1", false},
 	} {
 		err := HostWrite(c.old, c.next, c.host)
 		if (err == nil) != c.ok {
