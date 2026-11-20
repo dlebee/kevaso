@@ -4700,8 +4700,8 @@
   "id": "G-715",
   "guard": "a reset keeps the silo made",
   "file": "builtin/kri/cloudhypervisor/runtime.go",
-  "find": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk = hostPub, false, true, nil, false",
-  "replace": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk = hostPub, false, false, nil, false",
+  "find": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, false, gen",
+  "replace": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, false, nil, false, gen",
   "mutation": "a reset clears that the silo was made",
   "packages": [
    "./builtin/kri/cloudhypervisor"
@@ -5624,8 +5624,8 @@
   "id": "G-875",
   "guard": "a reported key is adopted only for a copy made onto an image that was already there",
   "file": "builtin/kri/cloudhypervisor/runtime.go",
-  "find": "if !st.KeyFromDisk { // this copy was made onto a new image; its key was installed then",
-  "replace": "if false { // this copy was made onto a new image; its key was installed then",
+  "find": "if !r.mayAdoptKey(st) { // this copy's image is not the one the reported key belongs to",
+  "replace": "if false { // this copy's image is not the one the reported key belongs to",
   "mutation": "a new image is given a key the guest does not have",
   "packages": [
    "./builtin/kri/cloudhypervisor"
@@ -5648,8 +5648,8 @@
   "id": "G-877",
   "guard": "a reset installs its own key and does not keep the previous one adoptable",
   "file": "builtin/kri/cloudhypervisor/runtime.go",
-  "find": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk = hostPub, false, true, nil, false",
-  "replace": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk = hostPub, false, true, nil, true",
+  "find": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, false, gen",
+  "replace": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, true, gen",
   "mutation": "a reset's new key is replaced by the one from before",
   "packages": [
    "./builtin/kri/cloudhypervisor"
@@ -5787,5 +5787,17 @@
    "./internal/agent"
   ],
   "protects": "a refused away write leaves the copy, so the mount is recorded on the next look"
+ },
+ {
+  "id": "G-894",
+  "guard": "a kept copy adopts a key once a reset elsewhere has replaced its image",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "return true // a reset elsewhere replaced the image",
+  "replace": "return false // a reset elsewhere replaced the image",
+  "mutation": "a key installed by a reset elsewhere is never adopted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a kept copy takes the guest host key a reset on another host installed"
  }
 ]

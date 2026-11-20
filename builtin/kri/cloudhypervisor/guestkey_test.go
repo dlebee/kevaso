@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -166,5 +167,72 @@ func TestAResetDoesNotAdoptTheKeyFromBefore(t *testing.T) {
 	st, _ = r.state(sp.ID)
 	if st.HostKey != installed {
 		t.Fatalf("adopted %q over the key a reset installed (%q)", st.HostKey, installed)
+	}
+}
+
+// A kept copy that first made its image adopts a key once a reset on another host has
+// replaced that image. Until then the key it installed stays.
+func TestAResetElsewhereIsAdopted(t *testing.T) {
+	ctx := context.Background()
+	reported := testPub(t)
+	dir := "/var/lib/kevaso/volumes/uid-web/disk.root"
+	file := dir + "/" + RootImage
+	h := newFakeHost()
+	h.answer = func(cmd string) (string, error) {
+		switch {
+		case cmd == "test -e "+file:
+			if _, ok := h.files[file]; !ok {
+				return "", errors.New("exit 1")
+			}
+			return "", nil
+		case strings.HasPrefix(cmd, "systemctl is-active"):
+			return "inactive", errors.New("exit 3")
+		}
+		return "", nil
+	}
+	r := newRuntime(t, h)
+	sp := spec("web")
+	sp.DiskHostPath = dir
+	sp.GuestHostKey = reported
+	if err := r.Create(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	st, ok := r.state(sp.ID)
+	if !ok || st.HostKey == "" || st.HostKey == reported || st.KeyFromDisk || st.KeyImage == "" {
+		t.Fatalf("create pinned %q (from disk %v, image %q)", st.HostKey, st.KeyFromDisk, st.KeyImage)
+	}
+	installed := st.HostKey
+	if err := r.SetGuestHostKey(ctx, sp.ID, reported); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = r.state(sp.ID)
+	if st.HostKey != installed {
+		t.Fatalf("adopted %q while this copy still boots the image it made", st.HostKey)
+	}
+	if err := h.WriteFile(file, []byte("disk-bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.WriteFile(filepath.Join(dir, imageGenFile), []byte("elsewhere\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := len(h.commands())
+	if err := r.SetGuestHostKey(ctx, sp.ID, reported); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = r.state(sp.ID)
+	if st.HostKey != reported {
+		t.Fatalf("pinned %q, want the key a reset elsewhere installed", st.HostKey)
+	}
+	ud := string(h.files[NamesFor(sp.ID).Dir+"/user-data"])
+	if !strings.Contains(ud, "ssh_deletekeys: false") || strings.Contains(ud, "ssh_keys:") {
+		t.Fatalf("adopting rewrote the guest's host key:\n%s", ud)
+	}
+	if got := string(h.files[file]); got != "disk-bytes" {
+		t.Fatalf("adopting a key rewrote the root image: %q", got)
+	}
+	for _, c := range h.commands()[before:] {
+		if strings.Contains(c, "lvremove") || strings.Contains(c, "qemu-img") {
+			t.Fatalf("adopting a key touched a disk: %s", c)
+		}
 	}
 }

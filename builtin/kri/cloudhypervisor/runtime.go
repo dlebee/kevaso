@@ -63,6 +63,9 @@ type State struct {
 	// there, so the guest already has its host key. A key generated for a new image stays:
 	// adopting the reported one would pin a key the guest does not have.
 	KeyFromDisk bool `json:"keyFromDisk,omitempty"`
+	// KeyImage is the generation of the root image this copy installed its key onto.
+	// A reset elsewhere writes a new one; this copy then adopts the key that belongs to it.
+	KeyImage string `json:"keyImage,omitempty"`
 	// Remake, if set, says its root disk is being made afresh (a reset) and isn't to be trusted:
 	// saved before the first destructive step (lvremove), cleared after the last. A reset cut
 	// there (kevasod stopped, a kill) is finished by the next Start before the VM boots, and the
@@ -355,6 +358,17 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 			return err
 		},
 		func() error {
+			if keyFromDisk || spec.DiskHostPath == "" { // an image already there keeps its generation
+				return nil
+			}
+			gen, err := r.writeImageGen(spec.DiskHostPath)
+			if err != nil {
+				return err
+			}
+			st.KeyImage = gen // this copy made the image
+			return nil
+		},
+		func() error {
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
 		},
 		func() error {
@@ -431,8 +445,9 @@ func (r *Runtime) GuestHostKey(id kri.ID) (string, bool) {
 
 // SetGuestHostKey implements kri.GuestHostKeySetter. A disk that travelled keeps the guest's
 // host key; this host pins the one the silo reports and rebuilds the seed so cloud-init does
-// not replace it, when this copy was created onto an image that was already there. A host-local
-// disk is left alone, and so is a key installed onto a new image. Nothing of the disk is removed.
+// not replace it, when the image this copy boots is the one that key belongs to. A host-local
+// disk is left alone, and so is a key this copy installed onto an image it still boots.
+// Nothing of the disk is removed.
 func (r *Runtime) SetGuestHostKey(ctx context.Context, id kri.ID, pub string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -444,7 +459,7 @@ func (r *Runtime) SetGuestHostKey(ctx context.Context, id kri.ID, pub string) er
 	if st.RootDir == "" { // a host-local disk did not travel; its key stays
 		return nil
 	}
-	if !st.KeyFromDisk { // this copy was made onto a new image; its key was installed then
+	if !r.mayAdoptKey(st) { // this copy's image is not the one the reported key belongs to
 		return nil
 	}
 	if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(pub)); err != nil {
@@ -475,6 +490,49 @@ func (r *Runtime) SetGuestHostKey(ctx context.Context, id kri.ID, pub string) er
 	}
 	st.HostKey = pub
 	return r.saveState(st)
+}
+
+// imageGenFile is the generation of a travelling root image, beside root.raw. The copy that
+// made the image records it; a reset writes a new one.
+const imageGenFile = "root.gen"
+
+// writeImageGen records a new generation for the root image in dir and returns it.
+func (r *Runtime) writeImageGen(dir string) (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	gen := fmt.Sprintf("%x", b[:])
+	if err := r.Host.WriteFile(filepath.Join(dir, imageGenFile), []byte(gen+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return gen, nil
+}
+
+// readImageGen reads the generation of the root image in dir.
+func (r *Runtime) readImageGen(dir string) (string, error) {
+	b, err := r.Host.ReadFile(filepath.Join(dir, imageGenFile))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// mayAdoptKey reports whether the image this copy boots is the one the reported key belongs to.
+// A copy created onto an image that was already there adopts it. A copy that made the image
+// adopts when a reset elsewhere has replaced that image.
+func (r *Runtime) mayAdoptKey(st State) bool {
+	if st.KeyFromDisk { // created onto an image that was already there
+		return true
+	}
+	if st.KeyImage == "" || st.RootDir == "" {
+		return false
+	}
+	gen, err := r.readImageGen(st.RootDir)
+	if err != nil || gen == "" || gen == st.KeyImage {
+		return false
+	}
+	return true // a reset elsewhere replaced the image
 }
 
 // Start implements kri.Runtime.
@@ -1246,10 +1304,22 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 	rm := st.Remake
 	oldLayout := LayoutFor(n, rm.OldVolumes, rm.OldRootDir)
 	layout := st.layout()
+	gen := ""
 	steps := []func() error{
 		func() error {
 			_, err := r.rootDisk(ctx, n, layout, img, rm.DiskBytes, true)
 			return err
+		},
+		func() error {
+			if st.RootDir == "" { // a host-local disk has no image generation
+				return nil
+			}
+			g, err := r.writeImageGen(st.RootDir)
+			if err != nil {
+				return err
+			}
+			gen = g
+			return nil
 		},
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
@@ -1272,7 +1342,7 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 			return err
 		}
 	}
-	st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk = hostPub, false, true, nil, false
+	st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, false, gen
 	return r.saveState(st)
 }
 
