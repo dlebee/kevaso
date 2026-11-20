@@ -389,6 +389,121 @@ func TestAStaleResetMarkLeavesAnotherHostsImage(t *testing.T) {
 	}
 }
 
+// The agent's retry of a reset that already removed the root image stats a file that is
+// not there. The new mark keeps the image the first one named. This copy was made onto an
+// image that was already there, so KeyImage is empty: a mark that forgot its image is
+// finished over a file another host writes afterwards.
+func TestRound5bRetriedMarkForgetsItsImage(t *testing.T) {
+	ctx := context.Background()
+	dir := "/var/lib/kevaso/volumes/uid-web/disk.root"
+	file := dir + "/" + RootImage
+	h := newFakeHost()
+	folder := &rootFolder{quota: true, failConvert: true}
+	folder.script(h, dir, file)
+	if err := h.WriteFile(file, []byte("old-disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	m := h.meta[file]
+	h.mu.Unlock()
+	made := fmt.Sprintf("%d:%d", m.ino, m.btime)
+	r := newRuntime(t, h)
+	sp := spec("web")
+	sp.DiskHostPath = dir
+	sp.GuestHostKey = testPub(t) // already there: this copy does not record KeyImage
+	sp.Reset = "2026-11-20T08:15:00Z"
+	if err := r.Create(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	err := r.Reset(ctx, sp)
+	if err == nil || errors.Is(err, errRootKept) || !strings.Contains(err.Error(), "nothing boots until a retry finishes it") {
+		t.Fatalf("reset: %v", err)
+	}
+	st, _ := r.state(sp.ID)
+	if st.Remake == nil || st.Remake.ImageID != made || st.KeyImage != "" {
+		t.Fatalf("mark %+v, want image %s and no key image", st.Remake, made)
+	}
+	err = r.Reset(ctx, sp) // the agent tries the same reset again; root.raw is still missing
+	if err == nil || errors.Is(err, errRootKept) {
+		t.Fatalf("retry: %v", err)
+	}
+	st, _ = r.state(sp.ID)
+	if st.Remake == nil || st.Remake.ImageID != made || st.Remake.Reset != sp.Reset || st.KeyImage != "" {
+		t.Fatalf("retried mark %+v forgot the image %s", st.Remake, made)
+	}
+	if err := h.WriteFile(file, []byte("guest-wrote"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := len(h.commands())
+	if err := r.Start(ctx, sp.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, rerr := h.ReadFile(file)
+	if rerr != nil || string(got) != "guest-wrote" {
+		t.Fatalf("root image %q %v", got, rerr)
+	}
+	cmds := h.commands()[before:]
+	if cmdExact(cmds, "rm -f "+file) >= 0 || indexOf(cmds, "qemu-img convert") >= 0 {
+		t.Fatalf("start replaced the image another host wrote: %v", cmds)
+	}
+	n := NamesFor(sp.ID)
+	if cmdExact(cmds, "systemctl start "+n.Unit) < 0 {
+		t.Fatalf("the image another host wrote was not booted: %v", cmds)
+	}
+}
+
+// A reset whose root image is already gone, and whose copy recorded no image of its own,
+// saves a mark that names nothing. A file that appears later is not that mark's to replace.
+func TestAMarkThatNamesNoImageKeepsALaterOne(t *testing.T) {
+	ctx := context.Background()
+	dir := "/var/lib/kevaso/volumes/uid-web/disk.root"
+	file := dir + "/" + RootImage
+	h := newFakeHost()
+	folder := &rootFolder{failConvert: true}
+	folder.script(h, dir, file)
+	if err := h.WriteFile(file, []byte("old-disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := newRuntime(t, h)
+	sp := spec("web")
+	sp.DiskHostPath = dir
+	sp.GuestHostKey = testPub(t) // already there: this copy does not record KeyImage
+	sp.Reset = "2026-11-20T08:15:00Z"
+	if err := r.Create(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.RemoveAll(file); err != nil {
+		t.Fatal(err)
+	}
+	err := r.Reset(ctx, sp)
+	if err == nil || errors.Is(err, errRootKept) {
+		t.Fatalf("reset: %v", err)
+	}
+	st, _ := r.state(sp.ID)
+	if st.Remake == nil || st.Remake.ImageID != "" || st.KeyImage != "" {
+		t.Fatalf("mark %+v, want no image and no key image", st.Remake)
+	}
+	if err := h.WriteFile(file, []byte("guest-wrote"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := len(h.commands())
+	if err := r.Start(ctx, sp.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, rerr := h.ReadFile(file)
+	if rerr != nil || string(got) != "guest-wrote" {
+		t.Fatalf("root image %q %v", got, rerr)
+	}
+	cmds := h.commands()[before:]
+	if cmdExact(cmds, "rm -f "+file) >= 0 || indexOf(cmds, "qemu-img convert") >= 0 {
+		t.Fatalf("start replaced an image the mark does not name: %v", cmds)
+	}
+	n := NamesFor(sp.ID)
+	if cmdExact(cmds, "systemctl start "+n.Unit) < 0 {
+		t.Fatalf("the later image was not booted: %v", cmds)
+	}
+}
+
 // systemd-run failing because /run is full says "No space left on device". That is not the
 // folder that holds the root image. The old image stays, and the reset's mark goes.
 func TestANoSpaceFailureFromAnotherStepKeepsTheOldImage(t *testing.T) {

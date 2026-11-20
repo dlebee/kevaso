@@ -6111,5 +6111,29 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a no-space message that is not the write of the new image keeps the old one"
+ },
+ {
+  "id": "G-940",
+  "guard": "a retried reset keeps the image its earlier mark named",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "imageID = st.Remake.ImageID",
+  "replace": "imageID = \"\"",
+  "mutation": "a retry whose root image is already gone saves a mark that names no image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset tried again still names the image it removed"
+ },
+ {
+  "id": "G-941",
+  "guard": "a mark that names no image does not replace a later one",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "return true, nil // the mark names no file: a later image is kept",
+  "replace": "return false, nil // the mark names no file: a later image is kept",
+  "mutation": "a mark with no image is finished over whatever file is there",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk that appears after a mark with no image is left as it is"
  }
 ]

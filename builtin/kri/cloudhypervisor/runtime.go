@@ -85,7 +85,8 @@ type State struct {
 // image that request was made against (inode and birth time, the same name as KeyImage). The
 // mark serves that request only: Start finishes it when the image is still that file, or is
 // missing because this request removed it. Another host finishing the request renames a new
-// file over root.raw, and the guest's later writes do not move that identity.
+// file over root.raw, and the guest's later writes do not move that identity. A mark that
+// names no file leaves a later image alone.
 type Remake struct {
 	Image      string       `json:"image"`
 	DiskBytes  int64        `json:"diskBytes"`
@@ -1412,11 +1413,18 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 	// From here on its disk is destroyed: the intent is on disk first, so a cut reset is
 	// finished (finishRemake), never booted half-made. The mark names the request (spec.reset)
 	// and the image that request is destroying, so a later start does not finish it over a
-	// file another host has written.
+	// file another host has written. A retry finds root.raw already gone, so the stat fails:
+	// the mark already held names that image, and the new mark keeps the name.
 	imageID := ""
 	if st.RootDir != "" {
 		if id, idErr := r.imageID(ctx, st.RootDir); idErr == nil {
 			imageID = id
+		}
+		if imageID == "" && st.Remake != nil {
+			missing, merr := r.rootImageMissing(ctx, filepath.Join(st.RootDir, RootImage))
+			if merr == nil && missing { // root.raw is already gone: keep the image the mark names
+				imageID = st.Remake.ImageID
+			}
 		}
 	}
 	st.Remake = &Remake{Image: spec.Image, DiskBytes: disk, OldVolumes: old.Volumes, OldRootDir: old.RootDir, Reset: spec.Reset, ImageID: imageID}
@@ -1491,7 +1499,8 @@ func (r *Runtime) finishRemake(ctx context.Context, id kri.ID) error {
 // made against. The mark's Reset is the request (`kvo reset`'s spec.reset). Its ImageID, or the
 // copy's KeyImage when the mark has none, is the file that request was destroying. A missing
 // image is that request, unfinished. A host-local disk has no such file. An image that cannot
-// be named is not "a different file": the caller does not destroy it on a guess.
+// be named is not "a different file": the caller does not destroy it on a guess. A mark that
+// names no file does not take a later one as its own.
 func (r *Runtime) remakeSuperseded(ctx context.Context, st State) (bool, error) {
 	if st.Remake == nil || st.RootDir == "" {
 		return false, nil
@@ -1513,7 +1522,7 @@ func (r *Runtime) remakeSuperseded(ctx context.Context, st State) (bool, error) 
 		bound = st.KeyImage
 	}
 	if bound == "" {
-		return false, nil // the mark names no file: finish it, as a mark from before this did
+		return true, nil // the mark names no file: a later image is kept
 	}
 	if id != bound { // another host has written this disk
 		return true, nil
