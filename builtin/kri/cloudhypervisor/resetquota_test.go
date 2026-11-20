@@ -311,6 +311,79 @@ func TestAnLVMResetStillReplacesTheRootVolume(t *testing.T) {
 	}
 }
 
+// Host A's reset removes the old image and the build fails, so A keeps the mark, bound to
+// that reset and to the image it was made against. The silo then runs on host B: B makes the
+// missing image, the reset finishes there, and the guest writes. Back on A, with A's silo.json
+// still holding the mark, Start must leave B's image alone.
+func TestAStaleResetMarkLeavesAnotherHostsImage(t *testing.T) {
+	ctx := context.Background()
+	dir := "/var/lib/kevaso/volumes/uid-web/disk.root"
+	file := dir + "/" + RootImage
+	h := newFakeHost()
+	folder := &rootFolder{quota: true, failConvert: true}
+	folder.script(h, dir, file)
+	if err := h.WriteFile(file, []byte("old-disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	m := h.meta[file]
+	h.mu.Unlock()
+	made := fmt.Sprintf("%d:%d", m.ino, m.btime)
+	r := newRuntime(t, h)
+	sp := spec("web")
+	sp.DiskHostPath = dir
+	sp.GuestHostKey = testPub(t) // already there: this copy does not record KeyImage
+	sp.Reset = "2026-11-20T08:15:00Z"
+	if err := r.Create(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	st, ok := r.state(sp.ID)
+	if !ok || !st.KeyFromDisk || st.KeyImage != "" {
+		t.Fatalf("create recorded an image it did not make: from disk %v key %q", st.KeyFromDisk, st.KeyImage)
+	}
+	err := r.Reset(ctx, sp)
+	if err == nil || errors.Is(err, errRootKept) || !strings.Contains(err.Error(), "nothing boots until a retry finishes it") {
+		t.Fatalf("reset: %v", err)
+	}
+	if _, err := h.ReadFile(file); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the failed reset left a root image: %v", err)
+	}
+	st, _ = r.state(sp.ID)
+	if st.Remake == nil || st.Remake.Reset != sp.Reset || st.Remake.ImageID != made || st.KeyImage != "" {
+		t.Fatalf("mark %+v, want reset %s image %s and no key image", st.Remake, sp.Reset, made)
+	}
+	// Host B makes the missing image. The reset finishes there. The guest writes.
+	if err := h.WriteFile(file, []byte("guest-wrote"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	wrote := h.meta[file]
+	h.mu.Unlock()
+	if wrote.ino == m.ino {
+		t.Fatal("host B reused the image this reset removed")
+	}
+	before := len(h.commands())
+	if err := r.Start(ctx, sp.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, rerr := h.ReadFile(file)
+	if rerr != nil || string(got) != "guest-wrote" {
+		t.Fatalf("root image %q %v", got, rerr)
+	}
+	cmds := h.commands()[before:]
+	if cmdExact(cmds, "rm -f "+file) >= 0 || indexOf(cmds, "qemu-img convert") >= 0 {
+		t.Fatalf("start replaced the image another host wrote: %v", cmds)
+	}
+	n := NamesFor(sp.ID)
+	if cmdExact(cmds, "systemctl start "+n.Unit) < 0 {
+		t.Fatalf("the image another host wrote was not booted: %v", cmds)
+	}
+	st, _ = r.state(sp.ID)
+	if st.Remake != nil {
+		t.Fatalf("the stale mark was kept: %+v", st.Remake)
+	}
+}
+
 func TestSpaceExhaustedIsQuotaOrNoSpace(t *testing.T) {
 	for _, err := range []error{
 		fmt.Errorf("open: %w", syscall.EDQUOT),

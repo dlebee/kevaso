@@ -72,17 +72,27 @@ type State struct {
 	// Remake, if set, says its root disk is being made afresh (a reset) and isn't to be trusted:
 	// saved before the first destructive step (lvremove), cleared after the last. A reset cut
 	// there (kevasod stopped, a kill) is finished by the next Start before the VM boots, and the
-	// half-made disk never boots (review-batch4 claim 2).
+	// half-made disk never boots (review-batch4 claim 2). The mark is that one request: Start
+	// finishes it only while the root image is still the file the request was made against, or
+	// is gone because the request removed it. A different file is another host's disk.
 	Remake *Remake `json:"remake,omitempty"`
 }
 
 // Remake is a reset under way: the image its root disk is made from and the disk's size, and
 // the layout it had before (its shares are taken down as the reset does).
+//
+// Reset is spec.reset, the request `kvo reset` wrote and the agent carries. ImageID is the root
+// image that request was made against (inode and birth time, the same name as KeyImage). The
+// mark serves that request only: Start finishes it when the image is still that file, or is
+// missing because this request removed it. Another host finishing the request renames a new
+// file over root.raw, and the guest's later writes do not move that identity.
 type Remake struct {
 	Image      string       `json:"image"`
 	DiskBytes  int64        `json:"diskBytes"`
 	OldVolumes []kri.Volume `json:"oldVolumes,omitempty"`
 	OldRootDir string       `json:"oldRootDir,omitempty"`
+	Reset      string       `json:"reset,omitempty"`
+	ImageID    string       `json:"imageID,omitempty"`
 }
 
 func (s State) layout() Layout { return LayoutFor(NamesFor(s.ID), s.Volumes, s.RootDir) }
@@ -572,7 +582,9 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 	}
 	if st.Remake != nil {
 		// Its reset was cut before its disk was made (kevasod stopped mid-convert, say): the disk
-		// is partial. Made again, from the same image, before anything boots it.
+		// is partial. Made again, from the same image, before anything boots it, and only while
+		// the mark still serves that request. A different root image was written by another host
+		// after this one; the mark is dropped and that disk boots.
 		if err := r.finishRemake(ctx, id); err != nil {
 			return fmt.Errorf("%s: its reset was cut short and its disk is not finished: %w (it doesn't start on a half-made disk)", id, err)
 		}
@@ -1351,8 +1363,16 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 		}
 	}
 	// From here on its disk is destroyed: the intent is on disk first, so a cut reset is
-	// finished (finishRemake), never booted half-made.
-	st.Remake = &Remake{Image: spec.Image, DiskBytes: disk, OldVolumes: old.Volumes, OldRootDir: old.RootDir}
+	// finished (finishRemake), never booted half-made. The mark names the request (spec.reset)
+	// and the image that request is destroying, so a later start does not finish it over a
+	// file another host has written.
+	imageID := ""
+	if st.RootDir != "" {
+		if id, idErr := r.imageID(ctx, st.RootDir); idErr == nil {
+			imageID = id
+		}
+	}
+	st.Remake = &Remake{Image: spec.Image, DiskBytes: disk, OldVolumes: old.Volumes, OldRootDir: old.RootDir, Reset: spec.Reset, ImageID: imageID}
 	if err := r.saveState(st); err != nil {
 		return fmt.Errorf("reset %s: %w", spec.ID, err)
 	}
@@ -1368,20 +1388,44 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 }
 
 // finishRemake makes afresh the root disk of a silo whose reset was cut (State.Remake), from the
-// same image, and clears the mark.
+// same image, and clears the mark. The mark is finished only while it still matches the request
+// it was saved for: the root image is still the file named on the mark, or it is missing because
+// that request removed it. A different file means another host already wrote the disk (the reset
+// finished there, and the guest may have written since). The mark is dropped and that file stays.
 func (r *Runtime) finishRemake(ctx context.Context, id kri.ID) error {
 	st, ok := r.state(id)
 	if !ok || st.Remake == nil {
 		return nil
 	}
-	img, err := r.image(ctx, st.Remake.Image, st.Remake.DiskBytes)
+	drop, err := r.remakeSuperseded(ctx, st)
 	if err != nil {
 		return err
+	}
+	var img string
+	if !drop {
+		img, err = r.image(ctx, st.Remake.Image, st.Remake.DiskBytes)
+		if err != nil {
+			return err
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if st, ok = r.state(id); !ok || st.Remake == nil {
 		return nil
+	}
+	drop, err = r.remakeSuperseded(ctx, st)
+	if err != nil {
+		return err
+	}
+	if drop {
+		st.Remake = nil // the request was served on the image that is here now
+		return r.saveState(st)
+	}
+	if img == "" {
+		img, err = r.image(ctx, st.Remake.Image, st.Remake.DiskBytes)
+		if err != nil {
+			return err
+		}
 	}
 	if _, up := r.vmm(ctx, NamesFor(id)); up {
 		return errors.New("its VMM runs") // never under a VMM (not reached: Remake means it was gone)
@@ -1394,6 +1438,40 @@ func (r *Runtime) finishRemake(ctx context.Context, id kri.ID) error {
 		return r.saveState(st)
 	}
 	return err
+}
+
+// remakeSuperseded reports whether the root image now on disk is not the one this reset mark was
+// made against. The mark's Reset is the request (`kvo reset`'s spec.reset). Its ImageID, or the
+// copy's KeyImage when the mark has none, is the file that request was destroying. A missing
+// image is that request, unfinished. A host-local disk has no such file. An image that cannot
+// be named is not "a different file": the caller does not destroy it on a guess.
+func (r *Runtime) remakeSuperseded(ctx context.Context, st State) (bool, error) {
+	if st.Remake == nil || st.RootDir == "" {
+		return false, nil
+	}
+	file := filepath.Join(st.RootDir, RootImage)
+	missing, err := r.rootImageMissing(ctx, file)
+	if err != nil {
+		return false, err
+	}
+	if missing { // this reset removed the image and nothing has replaced it
+		return false, nil
+	}
+	id, err := r.imageID(ctx, st.RootDir)
+	if err != nil {
+		return false, err
+	}
+	bound := st.Remake.ImageID
+	if bound == "" {
+		bound = st.KeyImage
+	}
+	if bound == "" {
+		return false, nil // the mark names no file: finish it, as a mark from before this did
+	}
+	if id != bound { // another host has written this disk
+		return true, nil
+	}
+	return false, nil // still the file this request (st.Remake.Reset) was made against
 }
 
 // remakeLocked does a reset's destructive steps, each one safe to do again: the root disk made

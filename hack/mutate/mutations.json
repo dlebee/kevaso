@@ -5991,5 +5991,77 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a reset replaces the root image and leaves the volume's mount"
+ },
+ {
+  "id": "G-930",
+  "guard": "a reset mark is finished only while its image is still the one it was made against",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if id != bound { // another host has written this disk",
+  "replace": "if false && id != bound { // another host has written this disk",
+  "mutation": "a stale mark rebuilds whatever root image is there",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset mark does not replace a disk another host wrote"
+ },
+ {
+  "id": "G-931",
+  "guard": "a missing root image is the reset, unfinished",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if missing { // this reset removed the image and nothing has replaced it\n\t\treturn false, nil",
+  "replace": "if missing { // this reset removed the image and nothing has replaced it\n\t\treturn true, nil",
+  "mutation": "a missing image is treated as another host's disk and the reset is dropped",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset that removed the old image and did not finish is tried again"
+ },
+ {
+  "id": "G-932",
+  "guard": "a reset mark records the image it was made against",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if id, idErr := r.imageID(ctx, st.RootDir); idErr == nil {\n\t\t\timageID = id\n\t\t}",
+  "replace": "if id, idErr := r.imageID(ctx, st.RootDir); false && idErr == nil {\n\t\t\timageID = id\n\t\t}",
+  "mutation": "the mark does not name the image it is destroying",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a later start can tell the image this reset was destroying from one another host wrote"
+ },
+ {
+  "id": "G-933",
+  "guard": "a reset mark records the request it serves",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "Reset: spec.Reset, ImageID: imageID",
+  "replace": "Reset: \"\", ImageID: imageID",
+  "mutation": "the mark is not bound to the reset that was asked for",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset mark is the spec.reset request it was saved for"
+ },
+ {
+  "id": "G-934",
+  "guard": "a reset mark that no longer matches is dropped",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if drop {\n\t\tst.Remake = nil // the request was served on the image that is here now\n\t\treturn r.saveState(st)\n\t}",
+  "replace": "if false {\n\t\tst.Remake = nil // the request was served on the image that is here now\n\t\treturn r.saveState(st)\n\t}",
+  "mutation": "a stale mark is finished over the image that is here",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk another host wrote is not made afresh by a stale reset mark"
+ },
+ {
+  "id": "G-935",
+  "guard": "the agent carries spec.reset into the runtime's reset",
+  "file": "internal/agent/agent.go",
+  "find": "DiskHostPath: diskPath, Reset: s.Spec.Reset}",
+  "replace": "DiskHostPath: diskPath}",
+  "mutation": "the runtime is not told which reset it is serving",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a reset mark can be bound to the request kvo reset asked for"
  }
 ]

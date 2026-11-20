@@ -61,6 +61,10 @@ type Spec struct {
 	// reports. When the travelling disk is already there, the runtime pins this key instead
 	// of generating one, so it trusts the key the guest has.
 	GuestHostKey string
+	// Reset is the silo's spec.reset when this call is a reset (`kvo reset` sets it; the agent
+	// compares it with status.image.reset). Empty on a create. A runtime that remembers a reset
+	// under way binds that memory to this request.
+	Reset string
 }
 
 // Volume is extra storage mounted in the silo.
