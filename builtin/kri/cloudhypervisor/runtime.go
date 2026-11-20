@@ -192,7 +192,9 @@ func (r *Runtime) run(ctx context.Context, name string, args ...string) error {
 
 // cmdError is one host command that failed. name is the program that was run, so a caller can
 // tell a truncate of the new root image from systemd-run failing to start, without reading a
-// no-space phrase out of whatever text the error happens to carry.
+// no-space phrase out of whatever text the error happens to carry. A convert names qemu-img
+// when that command ran and systemd-run when the unit never started. args is empty then, so
+// the unit's confinement is not what gets reported.
 type cmdError struct {
 	name string
 	args []string
@@ -201,7 +203,11 @@ type cmdError struct {
 }
 
 func (e *cmdError) Error() string {
-	return fmt.Sprintf("%s %s: %v: %s", e.name, strings.Join(e.args, " "), e.err, strings.TrimSpace(e.out))
+	head := e.name
+	if len(e.args) > 0 {
+		head += " " + strings.Join(e.args, " ")
+	}
+	return fmt.Sprintf("%s: %v: %s", head, e.err, strings.TrimSpace(e.out))
 }
 
 func (e *cmdError) Unwrap() error { return e.err }

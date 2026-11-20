@@ -17,11 +17,14 @@ import (
 // dir fails while root.raw is there: the folder's quota is the disk's size, and the
 // real truncate reports that as text (exit 1), not as a Go errno. failConvert makes
 // qemu-img convert fail, the way a killed convert does. convertNoSpace makes that
-// failure the text systemd-run prints when /run is full.
+// failure the text systemd-run prints when /run is full. convertFull is the text of
+// a convert that did start and then could not write the data (a block quota, or a
+// full filesystem): the sparse file is created, and this is what refuses the bytes.
 type rootFolder struct {
 	quota          bool
 	failConvert    bool
 	convertNoSpace bool
+	convertFull    string
 	fullMessage    string
 }
 
@@ -59,6 +62,11 @@ func (f *rootFolder) script(h *fakeHost, dir, file string) {
 			if _, ok := h.files[dst]; !ok {
 				if msg, err := f.admit(h, dir, file, dst); err != nil {
 					return msg, err
+				}
+			}
+			if f.convertFull != "" {
+				if _, filled := h.files[file]; filled {
+					return f.convertFull, errors.New("exit 1")
 				}
 			}
 			if f.failConvert {
@@ -512,6 +520,81 @@ func TestANoSpaceFailureFromAnotherStepKeepsTheOldImage(t *testing.T) {
 	file := dir + "/" + RootImage
 	h := newFakeHost()
 	folder := &rootFolder{failConvert: true, convertNoSpace: true}
+	folder.script(h, dir, file)
+	r, sp := newTravellingRoot(t, h, dir, file)
+	n := NamesFor(sp.ID)
+	err := r.Reset(ctx, sp)
+	if err == nil || !errors.Is(err, errRootKept) {
+		t.Fatalf("reset: %v", err)
+	}
+	got, rerr := h.ReadFile(file)
+	if rerr != nil || string(got) != "old-disk" {
+		t.Fatalf("root image %q %v", got, rerr)
+	}
+	if b, _ := h.ReadFile(n.Dir + "/silo.json"); strings.Contains(string(b), `"remake"`) {
+		t.Fatalf("a reset that removed nothing left its mark: %s", b)
+	}
+	if cmdExact(h.commands(), "rm -f "+file) >= 0 {
+		t.Fatalf("the old image was removed: %v", h.commands())
+	}
+	if strings.Contains(err.Error(), "--property=") {
+		t.Fatalf("the failure lists the unit's confinement: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Failed to start transient service unit") {
+		t.Fatalf("the failure does not say the unit did not start: %v", err)
+	}
+}
+
+// truncate of the sparse file succeeds. qemu-img then cannot write the bytes, because
+// a block quota or a full filesystem refuses them. That is the convert, so the old
+// image is given up and the reset finishes in its place.
+func TestAQuotaMetDuringConvertGivesUpTheOldImage(t *testing.T) {
+	for _, msg := range []string{
+		"qemu-img: error while writing at byte 0: Disk quota exceeded",
+		"qemu-img: error while writing at byte 0: No space left on device",
+	} {
+		t.Run(msg, func(t *testing.T) {
+			ctx := context.Background()
+			dir := "/var/lib/kevaso/volumes/uid-web/disk.root"
+			file := dir + "/" + RootImage
+			h := newFakeHost()
+			folder := &rootFolder{convertFull: msg}
+			folder.script(h, dir, file)
+			r, sp := newTravellingRoot(t, h, dir, file)
+			before, ok := imageIno(h, file)
+			if !ok || before == 0 {
+				t.Fatal("the old image has no inode")
+			}
+			at := len(h.commands())
+			if err := r.Reset(ctx, sp); err != nil {
+				t.Fatal(err)
+			}
+			cmds := h.commands()[at:]
+			conv := indexOf(cmds, "qemu-img convert")
+			rm := cmdExact(cmds, "rm -f "+file)
+			if conv < 0 || rm < 0 || conv > rm {
+				t.Fatalf("the convert was not tried before the old image was removed: %v", cmds)
+			}
+			got, err := h.ReadFile(file)
+			if err != nil || string(got) != "fresh-image" {
+				t.Fatalf("root image %q %v", got, err)
+			}
+			after, ok := imageIno(h, file)
+			if !ok || after == 0 || after == before {
+				t.Fatalf("reset kept inode %d (%d)", after, before)
+			}
+		})
+	}
+}
+
+// A no-space phrase that is neither systemd-run refusing to start nor qemu-img's own
+// error is not the write of the new image. The old one stays.
+func TestABareNoSpaceDuringConvertKeepsTheOldImage(t *testing.T) {
+	ctx := context.Background()
+	dir := "/var/lib/kevaso/volumes/uid-web/disk.root"
+	file := dir + "/" + RootImage
+	h := newFakeHost()
+	folder := &rootFolder{convertFull: "No space left on device"}
 	folder.script(h, dir, file)
 	r, sp := newTravellingRoot(t, h, dir, file)
 	n := NamesFor(sp.ID)

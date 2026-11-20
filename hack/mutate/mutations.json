@@ -6080,9 +6080,9 @@
   "id": "G-937",
   "guard": "a failure to start the convert is systemd-run, not the write",
   "file": "builtin/kri/cloudhypervisor/image.go",
-  "find": "return &cmdError{name: \"systemd-run\", args: args, out: string(out), err: err}",
-  "replace": "return &cmdError{name: \"qemu-img\", args: argv, out: string(out), err: err}",
-  "mutation": "systemd-run failing is reported as qemu-img writing the new image",
+  "find": "return \"systemd-run\" // the unit never started",
+  "replace": "return \"qemu-img\" // the unit never started",
+  "mutation": "systemd-run failing to start is reported as qemu-img writing the new image",
   "packages": [
    "./builtin/kri/cloudhypervisor"
   ],
@@ -6135,5 +6135,41 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a disk that appears after a mark with no image is left as it is"
+ },
+ {
+  "id": "G-942",
+  "guard": "a qemu-img failure inside the unit is the write of the new image",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "return \"qemu-img\" // the command inside failed",
+  "replace": "return \"systemd-run\" // the command inside failed",
+  "mutation": "qemu-img failing to write is reported as the unit never starting",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a quota or a full filesystem during the convert gives up the old root image"
+ },
+ {
+  "id": "G-943",
+  "guard": "a systemd-run failure is not reported as its confinement arguments",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "return &cmdError{name: \"systemd-run\", out: string(out), err: err}",
+  "replace": "return &cmdError{name: \"systemd-run\", args: args, out: string(out), err: err}",
+  "mutation": "the user-facing error lists every property systemd-run was given",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a failure to start the convert does not dump the unit's confinement"
+ },
+ {
+  "id": "G-944",
+  "guard": "a no-space phrase that is not qemu-img's is not the write",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "return \"systemd-run\" // not shown to be the write",
+  "replace": "return \"qemu-img\" // not shown to be the write",
+  "mutation": "any no-space text from the convert gives up the old image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a no-space phrase that is not qemu-img writing the new image keeps the old one"
  }
 ]
