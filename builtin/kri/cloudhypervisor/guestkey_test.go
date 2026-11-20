@@ -5,8 +5,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -209,10 +211,22 @@ func TestAResetElsewhereIsAdopted(t *testing.T) {
 	if st.HostKey != installed {
 		t.Fatalf("adopted %q while this copy still boots the image it made", st.HostKey)
 	}
-	if err := h.WriteFile(file, []byte("disk-bytes"), 0o600); err != nil {
+	// A write through the open file (the guest using its disk) keeps the inode.
+	// A reset elsewhere renames a new file over root.raw, which does not.
+	h.mu.Lock()
+	h.files[file] = []byte("guest-wrote")
+	h.mu.Unlock()
+	if err := r.SetGuestHostKey(ctx, sp.ID, reported); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.WriteFile(filepath.Join(dir, imageGenFile), []byte("elsewhere\n"), 0o600); err != nil {
+	st, _ = r.state(sp.ID)
+	if st.HostKey != installed {
+		t.Fatalf("adopted %q after a write that left the same file in place", st.HostKey)
+	}
+	if got := string(h.files[file]); got != "guest-wrote" {
+		t.Fatalf("root image %q", got)
+	}
+	if err := h.WriteFile(file, []byte("disk-bytes"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	before := len(h.commands())
@@ -234,5 +248,96 @@ func TestAResetElsewhereIsAdopted(t *testing.T) {
 		if strings.Contains(c, "lvremove") || strings.Contains(c, "qemu-img") {
 			t.Fatalf("adopting a key touched a disk: %s", c)
 		}
+	}
+}
+
+// The root disk's folder is quota'd to the disk's size. Once root.raw is there,
+// creating any other file in that folder fails. Making the VM still succeeds,
+// and the key installed onto the image this copy just made is kept.
+func TestCreateOnAFullRootDiskFolder(t *testing.T) {
+	ctx := context.Background()
+	reported := testPub(t)
+	dir := "/var/lib/kevaso/volumes/uid-web/disk.root"
+	file := dir + "/" + RootImage
+	h := newFakeHost()
+	h.answer = func(cmd string) (string, error) {
+		switch {
+		case cmd == "test -e "+file:
+			if _, ok := h.files[file]; !ok {
+				return "", errors.New("exit 1")
+			}
+			return "", nil
+		case cmd == "mv -f "+file+".new "+file:
+			// The image lands by rename and fills the folder. A new file beside it cannot.
+			if _, ok := h.files[file]; !ok {
+				h.files[file] = []byte("image")
+			}
+			return "", nil
+		case strings.HasPrefix(cmd, "systemctl is-active"):
+			return "inactive", errors.New("exit 3")
+		}
+		return "", nil
+	}
+	r := newRuntime(t, &quotaHost{fakeHost: h, dir: dir})
+	sp := spec("web")
+	sp.DiskHostPath = dir
+	sp.GuestHostKey = reported
+	if err := r.Create(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	for p := range h.files {
+		if filepath.Dir(p) == dir && filepath.Base(p) != RootImage {
+			t.Fatalf("wrote %s into a root disk folder that root.raw already fills", p)
+		}
+	}
+	if _, ok := h.files[file]; !ok {
+		t.Fatal("root image was not put in place")
+	}
+	st, ok := r.state(sp.ID)
+	if !ok || st.HostKey == "" || st.HostKey == reported || st.KeyImage == "" {
+		t.Fatalf("create pinned %q (image %q)", st.HostKey, st.KeyImage)
+	}
+	installed := st.HostKey
+	if err := r.SetGuestHostKey(ctx, sp.ID, reported); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = r.state(sp.ID)
+	if st.HostKey != installed {
+		t.Fatalf("adopted %q over the key installed on the image this copy just made", st.HostKey)
+	}
+}
+
+// quotaHost is a disk.root whose quota is the disk's size: once root.raw is
+// there, creating a file in the folder fails with EDQUOT.
+type quotaHost struct {
+	*fakeHost
+	dir string
+}
+
+func (q *quotaHost) WriteFile(p string, data []byte, mode os.FileMode) error {
+	if filepath.Dir(p) == q.dir {
+		if _, err := q.ReadFile(p); errors.Is(err, os.ErrNotExist) {
+			if _, rerr := q.ReadFile(filepath.Join(q.dir, RootImage)); rerr == nil {
+				return &os.PathError{Op: "open", Path: p, Err: syscall.EDQUOT}
+			}
+		}
+	}
+	return q.fakeHost.WriteFile(p, data, mode)
+}
+
+func TestImageIdentityIsTheInodeAndItsBirth(t *testing.T) {
+	same, err := imageIdentity([]string{"42", "0", "100"})
+	wrote, err2 := imageIdentity([]string{"42", "0", "200"})
+	if err != nil || err2 != nil || same != wrote || same != "42" {
+		t.Fatalf("a write renamed the image: %q %q %v %v", same, wrote, err, err2)
+	}
+	born, err := imageIdentity([]string{"42", "7", "100"})
+	reborn, err2 := imageIdentity([]string{"42", "8", "100"})
+	if err != nil || err2 != nil || born == reborn || born != "42:7" {
+		t.Fatalf("birth: %q %q %v %v", born, reborn, err, err2)
+	}
+	replaced, err := imageIdentity([]string{"43", "0", "100"})
+	if err != nil || replaced == same {
+		t.Fatalf("a replaced file kept its name: %q %v", replaced, err)
 	}
 }

@@ -4700,8 +4700,8 @@
   "id": "G-715",
   "guard": "a reset keeps the silo made",
   "file": "builtin/kri/cloudhypervisor/runtime.go",
-  "find": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, false, gen",
-  "replace": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, false, nil, false, gen",
+  "find": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, false, id",
+  "replace": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, false, nil, false, id",
   "mutation": "a reset clears that the silo was made",
   "packages": [
    "./builtin/kri/cloudhypervisor"
@@ -5624,7 +5624,7 @@
   "id": "G-875",
   "guard": "a reported key is adopted only for a copy made onto an image that was already there",
   "file": "builtin/kri/cloudhypervisor/runtime.go",
-  "find": "if !r.mayAdoptKey(st) { // this copy's image is not the one the reported key belongs to",
+  "find": "if !r.mayAdoptKey(ctx, st) { // this copy's image is not the one the reported key belongs to",
   "replace": "if false { // this copy's image is not the one the reported key belongs to",
   "mutation": "a new image is given a key the guest does not have",
   "packages": [
@@ -5648,8 +5648,8 @@
   "id": "G-877",
   "guard": "a reset installs its own key and does not keep the previous one adoptable",
   "file": "builtin/kri/cloudhypervisor/runtime.go",
-  "find": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, false, gen",
-  "replace": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, true, gen",
+  "find": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, false, id",
+  "replace": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, true, id",
   "mutation": "a reset's new key is replaced by the one from before",
   "packages": [
    "./builtin/kri/cloudhypervisor"
@@ -5823,5 +5823,77 @@
    "./internal/agent"
   ],
   "protects": "a drop of an older copy asks what that copy holds"
+ },
+ {
+  "id": "G-910",
+  "guard": "the image this copy made is not given another key",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if id == st.KeyImage { // this copy still boots the image it made",
+  "replace": "if false && id == st.KeyImage { // this copy still boots the image it made",
+  "mutation": "a key is adopted over the image this copy still boots",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a key installed onto an image this copy made stays until that image is replaced"
+ },
+ {
+  "id": "G-911",
+  "guard": "the image is named by root.raw itself",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "p := filepath.Join(dir, RootImage)",
+  "replace": "p := filepath.Join(dir, \"root.gen\")",
+  "mutation": "the image is named by a file beside root.raw",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a full root-disk folder still names the image it holds"
+ },
+ {
+  "id": "G-912",
+  "guard": "naming the image writes nothing beside it",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "out, err := r.Host.Run(ctx, \"stat\", \"-c\", \"%i %W %Z\", p) // read it; write nothing beside it",
+  "replace": "out, err := r.Host.Run(ctx, \"stat\", \"-c\", \"%i %W %Z\", p); if werr := r.Host.WriteFile(filepath.Join(dir, \"root.gen\"), []byte(\"x\\n\"), 0o600); werr != nil { return \"\", werr } // read it; write nothing beside it",
+  "mutation": "naming the image creates a file in the root disk's folder",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a root disk that fills its folder can still be booted"
+ },
+ {
+  "id": "G-913",
+  "guard": "a copy that made the image records which file it was",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if keyFromDisk || spec.DiskHostPath == \"\" { // a host-local disk, or a key already taken from the image",
+  "replace": "if true { // a host-local disk, or a key already taken from the image",
+  "mutation": "a new image is not remembered, so a later reset cannot be told apart",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a kept copy can tell the image it made from one a reset elsewhere installed"
+ },
+ {
+  "id": "G-914",
+  "guard": "a birth time is part of the image's name",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if bt > 0 { // inode and birth time; a write does not move the birth time",
+  "replace": "if false && bt > 0 { // inode and birth time; a write does not move the birth time",
+  "mutation": "a reused inode with a new birth time is the same image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a file that reuses an inode is still a new image when its birth time changed"
+ },
+ {
+  "id": "G-915",
+  "guard": "a write's change time does not rename the image",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "return ino, nil // no birth time: the inode alone, since a write moves the change time",
+  "replace": "return ino + \":\" + ctime, nil // no birth time: the inode alone, since a write moves the change time",
+  "mutation": "the guest writing its disk is taken as a new image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk the guest has written is still the image this copy made"
  }
 ]

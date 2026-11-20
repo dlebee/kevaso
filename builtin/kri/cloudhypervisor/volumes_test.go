@@ -398,6 +398,11 @@ func TestRootDiskFile(t *testing.T) {
 	for _, exists := range []bool{false, true} {
 		h := newFakeHost()
 		r := newRuntime(t, h)
+		if exists {
+			if err := h.WriteFile(file, []byte("disk-bytes"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
 		h.answer = func(cmd string) (string, error) {
 			switch {
 			case cmd == "test -e "+file:

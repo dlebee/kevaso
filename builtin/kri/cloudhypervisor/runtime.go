@@ -63,8 +63,10 @@ type State struct {
 	// there, so the guest already has its host key. A key generated for a new image stays:
 	// adopting the reported one would pin a key the guest does not have.
 	KeyFromDisk bool `json:"keyFromDisk,omitempty"`
-	// KeyImage is the generation of the root image this copy installed its key onto.
-	// A reset elsewhere writes a new one; this copy then adopts the key that belongs to it.
+	// KeyImage names the root image this copy installed its key onto: the file's
+	// inode and, when the filesystem keeps one, its birth time. It is kept in this
+	// host's state, outside the disk folder. A reset elsewhere renames a new file
+	// over root.raw, so the name changes and this copy adopts the key of that image.
 	KeyImage string `json:"keyImage,omitempty"`
 	// Remake, if set, says its root disk is being made afresh (a reset) and isn't to be trusted:
 	// saved before the first destructive step (lvremove), cleared after the last. A reset cut
@@ -358,14 +360,14 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 			return err
 		},
 		func() error {
-			if keyFromDisk || spec.DiskHostPath == "" { // an image already there keeps its generation
+			if keyFromDisk || spec.DiskHostPath == "" { // a host-local disk, or a key already taken from the image
 				return nil
 			}
-			gen, err := r.writeImageGen(spec.DiskHostPath)
+			id, err := r.imageID(ctx, spec.DiskHostPath)
 			if err != nil {
 				return err
 			}
-			st.KeyImage = gen // this copy made the image
+			st.KeyImage = id // this copy made the image, or is booting the one already there
 			return nil
 		},
 		func() error {
@@ -459,7 +461,7 @@ func (r *Runtime) SetGuestHostKey(ctx context.Context, id kri.ID, pub string) er
 	if st.RootDir == "" { // a host-local disk did not travel; its key stays
 		return nil
 	}
-	if !r.mayAdoptKey(st) { // this copy's image is not the one the reported key belongs to
+	if !r.mayAdoptKey(ctx, st) { // this copy's image is not the one the reported key belongs to
 		return nil
 	}
 	if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(pub)); err != nil {
@@ -492,44 +494,70 @@ func (r *Runtime) SetGuestHostKey(ctx context.Context, id kri.ID, pub string) er
 	return r.saveState(st)
 }
 
-// imageGenFile is the generation of a travelling root image, beside root.raw. The copy that
-// made the image records it; a reset writes a new one.
-const imageGenFile = "root.gen"
-
-// writeImageGen records a new generation for the root image in dir and returns it.
-func (r *Runtime) writeImageGen(dir string) (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
+// imageID is the identity of the root image in dir. Nothing is written into dir:
+// the folder's quota is the disk's size, and root.raw already fills it.
+//
+// The identity is the file's inode and, when the filesystem keeps one, its birth
+// time. A reset replaces root.raw by renaming a new file over it (RootFilePlan),
+// so the inode changes. The change time is read and not used: the guest writing
+// the disk moves it. A filesystem that keeps no birth time is named by the inode
+// alone. stat is GNU stat, as on the Linux host kevasod runs on.
+func (r *Runtime) imageID(ctx context.Context, dir string) (string, error) {
+	// The image itself, not a file beside it.
+	p := filepath.Join(dir, RootImage)
+	out, err := r.Host.Run(ctx, "stat", "-c", "%i %W %Z", p) // read it; write nothing beside it
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", fmt.Errorf("root image %s: %s", p, msg)
 	}
-	gen := fmt.Sprintf("%x", b[:])
-	if err := r.Host.WriteFile(filepath.Join(dir, imageGenFile), []byte(gen+"\n"), 0o600); err != nil {
-		return "", err
+	id, err := imageIdentity(strings.Fields(string(out)))
+	if err != nil {
+		return "", fmt.Errorf("root image %s: %w", p, err)
 	}
-	return gen, nil
+	return id, nil
 }
 
-// readImageGen reads the generation of the root image in dir.
-func (r *Runtime) readImageGen(dir string) (string, error) {
-	b, err := r.Host.ReadFile(filepath.Join(dir, imageGenFile))
-	if err != nil {
-		return "", err
+// imageIdentity names a file from GNU stat -c '%i %W %Z' (inode, birth time,
+// change time). A birth time of 0 means the filesystem does not keep one.
+func imageIdentity(fields []string) (string, error) {
+	if len(fields) != 3 {
+		return "", fmt.Errorf("stat: %q", strings.Join(fields, " "))
 	}
-	return strings.TrimSpace(string(b)), nil
+	ino, btime, ctime := fields[0], fields[1], fields[2]
+	if _, err := strconv.ParseUint(ino, 10, 64); err != nil || ino == "0" {
+		return "", fmt.Errorf("inode %q", ino)
+	}
+	bt, err := strconv.ParseInt(btime, 10, 64)
+	if err != nil {
+		return "", fmt.Errorf("birth time %q", btime)
+	}
+	if _, err := strconv.ParseInt(ctime, 10, 64); err != nil {
+		return "", fmt.Errorf("change time %q", ctime)
+	}
+	if bt > 0 { // inode and birth time; a write does not move the birth time
+		return ino + ":" + strconv.FormatInt(bt, 10), nil
+	}
+	return ino, nil // no birth time: the inode alone, since a write moves the change time
 }
 
 // mayAdoptKey reports whether the image this copy boots is the one the reported key belongs to.
 // A copy created onto an image that was already there adopts it. A copy that made the image
 // adopts when a reset elsewhere has replaced that image.
-func (r *Runtime) mayAdoptKey(st State) bool {
+func (r *Runtime) mayAdoptKey(ctx context.Context, st State) bool {
 	if st.KeyFromDisk { // created onto an image that was already there
 		return true
 	}
 	if st.KeyImage == "" || st.RootDir == "" {
 		return false
 	}
-	gen, err := r.readImageGen(st.RootDir)
-	if err != nil || gen == "" || gen == st.KeyImage {
+	id, err := r.imageID(ctx, st.RootDir)
+	if err != nil || id == "" {
+		return false
+	}
+	if id == st.KeyImage { // this copy still boots the image it made
 		return false
 	}
 	return true // a reset elsewhere replaced the image
@@ -1304,21 +1332,21 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 	rm := st.Remake
 	oldLayout := LayoutFor(n, rm.OldVolumes, rm.OldRootDir)
 	layout := st.layout()
-	gen := ""
+	id := ""
 	steps := []func() error{
 		func() error {
 			_, err := r.rootDisk(ctx, n, layout, img, rm.DiskBytes, true)
 			return err
 		},
 		func() error {
-			if st.RootDir == "" { // a host-local disk has no image generation
+			if st.RootDir == "" { // a host-local disk has no image to name
 				return nil
 			}
-			g, err := r.writeImageGen(st.RootDir)
+			g, err := r.imageID(ctx, st.RootDir)
 			if err != nil {
 				return err
 			}
-			gen = g
+			id = g
 			return nil
 		},
 		func() error {
@@ -1342,7 +1370,7 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 			return err
 		}
 	}
-	st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, false, gen
+	st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, false, id
 	return r.saveState(st)
 }
 
