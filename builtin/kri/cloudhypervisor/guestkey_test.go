@@ -48,7 +48,7 @@ func TestATravellingDiskTrustsTheReportedGuestKey(t *testing.T) {
 		t.Fatalf("pinned %q, want the reported key", st.HostKey)
 	}
 	ud := string(present.files[NamesFor(sp.ID).Dir+"/user-data"])
-	if strings.Contains(ud, "ssh_deletekeys") || strings.Contains(ud, "ssh_keys:") {
+	if !strings.Contains(ud, "ssh_deletekeys: false") || !strings.Contains(ud, "ssh_genkeytypes: []") || strings.Contains(ud, "ssh_keys:") {
 		t.Fatalf("the seed would replace the guest's host key:\n%s", ud)
 	}
 	if got := string(present.files[file]); got != "disk-bytes" {
@@ -80,7 +80,7 @@ func TestATravellingDiskTrustsTheReportedGuestKey(t *testing.T) {
 		t.Fatalf("a new disk pinned %q", st.HostKey)
 	}
 	ud = string(missing.files[NamesFor(sm.ID).Dir+"/user-data"])
-	if !strings.Contains(ud, "ssh_deletekeys") {
+	if !strings.Contains(ud, "ssh_deletekeys: true") || !strings.Contains(ud, "ssh_keys:") {
 		t.Fatalf("a new disk was not given a host key:\n%s", ud)
 	}
 
@@ -109,7 +109,7 @@ func TestATravellingDiskTrustsTheReportedGuestKey(t *testing.T) {
 		t.Fatalf("adopted %q, want %q", st.HostKey, again)
 	}
 	ud = string(present.files[NamesFor(sp.ID).Dir+"/user-data"])
-	if strings.Contains(ud, "ssh_deletekeys") {
+	if !strings.Contains(ud, "ssh_deletekeys: false") || !strings.Contains(ud, "ssh_genkeytypes: []") || strings.Contains(ud, "ssh_keys:") {
 		t.Fatalf("adopting a key replaced the guest's:\n%s", ud)
 	}
 	if got := string(present.files[file]); got != "disk-bytes" {

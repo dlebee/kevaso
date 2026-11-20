@@ -347,7 +347,9 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
 		},
-		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID, hostPub)), 0o600) },
+		func() error {
+			return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID, hostPub, Gateway.String())), 0o600)
+		},
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, spec.ID.Namespace)), 0o600)
 		},
@@ -442,7 +444,7 @@ func (r *Runtime) SetGuestHostKey(ctx context.Context, id kri.ID, pub string) er
 	if err := r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, "", pub)), 0o600); err != nil {
 		return err
 	}
-	if err := r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(id, pub)), 0o600); err != nil {
+	if err := r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(id, pub, Gateway.String())), 0o600); err != nil {
 		return err
 	}
 	if err := r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, id.Namespace)), 0o600); err != nil {
@@ -1221,7 +1223,9 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
 		},
-		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(st.ID, hostPub)), 0o600) },
+		func() error {
+			return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(st.ID, hostPub, Gateway.String())), 0o600)
+		},
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, st.ID.Namespace)), 0o600)
 		},

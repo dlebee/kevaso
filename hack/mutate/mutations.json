@@ -5595,5 +5595,29 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a copy is not dropped because its volumes could not be listed"
+ },
+ {
+  "id": "G-873",
+  "guard": "the instance id changes with this host's network",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "h := sha256.Sum256([]byte(hostPub + \"\\n\" + hostNet)) // this host's network, not only the guest key",
+  "replace": "h := sha256.Sum256([]byte(hostPub)) // this host's network, not only the guest key",
+  "mutation": "a moved guest keeps the last host's instance id",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk that arrives with the same guest host key still takes this host's address"
+ },
+ {
+  "id": "G-874",
+  "guard": "a reused guest host key is not deleted by the new instance",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "ssh_deletekeys: false",
+  "replace": "ssh_deletekeys: true",
+  "mutation": "a new instance replaces the guest's host keys",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk that travels keeps the guest host key it already has"
  }
 ]

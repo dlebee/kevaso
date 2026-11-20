@@ -129,8 +129,10 @@ func UserData(execPub, hostPriv, hostPub string) string {
 		return "      " + strings.ReplaceAll(strings.TrimSpace(s), "\n", "\n      ")
 	}
 	// An empty private key means the guest already has hostPub (a disk that travelled).
-	// Leaving the keys out keeps cloud-init from replacing them.
-	keys := ""
+	// A new instance must not replace those keys.
+	keys := `ssh_deletekeys: false
+ssh_genkeytypes: []
+`
 	if strings.TrimSpace(hostPriv) != "" {
 		keys = `ssh_deletekeys: true
 ssh_genkeytypes: []
@@ -181,9 +183,10 @@ func yamlQuote(s string) string {
 
 // MetaData is cloud-init's instance identity. Each new seed (a create, a reset, a create on
 // another host for a disk that moved) is a new instance, so cloud-init applies this host's keys,
-// address and host key to a disk that has booted before.
-func MetaData(id kri.ID, hostPub string) string {
-	h := sha256.Sum256([]byte(hostPub))
+// address and host key to a disk that has booted before. hostNet is this host's address on the
+// bridge: a disk that arrives already carrying hostPub is still a new instance here.
+func MetaData(id kri.ID, hostPub, hostNet string) string {
+	h := sha256.Sum256([]byte(hostPub + "\n" + hostNet)) // this host's network, not only the guest key
 	return "instance-id: " + id.UID + "-" + hex.EncodeToString(h[:4]) + "\nlocal-hostname: " + id.Name + "\n"
 }
 
