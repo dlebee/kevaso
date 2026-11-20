@@ -5895,5 +5895,101 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a disk the guest has written is still the image this copy made"
+ },
+ {
+  "id": "G-920",
+  "guard": "a fresh root image is written beside the old one",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "tmp := file + \".new\" // beside the old image, so a half-written file is never the disk",
+  "replace": "tmp := file // beside the old image, so a half-written file is never the disk",
+  "mutation": "the new image is written over the old one",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a half-written root image is never the disk that boots"
+ },
+ {
+  "id": "G-921",
+  "guard": "only a full folder gives up the image already there",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if !spaceExhausted(err) { // only a full folder gives up the image already there",
+  "replace": "if false { // only a full folder gives up the image already there",
+  "mutation": "any failure removes the old image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset that fails while the old image is still there keeps that image"
+ },
+ {
+  "id": "G-922",
+  "guard": "a full folder gives up the old image so the new one can be written",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if !spaceExhausted(err) { // only a full folder gives up the image already there",
+  "replace": "if true { // only a full folder gives up the image already there",
+  "mutation": "a full folder keeps the old image and the reset cannot finish",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset of a travelling root whose folder holds only one image still replaces it"
+ },
+ {
+  "id": "G-923",
+  "guard": "a failure after the old image was removed is not a kept disk",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "return fmt.Errorf(\"the old root image was removed so a new one could be written, and that was not finished: %w (nothing boots until a retry finishes it)\", err)",
+  "replace": "return fmt.Errorf(\"%w: the old root image was removed so a new one could be written, and that was not finished: %v (nothing boots until a retry finishes it)\", errRootKept, err)",
+  "mutation": "the reset's mark is cleared after the old image was removed",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a silo does not boot when its reset removed the old image and the new one is not finished"
+ },
+ {
+  "id": "G-924",
+  "guard": "a half-written image beside the disk is removed",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "_ = r.Host.RemoveAll(tmp) // the half-written image is not left where a boot could find it",
+  "replace": "_ = tmp // the half-written image is not left where a boot could find it",
+  "mutation": "a failed write leaves the half-written image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a failed reset leaves nothing that can be booted as the root disk"
+ },
+ {
+  "id": "G-925",
+  "guard": "a child's quota or no-space text means the folder is full",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "return strings.Contains(msg, \"Disk quota exceeded\") || strings.Contains(msg, \"No space left on device\")",
+  "replace": "return strings.Contains(msg, \"not a full folder\")",
+  "mutation": "the text truncate prints is not a full folder",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a travelling root resets when truncate fails with a disk quota"
+ },
+ {
+  "id": "G-926",
+  "guard": "EDQUOT or ENOSPC means the folder is full",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if errors.Is(err, syscall.EDQUOT) || errors.Is(err, syscall.ENOSPC) {",
+  "replace": "if errors.Is(err, syscall.EIO) {",
+  "mutation": "a quota or no-space errno is not a full folder",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a full folder is recognised when the error is the errno itself"
+ },
+ {
+  "id": "G-927",
+  "guard": "giving up a root image removes the file, not its folder",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "r.run(ctx, \"rm\", \"-f\", file) // the image, not its folder: the volume's mount stays",
+  "replace": "r.run(ctx, \"rm\", \"-rf\", filepath.Dir(file)) // the image, not its folder: the volume's mount stays",
+  "mutation": "the root image's folder is removed",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset replaces the root image and leaves the volume's mount"
  }
 ]

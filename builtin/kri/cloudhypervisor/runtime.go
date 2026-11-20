@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -888,25 +889,104 @@ func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, s
 	if err := r.mustBeMounted(ctx, filepath.Dir(l.RootFile)); err != nil { // a root disk is written only on the volume's mount
 		return false, err
 	}
-	_, probeErr := r.Host.Run(ctx, "test", "-e", l.RootFile)
-	missing, err := probeMissing(probeErr)
+	missing, err := r.rootImageMissing(ctx, l.RootFile)
 	if err != nil {
 		return false, fmt.Errorf("root disk %s could not be checked (%w): not writing it", l.RootFile, err)
 	}
 	if !missing && !fresh {
 		return false, nil // moved here with its data
 	}
-	tmp := l.RootFile + ".new"
-	for _, c := range RootFilePlan(img, tmp, l.RootFile, size) {
-		if err := r.run(ctx, c[0], c[1:]...); err != nil {
-			_ = r.Host.RemoveAll(tmp)
-			if _, terr := r.Host.Run(ctx, "test", "-e", l.RootFile); terr == nil {
-				return false, fmt.Errorf("%w: %v", errRootKept, err) // written beside it, put in place last
-			}
-			return false, err
-		}
+	// A reset of an image already there keeps it until the new one is in place, unless the
+	// folder cannot hold both. A first create has nothing to keep.
+	if err := r.replaceRootFile(ctx, img, l.RootFile, size, fresh && !missing); err != nil {
+		return false, err
 	}
 	return false, nil
+}
+
+// replaceRootFile writes a fresh root image at file, beside it, then renames it into place, so a
+// half-written image is never what boots. keep means file is already the silo's disk.
+//
+// The folder's quota is the disk's size, so the old image and a second full one cannot both be
+// there: truncate of the new file fails with EDQUOT (a full filesystem says ENOSPC). The silo is
+// already stopped and a fresh disk was asked for, so only then is the old image removed and the
+// new one built in its place. Any other failure leaves the old image, and the reset's mark goes
+// (errRootKept): the next start boots it, and a reset still asked for is asked again through its
+// gate. A failure after the old image was removed leaves no root.raw. That is not errRootKept, so
+// the mark stays: Start will not boot, and the reset is tried again (the agent reports ResetFailed
+// and its reconcile runs the reset again) until the new image is in place.
+func (r *Runtime) replaceRootFile(ctx context.Context, img, file string, size int64, keep bool) error {
+	tmp := file + ".new" // beside the old image, so a half-written file is never the disk
+	gaveUp := false
+	for {
+		err := r.applyRootFile(ctx, img, tmp, file, size)
+		if err == nil {
+			return nil
+		}
+		_ = r.Host.RemoveAll(tmp) // the half-written image is not left where a boot could find it
+		if gaveUp {
+			return fmt.Errorf("the old root image was removed so a new one could be written, and that was not finished: %w (nothing boots until a retry finishes it)", err)
+		}
+		if !keep {
+			return err
+		}
+		missing, perr := r.rootImageMissing(ctx, file)
+		if perr != nil || missing { // not confirmed still there: the mark stays, nothing boots on a guess
+			return err
+		}
+		if !spaceExhausted(err) { // only a full folder gives up the image already there
+			return fmt.Errorf("%w: %v", errRootKept, err)
+		}
+		if err := r.dropRootImage(ctx, file, err); err != nil {
+			return err
+		}
+		gaveUp = true
+	}
+}
+
+// applyRootFile runs the plan that writes tmp and, only at the end, renames it over file.
+func (r *Runtime) applyRootFile(ctx context.Context, img, tmp, file string, size int64) error {
+	for _, c := range RootFilePlan(img, tmp, file, size) {
+		if err := r.run(ctx, c[0], c[1:]...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// dropRootImage removes the root image so a new one can be written in a folder that holds only
+// one. errRootKept means the image is still there. Any other error means it is gone, or that
+// could not be told, and the disk must not be treated as kept.
+func (r *Runtime) dropRootImage(ctx context.Context, file string, cause error) error {
+	rerr := r.run(ctx, "rm", "-f", file) // the image, not its folder: the volume's mount stays
+	missing, perr := r.rootImageMissing(ctx, file)
+	if perr == nil && !missing {
+		return fmt.Errorf("%w: %v", errRootKept, cause) // the remove did not take it
+	}
+	if rerr != nil || perr != nil {
+		return fmt.Errorf("the old root image was given up so a new one could be written, and that could not be confirmed: %w (nothing boots until a retry finishes it)", errors.Join(cause, rerr, perr))
+	}
+	return nil
+}
+
+// rootImageMissing says whether file is absent. A probe that fails is not "absent".
+func (r *Runtime) rootImageMissing(ctx context.Context, file string) (bool, error) {
+	_, err := r.Host.Run(ctx, "test", "-e", file)
+	return probeMissing(err)
+}
+
+// spaceExhausted reports EDQUOT or ENOSPC. truncate and qemu-img are children: they print
+// "Disk quota exceeded" or "No space left on device" (LC_ALL=C) and exit, and that text is the
+// errno. A Go error that wraps the errno counts as well.
+func spaceExhausted(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EDQUOT) || errors.Is(err, syscall.ENOSPC) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Disk quota exceeded") || strings.Contains(msg, "No space left on device")
 }
 
 // probeMissing says whether test -e found the path absent. Exit 1 is absent. Any other
@@ -943,9 +1023,9 @@ func commandExit(err error) (int, bool) {
 }
 
 // errRootKept: making a root disk afresh failed before the old one was touched (its lvremove
-// failed; the new image file never put in place). K-112: a reset cut there removed nothing, so
-// its mark goes and the disk is kept as it was: the next reset is asked for again, through its
-// gate, never finished at a start with no one asked.
+// failed; the new image was never put in place, and a full folder was not why). K-112: a reset
+// cut there removed nothing, so its mark goes and the disk is kept as it was: the next reset is
+// asked for again, through its gate, never finished at a start with no one asked.
 var errRootKept = errors.New("the root disk was kept as it was")
 
 // RootFilePlan makes a root disk image file from an image: written next to it, grown to the disk's
