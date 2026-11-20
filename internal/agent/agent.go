@@ -1398,7 +1398,9 @@ func (a *Agent) writeStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.Sil
 		}
 		before := statusKey(cur.Status)
 		mutate(&cur.Status)
-		cur.Status.Routing = routing.Silo(cur.Spec, cur.Status) // always as its status says now
+		if !away { // an away write leaves routing as stored
+			cur.Status.Routing = routing.Silo(cur.Spec, cur.Status)
+		}
 		if statusKey(cur.Status) == before {
 			return nil
 		}
@@ -1847,6 +1849,12 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 // forgetCopy removes this host's runtime state for id and unmounts what this host mounted.
 // A root image on a travelling class is not this host's file: the runtime leaves it.
 func (a *Agent) forgetCopy(ctx context.Context, rt kri.Runtime, id kri.ID, s *v1.Silo) error {
+	if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
+		return err
+	}
+	if err := a.unmountVolumes(ctx, id.UID, s); err != nil { // the mount record, before this copy is forgotten
+		return err
+	}
 	a.keptNoted.Delete(id.UID)
 	a.heldBack.Delete(id.UID)
 	if a.endpoint != nil {
@@ -1856,13 +1864,7 @@ func (a *Agent) forgetCopy(ctx context.Context, rt kri.Runtime, id kri.ID, s *v1
 	a.delivered.Delete(id.UID)
 	a.guestMounted.Delete(id.UID)
 	a.kept.Delete(id.UID)
-	if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
-		return err
-	}
 	if err := rt.Delete(ctx, id); err != nil {
-		return err
-	}
-	if err := a.unmountVolumes(ctx, id.UID, s); err != nil {
 		return err
 	}
 	a.forgetDelete(id.UID) // nothing of it left here

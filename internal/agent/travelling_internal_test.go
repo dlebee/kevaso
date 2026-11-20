@@ -5,15 +5,29 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"kevaso.com/core/api/client"
+	"kevaso.com/core/api/informer"
+	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
+	"kevaso.com/core/internal/apiserver"
+	"kevaso.com/core/internal/clock"
+	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/jointoken"
+	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/plugins"
+	"kevaso.com/core/internal/routing"
+	"kevaso.com/core/internal/store"
 	"kevaso.com/core/sdk/kplugin"
 	"kevaso.com/core/sdk/kplugin/kplugintest"
 	"kevaso.com/core/sdk/kri"
@@ -477,6 +491,117 @@ func mixedSilo(name string) *v1.Silo {
 			{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"},
 		}
 	})
+}
+
+// failOnceStatus refuses the first status PUT and lets the rest through.
+type failOnceStatus struct {
+	base http.RoundTripper
+	n    atomic.Int32
+}
+
+func (f *failOnceStatus) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/status") && f.n.Add(1) == 1 {
+		return nil, errors.New("status write refused once")
+	}
+	return f.base.RoundTrip(r)
+}
+
+// A silo with a service is placed elsewhere. The old host's away write records the volume
+// unmounted and leaves routing as it was stored. A write that does not land leaves the copy,
+// so the next look records the mount and then forgets it.
+func TestAnAwayWriteClearsTheMountAndKeepsRouting(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ca, err := pki.NewCA("test", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewMemory(0)
+	srv, err := apiserver.NewWithAuth(st, clock.Real{}, &apiserver.Auth{CA: ca, Tokens: &jointoken.Issuer{Store: st, Clock: clock.Real{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	as := httptest.NewUnstartedServer(srv)
+	as.Config = srv.HTTPServer(true)
+	as.Start()
+	defer as.Close()
+	admin := client.New(as.URL)
+	host, closeHost := srv.InProcessAs(pki.Identity{Type: "host", Name: "hv1", Role: "worker"})
+	defer closeHost()
+	host.HTTP.Transport = &failOnceStatus{base: host.HTTP.Transport}
+
+	if err := admin.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}}); err != nil {
+		t.Fatal(err)
+	}
+	s := travellingSilo("web", "")
+	s.Spec.Ports = []v1.SiloPort{{Name: "web", Port: 8080}}
+	s.Spec.Service = &v1.SiloService{RouteWhen: v1.RouteWhenRunning, Ports: []v1.ServicePort{{Port: "web"}}}
+	s.Spec.Volumes = []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"}}
+	if err := admin.Create(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	var cur v1.Silo
+	if err := admin.Get(ctx, "Silo", "dev", "web", &cur); err != nil {
+		t.Fatal(err)
+	}
+	cur.Status.Host, cur.Status.Phase, cur.Status.SiloIP = "hv1", "Running", "10.64.0.2"
+	cur.Status.Volumes = []v1.VolumeStatus{{
+		Name: "home", Class: kplugintest.ClassShare, Handle: "home-1", AttachedTo: "hv1", Mounted: true,
+	}}
+	cur.Status.Routing = routing.Silo(cur.Spec, cur.Status)
+	if cur.Status.Routing == nil || !cur.Status.Routing.Routed {
+		t.Fatalf("running routing: %+v", cur.Status.Routing)
+	}
+	if err := admin.UpdateStatus(ctx, &cur); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Get(ctx, "Silo", "dev", "web", &cur); err != nil {
+		t.Fatal(err)
+	}
+	want := *cur.Status.Routing
+	cur.Status.Host, cur.Status.Phase, cur.Status.SiloIP, cur.Status.MovingFrom = "hv2", "Scheduled", "", ""
+	if err := admin.UpdateStatus(ctx, &cur); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Get(ctx, "Silo", "dev", "web", &cur); err != nil {
+		t.Fatal(err)
+	}
+	if cur.Status.Routing == nil || *cur.Status.Routing != want {
+		t.Fatalf("the placement rewrote routing: %+v", cur.Status.Routing)
+	}
+
+	inner := fake.New()
+	rt := &diskRT{Runtime: inner}
+	a := &Agent{Client: host, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}, Log: t.Logf, runCtx: ctx}
+	a.silos, a.secrets, a.grants = informer.New(host, "Silo"), informer.New(host, "Secret"), informer.New(host, "Grant")
+	a.silos.Seed([]meta.Object{&cur})
+	a.secrets.Seed(nil)
+	a.grants.Seed(nil)
+	if err := inner.Create(ctx, kri.Spec{ID: idOf(&cur), Image: "ubuntu-24.04"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Reconcile(ctx, engine.Key{Kind: "Silo", Namespace: "dev", Name: "web"}); err == nil {
+		t.Fatal("the first away write was accepted")
+	}
+	if ids, _ := inner.List(ctx); len(ids) != 1 {
+		t.Fatalf("the copy was forgotten before the mount was recorded: %v", ids)
+	}
+	if _, err := a.Reconcile(ctx, engine.Key{Kind: "Silo", Namespace: "dev", Name: "web"}); err != nil {
+		t.Fatal(err)
+	}
+	var got v1.Silo
+	if err := admin.Get(ctx, "Silo", "dev", "web", &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Status.Volumes) != 1 || got.Status.Volumes[0].Mounted {
+		t.Fatalf("mount: %+v", got.Status.Volumes)
+	}
+	if got.Status.Routing == nil || !reflect.DeepEqual(*got.Status.Routing, want) {
+		t.Fatalf("routing %+v, want %+v", got.Status.Routing, want)
+	}
+	if ids, _ := inner.List(ctx); len(ids) != 0 {
+		t.Fatalf("the copy stayed after the mount was recorded: %v", ids)
+	}
 }
 
 func hostLocalVM(name string) *v1.Silo {

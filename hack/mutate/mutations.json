@@ -5763,5 +5763,29 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a handoff removes a root disk and keeps a volume LV"
+ },
+ {
+  "id": "G-892",
+  "guard": "an away write leaves routing as stored",
+  "file": "internal/agent/agent.go",
+  "find": "if !away { // an away write leaves routing as stored",
+  "replace": "if true { // an away write leaves routing as stored",
+  "mutation": "a host recording a volume unmounted recomputes routing",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "the old host's away write is accepted and the mount clears"
+ },
+ {
+  "id": "G-893",
+  "guard": "the mount record is written before the copy is forgotten",
+  "file": "internal/agent/agent.go",
+  "find": "if err := a.unmountVolumes(ctx, id.UID, s); err != nil { // the mount record, before this copy is forgotten",
+  "replace": "if err := error(nil); err != nil { // the mount record, before this copy is forgotten",
+  "mutation": "the copy is forgotten before the mount is recorded",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a refused away write leaves the copy, so the mount is recorded on the next look"
  }
 ]
