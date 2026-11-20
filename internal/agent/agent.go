@@ -1991,6 +1991,41 @@ func (a *Agent) hostStorage(ctx context.Context, rt kri.Runtime, id kri.ID, s *v
 	return len(hostLocalVolumes(s)) > 0, nil
 }
 
+// copyOnHost reports whether deleting this copy removes a disk or volume on this host.
+// It is the same question as a drop: what the copy holds here, not only what the spec lists.
+// A runtime that cannot say is answered from the spec: a root disk that does not travel, or a
+// host-local volume.
+func (a *Agent) copyOnHost(ctx context.Context, rt kri.Runtime, id kri.ID, s *v1.Silo) bool {
+	if d, ok := rt.(kri.HostStorage); ok { // the same question as a drop: what this host holds
+		own, err := d.HasHostStorage(ctx, id)
+		if err != nil { // a failed list is not nothing on this host
+			return true
+		}
+		return own
+	}
+	if s != nil {
+		if _, travels := v1.DiskVolume(s); !travels {
+			return true // the root disk is on this host
+		}
+	}
+	return len(hostLocalVolumes(s)) > 0
+}
+
+// keptClasses is what a kept-copy removal should say: the travelling classes, and whether
+// this host also holds a disk or volume of the copy.
+func (a *Agent) keptClasses(c keptCopy) (shared string, onHost bool) {
+	s := a.siloCached(c.id)
+	shared = sharedClasses(s)
+	if shared == "" {
+		return "", false
+	}
+	var rt kri.Runtime
+	if a.Runtimes != nil {
+		rt = a.Runtimes[c.runtime]
+	}
+	return shared, a.copyOnHost(context.Background(), rt, c.id, s)
+}
+
 // sharedClasses lists the storage classes of s's travelling disk and volumes, in spec order.
 func sharedClasses(s *v1.Silo) string {
 	if s == nil {

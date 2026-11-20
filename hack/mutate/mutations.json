@@ -4700,8 +4700,8 @@
   "id": "G-715",
   "guard": "a reset keeps the silo made",
   "file": "builtin/kri/cloudhypervisor/runtime.go",
-  "find": "st.HostKey, st.Started, st.Made, st.Remake = hostPub, false, true, nil",
-  "replace": "st.HostKey, st.Started, st.Made, st.Remake = hostPub, false, false, nil",
+  "find": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk = hostPub, false, true, nil, false",
+  "replace": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk = hostPub, false, false, nil, false",
   "mutation": "a reset clears that the silo was made",
   "packages": [
    "./builtin/kri/cloudhypervisor"
@@ -5552,8 +5552,8 @@
   "id": "G-862",
   "guard": "removing a kept copy of a travelling disk does not say those volumes go",
   "file": "internal/agent/keptcmd.go",
-  "find": "if shared != \"\" { // a travelling class is not this host's to delete",
-  "replace": "if false && shared != \"\" { // a travelling class is not this host's to delete",
+  "find": "case shared != \"\" && !onHost: // a travelling class is not this host's to delete",
+  "replace": "case shared != \"\" && false && !onHost: // a travelling class is not this host's to delete",
   "mutation": "a kept-copy removal says a travelling volume is deleted",
   "packages": [
    "./internal/agent"
@@ -5655,5 +5655,65 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a reset's guest host key is the one installed onto the new image"
+ },
+ {
+  "id": "G-878",
+  "guard": "a kept-copy removal asks the host what the copy holds",
+  "file": "internal/agent/agent.go",
+  "find": "if d, ok := rt.(kri.HostStorage); ok { // the same question as a drop: what this host holds",
+  "replace": "if d, ok := rt.(kri.HostStorage); false && ok { // the same question as a drop: what this host holds",
+  "mutation": "a kept-copy removal ignores a disk this host still holds",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a removal says a disk on this host goes when the copy still holds one"
+ },
+ {
+  "id": "G-879",
+  "guard": "a kept-copy removal says a disk on this host goes and a travelling volume stays",
+  "file": "internal/agent/keptcmd.go",
+  "find": "case shared != \"\" && onHost: // this host's disk goes; what is on the class stays",
+  "replace": "case shared != \"\" && false && onHost: // this host's disk goes; what is on the class stays",
+  "mutation": "a kept-copy removal does not say the disk on this host goes",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "removing a copy that holds a disk here says that disk goes and the travelling volumes stay"
+ },
+ {
+  "id": "G-880",
+  "guard": "kvoadm says a disk on this host goes and a travelling volume stays",
+  "file": "internal/cli/kvoadm/kept.go",
+  "find": "case e.Shared != \"\" && e.OnHost: // this host's disk goes; what is on the class stays",
+  "replace": "case e.Shared != \"\" && false && e.OnHost: // this host's disk goes; what is on the class stays",
+  "mutation": "kvoadm says a disk on this host is not deleted",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "the removal prompt says a disk on this host goes and the travelling volumes stay"
+ },
+ {
+  "id": "G-881",
+  "guard": "a root disk on this host is not described as only a travelling copy",
+  "file": "internal/agent/agent.go",
+  "find": "return true // the root disk is on this host",
+  "replace": "return false // the root disk is on this host",
+  "mutation": "a local root disk is said to stay on its class",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "removing a copy whose root disk is on this host says that disk goes"
+ },
+ {
+  "id": "G-882",
+  "guard": "a failed list of this host's disks is not read as nothing here",
+  "file": "internal/agent/agent.go",
+  "find": "if err != nil { // a failed list is not nothing on this host",
+  "replace": "if false && err != nil { // a failed list is not nothing on this host",
+  "mutation": "a kept-copy removal says a disk is not here when it could not be listed",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a removal does not say only the copy goes when this host's disks could not be listed"
  }
 ]

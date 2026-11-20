@@ -33,8 +33,11 @@ type KeptEntry struct {
 	Runtime   string `json:"runtime"`
 	What      string `json:"what"` // how KeptSilos lists it
 	// Shared is the storage class of a disk or volume that travels with the silo.
-	// Empty when this copy's disks are on this host.
+	// Empty when nothing of this copy travels.
 	Shared string `json:"shared,omitempty"`
+	// OnHost is set with Shared when this copy also holds a disk or volume on this host.
+	// Removing it then deletes what is here and leaves what is on Shared.
+	OnHost bool `json:"onHost,omitempty"`
 }
 
 // siloCached is the silo of id as this host's cache has it, or nil.
@@ -70,9 +73,7 @@ func (a *Agent) writeKeptFile() {
 	a.keptNoted.Range(func(k, v any) bool {
 		if c, ok := v.(keptCopy); ok && c.id.UID != "" {
 			e := KeptEntry{UID: c.id.UID, Namespace: c.id.Namespace, Name: c.id.Name, Runtime: c.runtime, What: c.name}
-			if s := a.siloCached(c.id); s != nil {
-				e.Shared = sharedClasses(s)
-			}
+			e.Shared, e.OnHost = a.keptClasses(c)
 			list = append(list, e)
 		}
 		return true
@@ -111,14 +112,14 @@ func (a *Agent) takeKeptRemovals() {
 			_ = os.Remove(filepath.Join(dir, KeptRemoveDir, uid))
 			continue
 		}
-		shared := ""
-		if s := a.siloCached(c.id); s != nil {
-			shared = sharedClasses(s)
-		}
+		shared, onHost := a.keptClasses(c)
 		if _, again := a.removeConfirmed.LoadOrStore(uid, c.id); !again {
-			if shared != "" { // a travelling class is not this host's to delete
+			switch {
+			case shared != "" && !onHost: // a travelling class is not this host's to delete
 				a.log("removing %s on a person's confirmation (kvoadm host kept --remove): only this host's copy; the volumes on %s stay", c.name, shared)
-			} else {
+			case shared != "" && onHost: // this host's disk goes; what is on the class stays
+				a.log("removing %s on a person's confirmation (kvoadm host kept --remove): its disk and volumes on this host go, for good; the volumes on %s stay", c.name, shared)
+			default:
 				a.log("removing %s on a person's confirmation (kvoadm host kept --remove): its disk and volumes go", c.name)
 			}
 		}

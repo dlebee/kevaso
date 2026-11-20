@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,9 +45,13 @@ type diskRT struct {
 	*fake.Runtime
 	lv      string
 	removed []string
+	err     error
 }
 
 func (d *diskRT) HasHostStorage(context.Context, kri.ID) (bool, error) {
+	if d.err != nil {
+		return false, d.err
+	}
 	return d.lv != "", nil
 }
 
@@ -250,6 +255,138 @@ func TestAKeptLocalVolumeAdoptsTheReportedGuestKey(t *testing.T) {
 	}
 }
 
+func TestRemovingAKeptCopyOfALocalDiskSaysTheSharedVolumeStays(t *testing.T) {
+	g := newGuardRig(t, nil, nil)
+	g.create(guardSilo("web", func(s *v1.Silo) {
+		s.Spec.Runtime = "cloud-hypervisor"
+		s.Spec.Container = nil
+		s.Spec.VM = &v1.VMSource{Image: "ubuntu-24.04"}
+		s.Spec.Disk = v1.Disk{Size: "20Gi"}
+		s.Spec.Volumes = []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"}}
+	}), "hv2", "")
+	g.cacheIs(g.stored("web"))
+	id := idOf(g.stored("web"))
+	g.a.keptNoted.Store(id.UID, keptCopy{runtime: "cloud-hypervisor", id: id, name: keptName(id, `cloud-hypervisor, stopped`)})
+	dir := t.TempDir()
+	g.a.DeletesFile = filepath.Join(dir, "seen-deletes.json")
+	if err := os.Mkdir(filepath.Join(dir, KeptRemoveDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, KeptRemoveDir, id.UID), []byte("remove\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	g.a.Log = func(f string, args ...any) { lines = append(lines, fmt.Sprintf(f, args...)) }
+	g.a.takeKeptRemovals()
+	got := strings.Join(lines, "\n")
+	if !strings.Contains(got, "for good") || !strings.Contains(got, "the volumes on "+kplugintest.ClassShare+" stay") {
+		t.Fatalf("log:\n%s", got)
+	}
+	if strings.Contains(got, "only this host's copy") {
+		t.Fatalf("a local disk was said to delete only the copy:\n%s", got)
+	}
+}
+
+func TestRemovingAKeptCopySaysWhatThisHostDeletesAndWhatStays(t *testing.T) {
+	g := newGuardRig(t, nil, nil)
+	g.create(mixedSilo("web"), "hv2", "")
+	g.cacheIs(g.stored("web"))
+	id := idOf(g.stored("web"))
+	g.a.keptNoted.Store(id.UID, keptCopy{runtime: "cloud-hypervisor", id: id, name: keptName(id, `cloud-hypervisor, stopped`)})
+	dir := t.TempDir()
+	g.a.DeletesFile = filepath.Join(dir, "seen-deletes.json")
+	if err := os.Mkdir(filepath.Join(dir, KeptRemoveDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, KeptRemoveDir, id.UID), []byte("remove\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	g.a.Log = func(f string, args ...any) { lines = append(lines, fmt.Sprintf(f, args...)) }
+	g.a.writeKeptFile()
+	var list []KeptEntry
+	if err := json.Unmarshal(mustReadFile(t, filepath.Join(dir, KeptFile)), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Shared != kplugintest.ClassShare || !list[0].OnHost {
+		t.Fatalf("kept list: %+v", list)
+	}
+	g.a.takeKeptRemovals()
+	got := strings.Join(lines, "\n")
+	if !strings.Contains(got, "for good") || !strings.Contains(got, "the volumes on "+kplugintest.ClassShare+" stay") {
+		t.Fatalf("log:\n%s", got)
+	}
+	if strings.Contains(got, "only this host's copy") {
+		t.Fatalf("a copy with a disk on this host was said to delete only the copy:\n%s", got)
+	}
+}
+
+// The volume is gone from the spec, but this host still holds its LV. The removal says both.
+func TestRemovingAKeptCopyWithStorageOnTheHostSaysBoth(t *testing.T) {
+	inner := fake.New()
+	rt := &diskRT{Runtime: inner, lv: "kv-web-data"}
+	g := newGuardRig(t, rt, func(a *Agent) {
+		a.Runtimes = map[string]kri.Runtime{"cloud-hypervisor": rt}
+	})
+	g.create(travellingSilo("web", ""), "hv2", "")
+	home := g.stored("web")
+	home.Spec.Volumes = []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"}}
+	g.cacheIs(home)
+	id := idOf(home)
+	g.a.keptNoted.Store(id.UID, keptCopy{runtime: "cloud-hypervisor", id: id, name: keptName(id, `cloud-hypervisor, stopped`)})
+	dir := t.TempDir()
+	g.a.DeletesFile = filepath.Join(dir, "seen-deletes.json")
+	if err := os.Mkdir(filepath.Join(dir, KeptRemoveDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, KeptRemoveDir, id.UID), []byte("remove\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	g.a.Log = func(f string, args ...any) { lines = append(lines, fmt.Sprintf(f, args...)) }
+	g.a.takeKeptRemovals()
+	got := strings.Join(lines, "\n")
+	if !strings.Contains(got, "for good") || !strings.Contains(got, "the volumes on "+kplugintest.ClassShare+" stay") {
+		t.Fatalf("log:\n%s", got)
+	}
+	if strings.Contains(got, "only this host's copy") {
+		t.Fatalf("a copy that holds a disk here was said to delete only the copy:\n%s", got)
+	}
+}
+
+// A list that fails is not "nothing on this host": the removal still says the disk here goes.
+func TestRemovingAKeptCopyDoesNotTreatAFailedListAsNothingHere(t *testing.T) {
+	inner := fake.New()
+	rt := &diskRT{Runtime: inner, err: errors.New("lvs failed")}
+	g := newGuardRig(t, rt, func(a *Agent) {
+		a.Runtimes = map[string]kri.Runtime{"cloud-hypervisor": rt}
+	})
+	g.create(travellingSilo("web", ""), "hv2", "")
+	home := g.stored("web")
+	home.Spec.Volumes = []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"}}
+	g.cacheIs(home)
+	id := idOf(home)
+	g.a.keptNoted.Store(id.UID, keptCopy{runtime: "cloud-hypervisor", id: id, name: keptName(id, `cloud-hypervisor, stopped`)})
+	dir := t.TempDir()
+	g.a.DeletesFile = filepath.Join(dir, "seen-deletes.json")
+	if err := os.Mkdir(filepath.Join(dir, KeptRemoveDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, KeptRemoveDir, id.UID), []byte("remove\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	g.a.Log = func(f string, args ...any) { lines = append(lines, fmt.Sprintf(f, args...)) }
+	g.a.takeKeptRemovals()
+	got := strings.Join(lines, "\n")
+	if !strings.Contains(got, "for good") || !strings.Contains(got, "the volumes on "+kplugintest.ClassShare+" stay") {
+		t.Fatalf("log:\n%s", got)
+	}
+	if strings.Contains(got, "only this host's copy") {
+		t.Fatalf("a copy whose disks could not be listed was said to delete only the copy:\n%s", got)
+	}
+}
+
 func TestRemovingAKeptCopyOfATravellingDiskLeavesTheVolumes(t *testing.T) {
 	g := newGuardRig(t, nil, nil)
 	g.create(travellingSilo("web", ""), "hv2", "")
@@ -291,6 +428,19 @@ func mustReadFile(t *testing.T, p string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func mixedSilo(name string) *v1.Silo {
+	return guardSilo(name, func(s *v1.Silo) {
+		s.Spec.Runtime = "cloud-hypervisor"
+		s.Spec.Container = nil
+		s.Spec.VM = &v1.VMSource{Image: "ubuntu-24.04"}
+		s.Spec.Disk = v1.Disk{Size: "20Gi"}
+		s.Spec.Volumes = []v1.Volume{
+			{Name: "data", MountPath: "/data"},
+			{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"},
+		}
+	})
 }
 
 func travellingSilo(name, localVolume string) *v1.Silo {

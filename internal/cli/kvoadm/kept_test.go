@@ -111,6 +111,25 @@ func TestHostKeptDescribesAPlacedCopyAndDoesNotCallItRemoved(t *testing.T) {
 	}
 }
 
+func TestHostKeptSaysWhatGoesHereAndWhatStays(t *testing.T) {
+	list := `[{"uid":"1111aaaa-0000","namespace":"dev","name":"db","runtime":"cloud-hypervisor","what":"dev/db uid 1111aaaa (cloud-hypervisor, stopped: placed on \"hv2\" with no handoff from this host)","shared":"juicefs","onHost":true}]`
+	h := &keptHost{list: list}
+	var out strings.Builder
+	o := KeptOptions{TrustOptions: TrustOptions{Data: "/var/lib/kevaso"}, Remove: "dev/db/1111aaaa"}
+	o.Address = "203.0.113.20"
+	err := runKept(context.Background(), h, o, bufio.NewReader(strings.NewReader("nope\n")), &out, time.Millisecond)
+	if err == nil {
+		t.Fatal("an unconfirmed removal succeeded")
+	}
+	text := out.String()
+	if !strings.Contains(text, "its disk and its volumes on 203.0.113.20, for good") || !strings.Contains(text, "The volumes on juicefs stay") {
+		t.Fatalf("prompt:\n%s", text)
+	}
+	if strings.Contains(text, "only this host's copy") {
+		t.Fatalf("a copy with a disk on this host was said to delete only the copy:\n%s", text)
+	}
+}
+
 func TestHostKeptSaysATravellingVolumeStays(t *testing.T) {
 	list := `[{"uid":"1111aaaa-0000","namespace":"dev","name":"db","runtime":"cloud-hypervisor","what":"dev/db uid 1111aaaa (cloud-hypervisor, stopped: placed on \"hv2\" with no handoff from this host)","shared":"juicefs"}]`
 	h := &keptHost{list: list}
