@@ -83,6 +83,18 @@ func TestATravellingDiskTrustsTheReportedGuestKey(t *testing.T) {
 	if !strings.Contains(ud, "ssh_deletekeys: true") || !strings.Contains(ud, "ssh_keys:") {
 		t.Fatalf("a new disk was not given a host key:\n%s", ud)
 	}
+	installed := st.HostKey
+	if err := rm.SetGuestHostKey(ctx, sm.ID, pub); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = rm.state(sm.ID)
+	if st.HostKey != installed {
+		t.Fatalf("adopted %q over the key installed on a new image (%q)", st.HostKey, installed)
+	}
+	ud = string(missing.files[NamesFor(sm.ID).Dir+"/user-data"])
+	if !strings.Contains(ud, "ssh_deletekeys: true") || !strings.Contains(ud, "ssh_keys:") {
+		t.Fatalf("adopting rewrote the seed of a new image:\n%s", ud)
+	}
 
 	local := newFakeHost()
 	rl := newRuntime(t, local)
@@ -119,5 +131,40 @@ func TestATravellingDiskTrustsTheReportedGuestKey(t *testing.T) {
 		if strings.Contains(c, "lvremove") || strings.Contains(c, "qemu-img") {
 			t.Fatalf("adopting a key touched a disk: %s", c)
 		}
+	}
+}
+
+// A reset installs a new host key onto a new image. The key the silo reported before that
+// is not adopted over it.
+func TestAResetDoesNotAdoptTheKeyFromBefore(t *testing.T) {
+	ctx := context.Background()
+	pub := testPub(t)
+	dir := "/var/lib/kevaso/volumes/uid-web/disk.root"
+	file := dir + "/" + RootImage
+	h := newFakeHost()
+	if err := h.WriteFile(file, []byte("disk-bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := newRuntime(t, h)
+	sp := spec("web")
+	sp.DiskHostPath = dir
+	sp.GuestHostKey = pub
+	if err := r.Create(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Reset(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	st, ok := r.state(sp.ID)
+	if !ok || st.HostKey == "" || st.HostKey == pub || st.KeyFromDisk {
+		t.Fatalf("reset pinned %q (from disk %v)", st.HostKey, st.KeyFromDisk)
+	}
+	installed := st.HostKey
+	if err := r.SetGuestHostKey(ctx, sp.ID, pub); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = r.state(sp.ID)
+	if st.HostKey != installed {
+		t.Fatalf("adopted %q over the key a reset installed (%q)", st.HostKey, installed)
 	}
 }

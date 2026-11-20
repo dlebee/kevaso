@@ -5619,5 +5619,41 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a disk that travels keeps the guest host key it already has"
+ },
+ {
+  "id": "G-875",
+  "guard": "a reported key is adopted only for a copy made onto an image that was already there",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if !st.KeyFromDisk { // this copy was made onto a new image; its key was installed then",
+  "replace": "if false { // this copy was made onto a new image; its key was installed then",
+  "mutation": "a new image is given a key the guest does not have",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a key installed onto a new image is the one the guest has"
+ },
+ {
+  "id": "G-876",
+  "guard": "a copy made onto an image that was already there may adopt the reported key",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "keyFromDisk = true",
+  "replace": "keyFromDisk = false",
+  "mutation": "a reported key is never adopted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a host trusts the guest host key of a disk that was already there"
+ },
+ {
+  "id": "G-877",
+  "guard": "a reset installs its own key and does not keep the previous one adoptable",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk = hostPub, false, true, nil, false",
+  "replace": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk = hostPub, false, true, nil, true",
+  "mutation": "a reset's new key is replaced by the one from before",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset's guest host key is the one installed onto the new image"
  }
 ]

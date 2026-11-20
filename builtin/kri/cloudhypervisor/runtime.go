@@ -59,6 +59,10 @@ type State struct {
 	// class's folder holding its root disk image (spec.disk.class).
 	Volumes []kri.Volume `json:"volumes,omitempty"`
 	RootDir string       `json:"rootDir,omitempty"`
+	// KeyFromDisk is set when this copy was created onto a root image that was already
+	// there, so the guest already has its host key. A key generated for a new image stays:
+	// adopting the reported one would pin a key the guest does not have.
+	KeyFromDisk bool `json:"keyFromDisk,omitempty"`
 	// Remake, if set, says its root disk is being made afresh (a reset) and isn't to be trusted:
 	// saved before the first destructive step (lvremove), cleared after the last. A reset cut
 	// there (kevasod stopped, a kill) is finished by the next Start before the VM boots, and the
@@ -312,6 +316,7 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	if err != nil {
 		return err
 	}
+	keyFromDisk := false
 	if spec.GuestHostKey != "" && spec.DiskHostPath != "" { // trust a reported key only for a disk that travels
 		file := filepath.Join(spec.DiskHostPath, RootImage)
 		_, probeErr := r.Host.Run(ctx, "test", "-e", file)
@@ -322,10 +327,11 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 				return fmt.Errorf("guest host key: %w", perr)
 			}
 			hostPub, hostPriv = pub, ""
+			keyFromDisk = true
 		}
 	}
 	st := State{ID: spec.ID, IP: ip.String(), MAC: MAC(spec.ID), HostKey: hostPub, CPUs: cpus, MemMiB: mem >> 20,
-		Volumes: spec.Volumes, RootDir: spec.DiskHostPath}
+		Volumes: spec.Volumes, RootDir: spec.DiskHostPath, KeyFromDisk: keyFromDisk}
 	layout := st.layout()
 
 	if err := r.run(ctx, "install", "-d", "-m", "0700", "-o", VMMUser, "-g", VMMUser, n.Dir); err != nil {
@@ -421,7 +427,8 @@ func (r *Runtime) GuestHostKey(id kri.ID) (string, bool) {
 
 // SetGuestHostKey implements kri.GuestHostKeySetter. A disk that travelled keeps the guest's
 // host key; this host pins the one the silo reports and rebuilds the seed so cloud-init does
-// not replace it. A host-local disk is left alone, and nothing of the disk is removed.
+// not replace it, when this copy was created onto an image that was already there. A host-local
+// disk is left alone, and so is a key installed onto a new image. Nothing of the disk is removed.
 func (r *Runtime) SetGuestHostKey(ctx context.Context, id kri.ID, pub string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -431,6 +438,9 @@ func (r *Runtime) SetGuestHostKey(ctx context.Context, id kri.ID, pub string) er
 		return nil
 	}
 	if st.RootDir == "" { // a host-local disk did not travel; its key stays
+		return nil
+	}
+	if !st.KeyFromDisk { // this copy was made onto a new image; its key was installed then
 		return nil
 	}
 	if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(pub)); err != nil {
@@ -1241,7 +1251,7 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 			return err
 		}
 	}
-	st.HostKey, st.Started, st.Made, st.Remake = hostPub, false, true, nil
+	st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk = hostPub, false, true, nil, false
 	return r.saveState(st)
 }
 
