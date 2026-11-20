@@ -5444,8 +5444,8 @@
   "id": "G-853",
   "guard": "a kept travelling copy is not resumed when the silo returns",
   "file": "internal/agent/agent.go",
-  "find": "if _, kept := a.keptNoted.Load(id.UID); kept && drop { // a kept copy of a disk that travelled",
-  "replace": "if _, kept := a.keptNoted.Load(id.UID); false && kept && drop { // a kept copy of a disk that travelled",
+  "find": "if drop { // a kept copy of a disk that travelled",
+  "replace": "if false && drop { // a kept copy of a disk that travelled",
   "mutation": "a kept copy is started again when the silo comes back",
   "packages": [
    "./internal/agent"
@@ -5799,5 +5799,29 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a kept copy takes the guest host key a reset on another host installed"
+ },
+ {
+  "id": "G-895",
+  "guard": "only a kept copy placed here is asked what it holds",
+  "file": "internal/agent/agent.go",
+  "find": "if _, kept := a.keptNoted.Load(id.UID); kept { // only a kept copy is asked what it holds",
+  "replace": "if true { // only a kept copy is asked what it holds",
+  "mutation": "every reconcile of a travelling silo lists its disks",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a travelling silo placed here is not failed by a list of disks"
+ },
+ {
+  "id": "G-896",
+  "guard": "a drop asks about the listed copy",
+  "file": "internal/agent/agent.go",
+  "find": "own, err := a.hostStorage(ctx, rt, id, s) // the listed copy",
+  "replace": "own, err := a.hostStorage(ctx, rt, idOf(s), s) // the listed copy",
+  "mutation": "a drop asks about the silo instead of the listed copy",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a drop of an older copy asks what that copy holds"
  }
 ]

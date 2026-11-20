@@ -61,9 +61,11 @@ type diskRT struct {
 	lv      string
 	removed []string
 	err     error
+	asked   kri.ID
 }
 
-func (d *diskRT) HasHostStorage(context.Context, kri.ID) (bool, error) {
+func (d *diskRT) HasHostStorage(_ context.Context, id kri.ID) (bool, error) {
+	d.asked = id
 	if d.err != nil {
 		return false, d.err
 	}
@@ -87,6 +89,48 @@ func (d *diskRT) Delete(ctx context.Context, id kri.ID) error {
 
 // A local volume taken out of the spec is still on this host. Placing the silo elsewhere,
 // with no handoff, must not lvremove it, and the copy stays.
+// A travelling microVM placed on this host is not asked what its disks are. A list that
+// fails must not fail a healthy silo.
+func TestAPlacedTravellingSiloDoesNotListItsDisks(t *testing.T) {
+	inner := fake.New()
+	rt := &diskRT{Runtime: inner, err: errors.New("lvs failed")}
+	g := newGuardRig(t, rt, func(a *Agent) {
+		a.Runtimes = map[string]kri.Runtime{"cloud-hypervisor": rt}
+	})
+	g.rt = inner
+	s := g.create(travellingSilo("web", ""), "hv1", "")
+	g.runtimeCopy(s, kri.Created)
+	g.cacheIs(g.stored("web"))
+	if err := g.a.removeEverywhere(g.ctx, engine.Key{Kind: "Silo", Namespace: "dev", Name: "web"}, g.stored("web")); err != nil {
+		t.Fatal(err)
+	}
+	if rt.asked != (kri.ID{}) {
+		t.Fatalf("a silo placed here was asked what it holds: %v", rt.asked)
+	}
+	if ids, _ := inner.List(g.ctx); len(ids) != 1 || ids[0].UID != s.UID {
+		t.Fatalf("the copy: %v", ids)
+	}
+}
+
+// The drop asks about the listed copy, which can be an older one than the silo now stored.
+func TestTravelsWithoutLocalDiskAsksAboutTheListedCopy(t *testing.T) {
+	inner := fake.New()
+	rt := &diskRT{Runtime: inner}
+	g := newGuardRig(t, rt, func(a *Agent) {
+		a.Runtimes = map[string]kri.Runtime{"cloud-hypervisor": rt}
+	})
+	s := g.create(travellingSilo("web", ""), "hv2", "")
+	copyID := idOf(s)
+	copyID.UID = "older-copy"
+	drop, err := g.a.travelsWithoutLocalDisk(g.ctx, rt, copyID, s)
+	if err != nil || !drop {
+		t.Fatalf("drop %v %v", drop, err)
+	}
+	if rt.asked != copyID {
+		t.Fatalf("asked %v, want the listed copy %v", rt.asked, copyID)
+	}
+}
+
 func TestAVolumeTakenOutOfTheSpecIsKeptWhenTheCopyIsDropped(t *testing.T) {
 	inner := fake.New()
 	const lv = "kv-web-data"

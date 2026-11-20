@@ -1739,16 +1739,18 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			}
 			listed[id.UID] = true
 			if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {
-				drop, err := a.travelsWithoutLocalDisk(ctx, rt, s)
-				if err != nil {
-					return err
-				}
-				if _, kept := a.keptNoted.Load(id.UID); kept && drop { // a kept copy of a disk that travelled
-					a.log("dropping %s on %s: it was kept here and its disk travels on %s, so this host starts from the silo's current state", id, rt.Info().Name, sharedClasses(s))
-					if err := a.forgetCopy(ctx, rt, id, s); err != nil {
+				if _, kept := a.keptNoted.Load(id.UID); kept { // only a kept copy is asked what it holds
+					drop, err := a.travelsWithoutLocalDisk(ctx, rt, id, s)
+					if err != nil {
 						return err
 					}
-					continue
+					if drop { // a kept copy of a disk that travelled
+						a.log("dropping %s on %s: it was kept here and its disk travels on %s, so this host starts from the silo's current state", id, rt.Info().Name, sharedClasses(s))
+						if err := a.forgetCopy(ctx, rt, id, s); err != nil {
+							return err
+						}
+						continue
+					}
 				}
 				a.keptNoted.Delete(id.UID) // known and placed here (again): no longer a kept copy
 				a.dropRemovalConfirmation(id.UID)
@@ -1786,7 +1788,7 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 					a.keptNoted.Delete(id.UID) // placed here again: no longer a kept copy
 					continue                   // the reconcile goes on with it
 				}
-				drop, err := a.travelsWithoutLocalDisk(ctx, rt, s)
+				drop, err := a.travelsWithoutLocalDisk(ctx, rt, id, s)
 				if err != nil {
 					return err
 				}
@@ -1969,14 +1971,14 @@ func (a *Agent) historyPlaced(uid string) string {
 // where the class put it) and is dropped, so a later return starts from the silo's current state.
 // What the copy holds is read from the host, not from the spec: a volume taken out of the spec
 // keeps its logical volume until the silo is deleted.
-func (a *Agent) travelsWithoutLocalDisk(ctx context.Context, rt kri.Runtime, s *v1.Silo) (bool, error) {
+func (a *Agent) travelsWithoutLocalDisk(ctx context.Context, rt kri.Runtime, id kri.ID, s *v1.Silo) (bool, error) {
 	if s == nil {
 		return false, nil
 	}
 	if _, ok := v1.DiskVolume(s); !ok {
 		return false, nil
 	}
-	own, err := a.hostStorage(ctx, rt, idOf(s), s)
+	own, err := a.hostStorage(ctx, rt, id, s) // the listed copy
 	if err != nil {
 		return false, err
 	}
