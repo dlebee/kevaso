@@ -144,6 +144,7 @@ func NewRuntimes(cfg Config) (map[string]Installer, error) {
 			}
 			out[name] = chInstaller{Runtime: &cloudhypervisor.Runtime{
 				Host: cloudhypervisor.Local{}, Arch: Arch(), ExecKey: signer, ExecPub: pub, Version: cloudhypervisor.Version,
+				HostName: cfg.HostName,
 			}, storage: cfg.Storage}
 		case "docker", "podman":
 			self, _ := os.Executable()

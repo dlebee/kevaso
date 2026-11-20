@@ -120,8 +120,15 @@ func runKept(ctx context.Context, h hostRunner, o KeptOptions, in *bufio.Reader,
 	if strings.Contains(e.What, "stopped:") {
 		held = "The control plane still has this silo: this host keeps a stopped copy, and removing it deletes only what is on this host."
 	}
-	_, _ = fmt.Fprintf(out, "%s keeps %s/%s (uid %s, %s): %s.\nRemoving it deletes the copy, its disk and its volumes on %s, for good. %s\n",
-		o.Address, e.Namespace, e.Name, e.UID, e.Runtime, e.What, o.Address, held)
+	removing := fmt.Sprintf("Removing it deletes the copy, its disk and its volumes on %s, for good.", o.Address)
+	switch {
+	case e.Shared != "" && e.OnHost: // this host's disk goes; what is on the class stays
+		removing = fmt.Sprintf("Removing it deletes the copy, its disk and its volumes on %s, for good. The volumes on %s stay.", o.Address, e.Shared)
+	case e.Shared != "":
+		removing = fmt.Sprintf("Removing it deletes only this host's copy; the volumes on %s stay.", e.Shared)
+	}
+	_, _ = fmt.Fprintf(out, "%s keeps %s/%s (uid %s, %s): %s.\n%s %s\n",
+		o.Address, e.Namespace, e.Name, e.UID, e.Runtime, e.What, removing, held)
 	if !o.Yes {
 		_, _ = fmt.Fprintf(out, "Type the silo's name (%s/%s) to remove it: ", e.Namespace, e.Name)
 		line, _ := readLine(in)

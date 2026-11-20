@@ -57,6 +57,10 @@ type Spec struct {
 	// keeps a VM's own disk as an image file instead of host-local storage, so the disk moves with
 	// the silo. Only one host has it mounted at a time; the runtime reuses an image already there.
 	DiskHostPath string
+	// GuestHostKey, if set, is the guest SSH host key (an authorized_keys line) the silo
+	// reports. When the travelling disk is already there, the runtime pins this key instead
+	// of generating one, so it trusts the key the guest has.
+	GuestHostKey string
 }
 
 // Volume is extra storage mounted in the silo.
@@ -82,6 +86,31 @@ type VolumeSetter interface {
 // runs, before its secrets are written and its init steps run; it is idempotent.
 type GuestVolumes interface {
 	MountGuestVolumes(ctx context.Context, id ID) error
+}
+
+// GuestHostKeySource is a runtime that pins a guest SSH host key and can say which one.
+type GuestHostKeySource interface {
+	GuestHostKey(id ID) (string, bool)
+}
+
+// GuestHostKeySetter replaces the key a host trusts for a guest whose disk travelled, without
+// touching that disk. A host-local disk is left as it is.
+type GuestHostKeySetter interface {
+	SetGuestHostKey(ctx context.Context, id ID, pub string) error
+}
+
+// HostStorage is a runtime that can say whether a copy holds storage of its own on this host:
+// a root logical volume, or any volume logical volume of that silo. A volume taken out of the
+// spec keeps its volume until the silo is deleted, so the spec is not the answer.
+type HostStorage interface {
+	HasHostStorage(ctx context.Context, id ID) (bool, error)
+}
+
+// HostVolume is a runtime that can say whether a copy holds a volume logical volume on this
+// host (a name kv-…-), apart from its root disk. A handoff keeps the copy for that volume.
+// The root disk is not one: a recreate removes it with the copy.
+type HostVolume interface {
+	HasHostVolume(ctx context.Context, id ID) (bool, error)
 }
 
 // InitStep is one init step (design §0.2): a script run by a shell or any interpreter.

@@ -128,17 +128,25 @@ func UserData(execPub, hostPriv, hostPub string) string {
 	indent := func(s string) string {
 		return "      " + strings.ReplaceAll(strings.TrimSpace(s), "\n", "\n      ")
 	}
-	return `#cloud-config
-users: []
-disable_root: false
-ssh_pwauth: false
-ssh_deletekeys: true
+	// An empty private key means the guest already has hostPub (a disk that travelled).
+	// A new instance must not replace those keys.
+	keys := `ssh_deletekeys: false
+ssh_genkeytypes: []
+`
+	if strings.TrimSpace(hostPriv) != "" {
+		keys = `ssh_deletekeys: true
 ssh_genkeytypes: []
 ssh_keys:
   ed25519_private: |
 ` + indent(hostPriv) + `
   ed25519_public: ` + strings.TrimSpace(hostPub) + `
-growpart: { mode: auto, devices: ["/"] }
+`
+	}
+	return `#cloud-config
+users: []
+disable_root: false
+ssh_pwauth: false
+` + keys + `growpart: { mode: auto, devices: ["/"] }
 # A disk that moved here holds the last host's exec key: replace it at every boot, before ssh lets
 # anyone in, instead of only in the final stage (write_files below, deferred).
 bootcmd:
@@ -175,9 +183,11 @@ func yamlQuote(s string) string {
 
 // MetaData is cloud-init's instance identity. Each new seed (a create, a reset, a create on
 // another host for a disk that moved) is a new instance, so cloud-init applies this host's keys,
-// address and host key to a disk that has booted before.
-func MetaData(id kri.ID, hostPub string) string {
-	h := sha256.Sum256([]byte(hostPub))
+// address and host key to a disk that has booted before. hostName is this machine's own name.
+// The bridge gateway is 10.64.0.1 on every host that is not on the mesh, so it cannot tell two
+// hosts apart; the name can. A reboot keeps the name, and the id with it.
+func MetaData(id kri.ID, hostPub, hostName string) string {
+	h := sha256.Sum256([]byte(hostPub + "\n" + hostName)) // this host's name, not only the guest key
 	return "instance-id: " + id.UID + "-" + hex.EncodeToString(h[:4]) + "\nlocal-hostname: " + id.Name + "\n"
 }
 

@@ -661,6 +661,11 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 			return engine.Result{RequeueAfter: time.Millisecond}, err
 		}
 	}
+	if rs.State != kri.Absent {
+		if err := a.adoptGuestHostKey(ctx, rt, s); err != nil {
+			return engine.Result{}, err
+		}
+	}
 	switch rs.State {
 	case kri.Absent:
 		a.endClaim(s.UID) // nothing of it here: no start of it runs (review-batch3 C)
@@ -690,7 +695,7 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 		digest, err := a.pull(ctx, rt, s, image)
 		if err == nil {
 			err = rt.Create(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
-				Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath})
+				Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath, GuestHostKey: guestHostKeyFor(s)})
 		}
 		if err != nil {
 			wait := a.createFailed(s)
@@ -997,6 +1002,9 @@ func (a *Agent) reconcileRunning(ctx, inside context.Context, rt kri.Runtime, s 
 	if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		a.volumesResponding(s, st, bad, dirs)
 		st.Phase, st.SiloIP = PhaseRunning, rs.Address
+		if key, ok := guestKeyOf(rt, idOf(s)); ok && st.GuestHostKey != key {
+			st.GuestHostKey = key
+		}
 		if st.Image == nil || st.Image.Running == "" {
 			st.Image = running(st.Image, s, image) // created before images were recorded
 		}
@@ -1390,7 +1398,9 @@ func (a *Agent) writeStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.Sil
 		}
 		before := statusKey(cur.Status)
 		mutate(&cur.Status)
-		cur.Status.Routing = routing.Silo(cur.Spec, cur.Status) // always as its status says now
+		if !away { // an away write leaves routing as stored
+			cur.Status.Routing = routing.Silo(cur.Spec, cur.Status)
+		}
 		if statusKey(cur.Status) == before {
 			return nil
 		}
@@ -1729,6 +1739,19 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			}
 			listed[id.UID] = true
 			if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {
+				if _, kept := a.keptNoted.Load(id.UID); kept { // only a kept copy is asked what it holds
+					drop, err := a.travelsWithoutLocalDisk(ctx, rt, id, s)
+					if err != nil {
+						return err
+					}
+					if drop { // a kept copy of a disk that travelled
+						a.log("dropping %s on %s: it was kept here and its disk travels on %s, so this host starts from the silo's current state", id, rt.Info().Name, sharedClasses(s))
+						if err := a.forgetCopy(ctx, rt, id, s); err != nil {
+							return err
+						}
+						continue
+					}
+				}
 				a.keptNoted.Delete(id.UID) // known and placed here (again): no longer a kept copy
 				a.dropRemovalConfirmation(id.UID)
 				continue
@@ -1765,6 +1788,17 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 					a.keptNoted.Delete(id.UID) // placed here again: no longer a kept copy
 					continue                   // the reconcile goes on with it
 				}
+				drop, err := a.travelsWithoutLocalDisk(ctx, rt, id, s)
+				if err != nil {
+					return err
+				}
+				if drop {
+					a.log("dropping %s on %s: its disk travels on %s, so this host holds no disk of its own (%s)", id, rt.Info().Name, sharedClasses(s), why)
+					if err := a.forgetCopy(ctx, rt, id, s); err != nil {
+						return err
+					}
+					continue
+				}
 				if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
 					return err
 				}
@@ -1778,42 +1812,68 @@ func (a *Agent) removeEverywhere(ctx context.Context, k engine.Key, s *v1.Silo) 
 			// them (every runtime removes a silo's local volumes on Delete). A volume is kept data
 			// (design §0.3): admission never lets such a silo be recreated elsewhere, so this
 			// shouldn't happen; if it does, stop the copy and keep it.
-			if local := hostLocalVolumes(s); why == whyHandoff && len(local) > 0 {
-				if _, seen := a.heldBack.LoadOrStore(id.UID, struct{}{}); !seen {
-					a.log("%s isn't placed here any more (host %q), but keeps local volume(s) %s here: stopped, not removed (delete the silo to remove them)",
-						id, s.Status.Host, strings.Join(local, ", "))
-					if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
-						a.heldBack.Delete(id.UID)
-						return err
-					}
+			if why == whyHandoff {
+				own, err := a.hostVolume(ctx, rt, id, s) // a handoff holds back a volume LV, not the root disk
+				if err != nil {
+					return err
 				}
-				continue
+				if own { // a disk on this host stays until the silo is deleted
+					names := hostLocalVolumes(s)
+					what := "a disk of its own"
+					if len(names) > 0 {
+						what = "local volume(s) " + strings.Join(names, ", ")
+					}
+					placed := ""
+					if s != nil {
+						placed = s.Status.Host
+					}
+					if _, seen := a.heldBack.LoadOrStore(id.UID, struct{}{}); !seen {
+						a.log("%s isn't placed here any more (host %q), but keeps %s here: stopped, not removed (delete the silo to remove them)",
+							id, placed, what)
+						if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
+							a.heldBack.Delete(id.UID)
+							return err
+						}
+					}
+					continue
+				}
 			}
 			a.heldBack.Delete(id.UID)
 			a.log("removing %s from %s", id, rt.Info().Name)
-			if a.endpoint != nil {
-				a.endpoint.Unregister(id.UID)
-			}
-			a.stopPanes(id.UID)
-			a.delivered.Delete(id.UID)
-			a.guestMounted.Delete(id.UID)
-			a.kept.Delete(id.UID)
-			if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
+			if err := a.forgetCopy(ctx, rt, id, s); err != nil {
 				return err
 			}
-			if err := rt.Delete(ctx, id); err != nil {
-				return err
-			}
-			if err := a.unmountVolumes(ctx, id.UID, s); err != nil {
-				return err
-			}
-			a.forgetDelete(id.UID) // nothing of it left here
-			a.forgetApplied(id.UID)
-			a.forgetPlaced(id.UID)
-			a.removalDone(id.UID)
 		}
 	}
 	return a.stopUnlisted(ctx, k, s, listed)
+}
+
+// forgetCopy removes this host's runtime state for id and unmounts what this host mounted.
+// A root image on a travelling class is not this host's file: the runtime leaves it.
+func (a *Agent) forgetCopy(ctx context.Context, rt kri.Runtime, id kri.ID, s *v1.Silo) error {
+	if err := rt.Stop(ctx, id); err != nil && !errors.Is(err, kri.ErrNotFound) {
+		return err
+	}
+	if err := a.unmountVolumes(ctx, id.UID, s); err != nil { // the mount record, before this copy is forgotten
+		return err
+	}
+	a.keptNoted.Delete(id.UID)
+	a.heldBack.Delete(id.UID)
+	if a.endpoint != nil {
+		a.endpoint.Unregister(id.UID)
+	}
+	a.stopPanes(id.UID)
+	a.delivered.Delete(id.UID)
+	a.guestMounted.Delete(id.UID)
+	a.kept.Delete(id.UID)
+	if err := rt.Delete(ctx, id); err != nil {
+		return err
+	}
+	a.forgetDelete(id.UID) // nothing of it left here
+	a.forgetApplied(id.UID)
+	a.forgetPlaced(id.UID)
+	a.removalDone(id.UID)
+	return nil
 }
 
 const whyHandoff = "handed off from here"
@@ -1904,6 +1964,137 @@ func (a *Agent) historyPlaced(uid string) string {
 		return historyNotRecorded
 	}
 	return a.historyAtStart
+}
+
+// travelsWithoutLocalDisk reports that s's root disk is on a class that travels and this host
+// holds no storage of its own for it. A kept copy then has no disk to keep (the image stays
+// where the class put it) and is dropped, so a later return starts from the silo's current state.
+// What the copy holds is read from the host, not from the spec: a volume taken out of the spec
+// keeps its logical volume until the silo is deleted.
+func (a *Agent) travelsWithoutLocalDisk(ctx context.Context, rt kri.Runtime, id kri.ID, s *v1.Silo) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	if _, ok := v1.DiskVolume(s); !ok {
+		return false, nil
+	}
+	own, err := a.hostStorage(ctx, rt, id, s) // the listed copy
+	if err != nil {
+		return false, err
+	}
+	return !own, nil // a host-local volume is a disk this host owns
+}
+
+// hostStorage reports whether this host holds storage for id that deleting the copy would
+// remove: a root LV, or any volume LV of that silo. A runtime that can look says so from the
+// host. One that cannot is answered from the spec's host-local volumes.
+func (a *Agent) hostStorage(ctx context.Context, rt kri.Runtime, id kri.ID, s *v1.Silo) (bool, error) {
+	if d, ok := rt.(kri.HostStorage); ok { // what this copy holds on this host, not the spec
+		return d.HasHostStorage(ctx, id)
+	}
+	return len(hostLocalVolumes(s)) > 0, nil
+}
+
+// hostVolume reports whether this host holds a volume LV of id (a name kv-…-), not its root
+// disk. A handoff keeps the copy for that volume and removes a root disk with the copy. A
+// runtime that cannot say is answered from the spec's host-local volumes.
+func (a *Agent) hostVolume(ctx context.Context, rt kri.Runtime, id kri.ID, s *v1.Silo) (bool, error) {
+	if d, ok := rt.(kri.HostVolume); ok { // a volume LV, not the root disk
+		return d.HasHostVolume(ctx, id)
+	}
+	return len(hostLocalVolumes(s)) > 0, nil
+}
+
+// copyOnHost reports whether deleting this copy removes a disk or volume on this host.
+// It is the same question as a drop: what the copy holds here, not only what the spec lists.
+// A runtime that cannot say is answered from the spec: a root disk that does not travel, or a
+// host-local volume.
+func (a *Agent) copyOnHost(ctx context.Context, rt kri.Runtime, id kri.ID, s *v1.Silo) bool {
+	if d, ok := rt.(kri.HostStorage); ok { // the same question as a drop: what this host holds
+		own, err := d.HasHostStorage(ctx, id)
+		if err != nil { // a failed list is not nothing on this host
+			return true
+		}
+		return own
+	}
+	if s != nil {
+		if _, travels := v1.DiskVolume(s); !travels {
+			return true // the root disk is on this host
+		}
+	}
+	return len(hostLocalVolumes(s)) > 0
+}
+
+// keptClasses is what a kept-copy removal should say: the travelling classes, and whether
+// this host also holds a disk or volume of the copy.
+func (a *Agent) keptClasses(c keptCopy) (shared string, onHost bool) {
+	s := a.siloCached(c.id)
+	shared = sharedClasses(s)
+	if shared == "" {
+		return "", false
+	}
+	var rt kri.Runtime
+	if a.Runtimes != nil {
+		rt = a.Runtimes[c.runtime]
+	}
+	return shared, a.copyOnHost(context.Background(), rt, c.id, s)
+}
+
+// sharedClasses lists the storage classes of s's travelling disk and volumes, in spec order.
+func sharedClasses(s *v1.Silo) string {
+	if s == nil {
+		return ""
+	}
+	var cs []string
+	seen := map[string]bool{}
+	add := func(c string) {
+		if c == "" || c == v1.VolumeLocal || seen[c] {
+			return
+		}
+		seen[c] = true
+		cs = append(cs, c)
+	}
+	if d, ok := v1.DiskVolume(s); ok {
+		add(d.Class)
+	}
+	for _, v := range s.Spec.Volumes {
+		add(v.Class)
+	}
+	return strings.Join(cs, ", ")
+}
+
+// guestHostKeyFor is the guest host key a create should trust: the one the silo reports, and
+// only when its disk travels. A host-local disk keeps the key stored with it.
+func guestHostKeyFor(s *v1.Silo) string {
+	if s == nil {
+		return ""
+	}
+	if _, ok := v1.DiskVolume(s); !ok { // a host-local disk did not travel
+		return ""
+	}
+	return strings.TrimSpace(s.Status.GuestHostKey)
+}
+
+func guestKeyOf(rt kri.Runtime, id kri.ID) (string, bool) {
+	src, ok := rt.(kri.GuestHostKeySource)
+	if !ok {
+		return "", false
+	}
+	return src.GuestHostKey(id)
+}
+
+// adoptGuestHostKey pins the key the silo reports when this host still has state for a
+// travelling disk (a host-local volume kept the copy here). The disk itself is not touched.
+func (a *Agent) adoptGuestHostKey(ctx context.Context, rt kri.Runtime, s *v1.Silo) error {
+	key := guestHostKeyFor(s)
+	if key == "" {
+		return nil
+	}
+	setter, ok := rt.(kri.GuestHostKeySetter)
+	if !ok {
+		return nil
+	}
+	return setter.SetGuestHostKey(ctx, idOf(s), key)
 }
 
 // hostLocalVolumes are the names of s's volumes on this host's own disks (class local).

@@ -495,6 +495,10 @@ type SiloStatus struct {
 	Restarts  *LivenessRestarts `json:"restarts,omitempty"`
 	// Routing is whether its own service gets traffic now (routeWhen), and why not.
 	Routing *Routing `json:"routing,omitempty"`
+	// GuestHostKey is the guest SSH host key (an authorized_keys line) pinned by the host
+	// that runs the silo. A disk that travels keeps that key; the next host trusts this
+	// one instead of a key it saved the last time the silo was there.
+	GuestHostKey string `json:"guestHostKey,omitempty"`
 	// Restore is the control plane's mark for a restored history: pending until every host has
 	// reported, settled once the placement is known, frozen when two or more hosts report a
 	// copy (or one does, and the stored host is live and holds nothing). A worker's write of

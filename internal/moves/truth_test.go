@@ -92,7 +92,11 @@ func TestPropertyHostWrites(t *testing.T) {
 			case next.Host != old.Host:
 				fail("it placed the silo")
 			case old.Host != host && !handingOff:
-				fail("not its silo")
+				// The silo has left, with no handoff under way. The host a volume is still
+				// attached to may record that it is unmounted, and nothing else.
+				if old.MovingFrom != "" || !clearedOwnMount(old, next, host) {
+					fail("not its silo")
+				}
 			case next.MovingFrom != old.MovingFrom && (!handingOff || next.MovingFrom != ""):
 				fail("it changed who is letting go")
 			case len(next.Volumes) != len(old.Volumes):

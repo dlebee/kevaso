@@ -59,6 +59,15 @@ type State struct {
 	// class's folder holding its root disk image (spec.disk.class).
 	Volumes []kri.Volume `json:"volumes,omitempty"`
 	RootDir string       `json:"rootDir,omitempty"`
+	// KeyFromDisk is set when this copy was created onto a root image that was already
+	// there, so the guest already has its host key. A key generated for a new image stays:
+	// adopting the reported one would pin a key the guest does not have.
+	KeyFromDisk bool `json:"keyFromDisk,omitempty"`
+	// KeyImage names the root image this copy installed its key onto: the file's
+	// inode and, when the filesystem keeps one, its birth time. It is kept in this
+	// host's state, outside the disk folder. A reset elsewhere renames a new file
+	// over root.raw, so the name changes and this copy adopts the key of that image.
+	KeyImage string `json:"keyImage,omitempty"`
 	// Remake, if set, says its root disk is being made afresh (a reset) and isn't to be trusted:
 	// saved before the first destructive step (lvremove), cleared after the last. A reset cut
 	// there (kevasod stopped, a kill) is finished by the next Start before the VM boots, and the
@@ -99,6 +108,10 @@ type Runtime struct {
 	ExecPub string // authorized_keys line for ExecKey
 	DialSSH func(ctx context.Context, addr string, cfg *ssh.ClientConfig) (*ssh.Client, error)
 	Version string
+	// HostName is this machine's own name. It is part of a guest's instance id, so a disk that
+	// arrives here is a new instance even when every host's bridge gateway is the same. A reboot
+	// keeps the name.
+	HostName string
 	// ExecCheck, if set, replaces ExecCheckEvery (tests).
 	ExecCheck time.Duration
 	mu        sync.Mutex // allocations (IP) and create/delete
@@ -312,8 +325,22 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 	if err != nil {
 		return err
 	}
+	keyFromDisk := false
+	if spec.GuestHostKey != "" && spec.DiskHostPath != "" { // trust a reported key only for a disk that travels
+		file := filepath.Join(spec.DiskHostPath, RootImage)
+		_, probeErr := r.Host.Run(ctx, "test", "-e", file)
+		missing, merr := probeMissing(probeErr)
+		if merr == nil && !missing { // the image is already the guest's
+			pub := strings.TrimSpace(spec.GuestHostKey)
+			if _, _, _, _, perr := ssh.ParseAuthorizedKey([]byte(pub)); perr != nil {
+				return fmt.Errorf("guest host key: %w", perr)
+			}
+			hostPub, hostPriv = pub, ""
+			keyFromDisk = true
+		}
+	}
 	st := State{ID: spec.ID, IP: ip.String(), MAC: MAC(spec.ID), HostKey: hostPub, CPUs: cpus, MemMiB: mem >> 20,
-		Volumes: spec.Volumes, RootDir: spec.DiskHostPath}
+		Volumes: spec.Volumes, RootDir: spec.DiskHostPath, KeyFromDisk: keyFromDisk}
 	layout := st.layout()
 
 	if err := r.run(ctx, "install", "-d", "-m", "0700", "-o", VMMUser, "-g", VMMUser, n.Dir); err != nil {
@@ -333,9 +360,22 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 			return err
 		},
 		func() error {
+			if keyFromDisk || spec.DiskHostPath == "" { // a host-local disk, or a key already taken from the image
+				return nil
+			}
+			id, err := r.imageID(ctx, spec.DiskHostPath)
+			if err != nil {
+				return err
+			}
+			st.KeyImage = id // this copy made the image, or is booting the one already there
+			return nil
+		},
+		func() error {
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
 		},
-		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID, hostPub)), 0o600) },
+		func() error {
+			return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID, hostPub, r.HostName)), 0o600)
+		},
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, spec.ID.Namespace)), 0o600)
 		},
@@ -393,6 +433,134 @@ func newHostKey() (pub, privPEM string, err error) {
 		return "", "", err
 	}
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sp))), string(pem.EncodeToMemory(blk)), nil
+}
+
+// GuestHostKey implements kri.GuestHostKeySource.
+func (r *Runtime) GuestHostKey(id kri.ID) (string, bool) {
+	st, ok := r.state(id)
+	key := strings.TrimSpace(st.HostKey)
+	if !ok || key == "" {
+		return "", false
+	}
+	return key, true
+}
+
+// SetGuestHostKey implements kri.GuestHostKeySetter. A disk that travelled keeps the guest's
+// host key; this host pins the one the silo reports and rebuilds the seed so cloud-init does
+// not replace it, when the image this copy boots is the one that key belongs to. A host-local
+// disk is left alone, and so is a key this copy installed onto an image it still boots.
+// Nothing of the disk is removed.
+func (r *Runtime) SetGuestHostKey(ctx context.Context, id kri.ID, pub string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st, ok := r.state(id)
+	pub = strings.TrimSpace(pub)
+	if !ok || pub == "" || pub == strings.TrimSpace(st.HostKey) {
+		return nil
+	}
+	if st.RootDir == "" { // a host-local disk did not travel; its key stays
+		return nil
+	}
+	if !r.mayAdoptKey(ctx, st) { // this copy's image is not the one the reported key belongs to
+		return nil
+	}
+	if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(pub)); err != nil {
+		return fmt.Errorf("guest host key: %w", err)
+	}
+	ip, err := netip.ParseAddr(st.IP)
+	if err != nil {
+		return err
+	}
+	n := NamesFor(id)
+	if err := r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, "", pub)), 0o600); err != nil {
+		return err
+	}
+	if err := r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(id, pub, r.HostName)), 0o600); err != nil {
+		return err
+	}
+	if err := r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, id.Namespace)), 0o600); err != nil {
+		return err
+	}
+	if err := r.run(ctx, "cloud-localds", "--network-config="+n.Dir+"/network-config", n.Dir+"/seed.img", n.Dir+"/user-data", n.Dir+"/meta-data"); err != nil {
+		return err
+	}
+	if err := r.run(ctx, "rm", "-f", n.Dir+"/user-data"); err != nil {
+		return err
+	}
+	if err := r.run(ctx, "chown", VMMUser+":"+VMMUser, n.Dir+"/seed.img"); err != nil {
+		return err
+	}
+	st.HostKey = pub
+	return r.saveState(st)
+}
+
+// imageID is the identity of the root image in dir. Nothing is written into dir:
+// the folder's quota is the disk's size, and root.raw already fills it.
+//
+// The identity is the file's inode and, when the filesystem keeps one, its birth
+// time. A reset replaces root.raw by renaming a new file over it (RootFilePlan),
+// so the inode changes. The change time is read and not used: the guest writing
+// the disk moves it. A filesystem that keeps no birth time is named by the inode
+// alone. stat is GNU stat, as on the Linux host kevasod runs on.
+func (r *Runtime) imageID(ctx context.Context, dir string) (string, error) {
+	// The image itself, not a file beside it.
+	p := filepath.Join(dir, RootImage)
+	out, err := r.Host.Run(ctx, "stat", "-c", "%i %W %Z", p) // read it; write nothing beside it
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", fmt.Errorf("root image %s: %s", p, msg)
+	}
+	id, err := imageIdentity(strings.Fields(string(out)))
+	if err != nil {
+		return "", fmt.Errorf("root image %s: %w", p, err)
+	}
+	return id, nil
+}
+
+// imageIdentity names a file from GNU stat -c '%i %W %Z' (inode, birth time,
+// change time). A birth time of 0 means the filesystem does not keep one.
+func imageIdentity(fields []string) (string, error) {
+	if len(fields) != 3 {
+		return "", fmt.Errorf("stat: %q", strings.Join(fields, " "))
+	}
+	ino, btime, ctime := fields[0], fields[1], fields[2]
+	if _, err := strconv.ParseUint(ino, 10, 64); err != nil || ino == "0" {
+		return "", fmt.Errorf("inode %q", ino)
+	}
+	bt, err := strconv.ParseInt(btime, 10, 64)
+	if err != nil {
+		return "", fmt.Errorf("birth time %q", btime)
+	}
+	if _, err := strconv.ParseInt(ctime, 10, 64); err != nil {
+		return "", fmt.Errorf("change time %q", ctime)
+	}
+	if bt > 0 { // inode and birth time; a write does not move the birth time
+		return ino + ":" + strconv.FormatInt(bt, 10), nil
+	}
+	return ino, nil // no birth time: the inode alone, since a write moves the change time
+}
+
+// mayAdoptKey reports whether the image this copy boots is the one the reported key belongs to.
+// A copy created onto an image that was already there adopts it. A copy that made the image
+// adopts when a reset elsewhere has replaced that image.
+func (r *Runtime) mayAdoptKey(ctx context.Context, st State) bool {
+	if st.KeyFromDisk { // created onto an image that was already there
+		return true
+	}
+	if st.KeyImage == "" || st.RootDir == "" {
+		return false
+	}
+	id, err := r.imageID(ctx, st.RootDir)
+	if err != nil || id == "" {
+		return false
+	}
+	if id == st.KeyImage { // this copy still boots the image it made
+		return false
+	}
+	return true // a reset elsewhere replaced the image
 }
 
 // Start implements kri.Runtime.
@@ -647,6 +815,40 @@ func (r *Runtime) deleteLockedRoot(ctx context.Context, id kri.ID, dropRoot bool
 		}
 	}
 	return r.Host.RemoveAll(n.Dir)
+}
+
+// HasHostStorage implements kri.HostStorage. True when this host holds a root LV or any volume
+// LV for id (a name kv-…-). applyLayout never removes a volume LV, so one taken out of the spec
+// is still here until a delete of the silo removes it.
+func (r *Runtime) HasHostStorage(ctx context.Context, id kri.ID) (bool, error) {
+	n := NamesFor(id)
+	out, err := r.Host.Run(ctx, "lvs", "--noheadings", "-o", "lv_name", VG)
+	if err != nil { // a failed list is not "no disk"
+		return false, fmt.Errorf("%s: logical volumes in %s could not be listed (%w): not treating this copy as without a disk", id, VG, err)
+	}
+	for _, f := range strings.Fields(string(out)) {
+		if f == n.LV || strings.HasPrefix(f, n.LV+"-") { // root LV, or a volume LV kept after it left the spec
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// HasHostVolume implements kri.HostVolume. True when this host holds a volume LV for id
+// (a name kv-…-). The root LV is not one: a handoff of a host-local root removes that disk.
+// applyLayout never removes a volume LV, so one taken out of the spec is still here.
+func (r *Runtime) HasHostVolume(ctx context.Context, id kri.ID) (bool, error) {
+	n := NamesFor(id)
+	out, err := r.Host.Run(ctx, "lvs", "--noheadings", "-o", "lv_name", VG)
+	if err != nil { // a failed list is not "no volume"
+		return false, fmt.Errorf("%s: logical volumes in %s could not be listed (%w): not treating this copy as without a volume", id, VG, err)
+	}
+	for _, f := range strings.Fields(string(out)) {
+		if strings.HasPrefix(f, n.LV+"-") { // a volume LV, not the root disk
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // rootDisk makes the silo's root disk from its image: a thin LV, or an image file on a mount
@@ -1130,15 +1332,29 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 	rm := st.Remake
 	oldLayout := LayoutFor(n, rm.OldVolumes, rm.OldRootDir)
 	layout := st.layout()
+	id := ""
 	steps := []func() error{
 		func() error {
 			_, err := r.rootDisk(ctx, n, layout, img, rm.DiskBytes, true)
 			return err
 		},
 		func() error {
+			if st.RootDir == "" { // a host-local disk has no image to name
+				return nil
+			}
+			g, err := r.imageID(ctx, st.RootDir)
+			if err != nil {
+				return err
+			}
+			id = g
+			return nil
+		},
+		func() error {
 			return r.Host.WriteFile(n.Dir+"/user-data", []byte(UserData(r.ExecPub, hostPriv, hostPub)), 0o600)
 		},
-		func() error { return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(st.ID, hostPub)), 0o600) },
+		func() error {
+			return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(st.ID, hostPub, r.HostName)), 0o600)
+		},
 		func() error {
 			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, st.ID.Namespace)), 0o600)
 		},
@@ -1154,7 +1370,7 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 			return err
 		}
 	}
-	st.HostKey, st.Started, st.Made, st.Remake = hostPub, false, true, nil
+	st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, false, id
 	return r.saveState(st)
 }
 
@@ -1171,4 +1387,10 @@ func imagePath(image, arch string) (string, error) {
 	return filepath.Join(ImagesDir, f.File), nil
 }
 
-var _ kri.Runtime = (*Runtime)(nil)
+var (
+	_ kri.Runtime            = (*Runtime)(nil)
+	_ kri.GuestHostKeySource = (*Runtime)(nil)
+	_ kri.GuestHostKeySetter = (*Runtime)(nil)
+	_ kri.HostStorage        = (*Runtime)(nil)
+	_ kri.HostVolume         = (*Runtime)(nil)
+)

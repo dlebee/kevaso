@@ -342,7 +342,12 @@ var ErrHostWrite = errors.New("forbidden")
 // because another host said it wasn't. Which volumes there are and where they're attached is
 // the control plane's. During a handoff the old host may only unmount its volumes (LetGo) and
 // then let go (Released); the new host may only set mounted on volumes attached to itself.
+// A host the silo has already left, with no handoff, may still record that a volume attached
+// to it is no longer mounted: that is the only write it may make.
 func HostWrite(old, next v1.SiloStatus, host string) error {
+	if old.Host != host && old.MovingFrom == "" && clearedOwnMount(old, next, host) {
+		return nil
+	}
 	if old.MovingFrom == host && old.Host != host {
 		for _, step := range []func(v1.SiloStatus, string) (v1.SiloStatus, bool){LetGo, Released} {
 			if want, ok := step(old, host); ok && reflect.DeepEqual(want, next) {
@@ -394,6 +399,37 @@ func HostWrite(old, next v1.SiloStatus, host string) error {
 		return err
 	}
 	return claimWrite(old, next, host)
+}
+
+// clearedOwnMount reports that next only records volumes attached to host as unmounted
+// (true to false). The stored routing stays as it was.
+func clearedOwnMount(old, next v1.SiloStatus, host string) bool {
+	if next.Host != old.Host || next.MovingFrom != old.MovingFrom || len(next.Volumes) != len(old.Volumes) {
+		return false
+	}
+	cleared := false
+	for i := range old.Volumes {
+		o, n := old.Volumes[i], next.Volumes[i]
+		if n.Name != o.Name || n.AttachedTo != o.AttachedTo || !sameButMounted(o, n) {
+			return false
+		}
+		if n.Mounted == o.Mounted {
+			continue
+		}
+		if o.AttachedTo != host || !o.Mounted || n.Mounted { // only this host, and only true to false
+			return false
+		}
+		cleared = true
+	}
+	if !cleared {
+		return false
+	}
+	want := old
+	want.Volumes = slices.Clone(old.Volumes)
+	for i := range want.Volumes {
+		want.Volumes[i].Mounted = next.Volumes[i].Mounted
+	}
+	return reflect.DeepEqual(want, next) // only the mounted flag; routing stays as stored
 }
 
 // hostDeletedWrite refuses a host's add, drop or change of Unschedulable/HostDeleted. The

@@ -26,17 +26,27 @@ import (
 	"kevaso.com/core/sdk/kri"
 )
 
+// fileID is one file in the fake, as stat would report it. A new file gets a new
+// inode; a rename keeps the source's.
+type fileID struct {
+	ino   uint64
+	btime int64
+	ctime int64
+}
+
 // fakeHost records commands and keeps files in memory.
 type fakeHost struct {
-	mu     sync.Mutex
-	cmds   []string
-	files  map[string][]byte
-	answer func(cmd string) (string, error) // scripted outputs
-	lvs    map[string]bool                  // logical volumes in VG, as lvcreate and lvremove leave them
+	mu      sync.Mutex
+	cmds    []string
+	files   map[string][]byte
+	meta    map[string]fileID
+	nextIno uint64
+	answer  func(cmd string) (string, error) // scripted outputs
+	lvs     map[string]bool                  // logical volumes in VG, as lvcreate and lvremove leave them
 }
 
 func newFakeHost() *fakeHost {
-	h := &fakeHost{files: map[string][]byte{}, lvs: map[string]bool{}}
+	h := &fakeHost{files: map[string][]byte{}, meta: map[string]fileID{}, lvs: map[string]bool{}}
 	// A raw image, so a create's convert has a disk it can accept.
 	raw := []byte("raw-disk-bytes-for-tests\n")
 	h.files[path.Join(ImagesDir, "ubuntu-24.04-x86_64.img")] = raw
@@ -55,6 +65,10 @@ func (h *fakeHost) Run(_ context.Context, name string, args ...string) ([]byte, 
 	// A pool command is recorded as systemd-run runs it, and answered as the LVM command it runs.
 	name, args = unwrapHost(name, args)
 	cmd = strings.TrimSpace(name + " " + strings.Join(args, " "))
+	h.noteMoved(name, args)
+	if name == "stat" {
+		return h.statLine(args)
+	}
 	pool := strings.HasPrefix(cmd, "lvs --noheadings --units b")
 	if h.answer != nil {
 		out, err := h.answer(cmd)
@@ -104,7 +118,67 @@ func (h *fakeHost) WriteFile(p string, data []byte, _ os.FileMode) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.files[p] = bytes.Clone(data)
+	h.meta[p] = h.freshFile() // renamed into place, as Local.WriteFile does, so the inode changes
 	return nil
+}
+
+// noteMoved applies mv. A root disk is replaced by renaming a new file over it,
+// and the destination keeps the new file's inode.
+func (h *fakeHost) noteMoved(name string, args []string) {
+	if name != "mv" {
+		return
+	}
+	var pos []string
+	for _, a := range args {
+		if a == "--" || strings.HasPrefix(a, "-") {
+			continue
+		}
+		pos = append(pos, a)
+	}
+	if len(pos) != 2 {
+		return
+	}
+	src, dst := pos[0], pos[1]
+	data, ok := h.files[src]
+	id, idOK := h.meta[src]
+	if ok {
+		data = append([]byte(nil), data...)
+		delete(h.files, src)
+		delete(h.meta, src)
+	} else {
+		data = []byte("image")
+	}
+	if !idOK {
+		id = h.freshFile()
+	}
+	h.files[dst] = data
+	h.meta[dst] = id
+}
+
+func (h *fakeHost) freshFile() fileID {
+	if h.meta == nil {
+		h.meta = map[string]fileID{}
+	}
+	h.nextIno++
+	n := h.nextIno
+	return fileID{ino: n, btime: int64(n), ctime: int64(n)}
+}
+
+// statLine answers GNU stat -c '%i %W %Z'.
+func (h *fakeHost) statLine(args []string) ([]byte, error) {
+	if len(args) == 0 {
+		return nil, errors.New("exit 1")
+	}
+	p := args[len(args)-1]
+	if _, ok := h.files[p]; !ok {
+		return []byte("stat: cannot stat '" + p + "': No such file or directory"), errors.New("exit 1")
+	}
+	m, ok := h.meta[p]
+	if !ok {
+		m = h.freshFile()
+		h.meta[p] = m
+	}
+	return []byte(fmt.Sprintf("%d %d %d\n", m.ino, m.btime, m.ctime)), nil
 }
 func (h *fakeHost) ReadFile(p string) ([]byte, error) {
 	h.mu.Lock()
@@ -121,6 +195,7 @@ func (h *fakeHost) RemoveAll(p string) error {
 	for k := range h.files {
 		if k == p || strings.HasPrefix(k, p+"/") {
 			delete(h.files, k)
+			delete(h.meta, k)
 		}
 	}
 	return nil

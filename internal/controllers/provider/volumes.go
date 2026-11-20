@@ -446,12 +446,12 @@ func (c *Volumes) ensure(ctx context.Context, s *v1.Silo, h *v1.Host, spec v1.Vo
 			attachedLost = true
 		}
 		if vs.Mounted && !moves.ForceRelease(s, vs, attachedLost) {
-			vs.Message = "waiting for " + vs.AttachedTo + " to unmount it"
+			vs.Message = mountWait(s, vs)
 			return vs, c.poll(), nil
 		}
 		if vs.Mounted { // forced off a lost host: only if it is lost now, not in a cache behind
 			if lost, err := c.lostNow(ctx, vs.AttachedTo); err != nil || !lost {
-				vs.Message = "waiting for " + vs.AttachedTo + " to unmount it"
+				vs.Message = mountWait(s, vs)
 				return vs, c.poll(), err
 			}
 		}
@@ -562,12 +562,24 @@ func PlaceMounted(s *v1.Silo, vs v1.VolumeStatus, host string, attachedLost bool
 	vs.Device = ""
 	switch {
 	case vs.AttachedTo == host:
+		vs.Message = ""
 	case vs.AttachedTo != "" && vs.Mounted && !moves.ForceRelease(s, vs, attachedLost):
-		return vs, "waiting for " + vs.AttachedTo + " to unmount it"
+		return vs, mountWait(s, vs)
 	default:
 		vs.AttachedTo = host
+		vs.Message = ""
 	}
 	return vs, ""
+}
+
+// mountWait is why a volume still marked mounted cannot move yet. During a handoff the
+// source is still supposed to unmount it. Once that host has let the silo go, the flag is
+// only a record that has not been cleared.
+func mountWait(s *v1.Silo, vs v1.VolumeStatus) string {
+	if s.Status.MovingFrom != "" && s.Status.MovingFrom == vs.AttachedTo {
+		return "waiting for " + vs.AttachedTo + " to unmount it"
+	}
+	return vs.AttachedTo + " has let the silo go; its mount is still recorded"
 }
 
 // keptVolumeMessage is what status says about a volume taken out of the spec.

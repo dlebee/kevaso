@@ -212,8 +212,8 @@
   "id": "G-017",
   "guard": "removeEverywhere stops, never removes, a moved silo that keeps local volumes",
   "file": "internal/agent/agent.go",
-  "find": "if local := hostLocalVolumes(s); why == whyHandoff && len(local) > 0 {",
-  "replace": "if local := hostLocalVolumes(s); false && why == whyHandoff && len(local) > 0 {",
+  "find": "if own { // a disk on this host stays until the silo is deleted",
+  "replace": "if false && own { // a disk on this host stays until the silo is deleted",
   "mutation": "copy and its volumes deleted",
   "packages": [
    "./internal/agent",
@@ -225,8 +225,8 @@
   "id": "G-018",
   "guard": "removeEverywhere never removes the silo it is reconciling",
   "file": "internal/agent/agent.go",
-  "find": "if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {\n\t\t\t\ta.keptNoted.Delete(id.UID)",
-  "replace": "if false {\n\t\t\t\ta.keptNoted.Delete(id.UID)",
+  "find": "if s != nil && s.Status.Host == a.HostName && s.DeletionTimestamp == nil && id.UID == s.UID {",
+  "replace": "if false {",
   "mutation": "own copy removed",
   "packages": [
    "./internal/agent",
@@ -4700,8 +4700,8 @@
   "id": "G-715",
   "guard": "a reset keeps the silo made",
   "file": "builtin/kri/cloudhypervisor/runtime.go",
-  "find": "st.HostKey, st.Started, st.Made, st.Remake = hostPub, false, true, nil",
-  "replace": "st.HostKey, st.Started, st.Made, st.Remake = hostPub, false, false, nil",
+  "find": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, false, id",
+  "replace": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, false, nil, false, id",
   "mutation": "a reset clears that the silo was made",
   "packages": [
    "./builtin/kri/cloudhypervisor"
@@ -5403,5 +5403,497 @@
    "./internal/apiserver"
   ],
   "protects": "a SiloSet whose template labels join a service an ingress names, on a leased port, needs expose-public"
+ },
+ {
+  "id": "G-850",
+  "guard": "the guest fstab is renamed into place",
+  "file": "builtin/kri/cloudhypervisor/volumes.go",
+  "find": "mv -f \"$tmp\" \"$fstab\"",
+  "replace": "cat \"$tmp\" > \"$fstab\"",
+  "mutation": "fstab is truncated in place",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a guest fstab is replaced by a rename, so a crash cannot leave it empty"
+ },
+ {
+  "id": "G-851",
+  "guard": "an fstab with no root line is given one",
+  "file": "builtin/kri/cloudhypervisor/volumes.go",
+  "find": "if ! grep -Eq '^[^#][^[:space:]]+[[:space:]]+/[[:space:]]' \"$tmp\"; then",
+  "replace": "if false; then",
+  "mutation": "an empty fstab is left without a root line",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "an empty fstab gets the guest's own root line so the next boot can mount / read-write"
+ },
+ {
+  "id": "G-852",
+  "guard": "a travelling disk is dropped only when this host holds no volume of its own",
+  "file": "internal/agent/agent.go",
+  "find": "return !own, nil // a host-local volume is a disk this host owns",
+  "replace": "return true || !own, nil // a host-local volume is a disk this host owns",
+  "mutation": "a kept copy is dropped even when it holds a host-local volume",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a host-local disk is kept until a delete the system saw"
+ },
+ {
+  "id": "G-853",
+  "guard": "a kept travelling copy is not resumed when the silo returns",
+  "file": "internal/agent/agent.go",
+  "find": "if drop { // a kept copy of a disk that travelled",
+  "replace": "if false && drop { // a kept copy of a disk that travelled",
+  "mutation": "a kept copy is started again when the silo comes back",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a silo that comes back starts from its current state, not a copy kept from before"
+ },
+ {
+  "id": "G-854",
+  "guard": "a host the silo has left may record its own volume unmounted",
+  "file": "internal/moves/moves.go",
+  "find": "if old.Host != host && old.MovingFrom == \"\" && clearedOwnMount(old, next, host) {",
+  "replace": "if false && old.Host != host && old.MovingFrom == \"\" && clearedOwnMount(old, next, host) {",
+  "mutation": "a host that has let go cannot record that its volume is unmounted",
+  "packages": [
+   "./internal/moves"
+  ],
+  "protects": "a volume stops saying a host still has it mounted once that host has let the silo go and unmounted it"
+ },
+ {
+  "id": "G-855",
+  "guard": "that record only clears volumes attached to the host writing it",
+  "file": "internal/moves/moves.go",
+  "find": "if o.AttachedTo != host || !o.Mounted || n.Mounted { // only this host, and only true to false",
+  "replace": "if false { // only this host, and only true to false",
+  "mutation": "any host can clear any volume's mounted flag",
+  "packages": [
+   "./internal/moves"
+  ],
+  "protects": "only the host a volume is attached to can say it is unmounted"
+ },
+ {
+  "id": "G-856",
+  "guard": "the unmount wait names a handoff only while that host is handing off",
+  "file": "internal/controllers/provider/volumes.go",
+  "find": "if s.Status.MovingFrom != \"\" && s.Status.MovingFrom == vs.AttachedTo {",
+  "replace": "if true {",
+  "mutation": "a host that has let go is still said to be unmounting",
+  "packages": [
+   "./internal/controllers/provider"
+  ],
+  "protects": "a volume does not say it is waiting for a host to unmount it after that host has let the silo go"
+ },
+ {
+  "id": "G-857",
+  "guard": "a reported guest host key is trusted only for a travelling disk",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if spec.GuestHostKey != \"\" && spec.DiskHostPath != \"\" { // trust a reported key only for a disk that travels",
+  "replace": "if false && spec.GuestHostKey != \"\" && spec.DiskHostPath != \"\" { // trust a reported key only for a disk that travels",
+  "mutation": "a reported guest host key is ignored",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a host trusts the guest host key the silo reports, not one it saved earlier"
+ },
+ {
+  "id": "G-858",
+  "guard": "a reported guest host key is trusted only when the disk image is already there",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if merr == nil && !missing { // the image is already the guest's",
+  "replace": "if merr == nil && (!missing || true) { // the image is already the guest's",
+  "mutation": "a new disk is given a key the guest does not have",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a new disk gets a host key installed into the guest"
+ },
+ {
+  "id": "G-859",
+  "guard": "adopting a guest host key leaves a host-local disk alone",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if st.RootDir == \"\" { // a host-local disk did not travel; its key stays",
+  "replace": "if false { // a host-local disk did not travel; its key stays",
+  "mutation": "a host-local disk's guest host key is replaced",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a host-local disk keeps the guest host key stored with it"
+ },
+ {
+  "id": "G-860",
+  "guard": "creating a silo passes the guest host key it reports",
+  "file": "internal/agent/agent.go",
+  "find": "GuestHostKey: guestHostKeyFor(s)",
+  "replace": "GuestHostKey: \"\"",
+  "mutation": "a create ignores the guest host key the silo reports",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a silo that comes back is created trusting the guest host key it reports"
+ },
+ {
+  "id": "G-861",
+  "guard": "a reported guest host key is used only when the disk travels",
+  "file": "internal/agent/agent.go",
+  "find": "if _, ok := v1.DiskVolume(s); !ok { // a host-local disk did not travel",
+  "replace": "if _, ok := v1.DiskVolume(s); false && !ok { // a host-local disk did not travel",
+  "mutation": "a host-local disk is created with a reported guest host key",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a host-local disk is not given a guest host key from a silo whose disk did not travel"
+ },
+ {
+  "id": "G-862",
+  "guard": "removing a kept copy of a travelling disk does not say those volumes go",
+  "file": "internal/agent/keptcmd.go",
+  "find": "case shared != \"\" && !onHost: // a travelling class is not this host's to delete",
+  "replace": "case shared != \"\" && false && !onHost: // a travelling class is not this host's to delete",
+  "mutation": "a kept-copy removal says a travelling volume is deleted",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "removing a kept copy leaves the volumes on a travelling class where they are"
+ },
+ {
+  "id": "G-870",
+  "guard": "whether a copy holds a disk is read from the host, not the spec",
+  "file": "internal/agent/agent.go",
+  "find": "if d, ok := rt.(kri.HostStorage); ok { // what this copy holds on this host, not the spec",
+  "replace": "if d, ok := rt.(kri.HostStorage); false && ok { // what this copy holds on this host, not the spec",
+  "mutation": "a volume taken out of the spec is treated as gone",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a local volume that has left the spec stays until the silo is deleted"
+ },
+ {
+  "id": "G-871",
+  "guard": "a volume LV left out of the spec is still this host's disk",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if f == n.LV || strings.HasPrefix(f, n.LV+\"-\") { // root LV, or a volume LV kept after it left the spec",
+  "replace": "if f == n.LV { // root LV, or a volume LV kept after it left the spec",
+  "mutation": "a volume LV is not counted as this host's disk",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a local volume that has left the spec is still storage this host holds"
+ },
+ {
+  "id": "G-872",
+  "guard": "a failed volume list is not taken as no disk",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if err != nil { // a failed list is not \"no disk\"",
+  "replace": "if false { // a failed list is not \"no disk\"",
+  "mutation": "a failed list of logical volumes is treated as no disk",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a copy is not dropped because its volumes could not be listed"
+ },
+ {
+  "id": "G-873",
+  "guard": "the instance id changes with this host's name",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "h := sha256.Sum256([]byte(hostPub + \"\\n\" + hostName)) // this host's name, not only the guest key",
+  "replace": "h := sha256.Sum256([]byte(hostPub)) // this host's name, not only the guest key",
+  "mutation": "a moved guest keeps the last host's instance id",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk that arrives with the same guest host key still takes this host's address, even when every gateway is the same"
+ },
+ {
+  "id": "G-874",
+  "guard": "a reused guest host key is not deleted by the new instance",
+  "file": "builtin/kri/cloudhypervisor/render.go",
+  "find": "ssh_deletekeys: false",
+  "replace": "ssh_deletekeys: true",
+  "mutation": "a new instance replaces the guest's host keys",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk that travels keeps the guest host key it already has"
+ },
+ {
+  "id": "G-875",
+  "guard": "a reported key is adopted only for a copy made onto an image that was already there",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if !r.mayAdoptKey(ctx, st) { // this copy's image is not the one the reported key belongs to",
+  "replace": "if false { // this copy's image is not the one the reported key belongs to",
+  "mutation": "a new image is given a key the guest does not have",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a key installed onto a new image is the one the guest has"
+ },
+ {
+  "id": "G-876",
+  "guard": "a copy made onto an image that was already there may adopt the reported key",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "keyFromDisk = true",
+  "replace": "keyFromDisk = false",
+  "mutation": "a reported key is never adopted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a host trusts the guest host key of a disk that was already there"
+ },
+ {
+  "id": "G-877",
+  "guard": "a reset installs its own key and does not keep the previous one adoptable",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, false, id",
+  "replace": "st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, true, id",
+  "mutation": "a reset's new key is replaced by the one from before",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset's guest host key is the one installed onto the new image"
+ },
+ {
+  "id": "G-878",
+  "guard": "a kept-copy removal asks the host what the copy holds",
+  "file": "internal/agent/agent.go",
+  "find": "if d, ok := rt.(kri.HostStorage); ok { // the same question as a drop: what this host holds",
+  "replace": "if d, ok := rt.(kri.HostStorage); false && ok { // the same question as a drop: what this host holds",
+  "mutation": "a kept-copy removal ignores a disk this host still holds",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a removal says a disk on this host goes when the copy still holds one"
+ },
+ {
+  "id": "G-879",
+  "guard": "a kept-copy removal says a disk on this host goes and a travelling volume stays",
+  "file": "internal/agent/keptcmd.go",
+  "find": "case shared != \"\" && onHost: // this host's disk goes; what is on the class stays",
+  "replace": "case shared != \"\" && false && onHost: // this host's disk goes; what is on the class stays",
+  "mutation": "a kept-copy removal does not say the disk on this host goes",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "removing a copy that holds a disk here says that disk goes and the travelling volumes stay"
+ },
+ {
+  "id": "G-880",
+  "guard": "kvoadm says a disk on this host goes and a travelling volume stays",
+  "file": "internal/cli/kvoadm/kept.go",
+  "find": "case e.Shared != \"\" && e.OnHost: // this host's disk goes; what is on the class stays",
+  "replace": "case e.Shared != \"\" && false && e.OnHost: // this host's disk goes; what is on the class stays",
+  "mutation": "kvoadm says a disk on this host is not deleted",
+  "packages": [
+   "./internal/cli/kvoadm"
+  ],
+  "protects": "the removal prompt says a disk on this host goes and the travelling volumes stay"
+ },
+ {
+  "id": "G-881",
+  "guard": "a root disk on this host is not described as only a travelling copy",
+  "file": "internal/agent/agent.go",
+  "find": "return true // the root disk is on this host",
+  "replace": "return false // the root disk is on this host",
+  "mutation": "a local root disk is said to stay on its class",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "removing a copy whose root disk is on this host says that disk goes"
+ },
+ {
+  "id": "G-882",
+  "guard": "a failed list of this host's disks is not read as nothing here",
+  "file": "internal/agent/agent.go",
+  "find": "if err != nil { // a failed list is not nothing on this host",
+  "replace": "if false && err != nil { // a failed list is not nothing on this host",
+  "mutation": "a kept-copy removal says a disk is not here when it could not be listed",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a removal does not say only the copy goes when this host's disks could not be listed"
+ },
+ {
+  "id": "G-883",
+  "guard": "a replaced guest fstab is mode 0644",
+  "file": "builtin/kri/cloudhypervisor/volumes.go",
+  "find": "chmod 0644 \"$tmp\"",
+  "replace": "chmod 0600 \"$tmp\"",
+  "mutation": "a replaced guest fstab stays the mode mktemp made",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a guest fstab replaced by rename is readable as the old one was"
+ },
+ {
+  "id": "G-884",
+  "guard": "a host recording its volume unmounted leaves routing as stored",
+  "file": "internal/moves/moves.go",
+  "find": "return reflect.DeepEqual(want, next) // only the mounted flag; routing stays as stored",
+  "replace": "want.Routing = next.Routing\n\treturn reflect.DeepEqual(want, next) // only the mounted flag; routing stays as stored",
+  "mutation": "a host recording its volume unmounted may rewrite routing",
+  "packages": [
+   "./internal/moves"
+  ],
+  "protects": "recording a volume unmounted changes only the mounted flag"
+ },
+ {
+  "id": "G-890",
+  "guard": "a handoff holds a copy back for a volume LV and not the root disk",
+  "file": "internal/agent/agent.go",
+  "find": "own, err := a.hostVolume(ctx, rt, id, s) // a handoff holds back a volume LV, not the root disk",
+  "replace": "own, err := a.hostStorage(ctx, rt, id, s) // a handoff holds back a volume LV, not the root disk",
+  "mutation": "a handed-off root disk is kept on the old host",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a recreate of a host-local root removes the old copy"
+ },
+ {
+  "id": "G-891",
+  "guard": "a volume LV is counted and the root LV is not",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if strings.HasPrefix(f, n.LV+\"-\") { // a volume LV, not the root disk",
+  "replace": "if f == n.LV || strings.HasPrefix(f, n.LV+\"-\") { // a volume LV, not the root disk",
+  "mutation": "a root disk counts as a volume left on this host",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a handoff removes a root disk and keeps a volume LV"
+ },
+ {
+  "id": "G-892",
+  "guard": "an away write leaves routing as stored",
+  "file": "internal/agent/agent.go",
+  "find": "if !away { // an away write leaves routing as stored",
+  "replace": "if true { // an away write leaves routing as stored",
+  "mutation": "a host recording a volume unmounted recomputes routing",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "the old host's away write is accepted and the mount clears"
+ },
+ {
+  "id": "G-893",
+  "guard": "the mount record is written before the copy is forgotten",
+  "file": "internal/agent/agent.go",
+  "find": "if err := a.unmountVolumes(ctx, id.UID, s); err != nil { // the mount record, before this copy is forgotten",
+  "replace": "if err := error(nil); err != nil { // the mount record, before this copy is forgotten",
+  "mutation": "the copy is forgotten before the mount is recorded",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a refused away write leaves the copy, so the mount is recorded on the next look"
+ },
+ {
+  "id": "G-894",
+  "guard": "a kept copy adopts a key once a reset elsewhere has replaced its image",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "return true // a reset elsewhere replaced the image",
+  "replace": "return false // a reset elsewhere replaced the image",
+  "mutation": "a key installed by a reset elsewhere is never adopted",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a kept copy takes the guest host key a reset on another host installed"
+ },
+ {
+  "id": "G-895",
+  "guard": "only a kept copy placed here is asked what it holds",
+  "file": "internal/agent/agent.go",
+  "find": "if _, kept := a.keptNoted.Load(id.UID); kept { // only a kept copy is asked what it holds",
+  "replace": "if true { // only a kept copy is asked what it holds",
+  "mutation": "every reconcile of a travelling silo lists its disks",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a travelling silo placed here is not failed by a list of disks"
+ },
+ {
+  "id": "G-896",
+  "guard": "a drop asks about the listed copy",
+  "file": "internal/agent/agent.go",
+  "find": "own, err := a.hostStorage(ctx, rt, id, s) // the listed copy",
+  "replace": "own, err := a.hostStorage(ctx, rt, idOf(s), s) // the listed copy",
+  "mutation": "a drop asks about the silo instead of the listed copy",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a drop of an older copy asks what that copy holds"
+ },
+ {
+  "id": "G-910",
+  "guard": "the image this copy made is not given another key",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if id == st.KeyImage { // this copy still boots the image it made",
+  "replace": "if false && id == st.KeyImage { // this copy still boots the image it made",
+  "mutation": "a key is adopted over the image this copy still boots",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a key installed onto an image this copy made stays until that image is replaced"
+ },
+ {
+  "id": "G-911",
+  "guard": "the image is named by root.raw itself",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "p := filepath.Join(dir, RootImage)",
+  "replace": "p := filepath.Join(dir, \"root.gen\")",
+  "mutation": "the image is named by a file beside root.raw",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a full root-disk folder still names the image it holds"
+ },
+ {
+  "id": "G-912",
+  "guard": "naming the image writes nothing beside it",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "out, err := r.Host.Run(ctx, \"stat\", \"-c\", \"%i %W %Z\", p) // read it; write nothing beside it",
+  "replace": "out, err := r.Host.Run(ctx, \"stat\", \"-c\", \"%i %W %Z\", p); if werr := r.Host.WriteFile(filepath.Join(dir, \"root.gen\"), []byte(\"x\\n\"), 0o600); werr != nil { return \"\", werr } // read it; write nothing beside it",
+  "mutation": "naming the image creates a file in the root disk's folder",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a root disk that fills its folder can still be booted"
+ },
+ {
+  "id": "G-913",
+  "guard": "a copy that made the image records which file it was",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if keyFromDisk || spec.DiskHostPath == \"\" { // a host-local disk, or a key already taken from the image",
+  "replace": "if true { // a host-local disk, or a key already taken from the image",
+  "mutation": "a new image is not remembered, so a later reset cannot be told apart",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a kept copy can tell the image it made from one a reset elsewhere installed"
+ },
+ {
+  "id": "G-914",
+  "guard": "a birth time is part of the image's name",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if bt > 0 { // inode and birth time; a write does not move the birth time",
+  "replace": "if false && bt > 0 { // inode and birth time; a write does not move the birth time",
+  "mutation": "a reused inode with a new birth time is the same image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a file that reuses an inode is still a new image when its birth time changed"
+ },
+ {
+  "id": "G-915",
+  "guard": "a write's change time does not rename the image",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "return ino, nil // no birth time: the inode alone, since a write moves the change time",
+  "replace": "return ino + \":\" + ctime, nil // no birth time: the inode alone, since a write moves the change time",
+  "mutation": "the guest writing its disk is taken as a new image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk the guest has written is still the image this copy made"
  }
 ]
