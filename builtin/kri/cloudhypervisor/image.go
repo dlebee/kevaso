@@ -304,7 +304,29 @@ func (r *Runtime) runConfined(ctx context.Context, img, dst string, argv []strin
 	args = append(args, argv...)
 	out, err := r.Host.Run(ctx, "systemd-run", args...)
 	if err != nil {
-		return fmt.Errorf("qemu-img %s: %w: %s", strings.Join(argv, " "), err, strings.TrimSpace(string(out)))
+		// The unit's properties are how it is confined, not why it failed.
+		if confinedProgram(out) == "qemu-img" {
+			return &cmdError{name: "qemu-img", args: argv, out: string(out), err: err}
+		}
+		return &cmdError{name: "systemd-run", out: string(out), err: err}
 	}
 	return nil
+}
+
+// confinedProgram is the program a failed systemd-run of qemu-img actually ran.
+// Both failures exit 1: a unit that never started, and qemu-img writing until the
+// disk is full. systemd-run's own error is the line "Failed to start transient
+// service unit" (a full /run, before the convert). Once the unit is up, qemu-img's
+// errors are prefixed "qemu-img:". Anything else was not shown to be that write.
+func confinedProgram(out []byte) string {
+	text := string(out)
+	if strings.Contains(text, "Failed to start transient service unit") {
+		return "systemd-run" // the unit never started
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "qemu-img:") {
+			return "qemu-img" // the command inside failed
+		}
+	}
+	return "systemd-run" // not shown to be the write
 }

@@ -352,6 +352,9 @@ func TestImageChangeAndResetAreStopFirst(t *testing.T) {
 	if n := strings.Count(strings.Join(e.rt.CallLog(), ","), "reset dev/node"); n != 2 {
 		t.Fatalf("%d resets, want 2", n)
 	}
+	if got, ok := e.rt.Spec(id); !ok || got.Reset != "2026-11-12T10:00:00Z" {
+		t.Fatalf("the runtime was reset for %q", got.Reset)
+	}
 }
 
 // A readiness probe keeps the silo from being Ready until it passes.

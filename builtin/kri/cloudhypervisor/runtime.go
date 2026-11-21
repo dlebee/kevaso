@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -71,17 +72,28 @@ type State struct {
 	// Remake, if set, says its root disk is being made afresh (a reset) and isn't to be trusted:
 	// saved before the first destructive step (lvremove), cleared after the last. A reset cut
 	// there (kevasod stopped, a kill) is finished by the next Start before the VM boots, and the
-	// half-made disk never boots (review-batch4 claim 2).
+	// half-made disk never boots (review-batch4 claim 2). The mark is that one request: Start
+	// finishes it only while the root image is still the file the request was made against, or
+	// is gone because the request removed it. A different file is another host's disk.
 	Remake *Remake `json:"remake,omitempty"`
 }
 
 // Remake is a reset under way: the image its root disk is made from and the disk's size, and
 // the layout it had before (its shares are taken down as the reset does).
+//
+// Reset is spec.reset, the request `kvo reset` wrote and the agent carries. ImageID is the root
+// image that request was made against (inode and birth time, the same name as KeyImage). The
+// mark serves that request only: Start finishes it when the image is still that file, or is
+// missing because this request removed it. Another host finishing the request renames a new
+// file over root.raw, and the guest's later writes do not move that identity. A mark that
+// names no file leaves a later image alone.
 type Remake struct {
 	Image      string       `json:"image"`
 	DiskBytes  int64        `json:"diskBytes"`
 	OldVolumes []kri.Volume `json:"oldVolumes,omitempty"`
 	OldRootDir string       `json:"oldRootDir,omitempty"`
+	Reset      string       `json:"reset,omitempty"`
+	ImageID    string       `json:"imageID,omitempty"`
 }
 
 func (s State) layout() Layout { return LayoutFor(NamesFor(s.ID), s.Volumes, s.RootDir) }
@@ -173,10 +185,32 @@ func (r *Runtime) run(ctx context.Context, name string, args ...string) error {
 	}
 	out, err := r.Host.Run(ctx, name, args...)
 	if err != nil {
-		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return &cmdError{name: name, args: args, out: string(out), err: err}
 	}
 	return nil
 }
+
+// cmdError is one host command that failed. name is the program that was run, so a caller can
+// tell a truncate of the new root image from systemd-run failing to start, without reading a
+// no-space phrase out of whatever text the error happens to carry. A convert names qemu-img
+// when that command ran and systemd-run when the unit never started. args is empty then, so
+// the unit's confinement is not what gets reported.
+type cmdError struct {
+	name string
+	args []string
+	out  string
+	err  error
+}
+
+func (e *cmdError) Error() string {
+	head := e.name
+	if len(e.args) > 0 {
+		head += " " + strings.Join(e.args, " ")
+	}
+	return fmt.Sprintf("%s: %v: %s", head, e.err, strings.TrimSpace(e.out))
+}
+
+func (e *cmdError) Unwrap() error { return e.err }
 
 func (r *Runtime) states() ([]State, error) {
 	paths, err := r.Host.Glob(SilosDir + "/*/silo.json")
@@ -571,7 +605,9 @@ func (r *Runtime) Start(ctx context.Context, id kri.ID) error {
 	}
 	if st.Remake != nil {
 		// Its reset was cut before its disk was made (kevasod stopped mid-convert, say): the disk
-		// is partial. Made again, from the same image, before anything boots it.
+		// is partial. Made again, from the same image, before anything boots it, and only while
+		// the mark still serves that request. A different root image was written by another host
+		// after this one; the mark is dropped and that disk boots.
 		if err := r.finishRemake(ctx, id); err != nil {
 			return fmt.Errorf("%s: its reset was cut short and its disk is not finished: %w (it doesn't start on a half-made disk)", id, err)
 		}
@@ -888,25 +924,135 @@ func (r *Runtime) rootDisk(ctx context.Context, n Names, l Layout, img string, s
 	if err := r.mustBeMounted(ctx, filepath.Dir(l.RootFile)); err != nil { // a root disk is written only on the volume's mount
 		return false, err
 	}
-	_, probeErr := r.Host.Run(ctx, "test", "-e", l.RootFile)
-	missing, err := probeMissing(probeErr)
+	missing, err := r.rootImageMissing(ctx, l.RootFile)
 	if err != nil {
 		return false, fmt.Errorf("root disk %s could not be checked (%w): not writing it", l.RootFile, err)
 	}
 	if !missing && !fresh {
 		return false, nil // moved here with its data
 	}
-	tmp := l.RootFile + ".new"
-	for _, c := range RootFilePlan(img, tmp, l.RootFile, size) {
-		if err := r.run(ctx, c[0], c[1:]...); err != nil {
-			_ = r.Host.RemoveAll(tmp)
-			if _, terr := r.Host.Run(ctx, "test", "-e", l.RootFile); terr == nil {
-				return false, fmt.Errorf("%w: %v", errRootKept, err) // written beside it, put in place last
-			}
-			return false, err
-		}
+	// A reset of an image already there keeps it until the new one is in place, unless the
+	// folder cannot hold both. A first create has nothing to keep.
+	if err := r.replaceRootFile(ctx, img, l.RootFile, size, fresh && !missing); err != nil {
+		return false, err
 	}
 	return false, nil
+}
+
+// replaceRootFile writes a fresh root image at file, beside it, then renames it into place, so a
+// half-written image is never what boots. keep means file is already the silo's disk.
+//
+// The folder's quota is the disk's size, so the old image and a second full one cannot both be
+// there: truncate of the new file fails with EDQUOT (a full filesystem says ENOSPC). The silo is
+// already stopped and a fresh disk was asked for, so only then is the old image removed and the
+// new one built in its place. Any other failure leaves the old image, and the reset's mark goes
+// (errRootKept): the next start boots it, and a reset still asked for is asked again through its
+// gate. A failure after the old image was removed leaves no root.raw. That is not errRootKept, so
+// the mark stays: Start will not boot, and the reset is tried again (the agent reports ResetFailed
+// and its reconcile runs the reset again) until the new image is in place.
+func (r *Runtime) replaceRootFile(ctx context.Context, img, file string, size int64, keep bool) error {
+	tmp := file + ".new" // beside the old image, so a half-written file is never the disk
+	gaveUp := false
+	for {
+		err := r.applyRootFile(ctx, img, tmp, file, size)
+		if err == nil {
+			return nil
+		}
+		_ = r.Host.RemoveAll(tmp) // the half-written image is not left where a boot could find it
+		if gaveUp {
+			return fmt.Errorf("the old root image was removed so a new one could be written, and that was not finished: %w (nothing boots until a retry finishes it)", err)
+		}
+		if !keep {
+			return err
+		}
+		missing, perr := r.rootImageMissing(ctx, file)
+		if perr != nil || missing { // not confirmed still there: the mark stays, nothing boots on a guess
+			return err
+		}
+		if !newRootBlocked(err, tmp) { // only a full folder gives up the image already there
+			return fmt.Errorf("%w: %v", errRootKept, err)
+		}
+		if err := r.dropRootImage(ctx, file, err); err != nil {
+			return err
+		}
+		gaveUp = true
+	}
+}
+
+// applyRootFile runs the plan that writes tmp and, only at the end, renames it over file.
+func (r *Runtime) applyRootFile(ctx context.Context, img, tmp, file string, size int64) error {
+	for _, c := range RootFilePlan(img, tmp, file, size) {
+		if err := r.run(ctx, c[0], c[1:]...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// dropRootImage removes the root image so a new one can be written in a folder that holds only
+// one. errRootKept means the image is still there. Any other error means it is gone, or that
+// could not be told, and the disk must not be treated as kept.
+func (r *Runtime) dropRootImage(ctx context.Context, file string, cause error) error {
+	rerr := r.run(ctx, "rm", "-f", file) // the image, not its folder: the volume's mount stays
+	missing, perr := r.rootImageMissing(ctx, file)
+	if perr == nil && !missing {
+		return fmt.Errorf("%w: %v", errRootKept, cause) // the remove did not take it
+	}
+	if rerr != nil || perr != nil {
+		return fmt.Errorf("the old root image was given up so a new one could be written, and that could not be confirmed: %w (nothing boots until a retry finishes it)", errors.Join(cause, rerr, perr))
+	}
+	return nil
+}
+
+// rootImageMissing says whether file is absent. A probe that fails is not "absent".
+func (r *Runtime) rootImageMissing(ctx context.Context, file string) (bool, error) {
+	_, err := r.Host.Run(ctx, "test", "-e", file)
+	return probeMissing(err)
+}
+
+// newRootBlocked reports that err is the write of tmp (root.raw.new) failing because the folder
+// cannot hold it. That write is truncate of tmp, or qemu-img convert into tmp. Which command
+// failed decides it. A no-space phrase anywhere else in an error does not: systemd-run failing
+// because /run is full says "No space left on device" and is not this write.
+func newRootBlocked(err error, tmp string) bool {
+	var ce *cmdError
+	if !errors.As(err, &ce) {
+		return errors.Is(err, syscall.EDQUOT) || errors.Is(err, syscall.ENOSPC)
+	}
+	if !writesNewRoot(ce.name, ce.args, tmp) { // only the write of root.raw.new
+		return false
+	}
+	return spaceExhausted(ce)
+}
+
+// writesNewRoot reports whether name args is the command that writes tmp, the new root image.
+func writesNewRoot(name string, args []string, tmp string) bool {
+	switch name {
+	case "truncate":
+		return len(args) > 0 && args[len(args)-1] == tmp // the new image, not another file
+	case "qemu-img":
+		if len(args) < 2 || args[0] != "convert" { // convert into the new image, not resize
+			return false
+		}
+		return args[len(args)-1] == tmp
+	default:
+		return false
+	}
+}
+
+// spaceExhausted reports EDQUOT or ENOSPC on err itself. truncate and qemu-img are children: they
+// print "Disk quota exceeded" or "No space left on device" (LC_ALL=C) and exit, and that text is
+// the errno. A Go error that wraps the errno counts as well. newRootBlocked chooses the command
+// this is asked about; the text of some other command does not count.
+func spaceExhausted(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EDQUOT) || errors.Is(err, syscall.ENOSPC) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Disk quota exceeded") || strings.Contains(msg, "No space left on device")
 }
 
 // probeMissing says whether test -e found the path absent. Exit 1 is absent. Any other
@@ -943,9 +1089,9 @@ func commandExit(err error) (int, bool) {
 }
 
 // errRootKept: making a root disk afresh failed before the old one was touched (its lvremove
-// failed; the new image file never put in place). K-112: a reset cut there removed nothing, so
-// its mark goes and the disk is kept as it was: the next reset is asked for again, through its
-// gate, never finished at a start with no one asked.
+// failed; the new image was never put in place, and a full folder was not why). K-112: a reset
+// cut there removed nothing, so its mark goes and the disk is kept as it was: the next reset is
+// asked for again, through its gate, never finished at a start with no one asked.
 var errRootKept = errors.New("the root disk was kept as it was")
 
 // RootFilePlan makes a root disk image file from an image: written next to it, grown to the disk's
@@ -1271,8 +1417,23 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 		}
 	}
 	// From here on its disk is destroyed: the intent is on disk first, so a cut reset is
-	// finished (finishRemake), never booted half-made.
-	st.Remake = &Remake{Image: spec.Image, DiskBytes: disk, OldVolumes: old.Volumes, OldRootDir: old.RootDir}
+	// finished (finishRemake), never booted half-made. The mark names the request (spec.reset)
+	// and the image that request is destroying, so a later start does not finish it over a
+	// file another host has written. A retry finds root.raw already gone, so the stat fails:
+	// the mark already held names that image, and the new mark keeps the name.
+	imageID := ""
+	if st.RootDir != "" {
+		if id, idErr := r.imageID(ctx, st.RootDir); idErr == nil {
+			imageID = id
+		}
+		if imageID == "" && st.Remake != nil {
+			missing, merr := r.rootImageMissing(ctx, filepath.Join(st.RootDir, RootImage))
+			if merr == nil && missing { // root.raw is already gone: keep the image the mark names
+				imageID = st.Remake.ImageID
+			}
+		}
+	}
+	st.Remake = &Remake{Image: spec.Image, DiskBytes: disk, OldVolumes: old.Volumes, OldRootDir: old.RootDir, Reset: spec.Reset, ImageID: imageID}
 	if err := r.saveState(st); err != nil {
 		return fmt.Errorf("reset %s: %w", spec.ID, err)
 	}
@@ -1288,20 +1449,44 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 }
 
 // finishRemake makes afresh the root disk of a silo whose reset was cut (State.Remake), from the
-// same image, and clears the mark.
+// same image, and clears the mark. The mark is finished only while it still matches the request
+// it was saved for: the root image is still the file named on the mark, or it is missing because
+// that request removed it. A different file means another host already wrote the disk (the reset
+// finished there, and the guest may have written since). The mark is dropped and that file stays.
 func (r *Runtime) finishRemake(ctx context.Context, id kri.ID) error {
 	st, ok := r.state(id)
 	if !ok || st.Remake == nil {
 		return nil
 	}
-	img, err := r.image(ctx, st.Remake.Image, st.Remake.DiskBytes)
+	drop, err := r.remakeSuperseded(ctx, st)
 	if err != nil {
 		return err
+	}
+	var img string
+	if !drop {
+		img, err = r.image(ctx, st.Remake.Image, st.Remake.DiskBytes)
+		if err != nil {
+			return err
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if st, ok = r.state(id); !ok || st.Remake == nil {
 		return nil
+	}
+	drop, err = r.remakeSuperseded(ctx, st)
+	if err != nil {
+		return err
+	}
+	if drop {
+		st.Remake = nil // the request was served on the image that is here now
+		return r.saveState(st)
+	}
+	if img == "" {
+		img, err = r.image(ctx, st.Remake.Image, st.Remake.DiskBytes)
+		if err != nil {
+			return err
+		}
 	}
 	if _, up := r.vmm(ctx, NamesFor(id)); up {
 		return errors.New("its VMM runs") // never under a VMM (not reached: Remake means it was gone)
@@ -1314,6 +1499,41 @@ func (r *Runtime) finishRemake(ctx context.Context, id kri.ID) error {
 		return r.saveState(st)
 	}
 	return err
+}
+
+// remakeSuperseded reports whether the root image now on disk is not the one this reset mark was
+// made against. The mark's Reset is the request (`kvo reset`'s spec.reset). Its ImageID, or the
+// copy's KeyImage when the mark has none, is the file that request was destroying. A missing
+// image is that request, unfinished. A host-local disk has no such file. An image that cannot
+// be named is not "a different file": the caller does not destroy it on a guess. A mark that
+// names no file does not take a later one as its own.
+func (r *Runtime) remakeSuperseded(ctx context.Context, st State) (bool, error) {
+	if st.Remake == nil || st.RootDir == "" {
+		return false, nil
+	}
+	file := filepath.Join(st.RootDir, RootImage)
+	missing, err := r.rootImageMissing(ctx, file)
+	if err != nil {
+		return false, err
+	}
+	if missing { // this reset removed the image and nothing has replaced it
+		return false, nil
+	}
+	id, err := r.imageID(ctx, st.RootDir)
+	if err != nil {
+		return false, err
+	}
+	bound := st.Remake.ImageID
+	if bound == "" {
+		bound = st.KeyImage
+	}
+	if bound == "" {
+		return true, nil // the mark names no file: a later image is kept
+	}
+	if id != bound { // another host has written this disk
+		return true, nil
+	}
+	return false, nil // still the file this request (st.Remake.Reset) was made against
 }
 
 // remakeLocked does a reset's destructive steps, each one safe to do again: the root disk made

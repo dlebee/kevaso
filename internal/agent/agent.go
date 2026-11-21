@@ -1168,7 +1168,7 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 		return err
 	}
 	spec := kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
-		Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath}
+		Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath, Reset: s.Spec.Reset}
 	if g, ok := rr.(gatedResetter); ok {
 		err = g.ResetGated(ctx, spec, gate)
 	} else if err = gate(ctx); err == nil {

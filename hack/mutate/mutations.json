@@ -5895,5 +5895,281 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a disk the guest has written is still the image this copy made"
+ },
+ {
+  "id": "G-920",
+  "guard": "a fresh root image is written beside the old one",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "tmp := file + \".new\" // beside the old image, so a half-written file is never the disk",
+  "replace": "tmp := file // beside the old image, so a half-written file is never the disk",
+  "mutation": "the new image is written over the old one",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a half-written root image is never the disk that boots"
+ },
+ {
+  "id": "G-921",
+  "guard": "only a full folder gives up the image already there",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if !newRootBlocked(err, tmp) { // only a full folder gives up the image already there",
+  "replace": "if false { // only a full folder gives up the image already there",
+  "mutation": "any failure removes the old image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset that fails while the old image is still there keeps that image"
+ },
+ {
+  "id": "G-922",
+  "guard": "a full folder gives up the old image so the new one can be written",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if !newRootBlocked(err, tmp) { // only a full folder gives up the image already there",
+  "replace": "if true { // only a full folder gives up the image already there",
+  "mutation": "a full folder keeps the old image and the reset cannot finish",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset of a travelling root whose folder holds only one image still replaces it"
+ },
+ {
+  "id": "G-923",
+  "guard": "a failure after the old image was removed is not a kept disk",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "return fmt.Errorf(\"the old root image was removed so a new one could be written, and that was not finished: %w (nothing boots until a retry finishes it)\", err)",
+  "replace": "return fmt.Errorf(\"%w: the old root image was removed so a new one could be written, and that was not finished: %v (nothing boots until a retry finishes it)\", errRootKept, err)",
+  "mutation": "the reset's mark is cleared after the old image was removed",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a silo does not boot when its reset removed the old image and the new one is not finished"
+ },
+ {
+  "id": "G-924",
+  "guard": "a half-written image beside the disk is removed",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "_ = r.Host.RemoveAll(tmp) // the half-written image is not left where a boot could find it",
+  "replace": "_ = tmp // the half-written image is not left where a boot could find it",
+  "mutation": "a failed write leaves the half-written image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a failed reset leaves nothing that can be booted as the root disk"
+ },
+ {
+  "id": "G-925",
+  "guard": "a child's quota or no-space text means the folder is full",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "return strings.Contains(msg, \"Disk quota exceeded\") || strings.Contains(msg, \"No space left on device\")",
+  "replace": "return strings.Contains(msg, \"not a full folder\")",
+  "mutation": "the text truncate prints is not a full folder",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a travelling root resets when truncate fails with a disk quota"
+ },
+ {
+  "id": "G-926",
+  "guard": "EDQUOT or ENOSPC means the folder is full",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if errors.Is(err, syscall.EDQUOT) || errors.Is(err, syscall.ENOSPC) {",
+  "replace": "if errors.Is(err, syscall.EIO) {",
+  "mutation": "a quota or no-space errno is not a full folder",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a full folder is recognised when the error is the errno itself"
+ },
+ {
+  "id": "G-927",
+  "guard": "giving up a root image removes the file, not its folder",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "r.run(ctx, \"rm\", \"-f\", file) // the image, not its folder: the volume's mount stays",
+  "replace": "r.run(ctx, \"rm\", \"-rf\", filepath.Dir(file)) // the image, not its folder: the volume's mount stays",
+  "mutation": "the root image's folder is removed",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset replaces the root image and leaves the volume's mount"
+ },
+ {
+  "id": "G-930",
+  "guard": "a reset mark is finished only while its image is still the one it was made against",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if id != bound { // another host has written this disk",
+  "replace": "if false && id != bound { // another host has written this disk",
+  "mutation": "a stale mark rebuilds whatever root image is there",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset mark does not replace a disk another host wrote"
+ },
+ {
+  "id": "G-931",
+  "guard": "a missing root image is the reset, unfinished",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if missing { // this reset removed the image and nothing has replaced it\n\t\treturn false, nil",
+  "replace": "if missing { // this reset removed the image and nothing has replaced it\n\t\treturn true, nil",
+  "mutation": "a missing image is treated as another host's disk and the reset is dropped",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset that removed the old image and did not finish is tried again"
+ },
+ {
+  "id": "G-932",
+  "guard": "a reset mark records the image it was made against",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if id, idErr := r.imageID(ctx, st.RootDir); idErr == nil {\n\t\t\timageID = id\n\t\t}",
+  "replace": "if id, idErr := r.imageID(ctx, st.RootDir); false && idErr == nil {\n\t\t\timageID = id\n\t\t}",
+  "mutation": "the mark does not name the image it is destroying",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a later start can tell the image this reset was destroying from one another host wrote"
+ },
+ {
+  "id": "G-933",
+  "guard": "a reset mark records the request it serves",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "Reset: spec.Reset, ImageID: imageID",
+  "replace": "Reset: \"\", ImageID: imageID",
+  "mutation": "the mark is not bound to the reset that was asked for",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset mark is the spec.reset request it was saved for"
+ },
+ {
+  "id": "G-934",
+  "guard": "a reset mark that no longer matches is dropped",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if drop {\n\t\tst.Remake = nil // the request was served on the image that is here now\n\t\treturn r.saveState(st)\n\t}",
+  "replace": "if false {\n\t\tst.Remake = nil // the request was served on the image that is here now\n\t\treturn r.saveState(st)\n\t}",
+  "mutation": "a stale mark is finished over the image that is here",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk another host wrote is not made afresh by a stale reset mark"
+ },
+ {
+  "id": "G-935",
+  "guard": "the agent carries spec.reset into the runtime's reset",
+  "file": "internal/agent/agent.go",
+  "find": "DiskHostPath: diskPath, Reset: s.Spec.Reset}",
+  "replace": "DiskHostPath: diskPath}",
+  "mutation": "the runtime is not told which reset it is serving",
+  "packages": [
+   "./internal/agent"
+  ],
+  "protects": "a reset mark can be bound to the request kvo reset asked for"
+ },
+ {
+  "id": "G-936",
+  "guard": "only the write of the new root image gives up the old one",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if !writesNewRoot(ce.name, ce.args, tmp) { // only the write of root.raw.new",
+  "replace": "if false { // only the write of root.raw.new",
+  "mutation": "any command's no-space text gives up the old image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a no-space failure from another step keeps the old root image"
+ },
+ {
+  "id": "G-937",
+  "guard": "a failure to start the convert is systemd-run, not the write",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "return \"systemd-run\" // the unit never started",
+  "replace": "return \"qemu-img\" // the unit never started",
+  "mutation": "systemd-run failing to start is reported as qemu-img writing the new image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "systemd-run failing on a full /run does not give up the old root image"
+ },
+ {
+  "id": "G-938",
+  "guard": "truncate gives up the old image only when it is writing the new one",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "return len(args) > 0 && args[len(args)-1] == tmp // the new image, not another file",
+  "replace": "return len(args) > 0 // the new image, not another file",
+  "mutation": "truncate of any file gives up the old image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a no-space failure while truncating another file keeps the old root image"
+ },
+ {
+  "id": "G-939",
+  "guard": "a no-space phrase that names no command does not give up the old image",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "if !errors.As(err, &ce) {\n\t\treturn errors.Is(err, syscall.EDQUOT) || errors.Is(err, syscall.ENOSPC)\n\t}",
+  "replace": "if !errors.As(err, &ce) {\n\t\treturn spaceExhausted(err)\n\t}",
+  "mutation": "text anywhere in an error gives up the old image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a no-space message that is not the write of the new image keeps the old one"
+ },
+ {
+  "id": "G-940",
+  "guard": "a retried reset keeps the image its earlier mark named",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "imageID = st.Remake.ImageID",
+  "replace": "imageID = \"\"",
+  "mutation": "a retry whose root image is already gone saves a mark that names no image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a reset tried again still names the image it removed"
+ },
+ {
+  "id": "G-941",
+  "guard": "a mark that names no image does not replace a later one",
+  "file": "builtin/kri/cloudhypervisor/runtime.go",
+  "find": "return true, nil // the mark names no file: a later image is kept",
+  "replace": "return false, nil // the mark names no file: a later image is kept",
+  "mutation": "a mark with no image is finished over whatever file is there",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a disk that appears after a mark with no image is left as it is"
+ },
+ {
+  "id": "G-942",
+  "guard": "a qemu-img failure inside the unit is the write of the new image",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "return \"qemu-img\" // the command inside failed",
+  "replace": "return \"systemd-run\" // the command inside failed",
+  "mutation": "qemu-img failing to write is reported as the unit never starting",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a quota or a full filesystem during the convert gives up the old root image"
+ },
+ {
+  "id": "G-943",
+  "guard": "a systemd-run failure is not reported as its confinement arguments",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "return &cmdError{name: \"systemd-run\", out: string(out), err: err}",
+  "replace": "return &cmdError{name: \"systemd-run\", args: args, out: string(out), err: err}",
+  "mutation": "the user-facing error lists every property systemd-run was given",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a failure to start the convert does not dump the unit's confinement"
+ },
+ {
+  "id": "G-944",
+  "guard": "a no-space phrase that is not qemu-img's is not the write",
+  "file": "builtin/kri/cloudhypervisor/image.go",
+  "find": "return \"systemd-run\" // not shown to be the write",
+  "replace": "return \"qemu-img\" // not shown to be the write",
+  "mutation": "any no-space text from the convert gives up the old image",
+  "packages": [
+   "./builtin/kri/cloudhypervisor"
+  ],
+  "protects": "a no-space phrase that is not qemu-img writing the new image keeps the old one"
  }
 ]
