@@ -5,7 +5,7 @@
 #
 # What each platform ships:
 #   darwin/*   kvo, kvoadm
-#   windows/*  kvo.exe (kvoadm does not build for Windows: builtin/kri/container/ocienv is Unix-only)
+#   windows/*  kvo.exe, kvoadm.exe
 #   linux/*    kvo, kvoadm, kevasod
 #
 # VERSION is the tag (v1.2.3 or v1.2.3-rc.1). It is stamped the way kevasod has always been
@@ -24,7 +24,7 @@ fi
 
 case "$GOOS_T" in
 darwin) cmds=(kvo kvoadm) ;;
-windows) cmds=(kvo) ;;
+windows) cmds=(kvo kvoadm) ;;
 linux) cmds=(kvo kvoadm kevasod) ;;
 *) echo "no release for GOOS=$GOOS_T" >&2; exit 1 ;;
 esac
