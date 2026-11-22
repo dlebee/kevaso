@@ -6171,5 +6171,41 @@
    "./builtin/kri/cloudhypervisor"
   ],
   "protects": "a no-space phrase that is not qemu-img writing the new image keeps the old one"
+ },
+ {
+  "id": "G-945",
+  "guard": "a same-host allowFrom cut is reset in the bridge prerouting chain",
+  "file": "builtin/kni/rules.go",
+  "find": "\tfor _, r := range brCut {\n\t\tw(\"    %s\", r)\n\t}\n\tfor _, b := range Bindings(local) {\n\t\te := \"\"\n\t\tif b.MAC != \"\" {\n\t\t\te = \"ether saddr \" + b.MAC + \" \"\n\t\t}\n\t\tw(\"    iifname %q %sip saddr %s accept\", b.Tap, e, b.IP) // no silo speaks for another…\n\t\tae := \"\"\n\t\tif b.MAC != \"\" {\n\t\t\tae = \" arp saddr ether \" + b.MAC\n\t\t}\n\t\tw(\"    iifname %q %sarp saddr ip %s%s accept\", b.Tap, e, b.IP, ae) // …nor claims its address\n\t}\n\tw(\"  }\")\n\tw(\"  chain forward {\")\n\tw(\"    type filter hook forward priority filter; policy accept;\")\n\tw(\"    ether type arp accept\") // silos must find each other's MAC before allowFrom can matter\n",
+  "replace": "\tfor _, b := range Bindings(local) {\n\t\te := \"\"\n\t\tif b.MAC != \"\" {\n\t\t\te = \"ether saddr \" + b.MAC + \" \"\n\t\t}\n\t\tw(\"    iifname %q %sip saddr %s accept\", b.Tap, e, b.IP) // no silo speaks for another…\n\t\tae := \"\"\n\t\tif b.MAC != \"\" {\n\t\t\tae = \" arp saddr ether \" + b.MAC\n\t\t}\n\t\tw(\"    iifname %q %sarp saddr ip %s%s accept\", b.Tap, e, b.IP, ae) // …nor claims its address\n\t}\n\tw(\"  }\")\n\tw(\"  chain forward {\")\n\tw(\"    type filter hook forward priority filter; policy accept;\")\n\tw(\"    ether type arp accept\") // silos must find each other's MAC before allowFrom can matter\n\tfor _, r := range brCut {\n\t\tw(\"    %s\", r)\n\t}\n",
+  "mutation": "the reset is written in the bridge forward chain",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "a tcp reset of a same-host flow does not make nft refuse the host's silo firewall"
+ },
+ {
+  "id": "G-946",
+  "guard": "a same-host allowFrom cut is before the bridge port accepts",
+  "file": "builtin/kni/rules.go",
+  "find": "\tfor _, r := range brCut {\n\t\tw(\"    %s\", r)\n\t}\n\tfor _, b := range Bindings(local) {\n\t\te := \"\"\n\t\tif b.MAC != \"\" {\n\t\t\te = \"ether saddr \" + b.MAC + \" \"\n\t\t}\n\t\tw(\"    iifname %q %sip saddr %s accept\", b.Tap, e, b.IP) // no silo speaks for another…\n\t\tae := \"\"\n\t\tif b.MAC != \"\" {\n\t\t\tae = \" arp saddr ether \" + b.MAC\n\t\t}\n\t\tw(\"    iifname %q %sarp saddr ip %s%s accept\", b.Tap, e, b.IP, ae) // …nor claims its address\n\t}\n",
+  "replace": "\tfor _, b := range Bindings(local) {\n\t\te := \"\"\n\t\tif b.MAC != \"\" {\n\t\t\te = \"ether saddr \" + b.MAC + \" \"\n\t\t}\n\t\tw(\"    iifname %q %sip saddr %s accept\", b.Tap, e, b.IP) // no silo speaks for another…\n\t\tae := \"\"\n\t\tif b.MAC != \"\" {\n\t\t\tae = \" arp saddr ether \" + b.MAC\n\t\t}\n\t\tw(\"    iifname %q %sarp saddr ip %s%s accept\", b.Tap, e, b.IP, ae) // …nor claims its address\n\t}\n\tfor _, r := range brCut {\n\t\tw(\"    %s\", r)\n\t}\n",
+  "mutation": "a port accept takes the frame and the cut never runs",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "a removed same-host allowFrom entry resets that flow"
+ },
+ {
+  "id": "G-947",
+  "guard": "a same-host allowFrom cut is written into the bridge table",
+  "file": "builtin/kni/rules.go",
+  "find": "\tfor _, r := range brCut {\n\t\tw(\"    %s\", r)\n\t}\n",
+  "replace": "\t_ = brCut\n",
+  "mutation": "the bridge table carries no reset for that flow",
+  "packages": [
+   "./builtin/kni"
+  ],
+  "protects": "removing a same-host allowFrom entry resets that flow on the bridge"
  }
 ]
