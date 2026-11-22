@@ -1,0 +1,57 @@
+name: windows
+
+# Runs only the tests you name, on a GitHub Windows runner. It never runs by itself.
+#
+#   make windows-test PKGS=./internal/cli/kvoadm/... RUN=TestSigningKey
+#
+# or from the Actions tab (Run workflow), or:
+#
+#   gh workflow run windows.yml --ref <your pushed branch> -f packages=./internal/cli/kvo/... -f run=TestName
+#
+# It always builds kvo.exe and kvoadm.exe first, so an empty `packages` is a quick "does it
+# still build for Windows" check.
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: Packages to test (go test patterns, space separated). Empty builds only.
+        default: ''
+        required: false
+      run:
+        description: Only tests matching this regular expression (go test -run). Empty runs them all.
+        default: ''
+        required: false
+      race:
+        description: Run with the race detector
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Windows tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: {go-version-file: go.mod}
+      - name: Build kvo.exe and kvoadm.exe
+        shell: bash
+        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/" ./cmd/kvo ./cmd/kvoadm
+      - name: go test
+        if: inputs.packages != ''
+        shell: bash
+        env:
+          PKGS: ${{ inputs.packages }}
+          RUN: ${{ inputs.run }}
+          RACE: ${{ inputs.race }}
+        run: |
+          set -euo pipefail
+          read -r -a pkgs <<<"$PKGS"
+          args=(-count=1 -v)
+          [ -n "$RUN" ] && args+=(-run "$RUN")
+          [ "$RACE" = true ] && args+=(-race)
+          go test "${args[@]}" "${pkgs[@]}"

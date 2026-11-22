@@ -1,7 +1,7 @@
 MODULES := . api sdk
 export GOTOOLCHAIN := auto
 
-.PHONY: test test-short race vet vet-tags lint e2e e2e-ci where fuzz stress contention mutate workspace proto plugins lab-up lab-down lab-list release-dry
+.PHONY: test test-short race vet vet-tags lint e2e e2e-ci where fuzz stress contention mutate workspace proto plugins lab-up lab-down lab-list release-dry windows-test
 
 # A worktree lab on the EPYC. LAB is the name. PAIR=1 is two machine VMs for the
 # two-machine metal tests (Kevaso is not installed; the tests install it).
@@ -28,7 +28,7 @@ vet:
 	@for m in $(MODULES); do (cd $$m && go vet ./... && GOOS=linux go vet ./...) || exit 1; done
 	GOOS=windows go vet $(WINDOWS_PKGS)
 
-WINDOWS_PKGS := ./cmd/kvo/... ./internal/cli/kvo/... ./internal/kvoplugin/... ./examples/kvo-plugin/...
+WINDOWS_PKGS := ./cmd/kvo/... ./internal/cli/kvo/... ./internal/kvoplugin/... ./examples/kvo-plugin/... ./cmd/kvoadm/... ./internal/cli/kvoadm/...
 
 GOLANGCI := $(CURDIR)/bin/golangci-lint
 
@@ -77,6 +77,17 @@ proto:                      ## regenerate sdk/kplugin/kpluginpb from its .proto 
 
 plugins:                    ## a local, signed kvo plugin index in ./bin/plugins (whoami for every platform; panes on macOS)
 	hack/plugins.sh
+
+# Runs PKGS (tests matching RUN, if set; RACE=1 for -race) on a GitHub Windows runner, against
+# this branch as pushed, and waits for the result. Empty PKGS only builds kvo.exe and kvoadm.exe.
+windows-test:               ## PKGS=./internal/cli/kvoadm/... [RUN=TestName] [RACE=1] on a GitHub Windows runner
+	@b="$$(git rev-parse --abbrev-ref HEAD)"; \
+	[ "$$(git rev-parse HEAD)" = "$$(git rev-parse '@{u}' 2>/dev/null)" ] || { echo "push $$b first: the runner tests the branch as it is on GitHub" >&2; exit 1; }; \
+	before="$$(gh run list --workflow windows.yml --branch "$$b" --limit 1 --json databaseId -q '.[0].databaseId')"; \
+	gh workflow run windows.yml --ref "$$b" -f packages="$(PKGS)" -f run="$(RUN)" -f race=$(if $(filter 1,$(RACE)),true,false) || exit 1; \
+	for i in $$(seq 30); do id="$$(gh run list --workflow windows.yml --branch "$$b" --limit 1 --json databaseId -q '.[0].databaseId')"; [ -n "$$id" ] && [ "$$id" != "$$before" ] && break; sleep 2; done; \
+	[ -n "$$id" ] && [ "$$id" != "$$before" ] || { echo "the run did not show up; see: gh run list --workflow windows.yml" >&2; exit 1; }; \
+	gh run watch "$$id" --exit-status || { gh run view "$$id" --log-failed | tail -60; exit 1; }
 
 RELEASE_VERSION ?= v0.0.0-dry
 
