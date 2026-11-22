@@ -267,8 +267,9 @@ func set(items []string) string {
 // lease ended): both directions of a translated connection whose original destination matched
 // (orig: the host's or load balancer's address, or the node port), placed before the rules that let established
 // traffic through. TCP is reset, so both ends learn at once; UDP is dropped. These lease cuts match
-// only translated connections. A removed allowFrom entry is cut on its own match, without
-// ct status dnat, and only for the flow that entry allowed. A grant is not cut.
+// only translated connections, and they are inet rules: the bridge family accepts reject only in
+// prerouting and input, and a lease cut is not written there. A removed allowFrom entry is cut on
+// its own match, without ct status dnat, and only for the flow that entry allowed. A grant is not cut.
 func cutRules(bridge string, ip netip.Addr, proto string, port int, orig string) []string {
 	verdict := "drop"
 	if proto == "tcp" {
@@ -736,6 +737,14 @@ func Generate(h Host) (string, []Problem) {
 	// the host itself sends onto the bridge don't pass this hook.
 	w("  chain prerouting {")
 	w("    type filter hook prerouting priority filter; policy drop;")
+	// A same-host allowFrom cut. The bridge family accepts reject only in prerouting and input;
+	// reject in forward is refused, and nft then refuses the host's whole silo firewall. Both
+	// directions enter through a silo tap, so this hook sees them. These rules are before the
+	// per-port accepts, which would take the frame, and ahead of forward's established accept,
+	// which would keep the connection. TCP is reset so both ends learn; UDP is dropped.
+	for _, r := range brCut {
+		w("    %s", r)
+	}
 	for _, b := range Bindings(local) {
 		e := ""
 		if b.MAC != "" {
@@ -752,9 +761,6 @@ func Generate(h Host) (string, []Problem) {
 	w("  chain forward {")
 	w("    type filter hook forward priority filter; policy accept;")
 	w("    ether type arp accept") // silos must find each other's MAC before allowFrom can matter
-	for _, r := range brCut {      // a same-host allowFrom flow, before established keeps it
-		w("    %s", r)
-	}
 	w("    ct state established,related accept")
 	for _, r := range br {
 		w("    %s", r)

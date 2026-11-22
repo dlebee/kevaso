@@ -198,8 +198,10 @@ func verdict(proto string) string {
 }
 
 // revokeCuts are the resets for allowFrom flows prev allowed and cur does not. inet is both
-// directions of a routed flow; bridge is a same-host flow, which never enters the inet forward
-// chain. Neither matches ct status dnat: a translated outside connection is not one of these flows.
+// directions of a routed flow, loaded in the inet forward chain. bridge is a same-host flow, which
+// never enters that chain; it is loaded in the bridge prerouting chain, where this family accepts
+// reject (forward refuses it, and nft then refuses the whole table). Neither matches ct status
+// dnat: a translated outside connection is not one of these flows.
 func revokeCuts(cur, prev Host) (inet, bridge []string) {
 	now := flowsOf(cur)
 	var gone []flow
