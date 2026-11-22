@@ -1,0 +1,2 @@
+# Golden outputs are compared byte for byte; keep LF on every OS (Windows checks out CRLF otherwise).
+internal/cli/kvo/testdata/golden/** text eol=lf

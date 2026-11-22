@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -80,7 +81,8 @@ func TestSigningKeyIsStableAndVerifies(t *testing.T) {
 	if !k1.Equal(k2) || string(pub1) != string(pub2) {
 		t.Fatal("a second call made a new key")
 	}
-	if fi, _ := os.Stat(filepath.Join(dir, "signing.key")); fi.Mode().Perm() != 0o600 {
+	// Windows has no Unix file modes to check (its access is set by ACLs).
+	if fi, _ := os.Stat(filepath.Join(dir, "signing.key")); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("signing.key mode %v", fi.Mode().Perm())
 	}
 	// What the host pins is a PKIX public key (openssl pkeyutl reads it), and it verifies the signature.
