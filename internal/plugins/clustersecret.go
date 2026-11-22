@@ -2,7 +2,7 @@ package plugins
 
 import (
 	"encoding/json"
-	"path/filepath"
+	"path"
 	"regexp"
 )
 
@@ -24,12 +24,13 @@ func ValidClusterSecretName(name string) bool {
 }
 
 // ClusterSecretsPath is where side's names are recorded (side "node", or the controller side).
+// It is a path on the Linux host, joined with "/" even when kvoadm runs on Windows.
 func ClusterSecretsPath(root, plugin, side string) string {
 	file := ClusterSecretsFile
 	if side == "node" {
 		file = ClusterSecretsNodeFile
 	}
-	return filepath.Join(root, plugin, file)
+	return path.Join(root, plugin, file)
 }
 
 type clusterSecretRecord struct {

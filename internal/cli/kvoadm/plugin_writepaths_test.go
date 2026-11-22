@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -69,6 +70,9 @@ func TestUnitRefusesForeignWritePaths(t *testing.T) {
 // at), an existing folder's mode is left alone (install -d -m 0700 on /etc broke every service),
 // a missing one is made 0700; systemd's own private/ link for a dynamic user's state is allowed.
 func TestWritePathScriptOnTheHost(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the script runs on the Linux host; Windows has no Unix modes to check")
+	}
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh")
 	}

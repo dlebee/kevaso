@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -13,6 +14,9 @@ import (
 // it just started: a refusal is the install's error, naming both plugins, and the refused unit is
 // stopped. The script runs on the host; here against a fake journalctl.
 func TestPluginInstallReportsKevasodsRefusal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the script runs on the Linux host, with a fake journalctl on a Unix PATH")
+	}
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh")
 	}
