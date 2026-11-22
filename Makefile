@@ -1,7 +1,7 @@
 MODULES := . api sdk
 export GOTOOLCHAIN := auto
 
-.PHONY: test test-short race vet vet-tags lint e2e e2e-ci where fuzz stress contention mutate workspace proto plugins lab-up lab-down lab-list
+.PHONY: test test-short race vet vet-tags lint e2e e2e-ci where fuzz stress contention mutate workspace proto plugins lab-up lab-down lab-list release-dry
 
 # A worktree lab on the EPYC. LAB is the name. PAIR=1 is two machine VMs for the
 # two-machine metal tests (Kevaso is not installed; the tests install it).
@@ -77,3 +77,13 @@ proto:                      ## regenerate sdk/kplugin/kpluginpb from its .proto 
 
 plugins:                    ## a local, signed kvo plugin index in ./bin/plugins (whoami for every platform; panes on macOS)
 	hack/plugins.sh
+
+RELEASE_VERSION ?= v0.0.0-dry
+
+release-dry:                ## what a tag release builds, unsigned, into dist/release-dry (RELEASE_VERSION=vX.Y.Z)
+	rm -rf dist/release-dry
+	@for t in darwin/arm64 darwin/amd64 windows/amd64 linux/amd64 linux/arm64; do \
+		hack/release/build.sh $(RELEASE_VERSION) $${t%/*} $${t#*/} dist/release-dry/build/$${t%/*}-$${t#*/} || exit 1; \
+	done
+	hack/release/package.sh $(RELEASE_VERSION) dist/release-dry/build dist/release-dry/out
+	cd dist/release-dry/out && shasum -a 256 * > SHA256SUMS && cat SHA256SUMS
