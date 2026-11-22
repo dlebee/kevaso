@@ -400,7 +400,15 @@ func (a *Agent) Run(ctx context.Context) {
 		e.Changed(key)
 	})
 	go a.silos.Run(ctx)
-	go a.watchDeletes(ctx, e)
+	// Run returns only once the delete watch has: it writes seen-deletes.json and
+	// delete-watch.json, and a stopped agent that still recorded a delete, or moved the revision
+	// past one, would leave the next run (a restart, the next kevasod) a delete it never saw.
+	watchEnded := make(chan struct{})
+	go func() {
+		defer close(watchEnded)
+		a.watchDeletes(ctx, e)
+	}()
+	defer func() { <-watchEnded }()
 	go a.RunClusterSecrets(ctx)
 	// Rotation fan-out: a secret or grant changing looks again at every silo here that receives
 	// it (its files and env vars are written again, its endpoint and policy follow its grants).
@@ -2323,6 +2331,11 @@ func (a *Agent) watchDeletes(ctx context.Context, e *engine.Engine) {
 				a.saveDeleteWatch(hist, listed)
 			}
 			for ev := range ch {
+				if ctx.Err() != nil {
+					// Stopping: the stream can still hand over an event after the run's context
+					// ended. It is neither recorded nor moved past, so the next run replays it.
+					break
+				}
 				if wm.mark().histories != m0.histories {
 					break // another history accepted: this stream's deletes are of the old one
 				}
