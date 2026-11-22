@@ -2,7 +2,6 @@ package ocienv
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -220,11 +219,8 @@ func (s *Shim) envFile(short string) ([]byte, error) {
 
 // readStrict reads a regular file of Owner's, not through a link, with no mode bit of deny set.
 func (s *Shim) readStrict(path string, deny fs.FileMode, max int64) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openNoFollow(path)
 	if err != nil {
-		if errors.Is(err, syscall.ELOOP) {
-			return nil, fmt.Errorf("%s is a link", path)
-		}
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
@@ -238,8 +234,8 @@ func (s *Shim) readStrict(path string, deny fs.FileMode, max int64) ([]byte, err
 	if err := s.owned(path, fi, deny); err != nil {
 		return nil, err
 	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Nlink != 1 {
-		return nil, fmt.Errorf("%s has %d links", path, st.Nlink)
+	if _, nlink, ok := fileOwner(fi); ok && nlink != 1 {
+		return nil, fmt.Errorf("%s has %d links", path, nlink)
 	}
 	b, err := io.ReadAll(io.LimitReader(f, max+1))
 	if err != nil {
@@ -253,12 +249,12 @@ func (s *Shim) readStrict(path string, deny fs.FileMode, max int64) ([]byte, err
 }
 
 func (s *Shim) owned(path string, fi fs.FileInfo, deny fs.FileMode) error {
-	st, ok := fi.Sys().(*syscall.Stat_t)
+	uid, _, ok := fileOwner(fi)
 	if !ok {
 		return fmt.Errorf("%s: no owner", path)
 	}
-	if int(st.Uid) != s.Owner {
-		return fmt.Errorf("%s is owned by uid %d, not %d", path, st.Uid, s.Owner)
+	if uid != s.Owner {
+		return fmt.Errorf("%s is owned by uid %d, not %d", path, uid, s.Owner)
 	}
 	if fi.Mode().Perm()&deny != 0 {
 		return fmt.Errorf("%s has mode %04o", path, fi.Mode().Perm())

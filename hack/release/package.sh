@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Packages what hack/release/build.sh left in BUILDROOT/<goos>-<goarch>/ into release archives in OUT.
+# Packages what hack/release/build.sh left in BUILDROOT/<goos>-<goarch>/ into release archives in OUT,
+# one archive per program:
 #
 #   hack/release/package.sh VERSION BUILDROOT OUT
 #
-#   kevaso-cli-VERSION-<goos>-<goarch>.zip     darwin, windows: kvo (and kvoadm), LICENSE, NOTICE, README.md
-#   kevaso-cli-VERSION-linux-<goarch>.tar.gz   linux: kvo, kvoadm, LICENSE, NOTICE, README.md
-#   kevasod-VERSION-linux-<goarch>.tar.gz      linux: kevasod, LICENSE, NOTICE
+#   kvo-VERSION-<goos>-<goarch>.zip / .tar.gz      kvo, LICENSE, NOTICE, README.md
+#   kvoadm-VERSION-<goos>-<goarch>.zip / .tar.gz   kvoadm, LICENSE, NOTICE, README.md
+#   kevasod-VERSION-linux-<goarch>.tar.gz          kevasod, LICENSE, NOTICE
 #
-# Each archive holds one top-level directory named like the archive. Binaries are packaged as they
-# are, so on macOS sign them before this runs.
+# macOS and Windows get .zip, Linux .tar.gz. Each archive holds one top-level directory named like
+# the archive. Binaries are packaged as they are, so sign them before this runs.
 set -euo pipefail
 
 VERSION="${1:?usage: $0 VERSION BUILDROOT OUT}"
@@ -36,27 +37,22 @@ archive() { # archive KIND NAME — STAGE/NAME becomes OUT/NAME.zip or OUT/NAME.
 found=0
 for dir in "$ROOT"/*-*/; do
 	[ -d "$dir" ] || continue
-	found=1
 	plat="$(basename "$dir")"
-	goos="${plat%-*}"
 	kind=zip
-	[ "$goos" = linux ] && kind=tgz
-
-	cli="kevaso-cli-$VERSION-$plat"
-	mkdir -p "$STAGE/$cli"
-	for b in kvo kvo.exe kvoadm kvoadm.exe; do
-		[ -f "$dir/$b" ] && cp -p "$dir/$b" "$STAGE/$cli/"
+	[ "${plat%-*}" = linux ] && kind=tgz
+	for f in "$dir"*; do
+		prog="$(basename "$f" .exe)"
+		case "$prog" in
+		kvo | kvoadm) extra=(README.md) ;;
+		kevasod) extra=() ;;
+		*) continue ;;
+		esac
+		found=1
+		name="$prog-$VERSION-$plat"
+		mkdir -p "$STAGE/$name"
+		cp -p "$f" "$STAGE/$name/"
+		for x in LICENSE NOTICE ${extra[@]+"${extra[@]}"}; do cp "$REPO/$x" "$STAGE/$name/"; done
+		archive "$kind" "$name"
 	done
-	[ -n "$(ls "$STAGE/$cli")" ] || { echo "no kvo in $dir" >&2; exit 1; }
-	cp "$REPO/LICENSE" "$REPO/NOTICE" "$REPO/README.md" "$STAGE/$cli/"
-	archive "$kind" "$cli"
-
-	if [ -f "$dir/kevasod" ]; then
-		d="kevasod-$VERSION-$plat"
-		mkdir -p "$STAGE/$d"
-		cp -p "$dir/kevasod" "$STAGE/$d/"
-		cp "$REPO/LICENSE" "$REPO/NOTICE" "$STAGE/$d/"
-		archive tgz "$d"
-	fi
 done
 [ "$found" = 1 ] || { echo "nothing built in $ROOT" >&2; exit 1; }

@@ -162,8 +162,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: {go-version-file: go.mod, cache: false}
 
-      # kvoadm does not build for Windows (builtin/kri/container/ocienv is Unix-only): kvo only.
-      - name: Build kvo (amd64)
+      - name: Build kvo and kvoadm (amd64)
         shell: bash
         run: hack/release/build.sh "$VERSION" windows amd64 build/windows-amd64
 
@@ -199,19 +198,23 @@ jobs:
           if (-not $signtool) { throw 'signtool.exe not found' }
           "ACS_DLIB=$dlib", "ACS_METADATA=$meta", "SIGNTOOL=$signtool" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Sign kvo.exe
+      - name: Sign kvo.exe and kvoadm.exe
         if: env.AZURE_CLIENT_ID != ''
         shell: pwsh
-        run: ./hack/release/sign-windows.ps1 build/windows-amd64/kvo.exe
+        run: |
+          foreach ($f in 'kvo.exe', 'kvoadm.exe') { & ./hack/release/sign-windows.ps1 "build/windows-amd64/$f" }
 
-      - name: Package zip
+      - name: Package zips
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $name = "kevaso-cli-$env:VERSION-windows-amd64"
-          New-Item -ItemType Directory -Force -Path "stage/$name", dist | Out-Null
-          Copy-Item build/windows-amd64/kvo.exe, LICENSE, NOTICE, README.md "stage/$name/"
-          Compress-Archive -Path "stage/$name" -DestinationPath "dist/$name.zip"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          foreach ($prog in 'kvo', 'kvoadm') {
+            $name = "$prog-$env:VERSION-windows-amd64"
+            New-Item -ItemType Directory -Force -Path "stage/$name" | Out-Null
+            Copy-Item "build/windows-amd64/$prog.exe", LICENSE, NOTICE, README.md "stage/$name/"
+            Compress-Archive -Path "stage/$name" -DestinationPath "dist/$name.zip"
+          }
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: windows, path: dist/*, if-no-files-found: error}
@@ -256,12 +259,17 @@ jobs:
           cat > notes.md <<EOF
           ## Downloads
 
+          \`kvo\` is the command line for using a cluster, \`kvoadm\` the one for running it, and
+          \`kevasod\` the daemon on each Linux host (worker and system nodes).
+
           | File | What |
           | --- | --- |
-          | \`kevaso-cli-$VERSION-darwin-arm64.zip\`, \`-darwin-amd64.zip\` | \`kvo\` and \`kvoadm\` for macOS (Apple silicon, Intel), signed with a Developer ID and notarized |
-          | \`kevaso-cli-$VERSION-windows-amd64.zip\` | \`kvo.exe\` for Windows, signed with Trusted Signing (\`kvoadm\` is not built for Windows) |
-          | \`kevaso-cli-$VERSION-linux-amd64.tar.gz\`, \`-linux-arm64.tar.gz\` | \`kvo\` and \`kvoadm\` for Linux, unsigned |
-          | \`kevasod-$VERSION-linux-amd64.tar.gz\`, \`-linux-arm64.tar.gz\` | \`kevasod\`, the host daemon, for Linux, unsigned |
+          | \`kvo-$VERSION-darwin-arm64.zip\`, \`kvoadm-$VERSION-darwin-arm64.zip\` | macOS, Apple silicon: signed with a Developer ID and notarized |
+          | \`kvo-$VERSION-darwin-amd64.zip\`, \`kvoadm-$VERSION-darwin-amd64.zip\` | macOS, Intel: signed with a Developer ID and notarized |
+          | \`kvo-$VERSION-windows-amd64.zip\`, \`kvoadm-$VERSION-windows-amd64.zip\` | Windows x64: signed with Trusted Signing |
+          | \`kvo-$VERSION-linux-amd64.tar.gz\`, \`kvoadm-$VERSION-linux-amd64.tar.gz\` | Linux x86-64, unsigned |
+          | \`kvo-$VERSION-linux-arm64.tar.gz\`, \`kvoadm-$VERSION-linux-arm64.tar.gz\` | Linux arm64, unsigned |
+          | \`kevasod-$VERSION-linux-amd64.tar.gz\`, \`kevasod-$VERSION-linux-arm64.tar.gz\` | the host daemon for Linux (Ubuntu 24.04, Debian 12), unsigned |
           | \`SHA256SUMS\` | SHA-256 of every file above: \`sha256sum -c SHA256SUMS --ignore-missing\` |
 
           The macOS zips were notarized by Apple, but a plain command-line binary cannot have its
