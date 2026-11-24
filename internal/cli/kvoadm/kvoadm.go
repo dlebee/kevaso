@@ -727,6 +727,15 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 		}
 		root = r
 	}
+	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
+	var restore []byte
+	existing := false // the machine already holds this cluster's data (a volume moved over to it)
+	if o.Restore != "" { // first: a restore takes the cluster's name from the backup
+		var err error
+		if restore, err = prepareRestore(&o, stdin, out); err != nil {
+			return fmt.Errorf("restore: %w", err)
+		}
+	}
 	// The cluster's folder: kvoadm's config, its admin credentials, and the keys hosts pin (its
 	// binary-signing key, its own SSH key). Copying the folder is handing the cluster over.
 	kc, err := admconfig.Load(root, o.Cluster)
@@ -738,15 +747,6 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	}
 	o.keys = kc.Folder()
 	home := kc.Folder()
-	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
-	var restore []byte
-	existing := false // the machine already holds this cluster's data (a volume moved over to it)
-	if o.Restore != "" {
-		var err error
-		if restore, err = prepareRestore(&o, stdin, out); err != nil {
-			return fmt.Errorf("restore: %w", err)
-		}
-	}
 	conn, err := bootstrap(ctx, o, home, stdin, out, say)
 	if err != nil {
 		return err
@@ -840,7 +840,7 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	// 6b. Your kvo: a plain user (editor in every namespace, nothing cluster-wide), never the admin
 	// certificate, which stays in the cluster folder (kvoadm kvo … runs kvo as the admin).
 	cfgPath := filepath.Join(root, "config.yaml")
-	if p := os.Getenv("KVO_CONFIG"); p != "" && o.Home == "" && filepath.Dir(p) != kc.Folder() { // never the folder's admin file
+	if p := os.Getenv("KVO_CONFIG"); p != "" && o.Home == "" && !inClusterFolders(root, p) { // never a cluster folder's admin file
 		cfgPath = p
 	}
 	if err := kvoUser(ctx, c, conn, o.UserName, o.Cluster, server, []byte(cred.CA), cfgPath, say); err != nil {
@@ -1157,4 +1157,11 @@ func loadKey(path string, pem []byte, stdin io.Reader, out io.Writer) (ssh.Signe
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return signer, nil
+}
+
+// inClusterFolders reports whether path is inside root/clusters (kvoadm's folders, where kvo's
+// plain-user context never goes).
+func inClusterFolders(root, path string) bool {
+	rel, err := filepath.Rel(filepath.Join(root, "clusters"), path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

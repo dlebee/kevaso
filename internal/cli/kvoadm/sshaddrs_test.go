@@ -301,3 +301,19 @@ func TestHostAddParsesWithoutACredential(t *testing.T) {
 		t.Fatal("init still needs a login: there's no cluster folder yet")
 	}
 }
+
+// init never writes kvo's plain-user context into a cluster folder's admin file.
+func TestInClusterFolders(t *testing.T) {
+	root := "/h/.kevaso"
+	for p, want := range map[string]bool{
+		"/h/.kevaso/clusters/a/kvo-admin.yaml": true,
+		"/h/.kevaso/clusters/b/x/y.yaml":       true,
+		"/h/.kevaso/config.yaml":               false,
+		"/h/.kevaso/clusters-other/c.yaml":     false,
+		"/elsewhere/kvo.yaml":                  false,
+	} {
+		if got := inClusterFolders(root, p); got != want {
+			t.Fatalf("%s: %v", p, got)
+		}
+	}
+}
