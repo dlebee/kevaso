@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -213,6 +214,15 @@ func usersResign(ctx context.Context, args []string, stdin io.Reader, stdout io.
 		}
 		if c.Local.Admin == "" {
 			c.Local.Admin = name
+		}
+		// A new admin's first run on this machine: their key, and the host key they just checked.
+		if c.Local.SSHKey == "" && o.SSHKey != "" {
+			if abs, err := filepath.Abs(o.SSHKey); err == nil {
+				c.Local.SSHKey = abs
+			}
+		}
+		if c.HasHost(o.Address) {
+			c.RecordHost(o.Address, "", conn.Fingerprint)
 		}
 		return installResignedCert(c.File(c.Local.Key), c.File(c.Local.Certificate), keyPEM, certPEM)
 	}); err != nil {
