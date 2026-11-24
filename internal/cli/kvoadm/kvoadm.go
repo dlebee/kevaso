@@ -1070,7 +1070,14 @@ func dialHost(ctx context.Context, o InitOptions, in *bufio.Reader, stdin io.Rea
 		prepareTarget(kc, &o)
 		if kc != nil {
 			if kc.HasHost(o.Address) && o.SSHPort == 22 {
-				conn, _, err := dialHostAt(ctx, kc, &v1.Host{ObjectMeta: meta.ObjectMeta{Name: o.Address}}, o, stdin, out)
+				h := &v1.Host{ObjectMeta: meta.ObjectMeta{Name: o.Address}}
+				if c, err := kc.Client(); err == nil { // the cluster's record: the host key pinned for it
+					var got v1.Host
+					if c.Get(ctx, "Host", "", o.Address, &got) == nil {
+						h = &got
+					}
+				}
+				conn, _, err := dialHostAt(ctx, kc, h, o, stdin, out)
 				return conn, false, err
 			}
 			if name, ok := kc.HostFor(net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))); ok && o.HostKey == "" {

@@ -108,6 +108,6 @@ func enableWorker(ctx context.Context, args []string, stdin io.Reader, out io.Wr
 	if err := installUnits(ctx, conn, UnitsFor(next, true, rts)); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(out, "→ kevasod restarted with the worker (%s), and its fence (%s). Its runtimes install now: kvo watch hosts\n", strings.Join(rts, ", "), FenceUnitName)
+	_, _ = fmt.Fprintf(out, "→ kevasod restarted with the worker (%s), and its fence (%s). Its runtimes install now: kvoadm kvo watch hosts\n", strings.Join(rts, ", "), FenceUnitName)
 	return nil
 }

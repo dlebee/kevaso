@@ -275,7 +275,7 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 		journal, _ := conn.Run(ctx, "journalctl -u kevasod -n 20 --no-pager", nil)
 		return fmt.Errorf("%w\nkevasod on the host:\n%s", err, journal)
 	}
-	say("host %s is Ready (it dials out to the control plane; nothing listens on it). Its runtimes install next: kvo watch hosts", o.Name)
+	say("host %s is Ready (it dials out to the control plane; nothing listens on it). Its runtimes install next: kvoadm kvo watch hosts", o.Name)
 	return nil
 }
 
