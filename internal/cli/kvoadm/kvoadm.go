@@ -729,7 +729,7 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	}
 	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
 	var restore []byte
-	existing := false // the machine already holds this cluster's data (a volume moved over to it)
+	existing := false    // the machine already holds this cluster's data (a volume moved over to it)
 	if o.Restore != "" { // first: a restore takes the cluster's name from the backup
 		var err error
 		if restore, err = prepareRestore(&o, stdin, out); err != nil {
