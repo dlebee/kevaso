@@ -286,3 +286,18 @@ func TestTakeClusterForAddressCommands(t *testing.T) {
 		}
 	}
 }
+
+// host add takes its SSH key from the cluster folder: no --ssh-key needed, and --ssh-key with no
+// --password is still fine.
+func TestHostAddParsesWithoutACredential(t *testing.T) {
+	if _, err := parseHostAdd([]string{"root@10.0.0.9", "--kevasod", "/k", "--name", "w9"}); err != nil {
+		t.Fatalf("no key given: %v", err)
+	}
+	o, err := parseHostAdd([]string{"root@10.0.0.9", "--kevasod", "/k", "--ssh-key", "/key"})
+	if err != nil || o.SSHKey != "/key" || o.Password {
+		t.Fatalf("a key given: %+v %v", o, err)
+	}
+	if _, err := parseInit([]string{"root@10.0.0.9", "--kevasod", "/k"}); err == nil {
+		t.Fatal("init still needs a login: there's no cluster folder yet")
+	}
+}

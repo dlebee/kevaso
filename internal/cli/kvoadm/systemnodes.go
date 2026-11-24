@@ -243,6 +243,9 @@ func hostAddSystemNode(ctx context.Context, o HostAddOptions, stdin io.Reader, o
 	}
 	o.Cluster = kc.Cluster() // the cluster the new system node's kevasod belongs to
 	prepareTarget(kc, &o.InitOptions)
+	if err := needCredential(o.InitOptions); err != nil {
+		return err
+	}
 	hosts, err := listHosts(ctx, c)
 	if err != nil {
 		return err
@@ -693,12 +696,12 @@ func storeMigrate(ctx context.Context, args []string, stdin io.Reader, out io.Wr
 	if err != nil {
 		return err
 	}
-	defaultSSHKey(&o)
-	if err := needCredential(o); err != nil {
+	c, kc, err := adminClient(kctx)
+	if err != nil {
 		return err
 	}
-	c, _, err := adminClient(kctx)
-	if err != nil {
+	prepareTarget(kc, &o) // a host's name, and the folder's SSH key
+	if err := needCredential(o); err != nil {
 		return err
 	}
 	conn, _, err := dialHost(ctx, o, bufio.NewReader(stdin), stdin, out)

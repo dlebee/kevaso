@@ -281,7 +281,9 @@ type InitOptions struct {
 	hardeningAsked       bool // a hardening flag was given: don't ask
 }
 
-func parseInit(args []string) (InitOptions, error) {
+// parseInitNoCredential is parseInit without the login check, for a command whose SSH key may come
+// from the cluster folder (host add): it checks once the folder has been read.
+func parseInitNoCredential(args []string) (InitOptions, error) {
 	var rest []string
 	store := ""
 	var replace, storeGiven bool
@@ -336,6 +338,15 @@ func parseInit(args []string) (InitOptions, error) {
 		return o, errors.New("--kevasod PATH is required: a kevasod binary for the host's OS and CPU (release downloads come later)")
 	}
 	if err := needIPs(o); err != nil {
+		return o, err
+	}
+	return o, nil
+}
+
+// parseInit is kvoadm init's flags: the login is given (no cluster folder exists yet).
+func parseInit(args []string) (InitOptions, error) {
+	o, err := parseInitNoCredential(args)
+	if err != nil {
 		return o, err
 	}
 	return o, needCredential(o)

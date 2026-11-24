@@ -84,6 +84,7 @@ func enableWorker(ctx context.Context, args []string, stdin io.Reader, out io.Wr
 	if err != nil {
 		return err
 	}
+	prepareTarget(targetCluster(ctx), &o) // the cluster folder's SSH key
 	if err := needCredential(o); err != nil {
 		return err
 	}

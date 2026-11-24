@@ -90,7 +90,7 @@ func parseHostAdd(args []string) (HostAddOptions, error) {
 			return o, err
 		}
 	}
-	init, err := parseInit(rest)
+	init, err := parseInitNoCredential(rest)
 	if err != nil {
 		return o, err
 	}
@@ -206,6 +206,9 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 		return err
 	}
 	prepareTarget(kc, &o.InitOptions) // the cluster folder's SSH key, before the first login
+	if err := needCredential(o.InitOptions); err != nil {
+		return err
+	}
 	if err := lookFirst(ctx, o.InitOptions, stdin, out); err != nil {
 		return err
 	}
