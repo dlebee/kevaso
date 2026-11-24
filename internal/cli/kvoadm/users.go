@@ -14,6 +14,7 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/admconfig"
 	"kevaso.com/core/internal/kvoconfig"
 )
 
@@ -206,16 +207,15 @@ func usersResign(ctx context.Context, args []string, stdin io.Reader, stdout io.
 	if err != nil {
 		return err
 	}
-	if kc.Local.Certificate == "" || kc.Local.Key == "" {
-		kc.Local.Certificate, kc.Local.Key = "admin.crt", "admin.key"
-	}
-	if kc.Local.Admin == "" {
-		kc.Local.Admin = name
-	}
-	if err := installResignedCert(kc.File(kc.Local.Key), kc.File(kc.Local.Certificate), keyPEM, certPEM); err != nil {
-		return err
-	}
-	if err := kc.Save(); err != nil {
+	if err := kc.Update(func(c *admconfig.Config) error {
+		if c.Local.Certificate == "" || c.Local.Key == "" {
+			c.Local.Certificate, c.Local.Key = "admin.crt", "admin.key"
+		}
+		if c.Local.Admin == "" {
+			c.Local.Admin = name
+		}
+		return installResignedCert(c.File(c.Local.Key), c.File(c.Local.Certificate), keyPEM, certPEM)
+	}); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "certificate for %s written to cluster %s (%s)\n", name, kc.Cluster(), kc.Folder())

@@ -334,7 +334,8 @@ func finishSystemNode(ctx context.Context, c *client.Client, conn *sshboot.Conn,
 // addServer adds a new system node's API URL to the cluster folder's server list, and to kvo's
 // context of the same name when there is one, so both fail over to it.
 func addServer(kc *admconfig.Config, url string, say func(string, ...any)) {
-	if kc.AddServer(url) && kc.Save() == nil {
+	added := false
+	if kc.Update(func(c *admconfig.Config) error { added = c.AddServer(url); return nil }) == nil && added {
 		say("cluster %s now lists %s too (kvoadm fails over between them)", kc.Cluster(), url)
 	}
 	path, err := kvoconfig.Path()
@@ -450,8 +451,7 @@ func hostRemoveSystemNode(ctx context.Context, name, kctx string, deleteHost, co
 	}
 	var h v1.Host
 	if deleteHost && client.IsNotFound(c.Get(ctx, "Host", "", name, &h)) {
-		kc.ForgetHost(name) // its addresses go with it
-		_ = kc.Save()
+		_ = kc.Update(func(c *admconfig.Config) error { c.ForgetHost(name); return nil }) // its addresses go with it
 	}
 	return nil
 }

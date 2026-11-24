@@ -45,6 +45,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	yaml "go.yaml.in/yaml/v3"
 	"golang.org/x/crypto/ssh"
@@ -290,6 +291,65 @@ func (c *Config) Save() error {
 		}
 	}
 	return nil
+}
+
+// Update changes the files as they are on disk now: it takes the folder's lock, reads both files
+// again, applies change, writes them, and leaves c holding the result. Two kvoadm runs at once (host
+// add of two workers) each keep the other's change.
+func (c *Config) Update(change func(*Config) error) error {
+	if err := os.MkdirAll(c.dir, 0o700); err != nil {
+		return err
+	}
+	unlock, err := lockDir(c.dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	cur := &Config{dir: c.dir}
+	if fileExists(c.SharedPath()) {
+		fresh, err := Load(filepath.Dir(filepath.Dir(c.dir)), filepath.Base(c.dir))
+		if err != nil {
+			return err
+		}
+		cur = fresh
+	} else {
+		cur.Shared, cur.Local = c.Shared, c.Local
+	}
+	if err := change(cur); err != nil {
+		return err
+	}
+	if err := cur.Save(); err != nil {
+		return err
+	}
+	*c = *cur
+	return nil
+}
+
+// lockWait is how long Update waits for another kvoadm's lock; lockStale is when a lock left by a
+// kvoadm that died is taken over.
+var lockWait, lockStale = 20 * time.Second, time.Minute
+
+func lockDir(dir string) (func(), error) {
+	p := filepath.Join(dir, ".lock")
+	deadline := time.Now().Add(lockWait)
+	for {
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_ = f.Close()
+			return func() { _ = os.Remove(p) }, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		if st, err := os.Stat(p); err == nil && time.Since(st.ModTime()) > lockStale {
+			_ = os.Remove(p)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("%s is locked by another kvoadm (remove %s if none is running)", dir, p)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // WriteCredentials stores the cluster CA (shared: it's public) and this admin's certificate and

@@ -147,8 +147,7 @@ func recordHostAddress(cfg *admconfig.Config, name, target, hostKey string, say 
 	if cfg == nil {
 		return
 	}
-	cfg.RecordHost(name, target, hostKey)
-	if err := cfg.Save(); err != nil {
+	if err := cfg.Update(func(c *admconfig.Config) error { c.RecordHost(name, target, hostKey); return nil }); err != nil {
 		say("couldn't record %s's address in %s (%v): kvoadm host ssh %s add %s", name, cfg.Folder(), err, name, target)
 	}
 }
@@ -198,11 +197,11 @@ func hostSSH(ctx context.Context, args []string, out io.Writer) error {
 	}
 	switch op {
 	case "add":
-		added, err := cfg.AddAddresses(name, local, addrs...)
-		if err != nil {
+		var added []string
+		if err := cfg.Update(func(c *admconfig.Config) (err error) {
+			added, err = c.AddAddresses(name, local, addrs...)
 			return err
-		}
-		if err := cfg.Save(); err != nil {
+		}); err != nil {
 			return err
 		}
 		where := cfg.SharedPath() + ": commit it for the team"
@@ -211,8 +210,8 @@ func hostSSH(ctx context.Context, args []string, out io.Writer) error {
 		}
 		_, _ = fmt.Fprintf(out, "→ %s: %d address(es) added (%s)\n", name, len(added), where)
 	case "remove":
-		removed := cfg.RemoveAddresses(name, addrs...)
-		if err := cfg.Save(); err != nil {
+		var removed []string
+		if err := cfg.Update(func(c *admconfig.Config) error { removed = c.RemoveAddresses(name, addrs...); return nil }); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(out, "→ %s: %d address(es) removed\n", name, len(removed))

@@ -72,9 +72,9 @@ func TestLabClusterSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	admin := kcfg.CurrentContext
-	if admin == "" {
-		t.Fatal("the lab config has no current context")
+	admin := os.Getenv("LAB_NAME") // the lab admin's context (a test's kvo login may switch the current one)
+	if _, ok := kcfg.Contexts[admin]; !ok {
+		t.Fatalf("the lab config has no context %s", admin)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)

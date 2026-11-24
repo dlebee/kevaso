@@ -444,10 +444,12 @@ func labAdmin(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kcfg.CurrentContext == "" {
-		t.Fatal("the lab config has no current context")
+	// The lab admin's context is the lab's name (a test's kvo login may have switched the current one).
+	admin := os.Getenv("LAB_NAME")
+	if _, ok := kcfg.Contexts[admin]; !ok {
+		t.Fatalf("the lab config has no context %s", admin)
 	}
-	return kcfg.CurrentContext
+	return admin
 }
 
 func labNamespace(t *testing.T, ctx context.Context, admin, name string) {

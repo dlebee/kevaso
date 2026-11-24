@@ -3,6 +3,7 @@ package admconfig
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -205,5 +206,42 @@ func TestParseAddress(t *testing.T) {
 	}
 	if s := (Target{User: "root", Host: "fd00::5", Port: 22}).String(); s != "root@[fd00::5]:22" {
 		t.Fatal(s)
+	}
+}
+
+// Two kvoadm runs at once (host add of two workers) each keep the other's change.
+func TestUpdatesAtOnceKeepEachOther(t *testing.T) {
+	root := t.TempDir()
+	if err := New(root, "c").Save(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error)
+	for i := range 12 {
+		go func() {
+			c, err := Load(root, "c") // each run read the file before the others wrote
+			if err != nil {
+				done <- err
+				return
+			}
+			done <- c.Update(func(c *Config) error {
+				c.RecordHost(fmt.Sprintf("w%d", i), fmt.Sprintf("root@10.0.0.%d", i), "SHA256:k")
+				return nil
+			})
+		}()
+	}
+	for range 12 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, err := Load(root, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Shared.Hosts) != 12 || len(c.Local.Hosts) != 12 {
+		t.Fatalf("lost updates: %d shared, %d local", len(c.Shared.Hosts), len(c.Local.Hosts))
+	}
+	if _, err := os.Stat(filepath.Join(c.Folder(), ".lock")); !os.IsNotExist(err) {
+		t.Fatal("the lock is left behind")
 	}
 }

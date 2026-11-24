@@ -58,10 +58,7 @@ func adminsCmd(ctx context.Context, args []string, stdin io.Reader, out io.Write
 			}
 			keys = append(keys, line)
 		}
-		if err := kc.SetAdmin(rest[1], keys...); err != nil {
-			return err
-		}
-		if err := kc.Save(); err != nil {
+		if err := kc.Update(func(c *admconfig.Config) error { return c.SetAdmin(rest[1], keys...) }); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(out, "→ admin %s: %d key(s) in %s. Commit it, then: kvoadm admins sync\n", rest[1], len(keys), kc.SharedPath())
@@ -70,10 +67,12 @@ func adminsCmd(ctx context.Context, args []string, stdin io.Reader, out io.Write
 		if len(rest) != 2 {
 			return errors.New("admins remove NAME")
 		}
-		if !kc.RemoveAdmin(rest[1]) {
-			return fmt.Errorf("no admin %s in %s", rest[1], kc.SharedPath())
-		}
-		if err := kc.Save(); err != nil {
+		if err := kc.Update(func(c *admconfig.Config) error {
+			if !c.RemoveAdmin(rest[1]) {
+				return fmt.Errorf("no admin %s in %s", rest[1], c.SharedPath())
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(out, "→ admin %s removed from %s. Commit it, then: kvoadm admins sync (it takes their keys off the hosts)\n", rest[1], kc.SharedPath())
