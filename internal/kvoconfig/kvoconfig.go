@@ -1,6 +1,7 @@
 // Package kvoconfig is kvo's config file (~/.kevaso/config.yaml, or $KVO_CONFIG), kubeconfig-style:
 // named contexts, each a server, the cluster CA to pin, a default namespace, and credentials: a
-// client certificate and key (what kvoadm init writes, under ~/.kevaso/clusters/<name>/, key 0600)
+// client certificate and key (under ~/.kevaso/contexts/<name>/, key 0600; kvoadm keeps its own,
+// per cluster, in ~/.kevaso/clusters/<name>/: package admconfig)
 // or a `kvo login` session, whose tokens live in the token store, never in this file.
 package kvoconfig
 
@@ -91,7 +92,7 @@ func AddContext(path, name, server string, caPEM, certPEM, keyPEM []byte) error 
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(filepath.Dir(path), "clusters", name)
+	dir := filepath.Join(filepath.Dir(path), "contexts", name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -122,7 +123,7 @@ func AddLoginContext(path, name, server string, caPEM []byte) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(filepath.Dir(path), "clusters", name)
+	dir := filepath.Join(filepath.Dir(path), "contexts", name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -178,20 +179,27 @@ func (c Config) Client(path, name string) (*client.Client, string, error) {
 		cl.Token = login.Tokens(servers[0], ca, Tokens(path), name, filepath.Join(filepath.Dir(path), "locks"))
 		return cl, name, nil
 	}
-	cert, err := read(ctx.Certificate)
+	cl, err := CertClient(name, ctx, ca)
+	return cl, name, err
+}
+
+// CertClient builds an API client from a certificate context, with the cluster CA given (kvoadm
+// keeps it in its cluster file, not as a file of its own). The certificate is renewed in place
+// when it's due, as for kvo.
+func CertClient(name string, ctx Context, ca []byte) (*client.Client, error) {
+	cert, err := os.ReadFile(ctx.Certificate)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	key, err := read(ctx.Key)
+	key, err := os.ReadFile(ctx.Key)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	cert, key, err = renewContextCert(name, ctx, ca, cert, key)
 	if err != nil {
-		return nil, name, err
+		return nil, err
 	}
-	cl, err := client.NewTLSEndpoints(client.SplitServers(ctx.Server), ca, cert, key)
-	return cl, name, err
+	return client.NewTLSEndpoints(client.SplitServers(ctx.Server), ca, cert, key)
 }
 
 // renewContextCert renews a certificate user's client certificate once it is past two thirds of

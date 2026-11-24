@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -376,13 +375,6 @@ func parsePlugin(args []string, needBinary bool) (PluginOptions, error) {
 	if u, a, ok := strings.Cut(target, "@"); ok {
 		o.User, o.Address = u, a
 	}
-	if o.SSHKey == "" {
-		if h, err := os.UserHomeDir(); err == nil {
-			if p := filepath.Join(h, ".kevaso", "ssh", "id_ed25519"); fileExists(p) {
-				o.SSHKey = p
-			}
-		}
-	}
 	return o, nil
 }
 
@@ -447,16 +439,16 @@ func pluginInstall(ctx context.Context, o PluginOptions, stdin io.Reader, out io
 			return err
 		}
 	}
-	h, err := os.UserHomeDir()
+	kc, err := loadCluster(clusterName(ctx))
 	if err != nil {
 		return err
 	}
-	signKey, _, err := SigningKey(filepath.Join(h, ".kevaso"))
+	signKey, _, err := SigningKey(kc.Folder()) // the key the cluster's hosts pinned at install
 	if err != nil {
 		return err
 	}
 	if len(o.ClusterSecrets) > 0 {
-		c, _, err := adminClient("")
+		c, _, err := adminClient(kc.Cluster())
 		if err != nil {
 			return err
 		}
@@ -575,7 +567,7 @@ func pluginRemove(ctx context.Context, o PluginOptions, stdin io.Reader, out io.
 	if _, err := conn.Run(ctx, PluginRemoveScript(o.Name, o.side()), nil); err != nil {
 		return err
 	}
-	if c, _, err := adminClient(""); err != nil {
+	if c, _, err := adminClient(clusterName(ctx)); err != nil {
 		return err
 	} else if err := deletePluginServiceAccount(ctx, c, o.Name, o.side()); err != nil {
 		return fmt.Errorf("service account %s: %w", operators.ServiceAccountForSide(o.Name, o.side()), err)

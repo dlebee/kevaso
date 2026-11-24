@@ -49,6 +49,7 @@ func TestKvoLoginAndRBACFromTheCLI(t *testing.T) {
 	if err := kvoconfig.AddContext(cfgPath, "admin", c.url, ca, cert, key); err != nil {
 		t.Fatal(err)
 	}
+	adminCluster(t, "admin", c.url, ca, cert, key)
 	ok := func(f func(context.Context, []string, *strings.Reader, *bytes.Buffer, *bytes.Buffer) int, stdin string, args ...string) string {
 		t.Helper()
 		out, errs, code := run(c.ctx, f, stdin, args...)
@@ -97,14 +98,15 @@ func TestKvoLoginAndRBACFromTheCLI(t *testing.T) {
 		t.Fatalf("ctx:\n%s", out)
 	}
 
-	// Bob can't manage users; the admin lists and disables him.
-	if _, errs, code := run(c.ctx, kvoadmCmd, "", "users", "invite", "eve"); code == 0 || !strings.Contains(errs, "Forbidden") {
-		t.Errorf("bob inviting: %d %s", code, errs)
+	// kvoadm never acts as kvo's current context (bob): it acts from its cluster folder, as the
+	// admin, and without one it refuses. The admin lists and disables bob.
+	if _, errs, code := run(c.ctx, kvoadmCmd, "", "users", "list", "--cluster", "nope"); code == 0 || !strings.Contains(errs, "kvoadm init") {
+		t.Errorf("no such cluster folder: %d %s", code, errs)
 	}
-	if out := ok(kvoadmCmd, "", "users", "list", "--context", "admin"); !strings.Contains(out, "bob") || !strings.Contains(out, "active") {
+	if out := ok(kvoadmCmd, "", "users", "list", "--cluster", "admin"); !strings.Contains(out, "bob") || !strings.Contains(out, "active") {
 		t.Fatalf("users list:\n%s", out)
 	}
-	ok(kvoadmCmd, "", "users", "disable", "bob", "--context", "admin")
+	ok(kvoadmCmd, "", "users", "disable", "bob")
 	if _, errs, code := run(c.ctx, kvoCmd, "", "get", "silos"); code == 0 || !strings.Contains(errs, "Unauthorized") {
 		t.Errorf("bob after disable: %d %s", code, errs)
 	}

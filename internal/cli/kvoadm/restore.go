@@ -34,16 +34,16 @@ func printRestoreAccount(ctx context.Context, c *client.Client, out io.Writer) e
 // restoreCmd is kvoadm restore status, and kvoadm restore settle SILO -n NS --to HOST.
 func restoreCmd(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) < 1 {
-		return errors.New("restore status [--context NAME] | restore settle SILO -n NS --to HOST [--context NAME]")
+		return errors.New("restore status [--cluster NAME] | restore settle SILO -n NS --to HOST [--cluster NAME]")
 	}
 	switch args[0] {
 	case "status":
 		kctx := ""
 		for i := 1; i < len(args); i++ {
 			switch args[i] {
-			case "--context":
+			case "--cluster":
 				if i+1 >= len(args) {
-					return errors.New("--context needs a value")
+					return errors.New("--cluster needs a value")
 				}
 				i++
 				kctx = args[i]
@@ -65,7 +65,7 @@ func restoreCmd(ctx context.Context, args []string, out io.Writer) error {
 
 func restoreSettle(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) < 1 {
-		return errors.New("restore settle SILO -n NS --to HOST [--context NAME]")
+		return errors.New("restore settle SILO -n NS --to HOST [--cluster NAME]")
 	}
 	name, ns, host, kctx := args[0], "", "", ""
 	for i := 1; i < len(args); i++ {
@@ -82,9 +82,9 @@ func restoreSettle(ctx context.Context, args []string, out io.Writer) error {
 			}
 			i++
 			host = args[i]
-		case "--context":
+		case "--cluster":
 			if i+1 >= len(args) {
-				return errors.New("--context needs a value")
+				return errors.New("--cluster needs a value")
 			}
 			i++
 			kctx = args[i]
@@ -93,7 +93,7 @@ func restoreSettle(ctx context.Context, args []string, out io.Writer) error {
 		}
 	}
 	if ns == "" || host == "" {
-		return errors.New("restore settle SILO -n NS --to HOST [--context NAME]")
+		return errors.New("restore settle SILO -n NS --to HOST [--cluster NAME]")
 	}
 	c, _, err := adminClient(kctx)
 	if err != nil {
@@ -143,16 +143,16 @@ func accountSilos(ctx context.Context, c *client.Client) ([]*v1.Silo, error) {
 // has names the store does not.
 func hostConfirmOff(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	if len(args) < 1 {
-		return errors.New("host confirm-off NAME [--yes|--confirm-off] [--context NAME]")
+		return errors.New("host confirm-off NAME [--yes|--confirm-off] [--cluster NAME]")
 	}
 	name, kctx, yes := args[0], "", false
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--yes", "--confirm-off":
 			yes = true
-		case "--context":
+		case "--cluster":
 			if i+1 >= len(args) {
-				return errors.New("--context needs a value")
+				return errors.New("--cluster needs a value")
 			}
 			i++
 			kctx = args[i]

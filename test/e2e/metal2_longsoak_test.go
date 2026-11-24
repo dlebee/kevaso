@@ -93,7 +93,7 @@ func TestMetal2LongSoakSetup(t *testing.T) {
 	n1 := "soak." + strings.ReplaceAll(p.m1.cfg.ExternalIP, ".", "-") + ".sslip.io"
 	n2 := "soak." + strings.ReplaceAll(p.m2.cfg.ExternalIP, ".", "-") + ".sslip.io"
 	var o strings.Builder
-	if code := kvoadm.Run(c.ctx, []string{"ingress", "install", "--host-port", "external", "--context", "metal2",
+	if code := kvoadm.Run(c.ctx, []string{"ingress", "install", "--host-port", "external", "--cluster", "metal2",
 		"--host", n1 + "=" + ns, "--host", n2 + "=" + ns}, strings.NewReader(""), &o, &o); code != 0 {
 		t.Fatalf("kvoadm ingress install: exit %d\n%s", code, o.String())
 	}

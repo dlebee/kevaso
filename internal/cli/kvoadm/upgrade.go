@@ -1,7 +1,6 @@
 package kvoadm
 
 import (
-	"bufio"
 	"context"
 	"crypto/ed25519"
 	"debug/buildinfo"
@@ -9,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +16,7 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/admconfig"
 	"kevaso.com/core/internal/upgrade"
 )
 
@@ -106,7 +105,7 @@ func upgradeCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writ
 			sshKey, err = next()
 		case "--version":
 			target, err = next()
-		case "--context":
+		case "--cluster":
 			kctx, err = next()
 		case "--batch":
 			var v string
@@ -133,7 +132,7 @@ func upgradeCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writ
 	if err != nil {
 		return fmt.Errorf("%s: %w", bin, err)
 	}
-	c, _, err := adminClient(kctx)
+	c, kc, err := adminClient(kctx)
 	if err != nil {
 		return err
 	}
@@ -162,21 +161,18 @@ func upgradeCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writ
 	if err != nil {
 		return err
 	}
-	home, err := os.UserHomeDir()
+	signKey, _, err := SigningKey(kc.Folder()) // the key the cluster's hosts pinned at install
 	if err != nil {
 		return err
 	}
-	signKey, _, err := SigningKey(filepath.Join(home, ".kevaso"))
-	if err != nil {
-		return err
-	}
-	d := &sshDriver{c: c, bin: data, sig: ed25519.Sign(signKey, data), sshKey: sshKey, stdin: stdin, out: out, started: map[string]time.Time{}}
+	d := &sshDriver{c: c, kc: kc, bin: data, sig: ed25519.Sign(signKey, data), sshKey: sshKey, stdin: stdin, out: out, started: map[string]time.Time{}}
 	return upgrade.Execute(ctx, plan, d, func(s string) { _, _ = fmt.Fprintln(out, "→ "+s) })
 }
 
 // sshDriver upgrades real hosts: over SSH as install does, health from the Hosts.
 type sshDriver struct {
 	c       *client.Client
+	kc      *admconfig.Config // this laptop's addresses for each host, and the cluster's keys
 	bin     []byte
 	sig     []byte
 	sshKey  string
@@ -212,13 +208,7 @@ func (d *sshDriver) Install(ctx context.Context, name string) error {
 	if err := d.c.Get(ctx, "Host", "", name, &h); err != nil {
 		return err
 	}
-	user, addr, port, ok := sshTarget(&h)
-	if !ok {
-		return fmt.Errorf("kvoadm doesn't know how to reach %s over SSH (no %s annotation)", name, AnnotationSSH)
-	}
-	o := InitOptions{User: user, Address: addr, SSHPort: port, SSHKey: d.sshKey, HostKey: h.Annotations[AnnotationSSHHostKey]}
-	defaultSSHKey(&o)
-	conn, _, err := dialHost(ctx, o, bufio.NewReader(d.stdin), d.stdin, d.out)
+	conn, _, err := dialHostAt(ctx, d.kc, &h, InitOptions{SSHKey: d.sshKey}, d.stdin, d.out)
 	if err != nil {
 		return err
 	}

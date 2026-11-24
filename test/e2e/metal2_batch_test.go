@@ -268,7 +268,7 @@ func TestMetal2DrainDuringAMove(t *testing.T) {
 	t.Cleanup(p.uncut)
 	t.Cleanup(func() {
 		var o bytes.Buffer
-		_ = kvoadm.Run(c.ctx, []string{"host", "uncordon", metalHost, "--context", "metal2"}, strings.NewReader(""), &o, &o)
+		_ = kvoadm.Run(c.ctx, []string{"host", "uncordon", metalHost, "--cluster", "metal2"}, strings.NewReader(""), &o, &o)
 	})
 	c.apply(boxEcho(ns, "web", 8080) + "  availability: { onHostLoss: Recreate }\n") // a container moves only as a fresh copy
 	c.waitRunning(ns, 10*time.Minute, "web")
@@ -285,7 +285,7 @@ func TestMetal2DrainDuringAMove(t *testing.T) {
 	p.cut() // machine 2 holds it: it can't hand it off now
 	t.Log("moving web from machine 2 to machine 1, machine 2 cut off")
 	var o bytes.Buffer
-	code := kvoadm.Run(c.ctx, []string{"host", "drain", metalHost, "--context", "metal2"}, strings.NewReader(""), &o, &o)
+	code := kvoadm.Run(c.ctx, []string{"host", "drain", metalHost, "--cluster", "metal2"}, strings.NewReader(""), &o, &o)
 	t.Logf("kvoadm host drain %s: exit %d\n%s", metalHost, code, o.String())
 	left := strings.Contains(o.String(), "a move from "+metalHost2+" is under way")
 	time.Sleep(30 * time.Second) // what the drain set going plays out, machine 2 still cut off

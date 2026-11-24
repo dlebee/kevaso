@@ -62,7 +62,7 @@ func hostAddresses(ctx context.Context, args []string, out io.Writer) error {
 	kctx := ""
 	var rest []string
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--context" && i+1 < len(args) {
+		if args[i] == "--cluster" && i+1 < len(args) {
 			kctx = args[i+1]
 			i++
 			continue

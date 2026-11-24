@@ -8,20 +8,18 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
-	"kevaso.com/core/internal/kvoconfig"
 	"kevaso.com/core/internal/operators"
 	"kevaso.com/core/internal/sshboot"
 )
 
 // Plugin operators (ADR 0006): kvoadm plugin install --package, uninstall and list, as a
-// cluster-admin of the current kvo context; the controller goes to a host over SSH.
+// cluster-admin of a cluster folder (--cluster); the controller goes to a host over SSH.
 
 type operatorOptions struct {
 	InitOptions
@@ -49,7 +47,7 @@ func parseOperator(args []string) (operatorOptions, error) {
 			o.binary, err = next()
 		case "--api-server":
 			o.apiServer, err = next()
-		case "--context":
+		case "--cluster":
 			o.kctx, err = next()
 		case "--adopt":
 			o.adopt = true
@@ -76,13 +74,6 @@ func parseOperator(args []string) (operatorOptions, error) {
 		}
 		if err != nil {
 			return o, err
-		}
-	}
-	if o.SSHKey == "" {
-		if h, err := os.UserHomeDir(); err == nil {
-			if p := filepath.Join(h, ".kevaso", "ssh", "id_ed25519"); fileExists(p) {
-				o.SSHKey = p
-			}
 		}
 	}
 	return o, nil
@@ -169,29 +160,14 @@ func controllerState(x operators.Listed, now time.Time) string {
 	return "not running (last seen " + now.Sub(*x.Heartbeat).Truncate(time.Second).String() + " ago)"
 }
 
-// installer connects as the current kvo context (a cluster-admin).
+// installer connects as the cluster's admin (--cluster, or the only cluster folder).
 func installer(o operatorOptions, out io.Writer) (*operators.Installer, error) {
-	path, err := kvoconfig.Path()
+	c, kc, err := adminClient(o.kctx)
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := kvoconfig.Load(path)
-	if err != nil {
-		return nil, err
-	}
-	c, name, err := cfg.Client(path, o.kctx)
-	if err != nil {
-		return nil, err
-	}
-	_, kc, err := cfg.Resolve(name)
-	if err != nil {
-		return nil, err
-	}
-	ca, err := os.ReadFile(kc.CA)
-	if err != nil {
-		return nil, err
-	}
-	server := kc.Server
+	ca := kc.CAPEM()
+	server := kc.Server()
 	if o.apiServer != "" { // how the host reaches the API, when that isn't how this machine does
 		server = o.apiServer
 	}
@@ -244,11 +220,11 @@ func (h *sshHost) dial(ctx context.Context) (*sshboot.Conn, error) {
 }
 
 func (h *sshHost) Start(ctx context.Context, c operators.Controller) error {
-	home, err := os.UserHomeDir()
+	kc, err := loadCluster(h.o.kctx)
 	if err != nil {
 		return err
 	}
-	signKey, _, err := SigningKey(filepath.Join(home, ".kevaso"))
+	signKey, _, err := SigningKey(kc.Folder()) // the key the cluster's hosts pinned at install
 	if err != nil {
 		return err
 	}

@@ -64,7 +64,8 @@ func TestLabClusterSecret(t *testing.T) {
 		t.Fatal("KVO_CONFIG and KEVASO_METAL_KEY come from the lab env file")
 	}
 	labDir := filepath.Dir(cfgPath)
-	if _, err := os.Stat(filepath.Join(labDir, ".kevaso", "signing.key")); err != nil {
+	// kvoadm keeps the signing key hosts pin in the cluster's folder (admconfig).
+	if _, err := os.Stat(filepath.Join(labDir, ".kevaso", "clusters", os.Getenv("LAB_NAME"), "signing.key")); err != nil {
 		t.Fatalf("lab signing key: %v", err)
 	}
 	kcfg, err := kvoconfig.Load(cfgPath)

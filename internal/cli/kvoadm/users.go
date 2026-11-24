@@ -17,12 +17,12 @@ import (
 	"kevaso.com/core/internal/kvoconfig"
 )
 
-// usersCmd runs kvoadm users invite|list|disable, as a cluster-admin of the current kvo context.
+// usersCmd runs kvoadm users invite|list|disable, as the cluster-admin of a cluster folder (--cluster).
 //
-//	kvoadm users invite NAME [--group G]… [--namespace NS [--role editor]] [--ttl 15m] [--context C]
+//	kvoadm users invite NAME [--group G]… [--namespace NS [--role editor]] [--ttl 15m] [--cluster NAME]
 //	kvoadm users list
 //	kvoadm users disable NAME
-//	kvoadm users resign [USER@]ADDRESS --name USER [--context C] [--ssh-key PATH]
+//	kvoadm users resign [USER@]ADDRESS --name USER [--cluster NAME] [--ssh-key PATH]
 func usersCmd(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("users needs invite, list, disable or resign")
@@ -53,7 +53,7 @@ func usersCmd(ctx context.Context, args []string, stdin io.Reader, stdout io.Wri
 			role, err = val()
 		case "--ttl":
 			ttl, err = val()
-		case "--context":
+		case "--cluster":
 			kctx, err = val()
 		default:
 			if strings.HasPrefix(a, "-") {
@@ -65,18 +65,11 @@ func usersCmd(ctx context.Context, args []string, stdin io.Reader, stdout io.Wri
 			return err
 		}
 	}
-	path, err := kvoconfig.Path()
+	c, kc, err := adminClient(kctx)
 	if err != nil {
 		return err
 	}
-	cfg, err := kvoconfig.Load(path)
-	if err != nil {
-		return err
-	}
-	c, name, err := cfg.Client(path, kctx)
-	if err != nil {
-		return err
-	}
+	_ = kc
 	switch args[0] {
 	case "invite":
 		if len(rest) != 1 {
@@ -103,7 +96,7 @@ func usersCmd(ctx context.Context, args []string, stdin io.Reader, stdout io.Wri
 			_, _ = fmt.Fprintf(stdout, "→ %s is %s in namespace %s\n", user, role, namespace)
 		}
 		_, _ = fmt.Fprintf(stdout, "→ invite for %s, valid until %s. Send them both lines:\n\n", user, inv.Expires.Local().Format("15:04 MST"))
-		_, _ = fmt.Fprintf(stdout, "    kvo login %s --ca %s\n", cfg.Contexts[name].Server, inv.CAFingerprint)
+		_, _ = fmt.Fprintf(stdout, "    kvo login %s --ca %s\n", kc.Server(), inv.CAFingerprint)
 		_, _ = fmt.Fprintf(stdout, "    invite code: %s\n\n", inv.Code)
 		_, _ = fmt.Fprintln(stdout, "The code works once; the browser asks for it.")
 		return nil
@@ -152,9 +145,9 @@ func usersResign(ctx context.Context, args []string, stdin io.Reader, stdout io.
 			}
 			i++
 			name = args[i]
-		case "--context":
+		case "--cluster":
 			if i+1 >= len(args) {
-				return errors.New("--context needs a value")
+				return errors.New("--cluster needs a value")
 			}
 			i++
 			kctx = args[i]
@@ -169,27 +162,13 @@ func usersResign(ctx context.Context, args []string, stdin io.Reader, stdout io.
 	if err != nil {
 		return err
 	}
-	defaultSSHKey(&o)
+	kc, err := loadCluster(kctx)
+	if err != nil {
+		return err
+	}
+	prepareTarget(kc, &o)
 	if err := needCredential(o); err != nil {
 		return err
-	}
-	path := os.Getenv("KVO_CONFIG")
-	if path == "" {
-		path, err = kvoconfig.Path()
-		if err != nil {
-			return err
-		}
-	}
-	cfg, err := kvoconfig.Load(path)
-	if err != nil {
-		return err
-	}
-	n, c, err := cfg.Resolve(kctx)
-	if err != nil {
-		return err
-	}
-	if c.Certificate == "" || c.Key == "" {
-		return fmt.Errorf("context %s has no certificate to replace", n)
 	}
 	conn, _, err := dialHost(ctx, o, bufio.NewReader(stdin), stdin, stdout)
 	if err != nil {
@@ -200,10 +179,29 @@ func usersResign(ctx context.Context, args []string, stdin io.Reader, stdout io.
 	if err != nil {
 		return err
 	}
-	if err := installResignedCert(c.Key, c.Certificate, keyPEM, certPEM); err != nil {
+	if kc.Local.Certificate == "" || kc.Local.Key == "" {
+		kc.Local.Certificate, kc.Local.Key = "admin.crt", "admin.key"
+	}
+	if kc.Local.Admin == "" {
+		kc.Local.Admin = name
+	}
+	if err := installResignedCert(kc.File(kc.Local.Key), kc.File(kc.Local.Certificate), keyPEM, certPEM); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(stdout, "certificate for %s written to context %s\n", name, n)
+	if err := kc.Save(); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "certificate for %s written to cluster %s (%s)\n", name, kc.Cluster(), kc.Folder())
+	// kvo's context of the same name holds its own copy (kvoadm init wrote both).
+	if path, err := kvoconfig.Path(); err == nil {
+		if cfg, err := kvoconfig.Load(path); err == nil {
+			if c, ok := cfg.Contexts[kc.Cluster()]; ok && c.Certificate != "" && c.Key != "" {
+				if installResignedCert(c.Key, c.Certificate, keyPEM, certPEM) == nil {
+					_, _ = fmt.Fprintf(stdout, "and to kvo context %s\n", kc.Cluster())
+				}
+			}
+		}
+	}
 	return nil
 }
 

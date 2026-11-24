@@ -63,6 +63,7 @@ func TestKvoPlugins(t *testing.T) {
 	if err := kvoconfig.AddContext(cfgPath, "admin", c.url, ca, cert, key); err != nil {
 		t.Fatal(err)
 	}
+	adminCluster(t, "admin", c.url, ca, cert, key)
 	ok := func(args ...string) string {
 		t.Helper()
 		out, errs, code := run(c.ctx, kvoCmd, "", args...)
@@ -153,7 +154,7 @@ func TestKvoPlugins(t *testing.T) {
 		if strings.Contains(env, saved.RefreshToken) || strings.Contains(args, saved.RefreshToken) {
 			t.Fatal("the refresh token reached the plugin")
 		}
-		for _, want := range []string{"KVO_PLUGIN_CONTEXT=bob", "KVO_PLUGIN_SERVER=" + c.url, "KVO_PLUGIN_NAMESPACE=payments", "KVO_PLUGIN_CA_FILE=" + filepath.Join(home, "clusters", "bob", "ca.crt")} {
+		for _, want := range []string{"KVO_PLUGIN_CONTEXT=bob", "KVO_PLUGIN_SERVER=" + c.url, "KVO_PLUGIN_NAMESPACE=payments", "KVO_PLUGIN_CA_FILE=" + filepath.Join(home, "contexts", "bob", "ca.crt")} {
 			if !strings.Contains(env, want+"\n") {
 				t.Errorf("plugin env: missing %s", want)
 			}

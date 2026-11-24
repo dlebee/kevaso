@@ -153,7 +153,7 @@ spec: { runtime: cloud-hypervisor, vm: { image: ubuntu-24.04 }, resources: { cpu
 	if o := must(kvo.Run, "", "get", "silos", "-A", "--context", "e2e"); !strings.Contains(o, "ledger") || !strings.Contains(o, "api") {
 		t.Fatalf("admin's view:\n%s", o)
 	}
-	must(kvoadm.Run, "", "users", "disable", "bob", "--context", "e2e")
+	must(kvoadm.Run, "", "users", "disable", "bob", "--cluster", "e2e")
 	if _, e, code := runCmd(kvo.Run, "", "get", "silos"); code == 0 || !strings.Contains(e, "Unauthorized") {
 		t.Errorf("bob after disable: %d %s", code, e)
 	}

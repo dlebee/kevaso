@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -48,16 +46,6 @@ func parseReset(args []string) (ResetOptions, error) {
 		return o, fmt.Errorf("%w\n%s", err, resetUsage)
 	}
 	o.InitOptions = t
-	if o.SSHKey == "" {
-		if h, err := os.UserHomeDir(); err == nil {
-			if p := filepath.Join(h, ".kevaso", "ssh", "id_ed25519"); fileExists(p) {
-				o.SSHKey = p
-			}
-		}
-	}
-	if o.SSHKey == "" {
-		return o, errors.New("--ssh-key PATH: reset logs in with a key (no password logins)")
-	}
 	return o, nil
 }
 
@@ -68,6 +56,10 @@ func resetCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer
 	o, err := parseReset(args)
 	if err != nil {
 		return err
+	}
+	prepareTarget(targetCluster(ctx), &o.InitOptions) // the cluster folder's key, when none is given
+	if o.SSHKey == "" {
+		return errors.New("--ssh-key PATH: reset logs in with a key (no password logins)")
 	}
 	in := bufio.NewReader(stdin)
 	conn, _, err := dialHost(ctx, o.InitOptions, in, stdin, out)

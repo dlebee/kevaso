@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,6 +16,8 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/admconfig"
+	"kevaso.com/core/internal/sshboot"
 )
 
 // Annotations kvoadm host add leaves on a worker's Host: how kvoadm reaches the machine over SSH.
@@ -95,6 +96,11 @@ func reconnect(ctx context.Context, o InitOptions, server string, c *client.Clie
 		return "", err
 	}
 	defer func() { _ = conn.Close() }()
+	return reconnectConn(ctx, conn, server, c)
+}
+
+// reconnectConn points the worker on conn at server and waits until it reports there.
+func reconnectConn(ctx context.Context, conn *sshboot.Conn, server string, c *client.Client) (string, error) {
 	unit, err := conn.Run(ctx, "cat /etc/systemd/system/kevasod.service", nil)
 	if err != nil {
 		return "", err
@@ -136,13 +142,14 @@ func waitHeartbeat(ctx context.Context, c *client.Client, name string, since tim
 	}
 }
 
-// hostReconnect: kvoadm host reconnect [USER@]ADDRESS [--server URL] [--context C] + SSH flags.
+// hostReconnect: kvoadm host reconnect NAME|[USER@]ADDRESS [--server URL] [--cluster NAME] + SSH flags.
+// A host's name tries its addresses in order (sshaddrs.go).
 func hostReconnect(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	var server, kctx string
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--server", "--context":
+		case "--server", "--cluster":
 			if i+1 >= len(args) {
 				return fmt.Errorf("%s needs a value", args[i])
 			}
@@ -160,22 +167,37 @@ func hostReconnect(ctx context.Context, args []string, stdin io.Reader, out io.W
 	if err != nil {
 		return err
 	}
-	defaultSSHKey(&o)
-	c, _, err := adminClient(kctx)
+	c, kc, err := adminClient(kctx)
 	if err != nil {
 		return err
 	}
+	o.keys = kc.Folder()
+	if o.SSHKey == "" && kc.SSHKey() != "" && !o.Password {
+		o.SSHKey = kc.SSHKey()
+	}
+	defaultSSHKey(&o)
 	if server == "" {
 		if server, err = controlPlaneServer(ctx, c); err != nil {
 			return err
 		}
 	}
-	if o.HostKey == "" { // the key kvoadm host add saw, if it recorded this machine
-		o.HostKey = recordedHostKey(ctx, c, o)
-	}
-	name, err := reconnect(ctx, o, server, c, stdin, out)
-	if err != nil {
-		return err
+	var name string
+	if h, ok := hostNamed(ctx, c, rest, o); ok { // a host's name: its addresses, in order
+		conn, _, err := dialHostAt(ctx, kc, h, o, stdin, out)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = conn.Close() }()
+		if name, err = reconnectConn(ctx, conn, server, c); err != nil {
+			return err
+		}
+	} else {
+		if o.HostKey == "" { // the key kvoadm host add saw, if it recorded this machine
+			o.HostKey = recordedHostKey(ctx, c, o)
+		}
+		if name, err = reconnect(ctx, o, server, c, stdin, out); err != nil {
+			return err
+		}
 	}
 	_, _ = fmt.Fprintf(out, "→ host %s reports to %s again\n", name, server)
 	return nil
@@ -199,14 +221,14 @@ func recordedHostKey(ctx context.Context, c *client.Client, o InitOptions) strin
 	return ""
 }
 
+// defaultSSHKey is the key kvoadm logs in with when none is given: kvoadm's own, in the cluster's
+// folder (the one bootstrap authorizes after a password login).
 func defaultSSHKey(o *InitOptions) {
-	if o.SSHKey != "" || o.Password {
+	if o.SSHKey != "" || o.Password || o.keys == "" {
 		return
 	}
-	if h, err := os.UserHomeDir(); err == nil {
-		if p := filepath.Join(h, ".kevaso", "ssh", "id_ed25519"); fileExists(p) {
-			o.SSHKey = p
-		}
+	if p := filepath.Join(o.keys, "ssh", "id_ed25519"); fileExists(p) {
+		o.SSHKey = p
 	}
 }
 
@@ -229,7 +251,7 @@ func sshTarget(h *v1.Host) (user, addr string, port int, ok bool) {
 // cluster's data already on the machine (a data volume moved to it): every worker in the cluster,
 // pointed at the new control plane, over SSH with the key you gave init (or kvoadm's own).
 // What it can't reach is listed with the command to run.
-func reconnectWorkers(ctx context.Context, o InitOptions, c *client.Client, server string, stdin io.Reader, out io.Writer) error {
+func reconnectWorkers(ctx context.Context, o InitOptions, kc *admconfig.Config, c *client.Client, server string, stdin io.Reader, out io.Writer) error {
 	l, err := c.List(ctx, "Host", "")
 	if err != nil {
 		return err
@@ -247,20 +269,24 @@ func reconnectWorkers(ctx context.Context, o InitOptions, c *client.Client, serv
 			continue
 		}
 		n++
-		user, addr, port, ok := sshTarget(h)
-		cmd := fmt.Sprintf("kvoadm host reconnect root@%s --ssh-key KEY --server %s", h.Reach(), server)
-		if !ok {
-			missed = append(missed, miss{h.Name, "added before kvoadm recorded how to reach it", cmd})
+		cmd := fmt.Sprintf("kvoadm host reconnect %s --server %s", h.Name, server)
+		if len(hostTargets(kc, h)) == 0 {
+			missed = append(missed, miss{h.Name, "kvoadm doesn't know how to reach it (kvoadm host ssh " + h.Name + " add ADDRESS)", cmd})
 			continue
 		}
-		cmd = fmt.Sprintf("kvoadm host reconnect %s@%s --ssh-port %d --ssh-key KEY --server %s", user, addr, port, server)
-		wo := InitOptions{User: user, Address: addr, SSHPort: port, SSHKey: o.SSHKey, HostKey: h.Annotations[AnnotationSSHHostKey]}
-		if wo.HostKey == "" {
+		if pinnedHostKey(kc, h) == "" {
 			missed = append(missed, miss{h.Name, "no host key recorded", cmd})
 			continue
 		}
-		defaultSSHKey(&wo)
-		if _, err := reconnect(ctx, wo, server, c, strings.NewReader(""), io.Discard); err != nil {
+		wo := InitOptions{SSHKey: o.SSHKey, Password: o.Password, keys: kc.Folder()}
+		conn, _, err := dialHostAt(ctx, kc, h, wo, strings.NewReader(""), io.Discard)
+		if err != nil {
+			missed = append(missed, miss{h.Name, firstLine(err.Error()), cmd})
+			continue
+		}
+		_, err = reconnectConn(ctx, conn, server, c)
+		_ = conn.Close()
+		if err != nil {
 			missed = append(missed, miss{h.Name, firstLine(err.Error()), cmd})
 			continue
 		}
@@ -292,4 +318,22 @@ func sshAddress(h *v1.Host) string {
 		return addr
 	}
 	return h.Reach()
+}
+
+// hostNamed finds the Host the target names, when it is a host's name (no user, no port) rather
+// than an address.
+func hostNamed(ctx context.Context, c *client.Client, args []string, o InitOptions) (*v1.Host, bool) {
+	for _, a := range args {
+		if strings.Contains(a, "@") && !strings.HasPrefix(a, "-") {
+			return nil, false // USER@ADDRESS: an address
+		}
+	}
+	if o.Address == "" || strings.Contains(o.Address, ":") {
+		return nil, false
+	}
+	var h v1.Host
+	if err := c.Get(ctx, "Host", "", o.Address, &h); err != nil {
+		return nil, false
+	}
+	return &h, true
 }
