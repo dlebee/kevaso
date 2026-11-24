@@ -201,21 +201,19 @@ func adminClient(cluster string) (*client.Client, *admconfig.Config, error) {
 // then on only dials out.
 func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writer) error {
 	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
-	if err := lookFirst(ctx, o.InitOptions, stdin, out); err != nil {
-		return err
-	}
-	o.looked = true
 	c, kc, err := adminClient(o.AdminCluster)
 	if err != nil {
 		return err
 	}
+	prepareTarget(kc, &o.InitOptions) // the cluster folder's SSH key, before the first login
+	if err := lookFirst(ctx, o.InitOptions, stdin, out); err != nil {
+		return err
+	}
+	o.looked = true
 	ca := kc.CAPEM()
 	server := o.ServerForIt
 	if server == "" {
 		server = kc.Server()
-	}
-	if o.SSHKey == "" && kc.SSHKey() != "" && !o.Password {
-		o.SSHKey = kc.SSHKey()
 	}
 	home := kc.Folder() // the cluster's keys: the signing key and kvoadm's SSH key hosts pin
 	o.keys = home

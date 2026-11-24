@@ -195,8 +195,16 @@ func usersResign(ctx context.Context, args []string, stdin io.Reader, stdout io.
 			return err
 		}
 		c, ok := cfg.Contexts[kc.Cluster()]
-		if !ok || c.Certificate == "" || c.Key == "" {
-			return fmt.Errorf("kvo has no certificate context %s in %s", kc.Cluster(), path)
+		if !ok { // a second admin's first kvo: set it up as kvoadm init does for the first
+			admin, err := kc.Client()
+			if err != nil {
+				return fmt.Errorf("%w (run kvoadm users resign %s --name %s first, for your admin certificate)", err, o.Address, name)
+			}
+			say := func(f string, a ...any) { _, _ = fmt.Fprintf(stdout, "→ "+f+"\n", a...) }
+			return kvoUser(ctx, admin, conn, name, kc.Cluster(), kc.Server(), kc.CAPEM(), path, say)
+		}
+		if c.Certificate == "" || c.Key == "" {
+			return fmt.Errorf("kvo context %s in %s has no certificate to replace", kc.Cluster(), path)
 		}
 		if err := installResignedCert(c.Key, c.Certificate, keyPEM, certPEM); err != nil {
 			return err

@@ -242,6 +242,7 @@ func hostAddSystemNode(ctx context.Context, o HostAddOptions, stdin io.Reader, o
 		return err
 	}
 	o.Cluster = kc.Cluster() // the cluster the new system node's kevasod belongs to
+	prepareTarget(kc, &o.InitOptions)
 	hosts, err := listHosts(ctx, c)
 	if err != nil {
 		return err
