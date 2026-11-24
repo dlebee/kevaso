@@ -178,6 +178,7 @@ func TestSecretsInASilo(t *testing.T) {
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
 		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker", "--loop-storage", "30G",
 		"--egress-extra-ca", "/etc/kevaso/test-internet-ca.pem")
+	useAdminKvo(t, "e2e") // kvo's own context is a plain user; these steps are an admin's
 	if !strings.Contains(initOut, "Recovery key for secrets") || !strings.Contains(initOut, "KVR1-") {
 		t.Fatal("kvoadm init didn't print the recovery key")
 	}

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -634,7 +633,7 @@ func labExpectOpen(t *testing.T, ctx context.Context, admin, name string) {
 // labLoginAdmin invites user as admin of ns and signs in. The context name is the user.
 func labLoginAdmin(t *testing.T, ctx context.Context, admin, user, ns string) string {
 	t.Helper()
-	inv := labKvoadm(t, ctx, filepath.Dir(os.Getenv("KVO_CONFIG")), "users", "invite", user, "--namespace", ns, "--role", "admin", "--cluster", admin)
+	inv := labKvoadm(t, ctx, os.Getenv("LAB_DIR"), "users", "invite", user, "--namespace", ns, "--role", "admin", "--cluster", admin)
 	t.Logf("invite: %s", labRedact(inv))
 	loginMatch := regexp.MustCompile(`kvo login (\S+) --ca (sha256:[0-9a-f]{64})`).FindStringSubmatch(inv)
 	inviteMatch := regexp.MustCompile(`invite code: (kvi_\S+)`).FindStringSubmatch(inv)

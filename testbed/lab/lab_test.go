@@ -288,7 +288,8 @@ func TestEnvFile(t *testing.T) {
 		Name: "smoke", Host: "ubuntu@54.39.243.98", SSHPort: 21122,
 		KeyPath: "/work/testbed/lab/.labs/smoke/id_ed25519", HostKey: "SHA256:abc",
 		ExternalIP: "54.39.243.98", InternalIP: "10.77.1.10",
-		ConfigPath: "/work/testbed/lab/.labs/smoke/config.yaml",
+		ConfigPath: "/work/testbed/lab/.labs/smoke/.kevaso/clusters/smoke/kvo-admin.yaml",
+		Dir:        "/work/testbed/lab/.labs/smoke",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -300,7 +301,9 @@ func TestEnvFile(t *testing.T) {
 		"export KEVASO_METAL_HOSTKEY='SHA256:abc'",
 		"export KEVASO_METAL_EXTERNAL_IP='54.39.243.98'",
 		"export KEVASO_METAL_INTERNAL_IP='10.77.1.10'",
-		"export KVO_CONFIG='/work/testbed/lab/.labs/smoke/config.yaml'",
+		"export KVO_CONFIG='/work/testbed/lab/.labs/smoke/.kevaso/clusters/smoke/kvo-admin.yaml'",
+		"export LAB_DIR='/work/testbed/lab/.labs/smoke'",
+		"export KVOADM_HOME='/work/testbed/lab/.labs/smoke/.kevaso'",
 		"unset KVO_SERVER",
 	} {
 		if !strings.Contains(text, want) {

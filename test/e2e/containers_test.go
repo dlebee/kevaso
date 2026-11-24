@@ -138,6 +138,7 @@ func TestContainerSilos(t *testing.T) {
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
 		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker",
 		"--runtime", "docker", "--runtime", "podman", "--egress-extra-ca", "/etc/kevaso/test-internet-ca.pem")
+	useAdminKvo(t, "e2e") // kvo's own context is a plain user; these steps are an admin's
 
 	apiKey, dbPassword := randomToken(t), randomToken(t)
 	must(kvo.Run, "apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: shop }\n", "apply", "-f", "-")

@@ -95,9 +95,18 @@ func TestKvoadmInitMakesAReadyHost(t *testing.T) {
 		t.Fatalf("kvoadm init exit %d: %s", code, stderr.String())
 	}
 
-	// 3. kvo, from the context kvoadm wrote, over TLS.
+	// 3. kvo, from the context kvoadm wrote, over TLS: a plain user, who works in namespaces and
+	// sees no hosts; the admin sees them through kvoadm kvo.
 	var kout, kerr bytes.Buffer
-	if code := kvo.Run(ctx, []string{"get", "hosts", "-o", "yaml"}, nil, &kout, &kerr); code != 0 {
+	if code := kvo.Run(ctx, []string{"get", "silos", "-n", "default"}, nil, &kout, &kerr); code != 0 {
+		t.Fatalf("kvo get silos as kvo's user: exit %d: %s", code, kerr.String())
+	}
+	kout.Reset()
+	if code := kvo.Run(ctx, []string{"get", "hosts"}, nil, &kout, &kerr); code == 0 || !strings.Contains(kerr.String(), "Forbidden") {
+		t.Fatalf("kvo's user listed hosts: exit %d %s", code, kout.String())
+	}
+	kout.Reset()
+	if code := kvoadm.Run(ctx, []string{"kvo", "get", "hosts", "-o", "yaml"}, nil, &kout, &kerr); code != 0 {
 		t.Fatalf("kvo get hosts: exit %d: %s", code, kerr.String())
 	}
 	y := kout.String()

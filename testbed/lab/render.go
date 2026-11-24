@@ -571,8 +571,9 @@ func DestroyScript(name string) (string, error) {
 }
 
 // Env is the file the metal tests source. The variable names are the ones test/e2e reads
-// (KEVASO_METAL_*), plus LAB_NAME. KVO_CONFIG points at the context kvoadm wrote, so kvo talks
-// to this lab.
+// (KEVASO_METAL_*), plus LAB_NAME. KVO_CONFIG is the lab admin's kvo config (kvoadm init's
+// kvo-admin.yaml in the cluster folder; kvo's own context there is a plain user), LAB_DIR the lab's
+// folder and KVOADM_HOME its .kevaso, so kvo and kvoadm talk to this lab.
 type Env struct {
 	Name       string
 	Host       string // ubuntu@public-ip
@@ -581,7 +582,8 @@ type Env struct {
 	HostKey    string // SHA256:… of the system node
 	ExternalIP string
 	InternalIP string
-	ConfigPath string
+	ConfigPath string // the kvo config tests use: the admin's, in the cluster folder (kvoadm kvo)
+	Dir        string // the lab's folder on this machine (HOME for kvoadm: .kevaso/clusters/NAME/)
 }
 
 // EnvFile renders Env as a shell script.
@@ -589,7 +591,7 @@ func EnvFile(e Env) (string, error) {
 	if err := ValidName(e.Name); err != nil {
 		return "", err
 	}
-	if e.SSHPort < 1 || e.Host == "" || e.KeyPath == "" || e.HostKey == "" || e.ExternalIP == "" || e.InternalIP == "" || e.ConfigPath == "" {
+	if e.SSHPort < 1 || e.Host == "" || e.KeyPath == "" || e.HostKey == "" || e.ExternalIP == "" || e.InternalIP == "" || e.ConfigPath == "" || e.Dir == "" {
 		return "", fmt.Errorf("env for %s: incomplete", e.Name)
 	}
 	var b strings.Builder
@@ -601,6 +603,8 @@ func EnvFile(e Env) (string, error) {
 	fmt.Fprintf(&b, "export KEVASO_METAL_EXTERNAL_IP=%s\n", q(e.ExternalIP))
 	fmt.Fprintf(&b, "export KEVASO_METAL_INTERNAL_IP=%s\n", q(e.InternalIP))
 	fmt.Fprintf(&b, "export KVO_CONFIG=%s\n", q(e.ConfigPath))
+	fmt.Fprintf(&b, "export LAB_DIR=%s\n", q(e.Dir))
+	fmt.Fprintf(&b, "export KVOADM_HOME=%s\n", q(e.Dir+"/.kevaso"))
 	b.WriteString("export KVO_TOKEN_STORE=file\n")
 	b.WriteString("unset KVO_SERVER\n")
 	return b.String(), nil

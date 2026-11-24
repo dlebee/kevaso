@@ -262,7 +262,7 @@ func renewContextCert(name string, ctx Context, ca, cert, key []byte) ([]byte, [
 // CertRecovery is the command that signs a new client certificate over SSH, the way
 // kvoadm init does: the key stays here, and only the request goes to the control plane.
 func CertRecovery(user, server string) string {
-	return "kvoadm users resign root@" + serverHost(server) + " --name " + user
+	return "kvoadm users resign root@" + serverHost(server) + " --name " + user + " --kvo"
 }
 
 func serverHost(server string) string {

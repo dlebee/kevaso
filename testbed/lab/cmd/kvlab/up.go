@@ -235,7 +235,7 @@ func cmdUp(args []string) error {
 		text, err = lab.EnvFile(lab.Env{
 			Name: name, Host: "ubuntu@" + h.cfg.ExternalIP, SSHPort: ports.SysSSH,
 			KeyPath: keyPath, HostKey: pins["sys"], ExternalIP: h.cfg.ExternalIP,
-			InternalIP: lab.IP(slot, 10), ConfigPath: filepath.Join(local, "config.yaml"),
+			InternalIP: lab.IP(slot, 10), ConfigPath: filepath.Join(local, ".kevaso", "clusters", name, "kvo-admin.yaml"), Dir: local,
 		})
 	}
 	if err != nil {
@@ -792,7 +792,9 @@ func waitRuntimes(ctx context.Context, kvoBin, local string) error {
 
 func kvoCmd(ctx context.Context, bin, local string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Env = childEnv(local, filepath.Join(local, "config.yaml"))
+	// As the lab's admin: kvo's own context is a plain user (kvoadm init's kvo-admin.yaml is the
+	// admin's, in the cluster folder; the lab's folder is named after the lab, and so is its cluster).
+	cmd.Env = childEnv(local, filepath.Join(local, ".kevaso", "clusters", filepath.Base(local), "kvo-admin.yaml"))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

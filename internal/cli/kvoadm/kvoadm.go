@@ -63,7 +63,6 @@ import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/admconfig"
 	"kevaso.com/core/internal/etcd"
-	"kevaso.com/core/internal/kvoconfig"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/sshboot"
 )
@@ -82,6 +81,18 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if len(args) > 0 && args[0] == "host" {
 		if err := hostCmd(ctx, args[1:], stdin, stdout); err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 1
+		}
+		return 0
+	}
+	if len(args) > 0 && args[0] == "kvo" {
+		err := kvoAsAdmin(ctx, args[1:], stdin, stdout, stderr)
+		var code exitCode
+		switch {
+		case errors.As(err, &code):
+			return int(code)
+		case err != nil:
 			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
 			return 1
 		}
@@ -176,6 +187,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm host list | drain NAME | uncordon NAME
   kvoadm host ssh NAME [list | add [USER@]ADDRESS[:PORT]… [--local] | remove ADDRESS…]
   kvoadm admins [list] | add NAME KEY.pub… | remove NAME | sync [--dry-run]
+  kvoadm kvo [--cluster NAME] ARGS…   any kvo command, as the cluster's admin (kvo's own context is a plain user)
   kvoadm store migrate [USER@]ADDRESS --ssh-key PATH
   kvoadm upgrade --kevasod PATH [--ssh-key PATH] [--batch N] [--version V] [--dry-run]
   kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME | resign [USER@]ADDRESS --name USER
@@ -798,21 +810,13 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	if err := kc.Save(); err != nil {
 		return err
 	}
-	say("cluster %s: kvoadm's config and admin credentials in %s (server %s)", o.Cluster, kc.Folder(), server)
-	cfgPath := filepath.Join(root, "config.yaml")
-	if p := os.Getenv("KVO_CONFIG"); p != "" && o.Home == "" {
-		cfgPath = p
-	}
-	if err := kvoconfig.AddContext(cfgPath, o.Cluster, server, []byte(cred.CA), []byte(cred.Certificate), keyPEM); err != nil {
-		return err
-	}
-	say("kvo context %q written to %s", o.Cluster, cfgPath)
+	say("cluster %s: kvoadm's config and admin credential in %s (server %s)", o.Cluster, kc.Folder(), server)
 	if cert, err := pki.ParseCertificatePEM([]byte(cred.Certificate)); err == nil {
-		say("certificate for %s is valid until %s. After that, run: %s",
-			o.UserName, cert.NotAfter.UTC().Format("2006-01-02"), kvoconfig.CertRecovery(o.UserName, server))
+		say("the admin certificate for %s is valid until %s. After that, run: kvoadm users resign %s --name %s",
+			o.UserName, cert.NotAfter.UTC().Format("2006-01-02"), o.Name, o.UserName)
 	}
 
-	// 6. Check it from here, over TLS, the way kvo will.
+	// 6. Check it from here, over TLS, the way kvoadm will.
 	c, err := client.NewTLS(server, []byte(cred.CA), []byte(cred.Certificate), keyPEM)
 	if err != nil {
 		return err
@@ -820,7 +824,20 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	if err := waitHostReady(ctx, c, o.Name, 2*time.Minute); err != nil {
 		return err
 	}
-	say("host %s is Ready. Try: kvo get hosts", o.Name)
+	say("host %s is Ready. Try: kvoadm host list", o.Name)
+
+	// 6b. Your kvo: a plain user (editor in every namespace, nothing cluster-wide), never the admin
+	// certificate, which stays in the cluster folder (kvoadm kvo … runs kvo as the admin).
+	cfgPath := filepath.Join(root, "config.yaml")
+	if p := os.Getenv("KVO_CONFIG"); p != "" && o.Home == "" && filepath.Dir(p) != kc.Folder() { // never the folder's admin file
+		cfgPath = p
+	}
+	if err := kvoUser(ctx, c, conn, o.UserName, o.Cluster, server, []byte(cred.CA), cfgPath, say); err != nil {
+		return fmt.Errorf("kvo's user: %w", err)
+	}
+	if p, err := adminKvoConfig(kc); err == nil {
+		say("kvo as the admin: kvoadm kvo ARGS… (or KVO_CONFIG=%s kvo ARGS…)", p)
+	}
 	// How kvoadm reaches it (kvoadm upgrade, store migrate), as for every host it sets up.
 	target := fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort)))
 	_ = annotateSSH(ctx, c, o.Name, target, conn.Fingerprint)
@@ -974,11 +991,21 @@ type runner interface {
 // signUserOverSSH makes a key here and has the control plane sign a certificate for userName.
 // Only the request crosses SSH. The signed certificate is for that user.
 func signUserOverSSH(ctx context.Context, run runner, userName string) (keyPEM, certPEM, caPEM []byte, err error) {
+	return signUserOverSSHAs(ctx, run, userName, "")
+}
+
+// signUserOverSSHAs signs a user certificate for a role ("" is cluster-admin; userRole has no
+// power of its own, only what RBAC binds to the name).
+func signUserOverSSHAs(ctx context.Context, run runner, userName, role string) (keyPEM, certPEM, caPEM []byte, err error) {
 	keyPEM, csrPEM, err := client.NewKeyAndCSR(userName)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	resp, err := run.Run(ctx, "kevasod admin sign-user --name "+sshboot.Quote(userName), csrPEM)
+	cmd := "kevasod admin sign-user --name " + sshboot.Quote(userName)
+	if role != "" {
+		cmd += " --role " + sshboot.Quote(role)
+	}
+	resp, err := run.Run(ctx, cmd, csrPEM)
 	if err != nil {
 		return nil, nil, nil, err
 	}

@@ -45,6 +45,7 @@ func TestApprovals(t *testing.T) {
 		"--name", "metal-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker",
 		"--runtime", "cloud-hypervisor", "--runtime", "docker", "--loop-storage", "30G",
 		"--egress-extra-ca", "/etc/kevaso/test-internet-ca.pem")...)
+	useAdminKvo(t, "e2e") // kvo's own context is a plain user; these steps are an admin's
 
 	ghToken, deployPw, dbPassword, apiKey := randomToken(t), randomToken(t), randomToken(t), randomToken(t)
 	r.must(kvo.Run, "apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: ops }\n", "apply", "-f", "-")

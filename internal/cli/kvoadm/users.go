@@ -22,7 +22,8 @@ import (
 //	kvoadm users invite NAME [--group G]… [--namespace NS [--role editor]] [--ttl 15m] [--cluster NAME]
 //	kvoadm users list
 //	kvoadm users disable NAME
-//	kvoadm users resign [USER@]ADDRESS --name USER [--cluster NAME] [--ssh-key PATH]
+//	kvoadm users resign [USER@]ADDRESS --name USER [--kvo] [--cluster NAME] [--ssh-key PATH]
+//	  (the admin certificate in the cluster folder; --kvo: kvo's plain user certificate)
 func usersCmd(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("users needs invite, list, disable or resign")
@@ -136,9 +137,12 @@ func usersCmd(ctx context.Context, args []string, stdin io.Reader, stdout io.Wri
 // The key is made here. The control plane only sees the request.
 func usersResign(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
 	var name, kctx string
+	var forKvo bool
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--kvo":
+			forKvo = true
 		case "--name":
 			if i+1 >= len(args) {
 				return errors.New("--name needs a value")
@@ -175,6 +179,29 @@ func usersResign(ctx context.Context, args []string, stdin io.Reader, stdout io.
 		return err
 	}
 	defer func() { _ = conn.Close() }()
+	if forKvo { // kvo's plain user certificate, into kvo's context of the cluster's name
+		keyPEM, certPEM, _, err := signUserOverSSHAs(ctx, conn, name, userRole)
+		if err != nil {
+			return err
+		}
+		path, err := kvoconfig.Path()
+		if err != nil {
+			return err
+		}
+		cfg, err := kvoconfig.Load(path)
+		if err != nil {
+			return err
+		}
+		c, ok := cfg.Contexts[kc.Cluster()]
+		if !ok || c.Certificate == "" || c.Key == "" {
+			return fmt.Errorf("kvo has no certificate context %s in %s", kc.Cluster(), path)
+		}
+		if err := installResignedCert(c.Key, c.Certificate, keyPEM, certPEM); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "kvo certificate for %s written to context %s\n", name, kc.Cluster())
+		return nil
+	}
 	keyPEM, certPEM, _, err := signUserOverSSH(ctx, conn, name)
 	if err != nil {
 		return err
@@ -192,16 +219,6 @@ func usersResign(ctx context.Context, args []string, stdin io.Reader, stdout io.
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "certificate for %s written to cluster %s (%s)\n", name, kc.Cluster(), kc.Folder())
-	// kvo's context of the same name holds its own copy (kvoadm init wrote both).
-	if path, err := kvoconfig.Path(); err == nil {
-		if cfg, err := kvoconfig.Load(path); err == nil {
-			if c, ok := cfg.Contexts[kc.Cluster()]; ok && c.Certificate != "" && c.Key != "" {
-				if installResignedCert(c.Key, c.Certificate, keyPEM, certPEM) == nil {
-					_, _ = fmt.Fprintf(stdout, "and to kvo context %s\n", kc.Cluster())
-				}
-			}
-		}
-	}
 	return nil
 }
 

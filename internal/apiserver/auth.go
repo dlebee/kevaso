@@ -541,7 +541,7 @@ func (s *Server) wrap(next http.Handler) http.Handler {
 type CertRequest struct {
 	Token string `json:"token,omitempty"` // /enroll only
 	Host  string `json:"host,omitempty"`  // /enroll: the host joining
-	Role  string `json:"role,omitempty"`  // /enroll: worker. A system node joins at /join/system-node.
+	Role  string `json:"role,omitempty"`  // /enroll: worker (a system node joins at /join/system-node); /admin/certs: cluster-admin (default) or user
 	Name  string `json:"name,omitempty"`  // /admin/certs: the user's name
 	CSR   string `json:"csr"`             // PEM
 }
@@ -605,6 +605,10 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 
 // issueUserCert: only through the admin socket (root on a control-plane host) can a user
 // certificate be minted. That's how `kvoadm init` hands you credentials for `kvo`.
+// UserRole is a user certificate's role with no power of its own: what the user may do is what RBAC
+// binds to their name.
+const UserRole = "user"
+
 func (s *Server) issueUserCert(w http.ResponseWriter, r *http.Request, caller pki.Identity) {
 	if caller != LocalAdmin {
 		writeErr(w, errf(http.StatusForbidden, "Forbidden", "user certificates are issued only through the admin socket"))
@@ -615,7 +619,18 @@ func (s *Server) issueUserCert(w http.ResponseWriter, r *http.Request, caller pk
 		writeErr(w, err)
 		return
 	}
-	id := pki.Identity{Type: "user", Name: req.Name, Role: "cluster-admin"}
+	// A user certificate is a cluster-admin's (kvoadm's own) or a plain user's, whose rights are
+	// only what RBAC binds to the name (kvoadm init binds kvo's user to editor). Nothing else: a
+	// user certificate never carries a host's role.
+	role := req.Role
+	if role == "" {
+		role = "cluster-admin"
+	}
+	if role != "cluster-admin" && role != UserRole {
+		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "user certificate role %q: want cluster-admin or %s", req.Role, UserRole))
+		return
+	}
+	id := pki.Identity{Type: "user", Name: req.Name, Role: role}
 	if err := id.Validate(); err != nil {
 		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s", err))
 		return
