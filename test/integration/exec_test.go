@@ -27,7 +27,7 @@ func TestKvoExec(t *testing.T) {
 		return strings.Join(cmd, " ") + " in " + id.Name + " <" + string(stdin) + ">", 0
 	}
 	a := &agent.Agent{Client: client.New(h.server), HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}}
-	go a.Run(ctx)
+	defer runAgent(ctx, a)()
 	h.ok(manifest, "apply", "-f", "-")
 	// What the scheduler would write: the silo is on hv1 (the agent then starts it).
 	c := client.New(h.server)

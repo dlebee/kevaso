@@ -182,7 +182,7 @@ func runningSilo(t *testing.T, rt *fake.Runtime) (*harness, context.Context, *cl
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	a := &agent.Agent{Client: client.New(h.server), HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}}
-	go a.Run(ctx)
+	t.Cleanup(runAgent(ctx, a)) // the helper returns first: stop with the test, before the folders it made earlier are removed
 	h.ok(manifest, "apply", "-f", "-")
 	c := client.New(h.server)
 	var s v1.Silo

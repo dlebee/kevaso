@@ -70,7 +70,7 @@ func newProbeRig(t *testing.T, handler fake.Handler) *probeRig {
 			var d net.Dialer
 			return d.DialContext(ctx, network, r.target.Load().(string))
 		}}
-	go a.Run(ctx)
+	t.Cleanup(runAgent(ctx, a)) // the helper returns first: stop with the test, before the folders it made earlier are removed
 	silos, services := informer.New(r.c, "Silo"), informer.New(r.c, "Service")
 	e := engine.New(clock.Real{})
 	e.Register(&servicecontroller.Controller{Client: r.c, Services: services, Silos: silos, Clock: clock.Real{}}, engine.Options{})

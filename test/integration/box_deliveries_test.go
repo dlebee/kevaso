@@ -65,7 +65,7 @@ func TestContainerFileAndEnvSecrets(t *testing.T) {
 	defer cancel()
 	for h, b := range boxes {
 		a := &agent.Agent{Client: c.host(t, h), HostName: h, Runtimes: map[string]kri.Runtime{"docker": b}, Clock: clock.Real{}}
-		go a.Run(ctx)
+		defer runAgent(ctx, a)()
 	}
 
 	// The silo: accepted, with a warning for its env secret that kvo prints.
