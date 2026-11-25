@@ -350,3 +350,35 @@ func TestQuote(t *testing.T) {
 		}
 	}
 }
+
+// A binary that can't run on the host (another OS or CPU) never replaces the one in place.
+func TestInstallBinaryCheckedRunsItBeforeReplacing(t *testing.T) {
+	for _, runs := range []bool{false, true} {
+		hk := newSigner(t)
+		h := startFakeHost(t, hk)
+		h.handler = func(cmd string, _ []byte) (string, int) {
+			if strings.Contains(strings.ReplaceAll(cmd, "'", ""), StagingDir+"/kevasod version") {
+				if !runs {
+					return "exec format error", 126
+				}
+				return "v0.1.0-rc.7\n", 0
+			}
+			return "", 0
+		}
+		c := connectWithPassword(t, h, hk)
+		ran, err := c.InstallBinaryChecked(ctxT(t), "kevasod", []byte("binary"), []byte("sig"), "version")
+		cmds, _, _ := h.seen()
+		installed := false
+		for _, cmd := range cmds {
+			if strings.HasPrefix(cmd, "install -m 0755") {
+				installed = true
+			}
+		}
+		switch {
+		case !runs && (err == nil || installed || !strings.Contains(err.Error(), "doesn't run on this host")):
+			t.Fatalf("a binary that doesn't run: err %v, installed %v", err, installed)
+		case runs && (err != nil || !installed || strings.TrimSpace(ran) != "v0.1.0-rc.7"):
+			t.Fatalf("a binary that runs: err %v, installed %v, ran %q", err, installed, ran)
+		}
+	}
+}

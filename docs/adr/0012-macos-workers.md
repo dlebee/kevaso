@@ -59,6 +59,10 @@ the fence (`com.kevaso.fence`, `kevasod fence-watch`, which keeps running when k
 Mac path (restart through `launchctl`, repoint the plist's `--server`, remove the daemons, files and
 macOS silo VMs with `--force`). A Mac has no SSH hardening and no install record: `reset` removes
 Kevaso's own fixed list of paths and never touches Tart, its images or SSH.
+A cluster with Macs and Linux hosts upgrades with a build for each
+(`kvoadm upgrade --kevasod kevasod-linux-amd64 --kevasod kevasod-darwin-arm64`): each host gets the
+one for its `uname -sm`, the roll is refused before any change when a host has none, and the new
+binary runs once on its host (`kevasod version`) before it replaces the old one.
 
 ## How it gets proven
 
