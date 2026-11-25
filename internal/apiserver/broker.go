@@ -63,10 +63,18 @@ func (s *Server) agentBroker(w http.ResponseWriter, r *http.Request) {
 		s.auth.Audit.Record(audit.Entry{
 			Time: s.clock.Now(), Event: "broker", User: "system:silo:" + req.Namespace + ":" + req.Name, Type: "silo",
 			Verb: req.Request.Op, Resource: map[bool]string{false: "secrets", true: v1.ResourceExposure}[portOp], Namespace: req.Namespace, Name: req.Request.Name,
-			Allowed: allowed, Reason: reason + " (via host " + host + ")",
+			Allowed: allowed, Reason: reason + askedKey(req.Request) + " (via host " + host + ")",
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// askedKey is what the audit adds for a key asked for by name.
+func askedKey(r client.BrokerRequest) string {
+	if r.Key == "" {
+		return ""
+	}
+	return " (key " + r.Key + " asked for)"
 }
 
 // broker decides and answers one request; the reason is for the audit log only.
@@ -81,9 +89,19 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 	}
 	switch op.Op {
 	case client.OpGetSecret: // what the silo asks for itself: broker deliveries only (file and env are the host's to write)
-		sec, g, gs, why := s.grantedSecret(ctx, call, op.Name, v1.DeliverBroker)
+		sec, g, gs, why := s.grantedSecret(ctx, call, op.Name, op.Key, v1.DeliverBroker)
 		if sec == nil {
 			return refuse(why)
+		}
+		keys := gs.Keys(sec.Status.Keys)
+		if op.Key != "" {
+			keys = gs.Keys([]string{op.Key})
+			if !contains(sec.Status.Keys, op.Key) {
+				keys = nil
+			}
+		}
+		if len(keys) == 0 {
+			return refuse("the secret has no such key (or no value yet)")
 		}
 		approved := ""
 		if gs.NeedsApproval() {
@@ -93,11 +111,27 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 			}
 			approved = ", " + why
 		}
-		value, ver, err := s.vault.Value(ctx, sec)
+		data, ver, err := s.vault.Value(ctx, sec)
 		if err != nil {
 			return refuse(err.Error())
 		}
-		return client.BrokerResponse{Value: value, Version: ver}, fmt.Sprintf("grant %s, %s%s", g.Name, gs.Delivery(), approved), true
+		out := map[string][]byte{}
+		for _, k := range keys {
+			if b, ok := data[k]; ok {
+				out[k] = b
+				delete(data, k)
+			}
+		}
+		secrets.Clear(data)
+		if len(out) == 0 {
+			return refuse("the secret has no such key now")
+		}
+		reason := fmt.Sprintf("grant %s, %s, keys %s%s", g.Name, gs.Delivery(), strings.Join(keys, ","), approved)
+		// One key, when one was asked for, the grant names one, or it's the shorthand's only key.
+		if one := op.Key != "" || gs.Key != "" || (len(keys) == 1 && keys[0] == v1.ValueKey); one && len(out) == 1 {
+			return client.BrokerResponse{Value: out[keys[0]], Version: ver}, reason, true
+		}
+		return client.BrokerResponse{Data: out, Version: ver}, reason, true
 	case client.OpSign, client.OpPublicKey:
 		sec, g, signOp, why := s.grantedKey(ctx, call, op.Name)
 		if sec == nil {
@@ -125,6 +159,12 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 		return client.BrokerResponse{Signature: sig}, "grant " + g.Name + ", sign" + approved, true
 	case client.OpDeliveries, client.OpDeliveryValues:
 		var out []client.Delivery
+		fail := func(name string, err error) (client.BrokerResponse, string, bool) {
+			for _, d := range out {
+				clear(d.Value)
+			}
+			return client.BrokerResponse{Error: "deliveries: " + name + ": can't be read now; try again"}, err.Error(), false
+		}
 		for _, g := range call.grants {
 			if !assured(g) {
 				continue
@@ -138,29 +178,33 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 				if sec == nil || !sec.Allows(mode) || sec.Status.Version == 0 {
 					continue
 				}
-				d := client.Delivery{Name: gs.Name, Mode: mode, Version: sec.Status.Version}
-				if mode == v1.DeliverFile {
-					d.Path = gs.Path
-					if d.Path == "" {
-						d.Path = "/run/secrets/" + gs.Name
-					}
-				} else {
-					d.Env = gs.Env
-					if d.Env == "" {
-						d.Env = strings.ToUpper(strings.ReplaceAll(gs.Name, "-", "_"))
-					}
-				}
-				if op.Op == client.OpDeliveryValues {
-					value, ver, err := s.vault.Value(ctx, sec)
+				keys := gs.Keys(sec.Status.Keys)
+				var data map[string][]byte
+				if op.Op == client.OpDeliveryValues && len(keys) > 0 {
+					d, ver, err := s.vault.Value(ctx, sec)
 					if err != nil {
-						for _, d := range out {
-							clear(d.Value)
-						}
-						return client.BrokerResponse{Error: "deliveries: " + gs.Name + ": can't be read now; try again"}, err.Error(), false
+						return fail(gs.Name, err)
 					}
-					d.Value, d.Version = value, ver
+					if ver != sec.Status.Version { // a write between the two reads: its status is behind
+						secrets.Clear(d)
+						return fail(gs.Name, fmt.Errorf("version %d sealed, status says %d", ver, sec.Status.Version))
+					}
+					data = d
 				}
-				out = append(out, d)
+				for _, k := range keys {
+					d := client.Delivery{Name: gs.Name, Key: k, Mode: mode, Version: sec.Status.Version}
+					if mode == v1.DeliverFile {
+						d.Path = gs.FilePath(k, sec.Status.Keys)
+					} else {
+						d.Env = gs.EnvName(k)
+					}
+					if data != nil {
+						d.Value = data[k]
+						delete(data, k)
+					}
+					out = append(out, d)
+				}
+				secrets.Clear(data)
 			}
 		}
 		if op.Op == client.OpDeliveryValues {
@@ -177,6 +221,7 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 		return s.brokerPort(ctx, call, op)
 	case client.OpInjections:
 		var out []client.Injection
+		var skipped []string
 		for _, g := range call.grants {
 			if !assured(g) {
 				continue
@@ -189,7 +234,12 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 				if sec == nil || !sec.Allows(v1.DeliverInject) {
 					continue
 				}
-				value, ver, err := s.vault.Value(ctx, sec)
+				key := gs.InjectKey(sec.Status.Keys)
+				if key == "" { // several keys and none named, or the key named isn't there: nothing to add
+					skipped = append(skipped, gs.Name)
+					continue
+				}
+				value, ver, err := s.vault.KeyValue(ctx, sec, key)
 				if err != nil {
 					continue
 				}
@@ -206,10 +256,14 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 				}
 				out = append(out, client.Injection{Host: strings.ToLower(gs.To.Host), Header: header,
 					Value: strings.Replace(format, "{{value}}", string(value), 1), Raw: value, Format: format,
-					Env: env, Secret: gs.Name, Version: ver, Approval: gs.NeedsApproval()})
+					Env: env, Secret: gs.Name, Key: key, Version: ver, Approval: gs.NeedsApproval()})
 			}
 		}
-		return client.BrokerResponse{Injections: out}, fmt.Sprintf("%d injections for the egress gate", len(out)), true
+		why := fmt.Sprintf("%d injections for the egress gate", len(out))
+		if len(skipped) > 0 {
+			why += "; left out (no single key to inject: name one with key:): " + strings.Join(skipped, ", ")
+		}
+		return client.BrokerResponse{Injections: out}, why, true
 	}
 	return client.BrokerResponse{Error: "unknown op " + op.Op}, "unknown op", false
 }
@@ -263,9 +317,10 @@ func (s *Server) secretNamed(ctx context.Context, ns, name string) *v1.Secret {
 	return obj.(*v1.Secret)
 }
 
-// grantedSecret finds a grant giving the silo secret name in one of modes. A grant that needs no
-// approval wins over one that does: the silo has the secret without asking anyway.
-func (s *Server) grantedSecret(ctx context.Context, call *brokerCall, name string, modes ...string) (*v1.Secret, *v1.Grant, v1.GrantSecret, string) {
+// grantedSecret finds a grant giving the silo secret name (key, when one is asked for: an entry
+// naming another key doesn't) in one of modes. A grant that needs no approval wins over one that
+// does: the silo has the secret without asking anyway.
+func (s *Server) grantedSecret(ctx context.Context, call *brokerCall, name, key string, modes ...string) (*v1.Secret, *v1.Grant, v1.GrantSecret, string) {
 	why := "no grant of the silo gives it this secret that way"
 	var (
 		gated     *v1.Grant
@@ -275,7 +330,7 @@ func (s *Server) grantedSecret(ctx context.Context, call *brokerCall, name strin
 	for _, g := range call.grants {
 		for _, gs := range g.Spec.Secrets {
 			mode := gs.Delivery()
-			if gs.Name != name || !contains(modes, mode) {
+			if gs.Name != name || !contains(modes, mode) || (key != "" && gs.Key != "" && gs.Key != key) {
 				continue
 			}
 			if !assured(g) {

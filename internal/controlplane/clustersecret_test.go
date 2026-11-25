@@ -84,7 +84,7 @@ func TestASystemNodeDeliversTheControllerSidesClusterSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cred := filepath.Join(etc, plugin, "token")
+	cred := filepath.Join(etc, plugin, "token", v1.ValueKey) // a folder: LoadCredential loads it as token_value
 	deadline := time.Now().Add(20 * time.Second)
 	var got []byte
 	var rdErr error

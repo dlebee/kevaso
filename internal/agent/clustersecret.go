@@ -260,20 +260,20 @@ func (a *Agent) deliverOne(ctx context.Context, g clusterSecretGroup) {
 		}
 		return
 	}
-	defer clear(v.Value)
+	defer clearKeys(v.Data)
 	if !a.watermark().acceptedSince(m) {
 		return // held, or another history: apply nothing from this answer
 	}
-	cur, rerr := os.ReadFile(g.path)
+	cur, rerr := readClusterSecretDir(g.path)
 	missing := errors.Is(rerr, os.ErrNotExist)
 	if rerr != nil && !missing {
 		a.log("plugin %s: cluster secret %s: %v", g.plugin, g.name, rerr)
 		return
 	}
-	defer clear(cur)
-	same := !missing && bytes.Equal(cur, v.Value)
+	defer clearKeys(cur)
+	same := !missing && sameKeys(cur, v.Data)
 	if !same {
-		if err := writeClusterSecretFile(g.path, v.Value); err != nil {
+		if err := writeClusterSecretDir(g.path, v.Data); err != nil {
 			a.log("plugin %s: cluster secret %s: %v", g.plugin, g.name, err)
 			return
 		}
@@ -335,10 +335,10 @@ func (a *Agent) mayDropClusterSecretNow() bool {
 }
 
 func (a *Agent) removeClusterSecret(ctx context.Context, g clusterSecretGroup) {
-	err := os.Remove(g.path)
-	if errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(g.path); errors.Is(err, os.ErrNotExist) {
 		return
 	}
+	err := os.RemoveAll(g.path)
 	if err != nil {
 		a.log("plugin %s: cluster secret %s: remove: %v", g.plugin, g.name, err)
 		return
@@ -567,9 +567,91 @@ func (a *Agent) restartPlugin(ctx context.Context, unit string) error {
 	return nil
 }
 
+// A cluster secret on a host is a folder, one file per key (hack/design/secret-keys.md): the
+// unit's LoadCredential=NAME:FOLDER loads each as the credential NAME_KEY. Keys never start with
+// a dot, so the temporary files (and nothing else) do.
+
+func clearKeys(d map[string][]byte) {
+	for _, b := range d {
+		clear(b)
+	}
+}
+
+func sameKeys(a, b map[string][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, x := range a {
+		if y, ok := b[k]; !ok || !bytes.Equal(x, y) {
+			return false
+		}
+	}
+	return true
+}
+
+// readClusterSecretDir reads the folder's keys (os.ErrNotExist when there's no folder; a file
+// in its place, from before keys, reads as none).
+func readClusterSecretDir(dir string) (map[string][]byte, error) {
+	if st, err := os.Lstat(dir); err != nil {
+		return nil, err
+	} else if !st.IsDir() {
+		return nil, os.ErrNotExist
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]byte{}
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), ".") || !e.Type().IsRegular() {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			clearKeys(out)
+			return nil, err
+		}
+		out[e.Name()] = b
+	}
+	return out, nil
+}
+
+// writeClusterSecretDir makes the folder hold exactly data's keys: each written atomically, the
+// others removed. Anything else at its path (a file from before keys) is replaced.
+func writeClusterSecretDir(dir string, data map[string][]byte) error {
+	if st, err := os.Lstat(dir); err == nil && !st.IsDir() {
+		if err := os.Remove(dir); err != nil {
+			return err
+		}
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	for k, b := range data {
+		if !v1.ValidKey(k) {
+			return fmt.Errorf("key %q isn't a file name", k)
+		}
+		if err := writeClusterSecretFile(filepath.Join(dir, k), b); err != nil {
+			return err
+		}
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range ents {
+		if _, keep := data[e.Name()]; !keep {
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // writeClusterSecretFile writes data to path atomically (a temporary file in the same
 // directory, flushed, then renamed) and leaves it mode 0600, owned by root when this
-// process is root. data is the secret: it is not logged.
+// process is root, in a folder only root reads. data is the secret: it is not logged.
 func writeClusterSecretFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -578,7 +660,7 @@ func writeClusterSecretFile(path string, data []byte) error {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
+	tmp := filepath.Join(dir, ".kvo-tmp-"+filepath.Base(path))
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err

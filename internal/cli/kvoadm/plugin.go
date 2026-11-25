@@ -32,7 +32,7 @@ type PluginOptions struct {
 	Name   string
 	Binary string
 	Side   string // controller (default: on a control plane, serving the API) | node (on a worker)
-	// ClusterSecrets are ClusterSecret names this side's unit loads (LoadCredential=NAME).
+	// ClusterSecrets are ClusterSecret names this side's unit loads (LoadCredential=NAME: a folder, each key the credential NAME_KEY).
 	// Install records the names and copies no value: kevasod writes each one, root only, at
 	// the path the unit already names. Repeatable.
 	ClusterSecrets []string
@@ -87,7 +87,7 @@ func PluginUnit(o PluginOptions) (string, error) {
 	w("RuntimeDirectoryPreserve=yes")
 	names := append([]string(nil), o.ClusterSecrets...)
 	sort.Strings(names)
-	for _, n := range names {
+	for _, n := range names { // a folder, one file per key: systemd loads each as the credential NAME_KEY
 		w("LoadCredential=%s:%s/%s", n, pluginEtc(o.Name), n)
 	}
 	if o.Config != "" {
@@ -327,7 +327,7 @@ func parsePlugin(args []string, needBinary bool) (PluginOptions, error) {
 		case "--yes":
 			o.Yes = true
 		case "--credential":
-			return o, errors.New("--credential was removed: pass --cluster-secret NAME (repeatable); kevasod fetches the value, and the plugin still reads it from its credential directory")
+			return o, errors.New("--credential was removed: pass --cluster-secret NAME (repeatable); kevasod fetches its keys, and the plugin reads each as NAME_KEY from its credential directory")
 		case "--cluster-secret":
 			var v string
 			if v, err = next(); err == nil {

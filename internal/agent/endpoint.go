@@ -36,7 +36,11 @@ import (
 // header (a browser made it) or a Host that isn't the endpoint's (DNS rebinding). There are no
 // redirects and no CORS headers, ever. The routes, all answering errors as {"error": "…"}:
 //
-//	GET  /v1/secrets/NAME[?for=D&wait=D&approval=A]          200 the value (application/octet-stream), Kevaso-Version: N
+//	GET  /v1/secrets/NAME[?for=D&wait=D&approval=A]          200 the value (application/octet-stream), Kevaso-Version: N,
+//	                                                         when the answer is one key (the grant names one, or the
+//	                                                         secret's only key is value); otherwise every key the grant
+//	                                                         gives: {"data": {KEY: base64}, "version": N} (application/json)
+//	GET  /v1/secrets/NAME/KEY[?for=D&wait=D&approval=A]      200 that key's bytes (application/octet-stream)
 //	POST /v1/sign/KEY[?slot=N&for=D&wait=D&approval=A]       body: the payload (≤ 512 KiB); 200 the signature, hex
 //	GET  /v1/keys/KEY                                        200 the public key, hex
 //	POST /v1/ports/NAME/open[?for=D&wait=D&approval=A]       200 {"port": NAME, "until": TIME, "clamped": BOOL}
@@ -180,7 +184,7 @@ func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		endpointFail(w, http.StatusForbidden, "Host must be "+v1.EndpointAddress)
 		return
 	}
-	op, name, method, ok := endpointRoute(r.URL.Path)
+	op, name, key, method, ok := endpointRoute(r.URL.Path)
 	if !ok {
 		endpointFail(w, http.StatusNotFound, "no such route: "+r.URL.Path)
 		return
@@ -194,6 +198,10 @@ func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		endpointFail(w, http.StatusBadRequest, fmt.Sprintf("name %q: lower-case letters, digits, - and .", name))
 		return
 	}
+	if key != "" && !v1.ValidKey(key) {
+		endpointFail(w, http.StatusBadRequest, fmt.Sprintf("key %q: letters, digits, - _ and .", key))
+		return
+	}
 	if e.Held != nil && e.Held() {
 		endpointFail(w, http.StatusServiceUnavailable, "this host is held (its control plane is older than what it saw): nothing is asked of it until that ends")
 		return
@@ -203,7 +211,7 @@ func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer e.leave(id.UID)
-	req := client.BrokerRequest{Op: op, Name: name}
+	req := client.BrokerRequest{Op: op, Name: name, Key: key}
 	q := r.URL.Query()
 	if op != client.OpPublicKey && op != client.OpPortClose {
 		for _, p := range []struct {
@@ -246,6 +254,11 @@ func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	err := e.Client.Call(r.Context(), http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{
 		Namespace: id.Namespace, Name: id.Name, UID: id.UID, Host: e.HostName, Request: req}, &resp)
 	defer clear(resp.Value)
+	defer func() {
+		for _, b := range resp.Data {
+			clear(b)
+		}
+	}()
 	if err != nil {
 		e.log("endpoint %s/%s: %v", id.Namespace, id.Name, err)
 		endpointFail(w, http.StatusServiceUnavailable, "the control plane can't be reached; try again")
@@ -263,26 +276,34 @@ func hasSecFetch(h http.Header) bool {
 	return false
 }
 
-// endpointRoute maps a path to its op, the name in it and its method. Exact matches only: no
-// cleaning, no trailing slashes, no redirects.
-func endpointRoute(path string) (op, name, method string, ok bool) {
+// endpointRoute maps a path to its op, the name (and a secret's key) in it and its method. Exact
+// matches only: no cleaning, no trailing slashes, no redirects.
+func endpointRoute(path string) (op, name, key, method string, ok bool) {
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	if len(parts) < 3 || parts[0] != "v1" || parts[2] == "" {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 	switch {
 	case len(parts) == 3 && parts[1] == "secrets":
-		return client.OpGetSecret, parts[2], http.MethodGet, true
+		return client.OpGetSecret, parts[2], "", http.MethodGet, true
+	case len(parts) == 4 && parts[1] == "secrets" && parts[3] != "":
+		return client.OpGetSecret, parts[2], parts[3], http.MethodGet, true
 	case len(parts) == 3 && parts[1] == "sign":
-		return client.OpSign, parts[2], http.MethodPost, true
+		return client.OpSign, parts[2], "", http.MethodPost, true
 	case len(parts) == 3 && parts[1] == "keys":
-		return client.OpPublicKey, parts[2], http.MethodGet, true
+		return client.OpPublicKey, parts[2], "", http.MethodGet, true
 	case len(parts) == 4 && parts[1] == "ports" && parts[3] == "open":
-		return client.OpPortOpen, parts[2], http.MethodPost, true
+		return client.OpPortOpen, parts[2], "", http.MethodPost, true
 	case len(parts) == 4 && parts[1] == "ports" && parts[3] == "close":
-		return client.OpPortClose, parts[2], http.MethodPost, true
+		return client.OpPortClose, parts[2], "", http.MethodPost, true
 	}
-	return "", "", "", false
+	return "", "", "", "", false
+}
+
+// SecretKeys is the answer to GET /v1/secrets/NAME when it holds several keys.
+type SecretKeys struct {
+	Data    map[string][]byte `json:"data"`
+	Version int64             `json:"version"`
 }
 
 // answer writes the control plane's answer as the route's.
@@ -311,6 +332,13 @@ func (e *Endpoint) answer(w http.ResponseWriter, op, name string, resp client.Br
 	}
 	switch op {
 	case client.OpGetSecret:
+		if resp.Data != nil {
+			h.Set("Content-Type", "application/json")
+			h.Set("Kevaso-Version", strconv.FormatInt(resp.Version, 10))
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(SecretKeys{Data: resp.Data, Version: resp.Version})
+			return
+		}
 		h.Set("Content-Type", "application/octet-stream")
 		h.Set("Kevaso-Version", strconv.FormatInt(resp.Version, 10))
 		h.Set("X-Content-Type-Options", "nosniff")

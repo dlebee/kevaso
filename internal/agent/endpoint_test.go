@@ -314,3 +314,34 @@ func TestEndpointLimits(t *testing.T) {
 		t.Fatalf("no control plane: %d", resp.StatusCode)
 	}
 }
+
+// /v1/secrets/NAME/KEY relays the key; an answer with several keys is JSON, one key is its bytes.
+func TestEndpointSecretKeys(t *testing.T) {
+	r := newEndpoint(t)
+	r.cp.answer = func(q client.AgentBrokerRequest) client.BrokerResponse {
+		if q.Request.Key != "" {
+			return client.BrokerResponse{Value: []byte("pw"), Version: 3}
+		}
+		return client.BrokerResponse{Data: map[string][]byte{"password": []byte("pw"), "username": []byte("app")}, Version: 3}
+	}
+	resp, body := r.do(t, "GET", "/v1/secrets/db/password", nil, nil)
+	if resp.StatusCode != 200 || body != "pw" || resp.Header.Get("Content-Type") != "application/octet-stream" {
+		t.Fatalf("one key: %d %q", resp.StatusCode, body)
+	}
+	if q := r.cp.calls()[0].Request; q.Op != client.OpGetSecret || q.Name != "db" || q.Key != "password" {
+		t.Fatalf("relayed %+v", q)
+	}
+	resp, body = r.do(t, "GET", "/v1/secrets/db", nil, nil)
+	var all agent.SecretKeys
+	if resp.StatusCode != 200 || json.Unmarshal([]byte(body), &all) != nil || string(all.Data["username"]) != "app" || all.Version != 3 || resp.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("every key: %d %q", resp.StatusCode, body)
+	}
+	for _, p := range []string{"/v1/secrets/db/a%20b", "/v1/secrets/db/.x"} {
+		if resp, _ := r.do(t, "GET", p, nil, nil); resp.StatusCode != 400 {
+			t.Fatalf("%s: %d", p, resp.StatusCode)
+		}
+	}
+	if resp, _ := r.do(t, "GET", "/v1/secrets/db/password/more", nil, nil); resp.StatusCode != 404 {
+		t.Fatalf("a deeper path: %d", resp.StatusCode)
+	}
+}

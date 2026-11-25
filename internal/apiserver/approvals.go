@@ -135,6 +135,9 @@ func approvalCall(call *brokerCall, req client.BrokerRequest, use, grant string)
 	switch use {
 	case v1.ApprovalForSecret:
 		c.Summary = "read the value of " + req.Name
+		if req.Key != "" {
+			c.Summary = "read key " + req.Key + " of " + req.Name
+		}
 	case v1.ApprovalForSign:
 		h := sha256.Sum256(req.Payload)
 		c.PayloadHash = hex.EncodeToString(h[:])

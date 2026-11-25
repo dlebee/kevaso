@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/operators"
@@ -22,34 +21,47 @@ import (
 // server's: a caller's status is dropped on create and on update, and /status is refused.
 // Who may manage, list or read a value is authorizeClusterSecret.
 
-// prepareClusterSecret takes the value out of a ClusterSecret being written. nil means the value
-// doesn't change. A create with no value is refused: there is nothing to seal.
-func (s *Server) prepareClusterSecret(ctx context.Context, t target, obj meta.Object) ([]byte, error) {
+// prepareClusterSecret takes the keys out of a ClusterSecret being written. nil means no key
+// changes. A create with no value is refused: there is nothing to seal.
+func (s *Server) prepareClusterSecret(ctx context.Context, t target, obj meta.Object) (*secretWrite, error) {
 	cs, ok := obj.(*v1.ClusterSecret)
 	if !ok || t.status {
 		return nil, nil
 	}
-	value := cs.Spec.Value
-	cs.Spec.Value = nil
+	sp := &cs.Spec
+	value, data, set, remove := sp.Value, sp.Data, sp.SetData, sp.RemoveKeys
+	sp.Value, sp.Data, sp.SetData, sp.RemoveKeys = nil, nil, nil, nil
 	cs.Status = v1.ClusterSecretStatus{} // the server sets status; the caller's is never stored
-	if len(value) > maxSecretValue {
-		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "ClusterSecret %s: spec.value is %d bytes, at most %d", cs.Name, len(value), maxSecretValue)
-	}
-	_, err := s.store.Get(ctx, t.key())
+	cur, err := s.store.Get(ctx, t.key())
 	creating := errors.Is(err, store.ErrNotFound)
 	if err != nil && !creating {
 		return nil, err
 	}
-	if value == nil {
+	keys, whole, err := newKeys("ClusterSecret", cs.Name, value, data, set, remove, func() (map[string][]byte, error) {
+		if creating || s.vault == nil {
+			return nil, secrets.ErrNoValue
+		}
+		o, _, err := v1.Decode(cur.Data)
+		if err != nil {
+			return nil, err
+		}
+		d, _, err := s.vault.ClusterValue(ctx, o.(*v1.ClusterSecret))
+		return d, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if keys == nil {
 		if creating {
-			return nil, errf(http.StatusUnprocessableEntity, "Invalid", "ClusterSecret %s: needs a value (kvo create clustersecret %s --from-file FILE|-)", cs.Name, cs.Name)
+			return nil, errf(http.StatusUnprocessableEntity, "Invalid", "ClusterSecret %s: needs a value (kvo create clustersecret %s --from-file FILE|- or --from-file KEY=FILE)", cs.Name, cs.Name)
 		}
 		return nil, nil
 	}
 	if s.vault == nil {
+		secrets.Clear(keys)
 		return nil, errf(http.StatusServiceUnavailable, "Unavailable", "this server has no KMS: it can't keep secret values")
 	}
-	return value, nil
+	return &secretWrite{data: keys, whole: whole}, nil
 }
 
 // withClusterStatus forces the status the server owns onto the bytes about to be stored, so a
@@ -69,14 +81,15 @@ func withClusterStatus(data []byte, st v1.ClusterSecretStatus) ([]byte, error) {
 }
 
 // storeClusterSecretValue seals value for the stored cluster secret and records the new version.
-func (s *Server) storeClusterSecretValue(ctx context.Context, o store.Object, value []byte) (store.Object, error) {
-	defer clear(value)
+func (s *Server) storeClusterSecretValue(ctx context.Context, o store.Object, data map[string][]byte) (store.Object, error) {
+	defer secrets.Clear(data)
 	obj, _, err := v1.Decode(o.Data)
 	if err != nil {
 		return o, err
 	}
 	cs := obj.(*v1.ClusterSecret)
-	ver, err := s.vault.PutCluster(ctx, cs, value)
+	ver, err := s.vault.PutCluster(ctx, cs, data)
+	keys, _ := secrets.Keys(data)
 	if err != nil {
 		return o, err
 	}
@@ -91,7 +104,7 @@ func (s *Server) storeClusterSecretValue(ctx context.Context, o store.Object, va
 			return o, err
 		}
 		cs = obj.(*v1.ClusterSecret)
-		cs.Status = v1.ClusterSecretStatus{Version: ver, ChangedAt: &now}
+		cs.Status = v1.ClusterSecretStatus{Version: ver, ChangedAt: &now, Keys: keys}
 		_, data, err := toMap(cs)
 		if err != nil {
 			return o, err
@@ -105,9 +118,9 @@ func (s *Server) storeClusterSecretValue(ctx context.Context, o store.Object, va
 	return o, errors.New("clustersecret keeps changing; its value is stored, its status will catch up")
 }
 
-// clusterSecretValue serves GET …/clustersecrets/NAME/value. Authorization already decided
-// who may have it: a cluster-admin, a pinned ClusterRole, or a host reading for a plugin.
-func (s *Server) clusterSecretValue(ctx context.Context, w http.ResponseWriter, t target) {
+// clusterSecretValue serves GET …/clustersecrets/NAME/value[?key=KEY]. Authorization already
+// decided who may have it: a cluster-admin, a pinned ClusterRole, or a host reading for a plugin.
+func (s *Server) clusterSecretValue(ctx context.Context, w http.ResponseWriter, t target, key string) {
 	o, err := s.store.Get(ctx, t.key())
 	if err != nil {
 		writeErr(w, err)
@@ -123,7 +136,7 @@ func (s *Server) clusterSecretValue(ctx context.Context, w http.ResponseWriter, 
 		writeErr(w, errf(http.StatusServiceUnavailable, "Unavailable", "this server has no KMS"))
 		return
 	}
-	value, ver, err := s.vault.ClusterValue(ctx, cs)
+	data, ver, err := s.vault.ClusterValue(ctx, cs)
 	if errors.Is(err, secrets.ErrNoValue) {
 		writeErr(w, errf(http.StatusNotFound, "NotFound", "clustersecret %s has no value yet", cs.Name))
 		return
@@ -132,9 +145,8 @@ func (s *Server) clusterSecretValue(ctx context.Context, w http.ResponseWriter, 
 		writeErr(w, err)
 		return
 	}
-	defer clear(value)
-	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, client.SecretValue{Value: value, Version: ver})
+	defer secrets.Clear(data)
+	writeKeys(w, "clustersecret "+cs.Name, data, ver, key)
 }
 
 // hostCertificate reports a worker's certificate or a system node's (role control-plane).

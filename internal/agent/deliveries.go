@@ -61,6 +61,9 @@ const writeScript = scriptEnv + fsTypeFn + `set -e
 p=$1; d=${p%/*}
 if [ "$3" = secret ]; then
   case "$p" in /run/*) ;; *) echo "kevaso: $p isn't under /run" >&2; exit 3 ;; esac
+  # a secret that was one file and is now a folder of keys, or the other way round
+  if [ -f "$R$d" ] && [ ! -L "$R$d" ]; then rm -f -- "$R$d"; fi
+  if [ -d "$R$p" ] && [ ! -L "$R$p" ]; then rm -rf -- "$R$p"; fi
   (umask 027; mkdir -p "$R$d")
   t=$(fstype "$d")
   case "$t" in tmpfs|ramfs) ;; *) echo "kevaso: $d is on ${t:-an unknown filesystem}, not tmpfs: no secret is written there" >&2; exit 4 ;; esac
@@ -82,7 +85,7 @@ if [ -f "$list" ]; then
   while IFS= read -r p; do
     keep=0
     for n in "$@"; do [ "$p" = "$n" ] && keep=1; done
-    case "$p" in /run/*) [ $keep = 1 ] || rm -f -- "$R$p" ;; esac
+    case "$p" in /run/*) [ $keep = 1 ] || [ -d "$R$p" ] || rm -f -- "$R$p" ;; esac
   done < "$list"
 fi
 env=0
@@ -142,7 +145,7 @@ type delivered struct {
 func deliveriesKey(ds []client.Delivery, ca string) string {
 	h := sha256.New()
 	for _, d := range ds {
-		_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%d\x00", d.Name, d.Mode, d.Path, d.Env, d.Version)
+		_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00", d.Name, d.Key, d.Mode, d.Path, d.Env, d.Version)
 	}
 	h.Write([]byte(ca))
 	return hex.EncodeToString(h.Sum(nil))

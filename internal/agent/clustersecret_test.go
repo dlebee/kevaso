@@ -35,6 +35,7 @@ type csAPI struct {
 	plugin   string
 	objs     map[string]*v1.ClusterSecret
 	values   map[string][]byte
+	keyed    map[string]map[string][]byte // a secret holding named keys (setKeys), in place of values
 	forbid   bool
 	worker   bool // a worker certificate: side=controller is refused, naming the side
 	rev      int64
@@ -65,6 +66,17 @@ func (s *csAPI) watchers() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.watches)
+}
+
+// setKeys is set for a secret holding named keys.
+func (s *csAPI) setKeys(name string, version int64, data map[string][]byte) {
+	s.mu.Lock()
+	if s.keyed == nil {
+		s.keyed = map[string]map[string][]byte{}
+	}
+	s.keyed[name] = data
+	s.mu.Unlock()
+	s.set(name, version, nil)
 }
 
 func (s *csAPI) set(name string, version int64, value []byte) {
@@ -225,6 +237,13 @@ func (s *csAPI) serveValue(w http.ResponseWriter, r *http.Request) {
 	worker := s.worker
 	want := s.plugin
 	val := append([]byte(nil), s.values[name]...)
+	data := map[string][]byte{v1.ValueKey: val}
+	if k, isKeyed := s.keyed[name]; isKeyed {
+		data = map[string][]byte{}
+		for key, b := range k {
+			data[key] = append([]byte(nil), b...)
+		}
+	}
 	ver := int64(0)
 	if o := s.objs[name]; o != nil {
 		ver = o.Status.Version
@@ -252,7 +271,7 @@ func (s *csAPI) serveValue(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(client.Error{Code: http.StatusNotFound, Reason: "NotFound", Message: "not found"})
 		return
 	}
-	_ = json.NewEncoder(w).Encode(client.SecretValue{Value: val, Version: ver})
+	_ = json.NewEncoder(w).Encode(client.SecretValue{Data: data, Version: ver})
 }
 
 type restartLog struct {
@@ -360,7 +379,8 @@ func (r *csRig) start() {
 	})
 }
 
-func (r *csRig) path() string { return filepath.Join(r.dir, "juicefs", "token") }
+// path is the key value's file in the secret's folder (LoadCredential loads it as token_value).
+func (r *csRig) path() string { return filepath.Join(r.dir, "juicefs", "token", v1.ValueKey) }
 
 func (r *csRig) wait(d time.Duration, what string, cond func() bool) {
 	r.t.Helper()
@@ -424,7 +444,7 @@ func TestClusterSecretFirstDelivery(t *testing.T) {
 			t.Fatalf("owner is not root: %+v", fi.Sys())
 		}
 	}
-	if _, err := os.Stat(r.path() + ".tmp"); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(r.path()), ".kvo-tmp-"+v1.ValueKey)); !os.IsNotExist(err) {
 		t.Fatalf("temporary file left behind: %v", err)
 	}
 	time.Sleep(150 * time.Millisecond)
@@ -443,7 +463,7 @@ func TestClusterSecretFirstDelivery(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if strings.Contains(string(body), r.secret) || strings.Contains(string(body), `"value"`) {
+	if strings.Contains(string(body), r.secret) || strings.Contains(string(body), `"value":`) {
 		t.Fatalf("list carries a value: %s", body)
 	}
 	if strings.Contains(r.logs.String(), r.secret) {
@@ -526,6 +546,9 @@ func TestClusterSecretRotationRewritesAndRestarts(t *testing.T) {
 // A 403 while the agent is held leaves the cached file where it is.
 func TestClusterSecretForbiddenWhileHeldKeepsTheFile(t *testing.T) {
 	r := newCSRig(t)
+	if err := os.MkdirAll(filepath.Dir(r.path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(r.path(), []byte(r.secret), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -638,6 +661,9 @@ func TestClusterSecretRecreateIsDeliveredAgain(t *testing.T) {
 // "the plugin may not read", which is what removes a file.
 func TestClusterSecretSideRefusalKeepsTheFile(t *testing.T) {
 	r := newCSRig(t)
+	if err := os.MkdirAll(filepath.Dir(r.path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(r.path(), []byte(r.secret), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -677,4 +703,40 @@ func TestClusterSecretBindingTakenAwayRemovesTheFile(t *testing.T) {
 		_, err := os.Stat(r.path())
 		return errors.Is(err, os.ErrNotExist)
 	})
+}
+
+// A cluster secret with named keys is a folder of files, one per key (LoadCredential loads each
+// as NAME_KEY). A key changed rewrites and restarts once; a key removed goes from the folder.
+func TestClusterSecretKeysFolder(t *testing.T) {
+	r := newCSRig(t)
+	dir := filepath.Dir(r.path())
+	r.api.setKeys("token", 1, map[string][]byte{"access-key": []byte("AK"), "secret-key": []byte("SK")})
+	r.start()
+	read := func(k string) string {
+		b, _ := os.ReadFile(filepath.Join(dir, k))
+		return string(b)
+	}
+	r.wait(3*time.Second, "both keys", func() bool {
+		return read("access-key") == "AK" && read("secret-key") == "SK" && len(r.restarts.units()) == 1
+	})
+	if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("folder: %v %v", fi, err)
+	}
+	r.api.setKeys("token", 2, map[string][]byte{"access-key": []byte("AK"), "secret-key": []byte("SK2"), "region": []byte("r1")})
+	r.wait(3*time.Second, "the rotated key", func() bool {
+		return read("secret-key") == "SK2" && read("region") == "r1" && len(r.restarts.units()) == 2
+	})
+	r.api.setKeys("token", 3, map[string][]byte{"secret-key": []byte("SK2"), "region": []byte("r1")})
+	r.wait(3*time.Second, "a key removed", func() bool {
+		_, err := os.Stat(filepath.Join(dir, "access-key"))
+		return os.IsNotExist(err) && len(r.restarts.units()) == 3
+	})
+	ents, _ := os.ReadDir(dir)
+	var names []string
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, ",") != "region,secret-key" {
+		t.Fatalf("folder holds %v", names)
+	}
 }

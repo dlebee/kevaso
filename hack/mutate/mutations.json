@@ -1227,8 +1227,8 @@
   "id": "G-126",
   "guard": "broker: a grant gives only the secret and mode it names",
   "file": "internal/apiserver/broker.go",
-  "find": "if gs.Name != name || !contains(modes, mode) {",
-  "replace": "if gs.Name != name {",
+  "find": "if gs.Name != name || !contains(modes, mode) || (key != \"\" && gs.Key != \"\" && gs.Key != key) {",
+  "replace": "if gs.Name != name || (key != \"\" && gs.Key != \"\" && gs.Key != key) {",
   "mutation": "mode ignored",
   "packages": [
    "./internal/apiserver",
@@ -1617,8 +1617,8 @@
   "id": "G-167",
   "guard": "apiserver: a secret's value is taken out of the object before it is stored",
   "file": "internal/apiserver/secrets.go",
-  "find": "\tvalue := sec.Spec.Value\n\tsec.Spec.Value = nil",
-  "replace": "\tvalue := sec.Spec.Value",
+  "find": "\tsp.Value, sp.Data, sp.SetData, sp.RemoveKeys = nil, nil, nil, nil\n\tvar old *v1.Secret",
+  "replace": "\tvar old *v1.Secret",
   "mutation": "value stored in the clear",
   "packages": [
    "./internal/apiserver",

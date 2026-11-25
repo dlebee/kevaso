@@ -95,7 +95,7 @@ func (s *Server) checkSiloImage(ctx context.Context, ns, what string, spec v1.Si
 	if had != nil && had.SecretRef == pull.SecretRef {
 		return nil // named already: the writer changes something else
 	}
-	if err := s.canUseSecrets(ctx, ns, map[string][]string{pull.SecretRef: nil}); err != nil {
+	if err := s.canUseSecrets(ctx, ns, map[string][]secretUse{pull.SecretRef: nil}); err != nil {
 		return fmt.Errorf("%s: pulling with secret %s: %w", what, pull.SecretRef, err)
 	}
 	return nil
@@ -115,7 +115,7 @@ func (s *Server) checkDefaultPull(ctx context.Context, t target, sec *v1.Secret)
 		return nil
 	}
 	if prev, ok := s.stored(ctx, t).(*v1.Secret); !ok || !prev.DefaultPull() {
-		if err := s.canUseSecrets(ctx, t.namespace, map[string][]string{sec.Name: nil}); err != nil {
+		if err := s.canUseSecrets(ctx, t.namespace, map[string][]secretUse{sec.Name: nil}); err != nil {
 			return fmt.Errorf("making %s the namespace's default pull secret for %s: %w", sec.Name, host, err)
 		}
 	}
@@ -185,7 +185,7 @@ func (s *Server) brokerPull(ctx context.Context, call *brokerCall, op client.Bro
 	if s.vault == nil {
 		return refuse("this server has no KMS")
 	}
-	value, ver, err := s.vault.Value(ctx, sec)
+	value, ver, err := s.vault.KeyValue(ctx, sec, v1.ValueKey) // a registry secret's password
 	if err != nil {
 		return refuse(err.Error())
 	}

@@ -120,11 +120,11 @@ func (s *Server) checkMutatedPrivileges(ctx context.Context, t target, before st
 // checkMutatedSecretValue: a secret's value is taken out before policies run (it's sealed, never
 // stored); a policy that sets one would store it in the clear.
 func checkMutatedSecretValue(obj meta.Object) error {
-	if sec, ok := obj.(*v1.Secret); ok && sec.Spec.Value != nil {
-		return errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: a mutation policy set spec.value: values are never set by policies", sec.Name)
+	if sec, ok := obj.(*v1.Secret); ok && (sec.Spec.Value != nil || sec.Spec.Data != nil || sec.Spec.SetData != nil || sec.Spec.RemoveKeys != nil) {
+		return errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: a mutation policy set spec.value, spec.data, spec.setData or spec.removeKeys: values are never set by policies", sec.Name)
 	}
-	if cs, ok := obj.(*v1.ClusterSecret); ok && cs.Spec.Value != nil {
-		return errf(http.StatusUnprocessableEntity, "Invalid", "ClusterSecret %s: a mutation policy set spec.value: values are never set by policies", cs.Name)
+	if cs, ok := obj.(*v1.ClusterSecret); ok && (cs.Spec.Value != nil || cs.Spec.Data != nil || cs.Spec.SetData != nil || cs.Spec.RemoveKeys != nil) {
+		return errf(http.StatusUnprocessableEntity, "Invalid", "ClusterSecret %s: a mutation policy set spec.value, spec.data, spec.setData or spec.removeKeys: values are never set by policies", cs.Name)
 	}
 	return nil
 }

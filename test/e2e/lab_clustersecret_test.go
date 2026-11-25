@@ -619,7 +619,7 @@ func labCredentialPath(t *testing.T, n *labNode) string {
 	if m == nil {
 		t.Fatalf("unit has no LoadCredential for %s:\n%s", labSecret, out)
 	}
-	return m[1]
+	return m[1] + "/value" // a folder, one file per key: the secret's one value is the key value
 }
 
 func labAwaitFile(t *testing.T, n *labNode, path, hash string, within time.Duration, secrets ...string) fileFact {

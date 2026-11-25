@@ -68,8 +68,9 @@ type JoinTokenResponse struct {
 // SecretValue is GET …/secrets/NAME/value: a secret's current value (only with read-value, never
 // for a write-only secret).
 type SecretValue struct {
-	Value   []byte `json:"value"`
-	Version int64  `json:"version"`
+	Value   []byte            `json:"value,omitempty"` // ?key=KEY: that key's bytes
+	Data    map[string][]byte `json:"data,omitempty"`  // without: every key
+	Version int64             `json:"version"`
 }
 
 // RecoveryKey is POST /admin/kms/recovery-key (admin socket, once): keep it offline.

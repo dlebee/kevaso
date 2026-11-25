@@ -56,7 +56,7 @@ func TestBackupAndRestoreEtcd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _, err := (&secrets.Vault{Store: e, KMS: k2, Now: time.Now}).Value(ctx, sec); err != nil || string(got) != "hunter2-hunter2" {
+	if got, _, err := (&secrets.Vault{Store: e, KMS: k2, Now: time.Now}).KeyValue(ctx, sec, v1.ValueKey); err != nil || string(got) != "hunter2-hunter2" {
 		t.Fatalf("secret in etcd after restore: %q %v", got, err)
 	}
 	// Revisions survive the snapshot, and the migration keeps them growing.
@@ -107,7 +107,7 @@ func roundTrip(t *testing.T, src string, st store.Store, snapshot func(context.C
 	}
 	vault := &secrets.Vault{Store: st, KMS: k, Now: time.Now}
 	sec := &v1.Secret{ObjectMeta: meta.ObjectMeta{Name: "db", Namespace: "payments", UID: "u1"}}
-	if _, err := vault.Put(ctx, sec, []byte("hunter2-hunter2")); err != nil {
+	if _, err := vault.Put(ctx, sec, map[string][]byte{v1.ValueKey: []byte("hunter2-hunter2")}, false); err != nil {
 		t.Fatal(err)
 	}
 	// What kvoadm init does: the recovery key, escrowed. Then a rotation re-escrows.
@@ -172,7 +172,7 @@ func roundTrip(t *testing.T, src string, st store.Store, snapshot func(context.C
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _, err := (&secrets.Vault{Store: st2, KMS: k2, Now: time.Now}).Value(ctx, sec)
+	got, _, err := (&secrets.Vault{Store: st2, KMS: k2, Now: time.Now}).KeyValue(ctx, sec, v1.ValueKey)
 	if err != nil || string(got) != "hunter2-hunter2" {
 		t.Fatalf("secret after restore: %q %v", got, err)
 	}

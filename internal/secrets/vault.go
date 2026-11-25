@@ -3,7 +3,8 @@
 // it so the key never leaves (design §8).
 //
 // Values live in an internal kind (SecretValue), next to the Secret object the API serves, which
-// never holds a value. A value is bound to its Secret's uid: deleting and re-creating a secret with
+// never holds a value. A secret's keys are sealed together, as one envelope: the plaintext is
+// EncodeData's (hack/design/secret-keys.md). A value is bound to its Secret's uid: deleting and re-creating a secret with
 // the same name never brings back the old value.
 package secrets
 
@@ -20,6 +21,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	v1 "kevaso.com/core/api/v1"
@@ -77,26 +79,73 @@ func valueKey(ns, name string) store.Key {
 	return store.Key{Kind: KindValue, Namespace: ns, Name: name}
 }
 
-// Put seals value as the secret's new version and returns the status to record. sec is the secret
-// as it is (or is about to be) stored: if it is write-only, so is the value, for good.
-func (v *Vault) Put(ctx context.Context, sec *v1.Secret, value []byte) (v1.SecretStatus, error) {
-	pub, err := PublicKey(sec.Spec.Type, value)
+// EncodeData is the plaintext a secret's keys are sealed as: JSON, keys sorted. Pure.
+func EncodeData(data map[string][]byte) []byte {
+	b, _ := json.Marshal(data) // map[string][]byte always marshals; keys come out sorted
+	return b
+}
+
+// DecodeData reads EncodeData's plaintext.
+func DecodeData(b []byte) (map[string][]byte, error) {
+	var m map[string][]byte
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, errors.New("the sealed value isn't a set of keys")
+	}
+	return m, nil
+}
+
+// Clear zeroes every value in data.
+func Clear(data map[string][]byte) {
+	for _, b := range data {
+		clear(b)
+	}
+}
+
+// Keys are data's key names, sorted, and their bytes together. Pure.
+func Keys(data map[string][]byte) ([]string, int) {
+	keys := make([]string, 0, len(data))
+	n := 0
+	for k, b := range data {
+		keys = append(keys, k)
+		n += len(b)
+	}
+	sort.Strings(keys)
+	return keys, n
+}
+
+// Put seals data (every key) as the secret's new version and returns the status to record. sec is
+// the secret as it is (or is about to be) stored: if it is write-only, so is the value, for good;
+// sticky keeps it write-only also when sec is readable now (a write that changes some keys of a
+// value written write-only, K-060).
+func (v *Vault) Put(ctx context.Context, sec *v1.Secret, data map[string][]byte, sticky bool) (v1.SecretStatus, error) {
+	pub, err := PublicKey(sec.Spec.Type, data[v1.ValueKey])
 	if err != nil {
 		return v1.SecretStatus{}, err
 	}
-	r, err := v.putRecord(ctx, sec.Namespace, sec.Name, sec.UID, registryOf(sec), value, !sec.Readable())
+	pt := EncodeData(data)
+	defer clear(pt)
+	r, err := v.putRecord(ctx, sec.Namespace, sec.Name, sec.UID, registryOf(sec), pt, sticky || !sec.Readable())
 	if err != nil {
 		return v1.SecretStatus{}, err
 	}
 	now := v.Now().UTC().Truncate(time.Second)
-	return v1.SecretStatus{Version: r.Version, UpdatedAt: &now, Size: len(value), PublicKey: pub}, nil
+	keys, size := Keys(data)
+	return v1.SecretStatus{Version: r.Version, UpdatedAt: &now, Keys: keys, Size: size, PublicKey: pub}, nil
 }
 
-// PutCluster seals value as the cluster secret's new version. The value is readable again (a
+// WrittenWriteOnly reports whether the secret's current value was written while it was write-only.
+func (v *Vault) WrittenWriteOnly(ctx context.Context, sec *v1.Secret) bool {
+	r, _, err := v.read(ctx, sec)
+	return err == nil && r.WriteOnly
+}
+
+// PutCluster seals data as the cluster secret's new version. The value is readable again (a
 // cluster-admin's --reveal, or a ClusterRole pinned to the name): it is not write-only in the vault.
 // The version is what the caller records; the clock that stamps changedAt is the server's.
-func (v *Vault) PutCluster(ctx context.Context, cs *v1.ClusterSecret, value []byte) (int64, error) {
-	r, err := v.putRecord(ctx, "", cs.Name, cs.UID, "", value, false)
+func (v *Vault) PutCluster(ctx context.Context, cs *v1.ClusterSecret, data map[string][]byte) (int64, error) {
+	pt := EncodeData(data)
+	defer clear(pt)
+	r, err := v.putRecord(ctx, "", cs.Name, cs.UID, "", pt, false)
 	if err != nil {
 		return 0, err
 	}
@@ -168,29 +217,54 @@ func (v *Vault) readAt(ctx context.Context, ns, name, uid string) (record, int64
 	return r, o.Revision, nil
 }
 
-// ClusterValue opens a cluster secret's current value. Callers decide who may have it.
-func (v *Vault) ClusterValue(ctx context.Context, cs *v1.ClusterSecret) ([]byte, int64, error) {
+// open opens a record's keys.
+func (v *Vault) open(ctx context.Context, r record, ad []byte) (map[string][]byte, error) {
+	pt, err := kms.Open(ctx, v.KMS, r.Sealed, ad)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(pt)
+	return DecodeData(pt)
+}
+
+// ClusterValue opens a cluster secret's current keys. Callers decide who may have them.
+func (v *Vault) ClusterValue(ctx context.Context, cs *v1.ClusterSecret) (map[string][]byte, int64, error) {
 	r, _, err := v.readAt(ctx, "", cs.Name, cs.UID)
 	if err != nil {
 		return nil, 0, err
 	}
-	pt, err := kms.Open(ctx, v.KMS, r.Sealed, aad("", cs.Name, cs.UID, ""))
-	return pt, r.Version, err
+	d, err := v.open(ctx, r, aad("", cs.Name, cs.UID, ""))
+	return d, r.Version, err
 }
 
-// Value opens the secret's current value. Callers decide who may have it; the vault doesn't.
-func (v *Vault) Value(ctx context.Context, sec *v1.Secret) ([]byte, int64, error) {
+// Value opens the secret's current keys. Callers decide who may have them; the vault doesn't.
+func (v *Vault) Value(ctx context.Context, sec *v1.Secret) (map[string][]byte, int64, error) {
 	r, _, err := v.read(ctx, sec)
 	if err != nil {
 		return nil, 0, err
 	}
-	pt, err := kms.Open(ctx, v.KMS, r.Sealed, aad(sec.Namespace, sec.Name, sec.UID, registryOf(sec)))
-	return pt, r.Version, err
+	d, err := v.open(ctx, r, aad(sec.Namespace, sec.Name, sec.UID, registryOf(sec)))
+	return d, r.Version, err
+}
+
+// KeyValue opens one key of the secret (ErrNoValue when it has no such key).
+func (v *Vault) KeyValue(ctx context.Context, sec *v1.Secret, key string) ([]byte, int64, error) {
+	d, ver, err := v.Value(ctx, sec)
+	if err != nil {
+		return nil, 0, err
+	}
+	b, ok := d[key]
+	delete(d, key)
+	Clear(d)
+	if !ok {
+		return nil, 0, ErrNoValue
+	}
+	return b, ver, nil
 }
 
 // PersonValue is Value for a person reading it back: refused (ErrWriteOnly) for a value that was
 // written while the secret was write-only, even if the secret has become readable since.
-func (v *Vault) PersonValue(ctx context.Context, sec *v1.Secret) ([]byte, int64, error) {
+func (v *Vault) PersonValue(ctx context.Context, sec *v1.Secret) (map[string][]byte, int64, error) {
 	r, _, err := v.read(ctx, sec)
 	if err != nil {
 		return nil, 0, err
@@ -198,8 +272,8 @@ func (v *Vault) PersonValue(ctx context.Context, sec *v1.Secret) ([]byte, int64,
 	if r.WriteOnly {
 		return nil, 0, ErrWriteOnly
 	}
-	pt, err := kms.Open(ctx, v.KMS, r.Sealed, aad(sec.Namespace, sec.Name, sec.UID, registryOf(sec)))
-	return pt, r.Version, err
+	d, err := v.open(ctx, r, aad(sec.Namespace, sec.Name, sec.UID, registryOf(sec)))
+	return d, r.Version, err
 }
 
 // Forget removes a deleted secret's value and signing state.
@@ -339,7 +413,7 @@ func (v *Vault) Sign(ctx context.Context, sec *v1.Secret, req SignRequest) ([]by
 	if !sec.KeyType() {
 		return nil, fmt.Errorf("%s/%s isn't a signing key", sec.Namespace, sec.Name)
 	}
-	value, _, err := v.Value(ctx, sec)
+	value, _, err := v.KeyValue(ctx, sec, v1.ValueKey)
 	if err != nil {
 		return nil, err
 	}

@@ -72,7 +72,11 @@ func TestClusterSecretCommands(t *testing.T) {
 			stored.Status.Version = 2
 			_ = json.NewEncoder(w).Encode(stored)
 		case r.Method == http.MethodGet && r.URL.Path == "/apis/kevaso/v1/clustersecrets/bucket/value":
-			_ = json.NewEncoder(w).Encode(client.SecretValue{Value: []byte("s3cret-bytes"), Version: 2})
+			if r.URL.Query().Get("key") == "user" {
+				_ = json.NewEncoder(w).Encode(client.SecretValue{Value: []byte("alice"), Version: 2})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(client.SecretValue{Data: map[string][]byte{v1.ValueKey: []byte("s3cret-bytes")}, Version: 2})
 		case r.Method == http.MethodGet && r.URL.Path == "/apis/kevaso/v1/clustersecrets":
 			item, _ := json.Marshal(stored)
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []json.RawMessage{item}, "metadata": map[string]string{"resourceVersion": "1"}})

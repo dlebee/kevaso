@@ -40,15 +40,15 @@ func TestPutValueVersions(t *testing.T) {
 	if v.Has(ctx, s) {
 		t.Fatal("has a value before Put")
 	}
-	st, err := v.Put(ctx, s, []byte("key-1"))
+	st, err := v.Put(ctx, s, map[string][]byte{v1.ValueKey: []byte("key-1")}, false)
 	if err != nil || st.Version != 1 || st.Size != 5 {
 		t.Fatalf("put: %+v %v", st, err)
 	}
-	st, _ = v.Put(ctx, s, []byte("key-2"))
+	st, _ = v.Put(ctx, s, map[string][]byte{v1.ValueKey: []byte("key-2")}, false)
 	if st.Version != 2 {
 		t.Fatalf("rotation: version %d", st.Version)
 	}
-	got, ver, err := v.Value(ctx, s)
+	got, ver, err := v.KeyValue(ctx, s, v1.ValueKey)
 	if err != nil || string(got) != "key-2" || ver != 2 {
 		t.Fatalf("value = %q v%d %v", got, ver, err)
 	}
@@ -61,10 +61,10 @@ func TestPutValueVersions(t *testing.T) {
 	}
 	// A new secret with the same name (another uid) doesn't get the old value.
 	again := secret("infura", "u2", "")
-	if _, _, err := v.Value(ctx, again); !errors.Is(err, ErrNoValue) {
+	if _, _, err := v.KeyValue(ctx, again, v1.ValueKey); !errors.Is(err, ErrNoValue) {
 		t.Fatalf("re-created secret read the old value: %v", err)
 	}
-	if st, _ := v.Put(ctx, again, []byte("fresh")); st.Version != 1 {
+	if st, _ := v.Put(ctx, again, map[string][]byte{v1.ValueKey: []byte("fresh")}, false); st.Version != 1 {
 		t.Fatalf("re-created secret starts at version %d", st.Version)
 	}
 	v.Forget(ctx, "web3", "infura")
@@ -99,7 +99,7 @@ func TestSign(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		st, err := v.Put(ctx, s, key)
+		st, err := v.Put(ctx, s, map[string][]byte{v1.ValueKey: key}, false)
 		if err != nil || st.PublicKey == "" {
 			t.Fatalf("%s: put %+v %v", typ, st, err)
 		}
@@ -138,7 +138,7 @@ func TestSlashingProtection(t *testing.T) {
 	v, _ := newVault(t)
 	s := secret("validator-1-key", "u1", v1.SecretEd25519)
 	key, _ := Generate(v1.SecretEd25519)
-	if _, err := v.Put(ctx, s, key); err != nil {
+	if _, err := v.Put(ctx, s, map[string][]byte{v1.ValueKey: key}, false); err != nil {
 		t.Fatal(err)
 	}
 	slot := func(n int64) *int64 { return &n }
@@ -173,8 +173,8 @@ func TestRewrapAll(t *testing.T) {
 	ctx := context.Background()
 	v, l := newVault(t)
 	a, b := secret("a", "u1", ""), secret("b", "u2", "")
-	_, _ = v.Put(ctx, a, []byte("va"))
-	_, _ = v.Put(ctx, b, []byte("vb"))
+	_, _ = v.Put(ctx, a, map[string][]byte{v1.ValueKey: []byte("va")}, false)
+	_, _ = v.Put(ctx, b, map[string][]byte{v1.ValueKey: []byte("vb")}, false)
 	if _, err := l.Rotate(); err != nil {
 		t.Fatal(err)
 	}
@@ -186,12 +186,46 @@ func TestRewrapAll(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range []*v1.Secret{a, b} {
-		got, ver, err := v.Value(ctx, s)
+		got, ver, err := v.KeyValue(ctx, s, v1.ValueKey)
 		if err != nil || !strings.HasPrefix(string(got), "v") || ver != 1 {
 			t.Fatalf("%s after rotation: %q v%d %v", s.Name, got, ver, err)
 		}
 	}
 	if n, _ := v.RewrapAll(ctx); n != 0 {
 		t.Fatalf("second rewrap changed %d", n)
+	}
+}
+
+// Keys are sealed together; status lists their names; a write that changes some keys of a value
+// written write-only stays write-only for people (sticky), whatever the secret says now.
+func TestPutKeysAndStickyWriteOnly(t *testing.T) {
+	ctx := context.Background()
+	v, _ := newVault(t)
+	s := secret("db", "u1", "")
+	st, err := v.Put(ctx, s, map[string][]byte{"username": []byte("app"), "password": []byte("pw")}, false)
+	if err != nil || strings.Join(st.Keys, ",") != "password,username" || st.Size != 5 || st.Version != 1 {
+		t.Fatalf("put: %+v %v", st, err)
+	}
+	d, _, err := v.PersonValue(ctx, s)
+	if err != nil || string(d["password"]) != "pw" || len(d) != 2 {
+		t.Fatalf("read: %v %v", d, err)
+	}
+	if b, _, err := v.KeyValue(ctx, s, "username"); err != nil || string(b) != "app" {
+		t.Fatalf("one key: %q %v", b, err)
+	}
+	if _, _, err := v.KeyValue(ctx, s, "nope"); !errors.Is(err, ErrNoValue) {
+		t.Fatalf("missing key: %v", err)
+	}
+	if v.WrittenWriteOnly(ctx, s) {
+		t.Fatal("written readable")
+	}
+	if _, err := v.Put(ctx, s, map[string][]byte{"password": []byte("pw2")}, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := v.PersonValue(ctx, s); !errors.Is(err, ErrWriteOnly) || !v.WrittenWriteOnly(ctx, s) {
+		t.Fatalf("sticky: %v", err)
+	}
+	if b, _, err := v.KeyValue(ctx, s, "password"); err != nil || string(b) != "pw2" { // silos still use it
+		t.Fatalf("silos' read: %q %v", b, err)
 	}
 }
