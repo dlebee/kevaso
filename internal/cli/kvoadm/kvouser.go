@@ -26,7 +26,9 @@ const kvoUserRole = "editor"
 // kvoUser sets up daily kvo for name: a namespace to start in (default), a ClusterRoleBinding of
 // the editor role to the name, a user certificate (role user) signed over conn, and the kvo
 // context that uses it. kvo never holds the admin certificate.
-func kvoUser(ctx context.Context, c *client.Client, run runner, name, cluster, server string, ca []byte, cfgPath string, say func(string, ...any)) error {
+// target is how kvoadm reaches the system node again (its name in the cluster folder), for the
+// renewal hint: the server's address with root@ is wrong where root can't log in over SSH.
+func kvoUser(ctx context.Context, c *client.Client, run runner, name, cluster, server, target string, ca []byte, cfgPath string, say func(string, ...any)) error {
 	ns := &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "default"}}
 	if err := c.Create(ctx, ns); err != nil && !client.IsAlreadyExists(err) {
 		return err
@@ -47,7 +49,7 @@ func kvoUser(ctx context.Context, c *client.Client, run runner, name, cluster, s
 	}
 	say("kvo context %q written to %s: user %s, %s in every namespace (namespace default to start in)", cluster, cfgPath, name, kvoUserRole)
 	if cert, err := pki.ParseCertificatePEM(certPEM); err == nil {
-		say("kvo's certificate is valid until %s. After that, run: %s", cert.NotAfter.UTC().Format("2006-01-02"), kvoconfig.CertRecovery(name, server))
+		say("kvo's certificate is valid until %s. After that, run: %s", cert.NotAfter.UTC().Format("2006-01-02"), KvoRenewHint(target, name, server))
 	}
 	return nil
 }
@@ -121,3 +123,12 @@ func takeClusterLeading(args []string) ([]string, string, error) {
 type exitCode int
 
 func (e exitCode) Error() string { return fmt.Sprintf("exit %d", int(e)) }
+
+// KvoRenewHint is the command that renews kvo's certificate, as kvoadm prints it (pure): by the
+// system node's name when kvoadm has one, else what kvo itself would say.
+func KvoRenewHint(target, user, server string) string {
+	if target == "" {
+		return kvoconfig.CertRecovery(user, server)
+	}
+	return "kvoadm users resign " + target + " --name " + user + " --kvo"
+}

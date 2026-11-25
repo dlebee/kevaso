@@ -39,10 +39,19 @@ const installedNow = `dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' 2>/dev
 // the script's.
 func Recording(install string) string { return recording(install, InstalledFile) }
 
+// The snapshot of what was there before is kept next to the file, one per package list, until the
+// record is written: a kevasod restart that cuts the script off after apt-get has installed but
+// before the record is written leaves the snapshot, and the next run of the same install (when
+// kevasod starts again) counts from it. Without that, what apt-get had installed was found already
+// there and never recorded, and a reset left it (found on a real machine: docker.io, with its
+// firewall tables and IP forwarding). A snapshot older than an hour is not trusted: what came since
+// may be the owner's.
 func recording(install, file string) string {
 	return `d=$(dirname ` + file + `); mkdir -p "$d" || exit 1
-b=$(mktemp) || exit 1
-` + installedNow + ` > "$b"
+b=` + file + `.before-$(printf '%s ' "$@" | cksum | cut -d' ' -f1)
+if [ -z "$(find "$b" -mmin -60 2>/dev/null)" ]; then
+` + installedNow + ` > "$b.tmp" && mv "$b.tmp" "$b" || exit 1
+fi
 ` + install + `
 rc=$?
 ` + installedNow + ` | LC_ALL=C comm -13 "$b" - >> ` + file + `

@@ -201,7 +201,11 @@ func usersResign(ctx context.Context, args []string, stdin io.Reader, stdout io.
 				return fmt.Errorf("%w (run kvoadm users resign %s --name %s first, for your admin certificate)", err, o.Address, name)
 			}
 			say := func(f string, a ...any) { _, _ = fmt.Fprintf(stdout, "→ "+f+"\n", a...) }
-			return kvoUser(ctx, admin, conn, name, kc.Cluster(), kc.Server(), kc.CAPEM(), path, say)
+			target := o.Address // a host's name, as typed
+			if !kc.HasHost(o.Address) && o.User != "" {
+				target = o.User + "@" + o.Address
+			}
+			return kvoUser(ctx, admin, conn, name, kc.Cluster(), kc.Server(), target, kc.CAPEM(), path, say)
 		}
 		if c.Certificate == "" || c.Key == "" {
 			return fmt.Errorf("kvo context %s in %s has no certificate to replace", kc.Cluster(), path)
