@@ -27,7 +27,8 @@ func TestClusterSecretUsage(t *testing.T) {
 		{[]string{"create", "clustersecret", "bucket", "--plugin", "juicefs"}, "unknown flag --plugin"},
 		{[]string{"create", "clustersecret", "bucket", "--from-literal", "x", "--i-know"}, "comes from --from-file"},
 		{[]string{"set"}, "usage: kvo set clustersecret"},
-		{[]string{"set", "secret", "bucket"}, "usage: kvo set clustersecret"},
+		{[]string{"set", "secret", "bucket"}, "kvo secret set NAME"}, // run 15: was the clustersecret usage
+		{[]string{"set", "secrets", "bucket"}, "usage: kvo set clustersecret"},
 		{[]string{"set", "clustersecret", "bucket"}, "needs the new value"},
 		{[]string{"get", "clustersecret", "--reveal"}, "--reveal works with one clustersecret"},
 	} {
