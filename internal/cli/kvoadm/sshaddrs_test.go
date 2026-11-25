@@ -219,6 +219,16 @@ func TestDialHostByNameUsesTheClusterFolder(t *testing.T) {
 	if got := runOn(t, conn); got != "home1" {
 		t.Fatalf("connected to %q", got)
 	}
+	// The caller learns who and where it logged in: o itself has only the name, and user root
+	// (found on a real Mac: kvoadm reset NAME refused, "log in to the Mac as its own user").
+	conn2, used, _, err := dialHostUsed(context.Background(), o, nil, strings.NewReader(""), &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn2.Close() }()
+	if want := "me@" + home.addr; used.User+"@"+net.JoinHostPort(used.Address, strconv.Itoa(used.SSHPort)) != want {
+		t.Fatalf("used %s@%s:%d, want %s", used.User, used.Address, used.SSHPort, want)
+	}
 }
 
 // kvoadm host ssh lists, adds and removes this laptop's addresses for a host.

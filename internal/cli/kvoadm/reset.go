@@ -62,11 +62,13 @@ func resetCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer
 		return errors.New("--ssh-key PATH: reset logs in with a key (no password logins)")
 	}
 	in := bufio.NewReader(stdin)
-	conn, _, err := dialHost(ctx, o.InitOptions, in, stdin, out)
+	conn, used, _, err := dialHostUsed(ctx, o.InitOptions, in, stdin, out)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
+	// By a host's name, who and where it logged in (a Mac's reset needs its own user, not root).
+	o.User, o.Address, o.SSHPort = used.User, used.Address, used.SSHPort
 	_, _ = fmt.Fprintf(out, "→ connected to %s@%s (host key %s)\n", o.User, o.Address, conn.Fingerprint)
 	if goos, err := conn.OS(ctx); err == nil && goos == "darwin" {
 		return runMacReset(ctx, conn, o, in, out)

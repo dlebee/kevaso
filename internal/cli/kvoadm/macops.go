@@ -156,7 +156,10 @@ func reconnectMac(ctx context.Context, conn *sshboot.Conn, server string, c *cli
 		return name, err
 	}
 	since := time.Now()
-	if changed {
+	// Already repointed (an earlier reconnect got this far) but not loaded: launch it anyway, or
+	// a second try waits for a daemon nothing started.
+	_, notLoaded := conn.Run(ctx, "launchctl print system/"+sshboot.Quote(MacLabel)+" >/dev/null 2>&1", nil)
+	if changed || notLoaded != nil {
 		if err := conn.InstallLaunchDaemon(ctx, MacLabel, []byte(updated)); err != nil {
 			return name, err
 		}
