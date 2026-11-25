@@ -423,7 +423,14 @@ func (a *Agent) Run(ctx context.Context) {
 		// while cut off must not make the watcher forget the last contact, or the silos.
 		a.fencePrev, _ = fence.Read(a.FenceDir)
 	}
-	go a.fence(ctx, e)
+	// Run returns only once the fence loop has: it writes the fence record, and a write still under
+	// way as Run returns could leave it half-replaced (and a test's folder removed under it).
+	fenceEnded := make(chan struct{})
+	go func() {
+		defer close(fenceEnded)
+		a.fence(ctx, e)
+	}()
+	defer func() { <-fenceEnded }()
 	go a.watchControlPlane(ctx)
 	go a.resync(ctx, e)
 	go func() { // after the first sync, look for runtime silos the API no longer knows

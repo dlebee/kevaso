@@ -279,7 +279,8 @@ func TestAssess(t *testing.T) {
 }
 
 func TestAssessAsksTheKevasodBinary(t *testing.T) {
-	facts := map[string]string{"os": "Ubuntu 26.04.1 LTS", "os_id": "ubuntu", "os_version": "26.04", "arch": "x86_64", "uid": "0"}
+	// An Ubuntu kvoadm's own list doesn't name, so the binary's list is what makes it ok.
+	facts := map[string]string{"os": "Ubuntu 25.10", "os_id": "ubuntu", "os_version": "25.10", "arch": "x86_64", "uid": "0"}
 	osLine := func(sup Supported) CheckResult {
 		for _, r := range AssessWith(facts, sup) {
 			if r.What == "operating system" {
@@ -289,9 +290,9 @@ func TestAssessAsksTheKevasodBinary(t *testing.T) {
 		t.Fatal("no operating system line")
 		return CheckResult{}
 	}
-	// A kevasod that lists 26.04: ok, whatever kvoadm's own build says.
+	// A kevasod that lists 25.10: ok, whatever kvoadm's own build says.
 	bin := filepath.Join(t.TempDir(), "kevasod")
-	if err := os.WriteFile(bin, []byte("\x7fELF…"+platform.Marker+"ubuntu/24.04,ubuntu/26.04;…"), 0o755); err != nil {
+	if err := os.WriteFile(bin, []byte("\x7fELF…"+platform.Marker+"ubuntu/24.04,ubuntu/25.10;…"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	sup := supportedFor(bin)

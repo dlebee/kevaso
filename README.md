@@ -6,7 +6,10 @@ Kubernetes-style. `kevasod` runs on every host, `kvo` is for users, `kvoadm` for
 **New here? Read [the guide](https://dlebee.github.io/kevaso-docs/)**: from an empty machine to a shared
 cluster, one explained step at a time. (`docs/` in this repo is for people working on Kevaso itself.)
 
-**Status:** early (M0–M12 of [MILESTONES.md](MILESTONES.md) done). What exists today:
+**Status:** `v0.1.0` release candidates. Each [release](https://github.com/dlebee/kevaso/releases)
+has `kvo` and `kvoadm` for macOS, Linux and Windows, and `kevasod` for Linux (Ubuntu 24.04 and 26.04,
+Debian 12) and for Macs (Apple Silicon, macOS 26), signed, with checksums. What's built and how far
+each part is proven: [MILESTONES.md](MILESTONES.md). What exists today:
 
 - setup in explicit steps ([guide](https://dlebee.github.io/kevaso-docs/setup/prepare/)): you make Kevaso's SSH key and
   check the machine's fingerprint, `kvoadm init` first looks without changing anything (`--dry-run` stops there), then
@@ -61,6 +64,10 @@ cluster, one explained step at a time. (`docs/` in this repo is for people worki
   reaches (`curl -H 'Kevaso-Local: 1' http://169.254.42.1/v1/secrets/NAME`, ADR 0009); nothing of
   Kevaso's is installed in a silo; signing keys stay outside (`Sign`, with slashing protection). Per-secret RBAC (`list`, `use`, `read-value`, `write`, by name or
   label), write-only secrets, and rotation that reaches every silo using a secret;
+- Mac workers (ADR 0012): a Mac joins with `kvoadm host add` (a signed, notarized `kevasod` under
+  launchd) and runs macOS silos with the `tart` runtime, at most two at a time (Apple's licence),
+  isolated from each other and from the Mac's network; it can sit behind NAT and dials out like any
+  worker. Xcode and the iOS Simulator run inside such a silo;
 - OpenShell runtimes: `runtime: openshell` (NVIDIA OpenShell's microVM, no network card) and
   `openshell-container` (its Docker driver, no KVM needed). kevasod installs the pinned release and runs
   its gateways under their own users in locked-down units, one per host, namespace or silo

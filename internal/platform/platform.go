@@ -18,7 +18,8 @@ const Marker = "kevaso-platforms/v1:"
 // An OS is added here once the whole end-to-end suite passed on it (test/e2e/METAL.md).
 // macos/26: ADR 0012's steps passed on macOS 26 (one Mac and two Macs in a Linode cluster,
 // provider-linode TestMacWorkerJoinsALinodeCluster and TestTwoMacWorkersShareALinodeCluster).
-const stamp = Marker + "ubuntu/24.04,debian/12,macos/26;"
+// ubuntu/26.04: the bare-metal suite (test/e2e/METAL.md) and the two-machine runs passed on it.
+const stamp = Marker + "ubuntu/24.04,ubuntu/26.04,debian/12,macos/26;"
 
 // Platform is one operating system release.
 type Platform struct{ ID, Version string }

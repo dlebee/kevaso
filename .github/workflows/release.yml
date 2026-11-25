@@ -269,7 +269,7 @@ jobs:
           | \`kvo-$VERSION-windows-amd64.zip\`, \`kvoadm-$VERSION-windows-amd64.zip\` | Windows x64: signed with Trusted Signing |
           | \`kvo-$VERSION-linux-amd64.tar.gz\`, \`kvoadm-$VERSION-linux-amd64.tar.gz\` | Linux x86-64, unsigned |
           | \`kvo-$VERSION-linux-arm64.tar.gz\`, \`kvoadm-$VERSION-linux-arm64.tar.gz\` | Linux arm64, unsigned |
-          | \`kevasod-$VERSION-linux-amd64.tar.gz\`, \`kevasod-$VERSION-linux-arm64.tar.gz\` | the host daemon for Linux (Ubuntu 24.04, Debian 12), unsigned |
+          | \`kevasod-$VERSION-linux-amd64.tar.gz\`, \`kevasod-$VERSION-linux-arm64.tar.gz\` | the host daemon for Linux (Ubuntu 24.04 and 26.04, Debian 12), unsigned |
           | \`kevasod-$VERSION-darwin-arm64.zip\` | the host daemon for a Mac worker (macOS 26, Apple silicon; the \`tart\` runtime): signed with a Developer ID and notarized |
           | \`SHA256SUMS\` | SHA-256 of every file above: \`sha256sum -c SHA256SUMS --ignore-missing\` |
 
