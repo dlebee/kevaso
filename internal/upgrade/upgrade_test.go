@@ -21,10 +21,16 @@ func TestParseCompare(t *testing.T) {
 	if _, err := Parse("1.2"); err == nil {
 		t.Fatal("parsed 1.2")
 	}
+	for _, c := range [][2]string{{"rc.9", "rc.10"}, {"1", "alpha"}, {"alpha", "beta"}, {"alpha", "alpha.1"}, {"rc.1.x", "rc.1.y"}} {
+		if comparePre(c[0], c[1]) != -1 || comparePre(c[1], c[0]) != 1 || comparePre(c[0], c[0]) != 0 {
+			t.Errorf("pre-release %s < %s", c[0], c[1])
+		}
+	}
 	if v("v0.4.1").String() != "v0.4.1" || v("0.4.1-rc.1").String() != "v0.4.1-rc.1" {
 		t.Fatal("round trip")
 	}
-	order := []string{"v0.3.9", "v0.4.0-rc.1", "v0.4.0", "v0.4.1", "v1.0.0"}
+	order := []string{"v0.3.9", "v0.4.0-rc", "v0.4.0-rc.1", "v0.4.0-rc.2", "v0.4.0-rc.9", "v0.4.0-rc.10", "v0.4.0-rc.10.1",
+		"v0.4.0-rc.11", "v0.4.0", "v0.4.1", "v1.0.0"}
 	for i := 1; i < len(order); i++ {
 		if v(order[i-1]).Compare(v(order[i])) != -1 || v(order[i]).Compare(v(order[i-1])) != 1 {
 			t.Fatalf("%s < %s", order[i-1], order[i])
@@ -40,8 +46,10 @@ func TestUpgradeAllowed(t *testing.T) {
 		{"v0.4.0", "v0.4.0", true},
 		{"v0.4.0", "v0.4.3", true},
 		{"v0.4.3", "v0.5.0", true},
-		{"v0.4.0", "v0.6.0", false}, // skips a minor
-		{"v0.5.0", "v0.4.9", false}, // downgrade
+		{"v0.4.0", "v0.6.0", false},           // skips a minor
+		{"v0.5.0", "v0.4.9", false},           // downgrade
+		{"v0.1.0-rc.9", "v0.1.0-rc.10", true}, // run 15: was refused as a downgrade (text order)
+		{"v0.1.0-rc.10", "v0.1.0-rc.9", false},
 		{"v0.9.0", "v1.0.0", false}, // major
 	} {
 		if err := UpgradeAllowed(v(c.from), v(c.to)); (err == nil) != c.ok {

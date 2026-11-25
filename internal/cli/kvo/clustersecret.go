@@ -50,6 +50,9 @@ func createClusterSecret(ctx context.Context, c *client.Client, o opts, stdin io
 }
 
 func setClusterSecret(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdout io.Writer) error {
+	if len(o.args) >= 1 && o.args[0] == "secret" {
+		return errors.New("a namespace secret changes with kvo secret set NAME (--from-file FILE|- | --from-file KEY=FILE… | --remove-key KEY…); kvo set is for a clustersecret")
+	}
 	if len(o.args) != 2 || o.args[0] != "clustersecret" {
 		return errors.New("usage: kvo set clustersecret NAME (--from-file FILE|- | --from-file KEY=FILE… | --remove-key KEY…)")
 	}
