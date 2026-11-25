@@ -7,6 +7,7 @@
 #   kvo-VERSION-<goos>-<goarch>.zip / .tar.gz      kvo, LICENSE, NOTICE, README.md
 #   kvoadm-VERSION-<goos>-<goarch>.zip / .tar.gz   kvoadm, LICENSE, NOTICE, README.md
 #   kevasod-VERSION-linux-<goarch>.tar.gz          kevasod, LICENSE, NOTICE
+#   kevasod-VERSION-darwin-arm64.zip               kevasod for a Mac worker, LICENSE, NOTICE
 #
 # macOS and Windows get .zip, Linux .tar.gz. Each archive holds one top-level directory named like
 # the archive. Binaries are packaged as they are, so sign them before this runs.

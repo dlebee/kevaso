@@ -4,7 +4,7 @@
 #   hack/release/build.sh VERSION GOOS GOARCH DIR
 #
 # What each platform ships:
-#   darwin/*   kvo, kvoadm
+#   darwin/*   kvo, kvoadm, and kevasod on arm64 (a Mac worker: Apple silicon only, ADR 0012)
 #   windows/*  kvo.exe, kvoadm.exe
 #   linux/*    kvo, kvoadm, kevasod
 #
@@ -23,7 +23,10 @@ if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
 fi
 
 case "$GOOS_T" in
-darwin) cmds=(kvo kvoadm) ;;
+darwin)
+	cmds=(kvo kvoadm)
+	[ "$GOARCH_T" = arm64 ] && cmds+=(kevasod)
+	;;
 windows) cmds=(kvo kvoadm) ;;
 linux) cmds=(kvo kvoadm kevasod) ;;
 *) echo "no release for GOOS=$GOOS_T" >&2; exit 1 ;;
