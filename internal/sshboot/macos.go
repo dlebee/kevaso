@@ -41,7 +41,18 @@ func (c *Conn) InstallLaunchDaemon(ctx context.Context, label string, plist []by
 	if err := c.Upload(ctx, path, plist, 0o644); err != nil {
 		return err
 	}
-	_, err := c.Run(ctx, "chown root:wheel "+Quote(path)+" && (launchctl bootout system/"+Quote(label)+" 2>/dev/null; true) && "+
-		"launchctl bootstrap system "+Quote(path)+" && launchctl enable system/"+Quote(label)+" && launchctl kickstart -k system/"+Quote(label), nil)
+	_, err := c.Run(ctx, "chown root:wheel "+Quote(path)+" && "+RelaunchScript(label, path), nil)
 	return err
+}
+
+// RelaunchScript loads the daemon at path under label, replacing a loaded one. launchctl bootout
+// returns before the old daemon is gone: a bootstrap right after it fails with "Bootstrap failed:
+// 5: Input/output error" and leaves nothing loaded. So it waits (30 s at most) until the label is
+// no longer loaded, and tries bootstrap a few times before giving up.
+func RelaunchScript(label, path string) string {
+	l, p := Quote(label), Quote(path)
+	return "(launchctl bootout system/" + l + " 2>/dev/null; true); " +
+		"i=0; while launchctl print system/" + l + " >/dev/null 2>&1 && [ $i -lt 30 ]; do sleep 1; i=$((i+1)); done; " +
+		"n=0; until launchctl bootstrap system " + p + "; do n=$((n+1)); [ $n -ge 5 ] && exit 1; sleep 2; done; " +
+		"launchctl enable system/" + l + " && launchctl kickstart -k system/" + l
 }

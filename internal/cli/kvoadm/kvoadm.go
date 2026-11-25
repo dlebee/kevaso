@@ -1078,6 +1078,13 @@ func waitHostReady(ctx context.Context, c *client.Client, name string, d time.Du
 // dialHost connects to a host the way kvoadm does: the host key pinned or confirmed first, then a
 // key or the password (asked once).
 func dialHost(ctx context.Context, o InitOptions, in *bufio.Reader, stdin io.Reader, out io.Writer) (*sshboot.Conn, bool, error) {
+	conn, _, usedPassword, err := dialHostUsed(ctx, o, in, stdin, out)
+	return conn, usedPassword, err
+}
+
+// dialHostUsed is dialHost that also returns the options it connected with: for a host's name,
+// the user, address and port of the address that answered (o has only the name, and user root).
+func dialHostUsed(ctx context.Context, o InitOptions, in *bufio.Reader, stdin io.Reader, out io.Writer) (*sshboot.Conn, InitOptions, bool, error) {
 	if !o.direct {
 		// The cluster folder knows this target: a host's name tries the host's addresses in order;
 		// one of its addresses gets the host key pinned for it.
@@ -1092,8 +1099,8 @@ func dialHost(ctx context.Context, o InitOptions, in *bufio.Reader, stdin io.Rea
 						h = &got
 					}
 				}
-				conn, _, err := dialHostAt(ctx, kc, h, o, stdin, out)
-				return conn, false, err
+				conn, used, err := dialHostAt(ctx, kc, h, o, stdin, out)
+				return conn, used, false, err
 			}
 			if name, ok := kc.HostFor(net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))); ok && o.HostKey == "" {
 				o.HostKey = kc.HostKey(name)
@@ -1116,10 +1123,10 @@ func dialHost(ctx context.Context, o InitOptions, in *bufio.Reader, stdin io.Rea
 	if o.SSHKey != "" {
 		b, err := os.ReadFile(o.SSHKey)
 		if err != nil {
-			return nil, false, err
+			return nil, o, false, err
 		}
 		if auth.Signer, err = loadKey(o.SSHKey, b, stdin, out); err != nil {
-			return nil, false, err
+			return nil, o, false, err
 		}
 	} else {
 		usedPassword = true
@@ -1136,10 +1143,10 @@ func dialHost(ctx context.Context, o InitOptions, in *bufio.Reader, stdin io.Rea
 	addr := net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))
 	conn, err := sshboot.Connect(ctx, sshboot.Target{Addr: addr, User: o.User}, policy, auth)
 	if err != nil {
-		return nil, false, err
+		return nil, o, false, err
 	}
 	conn.Sudo = o.User != "root"
-	return conn, usedPassword, nil
+	return conn, o, usedPassword, nil
 }
 
 // loadKey reads the SSH key kvoadm logs in with. A key with a passphrase (as it should have) is
