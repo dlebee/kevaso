@@ -248,14 +248,22 @@ func authorizes(file, pub string) bool {
 // AuthorizedKeysRead prints the login user's authorized_keys (nothing when there is none). It
 // runs as root (kvoadm's connection uses sudo for another login).
 func AuthorizedKeysRead(user string) string {
-	return "h=$(getent passwd " + sshboot.Quote(user) + " | cut -d: -f6); [ -n \"$h\" ] || exit 3; cat \"$h/.ssh/authorized_keys\" 2>/dev/null; true"
+	return homeOf(user) + "[ -n \"$h\" ] || exit 3; cat \"$h/.ssh/authorized_keys\" 2>/dev/null; true"
+}
+
+// homeOf sets $h to user's home folder: getent on Linux, the directory service on a Mac (macOS
+// has no getent).
+func homeOf(user string) string {
+	u := sshboot.Quote(user)
+	return "h=$(getent passwd " + u + " 2>/dev/null | cut -d: -f6); " +
+		"[ -n \"$h\" ] || h=$(dscl . -read /Users/" + u + " NFSHomeDirectory 2>/dev/null | awk '{print $2}'); "
 }
 
 // AuthorizedKeysWrite replaces the login user's authorized_keys with stdin, atomically, owned by
 // the user, mode 0600.
 func AuthorizedKeysWrite(user string) string {
 	u := sshboot.Quote(user)
-	return "set -e; h=$(getent passwd " + u + " | cut -d: -f6); [ -n \"$h\" ]; g=$(id -g " + u + "); " +
+	return "set -e; " + homeOf(user) + "[ -n \"$h\" ]; g=$(id -g " + u + "); " +
 		"install -d -m 0700 -o " + u + " -g \"$g\" \"$h/.ssh\"; t=\"$h/.ssh/authorized_keys.kevaso\"; cat > \"$t\"; " +
 		"chown " + u + ":\"$g\" \"$t\"; chmod 0600 \"$t\"; mv \"$t\" \"$h/.ssh/authorized_keys\""
 }

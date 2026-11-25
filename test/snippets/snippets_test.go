@@ -36,6 +36,7 @@ var sites = map[string]string{
 	"builtin/kri/container/runtime.go RunInit":                 "dynamic: a silo's own init step (spec.init), the user's script",
 	"builtin/kri/hostexec/sweep.go Held":                       "holdScript: holds a sandbox's processes",
 	"builtin/kri/openshell/install.go Install":                 "docker check, apt-get install of docker and the gateway",
+	"builtin/kri/tart/install.go Install":                      "softnetCheck: is softnet setuid root, or allowed by sudo -n (a constant, sh -n checked; a Mac's sh)",
 	"builtin/kri/openshell/runtime.go Exec":                    "hostexec.SweepScript in the sandbox",
 	"internal/agent/agent.go command":                          "dynamic: a silo's own init step",
 	"internal/agent/deliveries.go execIn":                      "a constant script, dynamic arguments",

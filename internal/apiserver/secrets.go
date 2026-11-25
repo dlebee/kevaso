@@ -715,6 +715,9 @@ func (s *Server) checkContainerFit(ctx context.Context, t target, silo *v1.Silo)
 		if len(silo.Spec.Command()) > 0 {
 			problems = append(problems, "command is for container silos (docker, podman); "+rt+" boots its image")
 		}
+		if rt == v1.RuntimeTart {
+			problems = append(problems, macSiloProblems(silo)...)
+		}
 		if rt == "cloud-hypervisor" {
 			problems = append(problems, s.vmVolumeProblems(silo)...)
 		} else if len(silo.Spec.Volumes) > 0 && !policy.SelfEnforced(rt) {

@@ -85,7 +85,7 @@ func TestSourceProblems(t *testing.T) {
 		tc{"ch vm.disk", "cloud-hypervisor", nil, &VMSource{Disk: disk}, ""},
 		tc{"ch none", "cloud-hypervisor", nil, nil, ""},
 	)
-	for _, rt := range []string{"docker", "podman", "openshell", "openshell-container"} {
+	for _, rt := range []string{"docker", "podman", "openshell", "openshell-container", "tart"} {
 		cases = append(cases,
 			tc{rt + " container", rt, ctr("ghcr.io/acme/api:v1"), nil, ""},
 			tc{rt + " vm.image", rt, nil, &VMSource{Image: "geth:v1"}, rt + " runs an OCI image: say it in container:"},
@@ -94,6 +94,9 @@ func TestSourceProblems(t *testing.T) {
 		)
 	}
 	cases = append(cases,
+		// tart: a macOS image from a registry, never the Ubuntu one the others know by name
+		tc{"tart macOS image", "tart", ctr("ghcr.io/cirruslabs/macos-tahoe-base:latest"), nil, ""},
+		tc{"tart builtin ubuntu", "tart", ctr("ubuntu-24.04"), nil, "tart runs macOS images"},
 		// vm: exactly one of image and disk
 		tc{"vm both", "cloud-hypervisor", nil, &VMSource{Image: "geth", Disk: disk}, "not both"},
 		tc{"vm neither", "cloud-hypervisor", nil, &VMSource{}, "vm: needs image"},

@@ -1,5 +1,5 @@
 Silo spec.runtime="kvm"
-  Silo s: spec.runtime must be one of cloud-hypervisor, openshell, docker, podman, openshell-container
+  Silo s: spec.runtime must be one of cloud-hypervisor, openshell, docker, podman, openshell-container, tart
 Silo spec.openshellPolicies=["Bad"]
   Silo s: openshellPolicies: at most 32 names, each a lower-case name (letters, digits, -); openshellPolicies is only for runtime openshell or openshell-container; docker can't use one
 Silo spec.openshellPolicies=["web","web"]
@@ -193,7 +193,7 @@ SiloSet spec.template.service={"name":"api"}
 SiloSet spec.template.network={"egress":{"source":"pool","ip":"x"}}
   SiloSet set: template.network.egress.ip would give every instance the same IP, which serves one silo
 SiloSet spec.template.runtime="kvm"
-  SiloSet set: template: spec.runtime must be one of cloud-hypervisor, openshell, docker, podman, openshell-container
+  SiloSet set: template: spec.runtime must be one of cloud-hypervisor, openshell, docker, podman, openshell-container, tart
 Service spec.selector={}
   Service svc: spec.selector is required: the labels of the silos it serves
 Service spec.ports=[{"name":"web","port":0}]

@@ -65,6 +65,9 @@ func Assess(facts map[string]string) []CheckResult {
 
 // AssessWith turns the machine's facts into findings, judging the OS by sup. Pure.
 func AssessWith(facts map[string]string, sup Supported) []CheckResult {
+	if facts["os_id"] == "macos" {
+		return assessMac(facts, sup)
+	}
 	var out []CheckResult
 	add := func(level, what, found, note string) {
 		out = append(out, CheckResult{What: what, Found: found, Note: note, Level: level})
@@ -136,7 +139,11 @@ var ErrDryRun = errors.New("dry run: nothing was changed")
 // inspectMachine reads the machine (changing nothing), prints what it found, and reports whether
 // it's fit (no ✗). Every command that sets a machine up does this first.
 func inspectMachine(ctx context.Context, conn *sshboot.Conn, kevasod string, out io.Writer) (map[string]string, bool, error) {
-	raw, err := conn.Run(ctx, "sh -c "+shQuote(checkScript), nil)
+	script := checkScript
+	if goos, err := conn.OS(ctx); err == nil && goos == "darwin" {
+		script = checkScriptDarwin
+	}
+	raw, err := conn.Run(ctx, "sh -c "+shQuote(script), nil)
 	if err != nil {
 		return nil, false, fmt.Errorf("reading the machine: %w", err)
 	}
@@ -170,22 +177,22 @@ func inspectMachine(ctx context.Context, conn *sshboot.Conn, kevasod string, out
 
 // lookFirst logs in and reads the machine before anything is created for it (host add declares the
 // Host and makes a join token before installing): a dry run or an unfit machine leaves nothing behind.
-func lookFirst(ctx context.Context, o InitOptions, stdin io.Reader, out io.Writer) error {
+func lookFirst(ctx context.Context, o InitOptions, stdin io.Reader, out io.Writer) (map[string]string, error) {
 	conn, _, err := dialHost(ctx, o, bufio.NewReader(stdin), stdin, out)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = conn.Close() }()
-	_, fit, err := inspectMachine(ctx, conn, o.Kevasod, out)
+	facts, fit, err := inspectMachine(ctx, conn, o.Kevasod, out)
 	switch {
 	case err != nil:
-		return err
+		return nil, err
 	case !fit:
-		return errors.New("fix the ✗ lines first: nothing was changed")
+		return nil, errors.New("fix the ✗ lines first: nothing was changed")
 	case o.DryRun:
-		return ErrDryRun
+		return nil, ErrDryRun
 	}
-	return nil
+	return facts, nil
 }
 
 func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

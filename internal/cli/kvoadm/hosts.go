@@ -35,6 +35,8 @@ type HostAddOptions struct {
 	Install      string // worker (default) | control-plane
 	StateOnly    bool   // with control-plane: a light system node (systemnodes.go)
 	ClusterDNS   string // the control plane's DNS name, on a new system node
+
+	runtimesGiven bool // --runtime was said (a Mac's default is tart, not cloud-hypervisor)
 }
 
 func parseHostAdd(args []string) (HostAddOptions, error) {
@@ -76,6 +78,7 @@ func parseHostAdd(args []string) (HostAddOptions, error) {
 		case "--runtime":
 			if v, err = val(); err == nil {
 				o.Runtimes = append(o.Runtimes, v)
+				o.runtimesGiven = true
 			}
 		case "--cluster":
 			o.AdminCluster, err = val()
@@ -97,7 +100,7 @@ func parseHostAdd(args []string) (HostAddOptions, error) {
 	o.InitOptions = init
 	switch {
 	case len(o.Runtimes) == 0:
-		o.Runtimes = []string{"cloud-hypervisor"}
+		o.Runtimes = []string{"cloud-hypervisor"} // a Mac's default (tart) is set once the machine is read
 	case len(o.Runtimes) == 1 && o.Runtimes[0] == "none":
 		o.Runtimes = nil // a worker with no runtime yet (e.g. a box without KVM, for now)
 	}
@@ -209,8 +212,18 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 	if err := needCredential(o.InitOptions); err != nil {
 		return err
 	}
-	if err := lookFirst(ctx, o.InitOptions, stdin, out); err != nil {
+	facts, err := lookFirst(ctx, o.InitOptions, stdin, out)
+	if err != nil {
 		return err
+	}
+	mac := facts["os_id"] == "macos"
+	if mac {
+		if !o.runtimesGiven {
+			o.Runtimes = []string{"tart"}
+		}
+		if bad := macRefusals(o); len(bad) > 0 {
+			return fmt.Errorf("not on a Mac: %s", strings.Join(bad, "; "))
+		}
 	}
 	o.looked = true
 	ca := kc.CAPEM()
@@ -255,12 +268,18 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 	if err := conn.Upload(ctx, "/etc/kevaso/join-token", []byte(tok.Token), 0o600); err != nil {
 		return err
 	}
-	// Its fence, a unit of its own: when this host's agent can no longer vouch for its silos (cut
-	// off, or not running), it stops those the control plane may start elsewhere.
-	if err := installUnits(ctx, conn, UnitsFor(WorkerUnit(o, server), true, o.Runtimes)); err != nil {
-		return err
+	if mac {
+		if err := installMacWorker(ctx, conn, o, server, say); err != nil {
+			return err
+		}
+	} else {
+		// Its fence, a unit of its own: when this host's agent can no longer vouch for its silos (cut
+		// off, or not running), it stops those the control plane may start elsewhere.
+		if err := installUnits(ctx, conn, UnitsFor(WorkerUnit(o, server), true, o.Runtimes)); err != nil {
+			return err
+		}
+		say("worker started (kevasod.service), joining %s; fence started (%s)", server, FenceUnitName)
 	}
-	say("worker started (kevasod.service), joining %s; fence started (%s)", server, FenceUnitName)
 	// How kvoadm reaches it, kept on its Host (and so in backups): kvoadm init --restore uses it to
 	// reconnect the worker to a restored control plane.
 	target := fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort)))
@@ -272,7 +291,11 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 
 	// 4. It joins and reports.
 	if err := waitHostReady(ctx, c, o.Name, 3*time.Minute); err != nil {
-		journal, _ := conn.Run(ctx, "journalctl -u kevasod -n 20 --no-pager", nil)
+		logs := "journalctl -u kevasod -n 20 --no-pager"
+		if mac {
+			logs = "tail -n 20 " + MacLog
+		}
+		journal, _ := conn.Run(ctx, logs, nil)
 		return fmt.Errorf("%w\nkevasod on the host:\n%s", err, journal)
 	}
 	say("host %s is Ready (it dials out to the control plane; nothing listens on it). Its runtimes install next: kvoadm kvo watch hosts", o.Name)

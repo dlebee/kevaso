@@ -219,7 +219,11 @@ func (d *sshDriver) Install(ctx context.Context, name string) error {
 	d.mu.Lock()
 	d.started[name] = time.Now()
 	d.mu.Unlock()
-	_, err = conn.Run(ctx, upgradeRestart, nil)
+	restart := upgradeRestart
+	if goos, _ := conn.OS(ctx); goos == "darwin" {
+		restart = MacUpgradeRestart
+	}
+	_, err = conn.Run(ctx, restart, nil)
 	return err
 }
 

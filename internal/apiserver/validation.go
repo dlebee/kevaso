@@ -18,8 +18,8 @@ type Rule struct {
 // checked before these run (strict decoding into the Go types).
 var builtinRules = map[string][]Rule{
 	"Silo": {
-		{`self.spec.runtime in ['cloud-hypervisor', 'openshell', 'docker', 'podman', 'openshell-container']`,
-			"spec.runtime must be one of cloud-hypervisor, openshell, docker, podman, openshell-container"},
+		{`self.spec.runtime in ['cloud-hypervisor', 'openshell', 'docker', 'podman', 'openshell-container', 'tart']`,
+			"spec.runtime must be one of cloud-hypervisor, openshell, docker, podman, openshell-container, tart"},
 		{`!has(self.spec.resources) || !has(self.spec.resources.cpu) || self.spec.resources.cpu >= 0`,
 			"spec.resources.cpu can't be negative"},
 		{`!has(self.spec.tolerations) || self.spec.tolerations.all(t, t.key != '')`,
@@ -227,7 +227,7 @@ var builtinRules = map[string][]Rule{
 			"a host needs at least one component: controlPlane or worker"},
 		{`!has(self.spec.components.worker) || !has(self.spec.components.worker.taints) || self.spec.components.worker.taints.all(t, t.key != '' && t.effect in ['NoSchedule', 'PreferNoSchedule'])`,
 			"every taint needs a key and an effect of NoSchedule or PreferNoSchedule (there's no NoExecute: silos are stateful)"},
-		{`!has(self.spec.components.worker) || !has(self.spec.components.worker.runtimes) || self.spec.components.worker.runtimes.all(r, r.name in ['cloud-hypervisor', 'openshell', 'docker', 'podman', 'openshell-container'])`,
+		{`!has(self.spec.components.worker) || !has(self.spec.components.worker.runtimes) || self.spec.components.worker.runtimes.all(r, r.name in ['cloud-hypervisor', 'openshell', 'docker', 'podman', 'openshell-container', 'tart'])`,
 			"unknown runtime in spec.components.worker.runtimes"},
 	},
 }

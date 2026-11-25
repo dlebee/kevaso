@@ -53,7 +53,7 @@ bare metal; private networks between hosts (hosts with internal IPs on a shared 
 - The JuiceFS provider's redesign (research D001).
 - M13 Runs.
 - New providers.
-- A macOS runtime.
+- A macOS runtime: **built** on branch feat/macos-worker (ADR 0012: `tart`, Mac workers on the mesh), **unproven** on real machines; released binaries stay Linux-only for `kevasod` until it is.
 - Volume retention.
 
 ## Awaiting the owner

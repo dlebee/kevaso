@@ -101,6 +101,9 @@ func reconnect(ctx context.Context, o InitOptions, server string, c *client.Clie
 
 // reconnectConn points the worker on conn at server and waits until it reports there.
 func reconnectConn(ctx context.Context, conn *sshboot.Conn, server string, c *client.Client) (string, error) {
+	if goos, _ := conn.OS(ctx); goos == "darwin" {
+		return reconnectMac(ctx, conn, server, c)
+	}
 	unit, err := conn.Run(ctx, "cat /etc/systemd/system/kevasod.service", nil)
 	if err != nil {
 		return "", err

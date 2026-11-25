@@ -31,6 +31,7 @@ import (
 	"kevaso.com/core/builtin/kri/container"
 	"kevaso.com/core/builtin/kri/hostexec"
 	"kevaso.com/core/builtin/kri/openshell"
+	"kevaso.com/core/builtin/kri/tart"
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/fence"
@@ -44,6 +45,11 @@ import (
 type Config struct {
 	HostName string
 	Runtimes []string // runtimes to install, e.g. cloud-hypervisor
+	// TartSoftnet starts every macOS silo behind Tart's softnet packet filter (default-deny to the
+	// LAN and other silos); needs root for softnet. On by default on a Mac.
+	TartSoftnet bool
+	// TartUser is the Mac user tart runs as (kevasod itself runs as root there); "" is kevasod's own.
+	TartUser string
 	Labels   map[string]string
 	DataDir  string // for the exec key
 	Storage  cloudhypervisor.StorageOptions
@@ -156,8 +162,13 @@ func NewRuntimes(cfg Config) (map[string]Installer, error) {
 			}
 			out[name] = &openshell.Runtime{Host: openshell.Local{}, Name: name, Driver: driver, Scope: cfg.GatewayScope,
 				ExtraCA: cfg.EgressExtraCA, Arch: Arch()}
+		case v1.RuntimeTart:
+			if runtime.GOOS != "darwin" {
+				return nil, fmt.Errorf("runtime tart runs macOS silos and needs a Mac (this host is %s)", runtime.GOOS)
+			}
+			out[name] = &tart.Runtime{Host: tart.Local{}, StateDir: filepath.Join(cfg.DataDir, "tart"), Softnet: cfg.TartSoftnet, RunAs: cfg.TartUser}
 		default:
-			return nil, fmt.Errorf("runtime %q isn't available yet (cloud-hypervisor, openshell, openshell-container are)", name)
+			return nil, fmt.Errorf("runtime %q isn't available yet (cloud-hypervisor, openshell, openshell-container, tart are)", name)
 		}
 	}
 	return out, nil
@@ -276,7 +287,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 			// A failed install (a download cut short, a mirror down) is tried again every minute.
 			for {
 				cfg.Log("installing runtime %s", name)
-				st := v1.RuntimeStatus{State: "Ready", Version: rt.Info().Version}
+				st := v1.RuntimeStatus{State: "Ready", Version: rt.Info().Version, MaxSilos: rt.Info().Capabilities.MaxSilos}
 				err := rt.Install(ctx, func(step string) {
 					cfg.Log("runtime %s: %s", name, step)
 					mu.Lock()
@@ -289,6 +300,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 					st.State, st.Message = "Failed", err.Error()
 				} else {
 					st.EnvOutsideEngine = rt.Info().Capabilities.EnvOutsideEngine
+					st.Version, st.MaxSilos = rt.Info().Version, rt.Info().Capabilities.MaxSilos // known once installed (tart reads its own)
 					cfg.Log("runtime %s ready", name)
 					if usesBridge(rt) { // the bridge is there now: keep its firewall current (once)
 						networkOnce.Do(func() {
@@ -336,7 +348,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 	if cfg.Contact != nil {
 		cfg.Contact.OnRemoved(func() { a.HostRemoved(context.Background()) })
 		a.LastContact, a.LastContactBoot, a.FenceApplies = cfg.Contact.Last, cfg.Contact.LastBoot, cfg.Contact.Fence
-		if runtime.GOOS == "linux" {
+		if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
 			a.FenceDir = fence.Dir // for kevasod fence-watch, which fences even when this agent is gone
 		}
 	}
@@ -504,10 +516,11 @@ func allocatable() v1.Resources {
 	return v1.Resources{CPU: cpus, Memory: fmt.Sprintf("%dMi", mem>>20)}
 }
 
-func memTotal() int64 {
+// memTotalLinux reads MemTotal from /proc/meminfo (Linux); memTotal picks the reader per system.
+func memTotalLinux() int64 {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
-		return 4 << 30 // not Linux (tests on a Mac): a plausible default
+		return 4 << 30 // no /proc: a plausible default
 	}
 	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)

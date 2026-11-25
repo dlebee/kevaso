@@ -35,6 +35,10 @@ type Capabilities struct {
 	// values in its records (a container runtime with Kevaso's OCI runtime in front of the real
 	// one, ADR 0009 addendum). Known once the runtime is installed.
 	EnvOutsideEngine bool
+	// MaxSilos is how many silos of this runtime one host can run at once (0: no limit the
+	// runtime knows of). tart: Apple lets a Mac run two macOS guests. The worker reports it on
+	// the Host and the scheduler never places more.
+	MaxSilos int
 }
 
 // Info identifies a runtime.
