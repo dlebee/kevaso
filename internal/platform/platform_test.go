@@ -7,7 +7,7 @@ import (
 
 func TestSupported(t *testing.T) {
 	got := Supported()
-	if !slices.Contains(got, Platform{"ubuntu", "24.04"}) || !Supports(got, "Ubuntu", "24.04") || Supports(got, "ubuntu", "22.04") {
+	if !slices.Contains(got, Platform{"ubuntu", "24.04"}) || !Supports(got, "Ubuntu", "24.04") || !Supports(got, "ubuntu", "26.04") || Supports(got, "ubuntu", "22.04") {
 		t.Fatalf("list %v", got)
 	}
 	if Names(got) == "" {
