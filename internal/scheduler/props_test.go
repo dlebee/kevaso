@@ -67,7 +67,7 @@ func TestPropertyPlacementsNeverClash(t *testing.T) {
 				if s.Status.Host != h.Name {
 					continue
 				}
-				if why := filter(s, h, h.Spec.Components.Worker, usage{}, 0); h.Spec.Components.Worker == nil || why != "" {
+				if why := filter(s, h, h.Spec.Components.Worker, usage{}, 0, 0); h.Spec.Components.Worker == nil || why != "" {
 					t.Fatalf("seed %d: %s placed on %s: %s", seed, s.Name, h.Name, why)
 				}
 				for _, p := range HostPorts(s) {

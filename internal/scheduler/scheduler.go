@@ -123,6 +123,7 @@ func ScheduleIn(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, env Env) (De
 		return Decision{}, err
 	}
 	used := map[string]usage{}
+	runtimeCount := map[string]int{} // host\x00runtime → silos placed there
 	for _, s := range placed {
 		if s.Status.Host == "" || (s.Namespace == silo.Namespace && s.Name == silo.Name) {
 			continue
@@ -131,6 +132,7 @@ func ScheduleIn(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, env Env) (De
 		if err != nil {
 			continue // already admitted; a bad value can't happen, and must not block scheduling
 		}
+		runtimeCount[s.Status.Host+"\x00"+s.Spec.Runtime]++
 		u := used[s.Status.Host]
 		u.cpu += s.Spec.Resources.CPU
 		u.mem += m
@@ -151,7 +153,7 @@ func ScheduleIn(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, env Env) (De
 		if w == nil {
 			continue // not a worker: not even a candidate
 		}
-		reason := filter(silo, h, w, used[h.Name], needMem)
+		reason := filter(silo, h, w, used[h.Name], needMem, runtimeCount[h.Name+"\x00"+silo.Spec.Runtime])
 		if reason == "" {
 			reason = netFilter(silo, h, placed, env)
 		}
@@ -190,7 +192,7 @@ func ScheduleIn(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, env Env) (De
 	return d, nil
 }
 
-func filter(silo *v1.Silo, h *v1.Host, w *v1.WorkerSpec, u usage, needMem int64) string {
+func filter(silo *v1.Silo, h *v1.Host, w *v1.WorkerSpec, u usage, needMem int64, ofRuntime int) string {
 	if !meta.IsTrue(h.Status.Conditions, "Ready") {
 		return "host not Ready"
 	}
@@ -206,6 +208,9 @@ func filter(silo *v1.Silo, h *v1.Host, w *v1.WorkerSpec, u usage, needMem int64)
 	}
 	if h.Spec.Unschedulable {
 		return "host is cordoned (draining)"
+	}
+	if max := h.Status.Runtimes[silo.Spec.Runtime].MaxSilos; max > 0 && ofRuntime >= max {
+		return fmt.Sprintf("runtime %s runs at most %d silos on a host (%d placed here)", silo.Spec.Runtime, max, ofRuntime)
 	}
 	if r := silo.Spec.Placement.Region; r != "" && h.Spec.Region != r {
 		return fmt.Sprintf("in region %s, not %s", dashed(h.Spec.Region), r)

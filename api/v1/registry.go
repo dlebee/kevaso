@@ -40,8 +40,13 @@ func DiskRuntime(rt string) bool { return rt == "cloud-hypervisor" }
 // RegistryRuntime reports whether a runtime runs registry images (OCI references), so it can
 // pull from a private registry.
 func RegistryRuntime(rt string) bool {
-	return rt == "docker" || rt == "podman" || rt == "openshell" || rt == "openshell-container"
+	return rt == "docker" || rt == "podman" || rt == "openshell" || rt == "openshell-container" || rt == RuntimeTart
 }
+
+// RuntimeTart is the macOS runtime: each silo is a macOS virtual machine on an Apple Silicon Mac,
+// from a macOS image in a registry (container.image). Only a Mac worker has it, and a Mac runs at
+// most two such silos at once.
+const RuntimeTart = "tart"
 
 // PullRuntime reports whether Kevaso pulls the runtime's images itself, so it can hand the engine
 // a credential for one pull (docker, podman). OpenShell pulls through its own gateway, whose CLI
@@ -203,6 +208,8 @@ func SourceProblems(spec SiloSpec, isVMImage func(name string) bool) []string {
 		switch {
 		case c.Image == "":
 			out = append(out, "container.image is required: a registry reference (e.g. ghcr.io/acme/api@sha256:…)")
+		case BuiltinImage(c.Image) && rt == RuntimeTart:
+			out = append(out, fmt.Sprintf("%s runs macOS images: container.image is a registry reference to a macOS image (e.g. ghcr.io/cirruslabs/macos-tahoe-base:latest), not %s", rt, c.Image))
 		case BuiltinImage(c.Image):
 		case isVMImage != nil && isVMImage(name):
 			out = append(out, fmt.Sprintf("%s is a VMImage, a disk for cloud-hypervisor; container.image is a registry reference, used as it is (e.g. ghcr.io/acme/api@sha256:…)", name))

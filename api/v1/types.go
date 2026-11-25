@@ -101,7 +101,7 @@ type WorkerSpec struct {
 
 // RuntimeSpec is one runtime installed on a worker, with its options.
 type RuntimeSpec struct {
-	Name    string            `json:"name"` // cloud-hypervisor | openshell | docker | podman | openshell-container
+	Name    string            `json:"name"` // cloud-hypervisor | openshell | docker | podman | openshell-container | tart
 	Options map[string]string `json:"options,omitempty"`
 }
 
@@ -230,6 +230,9 @@ type RuntimeStatus struct {
 	// EnvOutsideEngine: env secrets reach this runtime's silos without the engine keeping their
 	// values (containers through Kevaso's OCI runtime, ADR 0009 addendum).
 	EnvOutsideEngine bool `json:"envOutsideEngine,omitempty"`
+	// MaxSilos is how many silos of this runtime the host can run at once (0: no limit): a Mac
+	// runs two macOS guests (Apple's licence). The scheduler places no more than that here.
+	MaxSilos int `json:"maxSilos,omitempty"`
 }
 
 // ── Silo ─────────────────────────────────────────────────────────────────────

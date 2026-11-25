@@ -285,10 +285,15 @@ func (c *Conn) InstallBinary(ctx context.Context, name string, data, sig []byte)
 	if err := c.Upload(ctx, staged+".sig", sig, 0o600); err != nil {
 		return err
 	}
-	verify := fmt.Sprintf("openssl pkeyutl -verify -pubin -inkey %s -rawin -in %s -sigfile %s", SigningKeyPath, Quote(staged), Quote(staged+".sig"))
-	if _, err := c.Run(ctx, verify, nil); err != nil {
+	goos, _ := c.OS(ctx)
+	if _, err := c.Run(ctx, VerifyCommand(goos, staged), nil); err != nil {
 		_, _ = c.Run(ctx, "rm -f "+Quote(staged)+" "+Quote(staged+".sig"), nil)
 		return fmt.Errorf("%s: %w", name, ErrSignature)
+	}
+	if goos == "darwin" { // Apple Silicon macOS has no /usr/local/bin until something makes it
+		if _, err := c.Run(ctx, "mkdir -p "+InstallDir, nil); err != nil {
+			return err
+		}
 	}
 	_, err := c.Run(ctx, fmt.Sprintf("install -m 0755 %s %s/%s && rm -f %s %s", Quote(staged), InstallDir, name, Quote(staged), Quote(staged+".sig")), nil)
 	return err

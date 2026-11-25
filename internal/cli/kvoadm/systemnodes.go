@@ -253,8 +253,12 @@ func hostAddSystemNode(ctx context.Context, o HostAddOptions, stdin io.Reader, o
 	if err := JoinReady(hosts); err != nil {
 		return err
 	}
-	if err := lookFirst(ctx, o.InitOptions, stdin, out); err != nil {
+	facts, err := lookFirst(ctx, o.InitOptions, stdin, out)
+	if err != nil {
 		return err
+	}
+	if facts["os_id"] == "macos" {
+		return errors.New("a Mac is a worker, not a system node: control planes run on Linux")
 	}
 	o.looked = true
 	ca := kc.CAPEM()

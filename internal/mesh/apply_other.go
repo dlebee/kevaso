@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package mesh
 
@@ -8,7 +8,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-// Apply is Linux only (kernel WireGuard).
+// Apply is for Linux (kernel WireGuard) and macOS (wireguard-go, userspace).
 func Apply(Desired, wgtypes.Key, wgtypes.Key) error {
-	return errors.New("the mesh needs Linux (kernel WireGuard)")
+	return errors.New("the mesh needs Linux or macOS")
 }

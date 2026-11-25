@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -36,7 +37,15 @@ import (
 
 // Dir is where the record lives: tmpfs, so a reboot forgets it (nothing runs after one anyway),
 // and not kevasod's own runtime directory (/run/kevaso), which systemd removes when kevasod stops.
-var Dir = "/run/kevaso-fence"
+var Dir = defaultDir()
+
+// defaultDir: /run is tmpfs on Linux; a Mac has no /run, and /var/run is cleared at boot.
+func defaultDir() string {
+	if runtime.GOOS == "darwin" {
+		return "/var/run/kevaso-fence"
+	}
+	return "/run/kevaso-fence"
+}
 
 // DefaultAfter is how old the last contact may get before a fence: under the control plane's host
 // lease (40s), so the old copy is stopped before the host is even called lost.

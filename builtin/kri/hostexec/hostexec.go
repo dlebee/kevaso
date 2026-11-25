@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,9 +20,13 @@ import (
 
 // Cmd is one command on the host.
 type Cmd struct {
-	Name   string
-	Args   []string
-	Env    []string // added to a minimal environment
+	Name string
+	Args []string
+	Env  []string // added to a minimal environment
+	// Dir is where the command starts ("": an empty folder of kevasod's own, readable by root
+	// only). A command run as another user (sudo -u) needs one that user can read, or a shell
+	// script it runs warns "shell-init: error retrieving current directory" into its output.
+	Dir    string
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
@@ -52,6 +58,18 @@ const WaitDelay = 5 * time.Second
 // command then cannot start or stop a silo. Tests point commandParent elsewhere.
 const defaultCommandParent = "/run/kevaso"
 
+// darwinCommandParent is the same on macOS, which has no /run (kevasod there is root too).
+const darwinCommandParent = "/var/run/kevaso"
+
+// DefaultPath is the PATH host commands get; on macOS it adds Homebrew's folders (Apple Silicon
+// and Intel), where tools like tart live.
+func DefaultPath() string {
+	if runtime.GOOS == "darwin" {
+		return "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	}
+	return "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+}
+
 // SetCommandParent points later host commands at dir and drops any directory already made.
 // kevasod leaves the default. Tests on a machine that cannot create /run/kevaso use it.
 func SetCommandParent(dir string) {
@@ -62,10 +80,17 @@ func SetCommandParent(dir string) {
 }
 
 var (
-	commandParent = defaultCommandParent
+	commandParent = initialCommandParent()
 	dirMu         sync.Mutex
 	dirPath       string
 )
+
+func initialCommandParent() string {
+	if runtime.GOOS == "darwin" {
+		return darwinCommandParent
+	}
+	return defaultCommandParent
+}
 
 func commandDir() (string, error) {
 	dirMu.Lock()
@@ -105,14 +130,32 @@ func SetCommandDir(cmd *exec.Cmd) error {
 	return nil
 }
 
+// LookPath finds name the way the commands kevasod runs will: in DefaultPath, not in kevasod's own
+// PATH (Go resolves a program's name against its own, and a service's is short: on a Mac Homebrew's
+// folder is not on it). A name with a slash is used as it is.
+func LookPath(name string) string {
+	if strings.Contains(name, "/") {
+		return name
+	}
+	for _, d := range filepath.SplitList(DefaultPath()) {
+		p := filepath.Join(d, name)
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			return p
+		}
+	}
+	return name // not found: exec reports it, with the name the caller used
+}
+
 // Run implements Runner.
 func (Local) Run(ctx context.Context, c Cmd) (int, error) {
-	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
-	if err := SetCommandDir(cmd); err != nil {
+	cmd := exec.CommandContext(ctx, LookPath(c.Name), c.Args...)
+	if c.Dir != "" {
+		cmd.Dir = c.Dir
+	} else if err := SetCommandDir(cmd); err != nil {
 		return -1, err
 	}
 	cmd.WaitDelay = WaitDelay
-	cmd.Env = append([]string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"}, c.Env...)
+	cmd.Env = append([]string{"PATH=" + DefaultPath(), "LANG=C.UTF-8"}, c.Env...)
 	if c.TTY != nil {
 		return runTTY(cmd, c)
 	}

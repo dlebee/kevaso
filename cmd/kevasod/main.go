@@ -56,6 +56,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -308,12 +309,14 @@ func runWorker(ctx context.Context, args []string) error {
 	fs.StringVar(&jc.TokenFile, "token-file", "/etc/kevaso/join-token", "the one-time join token")
 	fs.StringVar(&jc.DataDir, "data", "/var/lib/kevaso", "data directory")
 	var runtimes multi
-	fs.Var(&runtimes, "runtime", "runtime to install (repeatable; default cloud-hypervisor)")
+	fs.Var(&runtimes, "runtime", "runtime to install (repeatable; default cloud-hypervisor, on a Mac tart)")
 	loop := fs.String("loop-storage", "", "development only: back silo disks with this sparse file")
 	loopSize := fs.String("loop-size", "64G", "size of the loop storage file")
 	device := fs.String("storage-device", "", "a whole, empty disk for the silos' volume group when the host has none (refused if anything is on it)")
 	every := fs.Duration("heartbeat", worker.DefaultHeartbeat, "how often to report")
-	withMesh := fs.Bool("mesh", true, "put this host on the WireGuard mesh")
+	withMesh := fs.Bool("mesh", true, "put this host on the WireGuard mesh (kernel WireGuard on Linux, wireguard-go on a Mac)")
+	tartUser := fs.String("tart-user", "", "macOS: the user tart runs as (kevasod runs as root for the mesh; Tart's images and VMs are this user's)")
+	tartSoftnet := fs.Bool("tart-softnet", true, "macOS: start every macOS silo behind Tart's softnet packet filter (silos can't reach each other or the LAN); needs softnet to run as root")
 	egressCA := fs.String("egress-extra-ca", "", "PEM file the egress gate also trusts for upstream hosts (a company TLS proxy)")
 	gwScope := fs.String("openshell-gateway-scope", "namespace", "OpenShell gateways: one per host, namespace or silo")
 	_ = fs.Parse(args)
@@ -321,6 +324,8 @@ func runWorker(ctx context.Context, args []string) error {
 		return errors.New("worker needs --name and --server")
 	}
 	switch {
+	case len(runtimes) == 0 && runtime.GOOS == "darwin":
+		runtimes = multi{"tart"} // the only runtime a Mac has
 	case len(runtimes) == 0:
 		runtimes = multi{"cloud-hypervisor"}
 	case len(runtimes) == 1 && runtimes[0] == "none":
@@ -349,7 +354,7 @@ func runWorker(ctx context.Context, args []string) error {
 	contact.SetFence(true) // a worker only: the control plane is elsewhere and carries on without it
 	wc := worker.Config{HostName: jc.HostName, Runtimes: runtimes, DataDir: jc.DataDir, Clock: clock.Real{}, Log: logger.Printf,
 		PluginsEtc: plugins.DefaultManifests,
-		Storage:    cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize, Device: *device}, Contact: contact, MeshSubnet: *withMesh, EgressExtraCA: *egressCA, GatewayScope: *gwScope, Watermark: wm}
+		Storage:    cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize, Device: *device}, Contact: contact, MeshSubnet: *withMesh, TartSoftnet: *tartSoftnet, TartUser: *tartUser, EgressExtraCA: *egressCA, GatewayScope: *gwScope, Watermark: wm}
 	rts, err := worker.NewRuntimes(wc)
 	if err != nil {
 		return err
@@ -376,10 +381,11 @@ func runFenceWatch(ctx context.Context, args []string) error {
 	var runtimes multi
 	fs.Var(&runtimes, "runtime", "a runtime this host runs silos with (repeatable)")
 	dataDir := fs.String("data", "/var/lib/kevaso", "the worker's data directory")
+	tartUser := fs.String("tart-user", "", "macOS: the user tart runs as (as for the worker)")
 	dir := fs.String("dir", fence.Dir, "where the agent writes its fence record")
 	after := fs.Duration("fence-after", fence.DefaultAfter, "fence when the last contact is older than this (under the host lease)")
 	_ = fs.Parse(args)
-	rts, err := worker.NewRuntimes(worker.Config{Runtimes: runtimes, DataDir: *dataDir})
+	rts, err := worker.NewRuntimes(worker.Config{Runtimes: runtimes, DataDir: *dataDir, TartUser: *tartUser})
 	if err != nil {
 		return err
 	}

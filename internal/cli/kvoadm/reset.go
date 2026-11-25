@@ -68,6 +68,9 @@ func resetCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer
 	}
 	defer func() { _ = conn.Close() }()
 	_, _ = fmt.Fprintf(out, "→ connected to %s@%s (host key %s)\n", o.User, o.Address, conn.Fingerprint)
+	if goos, err := conn.OS(ctx); err == nil && goos == "darwin" {
+		return runMacReset(ctx, conn, o, in, out)
+	}
 	return runReset(ctx, conn, o, in, out)
 }
 

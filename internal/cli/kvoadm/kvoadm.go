@@ -891,7 +891,7 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 func bootstrap(ctx context.Context, o InitOptions, home string, stdin io.Reader, out io.Writer, say func(string, ...any)) (*sshboot.Conn, error) {
 	in := bufio.NewReader(stdin)
 
-	binArch, err := ElfArch(o.Kevasod)
+	binOS, binArch, err := BinaryTarget(o.Kevasod)
 	if err != nil {
 		return nil, err
 	}
@@ -938,7 +938,18 @@ func bootstrap(ctx context.Context, o InitOptions, home string, stdin io.Reader,
 	if got := strings.TrimSpace(string(uname)); got != binArch {
 		return nil, fmt.Errorf("the host is %s but --kevasod is built for %s", got, binArch)
 	}
-	if _, err := conn.Run(ctx, "command -v openssl >/dev/null && command -v systemctl >/dev/null", nil); err != nil {
+	hostOS, err := conn.OS(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if hostOS != binOS {
+		return nil, fmt.Errorf("the host runs %s but --kevasod is built for %s", hostOS, binOS)
+	}
+	if hostOS == "darwin" {
+		if o.Password || o.DisablePasswordLogin || o.ChangeRootPassword {
+			return nil, errors.New("on a Mac kvoadm logs in with an SSH key and changes nothing about SSH: no --password, --disable-password-login or --change-root-password")
+		}
+	} else if _, err := conn.Run(ctx, "command -v openssl >/dev/null && command -v systemctl >/dev/null", nil); err != nil {
 		return nil, errors.New("the host needs openssl and systemd")
 	}
 
@@ -949,25 +960,29 @@ func bootstrap(ctx context.Context, o InitOptions, home string, stdin io.Reader,
 		}
 		say("added kvoadm's SSH key (%s) to root's authorized_keys; use it as --ssh-key from now on", filepath.Join(home, "ssh", "id_ed25519"))
 	}
-	// Extra hardening: only what you ask for.
-	h, err := askHardening(o, stdin, out)
-	if err != nil {
-		return nil, err
-	}
-	if err := conn.Harden(ctx, h); err != nil {
-		return nil, err
-	}
-	if h.DisablePasswordLogin {
-		say("SSH password logins are off: keys only from now on")
-	}
-	if h.ChangeRootPassword {
-		say("root's password changed to a random one nobody knows (log in with keys, or reset it from the provider's console)")
-	}
+	if hostOS == "darwin" {
+		say("a Mac: no SSH hardening, and no install record (kvoadm reset doesn't cover a Mac yet)")
+	} else {
+		// Extra hardening: only what you ask for.
+		h, err := askHardening(o, stdin, out)
+		if err != nil {
+			return nil, err
+		}
+		if err := conn.Harden(ctx, h); err != nil {
+			return nil, err
+		}
+		if h.DisablePasswordLogin {
+			say("SSH password logins are off: keys only from now on")
+		}
+		if h.ChangeRootPassword {
+			say("root's password changed to a random one nobody knows (log in with keys, or reset it from the provider's console)")
+		}
 
-	// 4. Record the host as it is, before anything of Kevaso's lands, so kvoadm reset undoes
-	// exactly what this install adds.
-	if err := recordInstall(ctx, conn, say); err != nil {
-		return nil, err
+		// 4. Record the host as it is, before anything of Kevaso's lands, so kvoadm reset undoes
+		// exactly what this install adds.
+		if err := recordInstall(ctx, conn, say); err != nil {
+			return nil, err
+		}
 	}
 
 	// 5. Install kevasod, signature checked on the host, and start the control plane.
