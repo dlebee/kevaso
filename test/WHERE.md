@@ -169,6 +169,7 @@ CI does not pass `-short`, so these run in full on every push; `make test-short`
 - TestPropertyWhoAsksDecides (internal/names)
 - TestRemoveASystemNodeThatIsOnlyThat (internal/controlplane)
 - TestThreeControlPlanesJoinAndSurviveLosingOne (internal/controlplane)
+- TestUpgradeTakesOneBuildPerOSAndCPU (internal/cli/kvoadm)
 - TestWorkerSetUpBeforeTheOtherSystemNodesSurvivesLosingTheFirst (internal/controlplane)
 
 ## Untagged tests that need something outside the Go toolchain

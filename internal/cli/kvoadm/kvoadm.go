@@ -189,7 +189,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm admins [list] | add NAME KEY.pub… | remove NAME | sync [--dry-run]
   kvoadm kvo [--cluster NAME] ARGS…   any kvo command, as the cluster's admin (kvo's own context is a plain user)
   kvoadm store migrate [USER@]ADDRESS --ssh-key PATH
-  kvoadm upgrade --kevasod PATH [--ssh-key PATH] [--batch N] [--version V] [--dry-run]
+  kvoadm upgrade --kevasod PATH [--kevasod PATH…, one per OS and CPU] [--ssh-key PATH] [--batch N] [--version V] [--dry-run]
   kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME | resign [USER@]ADDRESS --name USER
   kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
   kvoadm reset HOST|[USER@]ADDRESS [--ssh-key PATH] [--host-key SHA256:…] [--dry-run] [--yes] [--force] [--wipe-storage]

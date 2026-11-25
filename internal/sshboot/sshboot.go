@@ -275,28 +275,45 @@ var ErrSignature = errors.New("signature check failed on the host")
 // InstallBinary pushes a binary and its ed25519 signature, verifies it on the host with the pinned
 // public key (stock openssl, E018), and only then installs it to InstallDir/name.
 func (c *Conn) InstallBinary(ctx context.Context, name string, data, sig []byte) error {
+	_, err := c.InstallBinaryChecked(ctx, name, data, sig, "")
+	return err
+}
+
+// InstallBinaryChecked is InstallBinary that, once the signature verifies and before anything is
+// replaced, runs the staged program with args and returns what it printed. A program built for
+// another OS or CPU fails there, and the one in place keeps running. Empty args: no run.
+func (c *Conn) InstallBinaryChecked(ctx context.Context, name string, data, sig []byte, args string) (string, error) {
 	staged := StagingDir + "/" + name
 	if _, err := c.Run(ctx, "mkdir -p "+StagingDir+" && chmod 0700 "+StagingDir, nil); err != nil {
-		return err
+		return "", err
 	}
 	if err := c.Upload(ctx, staged, data, 0o600); err != nil {
-		return err
+		return "", err
 	}
 	if err := c.Upload(ctx, staged+".sig", sig, 0o600); err != nil {
-		return err
+		return "", err
 	}
 	goos, _ := c.OS(ctx)
 	if _, err := c.Run(ctx, VerifyCommand(goos, staged), nil); err != nil {
 		_, _ = c.Run(ctx, "rm -f "+Quote(staged)+" "+Quote(staged+".sig"), nil)
-		return fmt.Errorf("%s: %w", name, ErrSignature)
+		return "", fmt.Errorf("%s: %w", name, ErrSignature)
+	}
+	var ran string
+	if args != "" {
+		o, err := c.Run(ctx, "chmod 0700 "+Quote(staged)+" && "+Quote(staged)+" "+args, nil)
+		if err != nil {
+			_, _ = c.Run(ctx, "rm -f "+Quote(staged)+" "+Quote(staged+".sig"), nil)
+			return "", fmt.Errorf("%s doesn't run on this host (built for another OS or CPU?): %w", name, err)
+		}
+		ran = string(o)
 	}
 	if goos == "darwin" { // Apple Silicon macOS has no /usr/local/bin until something makes it
 		if _, err := c.Run(ctx, "mkdir -p "+InstallDir, nil); err != nil {
-			return err
+			return "", err
 		}
 	}
 	_, err := c.Run(ctx, fmt.Sprintf("install -m 0755 %s %s/%s && rm -f %s %s", Quote(staged), InstallDir, name, Quote(staged), Quote(staged+".sig")), nil)
-	return err
+	return ran, err
 }
 
 // PinSigningKey writes the public key binaries must verify against.
