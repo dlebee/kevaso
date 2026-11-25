@@ -13,6 +13,10 @@ import (
 var workerFlags = map[string]bool{"--worker": false, "--runtime": true, "--loop-storage": true, "--loop-size": true, "--storage-device": true,
 	"--egress-extra-ca": true, "--openshell-gateway-scope": true} // flag → takes a value
 
+// storageFlags are the worker flags that say where silo disks live: kept by enable-worker when a
+// run doesn't name storage.
+var storageFlags = map[string]bool{"--loop-storage": true, "--loop-size": true, "--storage-device": true}
+
 // WithWorker rewrites a control-plane unit so that host also runs silos: the worker flags in its
 // ExecStart are replaced by o's. Pure.
 func WithWorker(unit string, o InitOptions) (string, error) {
@@ -26,9 +30,12 @@ func WithWorker(unit string, o InitOptions) (string, error) {
 		if len(f) == 0 || f[0] != "control-plane" {
 			return "", errors.New("this host's kevasod isn't a control plane (worker-only hosts are added with kvoadm host add)")
 		}
-		var keep []string
+		var keep, storage []string
 		for j := 0; j < len(f); j++ {
 			if takesValue, isWorker := workerFlags[f[j]]; isWorker {
+				if storageFlags[f[j]] && j+1 < len(f) {
+					storage = append(storage, f[j], f[j+1])
+				}
 				if takesValue {
 					j++
 				}
@@ -38,6 +45,11 @@ func WithWorker(unit string, o InitOptions) (string, error) {
 		}
 		o.Worker = true
 		keep = append(keep, workerArgs(o)...)
+		// Storage is set up once: a run that names none keeps the unit's (a loop file or a disk),
+		// or the runtime would fail with its volume group "missing".
+		if o.LoopStorage == "" && o.StorageDevice == "" {
+			keep = append(keep, storage...)
+		}
 		lines[i] = "ExecStart=/usr/local/bin/kevasod " + strings.Join(keep, " ")
 		return strings.Join(lines, "\n"), nil
 	}

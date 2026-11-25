@@ -330,10 +330,17 @@ func TestWithWorker(t *testing.T) {
 	if !strings.Contains(got, "ExecStart=/usr/local/bin/kevasod control-plane --name hv1 --external-ip 203.0.113.10 --cluster home --worker --runtime docker --runtime cloud-hypervisor --loop-storage /var/lib/kevaso-storage.img --loop-size 40G\n") {
 		t.Fatalf("unit:\n%s", got)
 	}
-	// Again, with other runtimes: the worker flags are replaced, not added to.
+	// Again, with other runtimes: the runtimes are replaced, not added to. Storage named by no run
+	// stays as it was (found on a real machine: a re-run by name dropped --loop-storage, and
+	// cloud-hypervisor failed with its volume group "missing").
 	again, _ := WithWorker(got, InitOptions{Runtimes: []string{"podman"}})
-	if strings.Count(again, "--worker") != 1 || strings.Contains(again, "docker") || strings.Contains(again, "loop") || !strings.Contains(again, "--runtime podman") {
+	if strings.Count(again, "--worker") != 1 || strings.Contains(again, "docker") || !strings.Contains(again, "--runtime podman") ||
+		strings.Count(again, "--loop-storage /var/lib/kevaso-storage.img --loop-size 40G") != 1 {
 		t.Fatalf("re-run:\n%s", again)
+	}
+	disk, _ := WithWorker(got, InitOptions{Runtimes: []string{"cloud-hypervisor"}, StorageDevice: "/dev/nvme1n1"})
+	if strings.Contains(disk, "loop") || strings.Count(disk, "--storage-device /dev/nvme1n1") != 1 {
+		t.Fatalf("a run naming a disk replaces the loop file:\n%s", disk)
 	}
 	if _, err := WithWorker("[Service]\nExecStart=/usr/local/bin/kevasod worker --name x\n", InitOptions{}); err == nil {
 		t.Fatal("rewrote a worker-only unit")

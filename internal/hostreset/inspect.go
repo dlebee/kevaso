@@ -270,6 +270,8 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 	case d.Plan.DockerOurs:
 		say("Docker was installed by Kevaso: every container, volume and image goes, then Docker itself")
 		d.Checks.DockerGone = true
+	case slices.Contains(d.NotOurs, "docker.io"):
+		say("Docker stays (installed after Kevaso, and not by it): Kevaso's containers and volumes go, and the daemon.json Kevaso made")
 	case d.Plan.DockerJSON == DockerJSONRestore:
 		say("Docker stays (it was there before): Kevaso's containers and volumes go; its daemon.json is put back as it was")
 	case d.Plan.DockerJSON == DockerJSONRemove:

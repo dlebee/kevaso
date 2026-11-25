@@ -843,7 +843,7 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	if p := os.Getenv("KVO_CONFIG"); p != "" && o.Home == "" && !inClusterFolders(root, p) { // never a cluster folder's admin file
 		cfgPath = p
 	}
-	if err := kvoUser(ctx, c, conn, o.UserName, o.Cluster, server, []byte(cred.CA), cfgPath, say); err != nil {
+	if err := kvoUser(ctx, c, conn, o.UserName, o.Cluster, server, o.Name, []byte(cred.CA), cfgPath, say); err != nil {
 		return fmt.Errorf("kvo's user: %w", err)
 	}
 	if p, err := adminKvoConfig(kc); err == nil {
@@ -961,7 +961,7 @@ func bootstrap(ctx context.Context, o InitOptions, home string, stdin io.Reader,
 		say("added kvoadm's SSH key (%s) to root's authorized_keys; use it as --ssh-key from now on", filepath.Join(home, "ssh", "id_ed25519"))
 	}
 	if hostOS == "darwin" {
-		say("a Mac: no SSH hardening, and no install record (kvoadm reset doesn't cover a Mac yet)")
+		say("a Mac: no SSH hardening, and no install record: kvoadm reset removes Kevaso's own files, never Tart, its images or SSH")
 	} else {
 		// Extra hardening: only what you ask for.
 		h, err := askHardening(o, stdin, out)

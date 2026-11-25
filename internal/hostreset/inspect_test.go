@@ -286,10 +286,13 @@ func TestDecideLeavesADockerSomeoneInstalledAfterKevaso(t *testing.T) {
 		t.Fatalf("purge %v, left %v", d.Plan.Purge, d.NotOurs)
 	}
 	sum := strings.Join(d.Summary, "\n")
-	for _, want := range []string{"not installed by Kevaso either", "containerd docker.io", "Kevaso's containers and volumes go"} {
+	for _, want := range []string{"not installed by Kevaso either", "containerd docker.io", "Kevaso's containers and volumes go", "Docker stays (installed after Kevaso, and not by it)"} {
 		if !strings.Contains(sum, want) {
 			t.Errorf("summary lacks %q:\n%s", want, sum)
 		}
+	}
+	if strings.Contains(sum, "it was there before") { // the record says it wasn't
+		t.Errorf("summary says Docker was there before Kevaso:\n%s", sum)
 	}
 	plan := Plan(d.Plan)
 	var all []string
