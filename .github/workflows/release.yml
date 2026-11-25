@@ -68,7 +68,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: {go-version-file: go.mod, cache: false}
 
-      - name: Build kvo and kvoadm (arm64, amd64)
+      - name: Build kvo and kvoadm (arm64, amd64), and kevasod for a Mac worker (arm64)
         run: |
           set -euo pipefail
           for arch in arm64 amd64; do hack/release/build.sh "$VERSION" darwin "$arch" "build/darwin-$arch"; done
@@ -260,7 +260,7 @@ jobs:
           ## Downloads
 
           \`kvo\` is the command line for using a cluster, \`kvoadm\` the one for running it, and
-          \`kevasod\` the daemon on each Linux host (worker and system nodes).
+          \`kevasod\` the daemon on each host: Linux workers and system nodes, and Mac workers (Apple silicon).
 
           | File | What |
           | --- | --- |
@@ -270,6 +270,7 @@ jobs:
           | \`kvo-$VERSION-linux-amd64.tar.gz\`, \`kvoadm-$VERSION-linux-amd64.tar.gz\` | Linux x86-64, unsigned |
           | \`kvo-$VERSION-linux-arm64.tar.gz\`, \`kvoadm-$VERSION-linux-arm64.tar.gz\` | Linux arm64, unsigned |
           | \`kevasod-$VERSION-linux-amd64.tar.gz\`, \`kevasod-$VERSION-linux-arm64.tar.gz\` | the host daemon for Linux (Ubuntu 24.04, Debian 12), unsigned |
+          | \`kevasod-$VERSION-darwin-arm64.zip\` | the host daemon for a Mac worker (macOS 26, Apple silicon; the \`tart\` runtime): signed with a Developer ID and notarized |
           | \`SHA256SUMS\` | SHA-256 of every file above: \`sha256sum -c SHA256SUMS --ignore-missing\` |
 
           The macOS zips were notarized by Apple, but a plain command-line binary cannot have its
