@@ -40,20 +40,20 @@ Unit-test style for every package (see `docs/adr/0001-testing.md`):
 | Place | What ran there | Caveat |
 |---|---|---|
 | In-process | every milestone's unit and integration tests; property, fuzz and golden tests | no real kernel, network or machine |
+| Macs | Mac workers (ADR 0012) on two Apple Silicon Macs: tart silos, two per Mac and a third held, softnet isolation, the mesh from behind NAT, Xcode and the iOS Simulator in a silo, two Macs in one cluster; with Linux workers: a controller restore and `kvoadm upgrade` with a build per OS | `provider-linode`'s `TestMacWorkerJoinsALinodeCluster` and `TestTwoMacWorkersShareALinodeCluster` run only with a Mac at hand |
 | Lima VMs | M3–M10's e2e loop; since the sealed model: `TestVMLeases`, `TestTerminalsAndUI`, `TestVMVolumes`, `TestVMMoves`, `TestSecretsInASilo` | no real external IP (Lima's network isn't routed); `TestMoves`, `TestApprovals`, `TestPanes`, `TestDaemonsAndUpkeep` ran before the sealed model |
-| Real Linodes | M6 leases, M11, M14 JuiceFS and moves, M15 terminals, M16 HA and upgrades, M17 plugin operators | all **before the sealed model**; no KVM, so containers only |
-| Bare metal | the one-machine suite, each test on one of two Ubuntu 26.04 machines: model, names, images, secrets (microVMs and containers), ingress with Let's Encrypt staging, probes, leases, panes, fencing, volumes, private registry, podman, reboot | **one machine at a time** so far |
+| Real Linodes | Since the sealed model (Nov 25, against `6bdafcd`): `TestProvider` (addresses, Block Storage volumes moved with their data, a foreign label refused, Kevaso's firewall rules from outside), `TestLinode` (a NodeBalancer and its DNS name, a shared IP over BGP following a confirmed move), `TestWorkloads` (leases on the real firewall, `kvo exec -it` / `ssh` / `cp`, a sandboxed plugin operator, moves by hand and after a host is lost), `TestHA` (SQLite → etcd, two full and one light system node, the leader powered off), `TestHA3` (three system nodes: leader loss, a cut-off worker, an upgrade, a wipe, a restore). Earlier: M14 JuiceFS for containers, M15 terminals | no KVM, so containers only |
+| Bare metal | the one-machine suite, each test on one of two Ubuntu 26.04 machines: model, names, images, secrets (microVMs and containers), ingress with Let's Encrypt staging, probes, leases, panes, fencing, volumes, private registry, podman, reboot. **Two machines together** (real-machine runs 10–15 and the docs install, Nov 22–25, with a Linode or one of them as the controller): JuiceFS microVMs moved between them and after a hard crash (`--confirm-fenced`), all four runtimes, OpenShell on both drivers, the mesh, silo-to-silo traffic across hosts by name, Grants, a lost controller restored from a backup with no silo restarted, `kvoadm upgrade` release to release with no silo restarted, a fresh install from the public docs | the failure cases run by hand, not in the suite |
 
-**Not proven anywhere:** two machines together on bare metal; the failure cases; a soak; OpenShell on
-bare metal; private networks between hosts (hosts with internal IPs on a shared network); NAT clouds
-(an external IP on no interface).
+**Not proven anywhere:** a soak; private networks between hosts (hosts with internal IPs on a shared
+network); NAT clouds (an external IP on no interface); Let's Encrypt production, Caddy and Kong,
+DNS-01 against a real DNS provider; a registry with TLS or on another host; `kevaso-oci` on podman.
 
 ## Parked until stabilization ends
 
 - The JuiceFS provider's redesign (research D001).
 - M13 Runs.
 - New providers.
-- A macOS runtime: **built** on branch feat/macos-worker (ADR 0012: `tart`, Mac workers on the mesh), **unproven** on real machines; released binaries stay Linux-only for `kevasod` until it is.
 - Volume retention.
 
 ## Awaiting the owner
