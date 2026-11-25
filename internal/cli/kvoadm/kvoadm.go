@@ -16,7 +16,7 @@
 //	kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker …   another machine
 //	             [--internal-ip IP] [--external-ip IP]
 //	kvoadm host list | drain NAME | uncordon NAME                     list: both IPs of every host
-//	kvoadm users invite NAME [--namespace NS [--role editor]] | list | disable NAME | resign [USER@]ADDRESS --name USER
+//	kvoadm users invite NAME [-n NS --role role/NAME|clusterrole/NAME | --cluster-role NAME] | list | disable NAME | resign [USER@]ADDRESS --name USER
 //	kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
 //	kvoadm reset [USER@]ADDRESS --ssh-key PATH [--yes] [--force] [--wipe-storage]
 //	                                                                    take Kevaso off a machine again
@@ -190,7 +190,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm kvo [--cluster NAME] ARGS…   any kvo command, as the cluster's admin (kvo's own context is a plain user)
   kvoadm store migrate [USER@]ADDRESS --ssh-key PATH
   kvoadm upgrade --kevasod PATH [--kevasod PATH…, one per OS and CPU] [--ssh-key PATH] [--batch N] [--version V] [--dry-run]
-  kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME | resign [USER@]ADDRESS --name USER
+  kvoadm users invite NAME [-n NS --role role/NAME|clusterrole/NAME | --cluster-role NAME] [--group G]… | list | disable NAME | resign [USER@]ADDRESS --name USER
   kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
   kvoadm reset HOST|[USER@]ADDRESS [--ssh-key PATH] [--host-key SHA256:…] [--dry-run] [--yes] [--force] [--wipe-storage]
   kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--cluster-secret NAME]… [--side controller|node]

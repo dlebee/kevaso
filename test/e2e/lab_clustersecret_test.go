@@ -314,7 +314,7 @@ func labNamespaceAdmin(t *testing.T, ctx context.Context, admin, aVal, bVal stri
 	t.Helper()
 	labKvo(t, ctx, "apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: "+labNS+" }\n",
 		"apply", "--context", admin, "-f", "-")
-	inv := labKvoadm(t, ctx, os.Getenv("LAB_DIR"), "users", "invite", labUser, "--namespace", labNS, "--role", "admin")
+	inv := labKvoadm(t, ctx, os.Getenv("LAB_DIR"), "users", "invite", labUser, "--namespace", labNS, "--role", "clusterrole/admin")
 	t.Logf("invite: %s", labRedact(inv, aVal, bVal))
 	loginMatch := regexp.MustCompile(`kvo login (\S+) --ca (sha256:[0-9a-f]{64})`).FindStringSubmatch(inv)
 	inviteMatch := regexp.MustCompile(`invite code: (kvi_\S+)`).FindStringSubmatch(inv)
