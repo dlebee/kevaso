@@ -34,8 +34,14 @@ func TestMacCheckFit(t *testing.T) {
 			t.Fatalf("a good Mac fails: %+v", r)
 		}
 	}
-	if levels(AssessWith(macFacts(), sup))["macOS worker"] != "warn" {
-		t.Fatal("a Mac worker is new and says so")
+	withMac := Supported{List: platform.Supported(), From: "kevasod"}
+	if l := levels(AssessWith(macFacts(), withMac))["supported"]; l != "ok" {
+		t.Fatalf("macOS 26 is on the list, the check says %q", l)
+	}
+	old := macFacts()
+	old["os_version"] = "15"
+	if l := levels(AssessWith(old, withMac))["supported"]; l != "warn" {
+		t.Fatalf("macOS 15 isn't on the list, the check says %q", l)
 	}
 }
 

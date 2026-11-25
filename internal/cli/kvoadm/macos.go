@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"kevaso.com/core/internal/fence"
+	"kevaso.com/core/internal/platform"
 	"kevaso.com/core/internal/sshboot"
 )
 
@@ -109,12 +110,12 @@ func assessMac(facts map[string]string, sup Supported) []CheckResult {
 	if facts["port_6443"] == "taken" && facts["kevasod"] != "running" {
 		add("fail", "port 6443", "taken", "the API listens on 6443: something else already does")
 	}
-	add("warn", "macOS worker", "new", "tested by hand on one Mac, not yet by the end-to-end suite; "+supportNote(sup))
+	if platform.Supports(sup.List, "macos", facts["os_version"]) {
+		add("ok", "supported", "macOS "+facts["os_version"], "on "+sup.From+"'s supported list")
+	} else {
+		add("warn", "supported", "macOS "+facts["os_version"], "not on "+sup.From+"'s supported list ("+platform.Names(sup.List)+"): it may work, it isn't tested")
+	}
 	return out
-}
-
-func supportNote(sup Supported) string {
-	return "kevasod's supported list (" + sup.From + ") names Linux systems only"
 }
 
 func atoiOr(s string, d int) int {
