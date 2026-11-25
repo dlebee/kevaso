@@ -264,9 +264,9 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	case t.token:
 		s.serviceAccountToken(w, r, t)
 	case t.value && r.Method == http.MethodGet && t.kind.Kind == "ClusterSecret":
-		s.clusterSecretValue(ctx, w, t)
+		s.clusterSecretValue(ctx, w, t, r.URL.Query().Get("key"))
 	case t.value && r.Method == http.MethodGet:
-		s.secretValue(ctx, w, t)
+		s.secretValue(ctx, w, t, r.URL.Query().Get("key"))
 	case t.answer != "":
 		s.answerApproval(w, r, t)
 	case t.bundle:
@@ -472,38 +472,41 @@ func (s *Server) write(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	}
 	t.name = om.Name
 	// The guards (exposure, secrets, runtime fit, …) run in admitBuiltin, on the object as stored.
-	value, err := s.prepareSecret(ctx, t, obj)
+	sw, err := s.prepareSecret(ctx, t, obj)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if value == nil {
-		value, err = s.prepareClusterSecret(ctx, t, obj)
+	if sw == nil {
+		sw, err = s.prepareClusterSecret(ctx, t, obj)
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
 	}
-	sw := &secretWrite{value: value}
+	if sw == nil {
+		sw = &secretWrite{}
+	}
 	ctx = context.WithValue(ctx, secretWriteKey{}, sw)
 	o, err := fn(ctx, t, obj)
 	if err != nil {
-		clear(value)
+		secrets.Clear(sw.data)
 		writeErr(w, err)
 		return
 	}
-	if sw.sealed {
-		clear(value)
-	} else if value != nil && o.Data != nil && !dryRun(ctx) {
+	switch {
+	case !sw.sealed && sw.data != nil && o.Data != nil && !dryRun(ctx):
 		if t.kind.Kind == "ClusterSecret" {
-			o, err = s.storeClusterSecretValue(ctx, o, value)
+			o, err = s.storeClusterSecretValue(ctx, o, sw.data)
 		} else {
-			o, err = s.storeSecretValue(ctx, o, value)
+			o, err = s.storeSecretValue(ctx, o, sw.data, sw.sticky)
 		}
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
+	default: // sealed already, or nothing to seal (a dry run, an object finalized away)
+		secrets.Clear(sw.data)
 	}
 	if o.Data == nil { // finalized away: the object is gone
 		writeJSON(w, http.StatusOK, Status{Code: http.StatusOK, Reason: "Deleted", Message: t.key().String() + " deleted"})

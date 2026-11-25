@@ -59,6 +59,12 @@ func semantic(obj meta.Object) []string {
 			}
 		}
 		for _, sec := range o.Spec.Secrets {
+			if sec.Key != "" && !v1.ValidKey(sec.Key) {
+				errs = append(errs, fmt.Sprintf("secret %s: key %q: letters, digits, - _ and . (starting and ending with a letter or a digit)", sec.Name, sec.Key))
+			}
+			if sec.Key != "" && sec.Delivery() == v1.DeliverSign {
+				errs = append(errs, fmt.Sprintf("secret %s: a signing key has no keys to name", sec.Name))
+			}
 			if sec.To != nil {
 				if _, err := (v1.EgressRule{To: sec.To.Host}).Parse(); err != nil || strings.Contains(sec.To.Host, "*") || strings.Contains(sec.To.Host, "/") {
 					errs = append(errs, fmt.Sprintf("secret %s: to.host %q must be one host name", sec.Name, sec.To.Host))
@@ -110,6 +116,11 @@ func semantic(obj meta.Object) []string {
 	case *v1.Secret:
 		if len(o.Spec.Value) > 64<<10 {
 			errs = append(errs, "spec.value: at most 64 KiB")
+		}
+		for _, k := range o.Spec.RemoveKeys {
+			if !v1.ValidKey(k) {
+				errs = append(errs, fmt.Sprintf("spec.removeKeys: %q isn't a key's name", k))
+			}
 		}
 	case *v1.IP:
 		if a := o.Spec.Address; a != "" {

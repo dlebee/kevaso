@@ -95,7 +95,7 @@ func TestK019OnlyTheCertificatesOwnSecretIsWrittenOrDeleted(t *testing.T) {
 	reconcile("web", anyCert)
 	value := func(name string) string {
 		var v client.SecretValue
-		if err := c.Call(ctx, "GET", "/apis/kevaso/v1/namespaces/shop/secrets/"+name+"/value", nil, &v); err != nil {
+		if err := c.Call(ctx, "GET", "/apis/kevaso/v1/namespaces/shop/secrets/"+name+"/value?key=value", nil, &v); err != nil {
 			return "(" + err.Error() + ")"
 		}
 		return string(v.Value)

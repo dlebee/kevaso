@@ -20,7 +20,7 @@ func TestRegistrySecretFlags(t *testing.T) {
 	if o.secret.server != "https://ghcr.io" || o.server != "http://127.0.0.1:7443" {
 		t.Fatalf("registry %q, API %q", o.secret.server, o.server)
 	}
-	value, err := o.secret.value(strings.NewReader("tok-1\n"))
+	value, _, err := o.secret.keys(strings.NewReader("tok-1\n"))
 	if err != nil || string(value) != "tok-1" {
 		t.Fatalf("value %q %v", value, err)
 	}

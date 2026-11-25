@@ -254,6 +254,27 @@ func (r *Runtime) SetSecrets(ctx context.Context, id kri.ID, sec kri.Secrets) (s
 			return "", err
 		}
 	}
+	// A secret that was one file and is now a folder of keys (or the other way round): what was
+	// there goes first, so the new path can be made (hack/design/secret-keys.md).
+	for _, np := range paths {
+		for _, op := range cur.Files {
+			if seen[op] || op == np {
+				continue
+			}
+			var gone string
+			switch {
+			case within(op, np): // a folder of keys becomes the one file
+				gone = np
+			case within(np, op): // the one file becomes a folder of keys
+				gone = op
+			default:
+				continue
+			}
+			if err := r.Host.RemoveAll(files + gone); err != nil {
+				return "", err
+			}
+		}
+	}
 	for _, f := range sec.Files {
 		if err := r.Host.WriteFile(files+f.Path, f.Value, fileMode(f.Mode)); err != nil {
 			return "", fmt.Errorf("secret %s: %w", f.Secret, err)

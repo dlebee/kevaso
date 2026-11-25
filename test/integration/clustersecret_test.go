@@ -85,9 +85,9 @@ func installedPlugin(name, serviceAccount string) *v1.Plugin {
 func (c *cluster) readClusterValue(t *testing.T, cl *client.Client, name, query string) (client.SecretValue, error) {
 	t.Helper()
 	var v client.SecretValue
-	path := "/apis/kevaso/v1/clustersecrets/" + name + "/value"
+	path := "/apis/kevaso/v1/clustersecrets/" + name + "/value?key=value"
 	if query != "" {
-		path += "?" + query
+		path += "&" + query
 	}
 	err := cl.Call(c.ctx, http.MethodGet, path, nil, &v)
 	return v, err
@@ -362,10 +362,10 @@ func TestClusterSecretHostForPlugin(t *testing.T) {
 			t.Fatalf("%s get of the object: %+v %v", who.name, got, err)
 		}
 		var raw json.RawMessage
-		if err := who.cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/bucket", nil, &raw); err != nil || strings.Contains(string(raw), "bucket-bytes") || strings.Contains(string(raw), `"value"`) {
+		if err := who.cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/bucket", nil, &raw); err != nil || strings.Contains(string(raw), "bucket-bytes") || strings.Contains(string(raw), `"value":`) {
 			t.Fatalf("%s get carries a value: %s %v", who.name, raw, err)
 		}
-		if err := who.cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets", nil, &raw); err != nil || strings.Contains(string(raw), "bucket-bytes") || strings.Contains(string(raw), "metering-bytes") || strings.Contains(string(raw), `"value"`) {
+		if err := who.cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets", nil, &raw); err != nil || strings.Contains(string(raw), "bucket-bytes") || strings.Contains(string(raw), "metering-bytes") || strings.Contains(string(raw), `"value":`) {
 			t.Fatalf("%s list carries a value: %s %v", who.name, raw, err)
 		}
 		if err := who.cl.Create(c.ctx, clusterSecret("from-"+who.name, "nope")); status(err) != http.StatusForbidden {
@@ -436,7 +436,7 @@ func TestClusterSecretHostForPlugin(t *testing.T) {
 			if !ok {
 				t.Fatal("worker watch ended before the object")
 			}
-			if strings.Contains(string(ev.Object), "bucket-bytes") || strings.Contains(string(ev.Object), `"value"`) {
+			if strings.Contains(string(ev.Object), "bucket-bytes") || strings.Contains(string(ev.Object), `"value":`) {
 				t.Fatalf("watch carries a value: %s", ev.Object)
 			}
 			if strings.Contains(string(ev.Object), `"bucket"`) {
@@ -504,10 +504,10 @@ func TestClusterSecretStatusIsServerSet(t *testing.T) {
 	}
 
 	var raw json.RawMessage
-	if err := c.admin.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/bucket", nil, &raw); err != nil || strings.Contains(string(raw), "s3cret") || strings.Contains(string(raw), `"value"`) {
+	if err := c.admin.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/bucket", nil, &raw); err != nil || strings.Contains(string(raw), "s3cret") || strings.Contains(string(raw), `"value":`) {
 		t.Fatalf("get carries a value: %s %v", raw, err)
 	}
-	if err := c.admin.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets", nil, &raw); err != nil || strings.Contains(string(raw), "s3cret") || strings.Contains(string(raw), `"value"`) {
+	if err := c.admin.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets", nil, &raw); err != nil || strings.Contains(string(raw), "s3cret") || strings.Contains(string(raw), `"value":`) {
 		t.Fatalf("list carries a value: %s %v", raw, err)
 	}
 	if err := c.admin.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/clustersecrets/value", nil, &raw); status(err) != http.StatusNotFound {

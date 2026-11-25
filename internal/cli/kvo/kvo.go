@@ -21,15 +21,16 @@
 //	kvo invite NAME [--group G]… [-n NS --role role/NAME|clusterrole/NAME | --cluster-role NAME] [--ttl 30m]   a one-time sign-in code for a person
 //	        and, if given, a role: a Role in NS, a ClusterRole in NS only, or a ClusterRole everywhere
 //	        (cluster-admin only; prints the kvo login line and the code to send them)
-//	kvo create secret NAME (--from-file F|- | --generate) [--type opaque|ed25519|ecdsa-p256]
+//	kvo create secret NAME (--from-file F|- | --from-file KEY=F… | --generate) [--type opaque|ed25519|ecdsa-p256]
 //	        [--write-only] [--allow broker,inject,file,env] [-l KEY=VALUE]…   values never on argv
 //	kvo create secret NAME --type registry --server HOST --username U --from-file -
 //	        [--default-pull]                    a registry credential, write-only; the password on stdin
 //	kvo secret set NAME --from-file F|-        rotate: every silo using it follows
-//	kvo get secret NAME --reveal               the value (read-value; never a write-only secret)
-//	kvo create clustersecret NAME [--description D] --from-file F|-
-//	kvo set clustersecret NAME --from-file F|-   rotate the value
-//	kvo get clustersecret [NAME] [--reveal]     spec and status; --reveal is the value
+//	kvo secret set NAME --from-file KEY=F… | --remove-key KEY…   change or remove some keys
+//	kvo get secret NAME --reveal [--key KEY]   the value (read-value; never a write-only secret)
+//	kvo create clustersecret NAME [--description D] --from-file F|- | --from-file KEY=F…
+//	kvo set clustersecret NAME --from-file F|- | --from-file KEY=F… | --remove-key KEY…
+//	kvo get clustersecret [NAME] [--reveal [--key KEY]]   spec and status; --reveal is the value
 //	kvo delete clustersecret NAME
 //	kvo get approvals | kvo watch approvals    silos waiting for a person's yes to use a secret
 //	kvo pane watch SILO                        follow a silo's panes (plain text; one way)
@@ -174,10 +175,19 @@ func parse(args []string, env func(string) string) (opts, error) {
 		case "--resource-version":
 			o.resourceVersion, err = val()
 		case "--from-file":
-			o.secret.fromFile, err = val()
+			var v string
+			v, err = val()
+			o.secret.fromFiles = append(o.secret.fromFiles, v)
 		case "--from-literal":
-			o.secret.fromLiteral, err = val()
-			o.secret.literalSet = true
+			var v string
+			v, err = val()
+			o.secret.fromLiterals = append(o.secret.fromLiterals, v)
+		case "--remove-key":
+			var v string
+			v, err = val()
+			o.secret.removeKeys = append(o.secret.removeKeys, v)
+		case "--key":
+			o.secret.key, err = val()
 		case "--i-know":
 			o.secret.iKnow = true
 		case "--generate":
@@ -591,12 +601,12 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 			if len(o.args) != 2 {
 				return errors.New("--reveal works with one clustersecret: kvo get clustersecret NAME --reveal")
 			}
-			return revealValue(ctx, c, "ClusterSecret", "", o.args[1], stdout)
+			return revealValue(ctx, c, "ClusterSecret", "", o.args[1], o.secret.key, stdout)
 		}
 		if k.Kind != "Secret" || len(o.args) != 2 {
 			return errors.New("--reveal works with one secret: kvo get secret NAME --reveal")
 		}
-		return revealSecret(ctx, c, ns, o.args[1], stdout)
+		return revealValue(ctx, c, "Secret", ns, o.args[1], o.secret.key, stdout)
 	}
 	var objs []meta.Object
 	if len(o.args) >= 2 {

@@ -70,7 +70,7 @@ func TestARefusedLooseningWriteKeepsThePreviousSecretValue(t *testing.T) {
 	if err := c.Create(ctx, sec); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, err := srv.Vault().Value(ctx, sec); err != nil || string(got) != "old-value" {
+	if got, _, err := srv.Vault().KeyValue(ctx, sec, v1.ValueKey); err != nil || string(got) != "old-value" {
 		t.Fatalf("value before the refused write: %q %v", got, err)
 	}
 	var cur v1.Secret
@@ -90,7 +90,7 @@ func TestARefusedLooseningWriteKeepsThePreviousSecretValue(t *testing.T) {
 	if cur.Readable() {
 		t.Fatal("the refused write left the secret readable")
 	}
-	got, _, err := srv.Vault().Value(ctx, &cur)
+	got, _, err := srv.Vault().KeyValue(ctx, &cur, v1.ValueKey)
 	if err != nil || string(got) != "old-value" {
 		t.Fatalf("value after the refused write: %q %v", got, err)
 	}

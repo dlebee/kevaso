@@ -88,7 +88,7 @@ func TestSecretsAccess(t *testing.T) {
 		t.Fatalf("create response: status %+v", infura.Status)
 	}
 	var raw json.RawMessage
-	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/infura-key", nil, &raw); err != nil || strings.Contains(string(raw), `"value"`) {
+	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/infura-key", nil, &raw); err != nil || strings.Contains(string(raw), `"value":`) {
 		t.Fatalf("get carries a value: %s %v", raw, err)
 	}
 	key := secretObj("validator-1-key", critical, "")
@@ -122,21 +122,21 @@ func TestSecretsAccess(t *testing.T) {
 		if err := cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets", nil, &raw); err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(raw), "c2staW5mdXJh") || strings.Contains(string(raw), "sk-infura") || strings.Contains(string(raw), `"value"`) {
+		if strings.Contains(string(raw), "c2staW5mdXJh") || strings.Contains(string(raw), "sk-infura") || strings.Contains(string(raw), `"value":`) {
 			t.Fatalf("a list carries a value: %s", raw)
 		}
 	}
 
 	// read-value: the admin may, the editor may not; nobody for a write-only key.
 	var v client.SecretValue
-	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/infura-key/value", nil, &v); err != nil || string(v.Value) != "sk-infura-value-2" || v.Version != 2 {
+	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/infura-key/value?key=value", nil, &v); err != nil || string(v.Value) != "sk-infura-value-2" || v.Version != 2 {
 		t.Fatalf("admin read-value: %q v%d %v", v.Value, v.Version, err)
 	}
-	if err := ed.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/infura-key/value", nil, &v); status(err) != http.StatusForbidden {
+	if err := ed.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/infura-key/value?key=value", nil, &v); status(err) != http.StatusForbidden {
 		t.Fatalf("editor read-value: want 403, got %v", err)
 	}
 	for _, cl := range []*client.Client{ada, c.admin} {
-		if err := cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/validator-1-key/value", nil, &v); status(err) != http.StatusForbidden || !strings.Contains(err.Error(), "write-only") {
+		if err := cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/validator-1-key/value?key=value", nil, &v); status(err) != http.StatusForbidden || !strings.Contains(err.Error(), "write-only") {
 			t.Fatalf("reading a signing key: want 403 write-only, got %v", err)
 		}
 	}
@@ -196,7 +196,7 @@ func TestSecretsAccess(t *testing.T) {
 	if err := ada.Create(c.ctx, secretObj("db-root", critical, "")); err != nil {
 		t.Fatal(err)
 	}
-	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/db-root/value", nil, &v); status(err) != http.StatusNotFound {
+	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/db-root/value?key=value", nil, &v); status(err) != http.StatusNotFound {
 		t.Fatalf("re-created secret: want 404 no value, got %v (%q)", err, v.Value)
 	}
 
@@ -236,7 +236,7 @@ func TestRecoveryKeyAndRotation(t *testing.T) {
 		t.Fatalf("rotate: %+v %v", rot, err)
 	}
 	var v client.SecretValue
-	if err := c.admin.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/a/value", nil, &v); err != nil || string(v.Value) != "value-a" {
+	if err := c.admin.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/a/value?key=value", nil, &v); err != nil || string(v.Value) != "value-a" {
 		t.Fatalf("after rotation: %q %v", v.Value, err)
 	}
 	// A plain rotation keeps the recovery key: the escrow (a backup's way back) still opens with it.
@@ -264,7 +264,7 @@ func TestRecoveryKeyAndRotation(t *testing.T) {
 		}
 		var sec v1.Secret
 		_ = c.admin.Get(c.ctx, "Secret", "web3", "a", &sec)
-		val, _, err := (&secrets.Vault{Store: c.store, KMS: l, Now: time.Now}).Value(c.ctx, &sec)
+		val, _, err := (&secrets.Vault{Store: c.store, KMS: l, Now: time.Now}).KeyValue(c.ctx, &sec, v1.ValueKey)
 		return val, err
 	}
 	if got, err := restore(oldRK); err != nil || string(got) != "value-a" {
@@ -371,7 +371,7 @@ func TestWriteOnlySecretStaysWriteOnly(t *testing.T) {
 		t.Errorf("adding a delivery mode without a new value: %v, want 422", err)
 	}
 	var v client.SecretValue
-	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/wo/value", nil, &v); status(err) != http.StatusForbidden || len(v.Value) != 0 {
+	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/wo/value?key=value", nil, &v); status(err) != http.StatusForbidden || len(v.Value) != 0 {
 		t.Errorf("reading the value of a write-only secret: %v, want 403", err)
 	}
 	// Narrowing is fine, and a write that brings a new value may loosen both.

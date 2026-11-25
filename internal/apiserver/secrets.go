@@ -31,11 +31,91 @@ import (
 // maxSecretValue is the largest value a secret can hold.
 const maxSecretValue = 64 << 10
 
-// secretWrite is what a write to a Secret carries from prepareSecret to the guards and the commit:
-// the value taken out of the object, and whether it has been sealed already.
+// secretWrite is what a write to a Secret (or a ClusterSecret) carries from prepareSecret to the
+// guards and the commit: every key the secret will hold (nil: unchanged), whether the write brought
+// them all (value or data, not setData or removeKeys), and whether they have been sealed already.
 type secretWrite struct {
-	value  []byte
+	data   map[string][]byte
+	whole  bool // value or data: every key was given in this write (only such a write may loosen)
+	sticky bool // the value it changes was written write-only: so is this one (K-060)
 	sealed bool // sealed before the object was committed (a loosening write): nothing left to do after
+}
+
+// newKeys is the set of keys a write leaves the secret with: value (the key value) or data
+// replace every key; setData and removeKeys change some and keep the rest, from old (the keys it
+// holds now; nil, ErrNoValue when none). nil: the write changes no key.
+func newKeys(what, name string, value []byte, data, set map[string][]byte, remove []string, old func() (map[string][]byte, error)) (map[string][]byte, bool, error) {
+	forms := 0
+	for _, given := range []bool{value != nil, data != nil, set != nil || remove != nil} {
+		if given {
+			forms++
+		}
+	}
+	bad := func(f string, a ...any) error {
+		return errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %s", what, name, fmt.Sprintf(f, a...))
+	}
+	var out map[string][]byte
+	whole := false
+	switch {
+	case forms == 0:
+		return nil, false, nil
+	case forms > 1:
+		return nil, false, bad("a write carries spec.value, spec.data, or spec.setData and spec.removeKeys: one of them")
+	case value != nil:
+		out, whole = map[string][]byte{v1.ValueKey: value}, true
+	case data != nil:
+		if len(data) == 0 {
+			return nil, false, bad("spec.data needs at least one key")
+		}
+		out, whole = map[string][]byte{}, true
+		for k, b := range data {
+			if b == nil {
+				b = []byte{}
+			}
+			out[k] = b
+		}
+	default:
+		cur, err := old()
+		if err != nil && !errors.Is(err, secrets.ErrNoValue) {
+			return nil, false, err
+		}
+		out = cur
+		if out == nil {
+			out = map[string][]byte{}
+		}
+		for _, k := range remove {
+			if _, both := set[k]; both {
+				secrets.Clear(out)
+				return nil, false, bad("key %q is both in spec.setData and spec.removeKeys", k)
+			}
+			if _, ok := out[k]; !ok {
+				secrets.Clear(out)
+				return nil, false, bad("spec.removeKeys: it has no key %q", k)
+			}
+			clear(out[k])
+			delete(out, k)
+		}
+		for k, b := range set {
+			if b == nil {
+				b = []byte{}
+			}
+			clear(out[k])
+			out[k] = b
+		}
+		if len(out) == 0 {
+			return nil, false, bad("a secret keeps at least one key: delete it instead")
+		}
+	}
+	keys, size := secrets.Keys(out)
+	if p := v1.KeyProblems(keys); len(p) > 0 {
+		secrets.Clear(out)
+		return nil, false, bad("%s", strings.Join(p, "; "))
+	}
+	if size > maxSecretValue {
+		secrets.Clear(out)
+		return nil, false, bad("its keys hold %d bytes, at most %d", size, maxSecretValue)
+	}
+	return out, whole, nil
 }
 
 type secretWriteKey struct{}
@@ -60,10 +140,10 @@ func checkLoosening(ctx context.Context, old, obj meta.Object) error {
 	if !loosens(prev, next) {
 		return nil
 	}
-	if sw := secretWriteFrom(ctx); sw != nil && sw.value != nil {
+	if sw := secretWriteFrom(ctx); sw != nil && sw.data != nil && sw.whole {
 		return nil
 	}
-	return errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.valueReadable, spec.allowedDelivery, and a registry secret's spec.server or spec.username can't be changed without a new spec.value in the same write (a value made write-only, or kept to one registry, stays so)", next.Name)
+	return errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.valueReadable, spec.allowedDelivery, and a registry secret's spec.server or spec.username can't be changed without every key again (spec.value or spec.data, not spec.setData) in the same write (a value made write-only, or kept to one registry, stays so)", next.Name)
 }
 
 func kind(s *v1.Secret) string {
@@ -82,7 +162,7 @@ func kind(s *v1.Secret) string {
 func (s *Server) sealBeforeLoosening(ctx context.Context, old meta.Object, data []byte, current, expected int64) ([]byte, func(), error) {
 	sw := secretWriteFrom(ctx)
 	prev, _ := old.(*v1.Secret)
-	if sw == nil || sw.value == nil || prev == nil || s.vault == nil || dryRun(ctx) {
+	if sw == nil || sw.data == nil || !sw.whole || prev == nil || s.vault == nil || dryRun(ctx) {
 		return data, nil, nil
 	}
 	obj, _, err := v1.Decode(data)
@@ -105,7 +185,7 @@ func (s *Server) sealBeforeLoosening(ctx context.Context, old meta.Object, data 
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, nil, err
 	}
-	st, err := s.vault.Put(ctx, next, sw.value)
+	st, err := s.vault.Put(ctx, next, sw.data, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -152,18 +232,16 @@ func (s *Server) restoreSecretValue(ctx context.Context, key store.Key, prior []
 	}
 }
 
-// prepareSecret takes the value out of a Secret being written and returns it (or a generated one)
-// to seal once the object is stored. nil means the value doesn't change.
-func (s *Server) prepareSecret(ctx context.Context, t target, obj meta.Object) ([]byte, error) {
+// prepareSecret takes the keys out of a Secret being written and returns every key it will hold
+// (or a generated value) to seal once the object is stored. nil means no key changes.
+func (s *Server) prepareSecret(ctx context.Context, t target, obj meta.Object) (*secretWrite, error) {
 	sec, ok := obj.(*v1.Secret)
 	if !ok || t.status {
 		return nil, nil
 	}
-	value := sec.Spec.Value
-	sec.Spec.Value = nil
-	if len(value) > maxSecretValue {
-		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.value is %d bytes, at most %d", sec.Name, len(value), maxSecretValue)
-	}
+	sp := &sec.Spec
+	value, data, set, remove := sp.Value, sp.Data, sp.SetData, sp.RemoveKeys
+	sp.Value, sp.Data, sp.SetData, sp.RemoveKeys = nil, nil, nil, nil
 	var old *v1.Secret
 	if cur, err := s.store.Get(ctx, t.key()); err == nil {
 		if o, _, err := v1.Decode(cur.Data); err == nil {
@@ -173,23 +251,40 @@ func (s *Server) prepareSecret(ctx context.Context, t target, obj meta.Object) (
 	if old != nil && old.Spec.Type != sec.Spec.Type {
 		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.type can't change (delete and re-create it)", sec.Name)
 	}
-	if value == nil && sec.Spec.Generate && (old == nil || s.vault == nil || !s.vault.Has(ctx, old)) {
+	if value == nil && data == nil && set == nil && remove == nil && sec.Spec.Generate && (old == nil || s.vault == nil || !s.vault.Has(ctx, old)) {
 		v, err := secrets.Generate(sec.Spec.Type)
 		if err != nil {
 			return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: %v", sec.Name, err)
 		}
 		value = v
 	}
-	if value == nil {
-		return nil, nil
+	sticky := false
+	keys, whole, err := newKeys("Secret", sec.Name, value, data, set, remove, func() (map[string][]byte, error) {
+		if old == nil || s.vault == nil {
+			return nil, secrets.ErrNoValue
+		}
+		sticky = s.vault.WrittenWriteOnly(ctx, old)
+		d, _, err := s.vault.Value(ctx, old)
+		return d, err
+	})
+	if err != nil || keys == nil {
+		return nil, err
 	}
 	if s.vault == nil {
+		secrets.Clear(keys)
 		return nil, errf(http.StatusServiceUnavailable, "Unavailable", "this server has no KMS: it can't keep secret values")
 	}
-	if _, err := secrets.PublicKey(sec.Spec.Type, value); err != nil {
+	if t := kind(sec); t != v1.SecretOpaque {
+		if _, ok := keys[v1.ValueKey]; !ok || len(keys) != 1 {
+			secrets.Clear(keys)
+			return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: a %s secret holds one value, the key %q (spec.value): no other key", sec.Name, t, v1.ValueKey)
+		}
+	}
+	if _, err := secrets.PublicKey(sec.Spec.Type, keys[v1.ValueKey]); err != nil {
+		secrets.Clear(keys)
 		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: %v", sec.Name, err)
 	}
-	return value, nil
+	return &secretWrite{data: keys, whole: whole, sticky: sticky && !whole}, nil
 }
 
 // loosens reports whether next lets more of the stored value out than old does: a person can read
@@ -219,14 +314,14 @@ func registryBindingLoosens(old, next *v1.Secret) bool {
 	return v1.RegistryBinding(old.Spec.Server) != v1.RegistryBinding(next.Spec.Server) || old.Spec.Username != next.Spec.Username
 }
 
-// storeSecretValue seals value for the stored secret and records the new version in its status.
-func (s *Server) storeSecretValue(ctx context.Context, o store.Object, value []byte) (store.Object, error) {
-	defer clear(value)
+// storeSecretValue seals the keys for the stored secret and records the new version in its status.
+func (s *Server) storeSecretValue(ctx context.Context, o store.Object, data map[string][]byte, sticky bool) (store.Object, error) {
+	defer secrets.Clear(data)
 	obj, _, err := v1.Decode(o.Data)
 	if err != nil {
 		return o, err
 	}
-	st, err := s.vault.Put(ctx, obj.(*v1.Secret), value)
+	st, err := s.vault.Put(ctx, obj.(*v1.Secret), data, sticky)
 	if err != nil {
 		return o, err
 	}
@@ -254,8 +349,8 @@ func (s *Server) storeSecretValue(ctx context.Context, o store.Object, value []b
 	return o, errors.New("secret keeps changing; its value is stored, its status will catch up")
 }
 
-// secretValue serves GET …/secrets/NAME/value (RBAC already checked read-value).
-func (s *Server) secretValue(ctx context.Context, w http.ResponseWriter, t target) {
+// secretValue serves GET …/secrets/NAME/value[?key=KEY] (RBAC already checked read-value).
+func (s *Server) secretValue(ctx context.Context, w http.ResponseWriter, t target, key string) {
 	o, err := s.store.Get(ctx, t.key())
 	if err != nil {
 		writeErr(w, err)
@@ -275,7 +370,7 @@ func (s *Server) secretValue(ctx context.Context, w http.ResponseWriter, t targe
 		writeErr(w, errf(http.StatusServiceUnavailable, "Unavailable", "this server has no KMS"))
 		return
 	}
-	value, ver, err := s.vault.PersonValue(ctx, sec)
+	data, ver, err := s.vault.PersonValue(ctx, sec)
 	if errors.Is(err, secrets.ErrWriteOnly) {
 		writeErr(w, errf(http.StatusForbidden, "Forbidden", "secret %s/%s: this value was written while it was write-only, so nobody can read it back; write a new value to make it readable", sec.Namespace, sec.Name))
 		return
@@ -288,9 +383,23 @@ func (s *Server) secretValue(ctx context.Context, w http.ResponseWriter, t targe
 		writeErr(w, err)
 		return
 	}
-	defer clear(value)
+	defer secrets.Clear(data)
+	writeKeys(w, "secret "+sec.Namespace+"/"+sec.Name, data, ver, key)
+}
+
+// writeKeys answers a /value read: every key, or with key only that one (404 when it isn't one).
+func writeKeys(w http.ResponseWriter, what string, data map[string][]byte, ver int64, key string) {
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, client.SecretValue{Value: value, Version: ver})
+	if key == "" {
+		writeJSON(w, http.StatusOK, client.SecretValue{Data: data, Version: ver})
+		return
+	}
+	b, ok := data[key]
+	if !ok {
+		writeErr(w, errf(http.StatusNotFound, "NotFound", "%s has no key %q", what, key))
+		return
+	}
+	writeJSON(w, http.StatusOK, client.SecretValue{Value: b, Version: ver})
 }
 
 // person reports whether ctx's caller is a person or service account (RBAC applies), not the admin
@@ -303,9 +412,13 @@ func person(ctx context.Context) (user string, ok bool) {
 	return id.Name, true
 }
 
+// secretUse is one way a grant uses a secret: a delivery, and the key it names ("" for every key).
+type secretUse struct{ mode, key string }
+
 // canUseSecrets checks use on each named secret in ns, with each secret's labels (for selector
-// rules), and that each existing secret allows the delivery asked for.
-func (s *Server) canUseSecrets(ctx context.Context, ns string, uses map[string][]string) error {
+// rules), and that each existing secret allows the delivery asked for and has the key named (an
+// inject with no key needs a secret with one key).
+func (s *Server) canUseSecrets(ctx context.Context, ns string, uses map[string][]secretUse) error {
 	names := make([]string, 0, len(uses))
 	for n := range uses {
 		names = append(names, n)
@@ -336,9 +449,19 @@ func (s *Server) canUseSecrets(ctx context.Context, ns string, uses map[string][
 			}
 		}
 		if sec != nil {
-			for _, mode := range uses[name] {
-				if !sec.Allows(mode) {
-					return errf(http.StatusUnprocessableEntity, "Invalid", "secret %s doesn't allow delivery %s (it allows %s)", name, mode, allowedList(sec))
+			have := sec.Status.Keys
+			for _, u := range uses[name] {
+				if !sec.Allows(u.mode) {
+					return errf(http.StatusUnprocessableEntity, "Invalid", "secret %s doesn't allow delivery %s (it allows %s)", name, u.mode, allowedList(sec))
+				}
+				if len(have) == 0 {
+					continue // no value yet: its keys aren't known
+				}
+				if u.key != "" && !slices.Contains(have, u.key) {
+					return errf(http.StatusUnprocessableEntity, "Invalid", "secret %s has no key %q (its keys: %s)", name, u.key, strings.Join(have, ", "))
+				}
+				if u.mode == v1.DeliverInject && u.key == "" && len(have) > 1 {
+					return errf(http.StatusUnprocessableEntity, "Invalid", "secret %s has %d keys (%s): an inject adds one, so name it (key: …)", name, len(have), strings.Join(have, ", "))
 				}
 			}
 		}
@@ -356,15 +479,15 @@ func allowedList(sec *v1.Secret) string {
 	return fmt.Sprint(out)
 }
 
-// grantUses is what a grant asks of each secret: name → delivery modes.
-func grantUses(g *v1.Grant) map[string][]string {
-	uses := map[string][]string{}
+// grantUses is what a grant asks of each secret: name → delivery modes and keys.
+func grantUses(g *v1.Grant) map[string][]secretUse {
+	uses := map[string][]secretUse{}
 	for _, sec := range g.Spec.Secrets {
-		uses[sec.Name] = append(uses[sec.Name], sec.Delivery())
+		uses[sec.Name] = append(uses[sec.Name], secretUse{sec.Delivery(), sec.Key})
 	}
 	if g.Spec.Operations != nil && g.Spec.Operations.Sign != nil {
 		k := g.Spec.Operations.Sign.KeyRef
-		uses[k] = append(uses[k], v1.DeliverSign)
+		uses[k] = append(uses[k], secretUse{mode: v1.DeliverSign})
 	}
 	return uses
 }
@@ -739,10 +862,16 @@ func (s *Server) checkContainerFit(ctx context.Context, t target, silo *v1.Silo)
 			for _, sec := range g.(*v1.Grant).Spec.Secrets {
 				switch sec.Delivery() {
 				case v1.DeliverFile:
-					p := sec.Path
-					if p == "" {
-						p = "/run/secrets/" + sec.Name
+					// The shape it has now (a file, or a folder of keys); unknown yet: one file.
+					have := []string{v1.ValueKey}
+					if cur := s.secretNamed(ctx, t.namespace, sec.Name); cur != nil && len(cur.Status.Keys) > 0 {
+						have = cur.Status.Keys
 					}
+					k := sec.Key
+					if k == "" {
+						k = have[0]
+					}
+					p := sec.FilePath(k, have)
 					if why := v1.ContainerFileProblem(p); why != "" {
 						problems = append(problems, fmt.Sprintf("grant %s: secret %s: %s", name, sec.Name, why))
 					}

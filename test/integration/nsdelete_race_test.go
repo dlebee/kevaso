@@ -108,7 +108,7 @@ func TestASecretWrittenDuringANamespaceDeleteNeverReachesTheNextOwner(t *testing
 				t.Errorf("the next owner of web3 gets the old owner's secret: %v, want 404", err)
 			}
 			var v client.SecretValue
-			if err := bob.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/db-root/value", nil, &v); err == nil || string(v.Value) != "" {
+			if err := bob.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/db-root/value?key=value", nil, &v); err == nil || string(v.Value) != "" {
 				t.Errorf("the next owner of web3 reads the old owner's secret value %q (%v)", v.Value, err)
 			}
 		})

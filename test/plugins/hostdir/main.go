@@ -68,9 +68,10 @@ func run(ctx context.Context, side, socket, cfgFile string) error {
 	if !filepath.IsAbs(cfg.Root) {
 		return fmt.Errorf("root %q: want an absolute folder", cfg.Root)
 	}
-	tok, err := os.ReadFile(filepath.Join(os.Getenv("CREDENTIALS_DIRECTORY"), "token"))
+	// The cluster secret token's key value (LoadCredential=token:FOLDER loads each key as token_KEY).
+	tok, err := os.ReadFile(filepath.Join(os.Getenv("CREDENTIALS_DIRECTORY"), "token_value"))
 	if err != nil || len(strings.TrimSpace(string(tok))) == 0 {
-		return fmt.Errorf("no credential token (LoadCredential=token:FILE): %v", err)
+		return fmt.Errorf("no credential token_value (kvoadm plugin install --cluster-secret token): %v", err)
 	}
 	p := &Plugin{Root: cfg.Root}
 	log.Printf("hostdir %s side on %s, root %s (token of %d bytes)", side, socket, cfg.Root, len(strings.TrimSpace(string(tok))))

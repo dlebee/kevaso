@@ -17,7 +17,7 @@ import (
 	"kevaso.com/core/internal/store"
 )
 
-const valuePath = "/apis/kevaso/v1/namespaces/web3/secrets/%s/value"
+const valuePath = "/apis/kevaso/v1/namespaces/web3/secrets/%s/value?key=value"
 
 // readers polls a secret's value from several goroutines until stop, and records every value any
 // of them was given.
