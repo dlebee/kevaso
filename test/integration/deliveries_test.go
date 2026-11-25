@@ -73,7 +73,7 @@ func TestHostWritesSecrets(t *testing.T) {
 	ctx, cancel := context.WithTimeout(c.ctx, 20*time.Second)
 	defer cancel()
 	a := &agent.Agent{Client: c.host(t, "hv1"), HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}}
-	go a.Run(ctx)
+	defer runAgent(ctx, a)()
 	for _, name := range []string{"one", "two"} {
 		s := silo(name, "web3")
 		s.Spec.Grants = []string{"app"}

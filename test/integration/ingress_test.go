@@ -106,7 +106,7 @@ func TestIngress(t *testing.T) {
 		}}
 	ctx, cancel := context.WithCancel(c.ctx)
 	defer cancel()
-	go a.Run(ctx)
+	defer runAgent(ctx, a)()
 	place := func(name, ns string, ports []v1.SiloPort, svc *v1.SiloService) {
 		t.Helper()
 		s := containerSilo(name, ns, "docker")

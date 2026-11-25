@@ -100,7 +100,7 @@ func TestMountClassFollowsTheSilo(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		go a.Run(ctx)
+		defer runAgent(ctx, a)()
 	}
 	go func() {
 		for ctx.Err() == nil {

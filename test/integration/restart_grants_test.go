@@ -87,7 +87,7 @@ func TestASiloWaitsForItsGrantsBeforeItsInitSteps(t *testing.T) {
 	ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
 	defer cancel()
 	a := &agent.Agent{Client: hc, HostName: "hv1", Runtimes: map[string]kri.Runtime{"cloud-hypervisor": rt}, Clock: clock.Real{}}
-	go a.Run(ctx)
+	defer runAgent(ctx, a)()
 	for {
 		var cur v1.Silo
 		_ = c.admin.Get(c.ctx, "Silo", "web3", "one", &cur)
