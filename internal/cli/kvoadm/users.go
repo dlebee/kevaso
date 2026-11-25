@@ -13,9 +13,8 @@ import (
 	"text/tabwriter"
 
 	"kevaso.com/core/api/client"
-	"kevaso.com/core/api/meta"
-	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/admconfig"
+	"kevaso.com/core/internal/invite"
 	"kevaso.com/core/internal/kvoconfig"
 )
 
@@ -78,31 +77,7 @@ func usersCmd(ctx context.Context, args []string, stdin io.Reader, stdout io.Wri
 		if len(rest) != 1 {
 			return errors.New("users invite needs NAME")
 		}
-		user := rest[0]
-		if role != "" && namespace == "" {
-			return errors.New("--role needs --namespace")
-		}
-		var inv client.InviteResponse
-		if err := c.Call(ctx, http.MethodPost, "/admin/invites", client.InviteRequest{User: user, Groups: groups, TTL: ttl}, &inv); err != nil {
-			return err
-		}
-		if namespace != "" {
-			if role == "" {
-				role = "editor"
-			}
-			rb := &v1.RoleBinding{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "RoleBinding"},
-				ObjectMeta: meta.ObjectMeta{Name: user + "-" + role, Namespace: namespace},
-				RoleRef:    v1.RoleRef{Kind: "ClusterRole", Name: role}, Subjects: []v1.Subject{{Kind: "User", Name: user}}}
-			if err := c.Create(ctx, rb); err != nil && !client.IsAlreadyExists(err) {
-				return fmt.Errorf("binding %s as %s in %s: %w", user, role, namespace, err)
-			}
-			_, _ = fmt.Fprintf(stdout, "→ %s is %s in namespace %s\n", user, role, namespace)
-		}
-		_, _ = fmt.Fprintf(stdout, "→ invite for %s, valid until %s. Send them both lines:\n\n", user, inv.Expires.Local().Format("15:04 MST"))
-		_, _ = fmt.Fprintf(stdout, "    kvo login %s --ca %s\n", kc.Server(), inv.CAFingerprint)
-		_, _ = fmt.Fprintf(stdout, "    invite code: %s\n\n", inv.Code)
-		_, _ = fmt.Fprintln(stdout, "The code works once; the browser asks for it.")
-		return nil
+		return invite.Create(ctx, c, kc.Server(), invite.Request{User: rest[0], Groups: groups, Namespace: namespace, Role: role, TTL: ttl}, stdout)
 	case "list":
 		var out struct{ Items []client.User }
 		if err := c.Call(ctx, http.MethodGet, "/admin/users", nil, &out); err != nil {

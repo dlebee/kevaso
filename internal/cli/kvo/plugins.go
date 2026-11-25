@@ -35,7 +35,7 @@ var builtinCommands = map[string]bool{
 	"login": true, "logout": true, "ctx": true, "ns": true, "auth": true, "apply": true, "get": true,
 	"describe": true, "create": true, "secret": true, "set": true, "move": true, "restore": true, "pane": true, "approve": true,
 	"deny": true, "open": true, "close": true, "delete": true, "watch": true, "scale": true,
-	"reset": true, "protect": true, "exec": true, "ssh": true, "cp": true, "ui": true, "plugin": true,
+	"reset": true, "protect": true, "exec": true, "ssh": true, "cp": true, "ui": true, "plugin": true, "invite": true,
 	// kept: kvo will want these, and a plugin by that name would confuse people
 	"help": true, "version": true, "completion": true, "config": true, "kvo": true, "edit": true,
 	"logs": true, "run": true, "ip": true, "ips": true, "vmimage": true, "vmimages": true,
