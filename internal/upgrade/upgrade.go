@@ -50,7 +50,9 @@ func (v Version) String() string {
 	return s
 }
 
-// Compare is -1, 0 or 1 (a pre-release sorts before its release; pre-releases compare as text).
+// Compare is -1, 0 or 1. A pre-release sorts before its release, and pre-releases compare
+// as semver says: field by field on the dots, numbers as numbers (rc.9 < rc.10), a number
+// before a word, and fewer fields first when the rest are equal (rc < rc.1).
 func (v Version) Compare(o Version) int {
 	for _, d := range []int{v.Major - o.Major, v.Minor - o.Minor, v.Patch - o.Patch} {
 		if d != 0 {
@@ -65,7 +67,31 @@ func (v Version) Compare(o Version) int {
 	case o.Pre == "":
 		return -1
 	}
-	return sign(strings.Compare(v.Pre, o.Pre))
+	return comparePre(v.Pre, o.Pre)
+}
+
+// comparePre orders two non-empty pre-release strings by semver's rules (pure).
+func comparePre(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		x, xerr := strconv.Atoi(as[i])
+		y, yerr := strconv.Atoi(bs[i])
+		switch {
+		case xerr == nil && yerr == nil:
+			if x != y {
+				return sign(x - y)
+			}
+		case xerr == nil:
+			return -1 // a number sorts before a word
+		case yerr == nil:
+			return 1
+		default:
+			if c := strings.Compare(as[i], bs[i]); c != 0 {
+				return c
+			}
+		}
+	}
+	return sign(len(as) - len(bs))
 }
 
 func sign(d int) int {
