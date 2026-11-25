@@ -80,7 +80,7 @@ func TestTheFenceIsArmedOnlyOnceTheRecordHoldsTheSilo(t *testing.T) {
 	a := &Agent{Client: c, HostName: "hv1", Runtimes: map[string]kri.Runtime{"docker": fake.New()}, Clock: clock.Real{},
 		LastContact: time.Now, FenceDir: dir}
 	RunForTest(t, ctx, a)
-	go stampLikeAWatcher(ctx, dir) // armed means a watcher runs (K-067)
+	stampLikeAWatcher(t, ctx, dir) // armed means a watcher runs (K-067)
 	get := func() *v1.Silo {
 		var cur v1.Silo
 		if err := c.Get(ctx, "Silo", "dev", "validator", &cur); err != nil {
@@ -131,14 +131,22 @@ func TestTheFenceIsArmedOnlyOnceTheRecordHoldsTheSilo(t *testing.T) {
 	}
 }
 
-// stampLikeAWatcher writes the fence watcher's stamp until ctx ends.
-func stampLikeAWatcher(ctx context.Context, dir string) {
-	for {
-		_ = fence.WriteStamp(dir, fence.Stamp{Version: fence.RecordVersion, BootID: boottime.ID(), Boot: boottime.Now(), At: time.Now()})
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(200 * time.Millisecond):
+// stampLikeAWatcher writes the fence watcher's stamp until ctx ends or the test does. It stops,
+// and is waited for, in a cleanup registered after dir's: before dir is removed, or the removal
+// races its last write ("directory not empty").
+func stampLikeAWatcher(t testing.TB, ctx context.Context, dir string) {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			_ = fence.WriteStamp(dir, fence.Stamp{Version: fence.RecordVersion, BootID: boottime.ID(), Boot: boottime.Now(), At: time.Now()})
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(200 * time.Millisecond):
+			}
 		}
-	}
+	}()
+	t.Cleanup(func() { cancel(); <-done })
 }
