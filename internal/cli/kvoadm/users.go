@@ -20,7 +20,7 @@ import (
 
 // usersCmd runs kvoadm users invite|list|disable, as the cluster-admin of a cluster folder (--cluster).
 //
-//	kvoadm users invite NAME [--group G]… [--namespace NS [--role editor]] [--ttl 15m] [--cluster NAME]
+//	kvoadm users invite NAME [--group G]… [-n NS --role role/NAME|clusterrole/NAME | --cluster-role NAME] [--ttl 15m] [--cluster NAME]
 //	kvoadm users list
 //	kvoadm users disable NAME
 //	kvoadm users resign [USER@]ADDRESS --name USER [--kvo] [--cluster NAME] [--ssh-key PATH]
@@ -33,7 +33,7 @@ func usersCmd(ctx context.Context, args []string, stdin io.Reader, stdout io.Wri
 		return usersResign(ctx, args[1:], stdin, stdout)
 	}
 	var groups, rest []string
-	var namespace, role, ttl, kctx string
+	var namespace, role, clusterRole, ttl, kctx string
 	for i := 1; i < len(args); i++ {
 		a := args[i]
 		val := func() (string, error) {
@@ -53,6 +53,8 @@ func usersCmd(ctx context.Context, args []string, stdin io.Reader, stdout io.Wri
 			namespace, err = val()
 		case "--role":
 			role, err = val()
+		case "--cluster-role":
+			clusterRole, err = val()
 		case "--ttl":
 			ttl, err = val()
 		case "--cluster":
@@ -77,7 +79,7 @@ func usersCmd(ctx context.Context, args []string, stdin io.Reader, stdout io.Wri
 		if len(rest) != 1 {
 			return errors.New("users invite needs NAME")
 		}
-		return invite.Create(ctx, c, kc.Server(), invite.Request{User: rest[0], Groups: groups, Namespace: namespace, Role: role, TTL: ttl}, stdout)
+		return invite.Create(ctx, c, kc.Server(), invite.Request{User: rest[0], Groups: groups, Namespace: namespace, Role: role, ClusterRole: clusterRole, TTL: ttl}, stdout)
 	case "list":
 		var out struct{ Items []client.User }
 		if err := c.Call(ctx, http.MethodGet, "/admin/users", nil, &out); err != nil {

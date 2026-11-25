@@ -59,10 +59,10 @@ func TestKvoLoginAndRBACFromTheCLI(t *testing.T) {
 		return out
 	}
 
-	out := ok(kvoadmCmd, "", "users", "invite", "bob", "--namespace", "payments")
+	out := ok(kvoadmCmd, "", "users", "invite", "bob", "--namespace", "payments", "--role", "clusterrole/editor")
 	login := regexp.MustCompile(`kvo login (\S+) --ca (sha256:[0-9a-f]{64})`).FindStringSubmatch(out)
 	code := regexp.MustCompile(`invite code: (kvi_\S+)`).FindStringSubmatch(out)
-	if login == nil || code == nil || !strings.Contains(out, "bob is editor in namespace payments") {
+	if login == nil || code == nil || !strings.Contains(out, "bob has the ClusterRole editor in namespace payments") {
 		t.Fatalf("invite output:\n%s", out)
 	}
 

@@ -72,7 +72,7 @@ func TestKvoPlugins(t *testing.T) {
 		}
 		return out
 	}
-	invite, _, _ := run(c.ctx, kvoadmCmd, "", "users", "invite", "bob", "--namespace", "payments")
+	invite, _, _ := run(c.ctx, kvoadmCmd, "", "users", "invite", "bob", "--namespace", "payments", "--role", "clusterrole/editor")
 	login := regexp.MustCompile(`kvo login (\S+) --ca (sha256:[0-9a-f]{64})`).FindStringSubmatch(invite)
 	code := regexp.MustCompile(`invite code: (kvi_\S+)`).FindStringSubmatch(invite)
 	if login == nil || code == nil {

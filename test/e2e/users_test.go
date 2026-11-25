@@ -116,7 +116,7 @@ kind: Silo
 metadata: { name: ledger, namespace: secret-project }
 spec: { runtime: cloud-hypervisor, vm: { image: ubuntu-24.04 }, resources: { cpu: 1, memory: 1Gi } }
 `, "apply", "-f", "-")
-	inv := must(kvoadm.Run, "", "users", "invite", "bob", "--namespace", "payments")
+	inv := must(kvoadm.Run, "", "users", "invite", "bob", "--namespace", "payments", "--role", "clusterrole/editor")
 	t.Logf("kvoadm users invite:\n%s", regexp.MustCompile(`kvi_\S+`).ReplaceAllString(inv, "kvi_…"))
 	login := regexp.MustCompile(`kvo login (\S+) --ca (sha256:[0-9a-f]{64})`).FindStringSubmatch(inv)
 	code := regexp.MustCompile(`invite code: (kvi_\S+)`).FindStringSubmatch(inv)

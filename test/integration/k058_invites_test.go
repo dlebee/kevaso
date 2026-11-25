@@ -2,6 +2,7 @@ package integration
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -89,7 +90,7 @@ func TestAClusterAdminSignedInWithKvoInvitesSomeone(t *testing.T) {
 	ann := signIn(c.invite(t, "ann", "kevaso:cluster-admins"))
 
 	var out strings.Builder
-	if err := invite.Create(c.ctx, ann, c.url, invite.Request{User: "bob", Namespace: "payments"}, &out); err != nil {
+	if err := invite.Create(c.ctx, ann, c.url, invite.Request{User: "bob", Namespace: "payments", Role: "clusterrole/editor"}, &out); err != nil {
 		t.Fatalf("a cluster-admin's kvo invite: %v", err)
 	}
 	printed := out.String()
@@ -99,7 +100,7 @@ func TestAClusterAdminSignedInWithKvoInvitesSomeone(t *testing.T) {
 			code = v
 		}
 	}
-	if code == "" || !strings.Contains(printed, "kvo login "+c.url+" --ca "+fp) || !strings.Contains(printed, "bob is editor in namespace payments") {
+	if code == "" || !strings.Contains(printed, "kvo login "+c.url+" --ca "+fp) || !strings.Contains(printed, "bob has the ClusterRole editor in namespace payments") {
 		t.Fatalf("what to send bob:\n%s", printed)
 	}
 	bob := signIn(code)
@@ -115,5 +116,106 @@ func TestAClusterAdminSignedInWithKvoInvitesSomeone(t *testing.T) {
 	}
 	if !strings.Contains(ce.Message, "kvo invite") {
 		t.Errorf("the refusal doesn't name kvo invite: %q", ce.Message)
+	}
+}
+
+// An invite's role says what it is and where it applies, every time: a Role in a namespace, a
+// ClusterRole in a namespace, or a ClusterRole everywhere. A missing Role, or a caller who may
+// not invite, leaves nothing behind: no binding, no code.
+func TestInviteRolesAreExplicit(t *testing.T) {
+	c := newCluster(t)
+	tm := func(k string) meta.TypeMeta { return meta.TypeMeta{APIVersion: v1.APIVersion, Kind: k} }
+	if err := c.admin.Create(c.ctx, &v1.Namespace{TypeMeta: tm("Namespace"), ObjectMeta: meta.ObjectMeta{Name: "payments"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.admin.Create(c.ctx, &v1.Role{TypeMeta: tm("Role"), ObjectMeta: meta.ObjectMeta{Name: "deployer", Namespace: "payments"},
+		Rules: []v1.PolicyRule{{Verbs: []string{"get", "list"}, Resources: []string{"silos"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	run := func(r invite.Request) (string, error) {
+		var out strings.Builder
+		err := invite.Create(c.ctx, c.admin, c.url, r, &out)
+		return out.String(), err
+	}
+	for _, x := range []struct {
+		r    invite.Request
+		says string
+		get  func() error
+	}{
+		{invite.Request{User: "ann", Namespace: "payments", Role: "role/deployer"}, "ann has the Role deployer in namespace payments",
+			func() error {
+				var b v1.RoleBinding
+				if err := c.admin.Get(c.ctx, "RoleBinding", "payments", "ann-role-deployer", &b); err != nil {
+					return err
+				}
+				if b.RoleRef != (v1.RoleRef{Kind: "Role", Name: "deployer"}) {
+					return fmt.Errorf("roleRef %+v", b.RoleRef)
+				}
+				return nil
+			}},
+		{invite.Request{User: "bob", Namespace: "payments", Role: "clusterrole/editor"}, "bob has the ClusterRole editor in namespace payments",
+			func() error {
+				var b v1.RoleBinding
+				if err := c.admin.Get(c.ctx, "RoleBinding", "payments", "bob-clusterrole-editor", &b); err != nil {
+					return err
+				}
+				if b.RoleRef != (v1.RoleRef{Kind: "ClusterRole", Name: "editor"}) {
+					return fmt.Errorf("roleRef %+v", b.RoleRef)
+				}
+				return nil
+			}},
+		{invite.Request{User: "cat", ClusterRole: "viewer"}, "cat has the ClusterRole viewer in every namespace",
+			func() error {
+				var b v1.ClusterRoleBinding
+				if err := c.admin.Get(c.ctx, "ClusterRoleBinding", "", "cat-clusterrole-viewer", &b); err != nil {
+					return err
+				}
+				if b.RoleRef != (v1.RoleRef{Kind: "ClusterRole", Name: "viewer"}) || len(b.Subjects) != 1 || b.Subjects[0].Name != "cat" {
+					return fmt.Errorf("binding %+v", b)
+				}
+				return nil
+			}},
+		{invite.Request{User: "dan"}, "dan has no role yet", func() error { return nil }},
+	} {
+		out, err := run(x.r)
+		if err != nil || !strings.Contains(out, x.says) || !strings.Contains(out, "invite code: kvi_") {
+			t.Fatalf("%+v: %v\n%s", x.r, err, out)
+		}
+		if err := x.get(); err != nil {
+			t.Errorf("%+v: the binding: %v", x.r, err)
+		}
+	}
+
+	// A Role that isn't there: refused before any code is made.
+	if out, err := run(invite.Request{User: "eve", Namespace: "payments", Role: "role/nosuch"}); err == nil ||
+		!strings.Contains(err.Error(), "no Role nosuch in namespace payments") || strings.Contains(out, "invite code") {
+		t.Fatalf("a missing Role: %v\n%s", err, out)
+	}
+
+	// Someone who may not invite (bob, an editor in payments): a 403, and no binding made for eve.
+	fp, _ := client.Fingerprint(c.ca)
+	caPEM, err := login.FetchCA(c.ctx, c.url, fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := login.Login(c.ctx, c.url, caPEM, login.Options{Open: browser(t, c.invite(t, "bob"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := tokenstore.File{Dir: t.TempDir()}
+	if err := login.Save(st, "it", tok); err != nil {
+		t.Fatal(err)
+	}
+	bob, _ := client.NewTLS(c.url, caPEM, nil, nil)
+	bob.Token = login.Tokens(c.url, caPEM, st, "it", t.TempDir())
+	var out strings.Builder
+	err = invite.Create(c.ctx, bob, c.url, invite.Request{User: "eve", Namespace: "payments", Role: "clusterrole/editor"}, &out)
+	var ce *client.Error
+	if !errors.As(err, &ce) || ce.Code != http.StatusForbidden || !strings.Contains(ce.Message, "cluster-admin") {
+		t.Fatalf("bob inviting: %v", err)
+	}
+	var rb v1.RoleBinding
+	if err := c.admin.Get(c.ctx, "RoleBinding", "payments", "eve-clusterrole-editor", &rb); !client.IsNotFound(err) {
+		t.Fatalf("a refused invite left a binding: %v", err)
 	}
 }
