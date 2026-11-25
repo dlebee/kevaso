@@ -63,17 +63,18 @@ func TestLabClusterSecret(t *testing.T) {
 	if cfgPath == "" || keyFile == "" {
 		t.Fatal("KVO_CONFIG and KEVASO_METAL_KEY come from the lab env file")
 	}
-	labDir := filepath.Dir(cfgPath)
-	if _, err := os.Stat(filepath.Join(labDir, ".kevaso", "signing.key")); err != nil {
+	labDir := os.Getenv("LAB_DIR")
+	// kvoadm keeps the signing key hosts pin in the cluster's folder (admconfig).
+	if _, err := os.Stat(filepath.Join(labDir, ".kevaso", "clusters", os.Getenv("LAB_NAME"), "signing.key")); err != nil {
 		t.Fatalf("lab signing key: %v", err)
 	}
 	kcfg, err := kvoconfig.Load(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	admin := kcfg.CurrentContext
-	if admin == "" {
-		t.Fatal("the lab config has no current context")
+	admin := os.Getenv("LAB_NAME") // the lab admin's context (a test's kvo login may switch the current one)
+	if _, ok := kcfg.Contexts[admin]; !ok {
+		t.Fatalf("the lab config has no context %s", admin)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
@@ -313,7 +314,7 @@ func labNamespaceAdmin(t *testing.T, ctx context.Context, admin, aVal, bVal stri
 	t.Helper()
 	labKvo(t, ctx, "apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: "+labNS+" }\n",
 		"apply", "--context", admin, "-f", "-")
-	inv := labKvoadm(t, ctx, filepath.Dir(os.Getenv("KVO_CONFIG")), "users", "invite", labUser, "--namespace", labNS, "--role", "admin")
+	inv := labKvoadm(t, ctx, os.Getenv("LAB_DIR"), "users", "invite", labUser, "--namespace", labNS, "--role", "admin")
 	t.Logf("invite: %s", labRedact(inv, aVal, bVal))
 	loginMatch := regexp.MustCompile(`kvo login (\S+) --ca (sha256:[0-9a-f]{64})`).FindStringSubmatch(inv)
 	inviteMatch := regexp.MustCompile(`invite code: (kvi_\S+)`).FindStringSubmatch(inv)

@@ -99,6 +99,7 @@ func TestBackupAndRestore(t *testing.T) {
 	a, target, ipA := machine("cpa")
 	initOut := kvoadmRun("", append(append([]string{"init"}, target...), "--kevasod", bin, "--name", "cp-1", "--cluster", "e2e",
 		"--api-server", "https://127.0.0.1:6443", "--internal-ip", ipA)...)
+	useAdminKvo(t, "e2e") // kvo's own context is a plain user; these steps are an admin's
 	rk := regexp.MustCompile(`KVR1-[A-Z0-9-]+`).FindString(initOut)
 	if rk == "" {
 		t.Fatalf("no recovery key in:\n%s", initOut)

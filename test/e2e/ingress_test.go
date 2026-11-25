@@ -189,6 +189,7 @@ chmod 0755 /etc/kevaso/dns-providers/challtest`); err != nil {
 	must(kvoadm.Run, "", "init", info.User+"@"+info.Host, "--ssh-port", strconv.Itoa(info.Port), "--ssh-key", info.KeyFile,
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
 		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker", "--runtime", "docker")
+	useAdminKvo(t, "e2e") // kvo's own context is a plain user; these steps are an admin's
 
 	app := func(name, ns, port, page string) string {
 		return fmt.Sprintf(`---

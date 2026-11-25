@@ -12,7 +12,6 @@ import (
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	kicdrivers "kevaso.com/core/builtin/kic"
-	"kevaso.com/core/internal/kvoconfig"
 	"kevaso.com/core/sdk/kic"
 )
 
@@ -65,7 +64,7 @@ func parseIngress(args []string) (IngressOptions, error) {
 			o.Image, err = val()
 		case "--runtime":
 			o.Runtime, err = val()
-		case "--context":
+		case "--cluster":
 			o.Context, err = val()
 		case "--host":
 			if v, err = val(); err == nil {
@@ -194,7 +193,7 @@ func IngressObjects(o IngressOptions, drivers kic.Registry) (*v1.Silo, *v1.Ingre
 	return silo, class, nil
 }
 
-// ingressCmd runs kvoadm ingress install, as a cluster-admin of the current kvo context: one
+// ingressCmd runs kvoadm ingress install, as the cluster-admin of a cluster folder (--cluster): one
 // command for an ingress class served by a stock proxy (design §7.3).
 func ingressCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) > 0 && args[0] == "assign" {
@@ -208,15 +207,7 @@ func ingressCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	path, err := kvoconfig.Path()
-	if err != nil {
-		return err
-	}
-	cfg, err := kvoconfig.Load(path)
-	if err != nil {
-		return err
-	}
-	c, _, err := cfg.Client(path, o.Context)
+	c, _, err := adminClient(o.Context)
 	if err != nil {
 		return err
 	}
@@ -252,7 +243,7 @@ func ingressCmd(ctx context.Context, args []string, stdout io.Writer) error {
 // ingressAssign adds host assignments to an IngressClass that is already there.
 func ingressAssign(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return errors.New("ingress assign CLASS --host NAME=NAMESPACE[,NAMESPACE]… [--context NAME]")
+		return errors.New("ingress assign CLASS --host NAME=NAMESPACE[,NAMESPACE]… [--cluster NAME]")
 	}
 	var o IngressOptions
 	o.Class = args[0]
@@ -267,9 +258,9 @@ func ingressAssign(ctx context.Context, args []string, stdout io.Writer) error {
 			if err := o.addHost(args[i]); err != nil {
 				return err
 			}
-		case "--context":
+		case "--cluster":
 			if i+1 >= len(args) {
-				return errors.New("--context needs a value")
+				return errors.New("--cluster needs a value")
 			}
 			i++
 			o.Context = args[i]
@@ -284,17 +275,9 @@ func ingressAssign(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 	}
 	if len(o.Hosts) == 0 {
-		return errors.New("ingress assign CLASS --host NAME=NAMESPACE[,NAMESPACE]… [--context NAME]")
+		return errors.New("ingress assign CLASS --host NAME=NAMESPACE[,NAMESPACE]… [--cluster NAME]")
 	}
-	path, err := kvoconfig.Path()
-	if err != nil {
-		return err
-	}
-	cfg, err := kvoconfig.Load(path)
-	if err != nil {
-		return err
-	}
-	c, _, err := cfg.Client(path, o.Context)
+	c, _, err := adminClient(o.Context)
 	if err != nil {
 		return err
 	}

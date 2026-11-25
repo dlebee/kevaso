@@ -61,16 +61,45 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/admconfig"
 	"kevaso.com/core/internal/etcd"
-	"kevaso.com/core/internal/kvoconfig"
 	"kevaso.com/core/internal/pki"
 	"kevaso.com/core/internal/sshboot"
 )
 
 // Run runs one kvoadm command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	// --cluster picks the cluster folder (admconfig). Commands that take a machine's address carry
+	// it in ctx; the rest parse it themselves, and init's --cluster names the new cluster.
+	if addressCommand(args) {
+		rest, name, err := takeCluster(args)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 2
+		}
+		args, ctx = rest, withCluster(ctx, name)
+	}
 	if len(args) > 0 && args[0] == "host" {
 		if err := hostCmd(ctx, args[1:], stdin, stdout); err != nil {
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 1
+		}
+		return 0
+	}
+	if len(args) > 0 && args[0] == "kvo" {
+		err := kvoAsAdmin(ctx, args[1:], stdin, stdout, stderr)
+		var code exitCode
+		switch {
+		case errors.As(err, &code):
+			return int(code)
+		case err != nil:
+			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
+			return 1
+		}
+		return 0
+	}
+	if len(args) > 0 && args[0] == "admins" {
+		if err := adminsCmd(ctx, args[1:], stdin, stdout); err != nil {
 			_, _ = fmt.Fprintln(stderr, "kvoadm:", err)
 			return 1
 		}
@@ -149,24 +178,33 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm init [USER@]ADDRESS --ssh-key PATH --host-key SHA256:… --kevasod PATH [--name NAME] [--api-server URL] [--store sqlite|etcd] [--restore BACKUP (--no-hosts-added | --host-added NAME)] [--internal-ip IP] [--external-ip IP]
   kvoadm backup [USER@]ADDRESS --output FILE [--ssh-key PATH]
   kvoadm host enable-worker [USER@]ADDRESS --ssh-key PATH [--runtime NAME]… [--loop-storage SIZE | --storage-device /dev/DISK]
-  kvoadm host reconnect [USER@]ADDRESS --ssh-key PATH [--server URL]
+  kvoadm host reconnect HOST|[USER@]ADDRESS [--ssh-key PATH] [--server URL]
   kvoadm host trust-control-plane [USER@]ADDRESS --ssh-key PATH [--data DIR] [--yes]
   kvoadm host kept [USER@]ADDRESS --ssh-key PATH [--data DIR] [--remove NAMESPACE/NAME/UID [--yes]]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install worker [--runtime NAME]… [--internal-ip IP] [--external-ip IP]
   kvoadm host add [USER@]ADDRESS --ssh-key PATH --kevasod PATH --install control-plane [--state-only] [--internal-ip IP] [--external-ip IP]
   kvoadm host install HOST control-plane [--state-only] | uninstall HOST control-plane | remove HOST | confirm-off NAME
   kvoadm host list | drain NAME | uncordon NAME
+  kvoadm host ssh NAME [list | add [USER@]ADDRESS[:PORT]… [--local] | remove ADDRESS…]
+  kvoadm admins [list] | add NAME KEY.pub… | remove NAME | sync [--dry-run]
+  kvoadm kvo [--cluster NAME] ARGS…   any kvo command, as the cluster's admin (kvo's own context is a plain user)
   kvoadm store migrate [USER@]ADDRESS --ssh-key PATH
   kvoadm upgrade --kevasod PATH [--ssh-key PATH] [--batch N] [--version V] [--dry-run]
   kvoadm users invite NAME [--namespace NS [--role editor]] [--group G]… | list | disable NAME | resign [USER@]ADDRESS --name USER
   kvoadm kms rotate [USER@]ADDRESS [--new-recovery-key]
-  kvoadm reset [USER@]ADDRESS --ssh-key PATH [--host-key SHA256:…] [--dry-run] [--yes] [--force] [--wipe-storage]
+  kvoadm reset HOST|[USER@]ADDRESS [--ssh-key PATH] [--host-key SHA256:…] [--dry-run] [--yes] [--force] [--wipe-storage]
   kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--cluster-secret NAME]… [--side controller|node]
   kvoadm plugin remove [USER@]ADDRESS --name NAME
   kvoadm ingress install [--class public] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --lb-class CLASS] [--host NAME=NAMESPACE[,NAMESPACE]]… [--image REF] [--option K=V]…
   kvoadm ingress assign CLASS --host NAME=NAMESPACE[,NAMESPACE]…
-  kvoadm restore status [--context NAME]
-  kvoadm restore settle SILO -n NS --to HOST [--context NAME]
+  kvoadm restore status [--cluster NAME]
+  kvoadm restore settle SILO -n NS --to HOST [--cluster NAME]
+
+Every command but init acts on one cluster: --cluster NAME, else $KVOADM_CLUSTER, else the only one.
+Each cluster is a folder, ~/.kevaso/clusters/NAME/ ($KVOADM_HOME replaces ~/.kevaso), with two files:
+cluster.yaml, the team's, to commit (the API and CA, each host's SSH addresses in the order to try,
+the admins and their public keys; never a secret), and local.yaml, this machine's alone (who you
+are, your SSH key, your admin credential, addresses only you use). kvo keeps ~/.kevaso/config.yaml.
 The step-by-step guide: https://dlebee.github.io/kevaso-docs/setup/prepare/`)
 		return 2
 	}
@@ -185,8 +223,24 @@ The step-by-step guide: https://dlebee.github.io/kevaso-docs/setup/prepare/`)
 	return 0
 }
 
+// addressCommand reports whether a command is given a machine's address (or a host's name) and
+// takes --cluster only to pick the cluster folder's keys and addresses.
+func addressCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "backup", "kms", "plugin", "reset", "store", "check":
+		return true
+	case "host":
+		return len(args) > 1 && (args[1] == "trust-control-plane" || args[1] == "kept" || args[1] == "enable-worker")
+	}
+	return false
+}
+
 // InitOptions are kvoadm init's flags.
 type InitOptions struct {
+	// Home replaces ~/.kevaso (tests); a cluster's folder is Home/clusters/CLUSTER (admconfig).
 	User, Address, Name, SSHKey, HostKey, Kevasod, APIServer, Cluster, UserName, Home string
 	SSHPort                                                                           int
 	HostKeyFirstUse                                                                   bool   // trust the host key without asking (tests only)
@@ -210,6 +264,8 @@ type InitOptions struct {
 	HostsAdded           []string // restore: a host that joined since the backup (repeatable)
 	Store                string   // init: sqlite (default) or etcd (the embedded member with a peer listener, ready for more system nodes)
 	ReplaceUnit          bool     // write kevasod.service from this run's flags only
+	keys                 string   // the cluster folder holding kvoadm's signing and SSH keys (admconfig)
+	direct               bool     // dial this address as given (dialHostAt already picked it)
 	nameGiven            bool
 	internalGiven        bool // --internal-ip was on the command line
 	externalGiven        bool // --external-ip was on the command line
@@ -225,7 +281,9 @@ type InitOptions struct {
 	hardeningAsked       bool // a hardening flag was given: don't ask
 }
 
-func parseInit(args []string) (InitOptions, error) {
+// parseInitNoCredential is parseInit without the login check, for a command whose SSH key may come
+// from the cluster folder (host add): it checks once the folder has been read.
+func parseInitNoCredential(args []string) (InitOptions, error) {
 	var rest []string
 	store := ""
 	var replace, storeGiven bool
@@ -280,6 +338,15 @@ func parseInit(args []string) (InitOptions, error) {
 		return o, errors.New("--kevasod PATH is required: a kevasod binary for the host's OS and CPU (release downloads come later)")
 	}
 	if err := needIPs(o); err != nil {
+		return o, err
+	}
+	return o, nil
+}
+
+// parseInit is kvoadm init's flags: the login is given (no cluster folder exists yet).
+func parseInit(args []string) (InitOptions, error) {
+	o, err := parseInitNoCredential(args)
+	if err != nil {
 		return o, err
 	}
 	return o, needCredential(o)
@@ -652,23 +719,34 @@ func readLine(r *bufio.Reader) (string, error) {
 }
 
 func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Writer) error {
-	home := o.Home
-	if home == "" {
-		h, err := os.UserHomeDir()
+	root := o.Home
+	if root == "" {
+		r, err := admconfig.Root()
 		if err != nil {
 			return err
 		}
-		home = filepath.Join(h, ".kevaso")
+		root = r
 	}
 	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
 	var restore []byte
-	existing := false // the machine already holds this cluster's data (a volume moved over to it)
-	if o.Restore != "" {
+	existing := false    // the machine already holds this cluster's data (a volume moved over to it)
+	if o.Restore != "" { // first: a restore takes the cluster's name from the backup
 		var err error
 		if restore, err = prepareRestore(&o, stdin, out); err != nil {
 			return fmt.Errorf("restore: %w", err)
 		}
 	}
+	// The cluster's folder: kvoadm's config, its admin credentials, and the keys hosts pin (its
+	// binary-signing key, its own SSH key). Copying the folder is handing the cluster over.
+	kc, err := admconfig.Load(root, o.Cluster)
+	if err != nil {
+		kc = admconfig.New(root, o.Cluster)
+	}
+	if err := os.MkdirAll(kc.Folder(), 0o700); err != nil {
+		return err
+	}
+	o.keys = kc.Folder()
+	home := kc.Folder()
 	conn, err := bootstrap(ctx, o, home, stdin, out, say)
 	if err != nil {
 		return err
@@ -725,20 +803,31 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	if server == "" {
 		server = "https://" + net.JoinHostPort(o.Address, "6443")
 	}
-	cfgPath := filepath.Join(home, "config.yaml")
-	if p := os.Getenv("KVO_CONFIG"); p != "" && o.Home == "" {
-		cfgPath = p
+	kc.Shared.Cluster, kc.Shared.Server = o.Cluster, server
+	kc.Local.Admin = o.UserName
+	if kc.Local.SSHKey == "" && o.SSHKey != "" {
+		if abs, err := filepath.Abs(o.SSHKey); err == nil {
+			kc.Local.SSHKey = abs
+		}
 	}
-	if err := kvoconfig.AddContext(cfgPath, o.Cluster, server, []byte(cred.CA), []byte(cred.Certificate), keyPEM); err != nil {
+	// You are the cluster's first admin: your public key goes in the shared file, for kvoadm
+	// admins sync to put on every host.
+	if pub := publicKeyOf(kc.Local.SSHKey); pub != "" && !adminListed(kc, o.UserName) {
+		_ = kc.SetAdmin(o.UserName, pub)
+	}
+	if err := kc.WriteCredentials([]byte(cred.CA), []byte(cred.Certificate), keyPEM); err != nil {
 		return err
 	}
-	say("kvo context %q written to %s (server %s)", o.Cluster, cfgPath, server)
+	if err := kc.Save(); err != nil {
+		return err
+	}
+	say("cluster %s: kvoadm's config and admin credential in %s (server %s)", o.Cluster, kc.Folder(), server)
 	if cert, err := pki.ParseCertificatePEM([]byte(cred.Certificate)); err == nil {
-		say("certificate for %s is valid until %s. After that, run: %s",
-			o.UserName, cert.NotAfter.UTC().Format("2006-01-02"), kvoconfig.CertRecovery(o.UserName, server))
+		say("the admin certificate for %s is valid until %s. After that, run: kvoadm users resign %s --name %s",
+			o.UserName, cert.NotAfter.UTC().Format("2006-01-02"), o.Name, o.UserName)
 	}
 
-	// 6. Check it from here, over TLS, the way kvo will.
+	// 6. Check it from here, over TLS, the way kvoadm will.
 	c, err := client.NewTLS(server, []byte(cred.CA), []byte(cred.Certificate), keyPEM)
 	if err != nil {
 		return err
@@ -746,9 +835,25 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	if err := waitHostReady(ctx, c, o.Name, 2*time.Minute); err != nil {
 		return err
 	}
-	say("host %s is Ready. Try: kvo get hosts", o.Name)
+	say("host %s is Ready. Try: kvoadm host list", o.Name)
+
+	// 6b. Your kvo: a plain user (editor in every namespace, nothing cluster-wide), never the admin
+	// certificate, which stays in the cluster folder (kvoadm kvo … runs kvo as the admin).
+	cfgPath := filepath.Join(root, "config.yaml")
+	if p := os.Getenv("KVO_CONFIG"); p != "" && o.Home == "" && !inClusterFolders(root, p) { // never a cluster folder's admin file
+		cfgPath = p
+	}
+	if err := kvoUser(ctx, c, conn, o.UserName, o.Cluster, server, []byte(cred.CA), cfgPath, say); err != nil {
+		return fmt.Errorf("kvo's user: %w", err)
+	}
+	if p, err := adminKvoConfig(kc); err == nil {
+		say("kvo as the admin: kvoadm kvo ARGS… (or KVO_CONFIG=%s kvo ARGS…)", p)
+	}
 	// How kvoadm reaches it (kvoadm upgrade, store migrate), as for every host it sets up.
-	_ = annotateSSH(ctx, c, o.Name, fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))), conn.Fingerprint)
+	target := fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort)))
+	_ = annotateSSH(ctx, c, o.Name, target, conn.Fingerprint)
+	recordHostAddress(kc, o.Name, target, conn.Fingerprint, say)
+	syncAdminsTo(ctx, kc, conn, o, say)
 
 	// 7. The recovery key for secrets: made on the host, shown once, here, and never again.
 	rk, err := conn.Run(ctx, "kevasod admin recovery-key", nil)
@@ -768,7 +873,7 @@ func initCluster(ctx context.Context, o InitOptions, stdin io.Reader, out io.Wri
 	// 8. After a restore, or on a machine that took over the cluster's data: the workers, pointed
 	// at this control plane (its address may be new).
 	if restore != nil || existing {
-		if err := reconnectWorkers(ctx, o, c, "https://"+net.JoinHostPort(o.Reach(), "6443"), stdin, out); err != nil {
+		if err := reconnectWorkers(ctx, o, kc, c, "https://"+net.JoinHostPort(o.Reach(), "6443"), stdin, out); err != nil {
 			return fmt.Errorf("reconnecting workers: %w", err)
 		}
 	}
@@ -897,11 +1002,21 @@ type runner interface {
 // signUserOverSSH makes a key here and has the control plane sign a certificate for userName.
 // Only the request crosses SSH. The signed certificate is for that user.
 func signUserOverSSH(ctx context.Context, run runner, userName string) (keyPEM, certPEM, caPEM []byte, err error) {
+	return signUserOverSSHAs(ctx, run, userName, "")
+}
+
+// signUserOverSSHAs signs a user certificate for a role ("" is cluster-admin; userRole has no
+// power of its own, only what RBAC binds to the name).
+func signUserOverSSHAs(ctx context.Context, run runner, userName, role string) (keyPEM, certPEM, caPEM []byte, err error) {
 	keyPEM, csrPEM, err := client.NewKeyAndCSR(userName)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	resp, err := run.Run(ctx, "kevasod admin sign-user --name "+sshboot.Quote(userName), csrPEM)
+	cmd := "kevasod admin sign-user --name " + sshboot.Quote(userName)
+	if role != "" {
+		cmd += " --role " + sshboot.Quote(role)
+	}
+	resp, err := run.Run(ctx, cmd, csrPEM)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -948,6 +1063,28 @@ func waitHostReady(ctx context.Context, c *client.Client, name string, d time.Du
 // dialHost connects to a host the way kvoadm does: the host key pinned or confirmed first, then a
 // key or the password (asked once).
 func dialHost(ctx context.Context, o InitOptions, in *bufio.Reader, stdin io.Reader, out io.Writer) (*sshboot.Conn, bool, error) {
+	if !o.direct {
+		// The cluster folder knows this target: a host's name tries the host's addresses in order;
+		// one of its addresses gets the host key pinned for it.
+		kc := targetCluster(ctx)
+		prepareTarget(kc, &o)
+		if kc != nil {
+			if kc.HasHost(o.Address) && o.SSHPort == 22 {
+				h := &v1.Host{ObjectMeta: meta.ObjectMeta{Name: o.Address}}
+				if c, err := kc.Client(); err == nil { // the cluster's record: the host key pinned for it
+					var got v1.Host
+					if c.Get(ctx, "Host", "", o.Address, &got) == nil {
+						h = &got
+					}
+				}
+				conn, _, err := dialHostAt(ctx, kc, h, o, stdin, out)
+				return conn, false, err
+			}
+			if name, ok := kc.HostFor(net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))); ok && o.HostKey == "" {
+				o.HostKey = kc.HostKey(name)
+			}
+		}
+	}
 	policy := sshboot.HostKeyPolicy{Pin: o.HostKey}
 	if o.HostKey == "" {
 		policy.Confirm = func(typ, fp string) bool {
@@ -1027,4 +1164,11 @@ func loadKey(path string, pem []byte, stdin io.Reader, out io.Writer) (ssh.Signe
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return signer, nil
+}
+
+// inClusterFolders reports whether path is inside root/clusters (kvoadm's folders, where kvo's
+// plain-user context never goes).
+func inClusterFolders(root, path string) bool {
+	rel, err := filepath.Rel(filepath.Join(root, "clusters"), path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

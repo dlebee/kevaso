@@ -36,6 +36,7 @@ func TestMoves(t *testing.T) {
 	r.must(kvoadm.Run, "", append(append([]string{"init"}, r.sshArgs("w1")...),
 		"--name", "w1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", w1IP, "--worker",
 		"--runtime", "cloud-hypervisor", "--runtime", "docker", "--loop-storage", "20G")...)
+	useAdminKvo(t, "e2e") // kvo's own context is a plain user; these steps are an admin's
 	r.must(kvoadm.Run, "", append(append([]string{"host", "add"}, r.sshArgs("w2")...),
 		"--name", "w2", "--install", "worker", "--internal-ip", w2IP, "--server", "https://"+w1IP+":6443", "--runtime", "docker")...)
 	t.Logf("kvoadm host list:\n%s", r.must(kvoadm.Run, "", "host", "list"))

@@ -149,7 +149,7 @@ func setUpPair() (p *metalPair, skip string, err error) {
 			return nil, "", err
 		}
 		home := filepath.Join(base, ".kevaso-metal", "pair-"+cfg1.ExternalIP)
-		for k, v := range map[string]string{"HOME": home, "KVO_CONFIG": filepath.Join(home, ".kevaso", "config.yaml"), "KVO_TOKEN_STORE": "file", "KVO_SERVER": ""} {
+		for k, v := range map[string]string{"HOME": home, "KVO_CONFIG": metalAdminKvo(home, "metal2"), "KVO_TOKEN_STORE": "file", "KVO_SERVER": ""} {
 			_ = os.Setenv(k, v)
 		}
 		if out, code := kvoOut(ctx, "get", "host", metalHost2, "-o", "json"); code == 0 {
@@ -230,6 +230,10 @@ func setUpPair() (p *metalPair, skip string, err error) {
 		return nil, "", err
 	}
 	p.recoveryKey = regexp.MustCompile(`KVR1-[A-Z0-9-]+`).FindString(lastOut)
+	// kvo's own context is a plain user; the suite does an admin's work through kvo.
+	if err := os.Setenv("KVO_CONFIG", metalAdminKvo(os.Getenv("HOME"), "metal2")); err != nil {
+		return nil, "", err
+	}
 	say("kvoadm init: %s, the system node", metalHost)
 	// Machine 2: a worker, joining over the external IPs.
 	storage := []string{"--loop-storage", metalLoop}

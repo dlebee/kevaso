@@ -233,7 +233,11 @@ func setUpMetal() (s *metalSuite, skip string, err error) {
 		}
 		s.home = filepath.Join(base, ".kevaso-metal", cfg.ExternalIP)
 	}
-	for k, v := range map[string]string{"HOME": s.home, "KVO_CONFIG": filepath.Join(s.home, ".kevaso", "config.yaml"),
+	kvoConfig := filepath.Join(s.home, ".kevaso", "config.yaml")
+	if reuse { // a kept cluster: kvo as its admin, from the folder kvoadm init wrote
+		kvoConfig = metalAdminKvo(s.home, metalCluster)
+	}
+	for k, v := range map[string]string{"HOME": s.home, "KVO_CONFIG": kvoConfig,
 		"KVO_TOKEN_STORE": "file", "KVO_SERVER": ""} {
 		if err := os.Setenv(k, v); err != nil {
 			return nil, "", err
@@ -295,7 +299,11 @@ func setUpMetal() (s *metalSuite, skip string, err error) {
 	if code := kvoadm.Run(ctx, args, strings.NewReader(""), &o, &o); code != 0 {
 		return nil, "", fmt.Errorf("kvoadm init: exit %d\n%s", code, metalRedact(o.String()))
 	}
-	say("kvoadm init: %s is Ready (kvo config: KVO_CONFIG=%s)", metalHost, os.Getenv("KVO_CONFIG"))
+	// kvo's own context is a plain user; the suite does an admin's work through kvo.
+	if err := os.Setenv("KVO_CONFIG", metalAdminKvo(s.home, metalCluster)); err != nil {
+		return nil, "", err
+	}
+	say("kvoadm init: %s is Ready (kvo as the admin: KVO_CONFIG=%s)", metalHost, os.Getenv("KVO_CONFIG"))
 
 	// 6. Both runtimes installed (the first silo shouldn't wait on apt).
 	if err := s.waitReady(ctx); err != nil {
@@ -862,4 +870,9 @@ func (c *mt) approve(ns, name string) string {
 		c.t.Fatal(err)
 	}
 	return c.must("", "approve", name, "-n", ns, "--request", approvals.RequestID(&a))
+}
+
+// metalAdminKvo is the kvo config kvoadm init writes for the cluster's admin, in its folder.
+func metalAdminKvo(home, cluster string) string {
+	return filepath.Join(home, ".kevaso", "clusters", cluster, "kvo-admin.yaml")
 }

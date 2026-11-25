@@ -7,8 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,8 +16,8 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/admconfig"
 	"kevaso.com/core/internal/fence"
-	"kevaso.com/core/internal/kvoconfig"
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/sshboot"
 )
@@ -27,16 +25,16 @@ import (
 // HostAddOptions are kvoadm host add's flags, on top of init's SSH ones.
 type HostAddOptions struct {
 	InitOptions
-	Labels      map[string]string
-	Region      string
-	Zone        string
-	Runtimes    []string
-	KvoContext  string // the kvo context to act as (a cluster-admin)
-	ServerForIt string // the API URL as the new host reaches it (default: the context's)
-	BehindNAT   bool   // nothing unsolicited reaches it (a box at home)
-	Install     string // worker (default) | control-plane
-	StateOnly   bool   // with control-plane: a light system node (systemnodes.go)
-	ClusterDNS  string // the control plane's DNS name, on a new system node
+	Labels       map[string]string
+	Region       string
+	Zone         string
+	Runtimes     []string
+	AdminCluster string // --cluster: the kvoadm cluster folder to act from (loadCluster)
+	ServerForIt  string // the API URL as the new host reaches it (default: the context's)
+	BehindNAT    bool   // nothing unsolicited reaches it (a box at home)
+	Install      string // worker (default) | control-plane
+	StateOnly    bool   // with control-plane: a light system node (systemnodes.go)
+	ClusterDNS   string // the control plane's DNS name, on a new system node
 }
 
 func parseHostAdd(args []string) (HostAddOptions, error) {
@@ -79,8 +77,8 @@ func parseHostAdd(args []string) (HostAddOptions, error) {
 			if v, err = val(); err == nil {
 				o.Runtimes = append(o.Runtimes, v)
 			}
-		case "--context":
-			o.KvoContext, err = val()
+		case "--cluster":
+			o.AdminCluster, err = val()
 		case "--server":
 			o.ServerForIt, err = val()
 		case "--behind-nat":
@@ -92,7 +90,7 @@ func parseHostAdd(args []string) (HostAddOptions, error) {
 			return o, err
 		}
 	}
-	init, err := parseInit(rest)
+	init, err := parseInitNoCredential(rest)
 	if err != nil {
 		return o, err
 	}
@@ -171,51 +169,57 @@ func installUnits(ctx context.Context, conn *sshboot.Conn, us []UnitFile) error 
 	return nil
 }
 
-func adminClient(kctx string) (*client.Client, kvoconfig.Context, error) {
-	path, err := kvoconfig.Path()
+// loadCluster reads kvoadm's config for a cluster: the --cluster flag, else $KVOADM_CLUSTER,
+// else the only cluster folder there is. Never kvo's current context.
+func loadCluster(cluster string) (*admconfig.Config, error) {
+	root, err := admconfig.Root()
 	if err != nil {
-		return nil, kvoconfig.Context{}, err
+		return nil, err
 	}
-	cfg, err := kvoconfig.Load(path)
+	name, err := admconfig.Pick(root, cluster)
 	if err != nil {
-		return nil, kvoconfig.Context{}, err
+		return nil, err
 	}
-	c, name, err := cfg.Client(path, kctx)
-	if err != nil {
-		return nil, kvoconfig.Context{}, err
-	}
-	return c, cfg.Contexts[name], nil
+	return admconfig.Load(root, name)
 }
 
-// hostAdd sets up a fresh machine as a worker of the cluster in the current kvo context: the Host
-// object, a one-time join token, the same SSH bootstrap as init, and `kevasod worker`, which joins
-// and from then on only dials out.
+// adminClient connects as the admin of a cluster (loadCluster picks it).
+func adminClient(cluster string) (*client.Client, *admconfig.Config, error) {
+	cfg, err := loadCluster(cluster)
+	if err != nil {
+		return nil, nil, err
+	}
+	c, err := cfg.Client()
+	if err != nil {
+		return nil, nil, err
+	}
+	return c, cfg, nil
+}
+
+// hostAdd sets up a fresh machine as a worker of the cluster (--cluster): the Host object, a
+// one-time join token, the same SSH bootstrap as init, and `kevasod worker`, which joins and from
+// then on only dials out.
 func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writer) error {
 	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
+	c, kc, err := adminClient(o.AdminCluster)
+	if err != nil {
+		return err
+	}
+	prepareTarget(kc, &o.InitOptions) // the cluster folder's SSH key, before the first login
+	if err := needCredential(o.InitOptions); err != nil {
+		return err
+	}
 	if err := lookFirst(ctx, o.InitOptions, stdin, out); err != nil {
 		return err
 	}
 	o.looked = true
-	c, kc, err := adminClient(o.KvoContext)
-	if err != nil {
-		return err
-	}
-	ca, err := os.ReadFile(kc.CA)
-	if err != nil {
-		return err
-	}
+	ca := kc.CAPEM()
 	server := o.ServerForIt
 	if server == "" {
-		server = kc.Server
+		server = kc.Server()
 	}
-	home := o.Home
-	if home == "" {
-		h, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-		home = filepath.Join(h, ".kevaso")
-	}
+	home := kc.Folder() // the cluster's keys: the signing key and kvoadm's SSH key hosts pin
+	o.keys = home
 
 	// 1. The Host, as declared (kvo get hosts shows it NotReady until its kevasod reports).
 	runtimes := make([]v1.RuntimeSpec, 0, len(o.Runtimes))
@@ -259,16 +263,19 @@ func hostAdd(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writ
 	say("worker started (kevasod.service), joining %s; fence started (%s)", server, FenceUnitName)
 	// How kvoadm reaches it, kept on its Host (and so in backups): kvoadm init --restore uses it to
 	// reconnect the worker to a restored control plane.
-	if err := annotateSSH(ctx, c, o.Name, fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))), conn.Fingerprint); err != nil {
+	target := fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort)))
+	if err := annotateSSH(ctx, c, o.Name, target, conn.Fingerprint); err != nil {
 		say("couldn't record how to reach %s (%v): after a restore, reconnect it with kvoadm host reconnect", o.Name, err)
 	}
+	recordHostAddress(kc, o.Name, target, conn.Fingerprint, say)
+	syncAdminsTo(ctx, kc, conn, o.InitOptions, say)
 
 	// 4. It joins and reports.
 	if err := waitHostReady(ctx, c, o.Name, 3*time.Minute); err != nil {
 		journal, _ := conn.Run(ctx, "journalctl -u kevasod -n 20 --no-pager", nil)
 		return fmt.Errorf("%w\nkevasod on the host:\n%s", err, journal)
 	}
-	say("host %s is Ready (it dials out to the control plane; nothing listens on it). Its runtimes install next: kvo watch hosts", o.Name)
+	say("host %s is Ready (it dials out to the control plane; nothing listens on it). Its runtimes install next: kvoadm kvo watch hosts", o.Name)
 	return nil
 }
 
@@ -339,7 +346,7 @@ func hostList(ctx context.Context, kctx string, out io.Writer) error {
 // hostCmd dispatches kvoadm host add|list|… .
 func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("host needs add, install, uninstall, remove, confirm-off, enable-worker, reconnect, list, drain, uncordon, addresses, trust-control-plane or kept")
+		return errors.New("host needs add, install, uninstall, remove, confirm-off, enable-worker, reconnect, list, drain, uncordon, addresses, ssh, trust-control-plane or kept")
 	}
 	switch args[0] {
 	case "add":
@@ -370,14 +377,14 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 			case args[i] == "--ssh-key" && i+1 < len(args):
 				o.SSHKey = args[i+1]
 				i++
-			case args[i] == "--context" && i+1 < len(args):
+			case args[i] == "--cluster" && i+1 < len(args):
 				kctx = args[i+1]
 				i++
 			default:
 				return fmt.Errorf("unknown flag %s", args[i])
 			}
 		}
-		o.KvoContext = kctx
+		o.AdminCluster = kctx
 		if args[0] == "uninstall" {
 			return hostRemoveSystemNode(ctx, args[1], kctx, false, false, stdin, out)
 		}
@@ -386,16 +393,16 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 		return hostConfirmOff(ctx, args[1:], stdin, out)
 	case "remove":
 		if len(args) < 2 {
-			return errors.New("host remove NAME [--confirm-off] [--context NAME]")
+			return errors.New("host remove NAME [--confirm-off] [--cluster NAME]")
 		}
 		name, kctx, confirmOff := args[1], "", false
 		for i := 2; i < len(args); i++ {
 			switch args[i] {
 			case "--confirm-off":
 				confirmOff = true
-			case "--context":
+			case "--cluster":
 				if i+1 >= len(args) {
-					return errors.New("--context needs a value")
+					return errors.New("--cluster needs a value")
 				}
 				i++
 				kctx = args[i]
@@ -412,9 +419,11 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 		return hostKept(ctx, args[1:], stdin, out)
 	case "addresses":
 		return hostAddresses(ctx, args[1:], out)
+	case "ssh":
+		return hostSSH(ctx, args[1:], out)
 	case "list":
 		kctx := ""
-		if len(args) == 3 && args[1] == "--context" {
+		if len(args) == 3 && args[1] == "--cluster" {
 			kctx = args[2]
 		}
 		return hostList(ctx, kctx, out)
@@ -423,7 +432,7 @@ func hostCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer)
 			return fmt.Errorf("host %s needs NAME", args[0])
 		}
 		kctx := ""
-		if len(args) == 4 && args[2] == "--context" {
+		if len(args) == 4 && args[2] == "--cluster" {
 			kctx = args[3]
 		}
 		return hostDrain(ctx, args[1], kctx, args[0] == "uncordon", out)

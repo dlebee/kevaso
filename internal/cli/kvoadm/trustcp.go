@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"kevaso.com/core/api/client"
@@ -50,16 +48,6 @@ func parseTrust(args []string) (TrustOptions, error) {
 		return o, fmt.Errorf("%w\n%s", err, trustUsage)
 	}
 	o.InitOptions = t
-	if o.SSHKey == "" {
-		if h, err := os.UserHomeDir(); err == nil {
-			if p := filepath.Join(h, ".kevaso", "ssh", "id_ed25519"); fileExists(p) {
-				o.SSHKey = p
-			}
-		}
-	}
-	if o.SSHKey == "" {
-		return o, errors.New("--ssh-key PATH: kvoadm logs in with a key (no password logins)")
-	}
 	return o, nil
 }
 
@@ -75,6 +63,10 @@ func trustControlPlane(ctx context.Context, args []string, stdin io.Reader, out 
 	o, err := parseTrust(args)
 	if err != nil {
 		return err
+	}
+	prepareTarget(targetCluster(ctx), &o.InitOptions) // the cluster folder's key, when none is given
+	if o.SSHKey == "" {
+		return errors.New("--ssh-key PATH: kvoadm logs in with a key (no password logins)")
 	}
 	in := bufio.NewReader(stdin)
 	conn, _, err := dialHost(ctx, o.InitOptions, in, stdin, out)

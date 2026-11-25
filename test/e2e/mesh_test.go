@@ -162,6 +162,7 @@ NFT`); err != nil {
 	// The control plane, advertising its shared address (the mesh endpoint and what hosts dial).
 	t.Logf("%s", must(kvoadm.Run, "", append(append([]string{"init"}, sshArgs("cp")...),
 		"--name", "cp-1", "--cluster", "e2e", "--api-server", "https://127.0.0.1:6443", "--internal-ip", cpIP)...))
+	useAdminKvo(t, "e2e") // kvo's own context is a plain user; these steps are an admin's
 	server := "https://" + cpIP + ":6443"
 	t.Logf("%s", must(kvoadm.Run, "", append(append([]string{"host", "add"}, sshArgs("worker")...),
 		"--name", "worker-1", "--install", "worker", "--internal-ip", workerIP, "--server", server, "--loop-storage", "40G",

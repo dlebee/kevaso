@@ -11,7 +11,7 @@ for linux and darwin (`make vet-tags`), so tagged code cannot rot, but compiling
 | Tag | Where it can run | Tests | Run in CI |
 |---|---|---|---|
 | `e2e` | Lima VMs on macOS, or a Linux machine with SSH access to its test machines | 20 | 1 |
-| `metal` | bare metal (test/e2e/METAL.md) | 9 | 0 |
+| `metal` | bare metal (test/e2e/METAL.md) | 10 | 0 |
 | `metal` | two bare-metal machines (test/e2e/METAL.md) | 47 | 0 |
 | `metal` | one bare-metal machine (test/e2e/METAL.md) | 30 | 0 |
 
@@ -56,6 +56,7 @@ fails when any of them reports SKIP (`hack/skipbudget`). Every other tagged test
 | TestLabOversizedDiskIsRefused | test/e2e/lab_forks_test.go | bare metal (test/e2e/METAL.md) | skips |
 | TestLabRemovingAllowFromResetsItsConnection | test/e2e/lab_forks_test.go | bare metal (test/e2e/METAL.md) | skips |
 | TestLabHostDelete | test/e2e/lab_hostdelete_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
+| TestLabKvoadmClusterFolder | test/e2e/lab_kvoadmcfg_test.go | bare metal (test/e2e/METAL.md) | skips |
 | TestLabOpenShellPolicy | test/e2e/lab_openshell_policy_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMetal2DrainDuringAMove | test/e2e/metal2_batch_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
 | TestMetal2IngressRecordDeleted | test/e2e/metal2_batch_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |

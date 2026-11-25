@@ -395,6 +395,7 @@ func runFenceWatch(ctx context.Context, args []string) error {
 func runSignUser(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("sign-user", flag.ExitOnError)
 	name := fs.String("name", "", "the user's name")
+	role := fs.String("role", "", "cluster-admin (default) or user (only what RBAC binds to the name)")
 	sock := fs.String("admin-socket", defaultAdminSocket, "admin unix socket")
 	wait := fs.Duration("wait", 2*time.Minute, "how long to wait for the control plane to come up")
 	_ = fs.Parse(args)
@@ -405,7 +406,7 @@ func runSignUser(ctx context.Context, args []string) error {
 	c := client.NewUnix(*sock)
 	deadline := time.Now().Add(*wait)
 	for {
-		cert, ca, err := c.SignUserCSR(ctx, *name, csr)
+		cert, ca, err := c.SignUserCSRAs(ctx, *name, *role, csr)
 		if err == nil {
 			return json.NewEncoder(os.Stdout).Encode(map[string]string{"certificate": string(cert), "ca": string(ca)})
 		}

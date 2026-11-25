@@ -139,6 +139,7 @@ func TestOpenShellSilos(t *testing.T) {
 		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker",
 		"--runtime", "openshell", "--runtime", "openshell-container", "--openshell-gateway-scope", "namespace",
 		"--egress-extra-ca", "/etc/kevaso/test-internet-ca.pem")
+	useAdminKvo(t, "e2e") // kvo's own context is a plain user; these steps are an admin's
 
 	apiKey := randomToken(t)
 	must(kvo.Run, "apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: agents }\n", "apply", "-f", "-")

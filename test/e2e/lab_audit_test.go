@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -445,10 +444,12 @@ func labAdmin(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kcfg.CurrentContext == "" {
-		t.Fatal("the lab config has no current context")
+	// The lab admin's context is the lab's name (a test's kvo login may have switched the current one).
+	admin := os.Getenv("LAB_NAME")
+	if _, ok := kcfg.Contexts[admin]; !ok {
+		t.Fatalf("the lab config has no context %s", admin)
 	}
-	return kcfg.CurrentContext
+	return admin
 }
 
 func labNamespace(t *testing.T, ctx context.Context, admin, name string) {
@@ -634,7 +635,7 @@ func labExpectOpen(t *testing.T, ctx context.Context, admin, name string) {
 // labLoginAdmin invites user as admin of ns and signs in. The context name is the user.
 func labLoginAdmin(t *testing.T, ctx context.Context, admin, user, ns string) string {
 	t.Helper()
-	inv := labKvoadm(t, ctx, filepath.Dir(os.Getenv("KVO_CONFIG")), "users", "invite", user, "--namespace", ns, "--role", "admin", "--context", admin)
+	inv := labKvoadm(t, ctx, os.Getenv("LAB_DIR"), "users", "invite", user, "--namespace", ns, "--role", "admin", "--cluster", admin)
 	t.Logf("invite: %s", labRedact(inv))
 	loginMatch := regexp.MustCompile(`kvo login (\S+) --ca (sha256:[0-9a-f]{64})`).FindStringSubmatch(inv)
 	inviteMatch := regexp.MustCompile(`invite code: (kvi_\S+)`).FindStringSubmatch(inv)

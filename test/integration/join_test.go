@@ -274,6 +274,7 @@ func TestDrainingAHost(t *testing.T) {
 	key, csr, _ := client.NewKeyAndCSR("david")
 	cert, ca, _ := admin.SignUserCSR(ctx, "david", csr)
 	_ = kvoconfig.AddContext(cfgPath, "it", server, ca, cert, key)
+	adminCluster(t, "it", server, ca, cert, key)
 
 	handler := func(kri.ID, []string, []byte) (string, int) { return "", 0 }
 	rt1 := fake.New()

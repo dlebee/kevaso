@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -70,13 +69,6 @@ func kmsCmd(ctx context.Context, args []string, stdin io.Reader, out io.Writer) 
 	o.User, o.Address = "root", target
 	if u, a, ok := strings.Cut(target, "@"); ok {
 		o.User, o.Address = u, a
-	}
-	if o.SSHKey == "" { // the key kvoadm installed when it set the host up
-		if h, err := os.UserHomeDir(); err == nil {
-			if p := filepath.Join(h, ".kevaso", "ssh", "id_ed25519"); fileExists(p) {
-				o.SSHKey = p
-			}
-		}
 	}
 	conn, _, err := dialHost(ctx, o, bufio.NewReader(stdin), stdin, out)
 	if err != nil {

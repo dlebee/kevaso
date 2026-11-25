@@ -19,8 +19,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,6 +27,7 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/admconfig"
 	"kevaso.com/core/internal/etcd"
 	"kevaso.com/core/internal/kvoconfig"
 	"kevaso.com/core/internal/moves"
@@ -238,8 +237,13 @@ func apiServers(hosts []v1.Host) []string {
 // promoted once caught up, and then serves the API (or, state-only, just votes).
 func hostAddSystemNode(ctx context.Context, o HostAddOptions, stdin io.Reader, out io.Writer) error {
 	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
-	c, kc, err := adminClient(o.KvoContext)
+	c, kc, err := adminClient(o.AdminCluster)
 	if err != nil {
+		return err
+	}
+	o.Cluster = kc.Cluster() // the cluster the new system node's kevasod belongs to
+	prepareTarget(kc, &o.InitOptions)
+	if err := needCredential(o.InitOptions); err != nil {
 		return err
 	}
 	hosts, err := listHosts(ctx, c)
@@ -253,18 +257,9 @@ func hostAddSystemNode(ctx context.Context, o HostAddOptions, stdin io.Reader, o
 		return err
 	}
 	o.looked = true
-	ca, err := os.ReadFile(kc.CA)
-	if err != nil {
-		return err
-	}
-	home := o.Home
-	if home == "" {
-		h, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-		home = filepath.Join(h, ".kevaso")
-	}
+	ca := kc.CAPEM()
+	home := kc.Folder() // the cluster's keys: the signing key and kvoadm's SSH key hosts pin
+	o.keys = home
 	h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: o.Name},
 		Spec: v1.HostSpec{InternalIP: o.InternalIP, ExternalIP: o.ExternalIP, Region: o.Region, Zone: o.Zone,
 			Components: v1.HostComponents{ControlPlane: &v1.ControlPlaneSpec{StateOnly: o.StateOnly}}}}
@@ -289,9 +284,12 @@ func hostAddSystemNode(ctx context.Context, o HostAddOptions, stdin io.Reader, o
 		return err
 	}
 	say("kevasod started: joining the store as a learner (it's promoted once it has caught up)")
-	if err := annotateSSH(ctx, c, o.Name, fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort))), conn.Fingerprint); err != nil {
+	target := fmt.Sprintf("%s@%s", o.User, net.JoinHostPort(o.Address, strconv.Itoa(o.SSHPort)))
+	if err := annotateSSH(ctx, c, o.Name, target, conn.Fingerprint); err != nil {
 		say("couldn't record how to reach %s (%v)", o.Name, err)
 	}
+	recordHostAddress(kc, o.Name, target, conn.Fingerprint, say)
+	syncAdminsTo(ctx, kc, conn, o.InitOptions, say)
 	return finishSystemNode(ctx, c, conn, o, kc, say)
 }
 
@@ -312,8 +310,8 @@ func installSystemNode(ctx context.Context, conn *sshboot.Conn, o HostAddOptions
 	return installUnits(ctx, conn, UnitsFor(SystemNodeUnit(o, servers, o.StateOnly, worker), worker && !o.StateOnly, o.InitOptions.Runtimes))
 }
 
-// finishSystemNode waits for the new node to vote, and adds its API to the kvo context.
-func finishSystemNode(ctx context.Context, c *client.Client, conn *sshboot.Conn, o HostAddOptions, kc kvoconfig.Context, say func(string, ...any)) error {
+// finishSystemNode waits for the new node to vote, and adds its API to the cluster folder and kvo.
+func finishSystemNode(ctx context.Context, c *client.Client, conn *sshboot.Conn, o HostAddOptions, kc *admconfig.Config, say func(string, ...any)) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	for {
@@ -325,7 +323,7 @@ func finishSystemNode(ctx context.Context, c *client.Client, conn *sshboot.Conn,
 				return nil
 			}
 			say("host %s votes in the store and serves the API at %s", o.Name, h.Status.ControlPlane.APIURL)
-			addServer(kc, o.KvoContext, h.Status.ControlPlane.APIURL, say)
+			addServer(kc, h.Status.ControlPlane.APIURL, say)
 			return nil
 		}
 		select {
@@ -337,8 +335,13 @@ func finishSystemNode(ctx context.Context, c *client.Client, conn *sshboot.Conn,
 	}
 }
 
-// addServer adds url to the kvo context's server list, so kvo fails over to it.
-func addServer(_ kvoconfig.Context, name, url string, say func(string, ...any)) {
+// addServer adds a new system node's API URL to the cluster folder's server list, and to kvo's
+// context of the same name when there is one, so both fail over to it.
+func addServer(kc *admconfig.Config, url string, say func(string, ...any)) {
+	added := false
+	if kc.Update(func(c *admconfig.Config) error { added = c.AddServer(url); return nil }) == nil && added {
+		say("cluster %s now lists %s too (kvoadm fails over between them)", kc.Cluster(), url)
+	}
 	path, err := kvoconfig.Path()
 	if err != nil {
 		return
@@ -347,8 +350,8 @@ func addServer(_ kvoconfig.Context, name, url string, say func(string, ...any)) 
 	if err != nil {
 		return
 	}
-	n, ctx, err := cfg.Resolve(name)
-	if err != nil {
+	ctx, ok := cfg.Contexts[kc.Cluster()]
+	if !ok {
 		return
 	}
 	servers := client.SplitServers(ctx.Server)
@@ -358,9 +361,9 @@ func addServer(_ kvoconfig.Context, name, url string, say func(string, ...any)) 
 		}
 	}
 	ctx.Server = strings.Join(append(servers, url), ",")
-	cfg.Contexts[n] = ctx
+	cfg.Contexts[kc.Cluster()] = ctx
 	if cfg.Save(path) == nil {
-		say("kvo context %q now lists %s too (kvo fails over between them)", n, url)
+		say("kvo context %q now lists %s too (kvo fails over between them)", kc.Cluster(), url)
 	}
 }
 
@@ -368,7 +371,7 @@ func addServer(_ kvoconfig.Context, name, url string, say func(string, ...any)) 
 // kvoadm used before, the unit rewritten to join the store, its worker part kept.
 func hostInstallControlPlane(ctx context.Context, name string, o HostAddOptions, stdin io.Reader, out io.Writer) error {
 	say := func(f string, a ...any) { _, _ = fmt.Fprintf(out, "→ "+f+"\n", a...) }
-	c, kc, err := adminClient(o.KvoContext)
+	c, kc, err := adminClient(o.AdminCluster)
 	if err != nil {
 		return err
 	}
@@ -391,21 +394,12 @@ func hostInstallControlPlane(ctx context.Context, name string, o HostAddOptions,
 	if h.Spec.Components.ControlPlane != nil {
 		return fmt.Errorf("%s already has the control-plane component", name)
 	}
-	user, addr, port, ok := sshTarget(h)
-	if !ok {
-		return fmt.Errorf("kvoadm doesn't know how to reach %s over SSH (no %s annotation)", name, AnnotationSSH)
-	}
-	io2 := o.InitOptions
-	io2.User, io2.Address, io2.SSHPort, io2.HostKey, io2.Name = user, addr, port, h.Annotations[AnnotationSSHHostKey], name
-	defaultSSHKey(&io2)
-	ca, err := os.ReadFile(kc.CA)
+	ca := kc.CAPEM()
+	conn, io2, err := dialHostAt(ctx, kc, h, o.InitOptions, stdin, out)
 	if err != nil {
 		return err
 	}
-	conn, _, err := dialHost(ctx, io2, bufio.NewReader(stdin), stdin, out)
-	if err != nil {
-		return err
-	}
+	io2.Name, io2.Cluster = name, kc.Cluster()
 	defer func() { _ = conn.Close() }()
 	for attempt := 0; ; attempt++ {
 		var cur v1.Host
@@ -452,11 +446,18 @@ func runtimesOf(h *v1.Host) []string {
 // first (the leader's member controller removes it, keeping the majority), refused when it
 // would lose the majority. remove also deletes the Host when nothing else is installed.
 func hostRemoveSystemNode(ctx context.Context, name, kctx string, deleteHost, confirmOff bool, stdin io.Reader, out io.Writer) error {
-	c, _, err := adminClient(kctx)
+	c, kc, err := adminClient(kctx)
 	if err != nil {
 		return err
 	}
-	return removeSystemNode(ctx, c, name, deleteHost, confirmOff, stdin, out)
+	if err := removeSystemNode(ctx, c, name, deleteHost, confirmOff, stdin, out); err != nil {
+		return err
+	}
+	var h v1.Host
+	if deleteHost && client.IsNotFound(c.Get(ctx, "Host", "", name, &h)) {
+		_ = kc.Update(func(c *admconfig.Config) error { c.ForgetHost(name); return nil }) // its addresses go with it
+	}
+	return nil
 }
 
 // RemoveSystemNode is host uninstall … control-plane (deleteHost false) and host remove (true)
@@ -684,7 +685,7 @@ func storeMigrate(ctx context.Context, args []string, stdin io.Reader, out io.Wr
 	var kctx string
 	var rest []string
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--context" && i+1 < len(args) {
+		if args[i] == "--cluster" && i+1 < len(args) {
 			kctx = args[i+1]
 			i++
 			continue
@@ -695,12 +696,12 @@ func storeMigrate(ctx context.Context, args []string, stdin io.Reader, out io.Wr
 	if err != nil {
 		return err
 	}
-	defaultSSHKey(&o)
-	if err := needCredential(o); err != nil {
+	c, kc, err := adminClient(kctx)
+	if err != nil {
 		return err
 	}
-	c, _, err := adminClient(kctx)
-	if err != nil {
+	prepareTarget(kc, &o) // a host's name, and the folder's SSH key
+	if err := needCredential(o); err != nil {
 		return err
 	}
 	conn, _, err := dialHost(ctx, o, bufio.NewReader(stdin), stdin, out)

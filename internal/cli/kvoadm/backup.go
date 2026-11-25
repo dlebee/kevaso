@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -176,12 +175,5 @@ func parseBackup(args []string) (InitOptions, string, error) {
 		return o, "", fmt.Errorf("%s exists: give a new file name (backups are never overwritten)", output)
 	}
 	o.User, o.Address = splitTarget(target)
-	if o.SSHKey == "" {
-		if h, err := os.UserHomeDir(); err == nil {
-			if p := filepath.Join(h, ".kevaso", "ssh", "id_ed25519"); fileExists(p) {
-				o.SSHKey = p
-			}
-		}
-	}
 	return o, output, nil
 }

@@ -186,8 +186,14 @@ func (c *Client) Enroll(ctx context.Context, token, host, role string) (Credenti
 // SignUserCSR mints a cluster-admin certificate for name from a CSR made elsewhere (so the key
 // never leaves the machine that made it). Only works over the admin socket.
 func (c *Client) SignUserCSR(ctx context.Context, name string, csrPEM []byte) (certPEM, caPEM []byte, err error) {
+	return c.SignUserCSRAs(ctx, name, "", csrPEM)
+}
+
+// SignUserCSRAs is SignUserCSR for a role: "" or cluster-admin, or user (no power of its own: only
+// what RBAC binds to the name). Only works over the admin socket.
+func (c *Client) SignUserCSRAs(ctx context.Context, name, role string, csrPEM []byte) (certPEM, caPEM []byte, err error) {
 	var resp certResponse
-	if err := c.do(ctx, http.MethodPost, "/admin/certs", certRequest{Name: name, CSR: string(csrPEM)}, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/admin/certs", certRequest{Name: name, Role: role, CSR: string(csrPEM)}, &resp); err != nil {
 		return nil, nil, err
 	}
 	return []byte(resp.Certificate), []byte(resp.CA), nil

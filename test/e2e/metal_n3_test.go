@@ -35,7 +35,7 @@ func TestMetalIngressUnknownHold(t *testing.T) {
 	name := "held." + strings.ReplaceAll(c.cfg.ExternalIP, ".", "-") + ".sslip.io"
 	long := strings.Repeat("a", 60) + "." + strings.Repeat("b", 60) + "." + name
 	var o strings.Builder
-	if code := kvoadm.Run(c.ctx, []string{"ingress", "install", "--host-port", "external", "--context", metalCluster,
+	if code := kvoadm.Run(c.ctx, []string{"ingress", "install", "--host-port", "external", "--cluster", metalCluster,
 		"--host", name + "=" + ns, "--host", long + "=" + other}, strings.NewReader(""), &o, &o); code != 0 {
 		t.Fatalf("kvoadm ingress install: exit %d\n%s", code, o.String())
 	}
