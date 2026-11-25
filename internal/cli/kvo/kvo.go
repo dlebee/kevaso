@@ -18,6 +18,8 @@
 //	kvo auth can-i VERB RESOURCE[/NAME|/SUBRESOURCE] [-n NS]   exits 0 for yes, 1 for no
 //	kvo auth whoami
 //	kvo create token NAME [-n NS] [--duration 1h]   a service account token, for CI ($KVO_TOKEN)
+//	kvo invite NAME [--group G]… [-n NS [--role editor]] [--ttl 30m]   a one-time sign-in code for a person
+//	        (cluster-admin only; prints the kvo login line and the code to send them)
 //	kvo create secret NAME (--from-file F|- | --generate) [--type opaque|ed25519|ecdsa-p256]
 //	        [--write-only] [--allow broker,inject,file,env] [-l KEY=VALUE]…   values never on argv
 //	kvo create secret NAME --type registry --server HOST --username U --from-file -
@@ -61,6 +63,7 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/internal/invite"
 	"kevaso.com/core/internal/kvoconfig"
 )
 
@@ -88,6 +91,9 @@ type opts struct {
 	args                                     []string
 	command                                  []string // after --
 	ctxNamespace                             string   // the context's default namespace
+	ctxServer                                string   // the server this command talks to (kvo invite prints it)
+	groups                                   []string // kvo invite --group
+	role, ttl                                string   // kvo invite --role, --ttl
 }
 
 func parse(args []string, env func(string) string) (opts, error) {
@@ -130,6 +136,14 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.noBrowser = true
 		case "--duration":
 			o.duration, err = val()
+		case "--group":
+			var g string
+			g, err = val()
+			o.groups = append(o.groups, g)
+		case "--role":
+			o.role, err = val()
+		case "--ttl":
+			o.ttl, err = val()
 		case "--reason":
 			o.reason, err = val()
 		case "--to":
@@ -231,7 +245,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 // Run runs one kvo command and returns its exit code.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|restore|pane|create|secret|set|ip|approve|deny|open|close|login|logout|ctx|ns|auth …")
+		_, _ = fmt.Fprintln(stderr, "usage: kvo apply|get|describe|delete|watch|exec|ssh|cp|ui|scale|reset|protect|move|restore|pane|create|secret|set|ip|approve|deny|open|close|invite|login|logout|ctx|ns|auth …")
 		return 2
 	}
 	if code, ok := pluginDispatch(ctx, args, stdin, stdout, stderr); ok { // kvo plugin …, kvo NAME (plugins.go)
@@ -291,6 +305,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		err = setClusterSecret(ctx, c, o, stdin, stdout)
 	case "ip":
 		err = ipCommand(ctx, c, o, stdout)
+	case "invite":
+		err = inviteCmd(ctx, c, o, stdout)
 	case "move":
 		err = move(ctx, c, o, stdout)
 	case "restore":
@@ -342,6 +358,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 // uses that context's server and CA and nothing else from it.
 func clientFor(o *opts) (*client.Client, error) {
 	token := os.Getenv("KVO_TOKEN")
+	o.ctxServer = o.server
 	if o.server != "" {
 		if token == "" || !strings.HasPrefix(o.server, "https://") {
 			return client.New(o.server), nil
@@ -382,14 +399,23 @@ func clientFor(o *opts) (*client.Client, error) {
 			return nil, err
 		}
 		c.Token = func(context.Context) (string, error) { return token, nil }
-		o.ctxNamespace = cfg.Contexts[name].Namespace
+		o.ctxNamespace, o.ctxServer = cfg.Contexts[name].Namespace, kc.Server
 		return c, nil
 	}
 	c, name, err := cfg.Client(path, o.context)
 	if err == nil {
-		o.ctxNamespace = cfg.Contexts[name].Namespace
+		o.ctxNamespace, o.ctxServer = cfg.Contexts[name].Namespace, cfg.Contexts[name].Server
 	}
 	return c, err
+}
+
+// inviteCmd: kvo invite NAME [--group G]… [-n NS [--role R]] [--ttl D]. The control plane allows it
+// for a cluster-admin only, however they signed in: no kvoadm or SSH needed.
+func inviteCmd(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error {
+	if len(o.args) != 1 {
+		return errors.New("invite needs NAME (kvo invite NAME [-n NS [--role editor]])")
+	}
+	return invite.Create(ctx, c, o.ctxServer, invite.Request{User: o.args[0], Groups: o.groups, Namespace: o.namespace, Role: o.role, TTL: o.ttl}, stdout)
 }
 
 // createToken: kvo create token NAME [-n NS] [--duration 1h] prints a service account token.
