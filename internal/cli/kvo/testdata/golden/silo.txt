@@ -175,12 +175,12 @@ Services:
   api   HostPort      ip: api-edge      https→443  172.232.0.9:443
   shop  LoadBalancer  provider: linode  https→443  the balancer :443 (once linode makes it)
 Ports:
-  PORT       NUMBER    SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER  ALLOW FROM  SOURCES
-  https      8443/TCP  (when running) (no silo allowed)  -            -            -              -           -
-Route when:  running (not stated: the silo has no readiness probe)
+  PORT          NUMBER    SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER       ALLOW FROM  SOURCES
+  https (api)   8443/TCP  (when running) (no silo allowed)  -            -            -                   -           -
+  https (shop)  8443/TCP  (when running) (no silo allowed)  -            -            (when placed) :443  -           -
+Route when:     running (not stated: the silo has no readiness probe)
 Traffic:
   PORT        TRAFFIC
-  https 8443  held (not running)
   https 8443  held (not running)
 ---
 Name:                   api

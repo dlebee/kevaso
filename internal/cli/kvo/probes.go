@@ -98,7 +98,12 @@ func writeServiceTraffic(w io.Writer, s *v1.Silo) {
 	_, _ = fmt.Fprintf(w, "Route when:\t%s\n", routeWhenText(*r))
 	_, _ = fmt.Fprintln(w, "Traffic:")
 	_, _ = fmt.Fprintln(w, "  PORT\tTRAFFIC")
+	seen := map[string]bool{} // a port in several services is one row: routing is the silo's
 	for _, p := range s.Spec.Open() {
+		if seen[p.Name] {
+			continue
+		}
+		seen[p.Name] = true
 		_, _ = fmt.Fprintf(w, "  %s %d\t%s\n", p.Name, p.Number, traffic(*r))
 	}
 }
@@ -110,11 +115,13 @@ func heldText(ep v1.ServiceEndpoint) string {
 
 // writeSiloPorts is a silo's declared ports and where each is reachable (design §7.0): its silo IP
 // for the silos allowFrom names, its host's internal and external IPs, its load-balancer address;
-// a declared port no service port opens is reachable nowhere.
+// a declared port no service port opens is reachable nowhere. A port that several services open
+// gets a row per service (PORT shows NAME (SERVICE)), each with that service's own way in: the
+// status lists a port once per service, in the order the spec opens them.
 func writeSiloPorts(w io.Writer, s *v1.Silo) {
-	where := map[string]v1.ServicePortStatus{}
+	where := map[string][]v1.ServicePortStatus{}
 	for _, p := range s.Status.Service.Ports {
-		where[p.Port] = p
+		where[p.Port] = append(where[p.Port], p)
 	}
 	at := func(addr, fallback string) string {
 		if addr != "" {
@@ -122,31 +129,46 @@ func writeSiloPorts(w io.Writer, s *v1.Silo) {
 		}
 		return fallback
 	}
+	open := s.Spec.OpenIn(s.Name)
 	_, _ = fmt.Fprintln(w, "Ports:")
 	_, _ = fmt.Fprintln(w, "  PORT\tNUMBER\tSILO IP (MESH)\tINTERNAL IP\tEXTERNAL IP\tLOAD BALANCER\tALLOW FROM\tSOURCES")
 	for _, d := range s.Spec.Ports {
 		num := fmt.Sprintf("%d/%s", d.Port, d.Proto())
-		op, ok := s.Spec.OpenPort(d.Name)
-		if !ok {
+		var ops []v1.OpenPort
+		for _, op := range open {
+			if op.Name == d.Name {
+				ops = append(ops, op)
+			}
+		}
+		if len(ops) == 0 {
 			_, _ = fmt.Fprintf(w, "  %s\t%s\tnot opened: reachable nowhere\t\t\t\t\t\n", d.Name, num)
 			continue
 		}
-		ws := where[d.Name]
-		want := func(on bool, got string) string {
-			switch {
-			case !on:
-				return "-"
-			case got == "":
-				return fmt.Sprintf("(when placed) :%d", op.HostNumber())
+		for i, op := range ops {
+			var ws v1.ServicePortStatus
+			if st := where[d.Name]; i < len(st) {
+				ws = st[i]
 			}
-			return got
+			want := func(on bool, got string) string {
+				switch {
+				case !on:
+					return "-"
+				case got == "":
+					return fmt.Sprintf("(when placed) :%d", op.HostNumber())
+				}
+				return got
+			}
+			mesh := at(ws.Mesh, "(when running)")
+			if len(op.AllowFrom) == 0 {
+				mesh += " (no silo allowed)"
+			}
+			name := d.Name
+			if len(ops) > 1 {
+				name += " (" + op.Service + ")"
+			}
+			_, _ = fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, num, mesh,
+				want(op.On(v1.NetworkInternal), ws.Internal), want(op.On(v1.NetworkExternal), ws.External), want(op.LoadBalancer, ws.LoadBalancer),
+				dash(strings.Join(op.AllowFrom, ", ")), dash(strings.Join(op.Sources, ", ")))
 		}
-		mesh := at(ws.Mesh, "(when running)")
-		if len(op.AllowFrom) == 0 {
-			mesh += " (no silo allowed)"
-		}
-		_, _ = fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.Name, num, mesh,
-			want(op.On(v1.NetworkInternal), ws.Internal), want(op.On(v1.NetworkExternal), ws.External), want(op.LoadBalancer, ws.LoadBalancer),
-			dash(strings.Join(op.AllowFrom, ", ")), dash(strings.Join(op.Sources, ", ")))
 	}
 }
