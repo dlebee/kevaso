@@ -140,7 +140,12 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloS
 			st.HostAddresses = append(st.HostAddresses, x.Status.Address)
 		}
 	}
-	st.Ports = PortStatus(s, h, st.LoadBalancerIP)
+	st.Ports = PortStatusWith(s, h, st.LoadBalancerIP, func(p v1.OpenPort) *v1.IP {
+		if p.Way.Own {
+			return OwnIP(s, env)
+		}
+		return heldIP(s, p.Way.IP, env)
+	})
 	st.EgressIP, st.EgressNote = Egress(s, h, st, egIP)
 	return st, nil
 }
@@ -149,6 +154,14 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloS
 // has one), the host's internal and external IPs its hostPort asks for, the load-balancer
 // address lb. Pure.
 func PortStatus(s *v1.Silo, h *v1.Host, lb string) []v1.ServicePortStatus {
+	return PortStatusWith(s, h, lb, nil)
+}
+
+// PortStatusWith is PortStatus, and a HostPort port on an IP (hostPort ip or own) at that IP's
+// address while the silo holds it on h: held is the IP the port names, as held (nil: not held).
+// It goes in internal or external as the IP is: a host's address of that kind, a provider's
+// external. Pure.
+func PortStatusWith(s *v1.Silo, h *v1.Host, lb string, held func(v1.OpenPort) *v1.IP) []v1.ServicePortStatus {
 	var out []v1.ServicePortStatus
 	at := func(ip string, port int) string {
 		if ip == "" {
@@ -166,6 +179,21 @@ func PortStatus(s *v1.Silo, h *v1.Host, lb string) []v1.ServicePortStatus {
 		}
 		if p.LoadBalancer {
 			ps.LoadBalancer = at(lb, p.HostNumber())
+		}
+		if (p.Way.IP != "" || p.Way.Own) && held != nil {
+			if x := held(p); x != nil && x.Status.Address != "" && x.Status.Host == h.Name {
+				kind := v1.NetworkExternal
+				if x.Spec.Type == v1.IPTypeHost {
+					if a, ok := h.Address(x.Spec.HostAddress); ok && a.Kind == v1.NetworkInternal {
+						kind = v1.NetworkInternal
+					}
+				}
+				if kind == v1.NetworkInternal {
+					ps.Internal = at(x.Status.Address, p.HostNumber())
+				} else {
+					ps.External = at(x.Status.Address, p.HostNumber())
+				}
+			}
 		}
 		out = append(out, ps)
 	}

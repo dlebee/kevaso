@@ -106,9 +106,9 @@ Services:
   far-smtp  HostPort  ip: mail  smtp   203.0.113.21:25
   far-api   HostPort  ip: nope  https  ip nope :8443 (no such IP yet: kvo create ip nope --type …)
 Ports:
-  PORT       NUMBER    SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER  ALLOW FROM  SOURCES
-  smtp       25/TCP    (when running) (no silo allowed)  -            -            -              -           -
-  https      8443/TCP  (when running) (no silo allowed)  -            -            -              -           -
+  PORT       NUMBER    SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP        LOAD BALANCER  ALLOW FROM  SOURCES
+  smtp       25/TCP    (when running) (no silo allowed)  -            (when held) :25    -              -           -
+  https      8443/TCP  (when running) (no silo allowed)  -            (when held) :8443  -              -           -
 Route when:  running (not stated: the silo has no readiness probe)
 Traffic:
   PORT        TRAFFIC
@@ -141,7 +141,7 @@ Services:
   smtp-metrics  Internal  mesh              metrics    10.64.3.4:9090 from monitoring/prometheus
 Ports:
   PORT       NUMBER    SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP       LOAD BALANCER  ALLOW FROM             SOURCES
-  smtp       25/TCP    (when running) (no silo allowed)  -            -                 -              -                      -
+  smtp       25/TCP    (when running) (no silo allowed)  -            (when held) :25   -              -                      -
   https      8443/TCP  (when running) (no silo allowed)  -            203.0.113.20:443  -              -                      -
   metrics    9090/TCP  (when running)                    -            -                 -              monitoring/prometheus  -
 Route when:  running (not stated: the silo has no readiness probe)
@@ -175,12 +175,12 @@ Services:
   api   HostPort      ip: api-edge      https→443  172.232.0.9:443
   shop  LoadBalancer  provider: linode  https→443  the balancer :443 (once linode makes it)
 Ports:
-  PORT       NUMBER    SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER  ALLOW FROM  SOURCES
-  https      8443/TCP  (when running) (no silo allowed)  -            -            -              -           -
-Route when:  running (not stated: the silo has no readiness probe)
+  PORT          NUMBER    SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP       LOAD BALANCER       ALLOW FROM  SOURCES
+  https (api)   8443/TCP  (when running) (no silo allowed)  -            (when held) :443  -                   -           -
+  https (shop)  8443/TCP  (when running) (no silo allowed)  -            -                 (when placed) :443  -           -
+Route when:     running (not stated: the silo has no readiness probe)
 Traffic:
   PORT        TRAFFIC
-  https 8443  held (not running)
   https 8443  held (not running)
 ---
 Name:                   api
@@ -243,9 +243,9 @@ Services:
   NAME        TYPE      WAY IN          PORTS      REACHABLE AT
   eth-node-a  HostPort  ip: eth-node-a  p2p, disc  ip eth-node-a :30303 (not reserved yet)
 Ports:
-  PORT       NUMBER     SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER  ALLOW FROM  SOURCES
-  p2p        30303/TCP  (when running) (no silo allowed)  -            -            -              -           -
-  disc       30303/UDP  (when running) (no silo allowed)  -            -            -              -           -
+  PORT       NUMBER     SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP         LOAD BALANCER  ALLOW FROM  SOURCES
+  p2p        30303/TCP  (when running) (no silo allowed)  -            (when held) :30303  -              -           -
+  disc       30303/UDP  (when running) (no silo allowed)  -            (when held) :30303  -              -           -
 Route when:  running (not stated: the silo has no readiness probe)
 Traffic:
   PORT        TRAFFIC

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"kevaso.com/core/api/client"
 	v1 "kevaso.com/core/api/v1"
@@ -39,7 +40,8 @@ func move(ctx context.Context, c clientCaller, o opts, stdout io.Writer) error {
 	if err := c.Call(ctx, http.MethodPost, path, moves.Request{To: o.moveTo, Recreate: o.recreate, ConfirmFenced: o.confirmFenced, Insist: o.insist}, &s); err != nil {
 		if o.confirmFenced || o.insist {
 			var ae *client.Error
-			if errors.As(err, &ae) && ae.Code == http.StatusForbidden {
+			// The server's own 403 says it already; an older one's may not.
+			if errors.As(err, &ae) && ae.Code == http.StatusForbidden && !strings.Contains(ae.Message, "hosts/confirm-off") {
 				return fmt.Errorf("%w\n\nsaying the old copy is off (--confirm-fenced, and --insist with it) needs create on hosts/confirm-off. That permission is cluster-scoped and only cluster-admin has it by default. editor and admin keep plain moves (create on silos/move)", err)
 			}
 		}

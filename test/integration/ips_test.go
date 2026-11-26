@@ -131,13 +131,19 @@ func TestProviderIPWaitsForTheProvider(t *testing.T) {
 			c.Message == "can't share with w1 yet: w1 can't take another IPv4: ask the provider's support to raise the limit", fmt.Sprintf("%+v", c)
 	})
 	fake.SetShareRefused(nil)
-	var x v1.IP // a change makes the controller look again now, not in a minute
-	if err := admin.Get(ctx, "IP", "mail", "edge", &x); err != nil {
-		t.Fatal(err)
-	}
-	x.Annotations = map[string]string{"test.example/poke": "1"}
-	if err := admin.Update(ctx, &x); err != nil {
-		t.Fatal(err)
+	for i := 0; ; i++ { // a change makes the controller look again now, not in a minute
+		var x v1.IP
+		if err := admin.Get(ctx, "IP", "mail", "edge", &x); err != nil {
+			t.Fatal(err)
+		}
+		x.Annotations = map[string]string{"test.example/poke": "1"}
+		err := admin.Update(ctx, &x)
+		if err == nil {
+			break
+		}
+		if !client.IsConflict(err) || i > 20 { // the controller writes the IP's status too
+			t.Fatal(err)
+		}
 	}
 	eventually("edge shared once the provider can", func() (bool, string) {
 		c := shared()
