@@ -88,7 +88,9 @@ type Plugin struct{ Root string }
 func (p *Plugin) Info(context.Context) (kplugin.Info, error) {
 	return kplugin.Info{Name: "hostdir", Version: "0.0.0-test", Protocol: kplugin.Protocol,
 		Storage: []kplugin.Class{{Name: Class, Description: "a folder on a shared root (tests only)",
-			Topology: kplugin.TopologyGlobal, Reach: kplugin.ReachMount}}}, nil
+			Topology: kplugin.TopologyGlobal, Reach: kplugin.ReachMount}},
+		// Storage only: it declares that it makes no IPs or balancers and accepts no annotations.
+		Networking: &kplugin.Networking{}}, nil
 }
 
 // handle is a volume's ID as a relative folder: UID/NAME, nothing that could leave the root.
@@ -133,6 +135,9 @@ func (p *Plugin) DeleteVolume(_ context.Context, ref kplugin.VolumeRef) error {
 	d, err := p.dir(ref.Handle)
 	if err != nil {
 		return err
+	}
+	if _, err := os.Lstat(d); os.IsNotExist(err) {
+		return kplugin.ErrNotFound // deleted already: done
 	}
 	if err := os.RemoveAll(d); err != nil {
 		return err

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"kevaso.com/core/sdk/kplugin"
+	"kevaso.com/core/sdk/kplugin/kplugintest"
 )
 
 func TestHandlesStayUnderTheRoot(t *testing.T) {
@@ -53,4 +54,10 @@ func TestManifestParses(t *testing.T) {
 	if _, err := kplugin.ParseManifest(b); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The test plugin keeps the protocol's promises too (its node side's mounts aren't checked here:
+// they bind-mount, which takes root on Linux).
+func TestConformance(t *testing.T) {
+	kplugintest.Conformance(t, kplugintest.Suite{Plugin: &Plugin{Root: t.TempDir()}, Region: "lab"})
 }
