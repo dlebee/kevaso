@@ -3,12 +3,14 @@ package apiserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/ips"
+	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/rbac"
 	"kevaso.com/core/internal/store"
 )
@@ -18,8 +20,8 @@ import (
 //   - naming an IP (hostPort.ip, loadBalancer.ip, egress.source.ip, a Service's loadBalancer.ip)
 //     needs use on ips/NAME, like a secret, the first time an object names it; a SiloSet's
 //     spec.ips needs use on ipsets/NAME;
-//   - a balancer's kept IP (loadBalancer.ip) is a Provider IP of the balancer's provider, and only
-//     where the provider lets a kept IP front a balancer;
+//   - a balancer's kept IP (loadBalancer.ip) is a Provider IP of the balancer's provider (and
+//     checkProviders: only where the provider lets a kept IP front a balancer);
 //   - the Host IPs a silo names are all one host's (each is pinned to its host);
 //   - a host's extra addresses have names unique in the cluster, addresses on one host, and the
 //     ones reserved by an IP stay.
@@ -124,9 +126,6 @@ func (s *Server) checkNamedIPs(ctx context.Context, t target, named []v1.NamedIP
 				return errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: loadBalancer.ip %s is %s's, and the balancer is %s's: name an IP of %s, or the provider %s",
 					t.kind.Kind, t.name, n.Name, x.Spec.Provider, prov, prov, x.Spec.Provider)
 			}
-			if why := s.balancerTakesIP(prov); why != "" {
-				return errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: loadBalancer.ip %s: %s", t.kind.Kind, t.name, n.Name, why)
-			}
 		}
 	}
 	if t.kind.Kind != "Silo" {
@@ -142,11 +141,67 @@ func (s *Server) checkNamedIPs(ctx context.Context, t target, named []v1.NamedIP
 	return nil
 }
 
-// balancerTakesIP says why provider's balancer can't answer on a kept IP ("" when it can, or
-// while nothing says: the balancer controller then reports it).
-// TODO(net-v2 plugins): the provider's declared capability (Azure and GCP yes; a Linode
-// NodeBalancer has its own address, so Linode refuses).
-func (s *Server) balancerTakesIP(provider string) string { return "" }
+// SetNetworking gives the server the providers' declared networking (the plugin registry):
+// admission checks balancers, Provider IPs and their annotations against it. nil: unchecked.
+func (s *Server) SetNetworking(n plugins.Networking) { s.networking = n }
+
+// checkProviders: what a provider must say yes to, or it can never work. A LoadBalancer
+// service needs a provider that makes balancers, annotations it declares, and a kept IP in
+// front only where the provider allows one; a Provider IP needs a provider that makes them in
+// its region, and annotations it declares. A provider not installed is refused too, naming the
+// installed ones (a plugin restarting is held by the registry, not dropped).
+func (s *Server) checkProviders(_ context.Context, t target, obj meta.Object) error {
+	if t.status || s.networking == nil {
+		return nil
+	}
+	n := s.networking
+	refuse := func(err error) error {
+		return errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %v", t.kind.Kind, t.name, err)
+	}
+	balancer := func(field string, l *v1.LoadBalancerSpec, annotations map[string]string) error {
+		if err := n.ValidateLoadBalancer(l.Provider); err != nil {
+			return refuse(fmt.Errorf("%s: %w", field, err))
+		}
+		if err := n.ValidateServiceAnnotations(l.Provider, annotations); err != nil {
+			return refuse(fmt.Errorf("%s: %w", field, err))
+		}
+		if l.IP != "" && !n.CanFrontWithIP(l.Provider) {
+			return refuse(fmt.Errorf("%s.ip %s: %s's balancer has an address of its own, so a kept IP can't front it: leave ip out (the balancer's address comes with the service), or use a HostPort service on the IP", field, l.IP, l.Provider))
+		}
+		return nil
+	}
+	services := func(prefix string, svs []v1.SiloService) error {
+		for i, sv := range svs {
+			if sv.TypeOrDefault() == v1.ServiceLoadBalancer && sv.LoadBalancer != nil {
+				if err := balancer(fmt.Sprintf("%sservices[%d].loadBalancer", prefix, i), sv.LoadBalancer, sv.Annotations); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	switch o := obj.(type) {
+	case *v1.Silo:
+		return services("", o.Spec.Services)
+	case *v1.SiloSet:
+		return services("template.", o.Spec.Template.Services)
+	case *v1.Service:
+		if o.Spec.TypeOrDefault() == v1.ServiceLoadBalancer && o.Spec.LoadBalancer != nil {
+			return balancer("spec.loadBalancer", o.Spec.LoadBalancer, o.Annotations)
+		}
+	case *v1.IP:
+		if o.Spec.Type != v1.IPTypeProvider {
+			return nil
+		}
+		if err := n.ValidateProviderIP(o.Spec.Provider, o.Spec.Region); err != nil {
+			return refuse(fmt.Errorf("spec: %w", err))
+		}
+		if err := n.ValidateIPAnnotations(o.Spec.Provider, o.Annotations); err != nil {
+			return refuse(err)
+		}
+	}
+	return nil
+}
 
 func (s *Server) checkHostAddresses(ctx context.Context, t target, h *v1.Host) error {
 	var prev []v1.HostAddress

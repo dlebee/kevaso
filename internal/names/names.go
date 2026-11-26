@@ -5,8 +5,9 @@
 package names
 
 import (
-	v1 "kevaso.com/core/api/v1"
 	"slices"
+
+	v1 "kevaso.com/core/api/v1"
 )
 
 // Reserved says whether a namespace name is one of the networks (mesh, internal, external), which

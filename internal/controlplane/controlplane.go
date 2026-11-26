@@ -283,6 +283,7 @@ func Start(ctx context.Context, cfg Config) (*Running, error) {
 	if cfg.Plugins != nil {
 		reg := cfg.Plugins
 		srv.SetClasses(func() map[string]scheduler.Class { return provider.Classes(reg) })
+		srv.SetNetworking(reg)
 	}
 	srv.SetVault(&secrets.Vault{Store: st, KMS: localKMS, Now: cfg.Clock.Now})
 	srv.SetKMSAdmin(haKMS{localKMS, st})

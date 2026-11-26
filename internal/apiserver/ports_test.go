@@ -103,9 +103,9 @@ func TestCheckPorts(t *testing.T) {
 			want: "leases are on HostPort services only"},
 		"a lease on Internal": {edit: func(s *v1.SiloSpec) { s.Services[0].Ports[0].Lease = &v1.PortLease{Max: "1h"} },
 			want: "leases are on HostPort services only"},
-		"bad source":                              {edit: func(s *v1.SiloSpec) { s.Services[2].Ports[0].Sources = []string{"10.0.0.0/33"} }, want: "isn't an address or CIDR"},
-		"as out of range":                         {edit: func(s *v1.SiloSpec) { s.Services[1].Ports[0].As = 70000 }, want: "70000 isn't from 1 to 65535"},
-		"a reserved host port":                    {edit: func(s *v1.SiloSpec) { s.Services[1].Ports[0].As = 22 }, want: "22 is the SSH port"},
+		"bad source":           {edit: func(s *v1.SiloSpec) { s.Services[2].Ports[0].Sources = []string{"10.0.0.0/33"} }, want: "isn't an address or CIDR"},
+		"as out of range":      {edit: func(s *v1.SiloSpec) { s.Services[1].Ports[0].As = 70000 }, want: "70000 isn't from 1 to 65535"},
+		"a reserved host port": {edit: func(s *v1.SiloSpec) { s.Services[1].Ports[0].As = 22 }, want: "22 is the SSH port"},
 		"a reserved number on a balancer is fine": {edit: func(s *v1.SiloSpec) { lb(s).Ports[0].As = 22 }},
 		"one number twice on one address": {edit: func(s *v1.SiloSpec) {
 			s.Services[2].Ports[0].As = 9229 // metrics on internal 9229, which debug holds

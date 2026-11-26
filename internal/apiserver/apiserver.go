@@ -38,6 +38,7 @@ import (
 	"kevaso.com/core/internal/leases"
 	"kevaso.com/core/internal/moves"
 	"kevaso.com/core/internal/pki"
+	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/rbac"
 	"kevaso.com/core/internal/scheduler"
 	"kevaso.com/core/internal/secrets"
@@ -66,6 +67,7 @@ type Server struct {
 	approvalLimits approvals.Limits
 	leaseLimits    leases.Limits                     // port leases (leases.go)
 	classes        func() map[string]scheduler.Class // the plugins' classes; nil: none
+	networking     plugins.Networking                // the providers' declared networking; nil: unchecked
 	paneRates      paneRates
 
 	kinds    kindCache   // the served KindDefinitions (kinds.go)
