@@ -77,7 +77,7 @@ func TestClaims(t *testing.T) {
 		{"another namespace's", []*v1.Silo{other}, nil, ""},
 		{"another IP or none", []*v1.Silo{silo("a", "x", 0, 0), worker}, nil, ""},
 	} {
-		if got := holders(Claims(ip("eth"), c.silos, c.svcs)); got != c.want {
+		if got := holders(Claims(ip("eth"), c.silos, c.svcs, nil)); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
@@ -85,7 +85,7 @@ func TestClaims(t *testing.T) {
 	placed.Status.Host = "hv1"
 	now := time.Now()
 	placed.DeletionTimestamp = &now
-	cs := Claims(ip("eth"), []*v1.Silo{placed}, nil)
+	cs := Claims(ip("eth"), []*v1.Silo{placed}, nil, nil)
 	if len(cs) != 1 || cs[0].Host != "hv1" || !cs[0].Deleting || cs[0].UID != "silo-a" {
 		t.Errorf("claim fields: %+v", cs)
 	}

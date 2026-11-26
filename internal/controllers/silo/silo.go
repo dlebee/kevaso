@@ -32,6 +32,7 @@ import (
 	"kevaso.com/core/internal/claims"
 	"kevaso.com/core/internal/clock"
 	hostctl "kevaso.com/core/internal/controllers/host"
+	ipctl "kevaso.com/core/internal/controllers/ip"
 	"kevaso.com/core/internal/controllers/restore"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/fence"
@@ -454,7 +455,7 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 	}
 	var again time.Duration
 	movableChanged := false
-	if m := moves.Summary(s, moves.Of(s, env.Classes)); m != st.Movable {
+	if m := scheduler.Movable(s, env, moves.Summary(s, moves.Of(s, env.Classes))); m != st.Movable {
 		st.Movable, movableChanged = m, true
 	}
 	// The image: resolved when the silo is new, and again only when what it starts from changes
@@ -649,6 +650,11 @@ type Controller struct {
 	Clock  clock.Clock
 	// Classes returns the plugins' classes now (nil: none).
 	Classes func() map[string]scheduler.Class
+	// Networking is where the providers' IPs and balancers reach a silo (the plugin registry;
+	// nil: their machines in the IP's region). IPSets and SiloSets resolve an instance's own.
+	Networking scheduler.Reacher
+	IPSets     *informer.Informer // nil: none
+	SiloSets   *informer.Informer // nil: none
 	// Claims make each node port and host port on a host one silo's, by the store (K-029).
 	Claims *claims.Claims
 	// Contacts are how long each host has been silent by this control plane's clock (the host
@@ -763,6 +769,17 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	}
 	if c.Classes != nil {
 		env.Classes = c.Classes()
+	}
+	env.Networking = c.Networking
+	if c.IPSets != nil {
+		for _, o := range c.IPSets.List() {
+			env.IPSets = append(env.IPSets, o.(*v1.IPSet))
+		}
+	}
+	if c.SiloSets != nil {
+		for _, o := range c.SiloSets.List() {
+			env.SiloSets = append(env.SiloSets, o.(*v1.SiloSet))
+		}
 	}
 	env.Restore = c.openGate() // an unsettled silo is not scheduled
 	now := c.Clock.Now().UTC().Truncate(time.Second)
@@ -1035,11 +1052,12 @@ func (c *Controller) Map(changed engine.Key) []engine.Key {
 		return nil
 	}
 	var keys []engine.Key
+	own := ipctl.OwnFrom(c.SiloSets, c.IPSets) // an instance's own IPSet member is one of its IPs too
 	for _, o := range c.Silos.List() {
 		s := o.(*v1.Silo)
 		self := changed.Kind == "Silo" && changed.Namespace == s.Namespace && changed.Name == s.Name
 		onIt := (changed.Kind == "Host" && (s.Status.Host == changed.Name || s.Status.MovingFrom == changed.Name)) ||
-			(changed.Kind == "IP" && s.Namespace == changed.Namespace && slices.Contains(v1.SiloIPs(s), changed.Name))
+			(changed.Kind == "IP" && s.Namespace == changed.Namespace && (slices.Contains(v1.SiloIPs(s), changed.Name) || own(s) == changed.Name))
 		if changed.Kind == "VMImage" {
 			name, _ := v1.SplitImage(s.Spec.From())
 			onIt = s.Spec.VM != nil && s.Namespace == changed.Namespace && name == changed.Name

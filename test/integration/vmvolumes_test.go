@@ -148,7 +148,7 @@ func TestVMVolumesFollowTheSilo(t *testing.T) {
 			t.Fatalf("disk.root was unmounted while the silo stayed on %s: %v", first, share.CallLog())
 		}
 	}
-	if get().Status.Movable != "Anywhere" {
+	if get().Status.Movable != "yes: any worker" {
 		t.Fatalf("movable: %q", cur.Status.Movable)
 	}
 	for _, vs := range get().Status.Volumes {

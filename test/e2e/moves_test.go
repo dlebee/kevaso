@@ -134,8 +134,8 @@ spec:
 	// 1. A docker silo without local volumes moves, the old host stopping it first.
 	mover := r.silo("mv", "mover")
 	from, to := mover.Status.Host, other[mover.Status.Host]
-	if mover.Status.Movable != "Anywhere" {
-		t.Errorf("mover's movable: %q, want Anywhere", mover.Status.Movable)
+	if mover.Status.Movable != "yes: any worker" {
+		t.Errorf("mover's movable: %q, want yes: any worker", mover.Status.Movable)
 	}
 	out := r.must(kvo.Run, "", "move", "silo", "mover", "-n", "mv", "--to", to, "--recreate")
 	expect(t, "kvo move silo", out, "moving to "+to+" as a fresh copy from its image; "+from+" stops it first")
@@ -157,7 +157,7 @@ spec:
 
 	// 2. A cloud-hypervisor silo keeps its disk on its host: refused as pinned.
 	pinned := r.silo("mv", "pinned")
-	if !strings.HasPrefix(pinned.Status.Movable, "Pinned") {
+	if !strings.HasPrefix(pinned.Status.Movable, "no: pinned to") {
 		t.Errorf("pinned's movable: %q", pinned.Status.Movable)
 	}
 	out, code := r.kvo("", "move", "silo", "pinned", "-n", "mv", "--to", other[pinned.Status.Host])

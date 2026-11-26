@@ -4,9 +4,8 @@
 // the cloud's API; these controllers decide when, and keep the API's objects saying what is where.
 //
 // Volumes carry a finalizer on the silo (kevaso.com/volumes), so deleting the silo deletes them
-// first. A load balancer is its IP's (design §7.2c-1): keyed by the IP's UID, ensured while the
-// silo holds the IP; the IP controller lets go of it (unshares or parks it) when the silo goes, and
-// releases it with the IP.
+// first. A load balancer is its service's (networking v2, Balancers): keyed by the service, with a
+// finalizer on its silo or Service, so it goes with them. Provider IPs are the IP controller's.
 package provider
 
 import (
@@ -64,6 +63,7 @@ type Hosts struct {
 type asked struct {
 	key string
 	at  time.Time
+	st  *kplugin.LoadBalancerStatus // a balancer's answer, for one not asked again
 }
 
 // fresh reports whether key was asked less than every ago (and remembers it was, if not).
