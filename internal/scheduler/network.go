@@ -175,10 +175,26 @@ func PortStatus(s *v1.Silo, h *v1.Host, lb string) []v1.ServicePortStatus {
 // SetLoadBalancerIP puts lb (empty: none) as s's load-balancer address in st: loadBalancerIP and
 // each load-balanced port's loadBalancer, as PortStatus says them, so one write never leaves the
 // two disagreeing (an address in with no port on it, or a port on an address taken away).
+//
+// st.Ports has one entry per service port (PortStatus): a declared port in two services is two
+// entries, each at its own service's as number. They are matched by position when they line up
+// with the spec's, so two LoadBalancer services on one port keep their own numbers (by name
+// alone both took the first's, and the scheduler's write put them back: a write storm).
 func SetLoadBalancerIP(s *v1.Silo, st *v1.SiloServiceStatus, lb string) {
 	st.LoadBalancerIP = lb
+	open := s.Spec.Open()
+	aligned := len(open) == len(st.Ports)
 	for i, ps := range st.Ports {
-		if p, ok := s.Spec.OpenPort(ps.Port); ok && p.LoadBalancer {
+		if aligned && open[i].Name != ps.Port {
+			aligned = false
+		}
+	}
+	for i, ps := range st.Ports {
+		p, ok := s.Spec.OpenPort(ps.Port)
+		if aligned {
+			p, ok = open[i], true
+		}
+		if ok && p.LoadBalancer {
 			st.Ports[i].LoadBalancer = ""
 			if lb != "" {
 				st.Ports[i].LoadBalancer = net.JoinHostPort(lb, strconv.Itoa(p.HostNumber()))
