@@ -515,19 +515,21 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	// How long each host has been silent, on this leader's clock, from its own start (K-014).
 	contacts := hostcontroller.NewContacts(cfg.Clock.Now())
 	gates := newInf("RestoreGate")
-	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, IPs: ipInf, Images: images, Gates: gates, Clock: cfg.Clock, Claims: uniq, Contacts: contacts}
+	ipSets := newInf("IPSet")
+	sc := &silocontroller.Controller{Client: c, Silos: silos, Hosts: hosts, IPs: ipInf, Images: images, Gates: gates, Clock: cfg.Clock, Claims: uniq, Contacts: contacts,
+		IPSets: ipSets, SiloSets: sets}
 	e.Register(&restorecontroller.Controller{Client: c, Silos: silos, Hosts: hosts, Gates: gates}, engine.Options{Workers: 1})
 	gates.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "RestoreGate", Name: k.Name}) })
 	if cfg.Plugins != nil {
 		reg := cfg.Plugins
 		sc.Classes = func() map[string]scheduler.Class { return provider.Classes(reg) }
+		sc.Networking = reg
 	}
 	e.Register(sc, engine.Options{Workers: 1})
 	e.Register(&hostcontroller.Controller{Client: c, Hosts: hosts, Clock: cfg.Clock, Lease: cfg.HostLease, Claims: uniq, Contacts: contacts}, engine.Options{Workers: 1})
 	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
 	ipInf.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IP", Namespace: k.Namespace, Name: k.Name}) })
-	ipSets := newInf("IPSet")
 	ipCtl := &ipcontroller.Controller{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, SiloSets: sets, IPSets: ipSets, Plugins: cfg.Plugins, Clock: cfg.Clock, Claims: uniq}
 	e.Register(ipCtl, engine.Options{Workers: 1})
 	e.Register(&ipcontroller.Sets{Client: c, IPSets: ipSets, IPs: ipInf, Silos: silos, SiloSets: sets, Clock: cfg.Clock}, engine.Options{Workers: 1})

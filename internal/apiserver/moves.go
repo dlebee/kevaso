@@ -254,31 +254,35 @@ func (s *Server) placement(ctx context.Context, silo *v1.Silo) ([]*v1.Silo, sche
 	if err != nil {
 		return nil, scheduler.Env{}, err
 	}
+	ipSets, err := listAs[*v1.IPSet](ctx, s.store, "IPSet")
+	if err != nil {
+		return nil, scheduler.Env{}, err
+	}
+	siloSets, err := listAs[*v1.SiloSet](ctx, s.store, "SiloSet")
+	if err != nil {
+		return nil, scheduler.Env{}, err
+	}
 	var placed []*v1.Silo
 	for _, x := range silos {
 		if x.Status.Host != "" && x.UID != silo.UID {
 			placed = append(placed, x)
 		}
 	}
-	return placed, scheduler.Env{IPs: ipList, Hosts: hosts, Classes: s.classMap(), Suffix: v1.ClusterSuffix(hosts)}, nil
+	env := scheduler.Env{IPs: ipList, Hosts: hosts, Classes: s.classMap(), Suffix: v1.ClusterSuffix(hosts), IPSets: ipSets, SiloSets: siloSets}
+	if s.networking != nil {
+		env.Networking = s.networking // the providers' reach: where their IPs and balancers reach a silo
+	}
+	return placed, env, nil
 }
 
-// fits is why host to can't take the silo ("" when it can), by the scheduler's own rules.
+// fits is why host to can't take the silo ("" when it can), by the scheduler's own rules: the
+// silo keeps its status.host while judged, so a balancer it has keeps it in that host's region.
 func (s *Server) fits(ctx context.Context, silo *v1.Silo, to *v1.Host) (string, error) {
 	placed, env, err := s.placement(ctx, silo)
 	if err != nil {
 		return "", err
 	}
-	c := *silo
-	c.Status.Host = ""
-	d, err := scheduler.ScheduleIn(&c, []*v1.Host{to}, placed, env)
-	if err != nil {
-		return "", err
-	}
-	if d.Host == to.Name {
-		return "", nil
-	}
-	return d.Message(), nil
+	return scheduler.MoveTo(silo, to, env.Hosts, placed, env)
 }
 
 // claimMove gives st (the silo's status once moved to host to) the service the silo has there,

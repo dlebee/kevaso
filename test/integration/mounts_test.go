@@ -159,7 +159,7 @@ func TestMountClassFollowsTheSilo(t *testing.T) {
 		t.Fatal("placed on a host without the node side")
 	}
 	handle := get().Status.Volumes[0].Handle
-	if get().Status.Movable != "Anywhere" {
+	if get().Status.Movable != "yes: any worker" {
 		t.Fatalf("movable: %q", cur.Status.Movable)
 	}
 	for _, c := range share.CallLog() {

@@ -95,8 +95,8 @@ spec:
 	r.waitRunning("mv", 30*time.Minute, "w1", "vm")
 	s := r.silo("mv", "vm")
 	n := vmNames(s)
-	if s.Status.Movable != "Anywhere" {
-		t.Errorf("movable: %q, want Anywhere", s.Status.Movable)
+	if s.Status.Movable != "yes: any worker" {
+		t.Errorf("movable: %q, want yes: any worker", s.Status.Movable)
 	}
 	img := hostdirRoot + "/volumes/" + s.UID + "/disk.root/root.raw"
 	data := cloudhypervisorVolumesDir + "/" + s.UID + "/data"

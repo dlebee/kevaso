@@ -259,6 +259,14 @@ func TestNamespaceCascadeReleasesBalancersAndIPs(t *testing.T) {
 			fmt.Sprintf("%d balancers; pool-0 %+v", len(lbs), x.Status)
 	})
 
+	// Where they may move, by their ways in (the scheduler's words, written by the silo controller).
+	eventually("movable by the ways in", func() (bool, string) {
+		var w, r v1.Silo
+		_ = admin.Get(ctx, "Silo", "shop", "web", &w)
+		_ = admin.Get(ctx, "Silo", "shop", "relay-0", &r)
+		return strings.HasPrefix(w.Status.Movable, "yes: within fake") && strings.HasPrefix(r.Status.Movable, "yes: within fake"),
+			w.Status.Movable + " | " + r.Status.Movable
+	})
 	if err := admin.DeleteNamespace(ctx, "shop", client.DeleteOptions{Cascade: true}); err != nil {
 		t.Fatal(err)
 	}
