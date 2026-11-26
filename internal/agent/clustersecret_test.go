@@ -85,7 +85,6 @@ func (s *csAPI) set(name string, version int64, value []byte) {
 	o := &v1.ClusterSecret{
 		TypeMeta:   meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterSecret"},
 		ObjectMeta: meta.ObjectMeta{Name: name, UID: "uid-" + name, ResourceVersion: strconv.FormatInt(s.rev, 10)},
-		Spec:       v1.ClusterSecretSpec{Value: append([]byte(nil), value...)},
 		Status:     v1.ClusterSecretStatus{Version: version},
 	}
 	s.objs[name] = o
@@ -108,7 +107,7 @@ func (s *csAPI) del(name string) {
 // public is the object a list or a watch may carry: metadata and status, never the value.
 func (s *csAPI) public(o *v1.ClusterSecret) *v1.ClusterSecret {
 	c := *o
-	c.Spec.Value = nil
+	c.Spec.Data = nil
 	return &c
 }
 
@@ -120,7 +119,6 @@ func (s *csAPI) recreate(name string, version int64, value []byte) {
 	o := &v1.ClusterSecret{
 		TypeMeta:   meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterSecret"},
 		ObjectMeta: meta.ObjectMeta{Name: name, UID: "uid-" + name + "-new-" + strconv.FormatInt(s.rev, 10), ResourceVersion: strconv.FormatInt(s.rev, 10)},
-		Spec:       v1.ClusterSecretSpec{Value: append([]byte(nil), value...)},
 		Status:     v1.ClusterSecretStatus{Version: version},
 	}
 	s.objs[name] = o
@@ -236,8 +234,7 @@ func (s *csAPI) serveValue(w http.ResponseWriter, r *http.Request) {
 	forbid := s.forbid
 	worker := s.worker
 	want := s.plugin
-	val := append([]byte(nil), s.values[name]...)
-	data := map[string][]byte{v1.ValueKey: val}
+	data := map[string][]byte{csKey: append([]byte(nil), s.values[name]...)}
 	if k, isKeyed := s.keyed[name]; isKeyed {
 		data = map[string][]byte{}
 		for key, b := range k {
@@ -251,6 +248,11 @@ func (s *csAPI) serveValue(w http.ResponseWriter, r *http.Request) {
 	_, ok := s.values[name]
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
+	if r.URL.Query().Get("key") != v1.AllKeys { // the host names every key: nothing is guessed
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(client.Error{Code: http.StatusBadRequest, Reason: "BadRequest", Message: "name a key (?key=KEY), or every key (?key=*)"})
+		return
+	}
 	if forPlugin != want || (side != "node" && side != "controller") {
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(client.Error{Code: http.StatusForbidden, Reason: "Forbidden", Message: "a host reads a clustersecret's value with side=node or side=controller"})
@@ -379,8 +381,11 @@ func (r *csRig) start() {
 	})
 }
 
-// path is the key value's file in the secret's folder (LoadCredential loads it as token_value).
-func (r *csRig) path() string { return filepath.Join(r.dir, "juicefs", "token", v1.ValueKey) }
+// csKey is the one key the rig's single-key cluster secrets hold.
+const csKey = "secret"
+
+// path is the key's file in the secret's folder (LoadCredential loads it as token_secret).
+func (r *csRig) path() string { return filepath.Join(r.dir, "juicefs", "token", csKey) }
 
 func (r *csRig) wait(d time.Duration, what string, cond func() bool) {
 	r.t.Helper()
@@ -444,7 +449,7 @@ func TestClusterSecretFirstDelivery(t *testing.T) {
 			t.Fatalf("owner is not root: %+v", fi.Sys())
 		}
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(r.path()), ".kvo-tmp-"+v1.ValueKey)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(r.path()), ".kvo-tmp-"+csKey)); !os.IsNotExist(err) {
 		t.Fatalf("temporary file left behind: %v", err)
 	}
 	time.Sleep(150 * time.Millisecond)

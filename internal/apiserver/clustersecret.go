@@ -29,15 +29,15 @@ func (s *Server) prepareClusterSecret(ctx context.Context, t target, obj meta.Ob
 		return nil, nil
 	}
 	sp := &cs.Spec
-	value, data, set, remove := sp.Value, sp.Data, sp.SetData, sp.RemoveKeys
-	sp.Value, sp.Data, sp.SetData, sp.RemoveKeys = nil, nil, nil, nil
+	data, set, remove := sp.Data, sp.SetData, sp.RemoveKeys
+	sp.Data, sp.SetData, sp.RemoveKeys = nil, nil, nil
 	cs.Status = v1.ClusterSecretStatus{} // the server sets status; the caller's is never stored
 	cur, err := s.store.Get(ctx, t.key())
 	creating := errors.Is(err, store.ErrNotFound)
 	if err != nil && !creating {
 		return nil, err
 	}
-	keys, whole, err := newKeys("ClusterSecret", cs.Name, value, data, set, remove, func() (map[string][]byte, error) {
+	keys, whole, err := newKeys("ClusterSecret", cs.Name, data, set, remove, func() (map[string][]byte, error) {
 		if creating || s.vault == nil {
 			return nil, secrets.ErrNoValue
 		}
@@ -53,7 +53,7 @@ func (s *Server) prepareClusterSecret(ctx context.Context, t target, obj meta.Ob
 	}
 	if keys == nil {
 		if creating {
-			return nil, errf(http.StatusUnprocessableEntity, "Invalid", "ClusterSecret %s: needs a value (kvo create clustersecret %s --from-file FILE|- or --from-file KEY=FILE)", cs.Name, cs.Name)
+			return nil, errf(http.StatusUnprocessableEntity, "Invalid", "ClusterSecret %s: needs at least one key (kvo create clustersecret %s --from-file KEY=FILE)", cs.Name, cs.Name)
 		}
 		return nil, nil
 	}

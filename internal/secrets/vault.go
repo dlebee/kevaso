@@ -118,7 +118,7 @@ func Keys(data map[string][]byte) ([]string, int) {
 // sticky keeps it write-only also when sec is readable now (a write that changes some keys of a
 // value written write-only, K-060).
 func (v *Vault) Put(ctx context.Context, sec *v1.Secret, data map[string][]byte, sticky bool) (v1.SecretStatus, error) {
-	pub, err := PublicKey(sec.Spec.Type, data[v1.ValueKey])
+	pub, err := PublicKey(sec.Spec.Type, data[v1.PrivateKeyKey])
 	if err != nil {
 		return v1.SecretStatus{}, err
 	}
@@ -413,7 +413,7 @@ func (v *Vault) Sign(ctx context.Context, sec *v1.Secret, req SignRequest) ([]by
 	if !sec.KeyType() {
 		return nil, fmt.Errorf("%s/%s isn't a signing key", sec.Namespace, sec.Name)
 	}
-	value, _, err := v.KeyValue(ctx, sec, v1.ValueKey)
+	value, _, err := v.KeyValue(ctx, sec, v1.PrivateKeyKey)
 	if err != nil {
 		return nil, err
 	}

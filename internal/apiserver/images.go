@@ -185,7 +185,7 @@ func (s *Server) brokerPull(ctx context.Context, call *brokerCall, op client.Bro
 	if s.vault == nil {
 		return refuse("this server has no KMS")
 	}
-	value, ver, err := s.vault.KeyValue(ctx, sec, v1.ValueKey) // a registry secret's password
+	value, ver, err := s.vault.KeyValue(ctx, sec, v1.PasswordKey) // a registry secret's password
 	if err != nil {
 		return refuse(err.Error())
 	}

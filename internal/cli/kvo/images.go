@@ -79,10 +79,10 @@ func registrySecret(s *v1.Secret, so secretOpts) error {
 		return nil
 	}
 	if so.server == "" || so.username == "" {
-		return errors.New("a registry secret needs --server HOST (e.g. ghcr.io) and --username U; the password or token comes from --from-file FILE or - (stdin)")
+		return errors.New("a registry secret needs --server HOST (e.g. ghcr.io) and --username U; the password or token is its key password: --from-file password=FILE or --from-file password=- (stdin)")
 	}
-	if so.generate {
-		return errors.New("a registry secret's value is the registry's password or token: --from-file, not --generate")
+	if so.generate != "" {
+		return errors.New("a registry secret's value is the registry's password or token: --from-file password=FILE, not --generate")
 	}
 	host, err := v1.RegistryHost(so.server)
 	if err != nil {

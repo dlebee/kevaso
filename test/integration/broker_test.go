@@ -48,17 +48,17 @@ func TestBroker(t *testing.T) {
 	put(secretObj("legacy-token", nil, "tok'en"))
 	put(secretObj("infura-key", nil, "sk-inject"))
 	key := secretObj("validator-1-key", nil, "")
-	key.Spec.Type, key.Spec.Generate = v1.SecretEd25519, true
+	key.Spec.Type, key.Spec.Generate = v1.SecretEd25519, v1.PrivateKeyKey
 	put(key)
 	for _, g := range []*v1.Grant{
 		grantObj("app", v1.GrantSpec{Secrets: []v1.GrantSecret{
-			{Name: "db-password"},
-			{Name: "tls-key", Deliver: v1.DeliverFile, Path: "/run/secrets/tls.pem"},
-			{Name: "legacy-token", Deliver: v1.DeliverEnv},
-			{Name: "infura-key", Deliver: v1.DeliverInject, To: &v1.InjectTarget{Host: "mainnet.infura.io"}},
+			{Name: "db-password", Key: "token"},
+			{Name: "tls-key", Key: "token", Deliver: v1.DeliverFile, Path: "/run/secrets/tls.pem"},
+			{Name: "legacy-token", Key: "token", Deliver: v1.DeliverEnv, Env: "LEGACY_TOKEN"},
+			{Name: "infura-key", Key: "token", Deliver: v1.DeliverInject, To: &v1.InjectTarget{Host: "mainnet.infura.io"}},
 		}}),
 		grantObj("validator", v1.GrantSpec{Operations: &v1.GrantOperations{Sign: &v1.SignOperation{KeyRef: "validator-1-key", SlashingProtection: true}}}),
-		grantObj("confidential-only", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-password"}}, Requires: &v1.GrantRequires{Assurance: v1.AssuranceConfidential}}),
+		grantObj("confidential-only", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-password", Key: "token"}}, Requires: &v1.GrantRequires{Assurance: v1.AssuranceConfidential}}),
 	} {
 		if err := c.admin.Create(c.ctx, g); err != nil {
 			t.Fatal(err)
@@ -90,17 +90,17 @@ func TestBroker(t *testing.T) {
 
 	// The node gets its broker secret; the same name from another silo is "no secret", like a
 	// name that doesn't exist, word for word.
-	if a := get(node, "/v1/secrets/db-password"); a.code != 200 || a.body != "pw-1" || a.header.Get("Kevaso-Version") != "1" {
+	if a := get(node, "/v1/secrets/db-password/token"); a.code != 200 || a.body != "pw-1" || a.header.Get("Kevaso-Version") != "1" {
 		t.Fatalf("node get db-password: %d %q", a.code, a.body)
 	}
-	aOther, aMissing := get(other, "/v1/secrets/db-password"), get(node, "/v1/secrets/does-not-exist")
+	aOther, aMissing := get(other, "/v1/secrets/db-password/token"), get(node, "/v1/secrets/does-not-exist/token")
 	if aOther.code != 404 || aMissing.code != 404 || strings.ReplaceAll(aOther.msg(), "db-password", "X") != strings.ReplaceAll(aMissing.msg(), "does-not-exist", "X") {
 		t.Fatalf("not granted vs missing must look the same: %d %q / %d %q", aOther.code, aOther.msg(), aMissing.code, aMissing.msg())
 	}
 	// Injected secrets never go to the silo, nor do signing keys, nor (now that the host writes
 	// them) file and env secrets.
 	for _, name := range []string{"infura-key", "validator-1-key", "tls-key", "legacy-token"} {
-		if a := get(node, "/v1/secrets/"+name); a.code != 404 {
+		if a := get(node, "/v1/secrets/"+name+"/token"); a.code != 404 {
 			t.Fatalf("%s reached the silo through its endpoint: %d %q", name, a.code, a.body)
 		}
 	}
@@ -111,11 +111,11 @@ func TestBroker(t *testing.T) {
 		}
 	}
 	// Assurance: a grant needing a confidential VM gives nothing to a host-assured silo.
-	if a := get(locked, "/v1/secrets/db-password"); a.code != 404 {
+	if a := get(locked, "/v1/secrets/db-password/token"); a.code != 404 {
 		t.Fatalf("confidential-only grant served a host-assured silo: %d", a.code)
 	}
 	// A host only gets secrets for silos placed on it.
-	if a := get(elsewhere, "/v1/secrets/db-password"); a.code != 404 || !strings.Contains(a.msg(), "no access") {
+	if a := get(elsewhere, "/v1/secrets/db-password/token"); a.code != 404 || !strings.Contains(a.msg(), "no access") {
 		t.Fatalf("hv1 fetching for a silo on hv2: %d %q", a.code, a.body)
 	}
 
@@ -180,7 +180,7 @@ func TestAffected(t *testing.T) {
 		return s
 	}
 	silos := []*v1.Silo{mk("web3", "a", "rpc"), mk("web3", "b", "rpc", "db"), mk("web3", "c"), mk("other", "d", "rpc")}
-	grants := []*v1.Grant{grantObj("rpc", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "infura-key"}}}), grantObj("db", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db"}}})}
+	grants := []*v1.Grant{grantObj("rpc", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "infura-key", Key: "token"}}}), grantObj("db", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db", Key: "token"}}})}
 	names := func(ss []*v1.Silo) string {
 		var out []string
 		for _, s := range ss {

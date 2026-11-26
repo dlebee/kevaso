@@ -392,7 +392,7 @@ func describeObject(w io.Writer, obj meta.Object) error {
 			kv(0, "Keys", keysLine(o.Status.Keys))
 		}
 		if o.Readable() {
-			kv(0, "Readable", "yes, with read-value (kvo get secret "+o.Name+" --reveal)")
+			kv(0, "Readable", "yes, with read-value (kvo get secret "+o.Name+" --reveal --key KEY, or --key \"*\")")
 		} else {
 			kv(0, "Readable", "no: write-only, only silos can use it")
 		}
@@ -424,7 +424,7 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		if o.Status.Version == 0 || o.Status.ChangedAt == nil {
 			kv(0, "Value", "none yet")
 		} else {
-			kv(0, "Value", fmt.Sprintf("version %d, changed %s ago (kvo get clustersecret %s --reveal)", o.Status.Version, since(*o.Status.ChangedAt), o.Name))
+			kv(0, "Value", fmt.Sprintf("version %d, changed %s ago (kvo get clustersecret %s --reveal --key KEY, or --key \"*\")", o.Status.Version, since(*o.Status.ChangedAt), o.Name))
 			kv(0, "Keys", keysLine(o.Status.Keys))
 		}
 	case *v1.OpenShellPolicy:
@@ -492,27 +492,25 @@ func describeObject(w io.Writer, obj meta.Object) error {
 				if f == "" {
 					f = "Bearer {{value}}"
 				}
-				how = fmt.Sprintf("tier 2, injection: the egress gate adds %s: %s for %s; never in the silo", h, f, t.Host)
+				how = fmt.Sprintf("tier 2, injection: the egress gate adds %s: %s for %s ({{value}}: the key's value); never in the silo", h, f, t.Host)
 			case v1.DeliverBroker:
-				p := sec.Name
-				if sec.Key != "" {
-					p += "/" + sec.Key
+				p := sec.Name + "/" + sec.Key
+				if sec.Key == v1.AllKeys {
+					p = sec.Name + "/KEY or /v1/secrets/" + sec.Name + "/* for every key"
 				}
 				how = "tier 4, broker: the silo fetches it when needed (curl -fsS -H '" + v1.EndpointHeader + ": 1' http://" + v1.EndpointAddress + "/v1/secrets/" + p + ")"
 			case v1.DeliverFile:
-				path := sec.FilePath("KEY", []string{"KEY"}) // a folder of keys
-				if sec.Key != "" {
-					path = sec.FilePath(sec.Key, nil)
-				} else {
-					path = strings.TrimSuffix(path, "/KEY") + " (one file for a single value; otherwise a folder, a file per key)"
+				path := sec.FilePath(sec.Key)
+				if sec.Key == v1.AllKeys {
+					path = strings.TrimSuffix(sec.FilePath("KEY"), "/KEY") + "/ (a folder, a file per key)"
 				}
 				how = "tier 4, file: " + path + " (tmpfs, written by the host, rewritten on rotation)"
 			case v1.DeliverEnv:
 				how = "tier 4, env " + envName(sec) + " — FLAGGED: leaks into child processes, dumps, logs and an agent's context; on docker and podman, also in the engine's container config (inspect)"
 			}
-			name := sec.Name
-			if sec.Key != "" {
-				name += " (key " + sec.Key + ")"
+			name := sec.Name + " (key " + sec.Key + ")"
+			if sec.Key == v1.AllKeys {
+				name = sec.Name + " (every key)"
 			}
 			_, _ = fmt.Fprintf(tw, "%s:\t%s: %s\n", label, name, how)
 		}
@@ -663,20 +661,14 @@ func portList(ps []v1.PortRange) string {
 
 // envName is the variable (or, for every key, the variables) a secret delivered as env gets.
 func envName(sec v1.GrantSecret) string {
-	if sec.Key != "" {
+	if sec.Key != v1.AllKeys {
 		return sec.EnvName(sec.Key)
 	}
-	p := sec.EnvName(v1.ValueKey)
-	return p + " (a single value; otherwise " + p + "_KEY for each key)"
+	return sec.EnvName("KEY") + " for each key"
 }
 
 // keysLine lists a secret's keys for describe.
-func keysLine(keys []string) string {
-	if v1.SingleValue(keys) {
-		return "one value (the key " + v1.ValueKey + ")"
-	}
-	return strings.Join(keys, ", ")
-}
+func keysLine(keys []string) string { return strings.Join(keys, ", ") }
 
 func ownerSet(s *v1.Silo) string {
 	for _, r := range s.OwnerReferences {

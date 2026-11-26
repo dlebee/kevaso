@@ -38,23 +38,23 @@ func TestMetalSecrets(t *testing.T) {
 	c.namespace(ns, "grant/app", "grant/boxapp", "grant/boxfiles", "secret/db-password", "secret/tls-key", "secret/env-token", "secret/api-key", "secret/gh-token", "secret/other")
 	dbPassword, tlsValue, envToken := randomValue(t, "pw-"), "-----TLS "+randomValue(t, "")+"-----", randomValue(t, "env-")
 	apiKey, ghToken, other := randomValue(t, "sk-"), randomValue(t, "gh-"), randomValue(t, "no-")
-	c.must(dbPassword, "create", "secret", "db-password", "-n", ns, "--from-file", "-")
-	c.must(tlsValue, "create", "secret", "tls-key", "-n", ns, "--from-file", "-")
-	c.must(envToken, "create", "secret", "env-token", "-n", ns, "--from-file", "-")
-	c.must(apiKey, "create", "secret", "api-key", "-n", ns, "--from-file", "-", "--allow", "inject", "--write-only")
-	c.must(ghToken, "create", "secret", "gh-token", "-n", ns, "--from-file", "-")
-	c.must(other, "create", "secret", "other", "-n", ns, "--from-file", "-")
+	c.must(dbPassword, "create", "secret", "db-password", "-n", ns, "--from-file", "password=-")
+	c.must(tlsValue, "create", "secret", "tls-key", "-n", ns, "--from-file", "tls.pem=-")
+	c.must(envToken, "create", "secret", "env-token", "-n", ns, "--from-file", "token=-")
+	c.must(apiKey, "create", "secret", "api-key", "-n", ns, "--from-file", "token=-", "--allow", "inject", "--write-only")
+	c.must(ghToken, "create", "secret", "gh-token", "-n", ns, "--from-file", "token=-")
+	c.must(other, "create", "secret", "other", "-n", ns, "--from-file", "token=-")
 	c.apply(`apiVersion: kevaso/v1
 kind: Grant
 metadata: { name: app, namespace: ` + ns + ` }
 spec:
   egress: [{ to: "` + metalInetAddr + `/32", ports: ["443"] }] # the stand-in is a private address: by name alone the gate refuses it
   secrets:
-    - { name: db-password }
-    - { name: tls-key, deliver: file, path: /run/secrets/tls.pem }
-    - { name: env-token, deliver: env, env: APP_TOKEN }
-    - { name: api-key, deliver: inject, to: { host: ` + metalInetName + ` } }
-    - { name: gh-token, approval: { required: true } }
+    - { name: db-password, key: password }
+    - { name: tls-key, key: tls.pem, deliver: file, path: /run/secrets/tls.pem }
+    - { name: env-token, key: token, deliver: env, env: APP_TOKEN }
+    - { name: api-key, key: token, deliver: inject, to: { host: ` + metalInetName + ` } }
+    - { name: gh-token, key: token, approval: { required: true } }
 ---
 apiVersion: kevaso/v1
 kind: Grant
@@ -62,9 +62,9 @@ metadata: { name: boxapp, namespace: ` + ns + ` }
 spec:
   egress: [{ to: "` + metalInetAddr + `/32", ports: ["443"] }] # the stand-in is a private address: by name alone the gate refuses it
   secrets:
-    - { name: db-password }
-    - { name: api-key, deliver: inject, to: { host: ` + metalInetName + ` } }
-    - { name: gh-token, approval: { required: true } }
+    - { name: db-password, key: password }
+    - { name: api-key, key: token, deliver: inject, to: { host: ` + metalInetName + ` } }
+    - { name: gh-token, key: token, approval: { required: true } }
 ---
 apiVersion: kevaso/v1
 kind: Silo
@@ -95,12 +95,12 @@ spec:
 				return in("curl -sS --max-time 10 -w ' %{http_code}' " + headers + " 'http://169.254.42.1" + path + "' 2>&1")
 			}
 			const local = "-H 'Kevaso-Local: 1'"
-			c.expect("the endpoint, with plain curl", ep("/v1/secrets/db-password", local), dbPassword+" 200")
+			c.expect("the endpoint, with plain curl", ep("/v1/secrets/db-password/password", local), dbPassword+" 200")
 			// (A second -H 'Kevaso-Local:' wouldn't take the first one away: curl sends the first.)
-			c.expect("without its header: refused", ep("/v1/secrets/db-password", ""), " 403")
-			c.expect("from a browser (an Origin): refused", ep("/v1/secrets/db-password", local+" -H 'Origin: http://evil.example'"), " 403")
-			c.expect("a secret the grant doesn't name: none", ep("/v1/secrets/other", local), " 404")
-			c.expect("an inject-only key: none", ep("/v1/secrets/api-key", local), " 404")
+			c.expect("without its header: refused", ep("/v1/secrets/db-password/password", ""), " 403")
+			c.expect("from a browser (an Origin): refused", ep("/v1/secrets/db-password/password", local+" -H 'Origin: http://evil.example'"), " 403")
+			c.expect("a secret the grant doesn't name: none", ep("/v1/secrets/other/token", local), " 404")
+			c.expect("an inject-only key: none", ep("/v1/secrets/api-key/token", local), " 404")
 			if silo == "vm" { // a container's file and env deliveries: the box-deliveries subtest
 				c.expect("a file the host wrote, in tmpfs", in("cat /run/secrets/tls.pem; echo; stat -c '%a %U' /run/secrets/tls.pem; grep -E ' /run(/secrets)? ' /proc/mounts | awk '{print $3}'"),
 					tlsValue+"\n400 root\ntmpfs")
@@ -121,7 +121,7 @@ spec:
 			}
 
 			// Approval: the call is held until a person says yes.
-			ask := `u='http://169.254.42.1/v1/secrets/gh-token?for=5m&wait=3m'; a=
+			ask := `u='http://169.254.42.1/v1/secrets/gh-token/token?for=5m&wait=3m'; a=
 while :; do
   code=$(curl -sS -o /tmp/answer -w '%{http_code}' -H 'Kevaso-Local: 1' "$u${a:+&approval=$a}")
   [ "$code" = 428 ] || break
@@ -179,8 +179,8 @@ kind: Grant
 metadata: { name: boxfiles, namespace: `+ns+` }
 spec:
   secrets:
-    - { name: tls-key, deliver: file, path: /run/secrets/tls.pem }
-    - { name: env-token, deliver: env, env: APP_TOKEN }
+    - { name: tls-key, key: tls.pem, deliver: file, path: /run/secrets/tls.pem }
+    - { name: env-token, key: token, deliver: env, env: APP_TOKEN }
 ---
 apiVersion: kevaso/v1
 kind: Silo
@@ -238,7 +238,7 @@ spec:
 		c.expect("the file's folder is read-only", in("touch /run/secrets/x 2>&1; echo rc=$?"), "rc=1")
 		// Rotation: a file is rewritten in place, no restart.
 		rotated := "-----TLS " + randomValue(t, "") + "-----"
-		c.must(rotated, "secret", "set", "tls-key", "-n", ns, "--from-file", "-")
+		c.must(rotated, "secret", "set", "tls-key", "-n", ns, "--from-file", "tls.pem=-")
 		c.eventually("a rotated file reaches the container in place", time.Minute, func() (bool, string) {
 			got := in("cat /run/secrets/tls.pem")
 			return got == rotated, got

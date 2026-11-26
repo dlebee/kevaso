@@ -69,7 +69,7 @@ type JoinTokenResponse struct {
 // for a write-only secret).
 type SecretValue struct {
 	Value   []byte            `json:"value,omitempty"` // ?key=KEY: that key's bytes
-	Data    map[string][]byte `json:"data,omitempty"`  // without: every key
+	Data    map[string][]byte `json:"data,omitempty"`  // ?key=*: every key
 	Version int64             `json:"version"`
 }
 

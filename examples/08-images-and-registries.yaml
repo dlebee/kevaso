@@ -1,6 +1,6 @@
 # 08 · Machine disks and private registries (design §0.2).
 #
-#   kvo create secret ghcr-pull -n payments --type registry --server ghcr.io --username acme-bot --from-file -
+#   kvo create secret ghcr-pull -n payments --type registry --server ghcr.io --username acme-bot --from-file password=-
 #   kvo apply -f examples/08-images-and-registries.yaml
 #   kvo get vmimages -n payments                  # VM disks only
 #   kvo describe silo api -n payments             # pinned or not, the digest pulled, the pull secret
@@ -27,7 +27,7 @@ apiVersion: kevaso/v1
 kind: Secret
 metadata: { name: ghcr-pull, namespace: payments }
 spec:
-  type: registry                  # the password or token: kvo create secret … --from-file - (never in YAML)
+  type: registry                  # the password or token, its key password: kvo create secret … --from-file password=- (never in YAML)
   server: ghcr.io
   username: acme-bot
 ---

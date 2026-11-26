@@ -61,7 +61,7 @@ each part is proven: [MILESTONES.md](MILESTONES.md). What exists today:
   Silos reach nothing outside the cluster without one. API keys are **injected** at the host's
   egress gate, so they never enter the silo; other secrets are written into the silo's tmpfs by its
   host (files, env for legacy apps) or fetched on demand from a plain HTTP endpoint only that silo
-  reaches (`curl -H 'Kevaso-Local: 1' http://169.254.42.1/v1/secrets/NAME`, ADR 0009); nothing of
+  reaches (`curl -H 'Kevaso-Local: 1' http://169.254.42.1/v1/secrets/NAME/KEY`, ADR 0009); nothing of
   Kevaso's is installed in a silo; signing keys stay outside (`Sign`, with slashing protection). Per-secret RBAC (`list`, `use`, `read-value`, `write`, by name or
   label), write-only secrets, and rotation that reaches every silo using a secret;
 - Mac workers (ADR 0012): a Mac joins with `kvoadm host add` (a signed, notarized `kevasod` under

@@ -41,12 +41,12 @@ type secretWrite struct {
 	sealed bool // sealed before the object was committed (a loosening write): nothing left to do after
 }
 
-// newKeys is the set of keys a write leaves the secret with: value (the key value) or data
-// replace every key; setData and removeKeys change some and keep the rest, from old (the keys it
-// holds now; nil, ErrNoValue when none). nil: the write changes no key.
-func newKeys(what, name string, value []byte, data, set map[string][]byte, remove []string, old func() (map[string][]byte, error)) (map[string][]byte, bool, error) {
+// newKeys is the set of keys a write leaves the secret with: data replaces every key; setData and
+// removeKeys change some and keep the rest, from old (the keys it holds now; nil, ErrNoValue when
+// none). nil: the write changes no key.
+func newKeys(what, name string, data, set map[string][]byte, remove []string, old func() (map[string][]byte, error)) (map[string][]byte, bool, error) {
 	forms := 0
-	for _, given := range []bool{value != nil, data != nil, set != nil || remove != nil} {
+	for _, given := range []bool{data != nil, set != nil || remove != nil} {
 		if given {
 			forms++
 		}
@@ -60,9 +60,7 @@ func newKeys(what, name string, value []byte, data, set map[string][]byte, remov
 	case forms == 0:
 		return nil, false, nil
 	case forms > 1:
-		return nil, false, bad("a write carries spec.value, spec.data, or spec.setData and spec.removeKeys: one of them")
-	case value != nil:
-		out, whole = map[string][]byte{v1.ValueKey: value}, true
+		return nil, false, bad("a write carries spec.data, or spec.setData and spec.removeKeys: one of them")
 	case data != nil:
 		if len(data) == 0 {
 			return nil, false, bad("spec.data needs at least one key")
@@ -143,7 +141,7 @@ func checkLoosening(ctx context.Context, old, obj meta.Object) error {
 	if sw := secretWriteFrom(ctx); sw != nil && sw.data != nil && sw.whole {
 		return nil
 	}
-	return errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.valueReadable, spec.allowedDelivery, and a registry secret's spec.server or spec.username can't be changed without every key again (spec.value or spec.data, not spec.setData) in the same write (a value made write-only, or kept to one registry, stays so)", next.Name)
+	return errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.valueReadable, spec.allowedDelivery, and a registry secret's spec.server or spec.username can't be changed without every key again (spec.data, not spec.setData) in the same write (a value made write-only, or kept to one registry, stays so)", next.Name)
 }
 
 func kind(s *v1.Secret) string {
@@ -240,8 +238,8 @@ func (s *Server) prepareSecret(ctx context.Context, t target, obj meta.Object) (
 		return nil, nil
 	}
 	sp := &sec.Spec
-	value, data, set, remove := sp.Value, sp.Data, sp.SetData, sp.RemoveKeys
-	sp.Value, sp.Data, sp.SetData, sp.RemoveKeys = nil, nil, nil, nil
+	data, set, remove := sp.Data, sp.SetData, sp.RemoveKeys
+	sp.Data, sp.SetData, sp.RemoveKeys = nil, nil, nil
 	var old *v1.Secret
 	if cur, err := s.store.Get(ctx, t.key()); err == nil {
 		if o, _, err := v1.Decode(cur.Data); err == nil {
@@ -251,15 +249,26 @@ func (s *Server) prepareSecret(ctx context.Context, t target, obj meta.Object) (
 	if old != nil && old.Spec.Type != sec.Spec.Type {
 		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.type can't change (delete and re-create it)", sec.Name)
 	}
-	if value == nil && data == nil && set == nil && remove == nil && sec.Spec.Generate && (old == nil || s.vault == nil || !s.vault.Has(ctx, old)) {
+	if g := sec.Spec.Generate; g != "" {
+		if fixed := v1.FixedKey(kind(sec)); fixed != "" && g != fixed {
+			return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.generate: a %s secret's key is %q (generate: %s)", sec.Name, kind(sec), fixed, fixed)
+		}
+		if !v1.ValidKey(g) {
+			return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.generate names the key to make: %q isn't a key name (letters, digits, - _ and .)", sec.Name, g)
+		}
+	}
+	if old == nil && sec.Spec.Generate != "" && (data != nil || set != nil) {
+		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: spec.generate and spec.data don't go together: the server makes the key", sec.Name)
+	}
+	if data == nil && set == nil && remove == nil && sec.Spec.Generate != "" && (old == nil || s.vault == nil || !s.vault.Has(ctx, old)) {
 		v, err := secrets.Generate(sec.Spec.Type)
 		if err != nil {
 			return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: %v", sec.Name, err)
 		}
-		value = v
+		data = map[string][]byte{sec.Spec.Generate: v}
 	}
 	sticky := false
-	keys, whole, err := newKeys("Secret", sec.Name, value, data, set, remove, func() (map[string][]byte, error) {
+	keys, whole, err := newKeys("Secret", sec.Name, data, set, remove, func() (map[string][]byte, error) {
 		if old == nil || s.vault == nil {
 			return nil, secrets.ErrNoValue
 		}
@@ -274,13 +283,13 @@ func (s *Server) prepareSecret(ctx context.Context, t target, obj meta.Object) (
 		secrets.Clear(keys)
 		return nil, errf(http.StatusServiceUnavailable, "Unavailable", "this server has no KMS: it can't keep secret values")
 	}
-	if t := kind(sec); t != v1.SecretOpaque {
-		if _, ok := keys[v1.ValueKey]; !ok || len(keys) != 1 {
+	if fixed := v1.FixedKey(kind(sec)); fixed != "" {
+		if _, ok := keys[fixed]; !ok || len(keys) != 1 {
 			secrets.Clear(keys)
-			return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: a %s secret holds one value, the key %q (spec.value): no other key", sec.Name, t, v1.ValueKey)
+			return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: a %s secret holds one key, %q (spec.data: {%s: …}): no other key", sec.Name, kind(sec), fixed, fixed)
 		}
 	}
-	if _, err := secrets.PublicKey(sec.Spec.Type, keys[v1.ValueKey]); err != nil {
+	if _, err := secrets.PublicKey(sec.Spec.Type, keys[v1.PrivateKeyKey]); err != nil {
 		secrets.Clear(keys)
 		return nil, errf(http.StatusUnprocessableEntity, "Invalid", "Secret %s: %v", sec.Name, err)
 	}
@@ -387,10 +396,15 @@ func (s *Server) secretValue(ctx context.Context, w http.ResponseWriter, t targe
 	writeKeys(w, "secret "+sec.Namespace+"/"+sec.Name, data, ver, key)
 }
 
-// writeKeys answers a /value read: every key, or with key only that one (404 when it isn't one).
+// writeKeys answers a /value read: ?key=KEY that key alone (404 when it isn't one), ?key=* every
+// key. No key named is refused: nothing is guessed.
 func writeKeys(w http.ResponseWriter, what string, data map[string][]byte, ver int64, key string) {
 	w.Header().Set("Cache-Control", "no-store")
-	if key == "" {
+	switch key {
+	case "":
+		writeErr(w, errf(http.StatusBadRequest, "BadRequest", "%s: name a key (?key=KEY), or every key (?key=*)", what))
+		return
+	case v1.AllKeys:
 		writeJSON(w, http.StatusOK, client.SecretValue{Data: data, Version: ver})
 		return
 	}
@@ -416,8 +430,7 @@ func person(ctx context.Context) (user string, ok bool) {
 type secretUse struct{ mode, key string }
 
 // canUseSecrets checks use on each named secret in ns, with each secret's labels (for selector
-// rules), and that each existing secret allows the delivery asked for and has the key named (an
-// inject with no key needs a secret with one key).
+// rules), and that each existing secret allows the delivery asked for and has the key named.
 func (s *Server) canUseSecrets(ctx context.Context, ns string, uses map[string][]secretUse) error {
 	names := make([]string, 0, len(uses))
 	for n := range uses {
@@ -457,11 +470,8 @@ func (s *Server) canUseSecrets(ctx context.Context, ns string, uses map[string][
 				if len(have) == 0 {
 					continue // no value yet: its keys aren't known
 				}
-				if u.key != "" && !slices.Contains(have, u.key) {
+				if u.key != "" && u.key != v1.AllKeys && !slices.Contains(have, u.key) {
 					return errf(http.StatusUnprocessableEntity, "Invalid", "secret %s has no key %q (its keys: %s)", name, u.key, strings.Join(have, ", "))
-				}
-				if u.mode == v1.DeliverInject && u.key == "" && len(have) > 1 {
-					return errf(http.StatusUnprocessableEntity, "Invalid", "secret %s has %d keys (%s): an inject adds one, so name it (key: …)", name, len(have), strings.Join(have, ", "))
 				}
 			}
 		}
@@ -862,16 +872,13 @@ func (s *Server) checkContainerFit(ctx context.Context, t target, silo *v1.Silo)
 			for _, sec := range g.(*v1.Grant).Spec.Secrets {
 				switch sec.Delivery() {
 				case v1.DeliverFile:
-					// The shape it has now (a file, or a folder of keys); unknown yet: one file.
-					have := []string{v1.ValueKey}
-					if cur := s.secretNamed(ctx, t.namespace, sec.Name); cur != nil && len(cur.Status.Keys) > 0 {
-						have = cur.Status.Keys
-					}
+					// One key's file, or the folder of every key ("*": the folder's own path is checked,
+					// through a key name that can't make it fail).
 					k := sec.Key
-					if k == "" {
-						k = have[0]
+					if k == v1.AllKeys {
+						k = "KEY"
 					}
-					p := sec.FilePath(k, have)
+					p := sec.FilePath(k)
 					if why := v1.ContainerFileProblem(p); why != "" {
 						problems = append(problems, fmt.Sprintf("grant %s: secret %s: %s", name, sec.Name, why))
 					}

@@ -230,27 +230,43 @@ Secret spec.type="ed25519" spec.valueReadable=true
   Secret k: a signing key is never readable: drop valueReadable
 Secret spec.type="ed25519" spec.allowedDelivery=["env"]
   Secret k: a signing key is only used through sign: allowedDelivery can only be [sign]
-Secret spec.generate=true spec.value="eA=="
-  Secret k: spec.generate and spec.value don't go together: the server makes the value
-Secret spec.value="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA…
-  Secret k: spec.value: at most 64 KiB
+Secret spec.generate="token" spec.data={"token":"eA=="}
+  Secret k: spec.generate and spec.data don't go together: the server makes the key
+Secret spec.value="eA=="
+  Secret: json: unknown field "value"
+Secret spec.generate=true
+  Secret: json: cannot unmarshal bool into Go struct field Secret.spec.generate of type string
+Secret spec.type="registry" spec.server="ghcr.io" spec.username="bot" spec.generate="password"
+  Secret k: a registry secret is never delivered to a silo (only a host's agent gets it, for a pull) and isn't generated: drop allowedDelivery and generate
 Grant spec.egress!
   Grant g: a grant needs egress, secrets or operations
-Grant spec.secrets=[{"name":"k","deliver":"email"}]
+Grant spec.secrets=[{"name":"k","key":"k","deliver":"email"}]
   Grant g: every grant secret needs a name, and deliver: broker, inject, file or env (signing keys go in operations.sign)
-Grant spec.secrets=[{"name":"k","deliver":"inject"}]
+Grant spec.secrets=[{"name":"k"}]
+  Grant g: secret k: key is required: name one key (key: KEY) or every key (key: "*")
+Grant spec.secrets=[{"name":"k","deliver":"file"}]
+  Grant g: secret k: key is required: name one key (key: KEY) or every key (key: "*")
+Grant spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"a.example.com"}}]
+  Grant g: secret k: key is required: name the one key to inject (key: KEY)
+Grant spec.secrets=[{"name":"k","key":"*","deliver":"inject","to":{"host":"a.example.com"}}]
+  Grant g: secret k: inject adds one key: name it (key: KEY), not "*"
+Grant spec.secrets=[{"name":"k","key":"a/b"}]
+  Grant g: secret k: key "a/b": letters, digits, - _ and . (starting and ending with a letter or a digit), or "*" for every key
+Grant spec.secrets=[{"name":"k","key":"-x","deliver":"env"}]
+  Grant g: secret k: key "-x": letters, digits, - _ and . (starting and ending with a letter or a digit), or "*" for every key
+Grant spec.secrets=[{"name":"k","key":"k","deliver":"inject"}]
   Grant g: deliver: inject needs to.host: the destination the gate adds it to
-Grant spec.secrets=[{"name":"k","to":{"host":"a.example.com"}}]
+Grant spec.secrets=[{"name":"k","key":"k","to":{"host":"a.example.com"}}]
   Grant g: to goes with deliver: inject
-Grant spec.secrets=[{"name":"k","path":"/run/k"}]
+Grant spec.secrets=[{"name":"k","key":"k","path":"/run/k"}]
   Grant g: path goes with deliver: file
-Grant spec.secrets=[{"name":"k","env":"K"}]
+Grant spec.secrets=[{"name":"k","key":"k","env":"K"}]
   Grant g: env goes with deliver: env (or inject, on OpenShell: the variable holding the placeholder)
 Grant spec.operations={"sign":{"keyRef":""}}
   Grant g: operations.sign needs a keyRef
 Grant spec.requires={"assurance":"trust-me"}
   Grant g: requires.assurance must be host, vtpm or confidential
-Grant spec.secrets=[{"name":"k","deliver":"file","path":"/run/k","approval":{"required":true}}]
+Grant spec.secrets=[{"name":"k","key":"k","deliver":"file","path":"/run/k","approval":{"required":true}}]
   Grant g: approval works with deliver: broker or inject (and operations.sign): once a value sits in a file or an env var, nothing can ask again
 Grant spec.egress=[{"to":"not a host"}]
   Grant g: egress "not a host": not a CIDR, an address or a host name
@@ -266,17 +282,17 @@ OpenShellPolicy spec.networkPolicies=[{"name":"web","endpoints":[{"host":"exampl
   OpenShellPolicy p: every endpoint needs a host, a port from 1 to 65535, protocol rest or none, and access read-only, read-write or none
 OpenShellPolicy spec.networkPolicies=[{"name":"web","endpoints":[{"host":"example.com","port":443}],"binaries":[]}]
   OpenShellPolicy p: binaries, when set, are 1 to 16 paths
-Grant spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"*.example.com"}}]
+Grant spec.secrets=[{"name":"k","key":"k","deliver":"inject","to":{"host":"*.example.com"}}]
   Grant g: secret k: to.host "*.example.com" must be one host name
-Grant spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"a.example.com","format":"Bearer"}}]
+Grant spec.secrets=[{"name":"k","key":"k","deliver":"inject","to":{"host":"a.example.com","format":"Bearer"}}]
   Grant g: secret k: to.format must contain {{value}} once
-Grant spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"a.example.com","header":"X: y"}}]
+Grant spec.secrets=[{"name":"k","key":"k","deliver":"inject","to":{"host":"a.example.com","header":"X: y"}}]
   Grant g: secret k: to.header "X: y" isn't a header name
-Grant spec.secrets=[{"name":"k","deliver":"file","path":"/run/s,src=/,dst=/run/q/f"}]
+Grant spec.secrets=[{"name":"k","key":"k","deliver":"file","path":"/run/s,src=/,dst=/run/q/f"}]
   Grant g: secret k: path "/run/s,src=/,dst=/run/q/f" must be under /run/ (tmpfs: a secret file never reaches the silo's disk), a clean path of letters, digits, . _ - and /
-Grant spec.secrets=[{"name":"k","deliver":"file","path":"/run/s/a:b"}]
+Grant spec.secrets=[{"name":"k","key":"k","deliver":"file","path":"/run/s/a:b"}]
   Grant g: secret k: path "/run/s/a:b" must be under /run/ (tmpfs: a secret file never reaches the silo's disk), a clean path of letters, digits, . _ - and /
-Grant spec.secrets=[{"name":"k","deliver":"file","path":"/etc/k"}]
+Grant spec.secrets=[{"name":"k","key":"k","deliver":"file","path":"/etc/k"}]
   Grant g: secret k: path "/etc/k" must be under /run/ (tmpfs: a secret file never reaches the silo's disk), a clean path of letters, digits, . _ - and /
 IngressClass spec.controller.driver=""
   IngressClass public: spec.controller.driver names the proxy's driver (nginx, caddy, kong…)

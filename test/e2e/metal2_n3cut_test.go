@@ -37,14 +37,14 @@ func TestMetal2InjectCutOff(t *testing.T) {
 		p.c2.mustSh("mkdir -p " + d + " && printf '[Service]\\nExecStart=\\nExecStart=%s --egress-extra-ca /etc/kevaso/test-internet-ca.pem\\n' '" + exec + "' > " + d + "/kvt-ca.conf && systemctl daemon-reload && systemctl restart kevasod")
 		c.eventually("machine 2 back with the CA", 3*time.Minute, func() (bool, string) { return c.hostReady(metalHost2) })
 	}
-	c.must(key, "create", "secret", "api-key", "-n", ns, "--from-file", "-", "--allow", "inject", "--write-only")
+	c.must(key, "create", "secret", "api-key", "-n", ns, "--from-file", "token=-", "--allow", "inject", "--write-only")
 	c.apply(`apiVersion: kevaso/v1
 kind: Grant
 metadata: { name: api, namespace: ` + ns + ` }
 spec:
   egress: [{ to: "` + metalInetAddr + `/32", ports: ["443"] }]
   secrets:
-    - { name: api-key, deliver: inject, to: { host: ` + metalInetName + ` } }
+    - { name: api-key, key: token, deliver: inject, to: { host: ` + metalInetName + ` } }
 ---
 ` + vmEcho(ns, "vm", 8080) + on(metalHost2) + "  grants: [api]\n")
 	c.waitRunning(ns, 20*time.Minute, "vm")

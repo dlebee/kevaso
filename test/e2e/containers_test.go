@@ -142,8 +142,8 @@ func TestContainerSilos(t *testing.T) {
 
 	apiKey, dbPassword := randomToken(t), randomToken(t)
 	must(kvo.Run, "apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: shop }\n", "apply", "-f", "-")
-	must(kvo.Run, apiKey, "create", "secret", "api-key", "-n", "shop", "--from-file", "-", "--allow", "inject", "--write-only")
-	must(kvo.Run, dbPassword, "create", "secret", "db-password", "-n", "shop", "--from-file", "-")
+	must(kvo.Run, apiKey, "create", "secret", "api-key", "-n", "shop", "--from-file", "token=-", "--allow", "inject", "--write-only")
+	must(kvo.Run, dbPassword, "create", "secret", "db-password", "-n", "shop", "--from-file", "password=-")
 	box := func(name, runtime string) string {
 		return fmt.Sprintf(`---
 apiVersion: kevaso/v1
@@ -168,8 +168,8 @@ kind: Grant
 metadata: { name: app, namespace: shop }
 spec:
   secrets:
-    - { name: api-key, deliver: inject, to: { host: ` + apiHost + ` } }
-    - { name: db-password }
+    - { name: api-key, key: token, deliver: inject, to: { host: ` + apiHost + ` } }
+    - { name: db-password, key: password }
 ` + box("dk", "docker") + box("pm", "podman") + `---
 apiVersion: kevaso/v1
 kind: Silo
@@ -236,11 +236,11 @@ spec:
 				t.Errorf("a host no grant names answered: %q", got)
 			}
 			expect("default deny (plain HTTP out)", in(s, "/data/hget http://"+clientIP+":80/ 2>&1 | head -c 200"), "error")
-			expect("broker over the local endpoint", in(s, "/data/hget http://169.254.42.1/v1/secrets/db-password Kevaso-Local=1"), "200 "+dbPassword)
-			if got := in(s, "/data/hget http://169.254.42.1/v1/secrets/api-key Kevaso-Local=1"); !strings.Contains(got, "404") || !strings.Contains(got, "no secret") {
+			expect("broker over the local endpoint", in(s, "/data/hget http://169.254.42.1/v1/secrets/db-password/password Kevaso-Local=1"), "200 "+dbPassword)
+			if got := in(s, "/data/hget http://169.254.42.1/v1/secrets/api-key/token Kevaso-Local=1"); !strings.Contains(got, "404") || !strings.Contains(got, "no secret") {
 				t.Errorf("an inject-only key reached the container: %q", got)
 			}
-			if got := in(s, "/data/hget http://169.254.42.1/v1/secrets/db-password"); !strings.HasPrefix(got, "403") {
+			if got := in(s, "/data/hget http://169.254.42.1/v1/secrets/db-password/password"); !strings.HasPrefix(got, "403") {
 				t.Errorf("the endpoint answered without its header: %q", got)
 			}
 			if n := in(s, fmt.Sprintf("grep -rl -F -e '%s' / --exclude-dir=proc --exclude-dir=sys 2>/dev/null | wc -l", apiKey)); n != "0" {

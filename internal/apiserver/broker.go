@@ -69,7 +69,7 @@ func (s *Server) agentBroker(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// askedKey is what the audit adds for a key asked for by name.
+// askedKey is what the audit adds for a key asked for by name (or every key, "*").
 func askedKey(r client.BrokerRequest) string {
 	if r.Key == "" {
 		return ""
@@ -89,16 +89,18 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 	}
 	switch op.Op {
 	case client.OpGetSecret: // what the silo asks for itself: broker deliveries only (file and env are the host's to write)
+		if op.Key == "" {
+			return refuse("no key named (ask for /v1/secrets/NAME/KEY, or /v1/secrets/NAME/* for every key)")
+		}
 		sec, g, gs, why := s.grantedSecret(ctx, call, op.Name, op.Key, v1.DeliverBroker)
 		if sec == nil {
 			return refuse(why)
 		}
-		keys := gs.Keys(sec.Status.Keys)
-		if op.Key != "" {
-			keys = gs.Keys([]string{op.Key})
-			if !contains(sec.Status.Keys, op.Key) {
-				keys = nil
-			}
+		var keys []string // what the silo asked for, of what the grant gives
+		if op.Key == v1.AllKeys {
+			keys = gs.Keys(sec.Status.Keys)
+		} else if gs.Gives(op.Key) && contains(sec.Status.Keys, op.Key) {
+			keys = []string{op.Key}
 		}
 		if len(keys) == 0 {
 			return refuse("the secret has no such key (or no value yet)")
@@ -127,9 +129,8 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 			return refuse("the secret has no such key now")
 		}
 		reason := fmt.Sprintf("grant %s, %s, keys %s%s", g.Name, gs.Delivery(), strings.Join(keys, ","), approved)
-		// One key, when one was asked for, the grant names one, or it's the shorthand's only key.
-		if one := op.Key != "" || gs.Key != "" || (len(keys) == 1 && keys[0] == v1.ValueKey); one && len(out) == 1 {
-			return client.BrokerResponse{Value: out[keys[0]], Version: ver}, reason, true
+		if op.Key != v1.AllKeys { // one key asked for by name: its bytes
+			return client.BrokerResponse{Value: out[op.Key], Version: ver}, reason, true
 		}
 		return client.BrokerResponse{Data: out, Version: ver}, reason, true
 	case client.OpSign, client.OpPublicKey:
@@ -194,7 +195,7 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 				for _, k := range keys {
 					d := client.Delivery{Name: gs.Name, Key: k, Mode: mode, Version: sec.Status.Version}
 					if mode == v1.DeliverFile {
-						d.Path = gs.FilePath(k, sec.Status.Keys)
+						d.Path = gs.FilePath(k)
 					} else {
 						d.Env = gs.EnvName(k)
 					}
@@ -234,8 +235,8 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 				if sec == nil || !sec.Allows(v1.DeliverInject) {
 					continue
 				}
-				key := gs.InjectKey(sec.Status.Keys)
-				if key == "" { // several keys and none named, or the key named isn't there: nothing to add
+				key := gs.Key
+				if key == "" || key == v1.AllKeys || !contains(sec.Status.Keys, key) { // admission refuses the first two; the key may be gone since
 					skipped = append(skipped, gs.Name)
 					continue
 				}
@@ -261,7 +262,7 @@ func (s *Server) broker(ctx context.Context, host string, req client.AgentBroker
 		}
 		why := fmt.Sprintf("%d injections for the egress gate", len(out))
 		if len(skipped) > 0 {
-			why += "; left out (no single key to inject: name one with key:): " + strings.Join(skipped, ", ")
+			why += "; left out (the key named isn't in the secret now): " + strings.Join(skipped, ", ")
 		}
 		return client.BrokerResponse{Injections: out}, why, true
 	}
@@ -330,7 +331,7 @@ func (s *Server) grantedSecret(ctx context.Context, call *brokerCall, name, key 
 	for _, g := range call.grants {
 		for _, gs := range g.Spec.Secrets {
 			mode := gs.Delivery()
-			if gs.Name != name || !contains(modes, mode) || (key != "" && gs.Key != "" && gs.Key != key) {
+			if gs.Name != name || !contains(modes, mode) || (key != v1.AllKeys && !gs.Gives(key)) {
 				continue
 			}
 			if !assured(g) {

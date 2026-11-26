@@ -80,11 +80,11 @@ func TestASystemNodeDeliversTheControllerSidesClusterSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := admin.Create(ctx, &v1.ClusterSecret{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterSecret"}, ObjectMeta: meta.ObjectMeta{Name: "token"},
-		Spec: v1.ClusterSecretSpec{Value: []byte(value)}}); err != nil {
+		Spec: v1.ClusterSecretSpec{Data: map[string][]byte{"api-token": []byte(value)}}}); err != nil {
 		t.Fatal(err)
 	}
 
-	cred := filepath.Join(etc, plugin, "token", v1.ValueKey) // a folder: LoadCredential loads it as token_value
+	cred := filepath.Join(etc, plugin, "token", "api-token") // a folder: LoadCredential loads it as token_api-token
 	deadline := time.Now().Add(20 * time.Second)
 	var got []byte
 	var rdErr error

@@ -19,7 +19,7 @@ func TestOnlyTheHostASiloIsPlacedOnGetsItsSecretsOrIngressConfig(t *testing.T) {
 	if err := c.admin.Create(c.ctx, secretObj("db-password", nil, "pw-1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.admin.Create(c.ctx, grantObj("app", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-password"}}})); err != nil {
+	if err := c.admin.Create(c.ctx, grantObj("app", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-password", Key: "token"}}})); err != nil {
 		t.Fatal(err)
 	}
 	s := silo("node", "web3")
@@ -36,7 +36,7 @@ func TestOnlyTheHostASiloIsPlacedOnGetsItsSecretsOrIngressConfig(t *testing.T) {
 	ask := func(cl *client.Client, uid string) (client.BrokerResponse, int) {
 		var resp client.BrokerResponse
 		err := cl.Call(c.ctx, http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{Namespace: "web3", Name: "node", UID: uid,
-			Request: client.BrokerRequest{Op: client.OpGetSecret, Name: "db-password"}}, &resp)
+			Request: client.BrokerRequest{Op: client.OpGetSecret, Name: "db-password", Key: "token"}}, &resp)
 		return resp, status(err)
 	}
 	if resp, code := ask(hv1, s.UID); code != 0 || string(resp.Value) != "pw-1" {
@@ -76,7 +76,7 @@ func TestASiloBeingDeletedGetsNothingFromTheBroker(t *testing.T) {
 	if err := c.admin.Create(c.ctx, secretObj("db-password", nil, "pw-1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.admin.Create(c.ctx, grantObj("app", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-password"}}})); err != nil {
+	if err := c.admin.Create(c.ctx, grantObj("app", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-password", Key: "token"}}})); err != nil {
 		t.Fatal(err)
 	}
 	s := silo("node", "web3")
@@ -93,7 +93,7 @@ func TestASiloBeingDeletedGetsNothingFromTheBroker(t *testing.T) {
 	ask := func() client.BrokerResponse {
 		var resp client.BrokerResponse
 		_ = hv1.Call(c.ctx, http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{Namespace: "web3", Name: "node", UID: s.UID,
-			Request: client.BrokerRequest{Op: client.OpGetSecret, Name: "db-password"}}, &resp)
+			Request: client.BrokerRequest{Op: client.OpGetSecret, Name: "db-password", Key: "token"}}, &resp)
 		return resp
 	}
 	if string(ask().Value) != "pw-1" {
@@ -121,7 +121,7 @@ func TestTheBrokerHonoursWhatTheSecretAllowsNow(t *testing.T) {
 	if err := c.admin.Create(c.ctx, sec); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.admin.Create(c.ctx, grantObj("app", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-password"}}})); err != nil {
+	if err := c.admin.Create(c.ctx, grantObj("app", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-password", Key: "token"}}})); err != nil {
 		t.Fatal(err)
 	}
 	s := silo("node", "web3")
@@ -137,7 +137,7 @@ func TestTheBrokerHonoursWhatTheSecretAllowsNow(t *testing.T) {
 	ask := func() client.BrokerResponse {
 		var resp client.BrokerResponse
 		_ = hv1.Call(c.ctx, http.MethodPost, client.PathAgentBroker, client.AgentBrokerRequest{Namespace: "web3", Name: "node", UID: s.UID,
-			Request: client.BrokerRequest{Op: client.OpGetSecret, Name: "db-password"}}, &resp)
+			Request: client.BrokerRequest{Op: client.OpGetSecret, Name: "db-password", Key: "token"}}, &resp)
 		return resp
 	}
 	if string(ask().Value) != "pw-1" {
@@ -147,7 +147,7 @@ func TestTheBrokerHonoursWhatTheSecretAllowsNow(t *testing.T) {
 	if err := c.admin.Get(c.ctx, "Secret", "web3", "db-password", &cur); err != nil {
 		t.Fatal(err)
 	}
-	cur.Spec.Value = nil
+	cur.Spec.Data = nil
 	cur.Spec.AllowedDelivery = []string{v1.DeliverFile}
 	if err := c.admin.Update(c.ctx, &cur); err != nil {
 		t.Skipf("the API refuses to restrict a secret a grant uses that way (%v): the broker's check is behind it", err)
@@ -169,7 +169,7 @@ func TestASecretsTypeCannotChange(t *testing.T) {
 	if err := c.admin.Get(c.ctx, "Secret", "web3", "db-password", &cur); err != nil {
 		t.Fatal(err)
 	}
-	cur.Spec.Value, cur.Spec.Type, cur.Spec.Generate = nil, v1.SecretEd25519, true
+	cur.Spec.Data, cur.Spec.Type, cur.Spec.Generate = nil, v1.SecretEd25519, v1.PrivateKeyKey
 	if err := c.admin.Update(c.ctx, &cur); status(err) != http.StatusUnprocessableEntity {
 		t.Fatalf("changing a secret's type: %v, want 422", err)
 	}

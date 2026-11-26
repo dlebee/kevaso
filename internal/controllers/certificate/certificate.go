@@ -524,14 +524,14 @@ func (c *Controller) writeSecret(ctx context.Context, cert *v1.Certificate, bund
 			sec = v1.Secret{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Secret"},
 				ObjectMeta: meta.ObjectMeta{Name: cert.Spec.SecretName, Namespace: cert.Namespace, Labels: map[string]string{LabelCertificate: cert.Name},
 					Annotations: map[string]string{AnnotationCertificateUID: string(cert.UID)}},
-				Spec: v1.SecretSpec{Value: bundle, AllowedDelivery: []string{v1.DeliverBroker, v1.DeliverFile}}}
+				Spec: v1.SecretSpec{Data: map[string][]byte{v1.CertificateKey: bundle}, AllowedDelivery: []string{v1.DeliverBroker, v1.DeliverFile}}}
 			err = c.Client.Create(ctx, &sec)
 		case err != nil:
 			return err
 		case !ownsSecret(cert, &sec): // made by someone else since the check before ordering
 			return c.fail(ctx, cert, ReasonSecretNotOwned, notOwned(cert))
 		default:
-			sec.Spec.Value = bundle
+			sec.Spec.Data = map[string][]byte{v1.CertificateKey: bundle}
 			err = c.Client.Update(ctx, &sec) // conditional on the version read, so on what was checked
 		}
 		if client.IsConflict(err) || client.IsAlreadyExists(err) {

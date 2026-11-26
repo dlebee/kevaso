@@ -100,7 +100,7 @@ anything backed up from now on):
 
 Backups taken before this still open with the old key, and hold the secret values of then:
   1. take a fresh backup and destroy the older ones;
-  2. rotate the secrets that matter (kvo secret set NAME --from-file -).
+  2. rotate the secrets that matter (kvo secret set NAME --from-file KEY=-).
 `, r.RecoveryKey)
 	return nil
 }

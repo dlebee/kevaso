@@ -55,7 +55,7 @@ docker image rm -f 127.0.0.1:5000/kvt/busy:1 >/dev/null`, []byte(pass)); err != 
 		t.Fatalf("push to the test registry: %v\n%s", err, out)
 	}
 
-	c.must(pass, "create", "secret", "regcred", "-n", ns, "--type", "registry", "--server", "127.0.0.1:5000", "--username", user, "--from-file", "-")
+	c.must(pass, "create", "secret", "regcred", "-n", ns, "--type", "registry", "--server", "127.0.0.1:5000", "--username", user, "--from-file", "password=-")
 	box := func(name, pull string) string {
 		return fmt.Sprintf(`apiVersion: kevaso/v1
 kind: Silo

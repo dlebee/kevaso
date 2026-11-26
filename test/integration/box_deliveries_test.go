@@ -30,13 +30,13 @@ func TestContainerFileAndEnvSecrets(t *testing.T) {
 		}
 	}
 	if err := c.admin.Create(c.ctx, grantObj("app", v1.GrantSpec{Secrets: []v1.GrantSecret{
-		{Name: "tls-key", Deliver: v1.DeliverFile, Path: "/run/secrets/tls.pem"},
-		{Name: "legacy-token", Deliver: v1.DeliverEnv},
+		{Name: "tls-key", Key: "token", Deliver: v1.DeliverFile, Path: "/run/secrets/tls.pem"},
+		{Name: "legacy-token", Key: "token", Deliver: v1.DeliverEnv, Env: "LEGACY_TOKEN"},
 	}})); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.admin.Create(c.ctx, grantObj("flat", v1.GrantSpec{Secrets: []v1.GrantSecret{
-		{Name: "tls-key", Deliver: v1.DeliverFile, Path: "/run/tls.pem"},
+		{Name: "tls-key", Key: "token", Deliver: v1.DeliverFile, Path: "/run/tls.pem"},
 	}})); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestContainerFileAndEnvSecrets(t *testing.T) {
 	starts := strings.Count(strings.Join(b1.Calls, "\n"), "start web3/api")
 	var tls v1.Secret
 	_ = c.admin.Get(c.ctx, "Secret", "web3", "tls-key", &tls)
-	tls.Spec.Value = []byte("KEY-2")
+	tls.Spec.Data = map[string][]byte{"token": []byte("KEY-2")}
 	if err := c.admin.Update(c.ctx, &tls); err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestContainerFileAndEnvSecrets(t *testing.T) {
 	// says so.
 	var tok v1.Secret
 	_ = c.admin.Get(c.ctx, "Secret", "web3", "legacy-token", &tok)
-	tok.Spec.Value = []byte("tok-2")
+	tok.Spec.Data = map[string][]byte{"token": []byte("tok-2")}
 	if err := c.admin.Update(c.ctx, &tok); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestContainerFileAndEnvSecrets(t *testing.T) {
 	// The grant gives them another way (the local endpoint): off the host.
 	var g v1.Grant
 	_ = c.admin.Get(c.ctx, "Grant", "web3", "app", &g)
-	g.Spec.Secrets = []v1.GrantSecret{{Name: "tls-key", Deliver: v1.DeliverBroker}}
+	g.Spec.Secrets = []v1.GrantSecret{{Name: "tls-key", Key: "token", Deliver: v1.DeliverBroker}}
 	if err := c.admin.Update(c.ctx, &g); err != nil {
 		t.Fatal(err)
 	}

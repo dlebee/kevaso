@@ -131,11 +131,18 @@ go test -tags metal -run '^TestMetalModel$' -v -count=1 -timeout 90m ./test/e2e/
 ```
 
 The tests are `TestMetalModel`, `TestMetalNames`, `TestMetalImages`, `TestMetalRegistry`,
-`TestMetalSecrets`, `TestMetalIngress`, `TestMetalProbes`, `TestMetalLeases`, `TestMetalPanes`,
+`TestMetalSecrets`, `TestMetalSecretKeys`, `TestMetalIngress`, `TestMetalProbes`, `TestMetalLeases`, `TestMetalPanes`,
 `TestMetalFence`, `TestMetalVolumes`, `TestMetalPodman` and `TestMetalReboot`. Each one can run
 alone. Files run in name order, so podman and the reboot (in `metal_zlast_test.go`) come last.
 The reboot takes the machine down and waits up to 15 minutes for it to come back with the same
 pinned host key.
+
+The secrets tests, together (every secret reference names its key: one key, or `"*"` for every key;
+hack/design/secret-keys.md):
+
+```bash
+go test -tags metal -run '^TestMetalSecret(s|Keys)$' -v -count=1 -timeout 90m ./test/e2e/ 2>&1 | tee /tmp/metal-secrets.log
+```
 
 For the Let's Encrypt **staging** certificate without a DNS name of your own, use an sslip.io
 name, which resolves to the IP it spells:
@@ -200,7 +207,7 @@ go test -tags metal -run '^TestMetal(Images|Model|Names|Leases|Podman|Reboot)$' 
 ```
 
 ```bash
-go test -tags metal -run '^TestMetal(Ingress|Probes|Panes|Fence|Volumes|Secrets|Registry)$' -v -count=1 -timeout 3h ./test/e2e/ 2>&1 | tee /tmp/metal-b.log
+go test -tags metal -run '^TestMetal(Ingress|Probes|Panes|Fence|Volumes|Secrets|SecretKeys|Registry)$' -v -count=1 -timeout 3h ./test/e2e/ 2>&1 | tee /tmp/metal-b.log
 ```
 
 In the second shell, set `KEVASO_METAL_HOSTNAME` to an sslip.io name of machine 2's IP. The
@@ -341,6 +348,7 @@ machine, 6443 (the API, mutual TLS) is open from the first test to the final res
 | TestMetalImages | nothing | |
 | TestMetalRegistry | nothing (the test's registry:2 is on 127.0.0.1:5000) | |
 | TestMetalSecrets | nothing (the stand-in API is on 127.0.0.77:443, loopback) | |
+| TestMetalSecretKeys | nothing (the same stand-in API) | |
 | TestMetalIngress | 80, 443 | stock nginx 1.27: the test's site (`tls: none`), a 308 to HTTPS for the Ingress without `tls:` (HTTPS is the default), 404 for unknown hosts |
 | TestMetalProbes | 18110 (only while ready), 18111 | echo |
 | TestMetalLeases | 18120 (for its 1-minute lease), 18121 (once approved, until closed) | echo |

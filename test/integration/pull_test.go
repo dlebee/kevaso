@@ -148,7 +148,8 @@ func TestPrivateRegistryPull(t *testing.T) {
 	ada, ed := c.as(t, "ada"), c.as(t, "ed")
 
 	registry := func(name, server, value string, def bool) *v1.Secret {
-		s := secretObj(name, nil, value)
+		s := secretObj(name, nil, "")
+		s.Spec.Data = map[string][]byte{v1.PasswordKey: []byte(value)}
 		s.Spec.Type, s.Spec.Server, s.Spec.Username = v1.SecretRegistry, server, "bot"
 		if def {
 			s.Labels = map[string]string{v1.LabelDefaultPull: "true"}
@@ -168,7 +169,7 @@ func TestPrivateRegistryPull(t *testing.T) {
 	if err := ada.Create(ctx, registry("hub-2", "registry-1.docker.io", "x", true)); status(err) != http.StatusConflict {
 		t.Fatalf("a second default for docker.io: %v", err)
 	}
-	if err := ada.Create(ctx, grantObj("leak", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "ghcr-pull"}}})); !client.IsInvalid(err) {
+	if err := ada.Create(ctx, grantObj("leak", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "ghcr-pull", Key: v1.PasswordKey}}})); !client.IsInvalid(err) {
 		t.Fatalf("a grant handing a registry secret to a silo: %v", err)
 	}
 
@@ -292,7 +293,7 @@ func TestPrivateRegistryPull(t *testing.T) {
 	// Rotation: the next pull (a reset) uses the new value.
 	sec := &v1.Secret{}
 	_ = ada.Get(ctx, "Secret", "web3", "ghcr-pull", sec)
-	sec.Spec.Value = []byte("tok-2")
+	sec.Spec.Data = map[string][]byte{v1.PasswordKey: []byte("tok-2")}
 	if err := ada.Update(ctx, sec); err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +340,7 @@ func TestPrivateRegistryPull(t *testing.T) {
 	eps := c.endpoints(t, "hv1")
 	s := get(api)
 	eps.add(t, s)
-	for _, path := range []string{"/v1/pull-credential", "/v1/pull-credential/ghcr.io", "/v1/secrets/ghcr-pull"} {
+	for _, path := range []string{"/v1/pull-credential", "/v1/pull-credential/ghcr.io", "/v1/secrets/ghcr-pull/password"} {
 		a := eps.call(t, s, http.MethodGet, path, nil)
 		if a.code == 200 || !strings.Contains(a.body, `"error"`) {
 			t.Fatalf("the silo asked %s and got %d %q", path, a.code, a.body)

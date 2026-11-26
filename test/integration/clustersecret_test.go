@@ -19,7 +19,7 @@ func clusterSecret(name, value string) *v1.ClusterSecret {
 	cs := &v1.ClusterSecret{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "ClusterSecret"},
 		ObjectMeta: meta.ObjectMeta{Name: name}}
 	if value != "" {
-		cs.Spec.Value = []byte(value)
+		cs.Spec.Data = map[string][]byte{"token": []byte(value)}
 	}
 	return cs
 }
@@ -85,7 +85,7 @@ func installedPlugin(name, serviceAccount string) *v1.Plugin {
 func (c *cluster) readClusterValue(t *testing.T, cl *client.Client, name, query string) (client.SecretValue, error) {
 	t.Helper()
 	var v client.SecretValue
-	path := "/apis/kevaso/v1/clustersecrets/" + name + "/value?key=value"
+	path := "/apis/kevaso/v1/clustersecrets/" + name + "/value?key=token"
 	if query != "" {
 		path += "&" + query
 	}
@@ -153,7 +153,7 @@ func TestClusterSecretManageIsClusterAdminOnly(t *testing.T) {
 	}
 	stale := got
 	stale.Spec.Description = "changed"
-	stale.Spec.Value = []byte("nope")
+	stale.Spec.Data = map[string][]byte{"token": []byte("nope")}
 	if err := bob.Update(c.ctx, &stale); status(err) != http.StatusForbidden {
 		t.Fatalf("update: want 403, got %v", err)
 	}
@@ -358,7 +358,7 @@ func TestClusterSecretHostForPlugin(t *testing.T) {
 			}
 		}
 		var got v1.ClusterSecret
-		if err := who.cl.Get(c.ctx, "ClusterSecret", "", "bucket", &got); err != nil || len(got.Spec.Value) != 0 || got.Status.Version == 0 {
+		if err := who.cl.Get(c.ctx, "ClusterSecret", "", "bucket", &got); err != nil || len(got.Spec.Data) != 0 || got.Status.Version == 0 {
 			t.Fatalf("%s get of the object: %+v %v", who.name, got, err)
 		}
 		var raw json.RawMessage
@@ -460,8 +460,8 @@ func TestClusterSecretHostForPlugin(t *testing.T) {
 func TestClusterSecretStatusIsServerSet(t *testing.T) {
 	c := newCluster(t)
 	past := time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)
-	if err := c.admin.Create(c.ctx, clusterSecret("no-value", "")); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "needs a value") {
-		t.Fatalf("no value: want 422 needs a value, got %v", err)
+	if err := c.admin.Create(c.ctx, clusterSecret("no-value", "")); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "needs at least one key") {
+		t.Fatalf("no value: want 422 needs at least one key, got %v", err)
 	}
 
 	cs := clusterSecret("bucket", "s3cret-bytes")
@@ -488,7 +488,7 @@ func TestClusterSecretStatusIsServerSet(t *testing.T) {
 	if err := c.admin.Get(c.ctx, "ClusterSecret", "", "bucket", &got); err != nil {
 		t.Fatal(err)
 	}
-	got.Spec.Value = []byte("s3cret-bytes-2")
+	got.Spec.Data = map[string][]byte{"token": []byte("s3cret-bytes-2")}
 	got.Status.Version = 99
 	got.Status.ChangedAt = &past
 	if err := c.admin.Update(c.ctx, &got); err != nil || got.Status.Version != 2 || got.Status.ChangedAt.Year() == 1999 {
@@ -547,11 +547,11 @@ func TestClusterSecretIsNotANamespacedSecret(t *testing.T) {
 	}
 
 	key := secretObj("signer", nil, "")
-	key.Spec.Type, key.Spec.Generate = v1.SecretEd25519, true
+	key.Spec.Type, key.Spec.Generate = v1.SecretEd25519, v1.PrivateKeyKey
 	if err := c.admin.Create(c.ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	g := grantObj("use-signer", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "signer", Deliver: v1.DeliverFile, Path: "/run/secrets/signer"}}})
+	g := grantObj("use-signer", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "signer", Key: "token", Deliver: v1.DeliverFile, Path: "/run/secrets/signer"}}})
 	if err := c.admin.Create(c.ctx, g); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "doesn't allow delivery file") {
 		t.Fatalf("grant resolved something other than the namespaced signing key: %v", err)
 	}

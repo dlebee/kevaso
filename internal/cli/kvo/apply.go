@@ -15,10 +15,10 @@ import (
 // manifest carries a value (or keys) is always written: the value is never in what's stored, so there's
 // nothing to compare it with.
 func wouldStore(ctx context.Context, c *client.Client, obj, cur meta.Object) (bool, error) {
-	if sec, ok := obj.(*v1.Secret); ok && (sec.Spec.Value != nil || sec.Spec.Data != nil || sec.Spec.SetData != nil || sec.Spec.RemoveKeys != nil) {
+	if sec, ok := obj.(*v1.Secret); ok && (sec.Spec.Data != nil || sec.Spec.SetData != nil || sec.Spec.RemoveKeys != nil) {
 		return false, nil
 	}
-	if cs, ok := obj.(*v1.ClusterSecret); ok && (cs.Spec.Value != nil || cs.Spec.Data != nil || cs.Spec.SetData != nil || cs.Spec.RemoveKeys != nil) {
+	if cs, ok := obj.(*v1.ClusterSecret); ok && (cs.Spec.Data != nil || cs.Spec.SetData != nil || cs.Spec.RemoveKeys != nil) {
 		return false, nil
 	}
 	b, err := json.Marshal(obj)

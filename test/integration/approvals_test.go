@@ -29,19 +29,19 @@ func TestApprovals(t *testing.T) {
 		}
 	}
 	key := secretObj("deploy-key", nil, "")
-	key.Spec.Type, key.Spec.Generate = v1.SecretEd25519, true
+	key.Spec.Type, key.Spec.Generate = v1.SecretEd25519, v1.PrivateKeyKey
 	if err := c.admin.Create(c.ctx, key); err != nil {
 		t.Fatal(err)
 	}
 	yes := &v1.ApprovalRule{Required: true}
 	if err := c.admin.Create(c.ctx, grantObj("dangerous", v1.GrantSpec{
-		Secrets:    []v1.GrantSecret{{Name: "gh-admin", Approval: yes}, {Name: "db-password"}},
+		Secrets:    []v1.GrantSecret{{Name: "gh-admin", Key: "token", Approval: yes}, {Name: "db-password", Key: "token"}},
 		Operations: &v1.GrantOperations{Sign: &v1.SignOperation{KeyRef: "deploy-key", Approval: yes}},
 	})); err != nil {
 		t.Fatal(err)
 	}
 	// Admission: approval with a delivery that puts the value in the silo is refused.
-	bad := grantObj("bad", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-password", Deliver: v1.DeliverFile, Approval: yes}}})
+	bad := grantObj("bad", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-password", Key: "token", Deliver: v1.DeliverFile, Approval: yes}}})
 	if err := c.admin.Create(c.ctx, bad); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "approval works with deliver: broker or inject") {
 		t.Fatalf("approval on a file delivery: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestApprovals(t *testing.T) {
 	}
 
 	// A secret without approval in the same grant: straight through.
-	if a := eps.call(t, node, http.MethodGet, "/v1/secrets/db-password", nil); a.code != 200 || a.body != "pw" {
+	if a := eps.call(t, node, http.MethodGet, "/v1/secrets/db-password/token", nil); a.code != 200 || a.body != "pw" {
 		t.Fatalf("ungated secret: %d %q", a.code, a.body)
 	}
 
@@ -131,7 +131,7 @@ func TestApprovals(t *testing.T) {
 	got := make(chan epAnswer, 1)
 	var waitedOn string
 	go func() {
-		got <- eps.ask(t, ctx, node, http.MethodGet, "/v1/secrets/gh-admin?for=20m", nil, 20*time.Millisecond, func(name string) { waitedOn = name })
+		got <- eps.ask(t, ctx, node, http.MethodGet, "/v1/secrets/gh-admin/token?for=20m", nil, 20*time.Millisecond, func(name string) { waitedOn = name })
 	}()
 	a := pendingOf(v1.ApprovalForSecret, "gh-admin")
 	if a.Spec.Silo != "agent" || a.Spec.Grant != "dangerous" || a.Spec.For != "20m0s" || a.Spec.ExpiresAt.IsZero() {
@@ -172,7 +172,7 @@ func TestApprovals(t *testing.T) {
 		t.Fatalf("second answer: %v", err)
 	}
 	// While access lasts, the silo doesn't ask again.
-	if r := eps.call(t, node, http.MethodGet, "/v1/secrets/gh-admin", nil); r.code != 200 || r.body != "ghp-admin" {
+	if r := eps.call(t, node, http.MethodGet, "/v1/secrets/gh-admin/token", nil); r.code != 200 || r.body != "ghp-admin" {
 		t.Fatalf("within access: %d %q", r.code, r.body)
 	}
 
@@ -219,7 +219,7 @@ func TestApprovals(t *testing.T) {
 	late.Status.Host = "hv1"
 	_ = c.admin.UpdateStatus(c.ctx, late)
 	eps.add(t, late)
-	if r := eps.ask(t, ctx, late, http.MethodGet, "/v1/secrets/gh-admin?wait=1s", nil, 100*time.Millisecond, nil); r.code != 403 || !strings.Contains(r.msg(), "expired") {
+	if r := eps.ask(t, ctx, late, http.MethodGet, "/v1/secrets/gh-admin/token?wait=1s", nil, 100*time.Millisecond, nil); r.code != 403 || !strings.Contains(r.msg(), "expired") {
 		t.Fatalf("unanswered: %d %s", r.code, r.body)
 	}
 	var expired *v1.Approval
@@ -237,7 +237,7 @@ func TestApprovals(t *testing.T) {
 		t.Fatalf("answer after expiry: %v", err)
 	}
 	// Limits: more access than the cluster allows is refused up front.
-	if r := eps.call(t, late, http.MethodGet, "/v1/secrets/gh-admin?for=100h", nil); r.code != 403 || !strings.Contains(r.msg(), "more than this cluster allows") {
+	if r := eps.call(t, late, http.MethodGet, "/v1/secrets/gh-admin/token?for=100h", nil); r.code != 403 || !strings.Contains(r.msg(), "more than this cluster allows") {
 		t.Fatalf("too long: %d %s", r.code, r.body)
 	}
 

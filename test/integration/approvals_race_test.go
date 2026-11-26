@@ -22,7 +22,7 @@ func TestApprovalAnsweredAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := c.admin.Create(c.ctx, grantObj("dangerous", v1.GrantSpec{
-		Secrets: []v1.GrantSecret{{Name: "gh-admin", Approval: &v1.ApprovalRule{Required: true}}}})); err != nil {
+		Secrets: []v1.GrantSecret{{Name: "gh-admin", Key: "token", Approval: &v1.ApprovalRule{Required: true}}}})); err != nil {
 		t.Fatal(err)
 	}
 	node := silo("agent", "web3")
@@ -46,7 +46,7 @@ func TestApprovalAnsweredAtOnce(t *testing.T) {
 	defer cancel()
 	asked := make(chan epAnswer, 1)
 	go func() {
-		asked <- eps.ask(t, ctx, node, http.MethodGet, "/v1/secrets/gh-admin?for=5m", nil, 20*time.Millisecond, nil)
+		asked <- eps.ask(t, ctx, node, http.MethodGet, "/v1/secrets/gh-admin/token?for=5m", nil, 20*time.Millisecond, nil)
 	}()
 	var pending *v1.Approval
 	for deadline := time.Now().Add(5 * time.Second); pending == nil && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {

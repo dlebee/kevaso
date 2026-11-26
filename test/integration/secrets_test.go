@@ -22,7 +22,7 @@ import (
 func secretObj(name string, labels map[string]string, value string) *v1.Secret {
 	s := &v1.Secret{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Secret"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "web3", Labels: labels}}
 	if value != "" {
-		s.Spec.Value = []byte(value)
+		s.Spec.Data = map[string][]byte{"token": []byte(value)}
 	}
 	return s
 }
@@ -92,7 +92,7 @@ func TestSecretsAccess(t *testing.T) {
 		t.Fatalf("get carries a value: %s %v", raw, err)
 	}
 	key := secretObj("validator-1-key", critical, "")
-	key.Spec.Type, key.Spec.Generate = v1.SecretEd25519, true
+	key.Spec.Type, key.Spec.Generate = v1.SecretEd25519, v1.PrivateKeyKey
 	if err := ada.Create(c.ctx, key); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestSecretsAccess(t *testing.T) {
 
 	// Rotation: a new value is a new version.
 	_ = ada.Get(c.ctx, "Secret", "web3", "infura-key", infura)
-	infura.Spec.Value = []byte("sk-infura-value-2")
+	infura.Spec.Data = map[string][]byte{"token": []byte("sk-infura-value-2")}
 	if err := ada.Update(c.ctx, infura); err != nil || infura.Status.Version != 2 {
 		t.Fatalf("rotate: %+v %v", infura.Status, err)
 	}
@@ -129,14 +129,14 @@ func TestSecretsAccess(t *testing.T) {
 
 	// read-value: the admin may, the editor may not; nobody for a write-only key.
 	var v client.SecretValue
-	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/infura-key/value?key=value", nil, &v); err != nil || string(v.Value) != "sk-infura-value-2" || v.Version != 2 {
+	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/infura-key/value?key=token", nil, &v); err != nil || string(v.Value) != "sk-infura-value-2" || v.Version != 2 {
 		t.Fatalf("admin read-value: %q v%d %v", v.Value, v.Version, err)
 	}
-	if err := ed.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/infura-key/value?key=value", nil, &v); status(err) != http.StatusForbidden {
+	if err := ed.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/infura-key/value?key=token", nil, &v); status(err) != http.StatusForbidden {
 		t.Fatalf("editor read-value: want 403, got %v", err)
 	}
 	for _, cl := range []*client.Client{ada, c.admin} {
-		if err := cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/validator-1-key/value?key=value", nil, &v); status(err) != http.StatusForbidden || !strings.Contains(err.Error(), "write-only") {
+		if err := cl.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/validator-1-key/value?key=token", nil, &v); status(err) != http.StatusForbidden || !strings.Contains(err.Error(), "write-only") {
 			t.Fatalf("reading a signing key: want 403 write-only, got %v", err)
 		}
 	}
@@ -154,13 +154,13 @@ func TestSecretsAccess(t *testing.T) {
 	}
 
 	// No back door through grants: naming a secret needs use on it, and the secret's own rules win.
-	if err := dev.Create(c.ctx, grantObj("rpc", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "infura-key", Deliver: v1.DeliverInject, To: &v1.InjectTarget{Host: "mainnet.infura.io"}}}})); err != nil {
+	if err := dev.Create(c.ctx, grantObj("rpc", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "infura-key", Key: "token", Deliver: v1.DeliverInject, To: &v1.InjectTarget{Host: "mainnet.infura.io"}}}})); err != nil {
 		t.Fatalf("dev granting a normal secret: %v", err)
 	}
-	if err := dev.Create(c.ctx, grantObj("db", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-root"}}})); status(err) != http.StatusForbidden {
+	if err := dev.Create(c.ctx, grantObj("db", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-root", Key: "token"}}})); status(err) != http.StatusForbidden {
 		t.Fatalf("dev granting a critical secret: want 403, got %v", err)
 	}
-	if err := dev.Create(c.ctx, grantObj("copy-key", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "validator-1-key", Deliver: v1.DeliverFile}}})); status(err) != http.StatusUnprocessableEntity {
+	if err := dev.Create(c.ctx, grantObj("copy-key", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "validator-1-key", Key: "token", Deliver: v1.DeliverFile}}})); status(err) != http.StatusUnprocessableEntity {
 		t.Fatalf("delivering a signing key as a file: want 422, got %v", err)
 	}
 	if err := dev.Create(c.ctx, grantObj("validator", v1.GrantSpec{Operations: &v1.GrantOperations{Sign: &v1.SignOperation{KeyRef: "validator-1-key", SlashingProtection: true}}})); err != nil {
@@ -168,7 +168,7 @@ func TestSecretsAccess(t *testing.T) {
 	}
 
 	// No back door through silos: giving a silo a grant needs use on the grant's secrets too.
-	if err := ada.Create(c.ctx, grantObj("db-root", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-root", Deliver: v1.DeliverFile}}})); err != nil {
+	if err := ada.Create(c.ctx, grantObj("db-root", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-root", Key: "token", Deliver: v1.DeliverFile}}})); err != nil {
 		t.Fatal(err)
 	}
 	s := silo("thief", "web3")
@@ -196,7 +196,7 @@ func TestSecretsAccess(t *testing.T) {
 	if err := ada.Create(c.ctx, secretObj("db-root", critical, "")); err != nil {
 		t.Fatal(err)
 	}
-	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/db-root/value?key=value", nil, &v); status(err) != http.StatusNotFound {
+	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/db-root/value?key=token", nil, &v); status(err) != http.StatusNotFound {
 		t.Fatalf("re-created secret: want 404 no value, got %v (%q)", err, v.Value)
 	}
 
@@ -236,7 +236,7 @@ func TestRecoveryKeyAndRotation(t *testing.T) {
 		t.Fatalf("rotate: %+v %v", rot, err)
 	}
 	var v client.SecretValue
-	if err := c.admin.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/a/value?key=value", nil, &v); err != nil || string(v.Value) != "value-a" {
+	if err := c.admin.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/a/value?key=token", nil, &v); err != nil || string(v.Value) != "value-a" {
 		t.Fatalf("after rotation: %q %v", v.Value, err)
 	}
 	// A plain rotation keeps the recovery key: the escrow (a backup's way back) still opens with it.
@@ -264,7 +264,7 @@ func TestRecoveryKeyAndRotation(t *testing.T) {
 		}
 		var sec v1.Secret
 		_ = c.admin.Get(c.ctx, "Secret", "web3", "a", &sec)
-		val, _, err := (&secrets.Vault{Store: c.store, KMS: l, Now: time.Now}).KeyValue(c.ctx, &sec, v1.ValueKey)
+		val, _, err := (&secrets.Vault{Store: c.store, KMS: l, Now: time.Now}).KeyValue(c.ctx, &sec, "token")
 		return val, err
 	}
 	if got, err := restore(oldRK); err != nil || string(got) != "value-a" {
@@ -293,9 +293,9 @@ func TestOpenShellAdmission(t *testing.T) {
 		grantObj("p2p-anywhere", v1.GrantSpec{Egress: []v1.EgressRule{{To: "0.0.0.0/0", Ports: []string{"30303"}, Protocols: []string{"tcp", "udp"}}}}),
 		grantObj("anthropic", v1.GrantSpec{
 			Egress:  []v1.EgressRule{{To: "api.github.com"}},
-			Secrets: []v1.GrantSecret{{Name: "anthropic-key", Deliver: v1.DeliverInject, Env: "ANTHROPIC_API_KEY", To: &v1.InjectTarget{Host: "api.anthropic.com", Header: "x-api-key", Format: "{{value}}"}}},
+			Secrets: []v1.GrantSecret{{Name: "anthropic-key", Key: "token", Deliver: v1.DeliverInject, Env: "ANTHROPIC_API_KEY", To: &v1.InjectTarget{Host: "api.anthropic.com", Header: "x-api-key", Format: "{{value}}"}}},
 		}),
-		grantObj("db", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-password", Deliver: v1.DeliverFile, Path: "/run/secrets/db"}}}),
+		grantObj("db", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db-password", Key: "token", Deliver: v1.DeliverFile, Path: "/run/secrets/db"}}}),
 	} {
 		if err := c.admin.Create(c.ctx, g); err != nil {
 			t.Fatal(err)
@@ -371,7 +371,7 @@ func TestWriteOnlySecretStaysWriteOnly(t *testing.T) {
 		t.Errorf("adding a delivery mode without a new value: %v, want 422", err)
 	}
 	var v client.SecretValue
-	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/wo/value?key=value", nil, &v); status(err) != http.StatusForbidden || len(v.Value) != 0 {
+	if err := ada.Call(c.ctx, http.MethodGet, "/apis/kevaso/v1/namespaces/web3/secrets/wo/value?key=token", nil, &v); status(err) != http.StatusForbidden || len(v.Value) != 0 {
 		t.Errorf("reading the value of a write-only secret: %v, want 403", err)
 	}
 	// Narrowing is fine, and a write that brings a new value may loosen both.
@@ -382,7 +382,7 @@ func TestWriteOnlySecretStaysWriteOnly(t *testing.T) {
 	fresh := cur()
 	fresh.Spec.ValueReadable = &yes
 	fresh.Spec.AllowedDelivery = nil
-	fresh.Spec.Value = []byte("new-value")
+	fresh.Spec.Data = map[string][]byte{"token": []byte("new-value")}
 	if err := ada.Update(c.ctx, fresh); err != nil {
 		t.Errorf("loosening with a new value: %v", err)
 	}

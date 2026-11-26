@@ -38,7 +38,7 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 	if err := ada.Create(c.ctx, secretObj("root-key", nil, "root-value")); err != nil {
 		t.Fatal(err)
 	}
-	if err := ada.Create(c.ctx, grantObj("root", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "root-key"}}})); err != nil {
+	if err := ada.Create(c.ctx, grantObj("root", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "root-key", Key: "token"}}})); err != nil {
 		t.Fatal(err)
 	}
 	if err := dev.Create(c.ctx, grantObj("none", v1.GrantSpec{Egress: []v1.EgressRule{{To: "api.github.com"}}})); err != nil {
@@ -151,13 +151,13 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 		want(t, "a policy rewriting a version", ada.Update(c.ctx, img), http.StatusUnprocessableEntity, "can't change once added")
 	})
 	t.Run("secret generate", func(t *testing.T) {
-		policy(t, "Secret", "spec.generate", `true`)
+		policy(t, "Secret", "spec.generate", `'token'`)
 		if err := ada.Create(c.ctx, secretObj("fine", nil, "")); err != nil {
 			t.Errorf("a policy setting another field of a secret: %v", err)
 		}
 	})
 	t.Run("secret value in the clear", func(t *testing.T) {
-		policy(t, "Secret", "spec.value", `b'aGVsbG8='`)
+		policy(t, "Secret", "spec.data", `{'token': b'aGVsbG8='}`)
 		want(t, "a value set by a policy", ada.Create(c.ctx, secretObj("leak", nil, "")), http.StatusUnprocessableEntity, "values are never set by policies")
 	})
 }

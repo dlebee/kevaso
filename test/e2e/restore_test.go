@@ -109,7 +109,7 @@ func TestBackupAndRestore(t *testing.T) {
 		"--runtime", "none", "--internal-ip", ipW, "--server", "https://"+ipA+":6443")...))
 	const password = "s3cret-db-password-0123"
 	kvoMust("apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: payments }\n", "apply", "-f", "-")
-	kvoMust(password, "create", "secret", "db", "-n", "payments", "--from-file", "-")
+	kvoMust(password, "create", "secret", "db", "-n", "payments", "--from-file", "password=-")
 
 	// 2. A backup, to a file here.
 	file := filepath.Join(t.TempDir(), "e2e.kvb")
@@ -148,7 +148,7 @@ func TestBackupAndRestore(t *testing.T) {
 	}
 
 	// 5. The cluster is back: the secret opens, and the host has its new address.
-	if got := kvoMust("", "get", "secret", "db", "-n", "payments", "--reveal"); !strings.Contains(got, password) {
+	if got := kvoMust("", "get", "secret", "db", "-n", "payments", "--reveal", "--key", "password"); !strings.Contains(got, password) {
 		t.Fatalf("secret after restore: %q", got)
 	}
 	t.Log("the secret opens on the restored control plane")

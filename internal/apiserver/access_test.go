@@ -150,7 +150,7 @@ func TestSiloSetTemplateGrantsNeedUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := e.admin.Create(e.ctx, &v1.Grant{TypeMeta: accessTM("Grant"), ObjectMeta: meta.ObjectMeta{Name: "db", Namespace: "dev"},
-		Spec: v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "prod-db"}}}}); err != nil {
+		Spec: v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "prod-db", Key: "password"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	s := newSilo("direct")

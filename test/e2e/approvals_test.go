@@ -49,19 +49,19 @@ func TestApprovals(t *testing.T) {
 
 	ghToken, deployPw, dbPassword, apiKey := randomToken(t), randomToken(t), randomToken(t), randomToken(t)
 	r.must(kvo.Run, "apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: ops }\n", "apply", "-f", "-")
-	r.must(kvo.Run, ghToken, "create", "secret", "gh-token", "-n", "ops", "--from-file", "-")
-	r.must(kvo.Run, deployPw, "create", "secret", "deploy-pw", "-n", "ops", "--from-file", "-")
-	r.must(kvo.Run, dbPassword, "create", "secret", "db-password", "-n", "ops", "--from-file", "-")
-	r.must(kvo.Run, apiKey, "create", "secret", "api-key", "-n", "ops", "--from-file", "-", "--allow", "inject", "--write-only")
+	r.must(kvo.Run, ghToken, "create", "secret", "gh-token", "-n", "ops", "--from-file", "token=-")
+	r.must(kvo.Run, deployPw, "create", "secret", "deploy-pw", "-n", "ops", "--from-file", "token=-")
+	r.must(kvo.Run, dbPassword, "create", "secret", "db-password", "-n", "ops", "--from-file", "token=-")
+	r.must(kvo.Run, apiKey, "create", "secret", "api-key", "-n", "ops", "--from-file", "token=-", "--allow", "inject", "--write-only")
 	r.must(kvo.Run, `apiVersion: kevaso/v1
 kind: Grant
 metadata: { name: careful, namespace: ops }
 spec:
   secrets:
-    - { name: gh-token, approval: { required: true } }
-    - { name: deploy-pw, approval: { required: true } }
-    - { name: db-password }
-    - { name: api-key, deliver: inject, to: { host: `+apiHost+` }, approval: { required: true } }
+    - { name: gh-token, key: token, approval: { required: true } }
+    - { name: deploy-pw, key: token, approval: { required: true } }
+    - { name: db-password, key: token }
+    - { name: api-key, key: token, deliver: inject, to: { host: `+apiHost+` }, approval: { required: true } }
 ---
 apiVersion: kevaso/v1
 kind: Silo
@@ -121,9 +121,9 @@ spec:
 // secretAsk is the sh a silo runs to read a secret from its local endpoint, waiting for a person's
 // yes as long as the answer is 428: the first pending answer (which says what to approve) is
 // printed, then the value alone, or the refusal. With curl, or with hget (which prints "STATUS
-// BODY"). Exit 0 only with the value.
+// BODY"). Exit 0 only with the value. Every secret here holds its value in the key token.
 func secretAsk(client, name, query string) string {
-	u := "http://169.254.42.1/v1/secrets/" + name + "?" + query
+	u := "http://169.254.42.1/v1/secrets/" + name + "/token?" + query
 	if client == "curl" {
 		return `u='` + u + `'; a=
 while :; do

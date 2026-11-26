@@ -1,7 +1,6 @@
 package apiserver
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -170,18 +169,26 @@ var refusals = []refusal{
 	{"Secret", []string{`spec.allowedDelivery=["email"]`}, "spec.allowedDelivery: broker, inject, file, env or sign"},
 	{"Secret", []string{`spec.type="ed25519"`, `spec.valueReadable=true`}, "a signing key is never readable"},
 	{"Secret", []string{`spec.type="ed25519"`, `spec.allowedDelivery=["env"]`}, "a signing key is only used through sign"},
-	{"Secret", []string{`spec.generate=true`, `spec.value="eA=="`}, "spec.generate and spec.value don't go together"},
-	{"Secret", []string{`spec.value="` + base64.StdEncoding.EncodeToString(make([]byte, 64<<10+1)) + `"`}, "spec.value: at most 64 KiB"},
+	{"Secret", []string{`spec.generate="token"`, `spec.data={"token":"eA=="}`}, "spec.generate and spec.data don't go together"},
+	{"Secret", []string{`spec.value="eA=="`}, `unknown field "value"`}, // gone: keys are always named (spec.data)
+	{"Secret", []string{`spec.generate=true`}, "spec.generate"},        // it names the key it makes
+	{"Secret", []string{`spec.type="registry"`, `spec.server="ghcr.io"`, `spec.username="bot"`, `spec.generate="password"`}, "a registry secret is never delivered to a silo (only a host's agent gets it, for a pull) and isn't generated"},
 	// Grant
 	{"Grant", []string{`spec.egress!`}, "a grant needs egress, secrets or operations"},
-	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"email"}]`}, "every grant secret needs a name, and deliver"},
-	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"inject"}]`}, "deliver: inject needs to.host"},
-	{"Grant", []string{`spec.secrets=[{"name":"k","to":{"host":"a.example.com"}}]`}, "to goes with deliver: inject"},
-	{"Grant", []string{`spec.secrets=[{"name":"k","path":"/run/k"}]`}, "path goes with deliver: file"},
-	{"Grant", []string{`spec.secrets=[{"name":"k","env":"K"}]`}, "env goes with deliver: env"},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"k","deliver":"email"}]`}, "every grant secret needs a name, and deliver"},
+	{"Grant", []string{`spec.secrets=[{"name":"k"}]`}, `secret k: key is required: name one key (key: KEY) or every key (key: "*")`},
+	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"file"}]`}, `secret k: key is required: name one key (key: KEY) or every key (key: "*")`},
+	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"a.example.com"}}]`}, "secret k: key is required: name the one key to inject (key: KEY)"},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"*","deliver":"inject","to":{"host":"a.example.com"}}]`}, `secret k: inject adds one key: name it (key: KEY), not "*"`},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"a/b"}]`}, `secret k: key "a/b": letters, digits, - _ and .`},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"-x","deliver":"env"}]`}, `secret k: key "-x"`},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"k","deliver":"inject"}]`}, "deliver: inject needs to.host"},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"k","to":{"host":"a.example.com"}}]`}, "to goes with deliver: inject"},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"k","path":"/run/k"}]`}, "path goes with deliver: file"},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"k","env":"K"}]`}, "env goes with deliver: env"},
 	{"Grant", []string{`spec.operations={"sign":{"keyRef":""}}`}, "operations.sign needs a keyRef"},
 	{"Grant", []string{`spec.requires={"assurance":"trust-me"}`}, "requires.assurance must be host, vtpm or confidential"},
-	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"file","path":"/run/k","approval":{"required":true}}]`}, "approval works with deliver: broker or inject"},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"k","deliver":"file","path":"/run/k","approval":{"required":true}}]`}, "approval works with deliver: broker or inject"},
 	{"Grant", []string{`spec.egress=[{"to":"not a host"}]`}, "egress"},
 	{"OpenShellPolicy", []string{`spec.networkPolicies!`}, "an OpenShellPolicy needs 1 to 32"},
 	{"OpenShellPolicy", []string{`spec.networkPolicies=[{"name":"Bad","endpoints":[{"host":"example.com","port":443}]}]`}, "every network policy needs a name"},
@@ -189,12 +196,12 @@ var refusals = []refusal{
 	{"OpenShellPolicy", []string{`spec.networkPolicies=[{"name":"web","endpoints":[]}]`}, "every network policy needs 1 to 16"},
 	{"OpenShellPolicy", []string{`spec.networkPolicies=[{"name":"web","endpoints":[{"host":"example.com","port":0}]}]`}, "every endpoint needs a host"},
 	{"OpenShellPolicy", []string{`spec.networkPolicies=[{"name":"web","endpoints":[{"host":"example.com","port":443}],"binaries":[]}]`}, "binaries, when set"},
-	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"*.example.com"}}]`}, `secret k: to.host "*.example.com" must be one host name`},
-	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"a.example.com","format":"Bearer"}}]`}, "secret k: to.format must contain {{value}} once"},
-	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"inject","to":{"host":"a.example.com","header":"X: y"}}]`}, `secret k: to.header "X: y" isn't a header name`},
-	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"file","path":"/run/s,src=/,dst=/run/q/f"}]`}, `secret k: path "/run/s,src=/,dst=/run/q/f" must be under /run/`},
-	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"file","path":"/run/s/a:b"}]`}, `secret k: path "/run/s/a:b" must be under /run/`},
-	{"Grant", []string{`spec.secrets=[{"name":"k","deliver":"file","path":"/etc/k"}]`}, `secret k: path "/etc/k" must be under /run/`},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"k","deliver":"inject","to":{"host":"*.example.com"}}]`}, `secret k: to.host "*.example.com" must be one host name`},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"k","deliver":"inject","to":{"host":"a.example.com","format":"Bearer"}}]`}, "secret k: to.format must contain {{value}} once"},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"k","deliver":"inject","to":{"host":"a.example.com","header":"X: y"}}]`}, `secret k: to.header "X: y" isn't a header name`},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"k","deliver":"file","path":"/run/s,src=/,dst=/run/q/f"}]`}, `secret k: path "/run/s,src=/,dst=/run/q/f" must be under /run/`},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"k","deliver":"file","path":"/run/s/a:b"}]`}, `secret k: path "/run/s/a:b" must be under /run/`},
+	{"Grant", []string{`spec.secrets=[{"name":"k","key":"k","deliver":"file","path":"/etc/k"}]`}, `secret k: path "/etc/k" must be under /run/`},
 	// IngressClass
 	{"IngressClass", []string{`spec.controller.driver=""`}, "spec.controller.driver names the proxy's driver"},
 	{"IngressClass", []string{`spec.controller.siloSet="ingress"`}, "spec.controller needs its namespace and one of silo or siloSet"},

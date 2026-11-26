@@ -28,7 +28,7 @@ func TestAControlPlaneWithSealedDataButNoMasterKeyRefusesToStart(t *testing.T) {
 	ctx := context.Background()
 	_ = admin.Create(ctx, &v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "web3"}})
 	sec := &v1.Secret{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Secret"}, ObjectMeta: meta.ObjectMeta{Name: "db", Namespace: "web3"}}
-	sec.Spec.Value = []byte("hunter2")
+	sec.Spec.Data = map[string][]byte{"password": []byte("hunter2")}
 	if err := admin.Create(ctx, sec); err != nil {
 		t.Fatal(err)
 	}
