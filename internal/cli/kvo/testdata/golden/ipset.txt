@@ -1,10 +1,42 @@
-NAMESPACE   NAME      AGE
-web3        eth-ips   -
+NAMESPACE   NAME      TYPE      MEMBERS   USED   MAX   AGE
+mail        edge      Dynamic   2         1      3     <age>
+mail        relays    Static    2         1      2     <age>
+web3        eth-ips   Static    2         0      2     -
 
-NAMESPACE   NAME      AGE
-web3        eth-ips   -
+NAMESPACE   NAME      TYPE      MEMBERS   USED   MAX   AGE
+mail        edge      Dynamic   2         1      3     <age>
+mail        relays    Static    2         1      2     <age>
+web3        eth-ips   Static    2         0      2     -
 
+Name:       edge
+Namespace:  mail
+Labels:     -
+Created:    YYYY-MM-DD hh:mm:ss (<age> ago)
+Type:       Dynamic (linode IPs in us-ord, reserved as instances need them, up to 3)
+Used by:    -
+Members:
+  ORDINAL  MEMBER    IP      ADDRESS       USED BY
+  0        reserved  edge-0  172.232.0.20  edge-0
+  1        reserved  edge-1  -             -
+---
+Name:       relays
+Namespace:  mail
+Labels:     -
+Created:    YYYY-MM-DD hh:mm:ss (<age> ago)
+Type:       Static (the members listed: it never grows on its own; add members at the end)
+Used by:    siloset/relay
+Members:
+  ORDINAL  MEMBER              IP        ADDRESS    USED BY
+  0        hostAddress: spare  relays-0  10.0.0.66  relay-0
+  1        ip: relay-1         relay-1   -          -
+---
 Name:       eth-ips
 Namespace:  web3
 Labels:     -
+Type:       Static (the members listed: it never grows on its own; add members at the end)
+Used by:    siloset/eth-pool
+Members:
+  ORDINAL  MEMBER              IP  ADDRESS  USED BY
+  0        hostAddress: eth-0  -   -        -
+  1        hostAddress: eth-1  -   -        -
 ---

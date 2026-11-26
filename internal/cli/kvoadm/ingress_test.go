@@ -33,18 +33,18 @@ func TestIngressObjects(t *testing.T) {
 	if !class.Spec.Public || class.Spec.Controller.Driver != "nginx" || !class.Spec.Controller.Runs(silo) || class.Spec.Controller.Options["worker-connections"] != "4096" {
 		t.Fatalf("class %+v", class.Spec)
 	}
-	// --host-port internal: on its host's internal IP; --lb-class: on a load balancer instead.
+	// --host-port internal: on its host's internal IP; --provider: on a load balancer instead.
 	o, _ = parseIngress([]string{"install", "--host-port", "internal"})
 	if silo, _, err := IngressObjects(o, kicdrivers.Builtin()); err != nil || len(silo.Spec.Services) != 1 || silo.Spec.Services[0].Way() != (v1.HostPortSource{Worker: v1.NetworkInternal}) {
 		t.Fatalf("--host-port internal: %+v %v", silo, err)
 	}
-	o, _ = parseIngress([]string{"install", "--lb-class", "linode-nodebalancer"})
+	o, _ = parseIngress([]string{"install", "--provider", "linode"})
 	if silo, _, err := IngressObjects(o, kicdrivers.Builtin()); err != nil ||
-		!reflect.DeepEqual(silo.Spec.Services, []v1.SiloService{{Type: v1.ServiceLoadBalancer, Ports: both, LoadBalancer: &v1.LoadBalancerSpec{Provider: "linode-nodebalancer"}}}) {
-		t.Fatalf("--lb-class: %+v %v", silo, err)
+		!reflect.DeepEqual(silo.Spec.Services, []v1.SiloService{{Type: v1.ServiceLoadBalancer, Ports: both, LoadBalancer: &v1.LoadBalancerSpec{Provider: "linode"}}}) {
+		t.Fatalf("--provider: %+v %v", silo, err)
 	}
-	if _, err := parseIngress([]string{"install", "--host-port", "external", "--lb-class", "ip-pool"}); err == nil || !strings.Contains(err.Error(), "not both") {
-		t.Fatalf("--host-port and --lb-class: %v", err)
+	if _, err := parseIngress([]string{"install", "--host-port", "external", "--provider", "linode"}); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("--host-port and --provider: %v", err)
 	}
 	if _, err := parseIngress([]string{"install", "--host-port", "public"}); err == nil || !strings.Contains(err.Error(), "internal or external") {
 		t.Fatalf("--host-port public: %v", err)

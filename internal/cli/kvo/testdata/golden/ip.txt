@@ -1,10 +1,58 @@
-NAMESPACE   NAME         TYPE   ADDRESS   WHERE   HELD-BY   AGE
-web3        eth-node-a   Host   -         -       -         -
+NAMESPACE   NAME         TYPE       ADDRESS        WHERE              SET        USED BY              MOVES                    AGE
+mail        api-edge     Provider   172.232.0.9    linode us-ord      -          -                    within linode us-ord     <age>
+mail        mail         Host       203.0.113.21   host baremetal-1   -          silo/smtp (25/TCP)   no: pinned to its host   <age>
+mail        relay-1      Provider   -              linode us-ord      relays#1   -                    within linode us-ord     <age>
+web3        eth-node-a   Host       -              -                  -          -                    no: pinned to its host   -
 
-NAMESPACE   NAME         TYPE   ADDRESS   WHERE   HELD-BY   AGE
-web3        eth-node-a   Host   -         -       -         -
+NAMESPACE   NAME         TYPE       ADDRESS        WHERE              SET        USED BY              MOVES                    AGE
+mail        api-edge     Provider   172.232.0.9    linode us-ord      -          -                    within linode us-ord     <age>
+mail        mail         Host       203.0.113.21   host baremetal-1   -          silo/smtp (25/TCP)   no: pinned to its host   <age>
+mail        relay-1      Provider   -              linode us-ord      relays#1   -                    within linode us-ord     <age>
+web3        eth-node-a   Host       -              -                  -          -                    no: pinned to its host   -
 
+Name:       api-edge
+Namespace:  mail
+Labels:     -
+Created:    YYYY-MM-DD hh:mm:ss (<age> ago)
+Type:       Provider (linode, region us-ord)
+Address:    172.232.0.9
+Where:      linode us-ord
+Moves:      with its holder, within linode us-ord (the new worker announces it)
+Used by:    -
+Waiting:    silo/web2: held by silo/web
+Deleting:   releases the address (kvo delete ip api-edge)
+---
+Name:          mail
+Namespace:     mail
+Labels:        -
+Created:       YYYY-MM-DD hh:mm:ss (<age> ago)
+Type:          Host (host address mail)
+Address:       203.0.113.21
+Where:         host baremetal-1
+Moves:         no: a host's address stays on its host, so its holder runs there
+Used by:       silo/smtp (25/TCP)
+  In and out:  in 203.0.113.20, out 203.0.113.21
+Deleting:      refused while silo/smtp uses it: delete that one first, or have it name no IP
+---
+Name:       relay-1
+Namespace:  mail
+Labels:     kevaso.com/ipset=relays, kevaso.com/ipset-ordinal=1
+Created:    YYYY-MM-DD hh:mm:ss (<age> ago)
+Type:       Provider (linode, region us-ord)
+Address:    -
+Where:      linode us-ord
+Moves:      with its holder, within linode us-ord (the new worker announces it)
+Set:        relays#1 (kvo describe ipset relays)
+Used by:    -
+Deleting:   releases the address (kvo delete ip relay-1)
+---
 Name:       eth-node-a
 Namespace:  web3
 Labels:     -
+Type:       Host (host address eth-a)
+Address:    -
+Where:      no host has an address named eth-a (kvoadm host addresses HOST add eth-a ADDRESS --external)
+Moves:      no: a host's address stays on its host, so its holder runs there
+Used by:    -
+Deleting:   releases the address (kvo delete ip eth-node-a)
 ---
