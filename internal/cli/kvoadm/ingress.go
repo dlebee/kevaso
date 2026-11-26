@@ -20,11 +20,11 @@ type IngressOptions struct {
 	Class  string // the IngressClass (default public)
 	Driver string // nginx (default), caddy, kong
 	Public bool   // reachable from the internet
-	// HostPort: the proxy's ports open on its worker's address on this network (default external);
-	// LBClass instead puts them behind a load balancer of that provider.
-	// TODO(net-v2 wave 2): --lb-class becomes --provider.
+	// HostPort: the proxy's ports open on its worker's address on this network (default external)
+	// (a HostPort service, hostPort: { worker: … }); Provider instead puts them behind a load
+	// balancer of that provider (a LoadBalancer service, loadBalancer: { provider: … }).
 	HostPort string
-	LBClass  string
+	Provider string
 	Image    string            // default: the driver's vendor image
 	Runtime  string            // default docker
 	Options  map[string]string // the driver's options
@@ -35,7 +35,7 @@ type IngressOptions struct {
 func parseIngress(args []string) (IngressOptions, error) {
 	o := IngressOptions{Class: "public", Driver: "nginx", Runtime: "docker"}
 	if len(args) == 0 || args[0] != "install" {
-		return o, errors.New("ingress install [--class NAME] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --lb-class CLASS] [--host NAME=NAMESPACE[,NAMESPACE]]… [--image REF] [--runtime NAME] [--option K=V]…")
+		return o, errors.New("ingress install [--class NAME] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --provider PROVIDER] [--host NAME=NAMESPACE[,NAMESPACE]]… [--image REF] [--runtime NAME] [--option K=V]…")
 	}
 	for i := 1; i < len(args); i++ {
 		a := args[i]
@@ -55,8 +55,8 @@ func parseIngress(args []string) (IngressOptions, error) {
 			o.Driver, err = val()
 		case "--public":
 			o.Public = true
-		case "--lb-class":
-			o.LBClass, err = val()
+		case "--provider":
+			o.Provider, err = val()
 		case "--host-port":
 			if o.HostPort, err = val(); err == nil && o.HostPort != v1.NetworkInternal && o.HostPort != v1.NetworkExternal {
 				err = fmt.Errorf("--host-port %s: internal or external", o.HostPort)
@@ -90,9 +90,9 @@ func parseIngress(args []string) (IngressOptions, error) {
 		}
 	}
 	switch {
-	case o.HostPort != "" && o.LBClass != "":
-		return o, errors.New("--host-port or --lb-class, not both: the proxy's ports open on its host's address or on a load balancer")
-	case o.HostPort == "" && o.LBClass == "":
+	case o.HostPort != "" && o.Provider != "":
+		return o, errors.New("--host-port or --provider, not both: the proxy's ports open on its host's address or on a load balancer")
+	case o.HostPort == "" && o.Provider == "":
 		o.HostPort = v1.NetworkExternal
 	}
 	return o, nil
@@ -178,8 +178,8 @@ func IngressObjects(o IngressOptions, drivers kic.Registry) (*v1.Silo, *v1.Ingre
 		ports = append(ports, v1.ServicePort{Port: n})
 	}
 	svc := v1.SiloService{Type: v1.ServiceHostPort, Ports: ports, HostPort: &v1.HostPortSource{Worker: o.HostPort}}
-	if o.LBClass != "" {
-		svc = v1.SiloService{Type: v1.ServiceLoadBalancer, Ports: ports, LoadBalancer: &v1.LoadBalancerSpec{Provider: o.LBClass}}
+	if o.Provider != "" {
+		svc = v1.SiloService{Type: v1.ServiceLoadBalancer, Ports: ports, LoadBalancer: &v1.LoadBalancerSpec{Provider: o.Provider}}
 	}
 	silo := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"},
 		ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "kevaso-system", Labels: map[string]string{"kevaso.com/ingress-class": o.Class}},
@@ -224,8 +224,8 @@ func ingressCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		_, _ = fmt.Fprintf(stdout, "→ %s %s\n", obj.GetTypeMeta().Kind, obj.GetObjectMeta().Name)
 	}
 	where := "on its host's " + o.HostPort + " IP"
-	if o.LBClass != "" {
-		where = "behind a " + o.LBClass + " address"
+	if o.Provider != "" {
+		where = "behind a " + o.Provider + " address"
 	}
 	_, _ = fmt.Fprintf(stdout, "Ingress class %s: %s (%s) in silo kevaso-system/%s, %s. Kevaso writes its config from outside;\n",
 		class.Name, o.Driver, silo.Spec.From(), silo.Name, where)

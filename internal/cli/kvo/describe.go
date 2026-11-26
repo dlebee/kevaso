@@ -32,10 +32,7 @@ func describe(ctx context.Context, c *client.Client, o opts, stdout io.Writer) e
 	if err := c.Get(ctx, k.Kind, ns, o.args[1], obj); err != nil {
 		return err
 	}
-	if x, ok := obj.(*v1.IP); ok {
-		return describeIP(ctx, c, x, stdout)
-	}
-	if err := describeObject(stdout, obj); err != nil {
+	if err := describeWith(stdout, obj, loadNetEnv(ctx, c, obj)); err != nil {
 		return err
 	}
 	if s, ok := obj.(*v1.Silo); ok {
@@ -45,7 +42,11 @@ func describe(ctx context.Context, c *client.Client, o opts, stdout io.Writer) e
 }
 
 // describeObject writes an object for people: what it is, what it wants, how it's doing and why.
-func describeObject(w io.Writer, obj meta.Object) error {
+func describeObject(w io.Writer, obj meta.Object) error { return describeWith(w, obj, nil) }
+
+// describeWith is describeObject with what the networking layouts read beside the object (the
+// IPs a silo names, who holds an IP, a host's reservations): env may be nil.
+func describeWith(w io.Writer, obj meta.Object, env *netEnv) error {
 	tw := tabwriter.NewWriter(safeTerminal(w), 0, 0, 2, ' ', 0)
 	kv := func(indent int, k string, v any) {
 		_, _ = fmt.Fprintf(tw, "%s%s:\t%v\n", strings.Repeat("  ", indent), k, v)
@@ -120,7 +121,12 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		if o.Status.MovingFrom != "" {
 			kv(0, "Moving from", o.Status.MovingFrom+" (it stops the silo and lets go first)")
 		}
-		kv(0, "Movable", dash(o.Status.Movable)+" (onHostLoss: "+o.Policy()+")")
+		canMove := o.Status.Movable // the scheduler's: yes/no and why (placement follows the address)
+		if canMove == "" {
+			canMove = "unknown"
+		}
+		kv(0, "Can move", canMove)
+		kv(0, "On host loss", o.Policy())
 		if stops, after := o.StopsOnControlPlaneLoss(); stops {
 			kv(0, "On control-plane loss", "STOPS: the host stops this silo after "+shortDur(after)+" without the control plane (onControlPlaneLoss: Stop)")
 		} else {
@@ -129,24 +135,9 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		kv(0, "Silo IP", dash(o.Status.SiloIP))
 		st := o.Status.Service
 		if len(o.Spec.Services) == 0 {
-			kv(0, "Service", "none: no name, nothing reachable (a silo IP for its own traffic only)")
-		}
-		// TODO(net-v2 wave 2): each service's own status, and "can move: … (why)".
-		for _, sv := range o.Spec.Services {
-			line := v1.ServiceNameOf(sv, o.Name) + ": " + sv.TypeOrDefault()
-			switch sv.TypeOrDefault() {
-			case v1.ServiceHostPort:
-				line += " (" + sv.Way().String() + ")"
-			case v1.ServiceLoadBalancer:
-				if sv.LoadBalancer != nil {
-					line += " (" + sv.LoadBalancer.Provider
-					if st.LoadBalancerIP != "" {
-						line += " at " + st.LoadBalancerIP
-					}
-					line += ")"
-				}
-			}
-			kv(0, "Service", line)
+			kv(0, "Services", "none: no name, nothing reachable (a silo IP for its own traffic only)")
+		} else {
+			tables = append(tables, func() { writeSiloServices(tw, o, env) })
 		}
 		if len(o.Spec.Ports) > 0 {
 			tables = append(tables, func() { writeSiloPorts(tw, o) })
@@ -288,6 +279,7 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		kv(0, "Internal IP", internal)
 		kv(0, "External IP", dash(o.External()))
 		kv(0, "Mesh IP", dash(o.Status.Network.MeshIP))
+		tables = append(tables, func() { writeHostAddresses(tw, o, env) })
 		dnsOn := "its silos and the mesh"
 		for _, n := range o.Spec.Network.DNS {
 			dnsOn += ", its " + n + " IP"
@@ -530,8 +522,17 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		if rq := o.Spec.Requires; rq != nil && rq.Assurance != "" && rq.Assurance != v1.AssuranceHost {
 			kv(0, "Requires", rq.Assurance+" assurance: no silo can have it yet (only host), so the broker refuses")
 		}
+	case *v1.IP:
+		conds = o.Status.Conditions
+		describeIPInto(kv, o, env)
+	case *v1.IPSet:
+		conds = o.Status.Conditions
+		tables = append(tables, describeIPSetInto(kv, tw, o, env))
 	case *v1.SiloSet:
 		conds = o.Status.Conditions
+		if o.Spec.IPs != "" {
+			kv(0, "IPs", "instance i takes member i of ipset "+o.Spec.IPs+" (hostPort: { own: true }; kvo describe ipset "+o.Spec.IPs+")")
+		}
 		kv(0, sourceLabel(o.InstanceSpec()), dash(o.InstanceSpec().From()))
 		kv(0, "Runtime", o.Spec.Template.Runtime)
 		kv(0, "Instances", fmt.Sprintf("%d wanted, %d ready, %d on revision %s", o.Spec.Instances, o.Status.Ready, o.Status.Updated, dash(o.Status.Revision)))

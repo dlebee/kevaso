@@ -1,16 +1,22 @@
-NAMESPACE   NAME         RUNTIME            PHASE      READY               HOST   AGE
-demo        hello        cloud-hypervisor   -          -                   -      -
-demo        hello        cloud-hypervisor   Starting   no (Initializing)   hv1    <age>
-payments    api          docker             -          -                   -      -
-payments    ledger       cloud-hypervisor   -          -                   -      -
-web3        eth-node-a   cloud-hypervisor   -          -                   -      -
+NAMESPACE   NAME         RUNTIME            PHASE      READY               HOST          AGE
+demo        hello        cloud-hypervisor   -          -                   -             -
+demo        hello        cloud-hypervisor   Starting   no (Initializing)   hv1           <age>
+mail        far          docker             -          -                   -             <age>
+mail        smtp         cloud-hypervisor   Running    -                   baremetal-1   <age>
+mail        web          docker             -          -                   -             <age>
+payments    api          docker             -          -                   -             -
+payments    ledger       cloud-hypervisor   -          -                   -             -
+web3        eth-node-a   cloud-hypervisor   -          -                   -             -
 
-NAMESPACE   NAME         RUNTIME            PHASE      READY               HOST   MOVABLE   ON-CP-LOSS       AGE
-demo        hello        cloud-hypervisor   -          -                   -      -         -                -
-demo        hello        cloud-hypervisor   Starting   no (Initializing)   hv1    -         stops after <age>   <age>
-payments    api          docker             -          -                   -      -         -                -
-payments    ledger       cloud-hypervisor   -          -                   -      -         -                -
-web3        eth-node-a   cloud-hypervisor   -          -                   -      -         -                -
+NAMESPACE   NAME         RUNTIME            PHASE      READY               HOST          MOVABLE                                                      ON-CP-LOSS       AGE
+demo        hello        cloud-hypervisor   -          -                   -             -                                                            -                -
+demo        hello        cloud-hypervisor   Starting   no (Initializing)   hv1           -                                                            stops after <age>   <age>
+mail        far          docker             -          -                   -             -                                                            -                <age>
+mail        smtp         cloud-hypervisor   Running    -                   baremetal-1   no: pinned to baremetal-1 (IP mail is that host's address)   -                <age>
+mail        web          docker             -          -                   -             -                                                            -                <age>
+payments    api          docker             -          -                   -             -                                                            -                -
+payments    ledger       cloud-hypervisor   -          -                   -             -                                                            -                -
+web3        eth-node-a   cloud-hypervisor   -          -                   -             -                                                            -                -
 
 Name:                   hello
 Namespace:              demo
@@ -21,10 +27,11 @@ Resources:              1 CPU, 1Gi memory
 Disk:                   10Gi
 Phase:                  -
 Host:                   -
-Movable:                - (onHostLoss: Wait)
+Can move:               unknown
+On host loss:           Wait
 On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
-Service:                none: no name, nothing reachable (a silo IP for its own traffic only)
+Services:               none: no name, nothing reachable (a silo IP for its own traffic only)
 Grants:                 -
 OpenShell policies:     -
 Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
@@ -44,16 +51,19 @@ Resources:              1 CPU, 1Gi memory
 Disk:                   10Gi
 Phase:                  Starting
 Host:                   hv1
-Movable:                - (onHostLoss: Wait)
+Can move:               unknown
+On host loss:           Wait
 On control-plane loss:  STOPS: the host stops this silo after <age> without the control plane (onControlPlaneLoss: Stop)
 Silo IP:                10.64.2.7
-Service:                api: HostPort (worker: external)
-Service:                api-metrics: Internal
 Egress IP:              -
 In and out:             no outside address in or out
 Grants:                 -
 OpenShell policies:     -
 Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
+Services:
+  NAME         TYPE      WAY IN            PORTS     REACHABLE AT
+  api          HostPort  worker: external  http→443  the worker's external IP :443 (when placed)
+  api-metrics  Internal  mesh              metrics   10.64.2.7:9090 from prom
 Ports:
   PORT       NUMBER    SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP         LOAD BALANCER  ALLOW FROM  SOURCES
   http       8080/TCP  (when running) (no silo allowed)  -            (when placed) :443  -              -           192.0.2.0/24
@@ -72,6 +82,107 @@ Conditions:
   TYPE   STATUS  REASON        SINCE  MESSAGE
   Ready  False   Initializing  <age>     init step two
 ---
+Name:                   far
+Namespace:              mail
+Labels:                 -
+Created:                YYYY-MM-DD hh:mm:ss (<age> ago)
+Runtime:                docker
+Starts from:            -
+Resources:              0 CPU, - memory
+Disk:                   -
+Phase:                  -
+Host:                   -
+Can move:               unknown
+On host loss:           Wait
+On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
+Silo IP:                -
+Egress IP:              -
+In and out:             no outside address in or out
+Grants:                 -
+OpenShell policies:     -
+Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
+Services:
+  NAME      TYPE      WAY IN    PORTS  REACHABLE AT
+  far-smtp  HostPort  ip: mail  smtp   203.0.113.21:25
+  far-api   HostPort  ip: nope  https  ip nope :8443 (no such IP yet: kvo create ip nope --type …)
+Ports:
+  PORT       NUMBER    SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER  ALLOW FROM  SOURCES
+  smtp       25/TCP    (when running) (no silo allowed)  -            -            -              -           -
+  https      8443/TCP  (when running) (no silo allowed)  -            -            -              -           -
+Route when:  running (not stated: the silo has no readiness probe)
+Traffic:
+  PORT        TRAFFIC
+  smtp 25     held (not running)
+  https 8443  held (not running)
+---
+Name:                   smtp
+Namespace:              mail
+Labels:                 -
+Created:                YYYY-MM-DD hh:mm:ss (<age> ago)
+Runtime:                cloud-hypervisor
+Starts from:            -
+Resources:              0 CPU, - memory
+Disk:                   -
+Phase:                  Running
+Host:                   baremetal-1
+Can move:               no: pinned to baremetal-1 (IP mail is that host's address)
+On host loss:           Wait
+On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
+Silo IP:                10.64.3.4
+Egress IP:              203.0.113.21 (ip: mail)
+In and out:             in 203.0.113.20, out 203.0.113.21
+Grants:                 -
+OpenShell policies:     -
+Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
+Services:
+  NAME          TYPE      WAY IN            PORTS      REACHABLE AT
+  smtp          HostPort  ip: mail          smtp       203.0.113.21:25
+  webmail       HostPort  worker: external  https→443  203.0.113.20:443
+  smtp-metrics  Internal  mesh              metrics    10.64.3.4:9090 from monitoring/prometheus
+Ports:
+  PORT       NUMBER    SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP       LOAD BALANCER  ALLOW FROM             SOURCES
+  smtp       25/TCP    (when running) (no silo allowed)  -            -                 -              -                      -
+  https      8443/TCP  (when running) (no silo allowed)  -            203.0.113.20:443  -              -                      -
+  metrics    9090/TCP  (when running)                    -            -                 -              monitoring/prometheus  -
+Route when:  running (not stated: the silo has no readiness probe)
+Traffic:
+  PORT          TRAFFIC
+  smtp 25       routed
+  https 8443    routed
+  metrics 9090  routed
+---
+Name:                   web
+Namespace:              mail
+Labels:                 -
+Created:                YYYY-MM-DD hh:mm:ss (<age> ago)
+Runtime:                docker
+Starts from:            -
+Resources:              0 CPU, - memory
+Disk:                   -
+Phase:                  -
+Host:                   -
+Can move:               unknown
+On host loss:           Wait
+On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
+Silo IP:                -
+Egress IP:              -
+In and out:             no outside address in or out
+Grants:                 -
+OpenShell policies:     -
+Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
+Services:
+  NAME  TYPE          WAY IN            PORTS      REACHABLE AT
+  api   HostPort      ip: api-edge      https→443  172.232.0.9:443
+  shop  LoadBalancer  provider: linode  https→443  the balancer :443 (once linode makes it)
+Ports:
+  PORT       NUMBER    SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER  ALLOW FROM  SOURCES
+  https      8443/TCP  (when running) (no silo allowed)  -            -            -              -           -
+Route when:  running (not stated: the silo has no readiness probe)
+Traffic:
+  PORT        TRAFFIC
+  https 8443  held (not running)
+  https 8443  held (not running)
+---
 Name:                   api
 Namespace:              payments
 Labels:                 -
@@ -83,10 +194,11 @@ Resources:              1 CPU, 1Gi memory
 Disk:                   -
 Phase:                  -
 Host:                   -
-Movable:                - (onHostLoss: Wait)
+Can move:               unknown
+On host loss:           Wait
 On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
-Service:                none: no name, nothing reachable (a silo IP for its own traffic only)
+Services:               none: no name, nothing reachable (a silo IP for its own traffic only)
 Grants:                 -
 OpenShell policies:     -
 Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
@@ -100,10 +212,11 @@ Resources:              2 CPU, 4Gi memory
 Disk:                   20Gi
 Phase:                  -
 Host:                   -
-Movable:                - (onHostLoss: Wait)
+Can move:               unknown
+On host loss:           Wait
 On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
-Service:                none: no name, nothing reachable (a silo IP for its own traffic only)
+Services:               none: no name, nothing reachable (a silo IP for its own traffic only)
 Grants:                 -
 OpenShell policies:     -
 Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
@@ -117,15 +230,18 @@ Resources:              2 CPU, 4Gi memory
 Disk:                   100Gi
 Phase:                  -
 Host:                   -
-Movable:                - (onHostLoss: Wait)
+Can move:               unknown
+On host loss:           Wait
 On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
-Service:                eth-node-a: HostPort (ip: eth-node-a)
 Egress IP:              - (ip: eth-node-a)
 In and out:             no outside address in or out
 Grants:                 -
 OpenShell policies:     -
 Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
+Services:
+  NAME        TYPE      WAY IN          PORTS      REACHABLE AT
+  eth-node-a  HostPort  ip: eth-node-a  p2p, disc  ip eth-node-a :30303 (not reserved yet)
 Ports:
   PORT       NUMBER     SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER  ALLOW FROM  SOURCES
   p2p        30303/TCP  (when running) (no silo allowed)  -            -            -              -           -

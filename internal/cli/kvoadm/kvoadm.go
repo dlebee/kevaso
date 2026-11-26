@@ -186,6 +186,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm host install HOST control-plane [--state-only] | uninstall HOST control-plane | remove HOST | confirm-off NAME
   kvoadm host list | drain NAME | uncordon NAME
   kvoadm host ssh NAME [list | add [USER@]ADDRESS[:PORT]… [--local] | remove ADDRESS…]
+  kvoadm host addresses HOST add NAME ADDRESS --external|--internal | remove NAME | list   a host's extra addresses (an IP of type Host reserves one)
   kvoadm admins [list] | add NAME KEY.pub… | remove NAME | sync [--dry-run]
   kvoadm kvo [--cluster NAME] ARGS…   any kvo command, as the cluster's admin (kvo's own context is a plain user)
   kvoadm store migrate [USER@]ADDRESS --ssh-key PATH
@@ -195,7 +196,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
   kvoadm reset HOST|[USER@]ADDRESS [--ssh-key PATH] [--host-key SHA256:…] [--dry-run] [--yes] [--force] [--wipe-storage]
   kvoadm plugin install [USER@]ADDRESS --name NAME --binary PATH [--cluster-secret NAME]… [--side controller|node]
   kvoadm plugin remove [USER@]ADDRESS --name NAME
-  kvoadm ingress install [--class public] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --lb-class CLASS] [--host NAME=NAMESPACE[,NAMESPACE]]… [--image REF] [--option K=V]…
+  kvoadm ingress install [--class public] [--driver nginx|caddy|kong] [--public] [--host-port internal|external | --provider PROVIDER] [--host NAME=NAMESPACE[,NAMESPACE]]… [--image REF] [--option K=V]…
   kvoadm ingress assign CLASS --host NAME=NAMESPACE[,NAMESPACE]…
   kvoadm restore status [--cluster NAME]
   kvoadm restore settle SILO -n NS --to HOST [--cluster NAME]

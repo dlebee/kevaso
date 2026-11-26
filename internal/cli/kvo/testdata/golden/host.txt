@@ -1,9 +1,34 @@
-NAME   INTERNAL IP   EXTERNAL IP    REGION       COMPONENTS             RUNTIMES                                   AGE
-hv1    10.0.0.5      203.0.113.10   ca-central   control-plane,worker   cloud-hypervisor:Ready,docker:Installing   <age>
+NAME          INTERNAL IP   EXTERNAL IP    REGION       COMPONENTS             RUNTIMES                                   AGE
+baremetal-1   10.0.0.6      203.0.113.20   ca-central   worker                 cloud-hypervisor                           <age>
+hv1           10.0.0.5      203.0.113.10   ca-central   control-plane,worker   cloud-hypervisor:Ready,docker:Installing   <age>
 
-NAME   INTERNAL IP   EXTERNAL IP    REGION       COMPONENTS             RUNTIMES                                   AGE
-hv1    10.0.0.5      203.0.113.10   ca-central   control-plane,worker   cloud-hypervisor:Ready,docker:Installing   <age>
+NAME          INTERNAL IP   EXTERNAL IP    REGION       COMPONENTS             RUNTIMES                                   AGE
+baremetal-1   10.0.0.6      203.0.113.20   ca-central   worker                 cloud-hypervisor                           <age>
+hv1           10.0.0.5      203.0.113.10   ca-central   control-plane,worker   cloud-hypervisor:Ready,docker:Installing   <age>
 
+Name:               baremetal-1
+Labels:             -
+Created:            YYYY-MM-DD hh:mm:ss (<age> ago)
+Internal IP:        10.0.0.6
+External IP:        203.0.113.20
+Mesh IP:            -
+Names answered on:  its silos and the mesh
+Region:             ca-central
+Zone:               -
+Components:         worker
+Worker labels:      -
+Taints:             -
+Allocatable:        0 CPU, - memory
+Addresses:
+  NAME    KIND      ADDRESS       RESERVED BY
+  (main)  external  203.0.113.20  used by mail/smtp (webmail) (worker: external)
+  (main)  internal  10.0.0.6      -
+  mail    external  203.0.113.21  ip mail/mail, used by silo/smtp (25/TCP)
+  spare   internal  10.0.0.66     - (free: an IP with type: Host, hostAddress: spare reserves it)
+Runtimes:
+  NAME              STATE  VERSION  MESSAGE
+  cloud-hypervisor  -      -        -
+---
 Name:               hv1
 Labels:             -
 Created:            YYYY-MM-DD hh:mm:ss (<age> ago)
@@ -18,6 +43,10 @@ Worker labels:      -
 Taints:             gpu=yes:NoSchedule
 Allocatable:        3 CPU, 4886Mi memory
 Last heartbeat:     <age> ago
+Addresses:
+  NAME    KIND      ADDRESS       RESERVED BY
+  (main)  external  203.0.113.10  used by demo/hello (api) (worker: external)
+  (main)  internal  10.0.0.5      -
 Runtimes:
   NAME              STATE       VERSION  MESSAGE
   cloud-hypervisor  Ready       v54.1    -

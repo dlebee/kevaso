@@ -39,6 +39,11 @@
 //	kvo pane bundle PANE -o FILE               save an HTML pane's bundle (for the panes app)
 //	kvo approve NAME [--request ID] | kvo deny NAME [--reason R]   answer one (approve on that secret;
 //	        people only); a yes is for the request ID read in kvo get approvals
+//	kvo create ip NAME --type Host --host-address NAME   keep one of a host's extra addresses (pinned to it)
+//	kvo create ip NAME --type Provider --provider P --region R   keep a provider's IP (follows its silo there)
+//	kvo get ips | ipsets; kvo describe ip|ipset NAME; kvo delete ip NAME   (refused while a silo uses it)
+//	        a silo uses one in a service: type: HostPort, hostPort: { ip: NAME } (or { worker: external|internal },
+//	        { own: true } in a SiloSet); type: LoadBalancer, loadBalancer: { provider: P }
 //	kvo plugin search|install|list|upgrade|remove|index …   client plugins; kvo NAME runs one (plugins.go)
 //
 // The cluster comes from --server or $KVO_SERVER (plain HTTP, for `kevasod dev`), otherwise from the
@@ -527,7 +532,7 @@ func apply(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdou
 	for _, doc := range docs {
 		obj, k, err := v1.DecodeStrict(doc)
 		if err != nil {
-			return err
+			return networkingHint(err)
 		}
 		if k, err = objectKind(ctx, c, obj, k); err != nil {
 			return err
@@ -810,6 +815,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 		head = append(head, "TYPE", "CLUSTER IP", "LOAD-BALANCER IP", "PORTS", "ENDPOINTS")
 	case "IP":
 		head = append(head, ipHead...)
+	case "IPSet":
+		head = append(head, ipsetHead...)
 	case "VMImage":
 		head = append(head, "VERSIONS", "DISK")
 	case "Approval":
@@ -946,6 +953,8 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			row = append(row, typ, dash(o.Status.ClusterIP), dash(o.Status.LoadBalancerIP), strings.Join(ps, ","), fmt.Sprint(len(o.Status.Endpoints)))
 		case *v1.IP:
 			row = append(row, ipRow(o)...)
+		case *v1.IPSet:
+			row = append(row, ipsetRow(o)...)
 		case *v1.VMImage:
 			var vs []string
 			for _, v := range o.Spec.Versions {
@@ -995,7 +1004,7 @@ func del(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdout 
 		pre.ConfirmOff = true
 	}
 	if err := c.Delete(ctx, k.Kind, ns, o.args[1], pre); err != nil {
-		return err
+		return deleteRefusal(k.Kind, err)
 	}
 	_, _ = fmt.Fprintf(stdout, "%s/%s deleted\n", strings.ToLower(k.Kind), o.args[1])
 	return nil

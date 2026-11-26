@@ -61,6 +61,13 @@ func EditAddresses(cur []v1.HostAddress, op string, args []string) ([]v1.HostAdd
 	return nil, fmt.Errorf("unknown addresses command %q: add, remove or list", op)
 }
 
+// addressesUsage is the command's forms, and how an IP then reserves an address.
+const addressesUsage = `host addresses HOST add NAME ADDRESS --external|--internal | remove NAME | list
+an IP in a namespace then reserves one by name, and a silo uses that IP:
+  kind: IP
+  spec: { type: Host, hostAddress: NAME }      # or: kvo create ip IPNAME --type Host --host-address NAME
+  services: [{ name: mail, type: HostPort, hostPort: { ip: IPNAME }, ports: [{ port: smtp }] }]`
+
 func hostAddresses(ctx context.Context, args []string, out io.Writer) error {
 	kctx := ""
 	var rest []string
@@ -73,15 +80,39 @@ func hostAddresses(ctx context.Context, args []string, out io.Writer) error {
 		rest = append(rest, args[i])
 	}
 	if len(rest) < 2 {
-		return errors.New("host addresses HOST add NAME ADDRESS --external|--internal | remove NAME | list")
+		return errors.New(addressesUsage)
 	}
-	name, op, more := rest[0], rest[1], rest[2:]
 	c, _, err := adminClient(kctx)
 	if err != nil {
 		return err
 	}
+	return editHostAddresses(ctx, c, rest[0], rest[1], rest[2:], out)
+}
+
+// editHostAddresses is kvoadm host addresses HOST OP ARGS… on the cluster c.
+func editHostAddresses(ctx context.Context, c *client.Client, name, op string, more []string, out io.Writer) error {
 	if op == "list" {
+		if len(more) > 0 {
+			return errors.New("addresses list takes no arguments: " + addressesUsage)
+		}
 		return listHostAddresses(ctx, c, name, out)
+	}
+	if op != "add" && op != "remove" {
+		return fmt.Errorf("unknown addresses command %q\n%s", op, addressesUsage)
+	}
+	if op == "remove" && len(more) == 1 {
+		ips, err := hostIPs(ctx, c)
+		if err != nil {
+			return err
+		}
+		if x := reserving(ips, more[0]); x != nil {
+			who := "no silo uses it now"
+			if x.Status.Holder != nil {
+				who = "used by " + x.Status.Holders()
+			}
+			return fmt.Errorf("address %s is reserved by IP %s/%s (%s): it stays until that IP is deleted (kvo delete ip %s -n %s, once nothing uses it)",
+				more[0], x.Namespace, x.Name, who, x.Name, x.Namespace)
+		}
 	}
 	for attempt := 0; ; attempt++ {
 		var h v1.Host
@@ -102,10 +133,43 @@ func hostAddresses(ctx context.Context, args []string, out io.Writer) error {
 			_, _ = fmt.Fprintf(out, "→ %s's extra addresses: %s\n", name, dashOr(strings.Join(names, ", ")))
 			return nil
 		}
-		if !client.IsConflict(err) || attempt > 5 || strings.Contains(err.Error(), "reserved") || strings.Contains(err.Error(), "already") {
-			return err // a reserved or duplicate address (Conflict, saying which) isn't worth retrying
+		var e *client.Error
+		if client.IsConflict(err) && errors.As(err, &e) && (strings.Contains(e.Message, "reserved") || strings.Contains(e.Message, "already") || strings.Contains(e.Message, "both")) {
+			return errors.New(e.Message) // a reserved or duplicate address: the server says which
+		}
+		if !client.IsConflict(err) || attempt > 5 {
+			return err
 		}
 	}
+}
+
+// hostIPs are the cluster's IPs of type Host.
+func hostIPs(ctx context.Context, c *client.Client) ([]*v1.IP, error) {
+	l, err := c.List(ctx, "IP", "")
+	if err != nil {
+		return nil, err
+	}
+	var out []*v1.IP
+	for _, raw := range l.Items {
+		obj, _, err := v1.Decode(raw)
+		if err != nil {
+			return nil, err
+		}
+		if x := obj.(*v1.IP); x.Spec.Type == v1.IPTypeHost {
+			out = append(out, x)
+		}
+	}
+	return out, nil
+}
+
+// reserving is the IP reserving the host address named name (nil: it's free).
+func reserving(ips []*v1.IP, name string) *v1.IP {
+	for _, x := range ips {
+		if x.Spec.HostAddress == name {
+			return x
+		}
+	}
+	return nil
 }
 
 func listHostAddresses(ctx context.Context, c *client.Client, name string, out io.Writer) error {
@@ -113,31 +177,26 @@ func listHostAddresses(ctx context.Context, c *client.Client, name string, out i
 	if err := c.Get(ctx, "Host", "", name, &h); err != nil {
 		return err
 	}
-	l, err := c.List(ctx, "IP", "")
+	ips, err := hostIPs(ctx, c)
 	if err != nil {
 		return err
 	}
-	holder := map[string]string{}
-	for _, raw := range l.Items {
-		obj, _, err := v1.Decode(raw)
-		if err != nil {
-			return err
-		}
-		if x := obj.(*v1.IP); x.Spec.Type == v1.IPTypeHost {
-			who := "ip " + x.Namespace + "/" + x.Name
-			if x.Status.Holder != nil {
-				who += " (held by " + x.Status.Holders() + ")"
-			}
-			holder[x.Spec.HostAddress] = who
-		}
-	}
 	tw := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "NAME\tKIND\tADDRESS\tIP")
+	_, _ = fmt.Fprintln(tw, "NAME\tKIND\tADDRESS\tRESERVED BY")
+	_, _ = fmt.Fprintf(tw, "(main)\t%s\t%s\t%s\n", v1.NetworkExternal, dashOr(h.External()), "the worker's (hostPort: { worker: external })")
+	_, _ = fmt.Fprintf(tw, "(main)\t%s\t%s\t%s\n", v1.NetworkInternal, dashOr(h.Internal()), "the worker's (hostPort: { worker: internal })")
 	for _, a := range h.Spec.Addresses {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, a.Kind, a.Address, dashOr(holder[a.Name]))
+		who := "-"
+		if x := reserving(ips, a.Name); x != nil {
+			who = "ip " + x.Namespace + "/" + x.Name
+			if x.Status.Holder != nil {
+				who += ", used by " + x.Status.Holders()
+			}
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, a.Kind, a.Address, who)
 	}
 	if len(h.Spec.Addresses) == 0 {
-		_, _ = fmt.Fprintf(tw, "(none: kvoadm host addresses %s add NAME ADDRESS --external)\n", name)
+		_, _ = fmt.Fprintf(tw, "(no extra addresses: kvoadm host addresses %s add NAME ADDRESS --external)\n", name)
 	}
 	return tw.Flush()
 }

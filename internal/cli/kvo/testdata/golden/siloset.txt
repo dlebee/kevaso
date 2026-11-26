@@ -1,14 +1,28 @@
 NAMESPACE   NAME       IMAGE                                   INSTANCES   READY   UPDATED   AGE
+mail        relay      relay:v1                                2           0/2     0         <age>
 web3        eth-pool   ubuntu-24.04                            2           0/2     0         -
 web3        rpc-pool   docker.io/ethereum/client-go:v1.14.13   3           0/3     0         -
 
 NAMESPACE   NAME       IMAGE                                   INSTANCES   READY   UPDATED   AGE
+mail        relay      relay:v1                                2           0/2     0         <age>
 web3        eth-pool   ubuntu-24.04                            2           0/2     0         -
 web3        rpc-pool   docker.io/ethereum/client-go:v1.14.13   3           0/3     0         -
 
+Name:             relay
+Namespace:        mail
+Labels:           -
+Created:          YYYY-MM-DD hh:mm:ss (<age> ago)
+IPs:              instance i takes member i of ipset relays (hostPort: { own: true }; kvo describe ipset relays)
+Container image:  relay:v1
+Runtime:          docker
+Instances:        2 wanted, 0 ready, 0 on revision -
+Upgrades:         Manual; at most 1 not ready at a time
+Scale-in:         NewestFirst (not ready ones first; protected ones never)
+---
 Name:       eth-pool
 Namespace:  web3
 Labels:     -
+IPs:        instance i takes member i of ipset eth-ips (hostPort: { own: true }; kvo describe ipset eth-ips)
 VM image:   ubuntu-24.04
 Runtime:    cloud-hypervisor
 Instances:  2 wanted, 0 ready, 0 on revision -

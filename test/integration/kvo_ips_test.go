@@ -18,7 +18,7 @@ func TestKvoIPs(t *testing.T) {
 		t.Fatalf("create ip without a type: %d %s", code, errs)
 	}
 	out := h.ok("", "get", "ips", "-n", "demo")
-	for _, want := range []string{"TYPE", "ADDRESS", "WHERE", "HELD-BY", "eth", "Host"} {
+	for _, want := range []string{"TYPE", "ADDRESS", "WHERE", "SET", "USED BY", "MOVES", "eth", "Host", "no: pinned to its host"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("get ips lacks %q:\n%s", want, out)
 		}
@@ -26,7 +26,7 @@ func TestKvoIPs(t *testing.T) {
 	if _, errs, code := h.kvo(t.Context(), "", "ip", "keep", "eth", "-n", "demo"); code == 0 || !strings.Contains(errs, "no keep or release") {
 		t.Fatalf("kvo ip keep: %d %s", code, errs)
 	}
-	if out := h.ok("", "describe", "ip", "eth", "-n", "demo"); !strings.Contains(out, "Host (host address eth-extra)") || !strings.Contains(out, "Held by:") {
+	if out := h.ok("", "describe", "ip", "eth", "-n", "demo"); !strings.Contains(out, "Host (host address eth-extra)") || !strings.Contains(out, "Used by:") {
 		t.Fatalf("describe ip:\n%s", out)
 	}
 	// A balancer can't answer on a host's address.
@@ -69,7 +69,8 @@ spec:
       ports: [{ port: p2p }]
   network: { egress: { source: { ip: eth-node-1 } } }
 `, "apply", "-f", "-")
-	if out := h.ok("", "describe", "silo", "eth-node-1", "-n", "demo"); !strings.Contains(out, "In and out:") || !strings.Contains(out, "(ip: eth-node-1)") {
+	if out := h.ok("", "describe", "silo", "eth-node-1", "-n", "demo"); !strings.Contains(out, "In and out:") || !strings.Contains(out, "(ip: eth-node-1)") ||
+		!strings.Contains(out, "Can move:") || !strings.Contains(out, "ip: eth-node-1") {
 		t.Fatalf("describe silo:\n%s", out)
 	}
 }
