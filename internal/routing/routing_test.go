@@ -129,3 +129,34 @@ func TestCheckService(t *testing.T) {
 		})
 	}
 }
+
+// Each service decides by its own routeWhen (networking v2): a running service routes while a
+// ready one on the same silo is held, and the silo's line says which one is held.
+func TestPerService(t *testing.T) {
+	s := silo("ready", true, "Running", false)
+	s.Spec.Services = append(s.Spec.Services, v1.SiloService{Name: "metrics", Ports: []v1.ServicePort{{Port: "rpc"}}, RouteWhen: v1.RouteWhenRunning})
+	if routing.ServiceRouted(s, "rpc-0") || !routing.ServiceRouted(s, "metrics") {
+		t.Fatal("the ready service is routed, or the running one held")
+	}
+	if routing.ServiceRouted(s, "nope") {
+		t.Fatal("a service it doesn't have is routed")
+	}
+	if got := routing.HeldServices(s); len(got) != 1 || got[0] != "rpc-0" {
+		t.Fatalf("held %v", got)
+	}
+	r := routing.SiloNamed(s.Name, s.Spec, s.Status)
+	if r.Routed || !strings.HasPrefix(r.Reason, "service rpc-0: not ready") || len(r.Services) != 2 || r.Services[1].Service != "metrics" || !r.Services[1].Routed {
+		t.Fatalf("%+v", r)
+	}
+	if routing.Routed(s) {
+		t.Fatal("the silo's line is routed with a service held")
+	}
+	meta.SetCondition(&s.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "ReadinessPassing"}, t0)
+	if !routing.Routed(s) || len(routing.HeldServices(s)) != 0 {
+		t.Fatal("ready now: every service routed")
+	}
+	one := silo("ready", true, "Running", true)
+	if r := routing.Silo(one.Spec, one.Status); len(r.Services) != 0 {
+		t.Fatalf("one service: no list, %+v", r)
+	}
+}

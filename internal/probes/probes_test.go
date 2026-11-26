@@ -288,9 +288,6 @@ func TestValidate(t *testing.T) {
 		{"routeWhen not stated with readiness", func(s *v1.SiloSpec) { s.Services = []v1.SiloService{{Ports: svc.Ports}} }, "say whether traffic waits"},
 		{"ready without readiness", func(s *v1.SiloSpec) { s.Probes.Readiness = nil }, "ready needs a readiness probe"},
 		{"routeWhen value", func(s *v1.SiloSpec) { s.Services = []v1.SiloService{{Ports: svc.Ports, RouteWhen: "always"}} }, "ready or running"},
-		{"services route the same way", func(s *v1.SiloSpec) {
-			s.Services = []v1.SiloService{svc, {Name: "rpc2", Ports: svc.Ports, RouteWhen: v1.RouteWhenRunning}}
-		}, "a silo's services route the same way"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := good
@@ -310,6 +307,12 @@ func TestValidate(t *testing.T) {
 	// A readiness probe and no service: nothing to route, nothing to state.
 	if errs := probes.Validate(v1.SiloSpec{Probes: &v1.Probes{Readiness: &v1.Probe{Exec: &v1.ExecProbe{Command: []string{"x"}}}}}); len(errs) != 0 {
 		t.Fatalf("no service: %v", errs)
+	}
+	// Each service routes its own way (one readiness gate per service): ready and running together.
+	two := good
+	two.Services = []v1.SiloService{svc, {Name: "rpc2", Ports: svc.Ports, RouteWhen: v1.RouteWhenRunning}}
+	if errs := probes.Validate(two); len(errs) != 0 {
+		t.Fatalf("services routing their own way: %v", errs)
 	}
 	// running with a readiness probe is a statement too.
 	s := good

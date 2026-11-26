@@ -33,7 +33,10 @@ type View struct {
 	Silos    []*v1.Silo
 	Services []*v1.Service
 	Hosts    []*v1.Host
-	Suffix   string // the cluster's last label ("": kevaso)
+	// IPs are the cluster's IPs: a service on an IP (hostPort ip or own) answers with its address
+	// while its silo holds it.
+	IPs    []*v1.IP
+	Suffix string // the cluster's last label ("": kevaso)
 }
 
 // Question is one name, asked by From; Namespace is an asking silo's (its short names).
@@ -193,20 +196,27 @@ func serviceAnswer(svc, ns, network string, v View) Answer {
 		for _, ep := range sv.Status.Endpoints {
 			for _, x := range v.Silos {
 				if x.Namespace == ns && x.Name == ep.Silo {
-					out.IPs = appendNew(out.IPs, siloOn(x, network, v)...)
+					for _, name := range v1.ServiceNames(x) { // a Service's endpoint answers by its HostPort services
+						out.IPs = appendNew(out.IPs, siloOn(x, name, network, v)...)
+					}
 				}
 			}
 		}
 	case s != nil:
 		out.Found = true
-		out.IPs = siloOn(s, network, v)
+		out.IPs = siloOn(s, svc, network, v)
 	}
 	return out
 }
 
-// siloOn is a silo's own service's address on network, if it has one there now.
-func siloOn(s *v1.Silo, network string, v View) []netip.Addr {
-	if len(s.Spec.Services) == 0 || !routing.Routed(s) || s.Status.SiloIP == "" {
+// siloOn is the address on network of the silo's service named svc, if it has one there now
+// (networking v2: each service is its own name, answered only by its own way in and its own
+// routeWhen). On the mesh: the silo IP, for any of its services. Internal or external: a HostPort
+// service's address there, the worker's main IP (hostPort worker) or its IP's (ip, own: a
+// Provider IP is external, a Host IP the kind of its host address), while the silo holds it.
+func siloOn(s *v1.Silo, svc, network string, v View) []netip.Addr {
+	sv, ok := serviceOf(s, svc)
+	if !ok || !routing.ServiceRouted(s, svc) || s.Status.SiloIP == "" {
 		return nil
 	}
 	if network == v1.NetworkMesh {
@@ -215,21 +225,81 @@ func siloOn(s *v1.Silo, network string, v View) []netip.Addr {
 		}
 		return nil
 	}
-	opens := false
-	for _, p := range s.Spec.Open() {
-		opens = opens || p.On(network)
-	}
-	if !opens {
+	if sv.TypeOrDefault() != v1.ServiceHostPort || len(sv.Ports) == 0 {
 		return nil
 	}
-	for _, h := range v.Hosts {
-		if h.Name == s.Status.Host {
-			if a, err := netip.ParseAddr(h.IPOn(network)); err == nil {
-				return []netip.Addr{a}
+	way := sv.Way()
+	if way.Worker != "" {
+		if way.Worker != network {
+			return nil
+		}
+		for _, h := range v.Hosts {
+			if h.Name == s.Status.Host {
+				if a, err := netip.ParseAddr(h.IPOn(network)); err == nil {
+					return []netip.Addr{a}
+				}
+			}
+		}
+		return nil
+	}
+	x := heldIP(s, way, v.IPs)
+	if x == nil || ipNetwork(x, v.Hosts) != network {
+		return nil
+	}
+	if a, err := netip.ParseAddr(x.Status.Address); err == nil {
+		return []netip.Addr{a}
+	}
+	return nil
+}
+
+// serviceOf is the silo's service named name.
+func serviceOf(s *v1.Silo, name string) (v1.SiloService, bool) {
+	for _, sv := range s.Spec.Services {
+		if v1.ServiceNameOf(sv, s.Name) == name {
+			return sv, true
+		}
+	}
+	return v1.SiloService{}, false
+}
+
+// heldIP is the IP a HostPort way on an IP names (ip: by name; own: the set member s holds),
+// when s holds it with an address, on the host s runs on (a Host IP).
+func heldIP(s *v1.Silo, way v1.HostPortSource, ips []*v1.IP) *v1.IP {
+	var best *v1.IP
+	for _, x := range ips {
+		if x.Namespace != s.Namespace || !x.Status.Holds(s.UID) || x.Status.Address == "" {
+			continue
+		}
+		if way.IP != "" && x.Name != way.IP || way.IP == "" && (!way.Own || x.Labels[v1.LabelIPSet] == "") {
+			continue
+		}
+		if x.Spec.Type == v1.IPTypeHost && x.Status.Host != s.Status.Host {
+			continue
+		}
+		if best == nil || x.Name < best.Name {
+			best = x
+		}
+	}
+	return best
+}
+
+// ipNetwork is the network an IP's address is on: a Provider IP's is external; a Host IP's, its
+// host address's kind.
+func ipNetwork(x *v1.IP, hosts []*v1.Host) string {
+	if x.Spec.Type == v1.IPTypeProvider {
+		return v1.NetworkExternal
+	}
+	for _, h := range hosts {
+		if h.Name == x.Status.Host {
+			if ad, ok := h.Address(x.Spec.HostAddress); ok {
+				if ad.Kind == v1.NetworkInternal {
+					return v1.NetworkInternal
+				}
+				return v1.NetworkExternal
 			}
 		}
 	}
-	return nil
+	return ""
 }
 
 func appendNew(l []netip.Addr, more ...netip.Addr) []netip.Addr {

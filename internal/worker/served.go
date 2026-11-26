@@ -29,6 +29,7 @@ type netState struct {
 	classes []*v1.IngressClass
 	svcs    []*v1.Service
 	leases  []*v1.Lease
+	ips     []*v1.IP
 }
 
 // served picks what the network serves from: the caches, or while held the trusted state.
@@ -103,6 +104,7 @@ func stateOf(m map[string][]meta.Object) netState {
 		classes: typed[*v1.IngressClass](m["IngressClass"]),
 		svcs:    typed[*v1.Service](m["Service"]),
 		leases:  typed[*v1.Lease](m["Lease"]),
+		ips:     typed[*v1.IP](m["IP"]),
 	}
 }
 
@@ -118,5 +120,5 @@ func (st netState) me(hostName string) *v1.Host {
 
 // names is the DNS view of the state.
 func (st netState) names() names.View {
-	return names.View{Silos: st.silos, Services: st.svcs, Hosts: st.hosts, Suffix: v1.ClusterSuffix(st.hosts)}
+	return names.View{Silos: st.silos, Services: st.svcs, Hosts: st.hosts, IPs: st.ips, Suffix: v1.ClusterSuffix(st.hosts)}
 }

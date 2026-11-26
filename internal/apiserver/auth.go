@@ -36,7 +36,7 @@ import (
 //   - hosts with role control-plane: everything (they run the controllers), except a mutation in
 //     that reserved namespace, which is a cluster-admin's;
 //   - hosts with role worker: read only what running the silos on them takes
-//     (hack/design/worker-reads.md). Hosts, Silos, Services and IngressClasses, cluster-wide;
+//     (hack/design/worker-reads.md). Hosts, Silos, Services, IngressClasses and IPs, cluster-wide;
 //     Grants, Secrets (never a value), Leases and Ingresses only for a silo placed on them or
 //     moving to or from them; nothing else. They write only their own Host's status and the status
 //     of silos placed on them (they can't move a silo elsewhere), and of the ingress controllers

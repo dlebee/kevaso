@@ -178,8 +178,8 @@ type OpenPort struct {
 	Number   int    // its number in the silo
 	Protocol string // TCP | UDP
 	// HostPort is the worker network it opens on (internal or external), for a HostPort service
-	// on the worker's address; empty otherwise.
-	// TODO(net-v2 wave 2): ports on an IP (ip, own) open on that address, which the agent adds.
+	// on the worker's address; empty otherwise. A port on an IP (Way ip, own) opens on that IP's
+	// address instead, which the worker reads from the IP while the silo holds it there.
 	HostPort []string
 	// LoadBalancer: the port is on the service's balancer.
 	LoadBalancer bool
@@ -275,7 +275,8 @@ func (s SiloSpec) Balancers() []SiloService {
 	return out
 }
 
-// RouteWhen is the silo's routeWhen: what its services say (admission keeps them the same).
+// RouteWhen is the first routeWhen its services state (each service routes by its own: see
+// internal/routing).
 func (s SiloSpec) RouteWhen() string {
 	for _, sv := range s.Services {
 		if sv.RouteWhen != "" {

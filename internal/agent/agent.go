@@ -1234,7 +1234,7 @@ func (a *Agent) gateReset(ctx context.Context, s *v1.Silo, image string, due fun
 		return false, nil // the caller says which gate refused
 	}
 	mutate(&cur.Status)
-	cur.Status.Routing = routing.Silo(cur.Spec, cur.Status)
+	cur.Status.Routing = routing.SiloNamed(cur.Name, cur.Spec, cur.Status)
 	if err := a.Client.UpdateStatus(ctx, &cur); client.IsConflict(err) {
 		return false, nil
 	} else if err != nil {
@@ -1414,7 +1414,7 @@ func (a *Agent) writeStatus(ctx context.Context, s *v1.Silo, mutate func(*v1.Sil
 		before := statusKey(cur.Status)
 		mutate(&cur.Status)
 		if !away { // an away write leaves routing as stored
-			cur.Status.Routing = routing.Silo(cur.Spec, cur.Status)
+			cur.Status.Routing = routing.SiloNamed(cur.Name, cur.Spec, cur.Status)
 		}
 		if statusKey(cur.Status) == before {
 			return nil
@@ -1569,7 +1569,7 @@ func (a *Agent) writeClaim(ctx context.Context, s *v1.Silo, renewal bool) error 
 	removeCondition(&cur.Status, ConditionStartClaim)
 	removeCondition(&cur.Status, fence.ConditionStopped)         // a report of an earlier start: this one isn't stopped
 	cur.Status.Conditions = append(cur.Status.Conditions, claim) // always a change: the write is the claim
-	cur.Status.Routing = routing.Silo(cur.Spec, cur.Status)
+	cur.Status.Routing = routing.SiloNamed(cur.Name, cur.Spec, cur.Status)
 	err := a.Client.UpdateStatus(ctx, &cur) // against cur's resourceVersion: applies only if nothing changed it
 	if client.IsConflict(err) {
 		return errClaimConflict

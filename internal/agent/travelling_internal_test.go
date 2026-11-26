@@ -610,7 +610,7 @@ func TestAnAwayWriteClearsTheMountAndKeepsRouting(t *testing.T) {
 	if err := admin.Get(ctx, "Silo", "dev", "web", &cur); err != nil {
 		t.Fatal(err)
 	}
-	if cur.Status.Routing == nil || *cur.Status.Routing != want {
+	if cur.Status.Routing == nil || !reflect.DeepEqual(*cur.Status.Routing, want) {
 		t.Fatalf("the placement rewrote routing: %+v", cur.Status.Routing)
 	}
 

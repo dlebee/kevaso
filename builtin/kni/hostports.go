@@ -32,7 +32,7 @@ func hostPortOwners(local []Silo, h Host) map[hpKey]string {
 		if !s.IP.IsValid() || s.HostPortsRefused {
 			continue
 		}
-		for _, p := range s.Spec.Open() {
+		for _, p := range s.open() {
 			if !okPort(p.Number) || !okPort(p.HostNumber()) || !okProto(lower(p.Protocol)) {
 				continue
 			}
@@ -40,14 +40,7 @@ func hostPortOwners(local []Silo, h Host) map[hpKey]string {
 				continue
 			}
 			proto, at := lower(p.Protocol), p.HostNumber()
-			for _, n := range p.HostPort {
-				a := h.InternalIP
-				if n == v1.NetworkExternal {
-					a = h.ExternalIP
-				}
-				if !a.IsValid() {
-					continue
-				}
+			for _, a := range hostAddrs(h, s, p) {
 				k := hpKey{a.String(), proto, at}
 				if want[k] == nil {
 					want[k] = map[string]bool{}

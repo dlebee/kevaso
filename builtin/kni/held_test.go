@@ -41,7 +41,7 @@ func TestHeldPorts(t *testing.T) {
 			s := base
 			s.Held, s.Closed = c.held, c.closed
 			for _, p := range []string{"rpc", "debug"} {
-				open, cut := Outside(s, p)
+				open, cut := Outside(s, "rpc", p)
 				wantOpen := !c.held && !contains(c.closed, p)
 				if open != wantOpen || cut != contains(c.closed, p) {
 					t.Errorf("Outside(%s): open %v cut %v", p, open, cut)

@@ -57,11 +57,17 @@ type Silo struct {
 	// (allowFrom) is never leased.
 	Leased []string
 	Closed []string
-	// Held (design §0.6): its service's routeWhen holds traffic back now (ready, and it isn't).
-	// Its outside ports and node ports get no rule, as if closed, but nothing is cut: connections
-	// it has stay (a lease is access, readiness is load). allowFrom stays too: the name is held
-	// where names are answered (no address).
-	Held bool
+	// Held (design §0.6): routeWhen holds traffic back now (ready, and it isn't) for every one of
+	// its services; HeldServices for those named (networking v2: each service has its own gate).
+	// A held service's outside ports and node ports get no rule, as if closed, but nothing is cut:
+	// connections it has stay (a lease is access, readiness is load). allowFrom stays too: the
+	// name is held where names are answered (no address).
+	Held         bool
+	HeldServices []string
+	// Addrs are where its HostPort services on an IP (hostPort ip or own) open, by service name:
+	// that IP's address, only while the silo holds it and it is on this host. A service missing
+	// here opens nothing (its IP is elsewhere, or not yet held).
+	Addrs map[string]netip.Addr
 	// HostPortsRefused: the controller's HostPorts condition is False. Another silo holds a host
 	// port this one asks for, so none of its host-port rules are emitted. A load balancer it has
 	// is unaffected. The zero value emits rules, which is what a silo with no such condition does.
@@ -127,14 +133,50 @@ func validIfname(n string) bool {
 	return true
 }
 
-// Outside is what one outside port's rule is now: open (a rule) only when its lease, if
-// it's leased, is open and its routing isn't held; cut (end what a lease let in) only when its
-// lease is closed. The two decisions stay apart: either one closes it.
-func Outside(s Silo, port string) (open, cut bool) {
+// Outside is what one outside port's rule is now, in the service named service: open (a rule)
+// only when its lease, if it's leased, is open and that service's routing isn't held; cut (end
+// what a lease let in) only when its lease is closed. The two decisions stay apart: either one
+// closes it.
+func Outside(s Silo, service, port string) (open, cut bool) {
 	if contains(s.Closed, port) {
 		return false, true
 	}
-	return !s.Held, false
+	return !s.Held && !contains(s.HeldServices, service), false
+}
+
+// name is the silo's name (its key's after the namespace).
+func (s Silo) name() string {
+	if i := strings.IndexByte(s.Key, '/'); i >= 0 {
+		return s.Key[i+1:]
+	}
+	return s.Key
+}
+
+// open are its services' ports, each with its service's name.
+func (s Silo) open() []v1.OpenPort { return s.Spec.OpenIn(s.name()) }
+
+// hostAddrs are the addresses on this host a HostPort port opens on: the host's internal and/or
+// external IP (worker), or its IP's address here (ip, own; none while it isn't). Valid IPv4 only.
+func hostAddrs(h Host, s Silo, p v1.OpenPort) []netip.Addr {
+	if p.Type != v1.ServiceHostPort {
+		return nil
+	}
+	var out []netip.Addr
+	for _, n := range p.HostPort {
+		a := h.InternalIP
+		if n == v1.NetworkExternal {
+			a = h.ExternalIP
+		}
+		if a.IsValid() {
+			out = append(out, a)
+		}
+	}
+	if p.Way.IP != "" || p.Way.Own {
+		if a := s.Addrs[p.Service]; a.Is4() && !a.IsUnspecified() {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // Service is a standalone Service as the rules need it (design §7.1): its virtual IP, sent to its
@@ -171,8 +213,11 @@ type Host struct {
 	// there). A host port opens on the ones its service port asks for.
 	InternalIP netip.Addr
 	ExternalIP netip.Addr
-	Local      []Silo // silos on this host
-	All        []Silo // every silo in the cluster with an address, to resolve allowFrom sources
+	// OwnIPs are the host's other addresses (its named extra addresses, the IPs its silos hold
+	// here): like its main ones, no silo reaches the host on them, whatever a grant says.
+	OwnIPs []netip.Addr
+	Local  []Silo // silos on this host
+	All    []Silo // every silo in the cluster with an address, to resolve allowFrom sources
 	// GatePort is where the egress gate listens on the gateway (0: no gate).
 	GatePort int
 	// Endpoint is the silos' local endpoint's address on the bridge (invalid: none): reached on
@@ -221,7 +266,7 @@ func closedRangeDrops(h Host) []string {
 func hostAddressDrops(h Host) []string {
 	var addrs []string
 	seen := map[netip.Addr]bool{}
-	for _, a := range []netip.Addr{h.InternalIP, h.ExternalIP} {
+	for _, a := range append([]netip.Addr{h.InternalIP, h.ExternalIP}, h.OwnIPs...) {
 		if a.IsValid() && a.Is4() && !a.IsUnspecified() && !seen[a] {
 			seen[a] = true
 			addrs = append(addrs, a.String())
@@ -417,7 +462,7 @@ func Generate(h Host) (string, []Problem) {
 		// Outside ports: DNAT from each address the port opens on (the host's internal and/or
 		// external IP, its load-balancer address), at its number there (as), then let through
 		// only its sources.
-		for _, p := range s.Spec.Open() {
+		for _, p := range s.open() {
 			if !okPort(p.Number) || !okPort(p.HostNumber()) || !okProto(lower(p.Protocol)) {
 				g.bad("Silo", s.Key, p.Name, fmt.Sprintf("%s %d as %d", p.Protocol, p.Number, p.HostNumber()), "not a port the rules can open")
 				continue
@@ -425,9 +470,10 @@ func Generate(h Host) (string, []Problem) {
 			proto, at := lower(p.Protocol), p.HostNumber()
 			var ips []string
 			hostWhy := ""
-			if len(p.HostPort) > 0 && s.HostPortsRefused { // its HostPorts condition is false: it does not hold the port
+			onHost := p.Type == v1.ServiceHostPort
+			if onHost && s.HostPortsRefused { // its HostPorts condition is false: it does not hold the port
 				hostWhy = "its HostPorts condition is false, so its host ports are not opened"
-			} else if len(p.HostPort) > 0 {
+			} else if onHost {
 				if why := reservedWhy(h, at); why != "" { // a number the platform listens on is not opened, whatever the spec says
 					hostWhy = why + ", which a silo may not take"
 				}
@@ -435,16 +481,12 @@ func Generate(h Host) (string, []Problem) {
 			if hostWhy != "" {
 				g.bad("Silo", s.Key, p.Name, fmt.Sprintf("%s/%d", proto, at), hostWhy)
 			}
-			for _, n := range p.HostPort {
+			if onHost && hostWhy == "" && (p.Way.IP != "" || p.Way.Own) && !s.Addrs[p.Service].Is4() {
+				g.bad("Silo", s.Key, p.Name, fmt.Sprintf("%s/%d on %s", proto, at, p.Way), "that IP isn't held by this silo on this host (yet), so it is not opened")
+			}
+			for _, a := range hostAddrs(h, s, p) {
 				if hostWhy != "" {
 					break
-				}
-				a := h.InternalIP
-				if n == v1.NetworkExternal {
-					a = h.ExternalIP
-				}
-				if !a.IsValid() {
-					continue
 				}
 				owner, claimed := portOwners[hpKey{a.String(), proto, at}]
 				if !claimed || owner != s.Key { // two silos ask and it is not settled which one holds it
@@ -464,7 +506,7 @@ func Generate(h Host) (string, []Problem) {
 			orig := "ct original ip daddr " + set(ips)
 			// Leased with no lease now: no rule; cut what a lease let in. Held by routing: no
 			// rule, nothing cut.
-			open, closed := Outside(s, p.Name)
+			open, closed := Outside(s, p.Service, p.Name)
 			if closed {
 				cut = append(cut, cutRules(h.Bridge, s.IP, proto, p.Number, orig)...)
 				continue
@@ -487,9 +529,11 @@ func Generate(h Host) (string, []Problem) {
 		ranges, shut := g.v4Ranges("Silo", s.Key, nodePortNames(s.NodePorts), s.SourceRanges)
 		if len(s.NodePorts) > 0 && len(ranges) > 0 && !shut {
 			protos := map[string]string{}
-			for _, p := range s.Spec.Open() {
+			lbs := map[string][]string{} // port → the LoadBalancer services it is in
+			for _, p := range s.open() {
 				if p.LoadBalancer {
 					protos[p.Name] = lower(p.Protocol)
+					lbs[p.Name] = append(lbs[p.Name], p.Service)
 				}
 			}
 			src := "ip saddr " + set(ranges) + " "
@@ -502,7 +546,11 @@ func Generate(h Host) (string, []Problem) {
 					g.bad("Silo", s.Key, np.Name, fmt.Sprintf("%d from node port %d", np.Port, np.NodePort), "not a port the rules can open")
 					continue
 				}
-				open, closed := Outside(s, np.Name)
+				open, closed := false, false
+				for _, svc := range lbs[np.Name] { // open while one balancer's service in front of it routes
+					o, c := Outside(s, svc, np.Name)
+					open, closed = open || o, closed || c
+				}
 				if closed {
 					cut = append(cut, cutRules(h.Bridge, s.IP, proto, np.Port, fmt.Sprintf("ct original proto-dst %d", np.NodePort))...)
 					continue
@@ -567,7 +615,7 @@ func Generate(h Host) (string, []Problem) {
 		}
 		// allowFrom: other silos, by their current address, to the port that names them.
 		ns := strings.SplitN(s.Key, "/", 2)[0]
-		for _, p := range s.Spec.Open() {
+		for _, p := range s.open() {
 			if !okPort(p.Number) || !okProto(lower(p.Protocol)) {
 				continue // reported with its outside rules
 			}
@@ -642,6 +690,8 @@ func Generate(h Host) (string, []Problem) {
 		cut = append(cut, inet...)
 		brCut = append(brCut, bridge...)
 	}
+	// A port in several services gives the same rule more than once: each once, in order.
+	dnat, fwd, br, cut = once(dnat), once(fwd), once(br), once(cut)
 
 	var b strings.Builder
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
@@ -774,6 +824,19 @@ func Generate(h Host) (string, []Problem) {
 		w("delete table %s", old)
 	}
 	return b.String(), g.problems
+}
+
+// once is rules without a repeat, the first of each kept in place.
+func once(rules []string) []string {
+	seen := map[string]bool{}
+	out := rules[:0:0]
+	for _, r := range rules {
+		if !seen[r] {
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // nodePortNames is the port the node-port rules belong to, for a report ("" when several).

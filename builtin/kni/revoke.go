@@ -175,7 +175,7 @@ func flowsOf(h Host) map[flow]bool {
 		if i := strings.IndexByte(s.Key, '/'); i >= 0 {
 			ns = s.Key[:i]
 		}
-		for _, p := range s.Spec.Open() {
+		for _, p := range s.open() {
 			proto := lower(p.Protocol)
 			if !okPort(p.Number) || !okProto(proto) {
 				continue

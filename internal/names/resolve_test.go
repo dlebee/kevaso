@@ -3,6 +3,7 @@ package names
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
@@ -198,7 +199,6 @@ func TestOwnerAndHolder(t *testing.T) {
 // Each of a silo's services is its own name (networking v2): a name answers on the networks its
 // own service opens on, not on those another service of the same silo opens on.
 func TestResolvePerService(t *testing.T) {
-	t.Skip("TODO(net-v2 wave 2): names.siloOn answers by every service of the silo, not the one named")
 	ovh := &v1.Host{ObjectMeta: meta.ObjectMeta{Name: "ovh-1"}, Spec: v1.HostSpec{InternalIP: "10.0.0.5", ExternalIP: "51.38.10.20"}}
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "api-blue", Namespace: "payments"}}
 	s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 8080}, {Name: "https", Port: 8443}, {Name: "metrics", Port: 9090}}
@@ -231,5 +231,69 @@ func TestResolvePerService(t *testing.T) {
 		if got := strings.Join(ips, " "); !a.Found || got != c.want {
 			t.Errorf("%s asks %s: %v %q, want %q", c.from, c.name, a.Found, got, c.want)
 		}
+	}
+}
+
+// A HostPort service on an IP answers with that IP's address, on the network the address is on,
+// while its silo holds it; and each service has its own readiness gate.
+func TestResolveServiceOnAnIP(t *testing.T) {
+	h := &v1.Host{ObjectMeta: meta.ObjectMeta{Name: "metal-1"}, Spec: v1.HostSpec{ExternalIP: "51.38.10.20", InternalIP: "10.0.0.5",
+		Addresses: []v1.HostAddress{{Name: "mail", Kind: v1.NetworkExternal, Address: "51.38.10.21"}, {Name: "back", Kind: v1.NetworkInternal, Address: "10.0.0.21"}}}}
+	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "mx", Namespace: "mail", UID: "u-mx"}}
+	s.Spec.Ports = []v1.SiloPort{{Name: "smtp", Port: 2525}, {Name: "admin", Port: 9000}}
+	s.Spec.Probes = &v1.Probes{Readiness: &v1.Probe{TCP: &v1.TCPProbe{Port: "smtp"}}}
+	s.Spec.Services = []v1.SiloService{
+		{Name: "smtp", Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{IP: "mail"}, Ports: []v1.ServicePort{{Port: "smtp", As: 25}}, RouteWhen: v1.RouteWhenReady},
+		{Name: "admin", Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{IP: "back"}, Ports: []v1.ServicePort{{Port: "admin"}}, RouteWhen: v1.RouteWhenRunning},
+	}
+	s.Status.Host, s.Status.SiloIP, s.Status.Phase = "metal-1", "10.64.2.7", "Running"
+	meta.SetCondition(&s.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionTrue, Reason: "ReadinessPassing"}, time.Now())
+	ip := func(name, addr, holder string) *v1.IP {
+		x := &v1.IP{ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "mail"}, Spec: v1.IPSpec{Type: v1.IPTypeHost, HostAddress: name}}
+		x.Status.Address, x.Status.Host = addr, "metal-1"
+		if holder != "" {
+			x.Status.Holder = &v1.IPHolder{Holder: "silo/mx", UID: holder}
+		}
+		return x
+	}
+	v := View{Silos: []*v1.Silo{s}, Hosts: []*v1.Host{h}, IPs: []*v1.IP{ip("mail", "51.38.10.21", "u-mx"), ip("back", "10.0.0.21", "u-mx")}}
+	ask := func(name string, from Asker) string {
+		a := Resolve(Question{Name: name, From: from, Namespace: "mail"}, v)
+		var ips []string
+		for _, x := range a.IPs {
+			ips = append(ips, x.String())
+		}
+		return strings.Join(ips, " ")
+	}
+	for _, c := range []struct {
+		name string
+		from Asker
+		want string
+	}{
+		{"smtp.mail.external.kevaso", FromHost, "51.38.10.21"},
+		{"smtp.mail.internal.kevaso", FromHost, ""},
+		{"smtp.mail.kevaso", FromOutside, "51.38.10.21"},
+		{"admin.mail.internal.kevaso", FromHost, "10.0.0.21"},
+		{"admin.mail.external.kevaso", FromHost, ""},
+		{"admin.mail.kevaso", FromNetwork, "10.0.0.21"},
+		{"smtp.mail.kevaso", FromSilo, "10.64.2.7"},
+	} {
+		if got := ask(c.name, c.from); got != c.want {
+			t.Errorf("%s asks %s: %q, want %q", c.from, c.name, got, c.want)
+		}
+	}
+	// Held by another silo: no address.
+	v.IPs[0] = ip("mail", "51.38.10.21", "u-other")
+	if got := ask("smtp.mail.external.kevaso", FromHost); got != "" {
+		t.Errorf("another silo's IP answers: %q", got)
+	}
+	v.IPs[0] = ip("mail", "51.38.10.21", "u-mx")
+	// Not ready: the ready service has no address, the running one still does.
+	meta.SetCondition(&s.Status.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "NotReady"}, time.Now())
+	if got := ask("smtp.mail.external.kevaso", FromHost); got != "" {
+		t.Errorf("a held service answers: %q", got)
+	}
+	if got := ask("admin.mail.internal.kevaso", FromHost); got != "10.0.0.21" {
+		t.Errorf("the running service is held with the other: %q", got)
 	}
 }
