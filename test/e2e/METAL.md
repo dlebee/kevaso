@@ -255,6 +255,7 @@ go test -tags metal -run '^TestMetal2' -v -count=1 -timeout 4h ./test/e2e/ 2>&1 
 | TestMetal2Fence | machine 2 cut off from the system node (nftables table `kvt-cut` on machine 2, traffic to and from machine 1 only, never port 22): the fence stops only the `Recreate` silo; the control plane starts it on machine 1; `--confirm-fenced`; one copy of everything once the cut is lifted | nothing |
 | TestMetal2HostLoss | machine 2 rebooted while it holds silos: the `Recreate` one moves, the `Wait` ones come back with their data | nothing |
 | TestMetal2Ingress | nginx on machine 1 serving a silo that runs on machine 2 | 80, 443 on machine 1 |
+| TestMetal2NetV2 | networking v2: `kvoadm host addresses` add/list/remove (refused while an IP reserves one); an `IP` of type Host; `hostPort: { ip }` answers on that address only, pins the silo (`Can move: no: pinned to …`, a move refused); `egress.source: { ip }` leaves from it; Internal (allowFrom) and HostPort services on one silo; `worker: external` on machine 2; readiness and DNS per service; a Static `IPSet` of host addresses for a SiloSet with `own: true`; `kvo delete namespace` asking at a terminal, its steps in order, nothing left | 18301, 18302 on machine 2; 18300, 18303 only on the private addresses; UDP 4799 between the machines |
 
 ## The reset
 
@@ -370,8 +371,12 @@ release), the Ubuntu archive and, with `KEVASO_METAL_HOSTNAME` set, Let's Encryp
   stopped. The owner's setup (a cloud VM as system node, this machine as its only worker) is
   described in `metal_linode_test.go` and belongs in the provider repository, next to its
   machine helpers.
-- **Load balancers and the `IP` kind**: no provider plugin on bare metal, and a Host IP needs an
-  extra routed address (a host address) the machine may not have.
+- **Load balancers and Provider IPs**: no provider plugin on bare metal. IPs of type Host are
+  covered by TestMetal2NetV2, on private addresses: the lab machines have no second public
+  address. The test links the two machines with a VXLAN (`kvtlab0`, UDP 4799 between their
+  external IPs) and routes each extra address to the machine that holds it, so the other machine
+  is the outside client. A machine with a routed public address (a failover IP) would prove the
+  same thing for an `--external` host address from the internet; that run hasn't happened.
 - **The DNS-01 solver and Let's Encrypt production.** Certificates are HTTP-01 against staging
   only, and only with a hostname. Never production in a test.
 - **The 1:1 NAT case** (external IP not on any interface): refused at setup, because it is known

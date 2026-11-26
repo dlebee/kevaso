@@ -12,7 +12,7 @@ for linux and darwin (`make vet-tags`), so tagged code cannot rot, but compiling
 |---|---|---|---|
 | `e2e` | Lima VMs on macOS, or a Linux machine with SSH access to its test machines | 20 | 1 |
 | `metal` | bare metal (test/e2e/METAL.md) | 10 | 0 |
-| `metal` | two bare-metal machines (test/e2e/METAL.md) | 47 | 0 |
+| `metal` | two bare-metal machines (test/e2e/METAL.md) | 48 | 0 |
 | `metal` | one bare-metal machine (test/e2e/METAL.md) | 31 | 0 |
 
 CI's `e2e` job (ubuntu-latest, KVM, no SSH to itself) runs the tests in `test/e2e/ci-expected.txt`, and
@@ -87,6 +87,7 @@ fails when any of them reports SKIP (`hack/skipbudget`). Every other tagged test
 | TestMetal2Upgrade | test/e2e/metal2_more_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
 | TestMetal2EgressByNameRefusesPrivate | test/e2e/metal2_n3_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
 | TestMetal2InjectCutOff | test/e2e/metal2_n3cut_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
+| TestMetal2NetV2 | test/e2e/metal2_netv2_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
 | TestMetal2OpenShellExperiment | test/e2e/metal2_osexp_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
 | TestMetal2Drain | test/e2e/metal2_tests_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
 | TestMetal2Fence | test/e2e/metal2_tests_test.go | two bare-metal machines (test/e2e/METAL.md) | skips |
