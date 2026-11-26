@@ -505,8 +505,9 @@ type SiloStatus struct {
 	// says it has stopped it and let go of its volumes, the new host starts nothing, so two copies
 	// never run. Empty when no move is under way, or when the old host was lost and fenced.
 	MovingFrom string `json:"movingFrom,omitempty"`
-	// Movable says where the silo could go with its data, from its storage: Pinned (HOST),
-	// Region (R), Anywhere; or Recreate when only a fresh copy can go elsewhere.
+	// Movable says whether and where the silo can move, from its storage and its ways in
+	// (scheduler.Movable): "yes: any worker", "yes: within PROVIDER/REGION (IP NAME)",
+	// "no: pinned to HOST (why)", "not now: REASON". kvo describe silo prints it as Can move.
 	Movable string `json:"movable,omitempty"`
 	// Probes are its probes' states (design §0.6); Restarts what liveness onFailure: restart did.
 	// StartedAt is when its workload last came up (running, init done): startup's deadline
