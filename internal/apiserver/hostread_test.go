@@ -330,7 +330,7 @@ func TestWorkerReadsOnlyWhatIsOnIt(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.Spec.Ports = []v1.SiloPort{{Name: "debug", Port: 9229}}
-		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "debug", HostPort: []string{v1.NetworkExternal}, Lease: &v1.PortLease{}}}}
+		s.Spec.Services = []v1.SiloService{{Name: silo + "-debug", Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "debug", Lease: &v1.PortLease{}}}}}
 		if err := e.admin.Update(e.ctx, s); err != nil {
 			t.Fatal(err)
 		}
@@ -352,8 +352,7 @@ func TestWorkerReadsOnlyWhatIsOnIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	web.Spec.Ports = append(web.Spec.Ports, v1.SiloPort{Name: "http", Port: 80})
-	web.Spec.Service.Ports = append(web.Spec.Service.Ports, v1.ServicePort{Port: "http"})
-	web.Spec.Service.Name = "web"
+	web.Spec.Services = append(web.Spec.Services, v1.SiloService{Name: "web", Ports: []v1.ServicePort{{Port: "http"}}})
 	if err := e.admin.Update(e.ctx, web); err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +369,7 @@ func TestWorkerReadsOnlyWhatIsOnIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	far.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 80}}
-	far.Spec.Service = &v1.SiloService{Name: "far", Ports: []v1.ServicePort{{Port: "http"}}}
+	far.Spec.Services = []v1.SiloService{{Name: "far", Ports: []v1.ServicePort{{Port: "http"}}}}
 	if err := e.admin.Update(e.ctx, far); err != nil {
 		t.Fatal(err)
 	}

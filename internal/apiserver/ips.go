@@ -3,78 +3,62 @@ package apiserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/ips"
+	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/rbac"
 	"kevaso.com/core/internal/store"
 )
 
-// IP objects (design §7.2c-1) at admission. A guard, so it runs on the object as stored (after
-// mutation policies):
-//   - naming an IP (a silo's loadBalancer.ip or egress.ip, a Service's loadBalancerIP) needs use on
-//     ips/NAME, like a secret, the first time an object names it, and its class must be the
-//     service's; on any IP a service would be on (named, or the namespace's default for its class),
-//     a port another holder has there is refused, saying who has it, and so is an exclusive address
-//     (one host's at a time) someone else holds;
-//   - egress.source sameAsService is refused for a class whose address is on no host (a balancer
-//     in front), when the class is known (otherwise the silo says so and it's never applied);
-//   - an IP's class, and its placement once it has an address, never change (one of a class that
-//     can't reserve gets its address from the balancer when a service first holds it);
-//   - a host's extra addresses in use by an IP stay, and no address is routed to two hosts.
+// IP objects at admission (networking v2). A guard, so it runs on the object as stored (after
+// mutation policies), reading the store for what the pure checks can't see:
+//   - naming an IP (hostPort.ip, loadBalancer.ip, egress.source.ip, a Service's loadBalancer.ip)
+//     needs use on ips/NAME, like a secret, the first time an object names it; a SiloSet's
+//     spec.ips needs use on ipsets/NAME;
+//   - a balancer's kept IP (loadBalancer.ip) is a Provider IP of the balancer's provider (and
+//     checkProviders: only where the provider lets a kept IP front a balancer);
+//   - the Host IPs a silo names are all one host's (each is pinned to its host);
+//   - a host's extra addresses have names unique in the cluster, addresses on one host, and the
+//     ones reserved by an IP stay.
 //
-// Deleting a bound IP is refused in delete (checkDeleteIP).
+// An IP that doesn't exist yet, or one held by another silo, could work later: the holder waits,
+// and says why. Deleting a held IP is refused in delete (checkDeleteIP).
 
 func (s *Server) checkIPs(ctx context.Context, t target, obj meta.Object) error {
 	if t.status {
 		return nil
 	}
-	classes := s.classMap()
-	excl := func(class string) bool { return class == v1.LBIPPool || classes[class].Exclusive }
 	switch o := obj.(type) {
 	case *v1.Silo:
-		if err := s.checkSameAsService(t, o); err != nil {
-			return err
-		}
-		var named []namedIP
-		if sv := o.Spec.Service; sv != nil && sv.LoadBalancer != nil {
-			class := sv.LoadBalancer.Class
-			if n, way := v1.SiloServiceIP(o, excl(class)); way == v1.IPNamed || way == v1.IPDefault {
-				named = append(named, namedIP{n, class, "service.loadBalancer.ip", way == v1.IPNamed, excl(class), v1.SiloPorts(o)})
+		named := o.Spec.NamedIPs()
+		balancer := map[string]string{} // IP → the provider of the balancer naming it
+		for _, sv := range o.Spec.Balancers() {
+			if sv.LoadBalancer != nil && sv.LoadBalancer.IP != "" {
+				balancer[sv.LoadBalancer.IP] = sv.LoadBalancer.Provider
 			}
 		}
-		if n := o.Spec.Network.Egress.IP; n != "" {
-			named = append(named, namedIP{n, v1.LBIPPool, "network.egress.ip", true, true, nil})
-		}
-		return s.checkNamedIPs(ctx, t, v1.HolderSiloPrefix+o.Name, o.UID, named)
+		return s.checkNamedIPs(ctx, t, named, balancer)
 	case *v1.SiloSet:
-		return s.checkSameAsService(t, o.Instance(0, false))
-	case *v1.Service:
-		class := o.Spec.LoadBalancerClass
-		n, way := v1.ServiceIP(o, excl(class))
-		if way != v1.IPNamed && way != v1.IPDefault {
-			return nil
+		if n := o.Spec.IPs; n != "" {
+			return s.checkUse(ctx, t, "ipsets", n, "IPSet")
 		}
-		return s.checkNamedIPs(ctx, t, v1.HolderServicePrefix+o.Name, o.UID,
-			[]namedIP{{n, class, "spec.loadBalancerIP", way == v1.IPNamed, excl(class), v1.ServicePorts(o)}})
+	case *v1.Service:
+		if l := o.Spec.LoadBalancer; l != nil && l.IP != "" {
+			return s.checkNamedIPs(ctx, t, []v1.NamedIP{{Name: l.IP, Field: "spec.loadBalancer.ip"}}, map[string]string{l.IP: l.Provider})
+		}
 	case *v1.Host:
 		return s.checkHostAddresses(ctx, t, o)
 	}
 	return nil
 }
 
-// namedIP is an IP a service would be on: named (needs use), or its class's default.
-type namedIP struct {
-	name, class, field string
-	named, exclusive   bool
-	ports              []string
-}
-
-// previousIPs are the IP names the stored version of the object already names.
-func (s *Server) previousIPs(ctx context.Context, t target) []string {
+// previousNames are the IP (or IPSet) names the stored version of the object already names.
+func (s *Server) previousNames(ctx context.Context, t target) []string {
 	cur, err := s.store.Get(ctx, t.key())
 	if err != nil {
 		return nil
@@ -85,41 +69,42 @@ func (s *Server) previousIPs(ctx context.Context, t target) []string {
 	}
 	switch o := prev.(type) {
 	case *v1.Silo:
-		var out []string
-		if sv := o.Spec.Service; sv != nil && sv.LoadBalancer != nil && sv.LoadBalancer.IP != "" {
-			out = append(out, sv.LoadBalancer.IP)
-		}
-		if n := o.Spec.Network.Egress.IP; n != "" {
-			out = append(out, n)
-		}
-		return out
+		return v1.SiloIPs(o)
+	case *v1.SiloSet:
+		return []string{o.Spec.IPs}
 	case *v1.Service:
-		return []string{o.Spec.LoadBalancerIP}
+		return []string{o.Spec.LoadBalancerIP()}
 	}
 	return nil
 }
 
-func (s *Server) checkNamedIPs(ctx context.Context, t target, holder, uid string, named []namedIP) error {
+// checkUse: naming resource/name the first time needs use on it.
+func (s *Server) checkUse(ctx context.Context, t target, resource, name, kind string) error {
+	user, isPerson := person(ctx)
+	if !isPerson || s.auth == nil || slices.Contains(s.previousNames(ctx, t), name) {
+		return nil
+	}
+	p, err := s.policy.Policy(ctx)
+	if err != nil {
+		return err
+	}
+	d := p.Authorize(rbac.Attributes{User: user, Groups: GroupsFrom(ctx), Verb: v1.VerbUse, Resource: resource, Namespace: t.namespace, Name: name})
+	if !d.Allowed {
+		return errf(http.StatusForbidden, "Forbidden", "%s may not use %s %s (needs use on %s): %s", user, kind, name, resource, d.Reason)
+	}
+	return nil
+}
+
+func (s *Server) checkNamedIPs(ctx context.Context, t target, named []v1.NamedIP, balancer map[string]string) error {
 	if len(named) == 0 {
 		return nil
 	}
-	had := s.previousIPs(ctx, t)
-	user, isPerson := person(ctx)
-	var p *rbac.Policy
-	if isPerson && s.auth != nil {
-		var err error
-		if p, err = s.policy.Policy(ctx); err != nil {
+	var found []*v1.IP
+	for _, n := range named {
+		if err := s.checkUse(ctx, t, "ips", n.Name, "IP"); err != nil {
 			return err
 		}
-	}
-	for _, n := range named {
-		if p != nil && n.named && !slices.Contains(had, n.name) {
-			d := p.Authorize(rbac.Attributes{User: user, Groups: GroupsFrom(ctx), Verb: v1.VerbUse, Resource: "ips", Namespace: t.namespace, Name: n.name})
-			if !d.Allowed {
-				return errf(http.StatusForbidden, "Forbidden", "%s may not use IP %s (needs use on ips): %s", user, n.name, d.Reason)
-			}
-		}
-		cur, err := s.store.Get(ctx, store.Key{Kind: "IP", Namespace: t.namespace, Name: n.name})
+		cur, err := s.store.Get(ctx, store.Key{Kind: "IP", Namespace: t.namespace, Name: n.Name})
 		if errors.Is(err, store.ErrNotFound) {
 			continue // not made yet: the holder waits for it, and says so
 		}
@@ -131,76 +116,128 @@ func (s *Server) checkNamedIPs(ctx context.Context, t target, holder, uid string
 			return err
 		}
 		x := obj.(*v1.IP)
-		if x.Spec.Class != n.class {
-			return errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %s %s is IP of class %s, not %s", t.kind.Kind, t.name, n.field, n.name, x.Spec.Class, n.class)
+		found = append(found, x)
+		if prov, ok := balancer[n.Name]; ok {
+			switch {
+			case x.Spec.Type != v1.IPTypeProvider:
+				return errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: loadBalancer.ip %s is a host's address (type Host): a balancer is the provider's, so it can only take a Provider IP of %s; leave ip out (the balancer has its own address) or use a HostPort service on it",
+					t.kind.Kind, t.name, n.Name, prov)
+			case x.Spec.Provider != prov:
+				return errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: loadBalancer.ip %s is %s's, and the balancer is %s's: name an IP of %s, or the provider %s",
+					t.kind.Kind, t.name, n.Name, x.Spec.Provider, prov, prov, x.Spec.Provider)
+			}
 		}
-		if why := ips.CanName(x, n.exclusive, holder, uid, n.ports); why != "" {
-			return errf(http.StatusConflict, "Conflict", "%s %s: %s", t.kind.Kind, t.name, why)
-		}
 	}
-	return nil
-}
-
-// checkSameAsService refuses egress.source sameAsService where the address is on no host: a
-// plugin's class that says it can't be sent from (a balancer in front). A class no plugin serves
-// now is let through; the silo's status says out is the host's until a plugin says otherwise.
-func (s *Server) checkSameAsService(t target, silo *v1.Silo) error {
-	if silo == nil || silo.Spec.Network.Egress.Source != v1.EgressSameAsService {
+	if t.kind.Kind != "Silo" {
 		return nil
-	}
-	class := v1.PluginLB(silo)
-	if class == "" {
-		return nil
-	}
-	c, ok := s.classMap()[class]
-	if !ok || c.SendsFrom {
-		return nil
-	}
-	return errf(http.StatusUnprocessableEntity, "Invalid",
-		"%s %s: egress.source sameAsService: %s's address is its balancer's, on no host, so nothing can send from it (use host, or pool with an IP of class ip-pool; design §7.2b)",
-		t.kind.Kind, t.name, class)
-}
-
-// ipTransition: an IP's class, and its placement once it has an address, never change.
-func ipTransition(o, x *v1.IP) []string {
-	if o.Spec.Class != x.Spec.Class {
-		return []string{"spec.class can't change (it's " + o.Spec.Class + "): make another IP"}
-	}
-	if o.Status.Address != "" && (o.Spec.Host != x.Spec.Host || o.Spec.Region != x.Spec.Region || o.Spec.Address != x.Spec.Address) {
-		return []string{"spec.host, spec.region and spec.address can't change once it has its address (" + o.Status.Address + ")"}
-	}
-	return nil
-}
-
-func (s *Server) checkHostAddresses(ctx context.Context, t target, h *v1.Host) error {
-	cur, err := s.store.Get(ctx, t.key())
-	if err != nil {
-		return nil //nolint:nilerr // a new host holds nothing yet; the overlap check needs no old one
-	}
-	prev, _, err := v1.Decode(cur.Data)
-	if err != nil {
-		return err
-	}
-	if slices.Equal(prev.(*v1.Host).Spec.Network.Addresses, h.Spec.Network.Addresses) {
-		return nil
-	}
-	all, err := listAs[*v1.IP](ctx, s.store, "IP")
-	if err != nil {
-		return err
-	}
-	if why := ips.CheckHostAddresses(h.Name, h.Spec.Network.Addresses, all); why != "" {
-		return errf(http.StatusConflict, "Conflict", "host %s: %s", h.Name, why)
 	}
 	hosts, err := listAs[*v1.Host](ctx, s.store, "Host")
 	if err != nil {
 		return err
 	}
-	for i, o := range hosts {
-		if o.Name == h.Name {
-			hosts[i] = h
+	if why := ips.Together(found, hosts); why != "" {
+		return errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %s", t.kind.Kind, t.name, why)
+	}
+	return nil
+}
+
+// SetNetworking gives the server the providers' declared networking (the plugin registry):
+// admission checks balancers, Provider IPs and their annotations against it. nil: unchecked.
+func (s *Server) SetNetworking(n plugins.Networking) { s.networking = n }
+
+// checkProviders: what a provider must say yes to, or it can never work. A LoadBalancer
+// service needs a provider that makes balancers, annotations it declares, and a kept IP in
+// front only where the provider allows one; a Provider IP needs a provider that makes them in
+// its region, and annotations it declares. A provider not installed is refused too, naming the
+// installed ones (a plugin restarting is held by the registry, not dropped).
+func (s *Server) checkProviders(_ context.Context, t target, obj meta.Object) error {
+	if t.status || s.networking == nil {
+		return nil
+	}
+	n := s.networking
+	refuse := func(err error) error {
+		return errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: %v", t.kind.Kind, t.name, err)
+	}
+	balancer := func(field string, l *v1.LoadBalancerSpec, annotations map[string]string) error {
+		if err := n.ValidateLoadBalancer(l.Provider); err != nil {
+			return refuse(fmt.Errorf("%s: %w", field, err))
+		}
+		if err := n.ValidateServiceAnnotations(l.Provider, annotations); err != nil {
+			return refuse(fmt.Errorf("%s: %w", field, err))
+		}
+		if l.IP != "" && !n.CanFrontWithIP(l.Provider) {
+			return refuse(fmt.Errorf("%s.ip %s: %s's balancer has an address of its own, so a kept IP can't front it: leave ip out (the balancer's address comes with the service), or use a HostPort service on the IP", field, l.IP, l.Provider))
+		}
+		return nil
+	}
+	services := func(prefix string, svs []v1.SiloService) error {
+		for i, sv := range svs {
+			if sv.TypeOrDefault() == v1.ServiceLoadBalancer && sv.LoadBalancer != nil {
+				if err := balancer(fmt.Sprintf("%sservices[%d].loadBalancer", prefix, i), sv.LoadBalancer, sv.Annotations); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	switch o := obj.(type) {
+	case *v1.Silo:
+		return services("", o.Spec.Services)
+	case *v1.SiloSet:
+		return services("template.", o.Spec.Template.Services)
+	case *v1.Service:
+		if o.Spec.TypeOrDefault() == v1.ServiceLoadBalancer && o.Spec.LoadBalancer != nil {
+			return balancer("spec.loadBalancer", o.Spec.LoadBalancer, o.Annotations)
+		}
+	case *v1.IP:
+		if o.Spec.Type != v1.IPTypeProvider {
+			return nil
+		}
+		if err := n.ValidateProviderIP(o.Spec.Provider, o.Spec.Region); err != nil {
+			return refuse(fmt.Errorf("spec: %w", err))
+		}
+		if err := n.ValidateIPAnnotations(o.Spec.Provider, o.Annotations); err != nil {
+			return refuse(err)
 		}
 	}
-	if why := ips.Overlap(hosts); why != "" {
+	return nil
+}
+
+func (s *Server) checkHostAddresses(ctx context.Context, t target, h *v1.Host) error {
+	var prev []v1.HostAddress
+	if cur, err := s.store.Get(ctx, t.key()); err == nil {
+		o, _, err := v1.Decode(cur.Data)
+		if err != nil {
+			return err
+		}
+		prev = o.(*v1.Host).Spec.Addresses
+		if slices.Equal(prev, h.Spec.Addresses) {
+			return nil
+		}
+	}
+	if len(prev) > 0 {
+		all, err := listAs[*v1.IP](ctx, s.store, "IP")
+		if err != nil {
+			return err
+		}
+		if why := ips.CheckHostAddresses(h.Name, h.Spec.Addresses, all); why != "" {
+			return errf(http.StatusConflict, "Conflict", "host %s: %s", h.Name, why)
+		}
+	}
+	hosts, err := listAs[*v1.Host](ctx, s.store, "Host")
+	if err != nil {
+		return err
+	}
+	mine := false
+	for i, o := range hosts {
+		if o.Name == h.Name {
+			hosts[i], mine = h, true
+		}
+	}
+	if !mine {
+		hosts = append(hosts, h)
+	}
+	if why := ips.Duplicates(hosts); why != "" {
 		return errf(http.StatusConflict, "Conflict", "host %s: %s", h.Name, why)
 	}
 	return nil

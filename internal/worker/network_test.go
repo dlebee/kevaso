@@ -20,8 +20,8 @@ func TestNetworkView(t *testing.T) {
 	}
 	node := mk("eth-node", "metal-1", "10.64.0.2", func(s *v1.Silo) {
 		s.Spec.Ports = []v1.SiloPort{{Name: "p2p", Port: 30303}}
-		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "p2p", HostPort: []string{v1.NetworkExternal}}}}
-		s.Spec.Network.Egress.Source = v1.EgressSameAsService
+		s.Spec.Services = []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{IP: "eth"}, Ports: []v1.ServicePort{{Port: "p2p"}}}}
+		s.Spec.Network.Egress.Source = &v1.EgressSource{IP: "eth"}
 		s.Status.Service = v1.SiloServiceStatus{EgressIP: "198.51.100.10"}
 	})
 	plain := mk("plain", "metal-1", "10.64.0.3", func(s *v1.Silo) { s.Status.Service.EgressIP = "198.51.100.10" })
@@ -69,11 +69,11 @@ func TestNetworkView(t *testing.T) {
 
 func TestWithIngressPaths(t *testing.T) {
 	api := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "payments"}, Spec: v1.SiloSpec{
-		Ports:   []v1.SiloPort{{Name: "http", Port: 8080}},
-		Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", AllowFrom: []string{"worker"}}}}}}
+		Ports:    []v1.SiloPort{{Name: "http", Port: 8080}},
+		Services: []v1.SiloService{{Ports: []v1.ServicePort{{Port: "http", AllowFrom: []string{"worker"}}}}}}}
 	other := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "other", Namespace: "payments"}, Spec: v1.SiloSpec{
-		Ports:   []v1.SiloPort{{Name: "http", Port: 8080}},
-		Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}}}}
+		Ports:    []v1.SiloPort{{Name: "http", Port: 8080}},
+		Services: []v1.SiloService{{Ports: []v1.ServicePort{{Port: "http"}}}}}}
 	class := &v1.IngressClass{ObjectMeta: meta.ObjectMeta{Name: "public"}, Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "ingress-public", Namespace: "kevaso-system"}}}
 	ing := &v1.Ingress{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "payments"}, Spec: v1.IngressSpec{IngressClass: "public",
 		Rules: []v1.IngressRule{{Path: "/", Service: v1.IngressTarget{Name: "api", Port: "http"}}}}}
@@ -84,7 +84,7 @@ func TestWithIngressPaths(t *testing.T) {
 	if p := got["payments/api"]["http"]; len(p) != 1 || p[0] != "kevaso-system/ingress-public" {
 		t.Fatalf("api paths %+v", got)
 	}
-	if len(api.Spec.Service.Ports[0].AllowFrom) != 1 {
+	if len(api.Spec.Services[0].Ports[0].AllowFrom) != 1 {
 		t.Fatal("the silo given was changed")
 	}
 	if len(got["payments/other"]) != 0 {

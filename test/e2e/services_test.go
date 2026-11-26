@@ -49,10 +49,12 @@ func echoInit(ports ...string) string {
         run: echo %s | base64 -d > /usr/local/bin/echo.py && systemd-run --unit=echo python3 /usr/local/bin/echo.py %s`, b64, strings.Join(ports, " "))
 }
 
-// TestServicesAndExposure is M6's "done when": examples 03 (hostPort: raw TCP+UDP on the host's
+// TestServicesAndExposure is M6's "done when": example 03 (HostPort: raw TCP+UDP on the host's
 // address, the client's IP kept, a private port that stays private, a source-restricted port,
-// outbound from the same IP) and 06 (ip-pool: metal-1's extra addresses, one IP per silo on the
-// same port, in and out), plus default-deny between silos opened by allowFrom, and private names.
+// outbound from the worker's IP), plus default-deny between silos opened by allowFrom, and private
+// names.
+// TODO(net-v2 wave 2): example 06 (metal-1's extra addresses as Host IPs, one per silo on the
+// same port, in and out) was here: back once a HostPort service on an IP opens on that address.
 //
 //	metal-1  control plane + KVM worker (one host), shared network
 //	client   "the internet": another machine on the same network
@@ -121,12 +123,7 @@ func TestServicesAndExposure(t *testing.T) {
 		return strings.TrimSpace(out)
 	}
 	metalIP, clientIP := addrOf("metal"), addrOf("client")
-	// Two unused addresses on the shared network for the IPPool (the DHCP range starts low), fresh
-	// for each run.
-	base := metalIP[:strings.LastIndex(metalIP, ".")+1]
-	n := 150 + int(time.Now().Unix()%50)*2
-	pool1, pool2 := base+strconv.Itoa(n), base+strconv.Itoa(n+1)
-	t.Logf("metal-1 %s, client %s, pool %s %s", metalIP, clientIP, pool1, pool2)
+	t.Logf("metal-1 %s, client %s", metalIP, clientIP)
 
 	bin := filepath.Join(t.TempDir(), "kevasod")
 	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "kevaso.com/core/cmd/kevasod")
@@ -152,8 +149,6 @@ func TestServicesAndExposure(t *testing.T) {
 		"--host-key", strings.Fields(hk)[1], "--kevasod", bin, "--name", "metal-1", "--cluster", "e2e",
 		"--api-server", "https://127.0.0.1:6443", "--internal-ip", metalIP, "--worker", "--loop-storage", "40G")
 	useAdminKvo(t, "e2e") // kvo's own context is a plain user; these steps are an admin's
-	// The two extra addresses routed to metal-1, for ip-pool to hand out.
-	must(kvoadm.Run, "", "host", "addresses", "metal-1", "add", pool1, pool2)
 
 	silo := func(ns, name, spec string) string {
 		return fmt.Sprintf(`---
@@ -184,46 +179,38 @@ metadata: { name: to-client, namespace: web3 }
 spec:
   egress: [{ to: "` + clientIP + `/32", ports: ["9100"] }]
 ` +
-		// Example 03's P2P node: TCP+UDP 30303 public, rpc private, outbound from the same IP;
-		// and rpc open to one other silo.
+		// Example 03's P2P node: TCP+UDP 30303 public, rpc private, outbound from the worker's
+		// IP; and rpc open to one other silo.
 		silo("web3", "eth-node", `  ports:
     - { name: p2p,  port: 30303, protocol: TCP }
     - { name: disc, port: 30303, protocol: UDP }
     - { name: rpc,  port: 8545,  protocol: TCP }
-  service:
-    ports:
-      - { port: p2p, hostPort: [internal] }
-      - { port: disc, hostPort: [internal] }
-      - { port: rpc, allowFrom: [ops/metrics] }
-  network: { egress: { source: sameAsService } }
+  services:
+    - ports: [{ port: rpc, allowFrom: [ops/metrics] }]
+    - name: eth-node-p2p
+      type: HostPort
+      hostPort: { worker: internal }
+      ports: [{ port: p2p }, { port: disc }]
   grants: [to-client]`+echoInit("tcp/30303", "udp/30303", "tcp/8545")) +
 		// Example 03's dashboard, open to the client's address only…
 		silo("ops", "metrics", `  ports: [{ name: web, port: 3000 }]
-  service:
-    ports: [{ port: web, hostPort: [internal], sources: ["`+clientIP+`/32"] }]`+echoInit("tcp/3000")) +
+  services:
+    - type: HostPort
+      hostPort: { worker: internal }
+      ports: [{ port: web, sources: ["`+clientIP+`/32"] }]`+echoInit("tcp/3000")) +
 		// …and one open only to a range the client isn't in.
 		silo("ops", "locked", `  ports: [{ name: web, port: 3001 }]
-  service:
-    ports: [{ port: web, hostPort: [internal], sources: ["203.0.113.0/24"] }]`+echoInit("tcp/3001")) +
-		// Example 06: both on 30303, each on an IP of its own from metal-1's addresses, in and out.
-		silo("web3", "eth-node-a", `  ports: [{ name: p2p, port: 30303, protocol: TCP }, { name: disc, port: 30303, protocol: UDP }]
-  service:
-    ports: [{ port: p2p, loadBalancer: true }, { port: disc, loadBalancer: true }]
-    loadBalancer: { class: ip-pool }
-  network: { egress: { source: sameAsService } }
-  grants: [to-client]`+echoInit("tcp/30303", "udp/30303")) +
-		silo("web3", "eth-node-b", `  ports: [{ name: p2p, port: 30303, protocol: TCP }, { name: disc, port: 30303, protocol: UDP }]
-  service:
-    ports: [{ port: p2p, loadBalancer: true }, { port: disc, loadBalancer: true }]
-    loadBalancer: { class: ip-pool }
-  network: { egress: { source: sameAsService } }`+echoInit("tcp/30303", "udp/30303"))
+  services:
+    - type: HostPort
+      hostPort: { worker: internal }
+      ports: [{ port: web, sources: ["203.0.113.0/24"] }]`+echoInit("tcp/3001"))
 	must(kvo.Run, manifest, "apply", "-f", "-")
 
-	// Wait for all five.
+	// Wait for all three.
 	deadline := time.Now().Add(30 * time.Minute)
 	for {
 		out := must(kvo.Run, "", "get", "silos", "-A")
-		if strings.Count(out, "Running") == 5 {
+		if strings.Count(out, "Running") == 3 {
 			t.Logf("silos:\n%s", out)
 			break
 		}
@@ -232,11 +219,6 @@ spec:
 			t.Fatalf("silos:\n%s\nkevasod:\n%s", out, j)
 		}
 		time.Sleep(10 * time.Second)
-	}
-	describe := must(kvo.Run, "", "describe", "silo", "eth-node-a", "-n", "web3")
-	t.Logf("describe eth-node-a:\n%s", describe)
-	if !strings.Contains(describe, pool1) && !strings.Contains(describe, pool2) {
-		t.Fatalf("eth-node-a has no pool address:\n%s", describe)
 	}
 
 	probe := func(target string) string { // from the client, "the internet"
@@ -276,13 +258,6 @@ spec:
 	expect("dashboard from the allowed address", tcp(metalIP, 3000), "metrics sees "+clientIP)
 	refused("dashboard limited to 203.0.113.0/24", tcp(metalIP, 3001))
 
-	// 06: same port, own addresses.
-	a, b := tcp(pool1, 30303), tcp(pool2, 30303)
-	if !(strings.Contains(a, "eth-node-a") && strings.Contains(b, "eth-node-b")) && !(strings.Contains(a, "eth-node-b") && strings.Contains(b, "eth-node-a")) {
-		t.Errorf("pool addresses: %s → %q, %s → %q", pool1, a, pool2, b)
-	}
-	expect("pool UDP", udp(pool1, 30303), "sees "+clientIP)
-
 	// Outbound: where does each silo's traffic come from? The client listens and reports.
 	egressSeen := func(ns, silo string) string {
 		_, _ = sh("client", `systemctl stop egress-listen 2>/dev/null; rm -f /tmp/egress; systemd-run --unit=egress-listen -p RuntimeMaxSec=30 python3 -c 'import socket; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("0.0.0.0", 9100)); s.listen(); c, a = s.accept(); open("/tmp/egress", "w").write("from " + a[0] + "\n")'; sleep 1`)
@@ -292,12 +267,7 @@ spec:
 		out, _ := sh("client", "cat /tmp/egress")
 		return out
 	}
-	expect("eth-node's outbound (sameAsService)", egressSeen("web3", "eth-node"), metalIP)
-	aIP := pool1
-	if strings.Contains(a, "eth-node-b") {
-		aIP = pool2
-	}
-	expect("eth-node-a's outbound (its pool address)", egressSeen("web3", "eth-node-a"), aIP)
+	expect("eth-node's outbound (the worker's IP)", egressSeen("web3", "eth-node"), metalIP)
 
 	// Between silos: denied by default, opened by allowFrom; private names resolve.
 	inside := func(ns, silo, script string) string {

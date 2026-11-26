@@ -7,7 +7,7 @@ web3        rpc    LoadBalancer   -            -                  8545/TCP   0  
 Name:              rpc
 Namespace:         web3
 Labels:            -
-Type:              LoadBalancer (linode-nodebalancer)
+Type:              LoadBalancer (linode)
 Selector:          app=rpc
 Name:              -
 Cluster IP:        -

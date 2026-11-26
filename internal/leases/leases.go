@@ -155,19 +155,22 @@ func Duration(ask string, pl *v1.PortLease, l Limits) (d time.Duration, clamped 
 // Validate is admission for the leases on a silo's service ports, port by port: only on a port
 // that opens outside its silo IP, valid durations, default ≤ max ≤ the cluster's limit.
 func Validate(spec v1.SiloSpec, l Limits) []string {
-	if spec.Service == nil {
+	if len(spec.Services) == 0 {
 		return nil
 	}
 	l = l.WithDefaults()
 	var errs []string
-	for _, p := range spec.Service.Ports {
+	for _, p := range spec.Open() {
 		ls := p.Lease
 		if ls == nil {
 			continue
 		}
-		field := fmt.Sprintf("service.ports[%s].lease", p.Port)
-		if !p.Outside() {
-			errs = append(errs, field+": only on a port with hostPort or loadBalancer (silo-to-silo access is never leased: it's allowFrom)")
+		field := fmt.Sprintf("service %s: ports[%s].lease", p.Service, p.Port)
+		if p.Service == "" {
+			field = fmt.Sprintf("services: ports[%s].lease", p.Port)
+		}
+		if p.Type != v1.ServiceHostPort {
+			errs = append(errs, field+": only on a HostPort service (silo-to-silo access is never leased: it's allowFrom)")
 			continue
 		}
 		max := l.DefaultMax

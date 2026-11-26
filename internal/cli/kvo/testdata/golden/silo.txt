@@ -4,7 +4,6 @@ demo        hello        cloud-hypervisor   Starting   no (Initializing)   hv1  
 payments    api          docker             -          -                   -      -
 payments    ledger       cloud-hypervisor   -          -                   -      -
 web3        eth-node-a   cloud-hypervisor   -          -                   -      -
-web3        eth-node-b   cloud-hypervisor   -          -                   -      -
 
 NAMESPACE   NAME         RUNTIME            PHASE      READY               HOST   MOVABLE   ON-CP-LOSS       AGE
 demo        hello        cloud-hypervisor   -          -                   -      -         -                -
@@ -12,7 +11,6 @@ demo        hello        cloud-hypervisor   Starting   no (Initializing)   hv1  
 payments    api          docker             -          -                   -      -         -                -
 payments    ledger       cloud-hypervisor   -          -                   -      -         -                -
 web3        eth-node-a   cloud-hypervisor   -          -                   -      -         -                -
-web3        eth-node-b   cloud-hypervisor   -          -                   -      -         -                -
 
 Name:                   hello
 Namespace:              demo
@@ -49,7 +47,8 @@ Host:                   hv1
 Movable:                - (onHostLoss: Wait)
 On control-plane loss:  STOPS: the host stops this silo after <age> without the control plane (onControlPlaneLoss: Stop)
 Silo IP:                10.64.2.7
-Service:                api
+Service:                api: HostPort (worker: external)
+Service:                api-metrics: Internal
 Egress IP:              -
 In and out:             no outside address in or out
 Grants:                 -
@@ -121,46 +120,16 @@ Host:                   -
 Movable:                - (onHostLoss: Wait)
 On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
-Service:                eth-node-a
-Load balancer:          ip-pool
-Egress IP:              - (sameAsService)
+Service:                eth-node-a: HostPort (ip: eth-node-a)
+Egress IP:              - (ip: eth-node-a)
 In and out:             no outside address in or out
 Grants:                 -
 OpenShell policies:     -
 Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
 Ports:
-  PORT       NUMBER     SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER         ALLOW FROM  SOURCES
-  p2p        30303/TCP  (when running) (no silo allowed)  -            -            (when placed) :30303  -           -
-  disc       30303/UDP  (when running) (no silo allowed)  -            -            (when placed) :30303  -           -
-Route when:  running (not stated: the silo has no readiness probe)
-Traffic:
-  PORT        TRAFFIC
-  p2p 30303   held (not running)
-  disc 30303  held (not running)
----
-Name:                   eth-node-b
-Namespace:              web3
-Labels:                 -
-Runtime:                cloud-hypervisor
-VM image:               ubuntu-24.04
-Resources:              2 CPU, 4Gi memory
-Disk:                   100Gi
-Phase:                  -
-Host:                   -
-Movable:                - (onHostLoss: Wait)
-On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
-Silo IP:                -
-Service:                eth-node-b
-Load balancer:          ip-pool
-Egress IP:              - (sameAsService)
-In and out:             no outside address in or out
-Grants:                 -
-OpenShell policies:     -
-Assurance:              host (kevasod on its host vouches for it; no vTPM or confidential VM)
-Ports:
-  PORT       NUMBER     SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER         ALLOW FROM  SOURCES
-  p2p        30303/TCP  (when running) (no silo allowed)  -            -            (when placed) :30303  -           -
-  disc       30303/UDP  (when running) (no silo allowed)  -            -            (when placed) :30303  -           -
+  PORT       NUMBER     SILO IP (MESH)                    INTERNAL IP  EXTERNAL IP  LOAD BALANCER  ALLOW FROM  SOURCES
+  p2p        30303/TCP  (when running) (no silo allowed)  -            -            -              -           -
+  disc       30303/UDP  (when running) (no silo allowed)  -            -            -              -           -
 Route when:  running (not stated: the silo has no readiness probe)
 Traffic:
   PORT        TRAFFIC

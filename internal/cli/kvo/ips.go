@@ -13,49 +13,30 @@ import (
 	v1 "kevaso.com/core/api/v1"
 )
 
-// IP objects (design §7.2c-1): addresses you keep.
+// IP objects (networking v2): addresses you keep, until you delete them.
 //
-//	kvo create ip NAME --class CLASS [--host HOST | --region REGION] [--address A] [--reclaim Delete]
+//	kvo create ip NAME --type Host --host-address NAME
+//	kvo create ip NAME --type Provider --provider PROVIDER --region REGION
 //	kvo get ips
-//	kvo ip keep NAME       its address stays when its holder goes (reclaim Retain; no longer owned)
-//	kvo ip release NAME    it goes with its holder (reclaim Delete), or now if nothing holds it
 //	kvo describe ip NAME
+//
+// TODO(net-v2 wave 2): kvo get ips with TYPE, ADDRESS, WHERE, SET, USED BY, MOVES; IPSets.
 
-type ipOpts struct{ class, host, region, address, reclaim string }
+type ipOpts struct{ typ, hostAddress, provider, region string }
 
-var ipHead = []string{"ADDRESS", "CLASS", "HELD-BY", "KEPT"}
+var ipHead = []string{"TYPE", "ADDRESS", "WHERE", "HELD-BY"}
 
 func ipRow(x *v1.IP) []string {
-	kept := "yes"
-	if !x.Kept() {
-		kept = "no, goes with " + dash(ownerOf(x))
-	}
-	return []string{dash(x.Status.Address), x.Spec.Class, dash(x.Status.Holders()), kept}
-}
-
-func ownerOf(x *v1.IP) string {
-	for _, r := range x.OwnerReferences {
-		return strings.ToLower(r.Kind) + "/" + r.Name
-	}
-	if x.Labels[v1.LabelDefaultIP] != "" {
-		return "its last service"
-	}
-	if len(x.Status.BoundTo) == 1 {
-		return x.Status.BoundTo[0].Holder
-	}
-	return "its last holder"
+	return []string{x.Spec.Type, dash(x.Status.Address), dash(x.Status.Where), dash(x.Status.Holders())}
 }
 
 func createIP(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error {
-	if len(o.args) != 2 || o.ip.class == "" {
-		return errors.New("create ip needs a NAME and a class: kvo create ip NAME --class ip-pool|CLASS [--host HOST | --region REGION]")
+	if len(o.args) != 2 || o.ip.typ == "" {
+		return errors.New("create ip needs a NAME and a type: kvo create ip NAME --type Host --host-address NAME, or --type Provider --provider PROVIDER --region REGION")
 	}
 	x := &v1.IP{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IP"},
 		ObjectMeta: meta.ObjectMeta{Name: o.args[1], Namespace: defaultNS(o)},
-		Spec:       v1.IPSpec{Class: o.ip.class, Host: o.ip.host, Region: o.ip.region, Address: o.ip.address, Reclaim: o.ip.reclaim}}
-	if x.Spec.Reclaim == "" {
-		x.Spec.Reclaim = v1.ReclaimRetain
-	}
+		Spec:       v1.IPSpec{Type: o.ip.typ, HostAddress: o.ip.hostAddress, Provider: o.ip.provider, Region: o.ip.region}}
 	if err := c.Create(ctx, x); err != nil {
 		return err
 	}
@@ -63,45 +44,9 @@ func createIP(ctx context.Context, c *client.Client, o opts, stdout io.Writer) e
 	return nil
 }
 
-func ipCommand(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error {
-	if len(o.args) != 2 || (o.args[0] != "keep" && o.args[0] != "release") {
-		return errors.New("usage: kvo ip keep|release NAME")
-	}
-	ns, name := defaultNS(o), o.args[1]
-	err := retryUpdate(func() error {
-		var x v1.IP
-		if err := c.Get(ctx, "IP", ns, name, &x); err != nil {
-			return err
-		}
-		msg := ""
-		if o.args[0] == "keep" {
-			if x.Kept() && len(x.OwnerReferences) == 0 {
-				_, _ = fmt.Fprintf(stdout, "ip/%s is kept already\n", name)
-				return nil
-			}
-			x.Spec.Reclaim, x.OwnerReferences = v1.ReclaimRetain, nil
-			msg = fmt.Sprintf("ip/%s kept: %s stays until you delete the IP", name, dash(x.Status.Address))
-		} else {
-			if len(x.Status.BoundTo) == 0 {
-				if err := c.Delete(ctx, "IP", ns, name, client.Seen(&x)); err != nil {
-					return err // a conflict: bound or replaced since it was read
-				}
-				_, _ = fmt.Fprintf(stdout, "ip/%s released: nothing held it, so it's deleted and %s goes back\n", name, dash(x.Status.Address))
-				return nil
-			}
-			x.Spec.Reclaim = v1.ReclaimDelete
-			msg = fmt.Sprintf("ip/%s released: it goes when %s let go of it", name, x.Status.Holders())
-		}
-		if err := c.Update(ctx, &x); err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintln(stdout, msg)
-		return nil
-	})
-	if client.IsConflict(err) {
-		return errors.New("the IP kept changing; try again")
-	}
-	return err
+// ipCommand: kvo ip keep and release are gone; an IP is kept until it is deleted.
+func ipCommand(context.Context, *client.Client, opts, io.Writer) error {
+	return errors.New("an IP is kept until you delete it (kvo delete ip NAME): there is no keep or release")
 }
 
 // describeIP: the address, where it comes from, who holds it, whether it's kept, and whether its
@@ -118,27 +63,20 @@ func describeIP(ctx context.Context, c *client.Client, x *v1.IP, w io.Writer) er
 		kv("Deleting", "releasing its address, since "+since(*x.DeletionTimestamp)+" ago")
 	}
 	kv("Address", dash(x.Status.Address))
-	from := x.Spec.Class
-	switch {
-	case x.Spec.Class == v1.LBIPPool && x.Status.Host != "":
-		from += " (one of " + x.Status.Host + "'s extra addresses)"
-	case x.Status.Region != "":
-		from += " (in " + x.Status.Region + ")"
+	from := x.Spec.Type
+	switch x.Spec.Type {
+	case v1.IPTypeHost:
+		from += " (host address " + x.Spec.HostAddress + ")"
+	case v1.IPTypeProvider:
+		from += " (" + x.Spec.Provider + ", " + x.Spec.Region + ")"
 	}
-	kv("Class", from)
-	if x.Status.Follows != "" {
-		kv("Follows its holder", x.Status.Follows)
-	}
-	kept := "yes: reclaim Retain, it stays until the IP is deleted"
-	if !x.Kept() {
-		kept = "no: reclaim Delete, it goes when " + dash(ownerOf(x)) + " lets go of it (kvo ip keep " + x.Name + " keeps it)"
-	}
-	kv("Kept", kept)
-	if x.Labels[v1.LabelDefaultIP] != "" {
-		kv("Shared", "the namespace's default for "+x.Spec.Class+": every load-balancer service of the class naming no ip is on it, on its own ports")
+	kv("Type", from)
+	kv("Where", dash(x.Status.Where))
+	if set := x.Labels[v1.LabelIPSet]; set != "" {
+		kv("Set", set+" #"+x.Labels[v1.LabelIPSetOrdinal])
 	}
 	kv("Held by", dash(x.Status.Holders()))
-	for _, h := range x.Status.BoundTo {
+	if h := x.Status.Holder; h != nil {
 		if strings.HasPrefix(h.Holder, v1.HolderSiloPrefix) {
 			var s v1.Silo
 			if err := c.Get(ctx, "Silo", x.Namespace, strings.TrimPrefix(h.Holder, v1.HolderSiloPrefix), &s); err == nil {

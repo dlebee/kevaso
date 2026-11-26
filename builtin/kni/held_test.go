@@ -10,13 +10,12 @@ import (
 // ports, and nothing is cut (established connections stay); private access stays. A port is open
 // only when its lease and its routing both say so.
 func TestHeldPorts(t *testing.T) {
-	ext := []string{v1.NetworkExternal}
 	spec := v1.SiloSpec{
 		Ports: []v1.SiloPort{{Name: "rpc", Port: 8545}, {Name: "debug", Port: 9229}},
-		Service: &v1.SiloService{Ports: []v1.ServicePort{
-			{Port: "rpc", HostPort: ext, AllowFrom: []string{"client"}},
-			{Port: "debug", HostPort: ext, Lease: &v1.PortLease{}, AllowFrom: []string{"client"}},
-		}},
+		Services: []v1.SiloService{service(v1.NetworkExternal,
+			v1.ServicePort{Port: "rpc", AllowFrom: []string{"client"}},
+			v1.ServicePort{Port: "debug", Lease: &v1.PortLease{}, AllowFrom: []string{"client"}},
+		)},
 	}
 	client := Silo{Key: "dev/client", IP: a("10.64.2.9")}
 	base := Silo{Key: "dev/rpc", IP: a("10.64.2.2"), Spec: spec, Leased: []string{"debug"}}
@@ -58,10 +57,9 @@ func TestHeldPorts(t *testing.T) {
 }
 
 func TestHeldNodePorts(t *testing.T) {
-	s := Silo{Key: "dev/rpc", IP: a("10.64.2.2"), Spec: v1.SiloSpec{Ports: []v1.SiloPort{{Name: "rpc", Port: 8545}}, Service: &v1.SiloService{
-		Ports:        []v1.ServicePort{{Port: "rpc", LoadBalancer: true}},
-		LoadBalancer: &v1.LoadBalancerSpec{Class: "linode-nodebalancer"},
-	}}, NodePorts: []v1.NodePort{{Name: "rpc", Port: 8545, NodePort: 30001}}, SourceRanges: []string{"192.168.255.0/24"}}
+	s := Silo{Key: "dev/rpc", IP: a("10.64.2.2"), Spec: v1.SiloSpec{Ports: []v1.SiloPort{{Name: "rpc", Port: 8545}},
+		Services: []v1.SiloService{service(lbWay, v1.ServicePort{Port: "rpc"})},
+	}, NodePorts: []v1.NodePort{{Name: "rpc", Port: 8545, NodePort: 30001}}, SourceRanges: []string{"192.168.255.0/24"}}
 	const nodeDNAT = "ip saddr 192.168.255.0/24 tcp dport 30001 dnat ip to 10.64.2.2:8545"
 	has(t, Rules(host(s)), nodeDNAT)
 	s.Held = true

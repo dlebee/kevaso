@@ -166,37 +166,8 @@ func info(name string, p *v1.HostProvider) kplugin.HostInfo {
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
 
-// ipAddress records a load balancer's address on the IP it is, for a class that can't reserve:
-// the balancer is the IP's, so its address is.
-func ipAddress(ctx context.Context, c *client.Client, ip *v1.IP, addr string, region string) error {
-	for attempt := 0; attempt < 5; attempt++ {
-		var cur v1.IP
-		if err := c.Get(ctx, "IP", ip.Namespace, ip.Name, &cur); err != nil {
-			return client.IgnoreNotFound(err)
-		}
-		if cur.UID != ip.UID || (cur.Status.Address == addr && (cur.Status.Region == region || region == "")) {
-			return nil
-		}
-		cur.Status.Address = addr
-		if region != "" {
-			cur.Status.Region = region
-		}
-		err := c.UpdateStatus(ctx, &cur)
-		if client.IsConflict(err) {
-			continue
-		}
-		return err
-	}
-	return errors.New("IP kept changing; will retry")
-}
-
-// updateStatus applies mutate to the latest copy of s's status (retrying conflicts).
-func updateStatus(ctx context.Context, c *client.Client, s *v1.Silo, mutate func(*v1.SiloStatus)) error {
-	return updateSiloStatus(ctx, c, s, func(cur *v1.Silo) { mutate(&cur.Status) })
-}
-
-// updateSiloStatus is updateStatus for a change that reads the latest copy's spec too; only its
-// status is written.
+// updateSiloStatus applies mutate to the latest copy of s (retrying conflicts); only its status
+// is written.
 func updateSiloStatus(ctx context.Context, c *client.Client, s *v1.Silo, mutate func(*v1.Silo)) error {
 	for attempt := 0; attempt < 5; attempt++ {
 		var cur v1.Silo

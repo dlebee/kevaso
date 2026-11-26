@@ -53,7 +53,7 @@ func (g *gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		var x v1.IP
 		if json.Unmarshal(body, &x) == nil {
-			what += fmt.Sprintf(" (bound to %v)", x.Status.BoundTo)
+			what += fmt.Sprintf(" (held by %v)", x.Status.Holder)
 		}
 	}
 	g.next.ServeHTTP(w, r) // reported once it is done, so a read after the report sees it
@@ -85,12 +85,15 @@ func TestK027ControllersWaitForEveryCacheBeforeActing(t *testing.T) {
 	}
 	silo := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "d"},
 		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 2, Memory: "4Gi"},
-			Ports:   []v1.SiloPort{{Name: "http", Port: 80}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", LoadBalancer: true}}, LoadBalancer: &v1.LoadBalancerSpec{Class: v1.LBIPPool}}}}
+			Ports:    []v1.SiloPort{{Name: "http", Port: 80}},
+			Services: []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{IP: "web-ip"}, Ports: []v1.ServicePort{{Port: "http"}}}}}}
 	if err := c.Create(ctx, silo); err != nil {
 		t.Fatal(err)
 	}
-	ipName, _ := v1.SiloServiceIP(silo, true)
+	ipName := "web-ip"
+	if err := c.Create(ctx, &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: ipName, Namespace: "d"}, Spec: v1.IPSpec{Type: v1.IPTypeHost, HostAddress: "a1"}}); err != nil {
+		t.Fatal(err)
+	}
 	cfg := Config{ClusterName: "test", HostName: "cp-1", Clock: clock.Real{}}
 	logs := make(chan string, 256)
 	cfg.Log = func(f string, a ...any) {
@@ -100,7 +103,7 @@ func TestK027ControllersWaitForEveryCacheBeforeActing(t *testing.T) {
 		}
 	}
 
-	// First run: the controllers make the Service's IP and bind it.
+	// First run: the controllers bind the IP to the silo naming it.
 	ctx1, stop1 := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -109,7 +112,7 @@ func TestK027ControllersWaitForEveryCacheBeforeActing(t *testing.T) {
 	for {
 		var l v1.IP
 		err := c.Get(ctx, "IP", "d", ipName, &l)
-		if err == nil && len(l.Status.BoundTo) == 1 {
+		if err == nil && l.Status.Holder != nil && l.Status.Holder.Holder == "silo/web" {
 			ip = l
 			break
 		}
@@ -155,8 +158,8 @@ func TestK027ControllersWaitForEveryCacheBeforeActing(t *testing.T) {
 		if err := c.Get(ctx, "IP", "d", ip.Name, &now); err != nil {
 			t.Fatalf("the IP is gone: %v", err)
 		}
-		if now.UID != ip.UID || now.DeletionTimestamp != nil || len(now.Status.BoundTo) != 1 {
-			t.Fatalf("the IP was unbound or deleted: uid %s→%s, deleting %v, bound to %v", ip.UID, now.UID, now.DeletionTimestamp != nil, now.Status.BoundTo)
+		if now.UID != ip.UID || now.DeletionTimestamp != nil || now.Status.Holder == nil {
+			t.Fatalf("the IP was unbound or deleted: uid %s→%s, deleting %v, held by %v", ip.UID, now.UID, now.DeletionTimestamp != nil, now.Status.Holder)
 		}
 		if meta.FindCondition(now.Status.Conditions, "Bound") != nil {
 			break // the controller looked, and it is still bound

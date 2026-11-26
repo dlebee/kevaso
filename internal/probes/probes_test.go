@@ -256,9 +256,9 @@ func TestOnLiveness(t *testing.T) {
 }
 
 func TestValidate(t *testing.T) {
-	svc := &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc"}}, RouteWhen: v1.RouteWhenReady}
+	svc := v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc"}}, RouteWhen: v1.RouteWhenReady}
 	// metrics is declared but not on the service: a probe may still use it.
-	good := v1.SiloSpec{Ports: []v1.SiloPort{{Name: "rpc", Port: 8545}, {Name: "metrics", Port: 9100}}, Service: svc, Probes: &v1.Probes{
+	good := v1.SiloSpec{Ports: []v1.SiloPort{{Name: "rpc", Port: 8545}, {Name: "metrics", Port: 9100}}, Services: []v1.SiloService{svc}, Probes: &v1.Probes{
 		Startup:   &v1.Probe{TCP: &v1.TCPProbe{Port: "rpc"}, Timeout: "10m"},
 		Readiness: &v1.Probe{HTTP: &v1.HTTPProbe{Port: "metrics", Path: "/health"}, Period: "10s"},
 		Liveness:  &v1.Probe{Exec: &v1.ExecProbe{Command: []string{"pg_isready"}}, Failures: 3, OnFailure: "restart"},
@@ -285,9 +285,12 @@ func TestValidate(t *testing.T) {
 		{"startup failures", func(s *v1.SiloSpec) { s.Probes.Startup.Failures = 2 }, "only by its deadline"},
 		{"onFailure on readiness", func(s *v1.SiloSpec) { s.Probes.Readiness.OnFailure = "restart" }, "only liveness"},
 		{"onFailure value", func(s *v1.SiloSpec) { s.Probes.Liveness.OnFailure = "kill" }, "report or restart"},
-		{"routeWhen not stated with readiness", func(s *v1.SiloSpec) { svc := *s.Service; svc.RouteWhen = ""; s.Service = &svc }, "say whether traffic waits"},
+		{"routeWhen not stated with readiness", func(s *v1.SiloSpec) { s.Services = []v1.SiloService{{Ports: svc.Ports}} }, "say whether traffic waits"},
 		{"ready without readiness", func(s *v1.SiloSpec) { s.Probes.Readiness = nil }, "ready needs a readiness probe"},
-		{"routeWhen value", func(s *v1.SiloSpec) { svc := *s.Service; svc.RouteWhen = "always"; s.Service = &svc }, "ready or running"},
+		{"routeWhen value", func(s *v1.SiloSpec) { s.Services = []v1.SiloService{{Ports: svc.Ports, RouteWhen: "always"}} }, "ready or running"},
+		{"services route the same way", func(s *v1.SiloSpec) {
+			s.Services = []v1.SiloService{svc, {Name: "rpc2", Ports: svc.Ports, RouteWhen: v1.RouteWhenRunning}}
+		}, "a silo's services route the same way"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := good
@@ -310,7 +313,7 @@ func TestValidate(t *testing.T) {
 	}
 	// running with a readiness probe is a statement too.
 	s := good
-	s.Service = &v1.SiloService{Ports: svc.Ports, RouteWhen: v1.RouteWhenRunning}
+	s.Services = []v1.SiloService{{Ports: svc.Ports, RouteWhen: v1.RouteWhenRunning}}
 	if errs := probes.Validate(s); len(errs) != 0 {
 		t.Fatalf("running stated: %v", errs)
 	}

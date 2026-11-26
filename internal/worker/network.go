@@ -55,7 +55,7 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 			ks.LoadBalancerIP = netip.Addr{}
 			ks.NodePorts, ks.SourceRanges = s.Status.Service.NodePorts, s.Status.Service.SourceRanges
 		}
-		if src := s.Spec.Network.Egress.Source; src == v1.EgressSameAsService || src == v1.EgressPool {
+		if s.Spec.Network.Egress.Source != nil { // TODO(net-v2 wave 2): own, and a balancer's IP that can't send
 			ks.EgressIP, _ = netip.ParseAddr(s.Status.Service.EgressIP)
 		}
 		for _, g := range v1.GrantsFor(s, grants) {
@@ -111,7 +111,7 @@ func ServiceView(hostName string, svcs []*v1.Service) []kni.Service {
 	return out
 }
 
-// PoolAddresses are the host's own extra addresses this host's silos hold (IPs of class ip-pool,
+// PoolAddresses are the host's own extra addresses this host's silos hold (IPs of type Host,
 // status.service.hostAddresses): they go on its uplink.
 func PoolAddresses(hostName string, silos []*v1.Silo) []string {
 	var out []string

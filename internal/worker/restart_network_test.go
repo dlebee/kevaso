@@ -37,11 +37,10 @@ func TestRunNetworkFirstApplyAfterARestartKeepsOpenLeases(t *testing.T) {
 	mk(&v1.Namespace{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Namespace"}, ObjectMeta: meta.ObjectMeta{Name: "dev"}})
 	mk(&v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: "hv1"},
 		Spec: v1.HostSpec{ExternalIP: "198.51.100.10", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}})
-	ext := []string{v1.NetworkExternal}
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "nginx"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-			Ports:   []v1.SiloPort{{Name: "debug", Port: 9229}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "debug", HostPort: ext, Sources: []string{"203.0.113.7"}, Lease: &v1.PortLease{Max: "1h"}}}}}}
+			Ports:    []v1.SiloPort{{Name: "debug", Port: 9229}},
+			Services: []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "debug", Sources: []string{"203.0.113.7"}, Lease: &v1.PortLease{Max: "1h"}}}}}}}
 	mk(s)
 	s.Status.Host, s.Status.Phase, s.Status.SiloIP = "hv1", "Running", "10.64.2.2"
 	if err := admin.UpdateStatus(ctx, s); err != nil {

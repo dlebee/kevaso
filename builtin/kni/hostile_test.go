@@ -280,20 +280,17 @@ var hostileSources = []string{"::/0", "2001:db8::/32", "2001:db8::1", "::ffff:19
 	"host.example.com", "10.0.0.0/33", "", " 192.0.2.8", "192.0.2.256", "0x0a000001", "10.0.0.1/8\"", "*"}
 
 func hostileHost() Host {
-	good := Silo{Key: "dev/good", IP: a("10.64.2.2"), Tap: "kvt02", Spec: opens(8080, v1.ServicePort{HostPort: []string{"internal"}, Sources: []string{"192.0.2.0/25"}})}
-	allBad := Silo{Key: "dev/bad", IP: a("10.64.2.3"), Tap: "kvt03", Spec: opens(9090, v1.ServicePort{HostPort: []string{"internal"}, Sources: hostileSources})}
-	mixed := Silo{Key: "dev/mixed", IP: a("10.64.2.4"), Tap: "kvt04", Spec: opens(7070, v1.ServicePort{HostPort: []string{"internal"}, Sources: append([]string{"203.0.113.0/24"}, hostileSources...)})}
+	good := Silo{Key: "dev/good", IP: a("10.64.2.2"), Tap: "kvt02", Spec: opens(8080, v1.ServicePort{Sources: []string{"192.0.2.0/25"}}, v1.NetworkInternal)}
+	allBad := Silo{Key: "dev/bad", IP: a("10.64.2.3"), Tap: "kvt03", Spec: opens(9090, v1.ServicePort{Sources: hostileSources}, v1.NetworkInternal)}
+	mixed := Silo{Key: "dev/mixed", IP: a("10.64.2.4"), Tap: "kvt04", Spec: opens(7070, v1.ServicePort{Sources: append([]string{"203.0.113.0/24"}, hostileSources...)}, v1.NetworkInternal)}
 	lb := Silo{Key: "dev/lb", IP: a("10.64.2.5"), Tap: "kvt05", Spec: func() v1.SiloSpec {
-		s := opens(6060, v1.ServicePort{LoadBalancer: true})
-		s.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "linode"}
-		return s
+		return opens(6060, v1.ServicePort{}, lbWay)
 	}(), NodePorts: []v1.NodePort{{Name: "web", Port: 6060, NodePort: 30001}}, SourceRanges: hostileSources}
-	v6 := Silo{Key: "dev/v6", IP: a("fd00::5"), Tap: "kvt06", Spec: opens(5050, v1.ServicePort{HostPort: []string{"internal"}})}
-	addrs := Silo{Key: "dev/addrs", IP: a("10.64.2.7"), Tap: "kvt07", Spec: opens(4040, v1.ServicePort{LoadBalancer: true}),
+	v6 := Silo{Key: "dev/v6", IP: a("fd00::5"), Tap: "kvt06", Spec: opens(5050, v1.ServicePort{}, v1.NetworkInternal)}
+	addrs := Silo{Key: "dev/addrs", IP: a("10.64.2.7"), Tap: "kvt07", Spec: opens(4040, v1.ServicePort{}, lbWay),
 		LoadBalancerIP: a("2001:db8::7"), EgressIP: a("2001:db8::8"), GatePorts: []v1.PortRange{{From: 0, To: 70000}, {From: 443, To: 443}},
 		Egress: []v1.ParsedEgress{{Prefix: netip.MustParsePrefix("2001:db8::/32"), Protocols: []string{"tcp"}}, {Prefix: netip.MustParsePrefix("192.0.2.0/24"), Protocols: []string{"sctp\n flush ruleset"}}}}
-	addrs.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: v1.LBIPPool}
-	badPort := Silo{Key: "dev/badport", IP: a("10.64.2.8"), Tap: "kvt08", Spec: opens(70000, v1.ServicePort{HostPort: []string{"internal"}})}
+	badPort := Silo{Key: "dev/badport", IP: a("10.64.2.8"), Tap: "kvt08", Spec: opens(70000, v1.ServicePort{}, v1.NetworkInternal)}
 	h := host(good, allBad, mixed, lb, v6, addrs, badPort)
 	h.GatePort = 15001
 	h.ExternalIP = a("2001:db8::10")
@@ -362,10 +359,10 @@ func TestHostileEntriesNeverBreakTheTable(t *testing.T) {
 
 // Removing the hostile entries changes nothing else: the table is the one the clean view gives.
 func TestHostileEntriesOnlyRemoveThemselves(t *testing.T) {
-	clean := host(Silo{Key: "dev/good", IP: a("10.64.2.2"), Tap: "kvt02", Spec: opens(8080, v1.ServicePort{HostPort: []string{"internal"}, Sources: []string{"192.0.2.0/25"}})})
+	clean := host(Silo{Key: "dev/good", IP: a("10.64.2.2"), Tap: "kvt02", Spec: opens(8080, v1.ServicePort{Sources: []string{"192.0.2.0/25"}}, v1.NetworkInternal)})
 	dirty := clean
 	dirty.Local = append([]Silo(nil), clean.Local...)
-	dirty.Local[0].Spec = opens(8080, v1.ServicePort{HostPort: []string{"internal"}, Sources: append([]string{"192.0.2.0/25"}, hostileSources...)})
+	dirty.Local[0].Spec = opens(8080, v1.ServicePort{Sources: append([]string{"192.0.2.0/25"}, hostileSources...)}, v1.NetworkInternal)
 	want, _ := Generate(clean)
 	got, problems := Generate(dirty)
 	if got != want {
@@ -375,7 +372,7 @@ func TestHostileEntriesOnlyRemoveThemselves(t *testing.T) {
 		t.Error("nothing reported")
 	}
 	// A prefix with host bits set is the network it names, written canonically.
-	n := host(Silo{Key: "dev/n", IP: a("10.64.2.2"), Tap: "kvt02", Spec: opens(8080, v1.ServicePort{HostPort: []string{"internal"}, Sources: []string{"10.0.0.5/24"}})})
+	n := host(Silo{Key: "dev/n", IP: a("10.64.2.2"), Tap: "kvt02", Spec: opens(8080, v1.ServicePort{Sources: []string{"10.0.0.5/24"}}, v1.NetworkInternal)})
 	if text := Rules(n); !strings.Contains(text, "ip saddr 10.0.0.0/24 ") {
 		t.Errorf("10.0.0.5/24 not written as 10.0.0.0/24:\n%s", text)
 	}
@@ -389,11 +386,12 @@ func FuzzRulesTakeAnyEntry(f *testing.F) {
 	}
 	f.Add("10.0.0.0/8", "192.0.2.1", "203.0.113.0/24", "kvt\"09", "zz", 0, 70000, "sctp")
 	f.Fuzz(func(t *testing.T, src, lbRange, svcRange, tap, mac string, port, nodePort int, proto string) {
-		good := Silo{Key: "dev/good", IP: a("10.64.2.2"), Tap: "kvt02", Spec: opens(8080, v1.ServicePort{HostPort: []string{"internal"}})}
+		good := Silo{Key: "dev/good", IP: a("10.64.2.2"), Tap: "kvt02", Spec: opens(8080, v1.ServicePort{}, v1.NetworkInternal)}
 		x := Silo{Key: "dev/x", IP: a("10.64.2.9"), Tap: tap, MAC: mac,
 			Spec: v1.SiloSpec{Ports: []v1.SiloPort{{Name: "p", Port: port, Protocol: proto}},
-				Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "p", HostPort: []string{"internal"}, LoadBalancer: true, Sources: []string{src}}},
-					LoadBalancer: &v1.LoadBalancerSpec{Class: "plugin"}}},
+				Services: []v1.SiloService{
+					service(v1.NetworkInternal, v1.ServicePort{Port: "p", Sources: []string{src}}),
+					{Name: "x-lb", Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "plugin"}, Ports: []v1.ServicePort{{Port: "p", Sources: []string{src}}}}}},
 			NodePorts: []v1.NodePort{{Name: "p", Port: port, NodePort: nodePort}}, SourceRanges: []string{lbRange, src}}
 		if a, err := netip.ParseAddr(src); err == nil {
 			x.LoadBalancerIP, x.EgressIP = a, a

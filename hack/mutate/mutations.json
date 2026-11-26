@@ -1329,10 +1329,10 @@
  },
  {
   "id": "G-134",
-  "guard": "ports: egress source pool needs an IP",
+  "guard": "ports: egress own only in a SiloSet instance",
   "file": "internal/apiserver/ports.go",
-  "find": "if spec.Network.Egress.Source == v1.EgressPool && spec.Network.Egress.IP == \"\" &&",
-  "replace": "if false && spec.Network.Egress.IP == \"\" &&",
+  "find": "case src.Own && !inSet:",
+  "replace": "case false && src.Own && !inSet:",
   "mutation": "check removed",
   "packages": [
    "./internal/apiserver",
@@ -1344,8 +1344,8 @@
   "id": "G-135",
   "guard": "ports: a service port must be declared",
   "file": "internal/apiserver/ports.go",
-  "find": "if !ok {\n\t\t\tadd(\"%s: %q isn't a declared port",
-  "replace": "if !ok && false {\n\t\t\tadd(\"%s: %q isn't a declared port",
+  "find": "if !ok {\n\t\t\t\tadd(\"%s: %q isn't a declared port",
+  "replace": "if !ok && false {\n\t\t\t\tadd(\"%s: %q isn't a declared port",
   "mutation": "check removed",
   "packages": [
    "./internal/apiserver",
@@ -3044,8 +3044,8 @@
   "id": "G-524",
   "guard": "a host port on a platform listener's number is refused",
   "file": "internal/apiserver/ports.go",
-  "find": "if why := v1.ReservedHostPort(at); len(p.HostPort) > 0 && why != \"\" { // a number the platform listens on",
-  "replace": "if why := v1.ReservedHostPort(at); false && len(p.HostPort) > 0 && why != \"\" { // a number the platform listens on",
+  "find": "if why := v1.ReservedHostPort(at); why != \"\" { // a number the platform listens on",
+  "replace": "if why := v1.ReservedHostPort(at); false && why != \"\" { // a number the platform listens on",
   "mutation": "a host port on a platform listener's number is accepted",
   "packages": [
    "./internal/apiserver"
@@ -3164,8 +3164,8 @@
   "id": "G-534",
   "guard": "a load balancer that opens more, or selects a new silo, needs the permission",
   "file": "internal/apiserver/exposure.go",
-  "find": "if serviceSelectorLoosened(old, next, silos) || servicePortsLoosened(old, next) || old.Spec.LoadBalancerClass != next.Spec.LoadBalancerClass { // a load balancer opens more, or its selector matches a new silo",
-  "replace": "if false && (serviceSelectorLoosened(old, next, silos) || servicePortsLoosened(old, next) || old.Spec.LoadBalancerClass != next.Spec.LoadBalancerClass) { // a load balancer opens more, or its selector matches a new silo",
+  "find": "if serviceSelectorLoosened(old, next, silos) || servicePortsLoosened(old, next) || fmt.Sprint(old.Spec.LoadBalancer) != fmt.Sprint(next.Spec.LoadBalancer) {",
+  "replace": "if false && (serviceSelectorLoosened(old, next, silos) || servicePortsLoosened(old, next) || fmt.Sprint(old.Spec.LoadBalancer) != fmt.Sprint(next.Spec.LoadBalancer)) {",
   "mutation": "a load balancer that opens more needs no extra permission",
   "packages": [
    "./internal/apiserver"

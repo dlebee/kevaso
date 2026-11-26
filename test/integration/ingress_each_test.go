@@ -76,10 +76,10 @@ func TestIngressClassHoldsBackOnlyTheBrokenIngress(t *testing.T) {
 	}
 	stop := start()
 	defer func() { stop() }()
-	place := func(name, ns string, ports []v1.SiloPort, svc *v1.SiloService) {
+	place := func(name, ns string, ports []v1.SiloPort, svc []v1.SiloService) {
 		t.Helper()
 		s := containerSilo(name, ns, "docker")
-		s.Spec.Ports, s.Spec.Service = ports, svc
+		s.Spec.Ports, s.Spec.Services = ports, svc
 		if err := c.admin.Create(c.ctx, s); err != nil {
 			t.Fatal(err)
 		}
@@ -88,8 +88,8 @@ func TestIngressClassHoldsBackOnlyTheBrokenIngress(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	place("ingress-web", "kevaso-system", []v1.SiloPort{{Name: "http", Port: 80}}, &v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}})
-	place("app", "shop", []v1.SiloPort{{Name: "http", Port: 8080}}, &v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}})
+	place("ingress-web", "kevaso-system", []v1.SiloPort{{Name: "http", Port: 80}}, []v1.SiloService{{Ports: []v1.ServicePort{{Port: "http"}}}})
+	place("app", "shop", []v1.SiloPort{{Name: "http", Port: 8080}}, []v1.SiloService{{Ports: []v1.ServicePort{{Port: "http"}}}})
 	for _, i := range []*v1.Ingress{ing("a", "a.example.com"), ing("b", "b.example.com")} {
 		if err := c.admin.Create(c.ctx, i); err != nil {
 			t.Fatal(err)

@@ -90,7 +90,9 @@ func genClusterOf(r *rand.Rand) genCluster {
 			silos[i] = s
 			continue // no service
 		}
-		sv := &v1.SiloService{}
+		// Each port's ways in, then one service per way: Internal (a port with none), HostPort on
+		// internal, HostPort on external, LoadBalancer.
+		ways := map[string][]v1.ServicePort{}
 		for _, d := range pickN(r, ports, len(ports)) {
 			sp := v1.ServicePort{Port: d.Name}
 			for _, c := range pickN(r, callers, 2) {
@@ -100,9 +102,9 @@ func genClusterOf(r *rand.Rand) genCluster {
 				}
 				sp.AllowFrom = append(sp.AllowFrom, c)
 			}
-			sp.HostPort = pickN(r, []string{v1.NetworkInternal, v1.NetworkExternal}, 2)
-			sp.LoadBalancer = r.Intn(4) == 0
-			if sp.Outside() {
+			hostPort := pickN(r, []string{v1.NetworkInternal, v1.NetworkExternal}, 2)
+			lb := r.Intn(4) == 0
+			if len(hostPort) > 0 || lb {
 				sp.As = propAs[r.Intn(len(propAs))]
 				sp.Sources = pickN(r, propSources, 2)
 				at := sp.As
@@ -110,41 +112,61 @@ func genClusterOf(r *rand.Rand) genCluster {
 					at = d.Port
 				}
 				ok := true
-				for _, n := range sp.HostPort {
+				for _, n := range hostPort {
 					ok = ok && !held[fmt.Sprintf("%s %s %d", n, d.Proto(), at)]
 				}
-				if !ok || (len(sp.HostPort) > 0 && v1.ReservedHostPort(at) != "") {
+				if !ok || (len(hostPort) > 0 && v1.ReservedHostPort(at) != "") {
 					// Another silo on this host has it, or the number is one the platform listens
 					// on: the scheduler would not put this silo here with that host port.
-					sp.HostPort = nil
-					if !ok || !sp.LoadBalancer {
-						sp.As, sp.Sources, sp.LoadBalancer = 0, nil, false
+					hostPort = nil
+					if !ok || !lb {
+						sp.As, sp.Sources, lb = 0, nil, false
 					}
 				}
 				if !remote {
-					for _, n := range sp.HostPort {
+					for _, n := range hostPort {
 						held[fmt.Sprintf("%s %s %d", n, d.Proto(), at)] = true
 					}
 				}
 			}
-			sv.Ports = append(sv.Ports, sp)
-			if sp.Outside() && r.Intn(3) == 0 {
+			outside := len(hostPort) > 0 || lb
+			for _, n := range hostPort {
+				ways[n] = append(ways[n], sp)
+			}
+			if lb {
+				ways[lbWay] = append(ways[lbWay], sp)
+			}
+			if !outside {
+				ways[""] = append(ways[""], sp)
+			}
+			if outside && r.Intn(3) == 0 {
 				s.Leased = append(s.Leased, d.Name)
 				if r.Intn(2) == 0 {
 					s.Closed = append(s.Closed, d.Name)
 				}
 			}
 		}
-		s.Spec.Service = sv
-		if s.Spec.LoadBalanced() {
-			sv.LoadBalancer = &v1.LoadBalancerSpec{Class: v1.LBIPPool}
-			if !remote && r.Intn(4) != 0 {
-				s.LoadBalancerIP = propLBs[i%len(propLBs)]
+		s.Spec.Services = []v1.SiloService{{}} // a service, maybe with no port
+		for _, w := range []string{"", v1.NetworkInternal, v1.NetworkExternal, lbWay} {
+			if len(ways[w]) == 0 {
+				continue
+			}
+			sv := service(w, ways[w]...)
+			if w != "" {
+				sv.Name = "svc-" + strings.ToLower(w)
+			}
+			if w == "" {
+				s.Spec.Services[0] = sv
+			} else {
+				s.Spec.Services = append(s.Spec.Services, sv)
 			}
 		}
+		if s.Spec.LoadBalanced() && !remote && r.Intn(4) != 0 {
+			s.LoadBalancerIP = propLBs[i%len(propLBs)]
+		}
 		s.Held = r.Intn(6) == 0
-		if len(sv.Ports) > 0 && r.Intn(5) == 0 {
-			s.Paths = map[string][]string{sv.Ports[0].Port: {callers[r.Intn(len(callers))]}}
+		if open := s.Spec.Open(); len(open) > 0 && r.Intn(5) == 0 {
+			s.Paths = map[string][]string{open[0].Name: {callers[r.Intn(len(callers))]}}
 		}
 		silos[i] = s
 	}
@@ -343,7 +365,7 @@ func TestPropertyRemovingTheServiceClosesEverything(t *testing.T) {
 		if !s.IP.IsValid() {
 			continue
 		}
-		s.Spec.Service, s.LoadBalancerIP, s.Paths, s.NodePorts = nil, netip.Addr{}, nil, nil
+		s.Spec.Services, s.LoadBalancerIP, s.Paths, s.NodePorts = nil, netip.Addr{}, nil, nil
 		for j := range g.h.All {
 			if g.h.All[j].Key == s.Key {
 				g.h.All[j] = *s
@@ -393,8 +415,8 @@ func TestPropertyRulesIgnoreOrder(t *testing.T) {
 // that allowFrom opens only to that silo. Silo traffic between hosts comes over the mesh only.
 func TestSpoofedSiloSourceFromTheUplink(t *testing.T) {
 	db := Silo{Key: "dev/db", IP: a("10.64.2.4"), Tap: "kvt04", Spec: v1.SiloSpec{
-		Ports:   []v1.SiloPort{{Name: "pg", Port: 5432}},
-		Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "pg", AllowFrom: []string{"api"}}}}}}
+		Ports:    []v1.SiloPort{{Name: "pg", Port: 5432}},
+		Services: []v1.SiloService{{Ports: []v1.ServicePort{{Port: "pg", AllowFrom: []string{"api"}}}}}}}
 	api := Silo{Key: "dev/api", IP: a("10.64.3.7")} // on another host
 	h := host(db)
 	h.All = []Silo{api, db}

@@ -40,8 +40,8 @@ func TestMetalIngressUnknownHold(t *testing.T) {
 		t.Fatalf("kvoadm ingress install: exit %d\n%s", code, o.String())
 	}
 	c.apply(boxEcho(ns, "app", 8080) + `  ports: [{ name: http, port: 8080 }]
-  service:
-    ports: [{ port: http }]
+  services:
+    - ports: [{ port: http }]
 ---
 apiVersion: kevaso/v1
 kind: Ingress
@@ -55,8 +55,8 @@ spec:
 	// The refused Ingress names a service in its own namespace. One that isn't there is omitted
 	// from the render, not refused, and a hand edit with nothing left out is written back over.
 	c.apply(boxEcho(other, "app", 8080) + `  ports: [{ name: http, port: 8080 }]
-  service:
-    ports: [{ port: http }]
+  services:
+    - ports: [{ port: http }]
 `)
 	c.waitRunning("kevaso-system", 10*time.Minute, "ingress-public")
 	c.waitRunning(ns, 10*time.Minute, "app")

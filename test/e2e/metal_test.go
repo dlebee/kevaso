@@ -202,11 +202,11 @@ func setUpMetal() (s *metalSuite, skip string, err error) {
 	if first("kvm") != "yes" {
 		return nil, "", errors.New("the machine has no /dev/kvm: KVM must be on (and nested virtualization isn't the point here)")
 	}
-	// The DNAT for [external] ports matches the external IP: it must be on an interface (a 1:1
+	// The DNAT for worker: external ports matches the external IP: it must be on an interface (a 1:1
 	// NAT cloud address isn't, and nothing would ever match).
 	for _, ip := range []string{cfg.ExternalIP, cfg.InternalIP} {
 		if ip != "" && !strings.Contains(strings.Join(facts["addr"], " ")+" ", ip+"/") {
-			return nil, "", fmt.Errorf("%s isn't on any interface of the machine (ip -4 addr): behind 1:1 NAT, [external] ports can't work", ip)
+			return nil, "", fmt.Errorf("%s isn't on any interface of the machine (ip -4 addr): behind 1:1 NAT, worker: external ports can't work", ip)
 		}
 	}
 	say("machine %s (%s), this Mac seen as %s", cfg.SSHTarget(), s.uname, s.macIP)

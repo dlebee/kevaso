@@ -61,6 +61,7 @@ func TestK029NodePortsAndHostPortsAreUniqueByTheStore(t *testing.T) {
 		h.Spec.Components.Worker.Labels = map[string]string{"name": n}
 		must(c.Create(ctx, h))
 		h.Status = readyHost(n).Status
+		h.Status.Provider = &v1.HostProvider{Name: "nb", ID: n, Region: "r"} // a balancer is its provider's machines'
 		must(c.UpdateStatus(ctx, h))
 	}
 	mk := func(name string, hostPort bool) *v1.Silo {
@@ -69,21 +70,16 @@ func TestK029NodePortsAndHostPortsAreUniqueByTheStore(t *testing.T) {
 		s.Spec.Resources = v1.Resources{CPU: 1, Memory: "1Gi"}
 		s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 80}}
 		if hostPort {
-			s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", HostPort: []string{v1.NetworkInternal}}}}
+			s.Spec.Services = []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{Worker: v1.NetworkInternal}, Ports: []v1.ServicePort{{Port: "http"}}}}
 		} else { // both on hv1, where their node ports are handed out
 			s.Spec.Placement.HostSelector = map[string]string{"name": "hv1"}
-			s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", LoadBalancer: true}}, LoadBalancer: &v1.LoadBalancerSpec{Class: "nb"}}
+			s.Spec.Services = []v1.SiloService{{Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "nb"}, Ports: []v1.ServicePort{{Port: "http"}}}}
 		}
 		must(c.Create(ctx, s))
 		return s
 	}
-	ip := &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: v1.DefaultIPName("nb"), Namespace: "dev",
-		Labels: map[string]string{v1.LabelDefaultIP: "nb"}}, Spec: v1.IPSpec{Class: "nb", Reclaim: v1.ReclaimDelete}}
-	must(c.Create(ctx, ip))
-	for _, s := range []*v1.Silo{mk("a", false), mk("b", false)} { // the IP controller's part: both on the shared IP
-		ip.Status.BoundTo = append(ip.Status.BoundTo, v1.IPHolder{Holder: v1.HolderSiloPrefix + s.Name, UID: s.UID, Ports: []string{"http"}})
-	}
-	must(c.UpdateStatus(ctx, ip))
+	mk("a", false)
+	mk("b", false)
 	mk("c", true)
 	mk("d", true)
 	classes := func() map[string]scheduler.Class {

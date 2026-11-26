@@ -92,7 +92,7 @@ func routeWhenText(r v1.Routing) string {
 // writeServiceTraffic is, per port of a silo's own service, whether it's routed now.
 func writeServiceTraffic(w io.Writer, s *v1.Silo) {
 	r := routing.Silo(s.Spec, s.Status)
-	if r == nil || len(s.Spec.Service.Ports) == 0 {
+	if r == nil || len(s.Spec.Open()) == 0 {
 		return
 	}
 	_, _ = fmt.Fprintf(w, "Route when:\t%s\n", routeWhenText(*r))

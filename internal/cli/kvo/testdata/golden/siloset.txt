@@ -1,9 +1,20 @@
 NAMESPACE   NAME       IMAGE                                   INSTANCES   READY   UPDATED   AGE
+web3        eth-pool   ubuntu-24.04                            2           0/2     0         -
 web3        rpc-pool   docker.io/ethereum/client-go:v1.14.13   3           0/3     0         -
 
 NAMESPACE   NAME       IMAGE                                   INSTANCES   READY   UPDATED   AGE
+web3        eth-pool   ubuntu-24.04                            2           0/2     0         -
 web3        rpc-pool   docker.io/ethereum/client-go:v1.14.13   3           0/3     0         -
 
+Name:       eth-pool
+Namespace:  web3
+Labels:     -
+VM image:   ubuntu-24.04
+Runtime:    cloud-hypervisor
+Instances:  2 wanted, 0 ready, 0 on revision -
+Upgrades:   Manual; at most 1 not ready at a time
+Scale-in:   NewestFirst (not ready ones first; protected ones never)
+---
 Name:             rpc-pool
 Namespace:        web3
 Labels:           -

@@ -14,8 +14,8 @@ import (
 func heldSilo(ready bool) *v1.Silo {
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "rpc", Namespace: "web3", UID: "u1"},
 		Spec: v1.SiloSpec{Probes: &v1.Probes{Readiness: &v1.Probe{TCP: &v1.TCPProbe{Port: "rpc"}}},
-			Ports:   []v1.SiloPort{{Name: "rpc", Port: 8545}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc", HostPort: []string{v1.NetworkExternal}}}, RouteWhen: v1.RouteWhenReady}},
+			Ports:    []v1.SiloPort{{Name: "rpc", Port: 8545}},
+			Services: []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "rpc"}}, RouteWhen: v1.RouteWhenReady}}},
 		Status: v1.SiloStatus{Phase: "Running", Host: "w1", SiloIP: "10.64.1.2"}}
 	st := meta.ConditionFalse
 	if ready {

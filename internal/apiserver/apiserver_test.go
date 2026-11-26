@@ -277,79 +277,158 @@ func TestRBACObjectsAreValidated(t *testing.T) {
 	}
 }
 
-func TestServiceAndPoolValidation(t *testing.T) {
+func TestServiceAndAddressValidation(t *testing.T) {
 	c, ctx := setup(t)
+	tm := func(k string) meta.TypeMeta { return meta.TypeMeta{APIVersion: v1.APIVersion, Kind: k} }
 	svc := func(f func(*v1.Silo)) *v1.Silo {
 		s := newSilo("p2p")
 		s.Spec.Ports = []v1.SiloPort{{Name: "p2p", Port: 30303}, {Name: "disc", Port: 30303, Protocol: "UDP"}}
-		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "p2p"}, {Port: "disc"}}}
+		s.Spec.Services = []v1.SiloService{{Ports: []v1.ServicePort{{Port: "p2p"}, {Port: "disc"}}}}
 		f(s)
 		return s
 	}
 	good := svc(func(s *v1.Silo) {
 		srcs := []string{"203.0.113.0/24", "198.51.100.7"}
-		s.Spec.Service.Ports = []v1.ServicePort{
-			{Port: "p2p", HostPort: []string{"external"}, Sources: srcs, AllowFrom: []string{"ops/grafana"}},
-			{Port: "disc", HostPort: []string{"external"}, Sources: srcs},
-		}
-		s.Spec.Network.Egress.Source = "sameAsService"
+		s.Spec.Services = []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{IP: "eth"}, Ports: []v1.ServicePort{
+			{Port: "p2p", Sources: srcs, AllowFrom: []string{"ops/grafana"}},
+			{Port: "disc", Sources: srcs},
+		}}}
+		s.Spec.Network.Egress.Source = &v1.EgressSource{IP: "eth"}
 	})
 	if err := c.Create(ctx, good); err != nil {
 		t.Fatal(err)
 	}
 	for name, s := range map[string]*v1.Silo{
-		"unknown hostPort":     svc(func(s *v1.Silo) { s.Spec.Service.Ports[0].HostPort = []string{"public"} }),
+		"unknown worker network": svc(func(s *v1.Silo) {
+			s.Spec.Services[0].Type, s.Spec.Services[0].HostPort = v1.ServiceHostPort, &v1.HostPortSource{Worker: "public"}
+		}),
 		"port 0":               svc(func(s *v1.Silo) { s.Spec.Ports[0].Port = 0 }),
 		"SCTP":                 svc(func(s *v1.Silo) { s.Spec.Ports[0].Protocol = "SCTP" }),
 		"duplicate port names": svc(func(s *v1.Silo) { s.Spec.Ports[1].Name = "p2p" }),
-		"sources without host": svc(func(s *v1.Silo) { s.Spec.Service.Ports[0].Sources = []string{"10.0.0.0/8"} }),
-		"service port a ghost": svc(func(s *v1.Silo) { s.Spec.Service.Ports[0].Port = "rpc" }),
+		"sources on Internal":  svc(func(s *v1.Silo) { s.Spec.Services[0].Ports[0].Sources = []string{"10.0.0.0/8"} }),
+		"service port a ghost": svc(func(s *v1.Silo) { s.Spec.Services[0].Ports[0].Port = "rpc" }),
 		"bad CIDR": svc(func(s *v1.Silo) {
-			s.Spec.Service.Ports[0].HostPort = []string{"external"}
-			s.Spec.Service.Ports[0].Sources = []string{"10.0.0.0/33"}
+			s.Spec.Services[0].Type = v1.ServiceHostPort
+			s.Spec.Services[0].Ports[0].Sources = []string{"10.0.0.0/33"}
 		}),
-		"LB class with bad characters": svc(func(s *v1.Silo) {
-			s.Spec.Service.Ports[0].LoadBalancer = true
-			s.Spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "Linode_NB"}
+		"provider with bad characters": svc(func(s *v1.Silo) {
+			s.Spec.Services[0].Type, s.Spec.Services[0].LoadBalancer = v1.ServiceLoadBalancer, &v1.LoadBalancerSpec{Provider: "Linode_NB"}
 		}),
-		"egress.ip without source pool": svc(func(s *v1.Silo) { s.Spec.Network.Egress.IP = "eth" }),
-		"sameAsService, private":        svc(func(s *v1.Silo) { s.Spec.Network.Egress.Source = "sameAsService" }),
-		"egress pool without pool":      svc(func(s *v1.Silo) { s.Spec.Network.Egress.Source = "pool" }),
-		"allowFrom a/b/c":               svc(func(s *v1.Silo) { s.Spec.Service.Ports[0].AllowFrom = []string{"a/b/c"} }),
+		"own on a single silo": svc(func(s *v1.Silo) { s.Spec.Network.Egress.Source = &v1.EgressSource{Own: true} }),
+		"two ways in one service": svc(func(s *v1.Silo) {
+			s.Spec.Services[0].Type, s.Spec.Services[0].HostPort = v1.ServiceHostPort, &v1.HostPortSource{Worker: "external", IP: "eth"}
+		}),
+		"allowFrom a/b/c": svc(func(s *v1.Silo) { s.Spec.Services[0].Ports[0].AllowFrom = []string{"a/b/c"} }),
 	} {
-
 		s.Name = "bad"
 		if err := c.Create(ctx, s); !client.IsInvalid(err) {
 			t.Errorf("%s: want Invalid, got %v", name, err)
 		}
 	}
-	// IPs: a class, a known reclaim, placement hints that fit the class.
-	mkIP := func(f func(*v1.IP)) *v1.IP {
-		x := &v1.IP{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IP"}, ObjectMeta: meta.ObjectMeta{Name: "eth", Namespace: "dev"},
-			Spec: v1.IPSpec{Class: v1.LBIPPool}}
-		f(x)
-		return x
+	// IPs: an explicit type and only its fields.
+	mkIP := func(name string, sp v1.IPSpec) *v1.IP {
+		return &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev"}, Spec: sp}
 	}
 	for name, x := range map[string]*v1.IP{
-		"no class":           mkIP(func(x *v1.IP) { x.Spec.Class = "" }),
-		"unknown reclaim":    mkIP(func(x *v1.IP) { x.Spec.Reclaim = "Forever" }),
-		"region on ip-pool":  mkIP(func(x *v1.IP) { x.Spec.Region = "ca-central" }),
-		"host on a plugin's": mkIP(func(x *v1.IP) { x.Spec.Class, x.Spec.Host = "linode-shared-ip", "metal-1" }),
-		"not an address":     mkIP(func(x *v1.IP) { x.Spec.Address = "nope" }),
+		"no type":             mkIP("x", v1.IPSpec{HostAddress: "mail"}),
+		"Host with a region":  mkIP("x", v1.IPSpec{Type: v1.IPTypeHost, HostAddress: "mail", Region: "us-ord"}),
+		"Provider, no region": mkIP("x", v1.IPSpec{Type: v1.IPTypeProvider, Provider: "linode"}),
 	} {
 		if err := c.Create(ctx, x); !client.IsInvalid(err) {
 			t.Errorf("IP %s: want Invalid, got %v", name, err)
 		}
 	}
-	if err := c.Create(ctx, mkIP(func(x *v1.IP) { x.Spec.Host = "metal-1" })); err != nil {
+	// A host's extra addresses: named, one IPv4 address each, names unique in the cluster.
+	host := func(name, ext string, a ...v1.HostAddress) *v1.Host {
+		return &v1.Host{TypeMeta: tm("Host"), ObjectMeta: meta.ObjectMeta{Name: name},
+			Spec: v1.HostSpec{ExternalIP: ext, Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}, Addresses: a}}
+	}
+	for name, a := range map[string]v1.HostAddress{
+		"garbage":      {Name: "x", Kind: "external", Address: "nope"},
+		"IPv6 for now": {Name: "x", Kind: "external", Address: "2001:db8:42::1"},
+		"a range":      {Name: "x", Kind: "external", Address: "198.51.100.0/30"},
+		"no kind":      {Name: "x", Address: "198.51.100.20"},
+	} {
+		if err := c.Create(ctx, host("addr", "198.51.100.9", a)); !client.IsInvalid(err) {
+			t.Errorf("host address %s: want Invalid, got %v", name, err)
+		}
+	}
+	if err := c.Create(ctx, host("metal-1", "198.51.100.9", v1.HostAddress{Name: "eth", Kind: "external", Address: "198.51.100.21"},
+		v1.HostAddress{Name: "mail", Kind: "external", Address: "198.51.100.22"})); err != nil {
 		t.Fatal(err)
 	}
-	// A host's extra addresses: IPv4 CIDRs and single addresses.
-	for name, addrs := range map[string][]string{"garbage": {"nope"}, "IPv6 for now": {"2001:db8:42::/64"}, "too wide": {"198.51.0.0/16"}} {
-		h := &v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: "addr-" + strings.ReplaceAll(strings.ToLower(name), " ", "-")},
-			Spec: v1.HostSpec{ExternalIP: "198.51.100.9", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}, Network: v1.HostNetwork{Addresses: addrs}}}
-		if err := c.Create(ctx, h); !client.IsInvalid(err) {
-			t.Errorf("host addresses %s: want Invalid, got %v", name, err)
+	if err := c.Create(ctx, host("metal-2", "198.51.100.10", v1.HostAddress{Name: "eth", Kind: "external", Address: "198.51.100.31"})); !client.IsConflict(err) ||
+		!strings.Contains(err.Error(), "address name eth is metal-1's already") {
+		t.Errorf("a second host's eth: %v, want 409 naming metal-1", err)
+	}
+	if err := c.Create(ctx, host("metal-2", "198.51.100.10", v1.HostAddress{Name: "web", Kind: "external", Address: "198.51.100.21"})); !client.IsConflict(err) ||
+		!strings.Contains(err.Error(), "is metal-1 (eth) already") {
+		t.Errorf("metal-1's address on metal-2: %v, want 409", err)
+	}
+	if err := c.Create(ctx, host("metal-2", "198.51.100.10", v1.HostAddress{Name: "web", Kind: "external", Address: "198.51.100.31"})); err != nil {
+		t.Fatal(err)
+	}
+	// Two Host IPs no host has together.
+	for _, x := range []*v1.IP{
+		mkIP("eth", v1.IPSpec{Type: v1.IPTypeHost, HostAddress: "eth"}),
+		mkIP("mail", v1.IPSpec{Type: v1.IPTypeHost, HostAddress: "mail"}),
+		mkIP("web", v1.IPSpec{Type: v1.IPTypeHost, HostAddress: "web"}),
+		mkIP("edge", v1.IPSpec{Type: v1.IPTypeProvider, Provider: "linode", Region: "us-ord"}),
+	} {
+		if err := c.Create(ctx, x); err != nil {
+			t.Fatal(err)
 		}
+	}
+	apart := svc(func(s *v1.Silo) {
+		s.Name = "apart"
+		s.Spec.Services = []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{IP: "eth"}, Ports: []v1.ServicePort{{Port: "p2p"}, {Port: "disc"}}}}
+		s.Spec.Network.Egress.Source = &v1.EgressSource{IP: "web"}
+	})
+	if err := c.Create(ctx, apart); !client.IsInvalid(err) || !strings.Contains(err.Error(), "no host has both") {
+		t.Errorf("IPs of metal-1 and metal-2 on one silo: %v, want Invalid", err)
+	}
+	together := svc(func(s *v1.Silo) {
+		s.Name = "together"
+		s.Spec.Services = []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{IP: "eth"}, Ports: []v1.ServicePort{{Port: "p2p"}, {Port: "disc"}}}}
+		s.Spec.Network.Egress.Source = &v1.EgressSource{IP: "mail"}
+	})
+	if err := c.Create(ctx, together); err != nil {
+		t.Errorf("two IPs of metal-1: %v", err)
+	}
+	// A balancer's kept IP is a Provider IP of the balancer's provider.
+	balanced := func(name, provider, ip string) *v1.Silo {
+		return svc(func(s *v1.Silo) {
+			s.Name = name
+			s.Spec.Services = []v1.SiloService{{Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: provider, IP: ip}, Ports: []v1.ServicePort{{Port: "p2p"}}}}
+		})
+	}
+	if err := c.Create(ctx, balanced("lb-host", "linode", "eth")); !client.IsInvalid(err) || !strings.Contains(err.Error(), "a balancer is the provider's") {
+		t.Errorf("a balancer on a host's address: %v, want Invalid", err)
+	}
+	if err := c.Create(ctx, balanced("lb-other", "azure", "edge")); !client.IsInvalid(err) || !strings.Contains(err.Error(), "edge is linode's, and the balancer is azure's") {
+		t.Errorf("a balancer on another provider's IP: %v, want Invalid", err)
+	}
+	if err := c.Create(ctx, balanced("lb", "linode", "edge")); err != nil {
+		t.Errorf("a balancer on its provider's IP: %v", err)
+	}
+	if err := c.Create(ctx, balanced("lb-later", "linode", "not-yet")); err != nil {
+		t.Errorf("an IP not made yet could work later: %v", err)
+	}
+	// A Service is never a HostPort; a SiloSet's template never names one IP.
+	hp := &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "group", Namespace: "dev"},
+		Spec: v1.ServiceSpec{Type: v1.ServiceHostPort, Selector: map[string]string{"app": "p2p"}, Ports: []v1.ServicePortSpec{{Name: "p2p", Port: 30303}}}}
+	if err := c.Create(ctx, hp); !client.IsInvalid(err) || !strings.Contains(err.Error(), "a Service of several can't be one") {
+		t.Errorf("a HostPort Service: %v, want Invalid", err)
+	}
+	set := &v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: "pool", Namespace: "dev"},
+		Spec: v1.SiloSetSpec{Instances: 1, Template: v1.SiloTemplate{SiloSpec: good.Spec}}}
+	if err := c.Create(ctx, set); !client.IsInvalid(err) || !strings.Contains(err.Error(), "one IP can't serve many instances") {
+		t.Errorf("a template naming an IP: %v, want Invalid", err)
+	}
+	set.Spec.IPs = "pool-ips"
+	set.Spec.Template.Services[0].HostPort = &v1.HostPortSource{Own: true}
+	set.Spec.Template.Network.Egress.Source = &v1.EgressSource{Own: true}
+	if err := c.Create(ctx, set); err != nil {
+		t.Errorf("a template on own with ips: %v", err)
 	}
 }

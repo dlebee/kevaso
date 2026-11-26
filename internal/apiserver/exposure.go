@@ -58,12 +58,15 @@ func facetsOf(spec v1.SiloSpec) map[string]facet {
 			approval: p.Lease != nil && p.Lease.Approval != nil && p.Lease.Approval.Required,
 			sources:  append([]string(nil), p.Sources...),
 		}
-		if p.LoadBalancer {
-			f.class = spec.LBClass()
+		for _, sv := range spec.Services {
+			if v1.ServiceNameOf(sv, "") == p.Service && sv.LoadBalancer != nil && p.LoadBalancer {
+				f.class = sv.LoadBalancer.Provider + "/" + sv.LoadBalancer.IP
+			}
 		}
-		f.nets = append([]string(nil), p.HostPort...)
-		slices.Sort(f.nets)
-		out[p.Name] = f
+		if p.Type == v1.ServiceHostPort {
+			f.nets = []string{p.Way.String()} // the address it arrives on: worker, an IP, own
+		}
+		out[p.Service+"/"+p.Name] = f
 	}
 	return out
 }
@@ -315,7 +318,7 @@ func serviceLoosened(prev, obj meta.Object, silos []*v1.Silo) bool {
 	if old == nil || old.Spec.Type != v1.ServiceLoadBalancer { // a new load balancer, or a service that became one
 		return true
 	}
-	if serviceSelectorLoosened(old, next, silos) || servicePortsLoosened(old, next) || old.Spec.LoadBalancerClass != next.Spec.LoadBalancerClass { // a load balancer opens more, or its selector matches a new silo
+	if serviceSelectorLoosened(old, next, silos) || servicePortsLoosened(old, next) || fmt.Sprint(old.Spec.LoadBalancer) != fmt.Sprint(next.Spec.LoadBalancer) { // a load balancer opens more, or its selector matches a new silo
 		return true
 	}
 	return false
@@ -481,7 +484,7 @@ func exposureFacts(obj meta.Object) string {
 		b.WriteString(labelFacts(o.Labels))
 	case *v1.Service:
 		if o.Spec.Type == v1.ServiceLoadBalancer {
-			fmt.Fprintf(&b, "svc:%s:%s:", o.Spec.Type, o.Spec.LoadBalancerClass)
+			fmt.Fprintf(&b, "svc:%s:%v:", o.Spec.Type, o.Spec.LoadBalancer)
 			b.WriteString(labelFacts(o.Spec.Selector))
 			ports := append([]v1.ServicePortSpec(nil), o.Spec.Ports...)
 			slices.SortFunc(ports, func(a, c v1.ServicePortSpec) int { return strings.Compare(a.Name, c.Name) })

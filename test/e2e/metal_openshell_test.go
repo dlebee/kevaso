@@ -27,9 +27,9 @@ import (
 //   - both runtimes install on the machine's Ubuntu and get Ready;
 //   - a silo of each runs: kvo exec, a terminal of the Mac's size (kvo exec -it), the name it
 //     has on its gateway;
-//   - what OpenShell can't do is refused at admission with its reason: a service (hostPort:
-//     [external]: it has no network card), a file or env delivery, the local endpoint (broker),
-//     a registry pull;
+//   - what OpenShell can't do is refused at admission with its reason: a service (a HostPort
+//     one: it has no network card), a file or env delivery, the local endpoint (broker), a
+//     registry pull;
 //   - a secret by inject: the silo holds OpenShell's placeholder, the stand-in API sees the key,
 //     a name no grant allows is refused, the key is nowhere inside;
 //   - the gateway stopped behind Kevaso's back: the agent starts the silo again; kvo reset makes
@@ -79,7 +79,7 @@ func TestMetalOpenShell(t *testing.T) {
 		grant("preload", "{ name: api-key, key: token, deliver: inject, env: LD_PRELOAD, to: { host: "+osInetName+" } }"))
 	for _, rt := range []string{"openshell", "openshell-container"} {
 		for what, c2 := range map[string]struct{ extra, want string }{
-			"a service (hostPort: [external])":  {"  ports: [{ name: web, port: 18150 }]\n  service:\n    ports: [{ port: web, hostPort: [external] }]\n", "no network interface, so no service"},
+			"a HostPort service":                {"  ports: [{ name: web, port: 18150 }]\n  services:\n    - type: HostPort\n      ports: [{ port: web }]\n", "no network interface, so no service"},
 			"a file delivery":                   {"  grants: [files]\n", "can't put a file or a variable in an OpenShell sandbox"},
 			"an env delivery":                   {"  grants: [vars]\n", "can't put a file or a variable in an OpenShell sandbox"},
 			"the local endpoint (broker)":       {"  grants: [broker]\n", "can't reach the host's local endpoint"},

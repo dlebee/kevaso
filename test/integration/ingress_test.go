@@ -107,11 +107,11 @@ func TestIngress(t *testing.T) {
 	ctx, cancel := context.WithCancel(c.ctx)
 	defer cancel()
 	defer runAgent(ctx, a)()
-	place := func(name, ns string, ports []v1.SiloPort, svc *v1.SiloService) {
+	place := func(name, ns string, ports []v1.SiloPort, svc []v1.SiloService) {
 		t.Helper()
 		s := containerSilo(name, ns, "docker")
 		s.Spec.Ports = ports
-		s.Spec.Service = svc
+		s.Spec.Services = svc
 		if err := c.admin.Create(c.ctx, s); err != nil {
 			t.Fatal(err)
 		}
@@ -121,8 +121,8 @@ func TestIngress(t *testing.T) {
 		}
 	}
 	place("ingress-public", "kevaso-system", []v1.SiloPort{{Name: "http", Port: 80}, {Name: "https", Port: 443}},
-		&v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}, {Port: "https"}}})
-	place("api", "payments", []v1.SiloPort{{Name: "http", Port: 8080}}, &v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}})
+		[]v1.SiloService{{Ports: []v1.ServicePort{{Port: "http"}, {Port: "https"}}}})
+	place("api", "payments", []v1.SiloPort{{Name: "http", Port: 8080}}, []v1.SiloService{{Ports: []v1.ServicePort{{Port: "http"}}}})
 	if err := c.as(t, "ada").Create(c.ctx, ing("api")); err != nil {
 		t.Fatalf("admin publishing: %v", err)
 	}

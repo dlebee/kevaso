@@ -62,6 +62,7 @@ func dockerHost(n string) *v1.Host {
 	h.Spec.Components.Worker.Labels = map[string]string{"name": n}
 	h.Spec.Components.Worker.Runtimes = []v1.RuntimeSpec{{Name: "docker"}}
 	h.Status.Runtimes = map[string]v1.RuntimeStatus{"docker": {State: "Ready"}}
+	h.Status.Provider = &v1.HostProvider{Name: "nb", ID: n, Region: "r"} // a balancer is its provider's machines'
 	return h
 }
 
@@ -72,8 +73,8 @@ func (x *k029) must(err error) {
 	}
 }
 
-// silo makes a container silo pinned to host: a load-balanced one on a node-port class (bound
-// to the namespace's shared IP), or one with host port 80 on the internal network.
+// silo makes a container silo pinned to host: a load-balanced one on a node-port provider, or
+// one with host port 80 on the internal network.
 func (x *k029) silo(name, host string, hostPort bool) *v1.Silo {
 	s := newSilo(name)
 	s.Spec.Runtime, s.Spec.Container = "docker", &v1.ContainerSource{Image: "app"}
@@ -81,25 +82,15 @@ func (x *k029) silo(name, host string, hostPort bool) *v1.Silo {
 	s.Spec.Resources = v1.Resources{CPU: 1, Memory: "1Gi"}
 	s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 80}}
 	if hostPort {
-		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", HostPort: []string{v1.NetworkInternal}}}}
+		s.Spec.Services = []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{Worker: v1.NetworkInternal}, Ports: []v1.ServicePort{{Port: "http"}}}}
 	} else {
-		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", LoadBalancer: true}}, LoadBalancer: &v1.LoadBalancerSpec{Class: "nb"}}
+		s.Spec.Services = []v1.SiloService{{Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "nb"}, Ports: []v1.ServicePort{{Port: "http"}}}}
 	}
 	if host != "" {
 		s.Spec.Placement.HostSelector = map[string]string{"name": host}
 	}
 	x.must(x.c.Create(x.ctx, s))
 	return s
-}
-
-func (x *k029) bindIP(silos ...*v1.Silo) {
-	ip := &v1.IP{TypeMeta: tmK029("IP"), ObjectMeta: meta.ObjectMeta{Name: v1.DefaultIPName("nb"), Namespace: "dev",
-		Labels: map[string]string{v1.LabelDefaultIP: "nb"}}, Spec: v1.IPSpec{Class: "nb", Reclaim: v1.ReclaimDelete}}
-	x.must(x.c.Create(x.ctx, ip))
-	for _, s := range silos {
-		ip.Status.BoundTo = append(ip.Status.BoundTo, v1.IPHolder{Holder: v1.HolderSiloPrefix + s.Name, UID: s.UID, Ports: []string{"http"}})
-	}
-	x.must(x.c.UpdateStatus(x.ctx, ip))
 }
 
 func (x *k029) ctl() *silo.Controller {
@@ -143,8 +134,8 @@ func (x *k029) unpin(name string) {
 // the first time it sees them on their new host.
 func TestK029AMovedSiloHoldsItsPortsOnItsNewHost(t *testing.T) {
 	x := newK029(t)
-	b, a := x.silo("b", "hv2", false), x.silo("a", "hv1", false)
-	x.bindIP(a, b)
+	x.silo("b", "hv2", false)
+	x.silo("a", "hv1", false)
 	x.silo("c", "hv2", true)
 	x.silo("d", "hv1", true)
 	place := x.ctl()
@@ -231,8 +222,8 @@ func TestK029ADrainedSiloClaimsWhereItLandsAndLetsGoWhereItLeft(t *testing.T) {
 // True once the other silo is gone.
 func TestK029SilosPutOnAHostWithoutClaimingAreSortedOut(t *testing.T) {
 	x := newK029(t)
-	a, b := x.silo("a", "hv1", false), x.silo("b", "hv1", false)
-	x.bindIP(a, b)
+	x.silo("a", "hv1", false)
+	x.silo("b", "hv1", false)
 	x.silo("c", "hv1", true)
 	x.silo("d", "hv1", true)
 	ctl := x.ctl()

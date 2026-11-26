@@ -114,7 +114,7 @@ func reach(ctx context.Context, cfg remote.Config) (*metalSuite, error) {
 		return nil, fmt.Errorf("%s: %w", cfg.SSHTarget(), err)
 	}
 	if !strings.Contains(addr+" ", cfg.ExternalIP+"/") {
-		return nil, fmt.Errorf("%s isn't on any interface of %s (ip -4 addr): [external] ports match that address", cfg.ExternalIP, cfg.SSHTarget())
+		return nil, fmt.Errorf("%s isn't on any interface of %s (ip -4 addr): worker: external ports match that address", cfg.ExternalIP, cfg.SSHTarget())
 	}
 	return s, nil
 }

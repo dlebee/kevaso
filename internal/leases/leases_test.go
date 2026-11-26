@@ -14,25 +14,31 @@ import (
 
 var t0 = time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 
-// svc is a silo spec whose service has web always open on the host, debug leased on the given
-// terms (nil: not leased) and disc open on its silo IP only (not outside).
+// svc is a silo spec whose HostPort service has web always open on the host and debug leased on
+// the given terms (nil: not leased), and whose Internal service opens disc on its silo IP only
+// (not outside).
 func svc(debug *v1.PortLease) v1.SiloSpec {
-	ext := []string{v1.NetworkExternal}
 	return v1.SiloSpec{
 		Ports: []v1.SiloPort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}, {Name: "disc", Port: 30303, Protocol: "UDP"}},
-		Service: &v1.SiloService{Ports: []v1.ServicePort{
-			{Port: "web", HostPort: ext, Sources: []string{"203.0.113.0/24"}},
-			{Port: "debug", HostPort: ext, Sources: []string{"203.0.113.0/24"}, Lease: debug},
-			{Port: "disc"},
-		}},
+		Services: []v1.SiloService{
+			{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{
+				{Port: "web", Sources: []string{"203.0.113.0/24"}},
+				{Port: "debug", Sources: []string{"203.0.113.0/24"}, Lease: debug},
+			}},
+			{Name: "peers", Ports: []v1.ServicePort{{Port: "disc"}}},
+		},
 	}
 }
 
 // withLease gives one more port of spec a lease.
 func withLease(spec v1.SiloSpec, port string, pl *v1.PortLease) v1.SiloSpec {
-	for i := range spec.Service.Ports {
-		if spec.Service.Ports[i].Port == port {
-			spec.Service.Ports[i].Lease = pl
+	spec.Services = slices.Clone(spec.Services)
+	for j := range spec.Services {
+		spec.Services[j].Ports = slices.Clone(spec.Services[j].Ports)
+		for i := range spec.Services[j].Ports {
+			if spec.Services[j].Ports[i].Port == port {
+				spec.Services[j].Ports[i].Lease = pl
+			}
 		}
 	}
 	return spec
@@ -53,16 +59,18 @@ func TestValidate(t *testing.T) {
 		{"good", svc(&v1.PortLease{Default: "30m", Max: "2h"}), nil},
 		{"empty lease: closed until leased", svc(&v1.PortLease{}), nil},
 		{"two ports, their own terms", withLease(svc(&v1.PortLease{Max: "2h", Approval: &v1.ApprovalRule{Required: true}}), "web", &v1.PortLease{Max: "4h"}), nil},
-		{"private", v1.SiloSpec{Ports: []v1.SiloPort{{Name: "web", Port: 80}}, Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", Lease: &v1.PortLease{}}}}},
-			[]string{"service.ports[web].lease: only on a port with hostPort or loadBalancer"}},
-		{"port not outside", withLease(svc(nil), "disc", &v1.PortLease{}), []string{"service.ports[disc].lease: only on a port with hostPort or loadBalancer"}},
-		{"bad durations", svc(&v1.PortLease{Default: "soon", Max: "0s"}), []string{"service.ports[debug].lease.max 0s: at least 1s", "default \"soon\" isn't a duration"}},
+		{"private", v1.SiloSpec{Ports: []v1.SiloPort{{Name: "web", Port: 80}}, Services: []v1.SiloService{{Ports: []v1.ServicePort{{Port: "web", Lease: &v1.PortLease{}}}}}},
+			[]string{"services: ports[web].lease: only on a HostPort service"}},
+		{"port not outside", withLease(svc(nil), "disc", &v1.PortLease{}), []string{"service peers: ports[disc].lease: only on a HostPort service"}},
+		{"on a load balancer", v1.SiloSpec{Ports: []v1.SiloPort{{Name: "web", Port: 80}}, Services: []v1.SiloService{{Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "linode"}, Ports: []v1.ServicePort{{Port: "web", Lease: &v1.PortLease{}}}}}},
+			[]string{"services: ports[web].lease: only on a HostPort service"}},
+		{"bad durations", svc(&v1.PortLease{Default: "soon", Max: "0s"}), []string{"ports[debug].lease.max 0s: at least 1s", "default \"soon\" isn't a duration"}},
 		{"max over the cluster's", svc(&v1.PortLease{Max: "5h"}), []string{"max 5h0m0s is more than this cluster allows (4h0m0s)"}},
 		{"default over max", svc(&v1.PortLease{Default: "3h", Max: "2h"}), []string{"default 3h0m0s is more than its max (2h0m0s)"}},
 		{"default over the cluster's default max", svc(&v1.PortLease{Default: "90m"}), []string{"more than its max (1h0m0s)"}},
 		// (lease.allowFrom is gone: a leased port's sources are the port's own, checked by admission.)
 		{"each port checked on its own", withLease(svc(&v1.PortLease{Max: "2h"}), "web", &v1.PortLease{Max: "5h"}),
-			[]string{"service.ports[web].lease.max 5h0m0s is more than this cluster allows"}},
+			[]string{"ports[web].lease.max 5h0m0s is more than this cluster allows"}},
 	} {
 		errs := Validate(c.sv, l)
 		if len(c.wants) == 0 && len(errs) > 0 {
@@ -125,11 +133,6 @@ func TestLeased(t *testing.T) {
 	if got := Leased(withLease(svc(nil), "disc", &v1.PortLease{})); got != nil {
 		t.Errorf("disc isn't outside: %v", got)
 	}
-	lb := withLease(svc(&v1.PortLease{}), "disc", &v1.PortLease{})
-	lb.Service.Ports[2].LoadBalancer = true
-	if got := Leased(lb); !slices.Equal(got, []string{"debug", "disc"}) {
-		t.Errorf("on the load balancer, disc is outside: %v", got)
-	}
 	if got := Exposed(svc(nil)); !slices.Equal(got, []string{"web", "debug"}) {
 		t.Errorf("exposed: %v", got)
 	}
@@ -145,9 +148,9 @@ func TestLeased(t *testing.T) {
 // doesn't, its own sources, its own clock; the port without a lease is always open.
 func TestTwoLeasedPorts(t *testing.T) {
 	sv := svc(&v1.PortLease{Max: "2h", Approval: &v1.ApprovalRule{Required: true}})
-	sv.Service.Ports[1].Sources = []string{"203.0.113.7"}
+	sv.Services[0].Ports[1].Sources = []string{"203.0.113.7"}
 	sv.Ports = append(sv.Ports, v1.SiloPort{Name: "preview", Port: 3000})
-	sv.Service.Ports = append(sv.Service.Ports, v1.ServicePort{Port: "preview", HostPort: []string{v1.NetworkExternal}, Lease: &v1.PortLease{Max: "8h", Default: "1h"}})
+	sv.Services[0].Ports = append(sv.Services[0].Ports, v1.ServicePort{Port: "preview", Lease: &v1.PortLease{Max: "8h", Default: "1h"}})
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "api", UID: "u1"}, Spec: sv}
 	lim := Limits{Max: 24 * time.Hour, DefaultMax: time.Hour}
 	if errs := Validate(sv, lim); len(errs) > 0 {

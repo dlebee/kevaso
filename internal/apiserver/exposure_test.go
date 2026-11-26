@@ -24,8 +24,12 @@ func TestExposureLoosenedIsDirectional(t *testing.T) {
 		edit(s)
 		return s
 	}
-	web := func(s *v1.Silo) *v1.ServicePort { return &s.Spec.Service.Ports[0] }
-	debug := func(s *v1.Silo) *v1.ServicePort { return &s.Spec.Service.Ports[1] }
+	web := func(s *v1.Silo) *v1.ServicePort { return &s.Spec.Services[0].Ports[0] }
+	debug := func(s *v1.Silo) *v1.ServicePort { return &s.Spec.Services[0].Ports[1] }
+	another := func(s *v1.Silo, sv v1.SiloService) {
+		sv.Ports = []v1.ServicePort{{Port: "web"}}
+		s.Spec.Services = append(s.Spec.Services, sv)
+	}
 	cases := []struct {
 		name string
 		next *v1.Silo
@@ -33,25 +37,30 @@ func TestExposureLoosenedIsDirectional(t *testing.T) {
 	}{
 		{"unchanged", cloneOf(t, base), false},
 		{"narrower sources", next(func(s *v1.Silo) { web(s).Sources = []string{"10.1.0.0/16"} }), false},
-		{"drop a host network", next(func(s *v1.Silo) { web(s).HostPort = nil }), false},
+		{"drop the way in", next(func(s *v1.Silo) { s.Spec.Services = nil }), false},
 		{"remove an outside port", next(func(s *v1.Silo) {
-			s.Spec.Service.Ports = s.Spec.Service.Ports[:1]
+			s.Spec.Services[0].Ports = s.Spec.Services[0].Ports[:1]
 		}), false},
 		{"add a lease", next(func(s *v1.Silo) { web(s).Lease = &v1.PortLease{} }), false},
 		{"an unparseable source is not a widening", next(func(s *v1.Silo) { web(s).Sources = []string{"not-an-ip"} }), false},
 		{"clear sources", next(func(s *v1.Silo) { web(s).Sources = nil }), true},
 		{"the world", next(func(s *v1.Silo) { web(s).Sources = []string{"0.0.0.0/0"} }), true},
 		{"a source outside the old ones", next(func(s *v1.Silo) { web(s).Sources = []string{"10.0.0.0/8", "11.0.0.0/8"} }), true},
-		{"a new host network", next(func(s *v1.Silo) { web(s).HostPort = []string{v1.NetworkExternal, v1.NetworkInternal} }), true},
+		{"another way in on the worker", next(func(s *v1.Silo) {
+			another(s, v1.SiloService{Name: "ops", Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{Worker: v1.NetworkInternal}})
+		}), true},
+		{"the way in moved to an IP", next(func(s *v1.Silo) { s.Spec.Services[0].HostPort = &v1.HostPortSource{IP: "edge"} }), true},
 		{"a new number", next(func(s *v1.Silo) { web(s).As = 8443 }), true},
 		{"a new protocol", next(func(s *v1.Silo) { s.Spec.Ports[0].Protocol = "UDP" }), true},
 		{"a new outside port", next(func(s *v1.Silo) {
 			s.Spec.Ports = append(s.Spec.Ports, v1.SiloPort{Name: "metrics", Port: 9090})
-			s.Spec.Service.Ports = append(s.Spec.Service.Ports, v1.ServicePort{Port: "metrics", HostPort: []string{v1.NetworkExternal}})
+			s.Spec.Services[0].Ports = append(s.Spec.Services[0].Ports, v1.ServicePort{Port: "metrics"})
 		}), true},
 		{"a lease removed", next(func(s *v1.Silo) { debug(s).Lease = nil }), true},
 		{"approval no longer required", next(func(s *v1.Silo) { debug(s).Lease = &v1.PortLease{} }), true},
-		{"a load balancer added", next(func(s *v1.Silo) { web(s).LoadBalancer = true }), true},
+		{"a load balancer added", next(func(s *v1.Silo) {
+			another(s, v1.SiloService{Name: "shop", Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "linode"}})
+		}), true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -62,14 +71,14 @@ func TestExposureLoosenedIsDirectional(t *testing.T) {
 	}
 
 	classed := cloneOf(t, base)
-	web(classed).LoadBalancer = true
+	another(classed, v1.SiloService{Name: "shop", Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "linode"}})
 	changed := cloneOf(t, classed)
-	changed.Spec.Service.LoadBalancer.Class = "other"
+	changed.Spec.Services[1].LoadBalancer.Provider = "other"
 	if !exposureLoosened(classed, changed, nil, nil, nil) {
-		t.Fatal("a changed load-balancer class is a loosening")
+		t.Fatal("a changed load-balancer provider is a loosening")
 	}
 	dropped := cloneOf(t, classed)
-	web(dropped).LoadBalancer = false
+	dropped.Spec.Services = dropped.Spec.Services[:1]
 	if exposureLoosened(classed, dropped, nil, nil, nil) {
 		t.Fatal("dropping a load balancer needs no extra permission")
 	}
@@ -85,7 +94,7 @@ func TestExposureLoosenedIsDirectional(t *testing.T) {
 	set := &v1.SiloSet{ObjectMeta: meta.ObjectMeta{Name: "set", Namespace: "d"}, Spec: v1.SiloSetSpec{Template: v1.SiloTemplate{SiloSpec: base.Spec}}}
 	setNext := cloneOf(t, set)
 	setNext.Spec.Template.Ports = append(setNext.Spec.Template.Ports, v1.SiloPort{Name: "metrics", Port: 9090})
-	setNext.Spec.Template.Service.Ports = append(setNext.Spec.Template.Service.Ports, v1.ServicePort{Port: "metrics", HostPort: []string{v1.NetworkExternal}})
+	setNext.Spec.Template.Services[0].Ports = append(setNext.Spec.Template.Services[0].Ports, v1.ServicePort{Port: "metrics"})
 	if !exposureLoosened(set, setNext, nil, nil, nil) {
 		t.Fatal("a SiloSet template is judged the same way")
 	}
@@ -101,9 +110,9 @@ func TestASelectorOrIngressBackendCanLoosen(t *testing.T) {
 	pay := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "pay", Namespace: "d", Labels: map[string]string{"app": "pay"}}}
 	web := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "d", Labels: map[string]string{"app": "web"}},
 		Spec: v1.SiloSpec{Ports: []v1.SiloPort{{Name: "debug", Port: 9229}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "debug", HostPort: []string{v1.NetworkExternal}, Lease: &v1.PortLease{}}}}}}
+			Services: []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "debug", Lease: &v1.PortLease{}}}}}}}
 	lb := &v1.Service{ObjectMeta: meta.ObjectMeta{Name: "edge", Namespace: "d"},
-		Spec: v1.ServiceSpec{Type: v1.ServiceLoadBalancer, LoadBalancerClass: "linode-nodebalancer",
+		Spec: v1.ServiceSpec{Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "linode"},
 			Selector: map[string]string{"app": "pay"}, Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "debug"}}}}
 	silos := []*v1.Silo{pay, web}
 	svcs := []*v1.Service{lb}
@@ -126,8 +135,8 @@ func TestASelectorOrIngressBackendCanLoosen(t *testing.T) {
 		t.Fatal("a new load balancer needs the permission")
 	}
 	cluster := cloneOf(t, lb)
-	cluster.Spec.Type = v1.ServiceClusterIP
-	cluster.Spec.LoadBalancerClass = ""
+	cluster.Spec.Type = v1.ServiceInternal
+	cluster.Spec.LoadBalancer = nil
 	retargeted := cloneOf(t, cluster)
 	retargeted.Spec.Selector = map[string]string{"app": "web"}
 	if exposureLoosened(cluster, retargeted, silos, nil, nil) {
@@ -149,7 +158,7 @@ func TestASelectorOrIngressBackendCanLoosen(t *testing.T) {
 		t.Fatal("a changed port number is a loosening")
 	}
 	reclassed := cloneOf(t, lb)
-	reclassed.Spec.LoadBalancerClass = "other"
+	reclassed.Spec.LoadBalancer = &v1.LoadBalancerSpec{Provider: "other"}
 	if !exposureLoosened(lb, reclassed, silos, svcs, nil) {
 		t.Fatal("a changed class is a loosening")
 	}
@@ -200,7 +209,7 @@ func TestASelectorOrIngressBackendCanLoosen(t *testing.T) {
 	early := &v1.Ingress{ObjectMeta: meta.ObjectMeta{Name: "early", Namespace: "d"},
 		Spec: v1.IngressSpec{Rules: []v1.IngressRule{{Path: "/", Service: v1.IngressTarget{Name: "edge", Port: "http"}}}}}
 	opened := &v1.Service{ObjectMeta: meta.ObjectMeta{Name: "edge", Namespace: "d"},
-		Spec: v1.ServiceSpec{Type: v1.ServiceClusterIP, Selector: map[string]string{"app": "web"},
+		Spec: v1.ServiceSpec{Type: v1.ServiceInternal, Selector: map[string]string{"app": "web"},
 			Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "debug"}}}}
 	if !exposureLoosened(nil, opened, silos, nil, []*v1.Ingress{early}) {
 		t.Fatal("creating a service an Ingress already names, on a leased port, is a loosening")
@@ -233,7 +242,7 @@ func TestASelectorOrIngressBackendCanLoosen(t *testing.T) {
 	}
 
 	plainSvc := &v1.Service{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "d"},
-		Spec: v1.ServiceSpec{Type: v1.ServiceClusterIP, Selector: map[string]string{"app": "pay"},
+		Spec: v1.ServiceSpec{Type: v1.ServiceInternal, Selector: map[string]string{"app": "pay"},
 			Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "debug"}}}}
 	namedIng := &v1.Ingress{ObjectMeta: meta.ObjectMeta{Name: "named", Namespace: "d"},
 		Spec: v1.IngressSpec{Rules: []v1.IngressRule{{Path: "/", Service: v1.IngressTarget{Name: "api", Port: "http"}}}}}
@@ -245,7 +254,7 @@ func TestASelectorOrIngressBackendCanLoosen(t *testing.T) {
 	}
 
 	lease := v1.SiloSpec{Ports: []v1.SiloPort{{Name: "debug", Port: 9229}},
-		Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "debug", HostPort: []string{v1.NetworkExternal}, Lease: &v1.PortLease{}}}}}
+		Services: []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "debug", Lease: &v1.PortLease{}}}}}}
 	inst := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "pool-0", Namespace: "d", Labels: map[string]string{"app": "web", v1.LabelSiloSet: "pool"}}, Spec: lease}
 	setJoin := &v1.SiloSet{ObjectMeta: meta.ObjectMeta{Name: "pool", Namespace: "d"},
 		Spec: v1.SiloSetSpec{Template: v1.SiloTemplate{Labels: map[string]string{"app": "web"}, SiloSpec: lease}}}
@@ -290,10 +299,10 @@ func TestAnEditorNeedsExposePublicToLoosenOutsideReach(t *testing.T) {
 	api := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "web3"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 			Ports: []v1.SiloPort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{
-				{Port: "web", HostPort: []string{v1.NetworkExternal}, As: 8080, Sources: []string{"10.0.0.0/8"}},
-				{Port: "debug", HostPort: []string{v1.NetworkExternal}, Lease: &v1.PortLease{}},
-			}}}}
+			Services: []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{
+				{Port: "web", As: 8080, Sources: []string{"10.0.0.0/8"}},
+				{Port: "debug", Lease: &v1.PortLease{}},
+			}}}}}
 	must(comp.Create(ctx, api))
 	pay := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "pay", Namespace: "web3", Labels: map[string]string{"app": "pay"}},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}}}
@@ -305,7 +314,7 @@ func TestAnEditorNeedsExposePublicToLoosenOutsideReach(t *testing.T) {
 	must(comp.Create(ctx, web))
 	must(comp.Create(ctx, shop))
 	must(comp.Create(ctx, &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "edge", Namespace: "web3"},
-		Spec: v1.ServiceSpec{Type: v1.ServiceLoadBalancer, LoadBalancerClass: "linode-nodebalancer",
+		Spec: v1.ServiceSpec{Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "linode"},
 			Selector: map[string]string{"app": "pay"}, Ports: []v1.ServicePortSpec{{Name: "http", Port: 80}}}}))
 	must(comp.Create(ctx, &v1.IngressClass{TypeMeta: tm("IngressClass"), ObjectMeta: meta.ObjectMeta{Name: "office"},
 		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Namespace: "web3", Silo: "edge"},
@@ -321,18 +330,18 @@ func TestAnEditorNeedsExposePublicToLoosenOutsideReach(t *testing.T) {
 		t.Fatalf("an editor changes memory: %v", err)
 	}
 	must(ed.Get(ctx, "Silo", "web3", "api", &cur))
-	cur.Spec.Service.Ports[0].Sources = nil
+	cur.Spec.Services[0].Ports[0].Sources = nil
 	if err := ed.Update(ctx, &cur); codeOf(err) != http.StatusForbidden || !strings.Contains(err.Error(), "expose-public") {
 		t.Fatalf("clearing sources: %v, want 403", err)
 	}
 	must(ed.Get(ctx, "Silo", "web3", "api", &cur))
-	cur.Spec.Service.Ports[0].Sources = []string{"10.1.0.0/16"}
+	cur.Spec.Services[0].Ports[0].Sources = []string{"10.1.0.0/16"}
 	if err := ed.Update(ctx, &cur); err != nil {
 		t.Fatalf("narrowing sources: %v", err)
 	}
 	must(ed.Get(ctx, "Silo", "web3", "api", &cur))
 	cur.Spec.Ports = append(cur.Spec.Ports, v1.SiloPort{Name: "metrics", Port: 9090})
-	cur.Spec.Service.Ports = append(cur.Spec.Service.Ports, v1.ServicePort{Port: "metrics", HostPort: []string{v1.NetworkExternal}})
+	cur.Spec.Services[0].Ports = append(cur.Spec.Services[0].Ports, v1.ServicePort{Port: "metrics"})
 	if err := ed.Update(ctx, &cur); codeOf(err) != http.StatusForbidden {
 		t.Fatalf("a new host port: %v, want 403", err)
 	}
@@ -374,7 +383,7 @@ func TestAnEditorNeedsExposePublicToLoosenOutsideReach(t *testing.T) {
 	}
 
 	must(comp.Create(ctx, &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "pool-edge", Namespace: "web3"},
-		Spec: v1.ServiceSpec{Type: v1.ServiceLoadBalancer, LoadBalancerClass: "linode-nodebalancer",
+		Spec: v1.ServiceSpec{Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "linode"},
 			Selector: map[string]string{"app": "pool"}, Ports: []v1.ServicePortSpec{{Name: "http", Port: 80}}}}))
 	pool := &v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: "pool", Namespace: "web3"},
 		Spec: v1.SiloSetSpec{Instances: 1, Template: v1.SiloTemplate{
@@ -398,13 +407,13 @@ func TestAnEditorNeedsExposePublicToLoosenOutsideReach(t *testing.T) {
 	// Creating that service, selecting a silo whose port is leased, is the loosening.
 	must(comp.Create(ctx, &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "hook", Namespace: "web3", Labels: map[string]string{"app": "hook"}},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-			Ports:   []v1.SiloPort{{Name: "debug", Port: 9229}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "debug", HostPort: []string{v1.NetworkExternal}, Lease: &v1.PortLease{}}}}}}))
+			Ports:    []v1.SiloPort{{Name: "debug", Port: 9229}},
+			Services: []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "debug", Lease: &v1.PortLease{}}}}}}}))
 	must(comp.Create(ctx, &v1.Ingress{TypeMeta: tm("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "early", Namespace: "web3"},
 		Spec: v1.IngressSpec{IngressClass: "office", Hosts: []string{"app.example.com"}, TLS: v1.IngressTLS{None: true},
 			Rules: []v1.IngressRule{{Path: "/early", Service: v1.IngressTarget{Name: "later", Port: "http"}}}}}))
 	later := &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "later", Namespace: "web3"},
-		Spec: v1.ServiceSpec{Type: v1.ServiceClusterIP, Selector: map[string]string{"app": "hook"},
+		Spec: v1.ServiceSpec{Type: v1.ServiceInternal, Selector: map[string]string{"app": "hook"},
 			Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "debug"}}}}
 	if err := ed.Create(ctx, later); codeOf(err) != http.StatusForbidden || !strings.Contains(err.Error(), "expose-public") {
 		t.Fatalf("a service an Ingress already names, on a leased port: %v, want 403", err)
@@ -424,7 +433,7 @@ func TestAnEditorNeedsExposePublicToLoosenOutsideReach(t *testing.T) {
 	}
 
 	must(comp.Create(ctx, &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "by-set", Namespace: "web3"},
-		Spec: v1.ServiceSpec{Type: v1.ServiceLoadBalancer, LoadBalancerClass: "linode-nodebalancer",
+		Spec: v1.ServiceSpec{Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "linode"},
 			Selector: map[string]string{v1.LabelSiloSet: "byname"}, Ports: []v1.ServicePortSpec{{Name: "http", Port: 80}}}}))
 	byName := &v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: "byname", Namespace: "web3"},
 		Spec: v1.SiloSetSpec{Instances: 1, Template: v1.SiloTemplate{
@@ -436,7 +445,7 @@ func TestAnEditorNeedsExposePublicToLoosenOutsideReach(t *testing.T) {
 	}
 
 	must(comp.Create(ctx, &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "plain", Namespace: "web3"},
-		Spec: v1.ServiceSpec{Type: v1.ServiceClusterIP, Selector: map[string]string{"app": "joined"},
+		Spec: v1.ServiceSpec{Type: v1.ServiceInternal, Selector: map[string]string{"app": "joined"},
 			Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "debug"}}}}))
 	must(comp.Create(ctx, &v1.Ingress{TypeMeta: tm("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "plain-in", Namespace: "web3"},
 		Spec: v1.IngressSpec{IngressClass: "office", Hosts: []string{"app.example.com"}, TLS: v1.IngressTLS{None: true},
@@ -451,13 +460,13 @@ func TestAnEditorNeedsExposePublicToLoosenOutsideReach(t *testing.T) {
 	// The set's stored instance still has the old labels. The template labels being written
 	// are what join the service.
 	leasedSpec := v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-		Ports:   []v1.SiloPort{{Name: "debug", Port: 9229}},
-		Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "debug", HostPort: []string{v1.NetworkExternal}, Lease: &v1.PortLease{}}}}}
+		Ports:    []v1.SiloPort{{Name: "debug", Port: 9229}},
+		Services: []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "debug", Lease: &v1.PortLease{}}}}}}
 	must(comp.Create(ctx, &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "leased-0", Namespace: "web3", Labels: map[string]string{"app": "web", v1.LabelSiloSet: "leased"}}, Spec: leasedSpec}))
 	must(comp.Create(ctx, &v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: "leased", Namespace: "web3"},
 		Spec: v1.SiloSetSpec{Instances: 1, Template: v1.SiloTemplate{Labels: map[string]string{"app": "web"}, SiloSpec: leasedSpec}}}))
 	must(comp.Create(ctx, &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "setplain", Namespace: "web3"},
-		Spec: v1.ServiceSpec{Type: v1.ServiceClusterIP, Selector: map[string]string{"app": "setjoin"},
+		Spec: v1.ServiceSpec{Type: v1.ServiceInternal, Selector: map[string]string{"app": "setjoin"},
 			Ports: []v1.ServicePortSpec{{Name: "http", Port: 80, TargetPort: "debug"}}}}))
 	must(comp.Create(ctx, &v1.Ingress{TypeMeta: tm("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "setplain-in", Namespace: "web3"},
 		Spec: v1.IngressSpec{IngressClass: "office", Hosts: []string{"app.example.com"}, TLS: v1.IngressTLS{None: true},
@@ -479,10 +488,10 @@ func exposedSilo() *v1.Silo {
 	return &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "d"},
 		Spec: v1.SiloSpec{
 			Ports: []v1.SiloPort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}},
-			Service: &v1.SiloService{LoadBalancer: &v1.LoadBalancerSpec{Class: v1.LBIPPool}, Ports: []v1.ServicePort{
-				{Port: "web", HostPort: []string{v1.NetworkExternal}, As: 8080, Sources: []string{"10.0.0.0/8"}},
-				{Port: "debug", HostPort: []string{v1.NetworkExternal}, Lease: &v1.PortLease{Approval: &v1.ApprovalRule{Required: true}}},
-			}},
+			Services: []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{
+				{Port: "web", As: 8080, Sources: []string{"10.0.0.0/8"}},
+				{Port: "debug", Lease: &v1.PortLease{Approval: &v1.ApprovalRule{Required: true}}},
+			}}},
 		}}
 }
 

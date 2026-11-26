@@ -74,20 +74,26 @@ func genNames(r *rand.Rand) genView {
 		if r.Intn(4) == 0 {
 			g.noServices[ns+"/"+s.Name] = true
 		} else {
-			sv := &v1.SiloService{}
+			// One service, its way in picked at random: Internal, or HostPort on the worker's
+			// internal or external address.
+			sv := v1.SiloService{}
 			if r.Intn(2) == 0 {
 				sv.Name = fmt.Sprintf("svc%d", i)
 			}
+			if way := pick(r, []string{v1.NetworkInternal, v1.NetworkExternal}); len(way) > 0 {
+				sv.Type = v1.ServiceHostPort
+				sv.HostPort = &v1.HostPortSource{Worker: way[0]}
+			}
 			for _, p := range []string{"web", "adm"} {
 				if r.Intn(2) == 0 {
-					sv.Ports = append(sv.Ports, v1.ServicePort{Port: p, HostPort: pick(r, []string{v1.NetworkInternal, v1.NetworkExternal})})
+					sv.Ports = append(sv.Ports, v1.ServicePort{Port: p})
 				}
 			}
-			s.Spec.Service = sv
 			if r.Intn(5) == 0 { // held back by routeWhen: ready, not ready
 				s.Spec.Probes = &v1.Probes{Readiness: &v1.Probe{TCP: &v1.TCPProbe{Port: "web"}}}
 				sv.RouteWhen = v1.RouteWhenReady
 			}
+			s.Spec.Services = []v1.SiloService{sv}
 			g.services[ns+"/"+v1.ServiceName(s)] = true
 		}
 		silos = append(silos, s)

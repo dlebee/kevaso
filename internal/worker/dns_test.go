@@ -17,7 +17,7 @@ import (
 func viewForDNS() names.View {
 	api := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "payments"}}
 	api.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 8080}}
-	api.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", HostPort: []string{"external"}}}}
+	api.Spec.Services = []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "http"}}}}
 	api.Status.Host, api.Status.SiloIP = "hv1", "10.64.3.7"
 	client := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "client", Namespace: "payments"}}
 	client.Status.SiloIP = "127.0.0.1" // the test asks from loopback, as this silo

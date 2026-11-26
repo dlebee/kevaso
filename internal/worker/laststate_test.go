@@ -40,7 +40,7 @@ func TestTheNetworkStartsFromTheLastStateWhenTheControlPlaneIsAway(t *testing.T)
 	}
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "nginx"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-			Ports: []v1.SiloPort{{Name: "web", Port: 8080}}, Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", HostPort: []string{v1.NetworkInternal}}}}}}
+			Ports: []v1.SiloPort{{Name: "web", Port: 8080}}, Services: []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{Worker: v1.NetworkInternal}, Ports: []v1.ServicePort{{Port: "web"}}}}}}
 	if err := admin.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}

@@ -579,7 +579,7 @@ func TestAnAwayWriteClearsTheMountAndKeepsRouting(t *testing.T) {
 	}
 	s := travellingSilo("web", "")
 	s.Spec.Ports = []v1.SiloPort{{Name: "web", Port: 8080}}
-	s.Spec.Service = &v1.SiloService{RouteWhen: v1.RouteWhenRunning, Ports: []v1.ServicePort{{Port: "web"}}}
+	s.Spec.Services = []v1.SiloService{{RouteWhen: v1.RouteWhenRunning, Ports: []v1.ServicePort{{Port: "web"}}}}
 	s.Spec.Volumes = []v1.Volume{{Name: "home", Class: kplugintest.ClassShare, Size: "5Gi", MountPath: "/home"}}
 	if err := admin.Create(ctx, s); err != nil {
 		t.Fatal(err)

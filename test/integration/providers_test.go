@@ -18,10 +18,12 @@ import (
 )
 
 // A provider plugin in a real control plane (M11): its machines are recognised among the hosts; a
-// silo on its load-balancer class and storage class lands on one of them, gets node ports, an
-// address, and a volume created and attached; an IngressClass with DNS publishes its host names;
-// and deleting the silo waits for the host to unmount the volume, detaches it (taking a while),
-// deletes it and the load balancer, and only then lets the silo go.
+// silo on its storage class lands on one of them and gets a volume created and attached; and
+// deleting the silo waits for the host to unmount the volume, detaches it (taking a while),
+// deletes it, and only then lets the silo go.
+// TODO(net-v2 wave 2): the silo's LoadBalancer service (node ports, the balancer's address, the
+// balancer deleted with it) and an IngressClass with DNS publishing its host names at the
+// controller's balancer address were here too: back once balancers are made again.
 func TestProviderPlugin(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -102,22 +104,20 @@ func TestProviderPlugin(t *testing.T) {
 	}
 	db := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "db", Namespace: "payments"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "postgres:17"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-			Ports: []v1.SiloPort{{Name: "pg", Port: 5432}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "pg", LoadBalancer: true}},
-				LoadBalancer: &v1.LoadBalancerSpec{Class: "fake-lb"}},
-			Volumes: []v1.Volume{{Name: "data", Class: "fake-block", Size: "10Gi", MountPath: "/var/lib/postgresql/data"}}}}
+			Ports:    []v1.SiloPort{{Name: "pg", Port: 5432}},
+			Services: []v1.SiloService{{Ports: []v1.ServicePort{{Port: "pg"}}}},
+			Volumes:  []v1.Volume{{Name: "data", Class: "fake-block", Size: "10Gi", MountPath: "/var/lib/postgresql/data"}}}}
 	if err := admin.Create(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	// Scheduled on w1, not home; node port, address, volume attached.
-	eventually("db placed with its load balancer and volume", func() (bool, string) {
+	// Scheduled on w1, not home; volume attached.
+	eventually("db placed with its volume", func() (bool, string) {
 		var s v1.Silo
 		_ = admin.Get(ctx, "Silo", "payments", "db", &s)
-		ok := s.Status.Host == "w1" && s.Status.Service.LoadBalancerIP == "198.51.100.10" && len(s.Status.Service.NodePorts) == 1 &&
-			s.Status.Service.NodePorts[0].NodePort == v1.NodePortMin && len(s.Status.Service.SourceRanges) == 1 &&
+		ok := s.Status.Host == "w1" &&
 			len(s.Status.Volumes) == 1 && s.Status.Volumes[0].AttachedTo == "w1" && s.Status.Volumes[0].Device != "" &&
 			s.Status.Volumes[0].Region == "ca-central"
-		return ok, s.Status.Host + " " + s.Status.Service.LoadBalancerIP + " " + strings.Join(s.Finalizers, ",") + " " + condMsgs(s.Status.Conditions) + volMsgs(s.Status.Volumes)
+		return ok, s.Status.Host + " " + strings.Join(s.Finalizers, ",") + " " + condMsgs(s.Status.Conditions) + volMsgs(s.Status.Volumes)
 	})
 	var s v1.Silo
 	_ = admin.Get(ctx, "Silo", "payments", "db", &s)
@@ -132,9 +132,6 @@ func TestProviderPlugin(t *testing.T) {
 		t.Fatalf("plugin called with nothing changed: %v", extra)
 	}
 	_, vols, _ := fake.Snapshot()
-	if lb, _ := fake.LBOf("payments", "silo/db"); len(lb.Backends) != 1 || lb.Backends[0].ID != "42" || lb.Ports[0].NodePort != v1.NodePortMin {
-		t.Fatalf("load balancer the plugin got: %+v", lb)
-	}
 	if len(vols) != 1 {
 		t.Fatalf("volumes: %+v", vols)
 	}
@@ -152,47 +149,6 @@ func TestProviderPlugin(t *testing.T) {
 		_ = admin.Get(ctx, "Silo", "payments", "stray", &x)
 		c := meta.FindCondition(x.Status.Conditions, "Scheduled")
 		return c != nil && c.Reason == "Unschedulable" && strings.Contains(c.Message, "home: class fake-block needs a fake machine"), condMsgs(x.Status.Conditions)
-	})
-
-	// Ingress host names published through the class's DNS provider, at the controller's address.
-	ingress := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "ingress", Namespace: "kevaso-system"},
-		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "caddy"}, Resources: v1.Resources{CPU: 1, Memory: "512Mi"},
-			Ports: []v1.SiloPort{{Name: "https", Port: 443}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "https", LoadBalancer: true}},
-				LoadBalancer: &v1.LoadBalancerSpec{Class: "fake-lb"}}}}
-	if err := admin.Create(ctx, ingress); err != nil {
-		t.Fatal(err)
-	}
-	if err := admin.Create(ctx, &v1.IngressClass{TypeMeta: tm("IngressClass"), ObjectMeta: meta.ObjectMeta{Name: "web"},
-		Spec: v1.IngressClassSpec{Controller: v1.IngressController{Driver: "nginx", Silo: "ingress", Namespace: "kevaso-system"}, DNS: &v1.IngressDNS{Provider: "fake-dns", TTL: 120},
-			Hosts: []v1.HostAssignment{{Host: "shop.example.com", Namespaces: []string{"payments"}}}}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := admin.Create(ctx, &v1.Ingress{TypeMeta: tm("Ingress"), ObjectMeta: meta.ObjectMeta{Name: "shop", Namespace: "payments"},
-		Spec: v1.IngressSpec{IngressClass: "web", Hosts: []string{"shop.example.com"}, TLS: v1.IngressTLS{Issuer: "internal-ca"},
-			Rules: []v1.IngressRule{{Path: "/", Service: v1.IngressTarget{Name: "db", Port: "pg"}}}}}); err != nil {
-		t.Fatal(err)
-	}
-	var ctrlIP string
-	eventually("shop.example.com published", func() (bool, string) {
-		var x v1.Silo
-		_ = admin.Get(ctx, "Silo", "kevaso-system", "ingress", &x)
-		ctrlIP = x.Status.Service.LoadBalancerIP
-		_, _, recs := fake.Snapshot()
-		r, ok := recs["shop.example.com/A"]
-		var ing v1.Ingress
-		_ = admin.Get(ctx, "Ingress", "payments", "shop", &ing)
-		return ok && ctrlOK(ctrlIP, r) && r.TTL == 120 && r.Owner == "kevaso:it/ingress/payments/shop" && len(ing.Status.DNSNames) == 1,
-			ctrlIP + " " + condMsgs(ing.Status.Conditions)
-	})
-	if err := admin.Delete(ctx, "Ingress", "payments", "shop"); err != nil {
-		t.Fatal(err)
-	}
-	eventually("the record goes with the Ingress", func() (bool, string) {
-		_, _, recs := fake.Snapshot()
-		var ing v1.Ingress
-		err := admin.Get(ctx, "Ingress", "payments", "shop", &ing)
-		return len(recs) == 0 && client.IsNotFound(err), ""
 	})
 
 	// The agent says it mounted the volume; then the silo is deleted.
@@ -223,15 +179,11 @@ func TestProviderPlugin(t *testing.T) {
 		t.Fatalf("while mounted: %s", volMsgs(held.Status.Volumes))
 	}
 	setMounted(false) // the agent removed the container and unmounted
-	eventually("volume detached (slowly) and deleted, silo gone, and the namespace's default IP (its last service gone) with its balancer", func() (bool, string) {
+	eventually("volume detached (slowly) and deleted, silo gone", func() (bool, string) {
 		_, vols, _ := fake.Snapshot()
 		var x v1.Silo
 		err := admin.Get(ctx, "Silo", "payments", "db", &x)
-		_, there := fake.LBOf("payments", "silo/db")
-		var ip v1.IP
-		ipErr := admin.Get(ctx, "IP", "payments", v1.DefaultIPName("fake-lb"), &ip)
-		return len(vols) == 0 && !there && client.IsNotFound(err) && client.IsNotFound(ipErr),
-			volMsgs(x.Status.Volumes) + strings.Join(x.Finalizers, ",") + " ip " + ip.Status.Holders()
+		return len(vols) == 0 && client.IsNotFound(err), volMsgs(x.Status.Volumes) + strings.Join(x.Finalizers, ",")
 	})
 	detaches := 0
 	for _, c := range fake.CallLog() {
@@ -242,10 +194,6 @@ func TestProviderPlugin(t *testing.T) {
 	if detaches < 3 {
 		t.Errorf("a slow detach is asked again until it's done: %d calls (%v)", detaches, fake.CallLog())
 	}
-}
-
-func ctrlOK(ip string, r kplugin.Record) bool {
-	return ip != "" && len(r.Values) == 1 && r.Values[0] == ip
 }
 
 func condMsgs(cs []meta.Condition) string {

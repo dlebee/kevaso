@@ -100,7 +100,7 @@ func (r *probeRig) place(t *testing.T, s *v1.Silo) {
 		t.Fatal(err)
 	}
 	s.Status.Host, s.Status.Phase = "hv1", "Scheduled"
-	if s.Spec.Service != nil {
+	if len(s.Spec.Services) > 0 {
 		s.Status.Service = v1.SiloServiceStatus{Name: s.Name + ".web3.kevaso"}
 	}
 	if err := r.c.UpdateStatus(r.ctx, s); err != nil {
@@ -168,7 +168,7 @@ func rpcSilo(routeWhen string, probe bool) *v1.Silo {
 	s := silo("rpc", "web3")
 	s.Labels = map[string]string{"app": "rpc"}
 	s.Spec.Ports = []v1.SiloPort{{Name: "rpc", Port: 8545}}
-	s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc", HostPort: []string{v1.NetworkExternal}}}, RouteWhen: routeWhen}
+	s.Spec.Services = []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "rpc"}}, RouteWhen: routeWhen}}
 	if probe {
 		s.Spec.Probes = &v1.Probes{Readiness: &v1.Probe{TCP: &v1.TCPProbe{Port: "rpc"}, Period: "1s", Failures: 1}}
 	}

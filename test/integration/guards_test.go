@@ -66,7 +66,7 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 	}
 
 	t.Run("exposure", func(t *testing.T) {
-		policy(t, "Silo", "spec.service", `{'ports': [{'port': 'p2p', 'hostPort': ['external']}]}`)
+		policy(t, "Silo", "spec.services", `[{'type': 'HostPort', 'ports': [{'port': 'p2p'}]}]`)
 		p2p := func(name string) *v1.Silo {
 			s := silo(name, "web3")
 			s.Spec.Ports = []v1.SiloPort{{Name: "p2p", Port: 30303}}
@@ -99,14 +99,14 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 	t.Run("ip use", func(t *testing.T) {
 		// Naming an IP needs use on it (editors and admins have it; dev's role doesn't), and only
 		// admins reserve addresses.
-		policy(t, "Silo", "spec.network", `{'egress': {'source': 'pool', 'ip': 'kept'}}`)
+		policy(t, "Silo", "spec.network", `{'egress': {'source': {'ip': 'kept'}}}`)
 		want(t, "dev", dev.Create(c.ctx, silo("p1", "web3")), http.StatusForbidden, "may not use IP kept")
 		want(t, "admin socket", c.admin.Create(c.ctx, silo("p2", "web3")), http.StatusForbidden, "policies can't grant privileges")
 		if err := ed.Create(c.ctx, silo("p3", "web3")); err != nil {
 			t.Errorf("editor, who may use IPs: %v", err)
 		}
 		ip := &v1.IP{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IP"}, ObjectMeta: meta.ObjectMeta{Name: "mine", Namespace: "web3"},
-			Spec: v1.IPSpec{Class: v1.LBIPPool}}
+			Spec: v1.IPSpec{Type: v1.IPTypeProvider, Provider: "linode", Region: "us-ord"}}
 		want(t, "editor reserving an address", ed.Create(c.ctx, ip), http.StatusForbidden, "")
 		if err := ada.Create(c.ctx, ip); err != nil {
 			t.Errorf("admin reserving an address: %v", err)
@@ -116,7 +116,7 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 		policy(t, "Silo", "spec.runtime", `'openshell'`)
 		s := containerSilo("r1", "web3", "docker")
 		s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 8080}}
-		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}}
+		s.Spec.Services = []v1.SiloService{{Ports: []v1.ServicePort{{Port: "http"}}}}
 		want(t, "a service on openshell", ed.Create(c.ctx, s), http.StatusUnprocessableEntity, "no network interface")
 	})
 	t.Run("vm volumes", func(t *testing.T) {
@@ -128,10 +128,10 @@ func TestMutationPoliciesCantGetPastGuards(t *testing.T) {
 		want(t, "Move on local disks", ed.Create(c.ctx, silo("m1", "web3")), http.StatusUnprocessableEntity, "onHostLoss: Move")
 	})
 	t.Run("lease", func(t *testing.T) {
-		policy(t, "Silo", "spec.service.ports", `[{'port': 'http', 'hostPort': ['external'], 'lease': {'max': '9999h'}}]`)
+		policy(t, "Silo", "spec.services", `[{'type': 'HostPort', 'ports': [{'port': 'http', 'lease': {'max': '9999h'}}]}]`)
 		s := silo("l1", "web3")
 		s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 8080}}
-		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", HostPort: []string{v1.NetworkExternal}}}}
+		s.Spec.Services = []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "http"}}}}
 		want(t, "a lease past the cluster's limit", ada.Create(c.ctx, s), http.StatusUnprocessableEntity, "more than this cluster allows")
 	})
 	t.Run("kind definition", func(t *testing.T) {

@@ -20,7 +20,7 @@ spec:
   runtime: docker
   container: { image: nginx:1.27 }
   ports: [{ name: web, port: 80 }]
-  servce: { ports: [{ port: web, hostPort: [external] }] }
+  servces: [{ type: HostPort, ports: [{ port: web }] }]
 `,
 		"nested": `apiVersion: kevaso/v1
 kind: Silo
@@ -29,7 +29,7 @@ spec:
   runtime: docker
   container: { image: nginx:1.27 }
   ports: [{ name: web, port: 80 }]
-  service: { ports: [{ port: web, hostPort: [external], source: [10.0.0.0/8] }] }
+  services: [{ type: HostPort, ports: [{ port: web, source: [10.0.0.0/8] }] }]
 `,
 		"metadata": `apiVersion: kevaso/v1
 kind: Namespace

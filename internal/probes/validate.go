@@ -60,19 +60,24 @@ func Validate(spec v1.SiloSpec) []string {
 			}
 		}
 	}
-	if sv := spec.Service; sv != nil {
+	for i, sv := range spec.Services {
+		f := fmt.Sprintf("services[%d].routeWhen", i)
 		switch sv.RouteWhen {
 		case "":
 			if spec.HasReadiness() {
-				errs = append(errs, "service.routeWhen: the silo has a readiness probe and a service, so say whether traffic waits for it: ready or running")
+				errs = append(errs, f+": the silo has a readiness probe and a service, so say whether traffic waits for it: ready or running")
 			}
 		case v1.RouteWhenReady:
 			if !spec.HasReadiness() {
-				errs = append(errs, "service.routeWhen: ready needs a readiness probe (probes.readiness)")
+				errs = append(errs, f+": ready needs a readiness probe (probes.readiness)")
 			}
 		case v1.RouteWhenRunning:
 		default:
-			errs = append(errs, "service.routeWhen: ready or running")
+			errs = append(errs, f+": ready or running")
+		}
+		// TODO(net-v2 wave 2): routing per service; until then one silo has one readiness gate.
+		if w := spec.RouteWhen(); sv.RouteWhen != "" && sv.RouteWhen != w {
+			errs = append(errs, fmt.Sprintf("%s: %s, but another service says %s: a silo's services route the same way for now (one readiness gate)", f, sv.RouteWhen, w))
 		}
 	}
 	return errs

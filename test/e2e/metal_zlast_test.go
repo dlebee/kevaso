@@ -90,8 +90,9 @@ spec:
 ---
 ` + strings.Replace(boxEcho(ns, "web", 18130), "runtime: docker", "runtime: podman", 1) + `  grants: [podapp]
   ports: [{ name: web, port: 18130 }]
-  service:
-    ports: [{ port: web, hostPort: [external] }]
+  services:
+    - type: HostPort
+      ports: [{ port: web }]
 `)
 	c.waitRunning(ns, 10*time.Minute, "web")
 	c.eventually("a podman silo answers this Mac on the external IP", time.Minute, func() (bool, string) {
@@ -121,7 +122,7 @@ func TestMetalReboot(t *testing.T) {
 	ns := "boot"
 	c.namespace(ns)
 	port := func(p int) string {
-		return fmt.Sprintf("  ports: [{ name: web, port: %d }]\n  service:\n    ports: [{ port: web, hostPort: [external] }]\n", p)
+		return fmt.Sprintf("  ports: [{ name: web, port: %d }]\n  services:\n    - type: HostPort\n      ports: [{ port: web }]\n", p)
 	}
 	c.apply(boxEcho(ns, "stay", 18140) + port(18140) + "---\n" + boxEcho(ns, "moves", 8080) + "  availability: { onHostLoss: Recreate }\n---\n" +
 		vmEcho(ns, "vm", 18141) + port(18141) + "  volumes: [{ name: data, size: 1Gi, mountPath: /data }]\n")

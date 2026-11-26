@@ -324,7 +324,7 @@ func roleBind(tm func(string) meta.TypeMeta, namespace, name string, subs ...v1.
 func siloAllow(tm func(string) meta.TypeMeta, name string, from ...string) *v1.Silo {
 	return &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "shop"},
 		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", Ports: []v1.SiloPort{{Name: "http", Port: 8080}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", AllowFrom: from}}}}}
+			Services: []v1.SiloService{{Ports: []v1.ServicePort{{Port: "http", AllowFrom: from}}}}}}
 }
 
 func policy(tm func(string) meta.TypeMeta, name string, namespaces []string) *v1.ValidationPolicy {

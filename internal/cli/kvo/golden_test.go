@@ -93,7 +93,10 @@ func livedIn() map[string][]meta.Object {
 	h.Status.Network.MeshIP = "10.63.0.2"
 	s := silo()
 	s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 8080}, {Name: "metrics", Port: 9090}}
-	s.Spec.Service = &v1.SiloService{Name: "api", Ports: []v1.ServicePort{{Port: "http", HostPort: []string{"external"}, As: 443, Sources: []string{"192.0.2.0/24"}}, {Port: "metrics", AllowFrom: []string{"prom"}}}}
+	s.Spec.Services = []v1.SiloService{
+		{Name: "api", Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "http", As: 443, Sources: []string{"192.0.2.0/24"}}}},
+		{Name: "api-metrics", Ports: []v1.ServicePort{{Port: "metrics", AllowFrom: []string{"prom"}}}},
+	}
 	s.Spec.Availability = v1.Availability{OnControlPlaneLoss: v1.OnControlPlaneLossStop, After: "5m"}
 	s.Status.SiloIP = "10.64.2.7"
 	return map[string][]meta.Object{"Host": {h}, "Silo": {s}}

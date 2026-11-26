@@ -7,10 +7,11 @@ import (
 	"strings"
 )
 
-// Ports and services (design §7.0): a silo declares its ports (spec.ports); its service
-// (spec.service) is what makes any of them reachable, port by port: by which silos (allowFrom), on
-// which of its host's addresses (hostPort, as, sources), on a lease, behind a load balancer. A
-// silo without a service has a silo IP for its own traffic, no name, and nothing reachable.
+// Ports and services (design §7.0, networking v2): a silo declares its ports (spec.ports); its
+// services (spec.services) are what make any of them reachable, each one way in: Internal (silos
+// in allowFrom, over the mesh), HostPort (at the worker running it: its main IP, a kept IP, or a
+// SiloSet instance's own) or LoadBalancer (a provider's balancer in front). A silo without a
+// service has a silo IP for its own traffic, no name, and nothing reachable.
 
 // Networks (design §7.0): where an address is. A host has an internal and/or an external IP and a
 // mesh IP; a service's name answers on each (SERVICE.NAMESPACE.NETWORK.kevaso), and a host port
@@ -39,16 +40,11 @@ func ServiceDNSName(service, namespace, network, suffix string) string {
 // Networks are the three, in the order names list them.
 var Networks = []string{NetworkMesh, NetworkInternal, NetworkExternal}
 
-// Load-balancer classes built in.
+// Service types (networking v2): each service is one way in.
 const (
-	LBIPPool = "ip-pool" // an address of its own: an IP from the host's extra addresses (spec.network.addresses)
-)
-
-// Egress sources: which address a silo's outgoing traffic leaves from.
-const (
-	EgressHost          = "host"          // the host's main address (default)
-	EgressSameAsService = "sameAsService" // the address the silo is reached on
-	EgressPool          = "pool"          // an address of its own: an IP of class ip-pool (egress.ip)
+	ServiceInternal     = "Internal"     // the default: silos in allowFrom, over the mesh
+	ServiceHostPort     = "HostPort"     // traffic arrives at the worker running the silo (Kubernetes hostPort)
+	ServiceLoadBalancer = "LoadBalancer" // a provider's balancer in front
 )
 
 // SiloPort is one port a silo declares: what exists. An undeclared port can never be reached.
@@ -66,68 +62,134 @@ func (p SiloPort) Proto() string {
 	return "TCP"
 }
 
-// SiloService is a silo's own service: its name, and which of its declared ports are reachable
-// and how.
+// SiloService is one of a silo's services: one way in (its type) to some of its declared ports.
+// A silo may have several, each its own name; a port may be in several.
 type SiloService struct {
-	// Name is what others resolve (SERVICE.NAMESPACE[.NETWORK].kevaso); default: the silo's
-	// name. Unique in the namespace, across silos' services and standalone Services.
-	Name  string        `json:"name,omitempty"`
+	// Name is what others resolve (NAME.NAMESPACE[.NETWORK].kevaso); default: the silo's name.
+	// Unique in the namespace, across silos' services and standalone Services. In a SiloSet's
+	// template, an instance's service is the instance's name (unnamed) or INSTANCE-NAME.
+	Name string `json:"name,omitempty"`
+	// Type is the way in: Internal (default), HostPort or LoadBalancer.
+	Type  string        `json:"type,omitempty"`
 	Ports []ServicePort `json:"ports,omitempty"`
-	// LoadBalancer is where the ports with loadBalancer: true get their address: the class, and
-	// which IP (design §7.2c-1).
+	// HostPort says which address a HostPort service arrives on: exactly one of worker, ip, own.
+	// Absent: { worker: external }. Only with type HostPort.
+	HostPort *HostPortSource `json:"hostPort,omitempty"`
+	// LoadBalancer is the provider whose balancer fronts it. Required with type LoadBalancer,
+	// refused otherwise.
 	LoadBalancer *LoadBalancerSpec `json:"loadBalancer,omitempty"`
+	// Annotations tune the way in: a provider's, declared by its plugin and checked at apply
+	// (e.g. linode.kevaso.com/nodebalancer: edge shares one balancer).
+	Annotations map[string]string `json:"annotations,omitempty"`
 	// RouteWhen: ready (traffic only while the readiness probe passes) or running (as soon as the
 	// silo runs). Required with a readiness probe; without one it's running (design §0.6).
 	RouteWhen string `json:"routeWhen,omitempty"`
 }
 
-// ServicePort opens one declared port: everything about reaching it is here.
+// TypeOrDefault is the service's type, Internal when it says none.
+func (sv SiloService) TypeOrDefault() string {
+	if sv.Type == "" {
+		return ServiceInternal
+	}
+	return sv.Type
+}
+
+// Way is where a HostPort service arrives: its hostPort, or { worker: external } when it says
+// none. The zero value for any other type.
+func (sv SiloService) Way() HostPortSource {
+	if sv.TypeOrDefault() != ServiceHostPort {
+		return HostPortSource{}
+	}
+	if sv.HostPort == nil {
+		return HostPortSource{Worker: NetworkExternal}
+	}
+	return *sv.HostPort
+}
+
+// HostPortSource is the address a HostPort service arrives on: exactly one of them.
+type HostPortSource struct {
+	// Worker: the main IP of the worker running the silo, external or internal. The address
+	// changes with the worker, so the silo can run anywhere.
+	Worker string `json:"worker,omitempty"`
+	// IP names an IP in this namespace: a host's address (pinned to that host) or a provider's
+	// (within its reach).
+	IP string `json:"ip,omitempty"`
+	// Own: a SiloSet instance's own member of the set's IPSet (spec.ips), by ordinal.
+	Own bool `json:"own,omitempty"`
+}
+
+// Ways is how many of worker, ip and own are set (exactly one is right).
+func (h HostPortSource) Ways() int {
+	n := 0
+	for _, b := range []bool{h.Worker != "", h.IP != "", h.Own} {
+		if b {
+			n++
+		}
+	}
+	return n
+}
+
+// String is the way as a person writes it: worker: external, ip: NAME, own.
+func (h HostPortSource) String() string {
+	switch {
+	case h.IP != "":
+		return "ip: " + h.IP
+	case h.Own:
+		return "own"
+	case h.Worker != "":
+		return "worker: " + h.Worker
+	}
+	return ""
+}
+
+// LoadBalancerSpec is the balancer in front of a LoadBalancer service.
+type LoadBalancerSpec struct {
+	// Provider is the installed provider (a plugin's name, e.g. linode) that makes the balancer.
+	Provider string `json:"provider"`
+	// IP names a kept IP (type Provider) the balancer answers on, only where the provider lets a
+	// kept IP front a balancer (a Linode NodeBalancer has its own address: refused there).
+	IP string `json:"ip,omitempty"`
+}
+
+// ServicePort opens one declared port in a service.
 type ServicePort struct {
 	Port string `json:"port"` // a declared port's name (spec.ports)
 	// AllowFrom are the silos that may connect to it on its silo IP: NAME (this namespace) or
-	// NAMESPACE/NAME.
+	// NAMESPACE/NAME. It works with every type.
 	AllowFrom []string `json:"allowFrom,omitempty"`
-	// HostPort: which of its host's addresses it opens on, internal and/or external. Absent: not
-	// on the host.
-	HostPort []string `json:"hostPort,omitempty"`
-	// As is the number on the host or the load balancer (default: the declared port's).
+	// As is the number on the host or the load balancer (default: the declared port's). Not on
+	// Internal.
 	As int `json:"as,omitempty"`
 	// Sources are the network ranges (CIDRs) that may connect on the host or the load balancer;
-	// absent: anyone who can reach that address.
+	// absent: anyone who can reach that address. Not on Internal.
 	Sources []string `json:"sources,omitempty"`
-	// Lease: the port opens on the host or the load balancer only on a lease, on its own terms
-	// (design §7.2d).
+	// Lease: the port opens on the host only on a lease, on its own terms (design §7.2d). HostPort
+	// only.
 	Lease *PortLease `json:"lease,omitempty"`
-	// LoadBalancer: the port is reachable on the service's load-balancer address (its class and
-	// IP: service.loadBalancer).
-	LoadBalancer bool `json:"loadBalancer,omitempty"`
 }
 
-// Outside says whether the port opens anywhere but its silo IP: on the host, or a load balancer.
-func (p ServicePort) Outside() bool { return len(p.HostPort) > 0 || p.LoadBalancer }
-
-// On says whether the port opens on the host's address on network (internal | external).
-func (p ServicePort) On(network string) bool { return slices.Contains(p.HostPort, network) }
-
-// LoadBalancerSpec is where a service's loadBalancer ports get their address.
-type LoadBalancerSpec struct {
-	Class string `json:"class"`
-	// IP names the IP object (design §7.2c-1) whose address this is. Empty: the namespace's shared
-	// one for the class (made on first use, gone with its last service unless kept), or with
-	// Dedicated one of its own.
-	IP string `json:"ip,omitempty"`
-	// Dedicated: an IP of its own, made for it and named after it, instead of the namespace's
-	// shared one for the class. An address only one host can have at a time is always its own.
-	Dedicated bool `json:"dedicated,omitempty"`
-}
-
-// OpenPort is a service port with the declared port it names.
+// OpenPort is a service port with the declared port it names and the service it's in.
 type OpenPort struct {
 	ServicePort
+	Service  string // the service's name (ServiceNameOf)
+	Type     string // the service's type
+	Way      HostPortSource
 	Name     string // the declared port's name
 	Number   int    // its number in the silo
 	Protocol string // TCP | UDP
+	// HostPort is the worker network it opens on (internal or external), for a HostPort service
+	// on the worker's address; empty otherwise.
+	// TODO(net-v2 wave 2): ports on an IP (ip, own) open on that address, which the agent adds.
+	HostPort []string
+	// LoadBalancer: the port is on the service's balancer.
+	LoadBalancer bool
 }
+
+// Outside says whether the port opens anywhere but its silo IP: on the host, or a load balancer.
+func (p OpenPort) Outside() bool { return p.Type == ServiceHostPort || p.Type == ServiceLoadBalancer }
+
+// On says whether the port opens on the worker's address on network (internal | external).
+func (p OpenPort) On(network string) bool { return slices.Contains(p.HostPort, network) }
 
 // HostNumber is the port's number on the host or the load balancer (as, or its own).
 func (p OpenPort) HostNumber() int {
@@ -147,24 +209,42 @@ func (s SiloSpec) Declared(name string) (SiloPort, bool) {
 	return SiloPort{}, false
 }
 
-// Open are the service's ports, each with its declared port, in the service's order; a service
-// port naming no declared port is left out (admission refuses it).
-func (s SiloSpec) Open() []OpenPort {
-	if s.Service == nil {
-		return nil
+// ServiceNameOf is a service's name in a silo named silo: its own, or the silo's.
+func ServiceNameOf(sv SiloService, silo string) string {
+	if sv.Name != "" {
+		return sv.Name
 	}
+	return silo
+}
+
+// OpenIn are the ports of the silo's services, each with its declared port and its service, in
+// the services' order; a service port naming no declared port is left out (admission refuses it).
+// A port in several services is there once per service. silo names unnamed services.
+func (s SiloSpec) OpenIn(silo string) []OpenPort {
 	var out []OpenPort
-	for _, sp := range s.Service.Ports {
-		d, ok := s.Declared(sp.Port)
-		if !ok {
-			continue
+	for _, sv := range s.Services {
+		t := sv.TypeOrDefault()
+		way := sv.Way()
+		for _, sp := range sv.Ports {
+			d, ok := s.Declared(sp.Port)
+			if !ok {
+				continue
+			}
+			op := OpenPort{ServicePort: sp, Service: ServiceNameOf(sv, silo), Type: t, Way: way, Name: d.Name, Number: d.Port, Protocol: d.Proto()}
+			if way.Worker != "" {
+				op.HostPort = []string{way.Worker}
+			}
+			op.LoadBalancer = t == ServiceLoadBalancer
+			out = append(out, op)
 		}
-		out = append(out, OpenPort{ServicePort: sp, Name: d.Name, Number: d.Port, Protocol: d.Proto()})
 	}
 	return out
 }
 
-// OpenPort is the service port opening the declared port name (ok false: the service doesn't).
+// Open is OpenIn with services unnamed left unnamed (callers that don't need the names).
+func (s SiloSpec) Open() []OpenPort { return s.OpenIn("") }
+
+// OpenPort is the first service port opening the declared port name (ok false: no service does).
 func (s SiloSpec) OpenPort(name string) (OpenPort, bool) {
 	for _, p := range s.Open() {
 		if p.Name == name {
@@ -174,60 +254,109 @@ func (s SiloSpec) OpenPort(name string) (OpenPort, bool) {
 	return OpenPort{}, false
 }
 
-// LoadBalanced says whether any of the service's ports is on its load balancer.
+// LoadBalanced says whether any of its services is a LoadBalancer.
 func (s SiloSpec) LoadBalanced() bool {
-	for _, p := range s.Open() {
-		if p.LoadBalancer {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(s.Services, func(sv SiloService) bool { return sv.TypeOrDefault() == ServiceLoadBalancer })
 }
 
-// OnHost says whether any of the service's ports opens on the host's own addresses.
+// OnHost says whether any of its services is a HostPort.
 func (s SiloSpec) OnHost() bool {
-	for _, p := range s.Open() {
-		if len(p.HostPort) > 0 {
-			return true
+	return slices.ContainsFunc(s.Services, func(sv SiloService) bool { return sv.TypeOrDefault() == ServiceHostPort })
+}
+
+// Balancers are its LoadBalancer services.
+func (s SiloSpec) Balancers() []SiloService {
+	var out []SiloService
+	for _, sv := range s.Services {
+		if sv.TypeOrDefault() == ServiceLoadBalancer {
+			out = append(out, sv)
 		}
 	}
-	return false
+	return out
 }
 
-// LBClass is the service's load-balancer class when it has a port on it ("" if none).
-func (s SiloSpec) LBClass() string {
-	if !s.LoadBalanced() || s.Service.LoadBalancer == nil {
-		return ""
+// RouteWhen is the silo's routeWhen: what its services say (admission keeps them the same).
+func (s SiloSpec) RouteWhen() string {
+	for _, sv := range s.Services {
+		if sv.RouteWhen != "" {
+			return sv.RouteWhen
+		}
 	}
-	return s.Service.LoadBalancer.Class
+	return ""
 }
 
-// ServiceName is the silo's service name: service.name, or the silo's own name; "" for a silo
-// without a service, which has no name.
+// UsesOwn says whether the spec takes a SiloSet instance's own IPSet member (hostPort own or
+// egress own).
+func (s SiloSpec) UsesOwn() bool {
+	if src := s.Network.Egress.Source; src != nil && src.Own {
+		return true
+	}
+	return slices.ContainsFunc(s.Services, func(sv SiloService) bool { return sv.HostPort != nil && sv.HostPort.Own })
+}
+
+// NamedIPs are the IPs the spec names, each once, with the field naming it first: hostPort.ip,
+// loadBalancer.ip, egress.source.ip.
+func (s SiloSpec) NamedIPs() []NamedIP {
+	var out []NamedIP
+	add := func(name, field string) {
+		if name == "" || slices.ContainsFunc(out, func(n NamedIP) bool { return n.Name == name }) {
+			return
+		}
+		out = append(out, NamedIP{Name: name, Field: field})
+	}
+	for i, sv := range s.Services {
+		if sv.HostPort != nil {
+			add(sv.HostPort.IP, fmt.Sprintf("services[%d].hostPort.ip", i))
+		}
+		if sv.LoadBalancer != nil {
+			add(sv.LoadBalancer.IP, fmt.Sprintf("services[%d].loadBalancer.ip", i))
+		}
+	}
+	if src := s.Network.Egress.Source; src != nil {
+		add(src.IP, "network.egress.source.ip")
+	}
+	return out
+}
+
+// NamedIP is an IP a spec names, and where.
+type NamedIP struct {
+	Name, Field string
+}
+
+// ServiceNames are the silo's services' names, in order; none for a silo without a service,
+// which has no name.
+func ServiceNames(s *Silo) []string {
+	var out []string
+	for _, sv := range s.Spec.Services {
+		out = append(out, ServiceNameOf(sv, s.Name))
+	}
+	return out
+}
+
+// ServiceName is the silo's first service's name ("" without a service).
+// TODO(net-v2 wave 2): callers that show one name should show every service's.
 func ServiceName(s *Silo) string {
-	if s.Spec.Service == nil {
-		return ""
+	if n := ServiceNames(s); len(n) > 0 {
+		return n[0]
 	}
-	if s.Spec.Service.Name != "" {
-		return s.Spec.Service.Name
-	}
-	return s.Name
+	return ""
 }
 
-// AllowedFrom says whether the silo caller (namespace/name) may connect to port on s, by s's
-// service's allowFrom.
+// AllowedFrom says whether the silo caller (namespace/name) may connect to port on s, by the
+// allowFrom of any of s's services that opens it.
 func AllowedFrom(s *Silo, port, caller string) bool {
-	p, ok := s.Spec.OpenPort(port)
-	if !ok {
-		return false
-	}
-	for _, a := range p.AllowFrom {
-		key := a
-		if !strings.Contains(key, "/") {
-			key = s.Namespace + "/" + key
+	for _, p := range s.Spec.Open() {
+		if p.Name != port {
+			continue
 		}
-		if key == caller {
-			return true
+		for _, a := range p.AllowFrom {
+			key := a
+			if !strings.Contains(key, "/") {
+				key = s.Namespace + "/" + key
+			}
+			if key == caller {
+				return true
+			}
 		}
 	}
 	return false
@@ -240,10 +369,26 @@ type SiloNetwork struct {
 
 // Egress picks the source address.
 type Egress struct {
-	Source string `json:"source,omitempty"` // host (default) | sameAsService | pool
-	// IP is the IP (class ip-pool) to send from with source pool; empty: the service's, when its
-	// load balancer is ip-pool.
-	IP string `json:"ip,omitempty"`
+	// Source is the address its traffic leaves from. Absent: the worker's own IP.
+	Source *EgressSource `json:"source,omitempty"`
+}
+
+// EgressSource is a silo's address out: exactly one of them.
+type EgressSource struct {
+	IP  string `json:"ip,omitempty"`  // an IP in this namespace (out from the same IP it receives on)
+	Own bool   `json:"own,omitempty"` // a SiloSet instance's own IPSet member
+}
+
+// Ways is how many of ip and own are set (exactly one is right).
+func (e EgressSource) Ways() int {
+	n := 0
+	if e.IP != "" {
+		n++
+	}
+	if e.Own {
+		n++
+	}
+	return n
 }
 
 // SiloServiceStatus says where the service is reachable, port by port, and where its traffic
@@ -259,7 +404,7 @@ type SiloServiceStatus struct {
 	EgressNote string `json:"egressNote,omitempty"`
 	// IP is the IP object its load-balancer address is, when it has one (design §7.2c-1).
 	IP string `json:"ip,omitempty"`
-	// HostAddresses are the host's own extra addresses this silo holds (IPs of class ip-pool, in or
+	// HostAddresses are the host's own extra addresses this silo holds (IPs of type Host, in or
 	// out): the host puts them on its uplink.
 	HostAddresses []string `json:"hostAddresses,omitempty"`
 	// NodePorts: for load-balancer classes that send to the host on ports of their own, which
@@ -278,7 +423,7 @@ type ServicePortStatus struct {
 	Mesh         string `json:"mesh,omitempty"`         // its silo IP, to the silos allowFrom names
 	Internal     string `json:"internal,omitempty"`     // its host's internal IP (hostPort: internal)
 	External     string `json:"external,omitempty"`     // its host's external IP (hostPort: external)
-	LoadBalancer string `json:"loadBalancer,omitempty"` // its load-balancer address (loadBalancer: true)
+	LoadBalancer string `json:"loadBalancer,omitempty"` // its load-balancer address (a LoadBalancer service)
 }
 
 // NodePort is the host port a service port arrives on from a load balancer.
@@ -399,18 +544,6 @@ const (
 	NodePortMin = 30000
 	NodePortMax = 32767
 )
-
-// IsBuiltinLB says whether a load-balancer class is built in (the others come from plugins).
-func IsBuiltinLB(class string) bool { return class == LBIPPool }
-
-// PluginLB is the silo's plugin load-balancer class ("" if it has none).
-func PluginLB(s *Silo) string {
-	c := s.Spec.LBClass()
-	if c == "" || IsBuiltinLB(c) {
-		return ""
-	}
-	return c
-}
 
 // VolumeLocal is the built-in storage class (the host's own disk).
 const VolumeLocal = "local"

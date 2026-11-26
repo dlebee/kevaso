@@ -37,8 +37,8 @@ func TestLeaseRenewalRacesTheSweep(t *testing.T) {
 	}
 	si := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "rpc", Namespace: "d"}, Spec: v1.SiloSpec{
 		Runtime: "docker", Container: &v1.ContainerSource{Image: "nginx:1.27"},
-		Ports:   []v1.SiloPort{{Name: "rpc", Port: 8545}},
-		Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc", HostPort: []string{v1.NetworkExternal}, Lease: &v1.PortLease{Max: "1h"}}}}}}
+		Ports:    []v1.SiloPort{{Name: "rpc", Port: 8545}},
+		Services: []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "rpc", Lease: &v1.PortLease{Max: "1h"}}}}}}}
 	if err := c.Create(ctx, si); err != nil {
 		t.Fatal(err)
 	}

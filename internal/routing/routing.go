@@ -68,12 +68,12 @@ func decide(routeWhen string, spec v1.SiloSpec, st v1.SiloStatus) v1.Routing {
 	return r
 }
 
-// Silo is whether a silo's own service (spec.service) gets traffic now; nil if it has none.
+// Silo is whether a silo's own services (spec.services) get traffic now; nil if it has none.
 func Silo(spec v1.SiloSpec, st v1.SiloStatus) *v1.Routing {
-	if spec.Service == nil {
+	if len(spec.Services) == 0 {
 		return nil
 	}
-	r := decide(spec.Service.RouteWhen, spec, st)
+	r := decide(spec.RouteWhen(), spec, st)
 	return &r
 }
 

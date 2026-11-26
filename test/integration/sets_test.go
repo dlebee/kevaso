@@ -21,7 +21,8 @@ import (
 )
 
 // Example 07 in a real control plane (M12): a SiloSet of three container instances spread
-// over two hosts, and a Service of type LoadBalancer in front of them through a plugin's class.
+// over two hosts, and a Service of type LoadBalancer in front of them (the fake provider's; its
+// balancer itself is wave 2's).
 // Then a rolling upgrade to v2 (never more than one instance down), admission refusing what would
 // run two copies, a scale-in that spares a protected instance, and deleting the set deleting its
 // instances. The hosts' agents are played by this test: they report each placed instance running
@@ -156,12 +157,12 @@ func TestSiloSetAndService(t *testing.T) {
 				Container: &v1.ContainerSource{Image: "docker.io/ethereum/client-go:v1.14.0"},
 				Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 				Ports:     []v1.SiloPort{{Name: "rpc", Port: 8545}},
-				Service:   &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc"}}}}}}}
+				Services:  []v1.SiloService{{Ports: []v1.ServicePort{{Port: "rpc"}}}}}}}}
 	if err := admin.Create(ctx, set); err != nil {
 		t.Fatal(err)
 	}
 	svc := &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "rpc", Namespace: "web3"},
-		Spec: v1.ServiceSpec{Selector: map[string]string{"app": "rpc"}, Type: v1.ServiceLoadBalancer, LoadBalancerClass: "fake-lb",
+		Spec: v1.ServiceSpec{Selector: map[string]string{"app": "rpc"}, Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "fake"},
 			Ports: []v1.ServicePortSpec{{Name: "rpc", Port: 8545, TargetPort: "rpc"}}}}
 	if err := admin.Create(ctx, svc); err != nil {
 		t.Fatal(err)
@@ -205,14 +206,12 @@ func TestSiloSetAndService(t *testing.T) {
 	if l := instances(); l[0].Name != "rpc-pool-0" || l[2].Name != "rpc-pool-2" {
 		t.Fatalf("names: %s", describe(l))
 	}
-	eventually("the service: a virtual IP, three endpoints, a load balancer on both hosts", func() (bool, string) {
+	// TODO(net-v2 wave 2): and a load balancer on both hosts (node ports, an address), once
+	// balancers are made again.
+	eventually("the service: a virtual IP, three endpoints", func() (bool, string) {
 		var s v1.Service
 		_ = admin.Get(ctx, "Service", "web3", "rpc", &s)
-		lb, ok := fake.LBOf("web3", "service/rpc")
-		return s.Status.ClusterIP == "10.65.0.1" && len(s.Status.Endpoints) == 3 && len(s.Status.NodePorts) == 1 &&
-				s.Status.NodePorts[0].NodePort == v1.NodePortSiloMax+1 && s.Status.LoadBalancerIP != "" && ok && len(lb.Backends) == 2 &&
-				lb.Ports[0].NodePort == v1.NodePortSiloMax+1,
-			fmt.Sprintf("%+v lb=%+v", s.Status, lb)
+		return s.Status.ClusterIP == "10.65.0.1" && len(s.Status.Endpoints) == 3, fmt.Sprintf("%+v", s.Status)
 	})
 	var set1 v1.SiloSet
 	eventually("the set Ready", func() (bool, string) {
@@ -294,11 +293,11 @@ func TestSiloSetAndService(t *testing.T) {
 		l := instances()
 		return len(l) == 1 && l[0].Name == "rpc-pool-1", describe(l)
 	})
-	eventually("the load balancer down to its host", func() (bool, string) {
+	// TODO(net-v2 wave 2): and the load balancer down to its host.
+	eventually("the service down to one endpoint", func() (bool, string) {
 		var s v1.Service
 		_ = admin.Get(ctx, "Service", "web3", "rpc", &s)
-		lb, _ := fake.LBOf("web3", "service/rpc")
-		return len(s.Status.Endpoints) == 1 && len(lb.Backends) == 1, fmt.Sprintf("%+v", lb)
+		return len(s.Status.Endpoints) == 1, fmt.Sprint(s.Status.Endpoints)
 	})
 
 	// Deleting the set deletes its instances; deleting the service, its load balancer.

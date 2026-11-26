@@ -16,20 +16,19 @@ import (
 // held, never an endpoint, and why names the port.
 func TestK061ALoadBalancerServicePublishesOnlyWhatTheSiloOpens(t *testing.T) {
 	app := map[string]string{"app": "api"}
-	mk := func(name string, open ...v1.ServicePort) *v1.Silo {
+	mk := func(name string, services ...v1.SiloService) *v1.Silo {
 		s := silo(name, "w1", "10.64.1.2", app, true)
 		s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 8080}, {Name: "debug", Port: 9229}}
-		if len(open) > 0 {
-			s.Spec.Service = &v1.SiloService{Ports: open}
-		}
+		s.Spec.Services = services
 		return s
 	}
-	opens := mk("opens", v1.ServicePort{Port: "http"}, v1.ServicePort{Port: "debug"})
-	leased := mk("leased", v1.ServicePort{Port: "http"}, v1.ServicePort{Port: "debug", HostPort: []string{v1.NetworkExternal}, Lease: &v1.PortLease{}})
-	unopened := mk("unopened", v1.ServicePort{Port: "http"})
+	opens := mk("opens", v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}, {Port: "debug"}}})
+	leased := mk("leased", v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}},
+		v1.SiloService{Name: "leased-debug", Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "debug", Lease: &v1.PortLease{}}}})
+	unopened := mk("unopened", v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}})
 	svc := func(typ string) *v1.Service {
 		return &v1.Service{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "web3"},
-			Spec: v1.ServiceSpec{Selector: app, RouteWhen: "running", Type: typ, LoadBalancerClass: "nb",
+			Spec: v1.ServiceSpec{Selector: app, RouteWhen: "running", Type: typ,
 				Ports: []v1.ServicePortSpec{{Name: "web", Port: 80, TargetPort: "http"}, {Name: "debug", Port: 9229}}}}
 	}
 	routed, held := service.Split(svc(v1.ServiceLoadBalancer), []*v1.Silo{opens, leased, unopened})
@@ -43,11 +42,11 @@ func TestK061ALoadBalancerServicePublishesOnlyWhatTheSiloOpens(t *testing.T) {
 	if r := why["leased"]; !strings.Contains(r, "debug") || !strings.Contains(r, "lease") {
 		t.Errorf("leased: held %q, want it to name port debug and its lease", r)
 	}
-	if r := why["unopened"]; !strings.Contains(r, "debug") || !strings.Contains(r, "spec.service.ports") {
+	if r := why["unopened"]; !strings.Contains(r, "debug") || !strings.Contains(r, "spec.services") {
 		t.Errorf("unopened: held %q, want it to name port debug and where to open it", r)
 	}
-	// A ClusterIP Service stays on the mesh: unchanged.
-	if routed, _ := service.Split(svc(v1.ServiceClusterIP), []*v1.Silo{opens, leased, unopened}); len(routed) != 3 {
-		t.Errorf("ClusterIP: routed %d, want 3", len(routed))
+	// An Internal Service stays on the mesh: unchanged.
+	if routed, _ := service.Split(svc(v1.ServiceInternal), []*v1.Silo{opens, leased, unopened}); len(routed) != 3 {
+		t.Errorf("Internal: routed %d, want 3", len(routed))
 	}
 }

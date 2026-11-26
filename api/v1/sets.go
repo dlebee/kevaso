@@ -181,6 +181,10 @@ type SiloSetSpec struct {
 	// Reset, when it changes, resets every instance onto the current image, rolling
 	// (`kvo reset siloset --rolling`), whatever the upgrade policy.
 	Reset string `json:"reset,omitempty"`
+	// IPs names the IPSet whose members the instances take by ordinal (instance N, member N),
+	// where the template says own (hostPort: { own: true }, egress.source: { own: true }). Only
+	// when the template uses own.
+	IPs string `json:"ips,omitempty"`
 }
 
 // SiloTemplate is each instance's Silo spec, plus its labels.
@@ -269,11 +273,12 @@ func InstanceIndex(set, silo string) int {
 
 // ── Service (standalone) ─────────────────────────────────────────────────────
 
-// Service load-balances several silos (typically a SiloSet's instances) behind one virtual IP and
+// Service covers a group of silos (typically a SiloSet's instances) behind one virtual IP and
 // name, NAME.NAMESPACE.kevaso (design §7.1). Its endpoints are the Ready silos its selector picks;
-// every worker sends the virtual IP's ports to them (like kube-proxy). type LoadBalancer also gives
-// it an outside address from a plugin's class. Single silos carry their own spec.service instead.
-// Namespaced.
+// every worker sends the virtual IP's ports to them (like kube-proxy). type LoadBalancer also puts
+// a provider's balancer in front. HostPort is a single silo's (it arrives at the worker running
+// it), so a Service never is one. Its metadata.annotations tune the balancer (the provider's,
+// checked at apply). Single silos carry their own spec.services. Namespaced.
 type Service struct {
 	meta.TypeMeta   `json:",inline"`
 	meta.ObjectMeta `json:"metadata"`
@@ -281,23 +286,14 @@ type Service struct {
 	Status          ServiceStatus `json:"status,omitempty"`
 }
 
-// Service types.
-const (
-	ServiceClusterIP    = "ClusterIP"    // the default: a virtual IP on the mesh
-	ServiceLoadBalancer = "LoadBalancer" // plus an outside address
-)
-
 // ServiceSpec is what the service selects and serves.
 type ServiceSpec struct {
 	Selector map[string]string `json:"selector"`
 	Ports    []ServicePortSpec `json:"ports"`
-	Type     string            `json:"type,omitempty"` // ClusterIP (default) | LoadBalancer
-	// LoadBalancerClass: a plugin's class (e.g. linode-nodebalancer) for type LoadBalancer.
-	LoadBalancerClass string `json:"loadBalancerClass,omitempty"`
-	// LoadBalancerIP names the IP object (design §7.2c-1) whose address it's reached on. Empty:
-	// the namespace's shared one for the class, or with LoadBalancerDedicated one of its own.
-	LoadBalancerIP        string `json:"loadBalancerIP,omitempty"`
-	LoadBalancerDedicated bool   `json:"loadBalancerDedicated,omitempty"`
+	Type     string            `json:"type,omitempty"` // Internal (default) | LoadBalancer
+	// LoadBalancer is the provider whose balancer fronts it: required with type LoadBalancer,
+	// refused otherwise.
+	LoadBalancer *LoadBalancerSpec `json:"loadBalancer,omitempty"`
 	// RouteWhen: ready (an endpoint only while its readiness probe passes) or running (as soon as
 	// it runs). Required when it selects silos with a readiness probe (design §0.6).
 	RouteWhen string `json:"routeWhen,omitempty"`
@@ -324,7 +320,7 @@ type ServiceStatus struct {
 	// For type LoadBalancer: its load-balancer address, the node port each port arrives on at the
 	// endpoints' hosts, and where the load balancer's traffic comes from.
 	LoadBalancerIP string           `json:"loadBalancerIP,omitempty"`
-	IP             string           `json:"ip,omitempty"` // the IP object LoadBalancerIP is
+	IP             string           `json:"ip,omitempty"` // the kept IP LoadBalancerIP is (loadBalancer.ip)
 	NodePorts      []NodePort       `json:"nodePorts,omitempty"`
 	SourceRanges   []string         `json:"sourceRanges,omitempty"`
 	Conditions     []meta.Condition `json:"conditions,omitempty"`
@@ -339,6 +335,22 @@ type ServiceEndpoint struct {
 	// Reason and Since: why a held endpoint is held, and since when.
 	Reason string     `json:"reason,omitempty"`
 	Since  *time.Time `json:"since,omitempty"`
+}
+
+// TypeOrDefault is the service's type, Internal when it says none.
+func (s ServiceSpec) TypeOrDefault() string {
+	if s.Type == "" {
+		return ServiceInternal
+	}
+	return s.Type
+}
+
+// LoadBalancerIP is the kept IP its balancer answers on ("" if it names none).
+func (s ServiceSpec) LoadBalancerIP() string {
+	if s.LoadBalancer == nil {
+		return ""
+	}
+	return s.LoadBalancer.IP
 }
 
 // Selects reports whether a selector picks these labels (an empty selector picks nothing).
@@ -408,7 +420,47 @@ func (s *SiloSet) InstanceSpec() SiloSpec {
 	if s.Spec.Reset != "" {
 		spec.Reset = s.Spec.Reset
 	}
+	spec.Services = cloneServices(spec.Services)
 	return spec
+}
+
+// cloneServices copies services so an instance never shares them with the template.
+func cloneServices(in []SiloService) []SiloService {
+	if in == nil {
+		return nil
+	}
+	out := make([]SiloService, len(in))
+	for i, sv := range in {
+		c := sv
+		c.Ports = append([]ServicePort(nil), sv.Ports...)
+		if sv.HostPort != nil {
+			h := *sv.HostPort
+			c.HostPort = &h
+		}
+		if sv.LoadBalancer != nil {
+			l := *sv.LoadBalancer
+			c.LoadBalancer = &l
+		}
+		if sv.Annotations != nil {
+			c.Annotations = make(map[string]string, len(sv.Annotations))
+			for k, v := range sv.Annotations {
+				c.Annotations[k] = v
+			}
+		}
+		out[i] = c
+	}
+	return out
+}
+
+// instanceServices names an instance's services: an unnamed one is the instance's own name, a
+// named one INSTANCE-NAME, so no two instances share a name.
+func instanceServices(in []SiloService, instance string) []SiloService {
+	for i := range in {
+		if in[i].Name != "" {
+			in[i].Name = instance + "-" + in[i].Name
+		}
+	}
+	return in
 }
 
 // Revision identifies the set's current instance spec and labels: instances on another revision
@@ -436,6 +488,11 @@ func (s *SiloSet) Instance(i int, standby bool) *Silo {
 		TypeMeta: meta.TypeMeta{APIVersion: APIVersion, Kind: "Silo"},
 		ObjectMeta: meta.ObjectMeta{Name: InstanceName(s.Name, i), Namespace: s.Namespace, Labels: labels,
 			OwnerReferences: []meta.OwnerReference{{APIVersion: APIVersion, Kind: "SiloSet", Name: s.Name, UID: s.UID, Controller: true}}},
-		Spec: s.InstanceSpec(),
+		Spec: instanceSpec(s.InstanceSpec(), InstanceName(s.Name, i)),
 	}
+}
+
+func instanceSpec(spec SiloSpec, name string) SiloSpec {
+	spec.Services = instanceServices(spec.Services, name)
+	return spec
 }

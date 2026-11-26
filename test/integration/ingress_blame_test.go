@@ -76,7 +76,7 @@ func TestIngressBlameFindsTheBrokenIngress(t *testing.T) {
 	place := func(name, ns string) {
 		t.Helper()
 		s := containerSilo(name, ns, "docker")
-		s.Spec.Ports, s.Spec.Service = []v1.SiloPort{{Name: "http", Port: 80}}, &v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}}
+		s.Spec.Ports, s.Spec.Services = []v1.SiloPort{{Name: "http", Port: 80}}, []v1.SiloService{{Ports: []v1.ServicePort{{Port: "http"}}}}
 		if err := c.admin.Create(c.ctx, s); err != nil {
 			t.Fatal(err)
 		}

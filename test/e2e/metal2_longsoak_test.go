@@ -102,9 +102,9 @@ func TestMetal2LongSoakSetup(t *testing.T) {
 	ip := map[string]string{metalHost: p.m1.cfg.ExternalIP, metalHost2: p.m2.cfg.ExternalIP}[edge]
 	name := "soak." + strings.ReplaceAll(ip, ".", "-") + ".sslip.io"
 	c.apply(vmEcho(ns, "vm", 8080) + on(metalHost2) + "  volumes: [{ name: data, size: 1Gi, mountPath: /data }]\n---\n" +
-		boxEcho(ns, "app", 8080) + on(metalHost) + "  ports: [{ name: http, port: 8080 }]\n  service:\n    ports: [{ port: http }]\n---\n" +
+		boxEcho(ns, "app", 8080) + on(metalHost) + "  ports: [{ name: http, port: 8080 }]\n  services:\n    - ports: [{ port: http }]\n---\n" +
 		boxEcho(ns, "stops", 8080) + on(metalHost2) + "  availability: { onControlPlaneLoss: Stop, after: 2m }\n---\n" +
-		boxEcho(ns, "leased", 18160) + on(metalHost) + "  ports: [{ name: debug, port: 18160 }]\n  service:\n    ports: [{ port: debug, hostPort: [external], lease: { max: 24h } }]\n---\n" +
+		boxEcho(ns, "leased", 18160) + on(metalHost) + "  ports: [{ name: debug, port: 18160 }]\n  services:\n    - type: HostPort\n      ports: [{ port: debug, lease: { max: 24h } }]\n---\n" +
 		`apiVersion: kevaso/v1
 kind: Issuer
 metadata: { name: le-staging }

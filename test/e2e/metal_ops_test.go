@@ -17,7 +17,7 @@ import (
 	"kevaso.com/core/sdk/kri"
 )
 
-// TestMetalLeases is port leases on an [external] port (design §7.2d): closed until leased;
+// TestMetalLeases is port leases on a HostPort port (worker: external) (design §7.2d): closed until leased;
 // opened for a minute, it answers this Mac, a connection held open is cut when the lease ends,
 // and new ones are refused. A port whose lease needs approval opens at once for someone who
 // holds approve (the admin's kvo open); asked for by the silo itself (its local endpoint), it
@@ -30,10 +30,11 @@ func TestMetalLeases(t *testing.T) {
 	ns := "leases"
 	c.namespace(ns)
 	c.apply(boxEcho(ns, "dbg", 18120, 18121) + `  ports: [{ name: debug, port: 18120 }, { name: gated, port: 18121 }]
-  service:
-    ports:
-      - { port: debug, hostPort: [external], lease: { max: 2m } }
-      - { port: gated, hostPort: [external], lease: { max: 2m, approval: { required: true } } }
+  services:
+    - type: HostPort
+      ports:
+        - { port: debug, lease: { max: 2m } }
+        - { port: gated, lease: { max: 2m, approval: { required: true } } }
 `)
 	c.waitRunning(ns, 10*time.Minute, "dbg")
 	c.holds("a leased port is closed until leased", 10*time.Second, func() (bool, string) { return c.closed(18120) })

@@ -21,7 +21,7 @@ var (
 		"silos", "silosets", "services", "vmimages", "serviceaccounts", "grants", "openshellpolicies", "ingresses", "certificates",
 		"silos/status", "silos/exec", "silos/move", "silos/restore-settle", "silos/ssh", "silos/files", v1.ResourceExposure, "silosets/scale",
 		"serviceaccounts/token", "services/expose-public", "ingresses/publish-public",
-		"secrets", "approvals", "panes", "leases", "ips", "roles", "rolebindings", "runs",
+		"secrets", "approvals", "panes", "leases", "ips", "ipsets", "roles", "rolebindings", "runs",
 		"hosts", "hosts/confirm-off", "namespaces", "clusterroles", "clusterrolebindings", "clustersecrets", "kinddefinitions", "validationpolicies", "plugins", "issuers", "ingressclasses",
 	}
 	rw        = []string{"get", "list", "watch", "create", "update", "patch", "delete"}
@@ -50,7 +50,7 @@ func expected() map[string]grants {
 			add(slices.Concat(secretsMeta, secretsWrite, []string{v1.VerbUse, v1.VerbReadValue, v1.VerbApprove}), "secrets").
 			add([]string{"get", "list", "watch", "delete"}, "approvals", "panes", "leases").
 			add([]string{v1.VerbOpen, v1.VerbApprove}, v1.ResourceExposure).
-			add(append(slices.Clone(rw), v1.VerbUse), "ips"),
+			add(append(slices.Clone(rw), v1.VerbUse), "ips", "ipsets"),
 		// K-077: no serviceaccounts/token: a token holds what its account holds, which an admin
 		// may have bound wider than the editor's own role.
 		"editor": grants{}.add(rw, workloadR...).
@@ -59,10 +59,10 @@ func expected() map[string]grants {
 			add(slices.Concat(secretsMeta, secretsWrite, []string{v1.VerbUse}), "secrets").
 			add(ro, "approvals", "panes", "leases").
 			add([]string{v1.VerbOpen}, v1.ResourceExposure).
-			add(append(slices.Clone(ro), v1.VerbUse), "ips"),
+			add(append(slices.Clone(ro), v1.VerbUse), "ips", "ipsets"),
 		"viewer": grants{}.add(ro, workloadR...).
 			add(secretsMeta, "secrets").
-			add(ro, "approvals", "panes", "leases", "ips"),
+			add(ro, "approvals", "panes", "leases", "ips", "ipsets"),
 		"runner": grants{}.add([]string{"get", "list", "watch", "create"}, "runs"),
 	}
 }

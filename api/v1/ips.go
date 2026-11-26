@@ -8,12 +8,14 @@ import (
 	"kevaso.com/core/api/meta"
 )
 
-// IP is an outside address kept as its own object (design §7.2c-1): peers, allowlists and DNS
-// records point at an address, so it outlives the services using it today. There is no load
-// balancer object: a balancer is what a plugin runs behind an address. Load-balancer services of a
-// class in a namespace share one IP (DefaultIPName) and its balancer, each on its own ports, unless
-// they name one (loadBalancer.ip) or ask for their own (dedicated). An address only one host can
-// have at a time (ip-pool, an announced shared IP) is never shared: one silo holds it.
+// IP is one address a namespace keeps (networking v2), with an explicit type, never guessed from
+// its fields:
+//   - type Host: one of a host's named extra addresses (spec.hostAddress): pinned to that host;
+//   - type Provider: an address reserved from a provider (spec.provider, spec.region): it follows
+//     its silo within the provider's reach.
+//
+// One IP is exactly one address (a range is an IPSet) and has one holder at a time. Deleting the
+// silo keeps the IP: the next silo naming it gets the same address.
 type IP struct {
 	meta.TypeMeta   `json:",inline"`
 	meta.ObjectMeta `json:"metadata"`
@@ -21,39 +23,36 @@ type IP struct {
 	Status          IPStatus `json:"status,omitempty"`
 }
 
-// IPSpec is where the address comes from and whether it's kept.
+// IP types.
+const (
+	IPTypeHost     = "Host"
+	IPTypeProvider = "Provider"
+)
+
+// IPSpec is where the address comes from: Host requires hostAddress, Provider requires provider
+// and region; the other fields are refused.
 type IPSpec struct {
-	// Class provides it: a plugin's load-balancer class, or ip-pool for a host's own extra addresses.
-	Class string `json:"class"`
-	// Reclaim: Retain (the default) keeps the address until the IP is deleted; Delete deletes the IP
-	// (and releases the address) once nothing holds it.
-	Reclaim string `json:"reclaim,omitempty"`
-	// Placement hints, for a class that needs them before anything holds the address: the host
-	// whose addresses ip-pool picks from, the provider's region a plugin reserves it in. Without
-	// them the address is reserved where its first holder lands.
-	Host   string `json:"host,omitempty"`
-	Region string `json:"region,omitempty"`
-	// Address asks for this address: one of the host's (ip-pool), or one you already own at the
-	// provider (a class that can reserve). Empty: any.
-	Address string `json:"address,omitempty"`
+	Type        string `json:"type"`
+	HostAddress string `json:"hostAddress,omitempty"` // type Host: a host's extra address, by name
+	Provider    string `json:"provider,omitempty"`    // type Provider: the installed provider, e.g. linode
+	Region      string `json:"region,omitempty"`      // type Provider: its region, e.g. us-ord
 }
 
-// IPStatus is the address and who holds it.
+// IPStatus is the address, who holds it and where it is.
 type IPStatus struct {
 	Address string `json:"address,omitempty"`
-	Host    string `json:"host,omitempty"`   // ip-pool: the host it's routed to
-	Region  string `json:"region,omitempty"` // a plugin's: the provider's region it's in
-	// Handle is the plugin's for the reservation, given back when it's released.
+	// Holder is the silo or Service holding it now (one at a time); nil: reserved, held by nobody.
+	Holder *IPHolder `json:"holder,omitempty"`
+	// Where is where the address can be, for people: "host NAME" (type Host) or "PROVIDER REGION".
+	Where string `json:"where,omitempty"`
+	// Host is the host the address is on now: its host's (type Host), or the worker announcing it
+	// (type Provider).
+	Host   string `json:"host,omitempty"`
+	Region string `json:"region,omitempty"` // type Provider: the provider's region it's in
+	// Handle is the provider's for the reservation, given back when it's released.
 	Handle string `json:"handle,omitempty"`
-	// BoundTo are who hold it, each with its ports: one silo for an address only one host can have
-	// at a time (ip-pool, an announced shared IP), any number of silos and Services on their own
-	// ports for a balancer's. Empty: reserved, held by nobody.
-	BoundTo []IPHolder `json:"boundTo,omitempty"`
-	// Waiting are the services that name it and can't have it yet, and why.
-	Waiting []IPWaiting `json:"waiting,omitempty"`
-	// Follows says where the address can go with its holder (the class's scope): host, region or
-	// global.
-	Follows    string           `json:"follows,omitempty"`
+	// Waiting are the others that name it and can't have it now, and why.
+	Waiting    []IPWaiting      `json:"waiting,omitempty"`
 	Conditions []meta.Condition `json:"conditions,omitempty"`
 }
 
@@ -64,7 +63,7 @@ type IPHolder struct {
 	Ports  []string `json:"ports,omitempty"`
 }
 
-// IPWaiting is a service that names an IP it can't have now.
+// IPWaiting is one that names an IP it can't have now.
 type IPWaiting struct {
 	Holder string `json:"holder"`
 	UID    string `json:"uid"`
@@ -73,12 +72,7 @@ type IPWaiting struct {
 
 // Holds reports whether the object with uid holds the IP.
 func (st IPStatus) Holds(uid string) bool {
-	for _, h := range st.BoundTo {
-		if uid != "" && h.UID == uid {
-			return true
-		}
-	}
-	return false
+	return uid != "" && st.Holder != nil && st.Holder.UID == uid
 }
 
 // WaitingReason is why the object with uid can't have the IP yet ("" if it isn't waiting).
@@ -91,33 +85,20 @@ func (st IPStatus) WaitingReason(uid string) string {
 	return ""
 }
 
-// Holders lists who hold it, with their ports, for people.
+// Holders says who holds it, with its ports, for people ("" for nobody).
 func (st IPStatus) Holders() string {
-	var out []string
-	for _, h := range st.BoundTo {
-		s := h.Holder
-		if len(h.Ports) > 0 {
-			s += " (" + strings.Join(h.Ports, ",") + ")"
-		}
-		out = append(out, s)
+	if st.Holder == nil {
+		return ""
 	}
-	return strings.Join(out, ", ")
+	s := st.Holder.Holder
+	if len(st.Holder.Ports) > 0 {
+		s += " (" + strings.Join(st.Holder.Ports, ",") + ")"
+	}
+	return s
 }
-
-// Reclaim policies.
-const (
-	ReclaimRetain = "Retain"
-	ReclaimDelete = "Delete"
-)
 
 // FinalizerIP holds an IP until its address is released.
 const FinalizerIP = "kevaso.com/ip"
-
-// LabelDefaultIP marks a namespace's default IP of a class (its value: the class).
-const LabelDefaultIP = "kevaso.com/default-ip"
-
-// Kept reports whether the IP stays when nothing holds it.
-func (ip *IP) Kept() bool { return ip.Spec.Reclaim != ReclaimDelete }
 
 // Holders of an IP.
 const (
@@ -125,91 +106,106 @@ const (
 	HolderServicePrefix = "service/"
 )
 
-// IPWay is how a load-balancer service comes by its IP.
-type IPWay int
+// ── IPSet ────────────────────────────────────────────────────────────────────
 
-// The ways.
+// IPSet is one reservation per SiloSet instance, matched by ordinal (like a StatefulSet's
+// volumeClaimTemplates). A SiloSet names it (spec.ips) when its template uses own:
+//   - type Static: an ordered list of members, each an IP (ip: NAME) or a host's extra address
+//     (hostAddress: NAME). It never grows on its own; members are only added at the end, never
+//     renumbered or removed.
+//   - type Dynamic: Kevaso reserves provider IPs as instances need them, up to max, kept per
+//     ordinal (SET-0, SET-1, …). A Dynamic set has no host addresses.
+//
+// Its members are ordinary IP objects (labelled LabelIPSet and LabelIPSetOrdinal), so kvo get ips
+// lists everything. Namespaced.
+type IPSet struct {
+	meta.TypeMeta   `json:",inline"`
+	meta.ObjectMeta `json:"metadata"`
+	Spec            IPSetSpec   `json:"spec"`
+	Status          IPSetStatus `json:"status,omitempty"`
+}
+
+// IPSet types.
 const (
-	IPNone    IPWay = iota // no IP: no port on a load balancer
-	IPNamed                // it names one (loadBalancer.ip)
-	IPMade                 // one of its own, made for it and named after it (dedicated, or an exclusive class)
-	IPDefault              // the namespace's shared one for its class (DefaultIPName)
+	IPSetStatic  = "Static"
+	IPSetDynamic = "Dynamic"
 )
 
-// DefaultIPName is the name of a namespace's shared IP of a class: every load-balancer service of
-// that class there that names no IP and isn't dedicated is on it, each on its own ports.
-func DefaultIPName(class string) string { return "default-" + class }
-
-func ipOf(class, named, self string, dedicated, exclusive bool) (string, IPWay) {
-	switch {
-	case class == "":
-		return "", IPNone
-	case named != "":
-		return named, IPNamed
-	case dedicated || exclusive:
-		return self, IPMade
-	}
-	return DefaultIPName(class), IPDefault
+// IPSetSpec: Static requires members; Dynamic requires provider, region and max; the other fields
+// are refused.
+type IPSetSpec struct {
+	Type     string        `json:"type"`
+	Members  []IPSetMember `json:"members,omitempty"`
+	Provider string        `json:"provider,omitempty"`
+	Region   string        `json:"region,omitempty"`
+	Max      int           `json:"max,omitempty"`
 }
 
-// SiloServiceIP is the IP a silo's own service has its address from, and how. exclusive: its
-// class's address is one host's at a time (ip-pool, an announced shared IP), so it's never shared.
-func SiloServiceIP(s *Silo, exclusive bool) (string, IPWay) {
-	sv := s.Spec.Service
-	if !s.Spec.LoadBalanced() || sv.LoadBalancer == nil {
-		return "", IPNone
-	}
-	// A SiloSet's instances have the same ports, so they'd clash on one address: each has its own.
-	dedicated := sv.LoadBalancer.Dedicated || slices.ContainsFunc(s.OwnerReferences, func(r meta.OwnerReference) bool { return r.Kind == "SiloSet" })
-	return ipOf(sv.LoadBalancer.Class, sv.LoadBalancer.IP, s.Name, dedicated, exclusive || sv.LoadBalancer.Class == LBIPPool)
+// IPSetMember is one ordinal of a Static set: exactly one of ip and hostAddress.
+type IPSetMember struct {
+	IP          string `json:"ip,omitempty"`          // an IP in this namespace
+	HostAddress string `json:"hostAddress,omitempty"` // a host's extra address, by name
 }
 
-// ServiceIP is the IP a standalone Service of type LoadBalancer has its address from, and how.
-func ServiceIP(svc *Service, exclusive bool) (string, IPWay) {
-	if svc.Spec.Type != ServiceLoadBalancer {
-		return "", IPNone
+// String is the member as a person writes it.
+func (m IPSetMember) String() string {
+	if m.IP != "" {
+		return "ip: " + m.IP
 	}
-	return ipOf(svc.Spec.LoadBalancerClass, svc.Spec.LoadBalancerIP, svc.Name, svc.Spec.LoadBalancerDedicated, exclusive)
+	return "hostAddress: " + m.HostAddress
 }
 
-// SiloEgressIP is the IP a silo with egress.source pool sends from ("" otherwise): egress.ip, or
-// its service's when that is ip-pool.
-func SiloEgressIP(s *Silo) string {
-	if s.Spec.Network.Egress.Source != EgressPool {
-		return ""
-	}
-	if n := s.Spec.Network.Egress.IP; n != "" {
-		return n
-	}
-	if sv := s.Spec.Service; sv != nil && sv.LoadBalancer != nil && sv.LoadBalancer.Class == LBIPPool {
-		n, _ := SiloServiceIP(s, true)
-		return n
-	}
-	return ""
+// IPSetStatus is the set's members as its controller sees them.
+type IPSetStatus struct {
+	Members    []IPSetMemberStatus `json:"members,omitempty"`
+	Conditions []meta.Condition    `json:"conditions,omitempty"`
 }
 
-// SiloIPs are the names of every IP a silo holds (its service's first); exclusive says which
-// classes' addresses are one host's at a time.
-func SiloIPs(s *Silo, exclusive func(class string) bool) []string {
+// IPSetMemberStatus is one ordinal: its IP object, address and user.
+type IPSetMemberStatus struct {
+	Ordinal int    `json:"ordinal"`
+	IP      string `json:"ip"`
+	Address string `json:"address,omitempty"`
+	UsedBy  string `json:"usedBy,omitempty"` // the instance on it
+}
+
+// Labels on an IPSet's member IPs.
+const (
+	LabelIPSet        = "kevaso.com/ipset"
+	LabelIPSetOrdinal = "kevaso.com/ipset-ordinal"
+)
+
+// DynamicMemberName is the IP a Dynamic set reserves for ordinal i: SET-i.
+func DynamicMemberName(set string, i int) string { return InstanceName(set, i) }
+
+// SiloIPs are the names of every IP a silo names (services first, then egress).
+func SiloIPs(s *Silo) []string {
 	var out []string
-	if sv := s.Spec.Service; sv != nil && sv.LoadBalancer != nil {
-		if n, _ := SiloServiceIP(s, exclusive(sv.LoadBalancer.Class)); n != "" {
-			out = append(out, n)
-		}
-	}
-	if n := SiloEgressIP(s); n != "" && !slices.Contains(out, n) {
-		out = append(out, n)
+	for _, n := range s.Spec.NamedIPs() {
+		out = append(out, n.Name)
 	}
 	return out
 }
 
-// SiloPorts are the ports a silo's load balancer takes on its address (PORT/PROTO: their as),
-// leased ones included: a closed port still has its number on the address.
-func SiloPorts(s *Silo) []string {
+// SiloPortsOn are the ports a silo takes on the IP named ip (PORT/PROTO: their as), from the
+// services that name it, leased ones included: a closed port still has its number on the address.
+func SiloPortsOn(s *Silo, ip string) []string {
 	var out []string
-	for _, p := range s.Spec.Open() {
-		if p.LoadBalancer {
-			out = append(out, portKey(p.HostNumber(), p.Protocol))
+	for _, sv := range s.Spec.Services {
+		on := (sv.HostPort != nil && sv.HostPort.IP == ip) || (sv.LoadBalancer != nil && sv.LoadBalancer.IP == ip)
+		if !on {
+			continue
+		}
+		for _, p := range sv.Ports {
+			if d, ok := s.Spec.Declared(p.Port); ok {
+				n := p.As
+				if n == 0 {
+					n = d.Port
+				}
+				if k := portKey(n, d.Proto()); !slices.Contains(out, k) {
+					out = append(out, k)
+				}
+			}
 		}
 	}
 	return out

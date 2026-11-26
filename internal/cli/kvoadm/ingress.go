@@ -20,8 +20,9 @@ type IngressOptions struct {
 	Class  string // the IngressClass (default public)
 	Driver string // nginx (default), caddy, kong
 	Public bool   // reachable from the internet
-	// HostPort: the proxy's ports open on its host's address on this network (default external);
-	// LBClass instead puts them behind a load balancer of that class.
+	// HostPort: the proxy's ports open on its worker's address on this network (default external);
+	// LBClass instead puts them behind a load balancer of that provider.
+	// TODO(net-v2 wave 2): --lb-class becomes --provider.
 	HostPort string
 	LBClass  string
 	Image    string            // default: the driver's vendor image
@@ -174,20 +175,16 @@ func IngressObjects(o IngressOptions, drivers kic.Registry) (*v1.Silo, *v1.Ingre
 			n = pn[i]
 		}
 		declared = append(declared, v1.SiloPort{Name: n, Port: p})
-		sp := v1.ServicePort{Port: n, LoadBalancer: o.LBClass != ""}
-		if o.HostPort != "" {
-			sp.HostPort = []string{o.HostPort}
-		}
-		ports = append(ports, sp)
+		ports = append(ports, v1.ServicePort{Port: n})
 	}
-	svc := &v1.SiloService{Ports: ports}
+	svc := v1.SiloService{Type: v1.ServiceHostPort, Ports: ports, HostPort: &v1.HostPortSource{Worker: o.HostPort}}
 	if o.LBClass != "" {
-		svc.LoadBalancer = &v1.LoadBalancerSpec{Class: o.LBClass}
+		svc = v1.SiloService{Type: v1.ServiceLoadBalancer, Ports: ports, LoadBalancer: &v1.LoadBalancerSpec{Provider: o.LBClass}}
 	}
 	silo := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"},
 		ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "kevaso-system", Labels: map[string]string{"kevaso.com/ingress-class": o.Class}},
 		Spec: v1.SiloSpec{Runtime: o.Runtime, Container: &v1.ContainerSource{Image: image}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
-			Ports: declared, Service: svc}}
+			Ports: declared, Services: []v1.SiloService{svc}}}
 	class := &v1.IngressClass{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IngressClass"}, ObjectMeta: meta.ObjectMeta{Name: o.Class},
 		Spec: v1.IngressClassSpec{Public: o.Public, Hosts: o.Hosts, Controller: v1.IngressController{Driver: o.Driver, Options: o.Options, Namespace: "kevaso-system", Silo: name}}}
 	return silo, class, nil

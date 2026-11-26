@@ -13,9 +13,9 @@
 # Each instance stays private: the Service's load balancer reaches it through a node port on its
 # host, from the load balancer's addresses only.
 #
-# The Linode parts (provider: linode, linode-nodebalancer) need the plugin (kvoadm plugin install
-# linode); without one, drop the hostSelector and use the Service's default type, ClusterIP: a
-# virtual IP and the name rpc.web3.kevaso, for the silos its instances' rpc port allows (allowFrom).
+# The Linode parts (provider: linode) need the plugin (kvoadm plugin install linode); without one,
+# drop the hostSelector and use the Service's default type, Internal: a virtual IP and the name
+# rpc.web3.kevaso, for the silos its instances' rpc port allows (allowFrom).
 #
 #   kvo scale siloset rpc-pool --instances 5      # more; fewer asks first (it deletes disks)
 #   kvo reset siloset rpc-pool --rolling          # every instance back onto its image, one at a time
@@ -48,9 +48,9 @@ spec:
         exec: { command: [sh, -c, "geth attach --exec eth.blockNumber /root/.ethereum/geth.ipc"] }
         period: 15s
     ports: [{ name: rpc, port: 8545, protocol: TCP }]
-    service:                      # each instance's own: rpc-pool-0.web3.kevaso…
-      ports: [{ port: rpc }]      # on its silo IP only; add allowFrom: [SILO] for silos that call it directly
-      routeWhen: ready            # stated, never assumed: its name answers only while ready
+    services:                     # each instance's own: rpc-pool-0.web3.kevaso…
+      - ports: [{ port: rpc }]    # Internal, on its silo IP only; add allowFrom: [SILO] for silos that call it directly
+        routeWhen: ready          # stated, never assumed: its name answers only while ready
 ---
 apiVersion: kevaso/v1
 kind: Service
@@ -61,7 +61,6 @@ spec:
   ports:
     - { name: rpc, port: 8545, targetPort: rpc, protocol: TCP }
   type: LoadBalancer
-  loadBalancerClass: linode-nodebalancer
-  # No loadBalancerIP: it's on the namespace's shared IP for the class (default-linode-nodebalancer,
-  # one NodeBalancer for every such service here, each on its own ports), made on first use and gone
-  # with the last unless kept. loadBalancerDedicated: true gives it one of its own.
+  loadBalancer: { provider: linode }   # one NodeBalancer of its own, made with the service and gone with it
+  # Sharing one balancer with other services, and its size, are the provider's annotations on the
+  # Service (metadata.annotations, e.g. linode.kevaso.com/nodebalancer: edge), checked at apply.

@@ -9,8 +9,8 @@
 //  4. have no NoSchedule taint the silo doesn't tolerate;
 //  5. have room: allocatable CPU and memory minus what silos already placed there ask for;
 //  6. for exposure: a public address (not behind NAT) with the silo's host ports free, and for its
-//     IPs (design §7.2c-1): held by the silo, and on the host that has the address (ip-pool), or in
-//     the region the address is in (a plugin's class);
+//     IPs (networking v2): held by the silo, and on the host with the address (type Host), or on
+//     the provider's machines in its region (type Provider);
 //  7. for a plugin's class (a load balancer, a volume): be one of that plugin's machines, in the
 //     region the silo's volumes already are.
 //
@@ -76,8 +76,8 @@ type Class struct {
 
 // Env is the rest of the cluster a decision depends on.
 type Env struct {
-	// IPs are the IP objects (design §7.2c-1); Hosts every host, for the ip-pool addresses they
-	// have free (default: the hosts scheduled onto).
+	// IPs are the IP objects; Hosts every host, for their named extra addresses (default: the
+	// hosts scheduled onto).
 	IPs   []*v1.IP
 	Hosts []*v1.Host
 	// Classes are the plugins' load-balancer and storage classes, by name.
@@ -242,10 +242,14 @@ func filter(silo *v1.Silo, h *v1.Host, w *v1.WorkerSpec, u usage, needMem int64,
 // classFilter: a plugin's class needs one of the plugin's machines, and volumes that already exist
 // keep the silo in their region.
 func classFilter(silo *v1.Silo, h *v1.Host, classes map[string]Class) string {
-	var used []string
-	if c := v1.PluginLB(silo); c != "" {
-		used = append(used, c)
+	// A load balancer is within its provider's reach: one of its machines.
+	// TODO(net-v2 wave 2): the provider's declared reach (Linode: its region, Linode workers).
+	for _, sv := range silo.Spec.Balancers() {
+		if p := sv.LoadBalancer.Provider; p != "" && (h.Status.Provider == nil || h.Status.Provider.Name != p) {
+			return "service " + v1.ServiceNameOf(sv, silo.Name) + ": provider " + p + "'s balancer needs a " + p + " machine"
+		}
 	}
+	var used []string
 	for _, v := range v1.PluginVolumes(silo) {
 		used = append(used, v.Class)
 	}

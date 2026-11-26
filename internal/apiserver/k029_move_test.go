@@ -55,8 +55,8 @@ func TestK029AMoveTakesThePlacementsClaims(t *testing.T) {
 	mk := func(name string) *v1.Silo {
 		s := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "d"},
 			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-				Ports:   []v1.SiloPort{{Name: "http", Port: 80}},
-				Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", HostPort: []string{v1.NetworkInternal}}}}}}
+				Ports:    []v1.SiloPort{{Name: "http", Port: 80}},
+				Services: []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{Worker: v1.NetworkInternal}, Ports: []v1.ServicePort{{Port: "http"}}}}}}
 		must(c.Create(ctx, s))
 		return s
 	}
@@ -111,7 +111,7 @@ func TestK029AMoveHoldsItsPortAndARefusedMoveChangesNothing(t *testing.T) {
 			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
 				Availability: v1.Availability{OnHostLoss: v1.OnHostLossRecreate}, // a container moves only as a fresh copy
 				Ports:        []v1.SiloPort{{Name: "http", Port: 80}},
-				Service:      &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", HostPort: []string{v1.NetworkInternal}}}}}}
+				Services:     []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{Worker: v1.NetworkInternal}, Ports: []v1.ServicePort{{Port: "http"}}}}}}
 		must(c.Create(ctx, s))
 		if host != "" {
 			s.Status.Host, s.Status.Phase = host, "Running"
@@ -162,8 +162,8 @@ func TestK029ARawStatusWriteOntoAHeldHostPortIsRefused(t *testing.T) {
 	mk := func(name string) *v1.Silo {
 		s := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "d"},
 			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"},
-				Ports:   []v1.SiloPort{{Name: "http", Port: 80}},
-				Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", HostPort: []string{v1.NetworkInternal}}}}}}
+				Ports:    []v1.SiloPort{{Name: "http", Port: 80}},
+				Services: []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{Worker: v1.NetworkInternal}, Ports: []v1.ServicePort{{Port: "http"}}}}}}
 		must(c.Create(ctx, s))
 		return s
 	}
