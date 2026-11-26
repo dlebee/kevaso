@@ -183,7 +183,7 @@ func TestIPScheduling(t *testing.T) {
 		s.Spec.Network.Egress.Source = &v1.EgressSource{IP: "eth"}
 	})
 	// Not made yet, held by another, not bound yet: nowhere.
-	if d, _ := Schedule(a, hs, nil); !strings.Contains(d.Excluded["metal-1"], "IP eth doesn't exist") {
+	if d, _ := Schedule(a, hs, nil); d.Reason != "IP eth doesn't exist" || d.Message() != d.Reason {
 		t.Fatalf("no IP: %+v", d)
 	}
 	other := ipObj("eth", v1.IPTypeHost, func(x *v1.IP) {
@@ -191,10 +191,10 @@ func TestIPScheduling(t *testing.T) {
 		x.Status.Holder = &v1.IPHolder{Holder: "silo/b", UID: "uid-b"}
 		x.Status.Waiting = []v1.IPWaiting{{Holder: "silo/a", UID: "uid-a", Reason: "IP eth is held by silo/b"}}
 	})
-	if d, _ := Schedule(a, hs, nil, other); d.Host != "" || !strings.Contains(d.Excluded["metal-1"], "held by silo/b") {
+	if d, _ := Schedule(a, hs, nil, other); d.Host != "" || !strings.Contains(d.Reason, "held by silo/b") {
 		t.Fatalf("held: %+v", d)
 	}
-	if d, _ := Schedule(a, hs, nil, ipObj("eth", v1.IPTypeHost, func(x *v1.IP) { x.Spec.HostAddress = "m1-a" })); !strings.Contains(d.Excluded["metal-1"], "waiting for IP eth to be bound") {
+	if d, _ := Schedule(a, hs, nil, ipObj("eth", v1.IPTypeHost, func(x *v1.IP) { x.Spec.HostAddress = "m1-a" })); d.Reason != "waiting for IP eth to be bound to it" {
 		t.Fatalf("unbound: %+v", d)
 	}
 	// Held, a Host IP: the host with that address, found by name before the IP says where.
@@ -203,7 +203,7 @@ func TestIPScheduling(t *testing.T) {
 		t.Fatalf("by name: %+v", d)
 	}
 	nowhere := ipObj("eth", v1.IPTypeHost, func(x *v1.IP) { boundTo(a)(x); x.Spec.HostAddress = "gone" })
-	if d, _ := Schedule(a, hs, nil, nowhere); d.Host != "" || !strings.Contains(d.Excluded["metal-1"], "no host has address gone") {
+	if d, _ := Schedule(a, hs, nil, nowhere); d.Host != "" || d.Reason != "no host has address gone (kvoadm host addresses HOST add gone ADDRESS)" {
 		t.Fatalf("no such address: %+v", d)
 	}
 	res := ipObj("eth", v1.IPTypeHost, func(x *v1.IP) {
@@ -310,7 +310,8 @@ func TestEgressTable(t *testing.T) {
 		{"source ip, not held yet", mk(&v1.EgressSource{IP: "mail"}), "", nil, "198.51.100.10", "waiting for IP mail's address"},
 		{"source ip, no address yet", mk(&v1.EgressSource{IP: "mail"}), "", ipObj("mail", v1.IPTypeProvider, nil), "198.51.100.10", "waiting for IP mail's address"},
 		{"source ip, on another host", mk(&v1.EgressSource{IP: "mail"}), "", away, "198.51.100.10", "waiting for IP mail's address"},
-		{"source own: not applied yet", mk(&v1.EgressSource{Own: true}), "", nil, "198.51.100.10", "isn't applied yet"},
+		{"source own, not held yet", mk(&v1.EgressSource{Own: true}), "", nil, "198.51.100.10", "waiting for its IPSet member's address"},
+		{"source own, on the host", mk(&v1.EgressSource{Own: true}), "", onH, "198.51.100.17", ""},
 		{"a balancer in front, no source: says so", mk(nil), "198.51.100.200", nil, "198.51.100.10", "no egress.source"},
 		{"a balancer in front on the worker's address: no note", mk(nil), "198.51.100.10", nil, "198.51.100.10", ""},
 	} {

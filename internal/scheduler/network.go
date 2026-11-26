@@ -53,15 +53,24 @@ func AddedHostPorts(old, next v1.SiloSpec) []HostPort {
 	return out
 }
 
+// missingAddress is the first of the silo's worker host ports h has no address for (ok false:
+// it has them all).
+func missingAddress(s *v1.Silo, h *v1.Host) (HostPort, bool) {
+	for _, w := range HostPorts(s) {
+		if h.IPOn(w.Network) == "" {
+			return w, true
+		}
+	}
+	return HostPort{}, false
+}
+
 // netFilter: the network rules a host must meet for the silo (empty: fine). A port with
 // hostPort needs the host to have that address, and no other silo there holding the same address
-// and number.
+// and number. (Where its kept addresses can be is addressLimits'.)
 func netFilter(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) string {
 	want := HostPorts(s)
-	for _, w := range want {
-		if h.IPOn(w.Network) == "" {
-			return fmt.Sprintf("no %s IP, which port %d/%s asks for (hostPort: [%s])", w.Network, w.Port, w.Proto, w.Network)
-		}
+	if w, ok := missingAddress(s, h); ok {
+		return fmt.Sprintf("no %s IP, which port %d/%s asks for (hostPort: [%s])", w.Network, w.Port, w.Proto, w.Network)
 	}
 	for _, w := range want {
 		if env.Claimed[h.Name].HostPorts[w] {
@@ -79,9 +88,6 @@ func netFilter(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) string {
 				}
 			}
 		}
-	}
-	if why := ipFilter(s, h, env); why != "" {
-		return why
 	}
 	return ""
 }
@@ -104,6 +110,9 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloS
 	var egIP *v1.IP
 	if src := s.Spec.Network.Egress.Source; src != nil {
 		egIP = heldIP(s, src.IP, env)
+		if src.Own {
+			egIP = OwnIP(s, env)
+		}
 	}
 	if lbIP != nil {
 		st.IP = lbIP.Name
@@ -121,8 +130,13 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloS
 	}
 	// A Host IP the silo holds on h is put on h's uplink.
 	// TODO(net-v2 wave 2): hostPort.ip opens its ports on that address (the agent's rules).
+	var held []*v1.IP
 	for _, name := range v1.SiloIPs(s) {
-		if x := heldIP(s, name, env); x != nil && x.Spec.Type == v1.IPTypeHost && x.Status.Address != "" && x.Status.Host == h.Name && !slices.Contains(st.HostAddresses, x.Status.Address) {
+		held = append(held, heldIP(s, name, env))
+	}
+	held = append(held, OwnIP(s, env))
+	for _, x := range held {
+		if x != nil && x.Spec.Type == v1.IPTypeHost && x.Status.Address != "" && x.Status.Host == h.Name && !slices.Contains(st.HostAddresses, x.Status.Address) {
 			st.HostAddresses = append(st.HostAddresses, x.Status.Address)
 		}
 	}
