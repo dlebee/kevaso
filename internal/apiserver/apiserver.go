@@ -933,9 +933,13 @@ func (s *Server) delete(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		writeErr(w, err)
 		return
 	}
-	nsRev, err := s.checkDeleteNamespace(ctx, t, wantUID, wantRV)
+	nsRev, plan, err := s.checkDeleteNamespace(ctx, r, t, wantUID, wantRV)
 	if err != nil {
 		writeErr(w, err)
+		return
+	}
+	if plan != nil { // a dry-run cascade: what it would delete, and nothing deleted
+		writeJSON(w, http.StatusOK, plan)
 		return
 	}
 	// A host's certificate is refused from the moment its removal is recorded. That record is

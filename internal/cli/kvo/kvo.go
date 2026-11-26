@@ -4,6 +4,8 @@
 //	kvo get KIND [NAME] [-n NS|-A] [-o yaml|json]
 //	kvo describe KIND NAME [-n NS]   everything about one object, for people
 //	kvo delete KIND NAME [-n NS] [--uid UID] [--resource-version V] [--confirm-off]   only that object, as it was
+//	kvo delete namespace NAME [--yes]   with what is in it: lists it and asks first; run again to resume
+//	kvo delete all [-n NS] [--yes]      everything in the namespace, secrets included (it stays): asks first
 //	kvo watch KIND [-n NS|-A]
 //	kvo exec silo NAME [-n NS] [-it] -- CMD [ARGS…]   run a command in a silo (-t: on a terminal); exits with its code
 //	kvo ssh silo NAME [-n NS]     a login shell in the silo, on a terminal (through the relay; no SSH)
@@ -331,7 +333,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "open", "close":
 		err = leaseCommand(ctx, c, o, args[0], stdout, stderr)
 	case "delete":
-		err = del(ctx, c, o, stdout)
+		err = del(ctx, c, o, stdin, stdout)
 	case "watch":
 		err = watch(ctx, c, o, stdout)
 	case "scale":
@@ -969,13 +971,19 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 
 // ── delete, watch ────────────────────────────────────────────────────────────
 
-func del(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error {
+func del(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdout io.Writer) error {
+	if len(o.args) >= 1 && o.args[0] == "all" {
+		return deleteAll(ctx, c, o, stdin, stdout)
+	}
 	if len(o.args) != 2 {
-		return errors.New("delete needs KIND NAME")
+		return errors.New("delete needs KIND NAME (or all -n NAMESPACE: everything in it)")
 	}
 	k, err := resolveKind(ctx, c, o.args[0])
 	if err != nil {
 		return err
+	}
+	if k.Kind == "Namespace" && o.uid == "" && o.resourceVersion == "" && !o.confirmOff {
+		return deleteNamespace(ctx, c, o, stdin, stdout) // with what is in it, after asking
 	}
 	ns := ""
 	if k.Scope == v1.Namespaced {
