@@ -30,8 +30,8 @@ func TestMetal2Worker(t *testing.T) {
 	ns := "worker2"
 	c.namespace(ns, "grant/app", "secret/pw")
 	pw := randomValue(t, "pw-")
-	c.must(pw, "create", "secret", "pw", "-n", ns, "--from-file", "-")
-	c.apply("apiVersion: kevaso/v1\nkind: Grant\nmetadata: { name: app, namespace: " + ns + " }\nspec:\n  secrets:\n    - { name: pw }\n    - { name: pw, deliver: file, path: /run/secrets/pw }\n")
+	c.must(pw, "create", "secret", "pw", "-n", ns, "--from-file", "password=-")
+	c.apply("apiVersion: kevaso/v1\nkind: Grant\nmetadata: { name: app, namespace: " + ns + " }\nspec:\n  secrets:\n    - { name: pw, key: password }\n    - { name: pw, key: password, deliver: file, path: /run/secrets/pw }\n")
 	for _, name := range []string{metalHost, metalHost2} {
 		var h = c.hostNamed(name)
 		t.Logf("%s: control plane %v, worker %v, external %s, mesh %s", name, h.Spec.Components.ControlPlane != nil, h.Spec.Components.Worker != nil,
@@ -74,7 +74,7 @@ func TestMetal2Worker(t *testing.T) {
 		}
 		c.expect(s.silo+": kvo exec through the tunnel", func() string { o, _ := c.in(ns, s.silo, "echo through-the-tunnel"); return o }(), "through-the-tunnel")
 		// Secrets on the worker: its agent asks the system node on the other machine.
-		got, _ := c.in(ns, s.silo, `python3 -c "import urllib.request as u; print(u.urlopen(u.Request('http://169.254.42.1/v1/secrets/pw', headers={'Kevaso-Local': '1'}), timeout=10).read().decode())"`)
+		got, _ := c.in(ns, s.silo, `python3 -c "import urllib.request as u; print(u.urlopen(u.Request('http://169.254.42.1/v1/secrets/pw/password', headers={'Kevaso-Local': '1'}), timeout=10).read().decode())"`)
 		c.expect(s.silo+": the local endpoint, answered across machines", got, pw)
 		c.expect(s.silo+": a file the worker wrote", func() string { o, _ := c.in(ns, s.silo, "cat /run/secrets/pw"); return o }(), pw)
 	}

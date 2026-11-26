@@ -97,7 +97,7 @@ func TestLabClusterSecret(t *testing.T) {
 	// plugin's service account. Install creates the account; the binding may
 	// name it first.
 	out := labKvo(t, ctx, "", "create", "--context", admin, "clustersecret", labSecret,
-		"--description", "lab clustersecret test", "--from-file", aFile)
+		"--description", "lab clustersecret test", "--from-file", "token="+aFile)
 	t.Logf("create: %s", labRedact(strings.TrimSpace(out), aVal, bVal))
 	if !strings.Contains(out, "version 1") {
 		t.Fatalf("create: want version 1: %s", labRedact(out, aVal, bVal))
@@ -134,7 +134,7 @@ func TestLabClusterSecret(t *testing.T) {
 	// secret bound to both accounts is readable by the worker and by the system node.
 	ctrlVal := randomValue(t, "kvtcs-ctrl-")
 	ctrlFile, _ := labValueFiles(t, ctrlVal, ctrlVal)
-	out = labKvo(t, ctx, "", "create", "--context", admin, "clustersecret", labCtrlSecret, "--from-file", ctrlFile)
+	out = labKvo(t, ctx, "", "create", "--context", admin, "clustersecret", labCtrlSecret, "--from-file", "token="+ctrlFile)
 	t.Logf("controller-only secret: %s", labRedact(strings.TrimSpace(out), aVal, bVal, ctrlVal))
 	labKvo(t, ctx, labCtrlRoleYAML(), "apply", "--context", admin, "-f", "-")
 	apiIP := labAPIAddrs(t, node, sys.internal)[0]
@@ -157,12 +157,12 @@ func TestLabClusterSecret(t *testing.T) {
 
 	// 4. A new value rewrites the file and restarts the unit once, within 60s.
 	// The same bytes again leave the file and the unit alone.
-	out = labKvo(t, ctx, "", "set", "--context", admin, "clustersecret", labSecret, "--from-file", bFile)
+	out = labKvo(t, ctx, "", "set", "--context", admin, "clustersecret", labSecret, "--from-file", "token="+bFile)
 	t.Logf("set: %s", labRedact(strings.TrimSpace(out), aVal, bVal))
 	rot := labAwaitRotation(t, node, cred, bHash, got.inode, u0, 60*time.Second, aVal, bVal)
 	t.Logf("step 4 rotate: sha256 %s inode %s -> %s pid %s -> %s started %s",
 		rot.file.hash, got.inode, rot.file.inode, u0.pid, rot.unit.pid, rot.unit.started)
-	out = labKvo(t, ctx, "", "set", "--context", admin, "clustersecret", labSecret, "--from-file", bFile)
+	out = labKvo(t, ctx, "", "set", "--context", admin, "clustersecret", labSecret, "--from-file", "token="+bFile)
 	t.Logf("set same bytes: %s", labRedact(strings.TrimSpace(out), aVal, bVal))
 	if err := node.holds(60*time.Second, cred, rot.file, rot.unit); err != nil {
 		node.fatal(t, "same bytes", err.Error(), aVal, bVal)
@@ -197,7 +197,7 @@ func TestLabClusterSecret(t *testing.T) {
 	labKvo(t, ctx, "", "delete", "--context", admin, "clustersecret", labSecret)
 	deleted := labAwaitRemoval(t, node, cred, backUnit, nil, time.Minute, aVal, bVal)
 	t.Logf("step 5 delete: file removed within a minute, unit %s (was inode %s)", deleted.state, back.inode)
-	out = labKvo(t, ctx, "", "create", "--context", admin, "clustersecret", labSecret, "--from-file", bFile)
+	out = labKvo(t, ctx, "", "create", "--context", admin, "clustersecret", labSecret, "--from-file", "token="+bFile)
 	t.Logf("secret recreated: %s", labRedact(strings.TrimSpace(out), aVal, bVal))
 
 	// 6. A namespace admin (invite into a namespace as admin, the same binding
@@ -292,7 +292,7 @@ subjects:
 // on the host. A 200 body is not returned.
 func labFetch(t *testing.T, n *labNode, ip, name, side string, secrets ...string) (int, string, string) {
 	t.Helper()
-	q := sshboot.Quote("https://" + ip + ":6443/apis/kevaso/v1/clustersecrets/" + name + "/value?for=" + labPlugin + "&side=" + side)
+	q := sshboot.Quote("https://" + ip + ":6443/apis/kevaso/v1/clustersecrets/" + name + "/value?key=*&for=" + labPlugin + "&side=" + side)
 	out := n.must("body=$(mktemp); code=$(curl -sS -o \"$body\" -w '%{http_code}' --cacert /etc/kevaso/ca.crt --cert /var/lib/kevaso/pki/host.crt --key /var/lib/kevaso/pki/host.key " + q + "); hash=$(sha256sum \"$body\" | awk '{print $1}'); msg=; if [ \"$code\" != 200 ]; then msg=$(tr '\\n' ' ' < \"$body\"); fi; rm -f \"$body\"; printf '%s %s\\n%s\\n' \"$code\" \"$hash\" \"$msg\"")
 	lines := strings.SplitN(strings.TrimRight(out, "\n"), "\n", 2)
 	fields := strings.Fields(lines[0])
@@ -339,7 +339,7 @@ func labNamespaceAdmin(t *testing.T, ctx context.Context, admin, aVal, bVal stri
 		t.Fatalf("admin of %s cannot get a silo there: %s", labNS, labRedact(out, aVal, bVal))
 	}
 
-	reveal, code := labKvoCode(ctx, "", "get", "--context", labUser, "clustersecret", labSecret, "--reveal")
+	reveal, code := labKvoCode(ctx, "", "get", "--context", labUser, "clustersecret", labSecret, "--reveal", "--key", "token")
 	if code == 0 || strings.Contains(reveal, aVal) || strings.Contains(reveal, bVal) {
 		sum := sha256.Sum256([]byte(reveal))
 		t.Fatalf("namespace admin read the value: exit %d sha256 %s", code, hex.EncodeToString(sum[:]))
@@ -619,7 +619,7 @@ func labCredentialPath(t *testing.T, n *labNode) string {
 	if m == nil {
 		t.Fatalf("unit has no LoadCredential for %s:\n%s", labSecret, out)
 	}
-	return m[1] + "/value" // a folder, one file per key: the secret's one value is the key value
+	return m[1] + "/token" // a folder, one file per key: the secret's key token
 }
 
 func labAwaitFile(t *testing.T, n *labNode, path, hash string, within time.Duration, secrets ...string) fileFact {

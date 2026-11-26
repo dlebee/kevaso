@@ -45,13 +45,13 @@ func TestAHeldEndpointRelaysNoOlderAnswer(t *testing.T) {
 	srv.Start()
 	defer srv.Close()
 	r := &endpointRig{cp: cp, ep: ep, url: srv.URL}
-	resp, body := r.do(t, http.MethodGet, "/v1/secrets/db-password", nil, nil)
+	resp, body := r.do(t, http.MethodGet, "/v1/secrets/db-password/password", nil, nil)
 	if resp.StatusCode != http.StatusServiceUnavailable || body == "revoked-since" || len(cp.calls()) != 0 {
 		t.Fatalf("held: %d %q, control plane asked %d times: want 503, nothing asked", resp.StatusCode, body, len(cp.calls()))
 	}
 	held = false
 	c.ControlPlane = nil
-	if resp, body := r.do(t, http.MethodGet, "/v1/secrets/db-password", nil, nil); resp.StatusCode != http.StatusOK || body != "revoked-since" {
+	if resp, body := r.do(t, http.MethodGet, "/v1/secrets/db-password/password", nil, nil); resp.StatusCode != http.StatusOK || body != "revoked-since" {
 		t.Fatalf("not held: %d %q", resp.StatusCode, body)
 	}
 }

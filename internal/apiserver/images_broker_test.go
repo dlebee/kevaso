@@ -41,7 +41,7 @@ func TestAPullCredentialFollowsTheSpecImage(t *testing.T) {
 		must(e.admin.Create(e.ctx, &v1.Secret{
 			TypeMeta:   tm("Secret"),
 			ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev", Labels: map[string]string{v1.LabelDefaultPull: "true"}},
-			Spec:       v1.SecretSpec{Type: v1.SecretRegistry, Server: server, Username: user, Value: []byte(pass)},
+			Spec:       v1.SecretSpec{Type: v1.SecretRegistry, Server: server, Username: user, Data: map[string][]byte{v1.PasswordKey: []byte(pass)}},
 		}))
 	}
 	reg("ghcr", "https://ghcr.io", "bot", "ghcr-tok")

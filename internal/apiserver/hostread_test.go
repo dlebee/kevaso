@@ -211,7 +211,7 @@ func TestWorkerReadsOnlyWhatIsOnIt(t *testing.T) {
 
 	mustCreate(t, e, &v1.Grant{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Grant"},
 		ObjectMeta: meta.ObjectMeta{Name: "use", Namespace: "dev"},
-		Spec: v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db"}},
+		Spec: v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db", Key: "password"}},
 			Operations: &v1.GrantOperations{Sign: &v1.SignOperation{KeyRef: "signing"}}}})
 	mustCreate(t, e, &v1.Grant{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Grant"},
 		ObjectMeta: meta.ObjectMeta{Name: "leave", Namespace: "dev"},
@@ -479,7 +479,7 @@ func TestWorkerWatchDoesNotReplay(t *testing.T) {
 	secretGen(t, e, "db", "v2")
 	mustCreate(t, e, &v1.Grant{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Grant"},
 		ObjectMeta: meta.ObjectMeta{Name: "use", Namespace: "dev"},
-		Spec:       v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db"}}}})
+		Spec:       v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db", Key: "password"}}}})
 	place(t, e, "web", "dev", "hv2", v1.SiloSpec{Runtime: "cloud-hypervisor", Grants: []string{"use"}})
 	mustCreate(t, e, &v1.Secret{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Secret"},
 		ObjectMeta: meta.ObjectMeta{Name: "other", Namespace: "dev", Labels: map[string]string{"gen": "v1"}}})
@@ -511,7 +511,7 @@ func TestWorkerWatchStartsWhenTheSiloArrives(t *testing.T) {
 	secretGen(t, e, "db", "v2")
 	mustCreate(t, e, &v1.Grant{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Grant"},
 		ObjectMeta: meta.ObjectMeta{Name: "use", Namespace: "dev"},
-		Spec:       v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db"}}}})
+		Spec:       v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db", Key: "password"}}}})
 
 	cancel, ch := watchSecrets(t, e, worker)
 	defer cancel()
@@ -533,7 +533,7 @@ func TestWorkerWatchDropsWhenTheSiloLeaves(t *testing.T) {
 		ObjectMeta: meta.ObjectMeta{Name: "db", Namespace: "dev", Labels: map[string]string{"gen": "v2"}}})
 	mustCreate(t, e, &v1.Grant{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Grant"},
 		ObjectMeta: meta.ObjectMeta{Name: "use", Namespace: "dev"},
-		Spec:       v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db"}}}})
+		Spec:       v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "db", Key: "password"}}}})
 	s := place(t, e, "web", "dev", "hv2", v1.SiloSpec{Runtime: "cloud-hypervisor", Grants: []string{"use"}})
 
 	cancel, ch := watchSecrets(t, e, worker)

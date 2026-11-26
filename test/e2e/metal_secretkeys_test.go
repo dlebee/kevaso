@@ -19,11 +19,14 @@ import (
 	"kevaso.com/core/internal/operators"
 )
 
-// TestMetalSecretKeys is a Secret with named keys (hack/design/secret-keys.md) in a microVM and in
-// a container: every key as files in a folder and one key as a file, every key as variables and
-// one as a named variable, one key injected by the egress gate, the endpoint answering one key or
-// all; then one key rotated, reaching each delivery. And a ClusterSecret with keys, which a plugin's
-// unit loads through systemd as NAME_KEY credentials, a rotated key restarting it.
+// TestMetalSecretKeys is a Secret with named keys (hack/design/secret-keys.md), every reference
+// naming its key, in a microVM and in a container: every key ("*") as files in a folder and as
+// PREFIX_KEY variables, one key as a file and as one variable, one key injected by the egress gate,
+// the endpoint answering one key or every key (/v1/secrets/NAME/*) and refusing a bare
+// /v1/secrets/NAME; then one key rotated and one removed, reaching each delivery. Admission refuses
+// a reference without a key, "*" for inject, and a key the secret doesn't have. And a ClusterSecret
+// with keys, which a plugin's unit loads through systemd as NAME_KEY credentials, a rotated key
+// restarting it.
 func TestMetalSecretKeys(t *testing.T) {
 	c := metal(t)
 	ns := "keys"
@@ -38,46 +41,59 @@ func TestMetalSecretKeys(t *testing.T) {
 		}
 		return p
 	}
+	// A value without its key is refused by kvo, showing the form.
+	if out, code := c.kvo(pw, "create", "secret", "nokey", "-n", ns, "--from-file", "-"); code == 0 || !strings.Contains(out, "--from-file KEY=") {
+		t.Fatalf("--from-file - without a key: exit %d %s", code, out)
+	}
 	out := c.must("", "create", "secret", "db", "-n", ns, "--from-file", "username="+file("u", user), "--from-file", "password="+file("p", pw))
 	c.expect("create names the keys", out, "keys password, username")
 	c.must("", "create", "secret", "api", "-n", ns, "--from-file", "token="+file("t", tok), "--from-file", "id="+file("i", id))
 	c.expect("describe lists the keys, not the values", c.must("", "describe", "secret", "db", "-n", ns), "password, username")
+	if out, code := c.kvo("", "get", "secret", "db", "-n", ns, "--reveal"); code == 0 || !strings.Contains(out, "--key") {
+		t.Fatalf("--reveal without --key: exit %d %s", code, out)
+	}
 
-	// An inject without a key on a secret with two keys: refused, saying why.
-	bad := `apiVersion: kevaso/v1
+	// References without a key, "*" for an inject, and a key the secret doesn't have: refused.
+	bad := func(entry string) string {
+		return `apiVersion: kevaso/v1
 kind: Grant
 metadata: { name: bad, namespace: ` + ns + ` }
 spec:
-  secrets: [{ name: api, deliver: inject, to: { host: ` + metalInetName + ` } }]
+  secrets: [` + entry + `]
 `
-	if out, code := c.kvo(bad, "apply", "-f", "-"); code == 0 || !strings.Contains(out, "name it (key:") {
-		t.Fatalf("inject without a key: exit %d %s", code, out)
 	}
-	if out, code := c.kvo(strings.Replace(bad, "deliver: inject, to: { host: "+metalInetName+" }", "key: nope", 1), "apply", "-f", "-"); code == 0 || !strings.Contains(out, `has no key "nope"`) {
-		t.Fatalf("an unknown key: exit %d %s", code, out)
+	inject := "deliver: inject, to: { host: " + metalInetName + " }"
+	for _, r := range []struct{ what, entry, want string }{
+		{"an inject without a key", "{ name: api, " + inject + " }", "name the one key to inject"},
+		{`an inject of "*"`, `{ name: api, key: "*", ` + inject + " }", `not "*"`},
+		{"a file without a key", "{ name: db, deliver: file }", `every key (key: "*")`},
+		{"a broker entry without a key", "{ name: db }", "key is required"},
+		{"an unknown key", "{ name: api, key: nope }", `has no key "nope"`},
+	} {
+		if out, code := c.kvo(bad(r.entry), "apply", "-f", "-"); code == 0 || !strings.Contains(out, r.want) {
+			t.Fatalf("%s: exit %d %s", r.what, code, out)
+		}
 	}
 
-	grant := func(name string, files bool) string {
-		s := `apiVersion: kevaso/v1
+	grant := func(name string) string {
+		return `apiVersion: kevaso/v1
 kind: Grant
 metadata: { name: ` + name + `, namespace: ` + ns + ` }
 spec:
   egress: [{ to: "` + metalInetAddr + `/32", ports: ["443"] }]
   secrets:
-    - { name: db }
+    - { name: db, key: "*" }
     - { name: api, key: id }
-    - { name: api, key: token, deliver: inject, to: { host: ` + metalInetName + ` } }
-`
-		if files {
-			s += `    - { name: db, deliver: file }
+    - { name: api, key: token, ` + inject + ` }
+    - { name: db, key: "*", deliver: file }
     - { name: db, key: password, deliver: file, path: /run/pg/password }
-    - { name: db, deliver: env }
+    - { name: api, key: id, deliver: file }
+    - { name: db, key: "*", deliver: env }
     - { name: db, key: password, deliver: env, env: PGPASSWORD }
+    - { name: api, key: id, deliver: env }
 `
-		}
-		return s
 	}
-	c.apply(grant("vmkeys", true) + "---\n" + grant("boxkeys", true) + `---
+	c.apply(grant("vmkeys") + "---\n" + grant("boxkeys") + `---
 apiVersion: kevaso/v1
 kind: Silo
 metadata: { name: vm, namespace: ` + ns + ` }
@@ -100,6 +116,14 @@ spec:
 	c.waitRunning(ns, 20*time.Minute, "vm", "box")
 
 	const local = "-H 'Kevaso-Local: 1'"
+	envOf := func(silo, name string) string {
+		if silo == "box" { // through Kevaso's OCI runtime: the main process's environment
+			o, _ := c.in(ns, silo, `tr '\0' '\n' < /proc/1/environ | sed -n 's/^`+name+`=//p'`)
+			return o
+		}
+		o, _ := c.in(ns, silo, `set -a; . /run/kevaso/secrets.env; printf '%s' "$`+name+`"`)
+		return o
+	}
 	for _, silo := range []string{"vm", "box"} {
 		t.Run(silo, func(t *testing.T) {
 			c := &mt{metalSuite: c.metalSuite, t: t, ctx: c.ctx}
@@ -108,36 +132,43 @@ spec:
 				return in("curl -sS --max-time 10 -w ' %{http_code}' " + local + " 'http://169.254.42.1" + path + "' 2>&1")
 			}
 			c.expect("the endpoint: one key", ep("/v1/secrets/db/password"), pw+" 200")
-			all := ep("/v1/secrets/db")
+			all := ep("/v1/secrets/db/*")
 			c.expect("the endpoint: every key, as JSON (username)", all, `"username":"`+b64(user)+`"`)
 			c.expect("the endpoint: every key, as JSON (password)", all, `"password":"`+b64(pw)+`"`)
-			c.expect("a grant naming one key: that key, as bytes", ep("/v1/secrets/api"), id+" 200")
+			c.expect("the endpoint: no key named is refused, showing both forms", ep("/v1/secrets/db"), "/v1/secrets/db/* for every key")
+			c.expect("the endpoint: no key named is a 400", ep("/v1/secrets/db"), " 400")
+			c.expect("a grant naming one key: that key", ep("/v1/secrets/api/id"), id+" 200")
+			some := ep("/v1/secrets/api/*")
+			c.expect(`a grant naming one key: "*" is that key alone`, some, `"id":"`+b64(id)+`"`)
+			if strings.Contains(some, b64(tok)) || strings.Contains(some, `"token"`) {
+				t.Errorf(`/v1/secrets/api/* gave a key the grant doesn't name: %s`, some)
+			}
 			c.expect("a key the grant doesn't give: none", ep("/v1/secrets/api/token"), " 404")
 
 			// Files and variables the host wrote.
-			envOf := func(name string) string {
-				if silo == "box" { // through Kevaso's OCI runtime: the main process's environment
-					return in(`tr '\0' '\n' < /proc/1/environ | sed -n 's/^` + name + `=//p'`)
-				}
-				return in(`set -a; . /run/kevaso/secrets.env; printf '%s' "$` + name + `"`)
-			}
-			c.expect("a folder of keys: username", in("cat /run/secrets/db/username"), user)
-			c.expect("a folder of keys: password", in("cat /run/secrets/db/password; echo; stat -c '%a %U' /run/secrets/db/password"), pw+"\n400 root")
+			c.expect(`"*" as a folder: username`, in("cat /run/secrets/db/username"), user)
+			c.expect(`"*" as a folder: password`, in("cat /run/secrets/db/password; echo; stat -c '%a %U' /run/secrets/db/password"), pw+"\n400 root")
 			c.expect("one key at its own path", in("cat /run/pg/password"), pw)
-			c.expect("every key as a variable: DB_USERNAME", envOf("DB_USERNAME"), user)
-			c.expect("every key as a variable: DB_PASSWORD", envOf("DB_PASSWORD"), pw)
-			c.expect("one key, named", envOf("PGPASSWORD"), pw)
+			c.expect("one key at its default path, /run/secrets/NAME/KEY", in("cat /run/secrets/api/id"), id)
+			c.expect(`"*" as variables: DB_USERNAME`, envOf(silo, "DB_USERNAME"), user)
+			c.expect(`"*" as variables: DB_PASSWORD`, envOf(silo, "DB_PASSWORD"), pw)
+			c.expect("one key, named", envOf(silo, "PGPASSWORD"), pw)
+			c.expect("one key, its default name NAME_KEY", envOf(silo, "API_ID"), id)
 
 			// The injected key: the stand-in API sees it (as a hash), the silo never does.
 			ca := `ca=; [ -f /etc/ssl/certs/kevaso-ca-bundle.crt ] && ca="--cacert /etc/ssl/certs/kevaso-ca-bundle.crt"; `
 			got := in(ca + "curl -sS --max-time 15 $ca --resolve " + metalInetName + ":443:203.0.113.9 https://" + metalInetName + "/v1/models 2>&1")
 			c.expect("the gate injects the key named", got, `"auth": "`+metalHash("Bearer "+tok)+`"`)
+			if leaked := in("grep -rl -F -e '" + tok + "' /run /etc /root /tmp 2>/dev/null | head -3; env | grep -c -F -e '" + tok + "' || true"); strings.TrimSpace(leaked) != "0" {
+				t.Errorf("the injected key is in the silo: %q", leaked)
+			}
 		})
 	}
 
 	// One key rotated: every delivery of it changes in both silos, the other key stays.
 	c.must(pw2, "secret", "set", "db", "-n", ns, "--from-file", "password=-")
 	c.expect("the other key kept", c.must("", "get", "secret", "db", "-n", ns, "--reveal", "--key", "username"), user)
+	c.expect(`--reveal --key "*": every key`, c.must("", "get", "secret", "db", "-n", ns, "--reveal", "--key", "*"), "password: "+pw2+"\nusername: "+user)
 	for _, silo := range []string{"vm", "box"} {
 		in := func(script string) string { o, _ := c.in(ns, silo, script); return o }
 		c.eventually(silo+": the rotated key in the folder and at its own path", 2*time.Minute, func() (bool, string) {
@@ -146,19 +177,29 @@ spec:
 		})
 		c.expect(silo+": the endpoint after rotation", in("curl -sS "+local+" http://169.254.42.1/v1/secrets/db/password"), pw2)
 		if silo == "vm" {
-			c.eventually("vm: the rotated key as a variable", time.Minute, func() (bool, string) {
-				got := in(`set -a; . /run/kevaso/secrets.env; printf '%s %s' "$DB_PASSWORD" "$PGPASSWORD"`)
+			c.eventually("vm: the rotated key as variables", time.Minute, func() (bool, string) {
+				got := envOf("vm", "DB_PASSWORD") + " " + envOf("vm", "PGPASSWORD")
 				return got == pw2+" "+pw2, got
 			})
 		}
 	}
-	// A key removed goes from the folder.
+	// A key removed goes from the folder, the variables and the endpoint's "*".
 	c.must("", "secret", "set", "db", "-n", ns, "--remove-key", "username")
 	for _, silo := range []string{"vm", "box"} {
 		c.eventually(silo+": a removed key's file is gone", 2*time.Minute, func() (bool, string) {
 			o, _ := c.in(ns, silo, "ls /run/secrets/db")
 			return strings.TrimSpace(o) == "password", o
 		})
+		o, _ := c.in(ns, silo, "curl -sS "+local+" 'http://169.254.42.1/v1/secrets/db/*'")
+		if strings.Contains(o, "username") || !strings.Contains(o, `"password":"`+b64(pw2)+`"`) {
+			t.Errorf("%s: /v1/secrets/db/* after the removal: %s", silo, o)
+		}
+		if silo == "vm" {
+			c.eventually("vm: a removed key's variable is gone", time.Minute, func() (bool, string) {
+				got := envOf("vm", "DB_USERNAME")
+				return got == "", got
+			})
+		}
 	}
 
 	t.Run("plugin", func(t *testing.T) { metalClusterSecretKeysPlugin(&mt{metalSuite: c.metalSuite, t: t, ctx: c.ctx}) })

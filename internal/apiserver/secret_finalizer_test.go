@@ -40,7 +40,7 @@ func TestASecretDeletedByItsLastFinalizerDropsTheSealedValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	sec := &v1.Secret{TypeMeta: tm("Secret"), ObjectMeta: meta.ObjectMeta{Name: "tok", Namespace: "dev", Finalizers: []string{"kevaso.com/hold"}},
-		Spec: v1.SecretSpec{Value: []byte("s3cret")}}
+		Spec: v1.SecretSpec{Data: map[string][]byte{"token": []byte("s3cret")}}}
 	if err := c.Create(ctx, sec); err != nil {
 		t.Fatal(err)
 	}

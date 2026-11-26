@@ -83,7 +83,7 @@ func TestIngress(t *testing.T) {
 	// The certificate as the certificate controller would leave it (it has its own tests).
 	cert1 := selfSigned(t, "api.example.com", 1)
 	if err := c.admin.Create(c.ctx, &v1.Secret{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Secret"},
-		ObjectMeta: meta.ObjectMeta{Name: "api-tls", Namespace: "payments"}, Spec: v1.SecretSpec{Value: cert1}}); err != nil {
+		ObjectMeta: meta.ObjectMeta{Name: "api-tls", Namespace: "payments"}, Spec: v1.SecretSpec{Data: map[string][]byte{v1.CertificateKey: cert1}}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -270,7 +270,7 @@ func TestIngress(t *testing.T) {
 		t.Fatal(err)
 	}
 	cert2 := selfSigned(t, "api.example.com", 2)
-	sec.Spec.Value = cert2
+	sec.Spec.Data = map[string][]byte{v1.CertificateKey: cert2}
 	if err := c.admin.Update(c.ctx, &sec); err != nil {
 		t.Fatal(err)
 	}

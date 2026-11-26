@@ -76,7 +76,8 @@ approved, how long the request may wait for an answer; the cluster's defaults ot
 
 | Route | Answer |
 |---|---|
-| `GET /v1/secrets/NAME[?for=D&wait=D&approval=A]` | `200`, the value as `application/octet-stream`; its version in `Kevaso-Version` |
+| `GET /v1/secrets/NAME/KEY[?for=D&wait=D&approval=A]` | `200`, that key's value as `application/octet-stream`; its version in `Kevaso-Version` |
+| `GET /v1/secrets/NAME/*[?for=D&wait=D&approval=A]` | `200`, every key the grant gives: `{"data":{KEY: base64},"version":N}` (`application/json`). `/v1/secrets/NAME` alone is `400`: a key is always named (hack/design/secret-keys.md) |
 | `POST /v1/sign/KEY[?slot=N&for=D&wait=D&approval=A]`, body = the payload | `200`, the signature, hex, `text/plain` |
 | `GET /v1/keys/KEY` | `200`, the public key, hex, `text/plain` |
 | `POST /v1/ports/NAME/open[?for=D&wait=D&approval=A]` | `200` `{"port":"debug","until":"2026-11-13T15:04:05Z","clamped":false}` |
@@ -103,9 +104,9 @@ pendings and partial successes, and a client would have to poll them apart anywa
 The exact lines a silo uses:
 
 ```sh
-curl -fsS -H 'Kevaso-Local: 1' http://169.254.42.1/v1/secrets/db-password
-curl -fsS -H 'Kevaso-Local: 1' 'http://169.254.42.1/v1/secrets/github-admin?for=30m&wait=10m'
-curl -fsS -H 'Kevaso-Local: 1' 'http://169.254.42.1/v1/secrets/github-admin?for=30m&approval=github-admin-x7k2p'
+curl -fsS -H 'Kevaso-Local: 1' http://169.254.42.1/v1/secrets/db/password
+curl -fsS -H 'Kevaso-Local: 1' 'http://169.254.42.1/v1/secrets/github-admin/token?for=30m&wait=10m'
+curl -fsS -H 'Kevaso-Local: 1' 'http://169.254.42.1/v1/secrets/github-admin/token?for=30m&approval=github-admin-x7k2p'
 printf 'block 7' | curl -fsS -H 'Kevaso-Local: 1' --data-binary @- 'http://169.254.42.1/v1/sign/validator-1-key?slot=7'
 curl -fsS -H 'Kevaso-Local: 1' http://169.254.42.1/v1/keys/validator-1-key
 curl -fsS -H 'Kevaso-Local: 1' -X POST 'http://169.254.42.1/v1/ports/debug/open?for=1h'
@@ -115,7 +116,7 @@ curl -fsS -H 'Kevaso-Local: 1' -X POST http://169.254.42.1/v1/ports/debug/close
 A wait for a yes, in plain `sh`:
 
 ```sh
-u='http://169.254.42.1/v1/secrets/github-admin?for=30m'; a=
+u='http://169.254.42.1/v1/secrets/github-admin/token?for=30m'; a=
 while :; do
   code=$(curl -sS -o /run/answer -w '%{http_code}' -H 'Kevaso-Local: 1' "$u${a:+&approval=$a}")
   [ "$code" = 428 ] || break

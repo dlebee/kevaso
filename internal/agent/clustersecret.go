@@ -310,7 +310,7 @@ func (a *Agent) fetchClusterSecret(ctx context.Context, plugin, side, name strin
 	if side == "" {
 		side = "controller"
 	}
-	p := "/apis/kevaso/v1/clustersecrets/" + url.PathEscape(name) + "/value?for=" + url.QueryEscape(plugin) + "&side=" + url.QueryEscape(side)
+	p := "/apis/kevaso/v1/clustersecrets/" + url.PathEscape(name) + "/value?key=*&for=" + url.QueryEscape(plugin) + "&side=" + url.QueryEscape(side)
 	err := a.Client.Call(ctx, http.MethodGet, p, nil, &v)
 	return v, err
 }

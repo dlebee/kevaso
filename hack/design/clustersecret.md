@@ -20,8 +20,8 @@ status:
 ```
 
 - Cluster-scoped, stored sealed like Secret values. The caller's `status` is dropped on create and on update.
-- Value write-only: `kvo create clustersecret NAME [--description D] --from-file F|-`,
-  `kvo set clustersecret NAME --from-file F|-` (rotate), `kvo get clustersecret [NAME] [--reveal]`,
+- Value write-only, keys always named (secret-keys.md): `kvo create clustersecret NAME [--description D] --from-file KEY=F|KEY=-`,
+  `kvo set clustersecret NAME --from-file KEY=F|KEY=-` (rotate), `kvo get clustersecret [NAME] [--reveal --key KEY|"*"]`,
   `kvo delete clustersecret NAME`.
 
 ## Who can do what

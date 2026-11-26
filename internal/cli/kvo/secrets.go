@@ -20,22 +20,22 @@ import (
 
 // Secrets from the command line (design §8.4, hack/design/secret-keys.md): values come from a file
 // or stdin, never from argv (which other users of the machine and shell history can see);
-// --from-literal needs --i-know.
+// --from-literal needs --i-know. Every key is named: nothing is implied.
 //
-//	kvo create secret NAME (--from-file F | --from-file - | --from-file KEY=F… | --generate) [--type opaque|ed25519|ecdsa-p256]
+//	kvo create secret NAME (--from-file KEY=F|KEY=-… | --generate KEY) [--type opaque|ed25519|ecdsa-p256]
 //	        [--write-only] [--allow broker,inject,…] [-l KEY=VALUE]…
-//	kvo create secret NAME --type registry --server HOST --username U --from-file - [--default-pull]
-//	kvo secret set NAME --from-file F|-       a new value, the key value only (rotation): every silo using it gets it
-//	kvo secret set NAME --from-file KEY=F…    set these keys, keep the others
-//	kvo secret set NAME --remove-key KEY…     remove keys
-//	kvo get secret NAME --reveal [--key KEY]  print the value (needs read-value; never write-only)
+//	kvo create secret NAME --type registry --server HOST --username U --from-file password=- [--default-pull]
+//	kvo secret set NAME --from-file KEY=F|KEY=-…  set these keys, keep the others (rotation): every silo using it gets them
+//	kvo secret set NAME --remove-key KEY…         remove keys
+//	kvo get secret NAME --reveal --key KEY|"*"    print one key, or every key (needs read-value; never write-only)
 type secretOpts struct {
 	fromFiles, fromLiterals []string
 	removeKeys              []string
-	key                     string // --reveal: one key
+	key                     string // --reveal: one key, or "*"
 	typ                     string
+	generate                string // the key to make
 	iKnow                   bool
-	generate, writeOnly     bool
+	writeOnly               bool
 	reveal                  bool
 	allow, labels           []string
 	server, username        string // type registry
@@ -45,7 +45,7 @@ type secretOpts struct {
 // literalSet reports whether any value is to come from the command line.
 func (o secretOpts) literalSet() bool { return len(o.fromLiterals) > 0 }
 
-// splitKey splits KEY=REST when KEY is a key's name; ok false: the whole is a path.
+// splitKey splits KEY=REST when KEY is a key's name; ok false: no key named.
 func splitKey(s string) (key, rest string, ok bool) {
 	k, r, found := strings.Cut(s, "=")
 	if !found || !v1.ValidKey(k) {
@@ -54,17 +54,22 @@ func splitKey(s string) (key, rest string, ok bool) {
 	return k, r, true
 }
 
-// keys reads what the flags give: value (a bare --from-file F|-, the key value) or data (KEY=F
-// and KEY=VALUE literals). Neither: nil, nil.
-func (o secretOpts) keys(stdin io.Reader) (value []byte, data map[string][]byte, err error) {
+// errFromFileForm is the answer to a --from-file that names no key.
+func errFromFileForm(f string) error {
+	return fmt.Errorf("--from-file %s: name the key: --from-file KEY=FILE, or --from-file KEY=- for stdin (e.g. --from-file token=%s)", f, f)
+}
+
+// keys reads what the flags give: data, every key named (KEY=FILE, KEY=- and KEY=VALUE literals).
+// None: nil.
+func (o secretOpts) keys(stdin io.Reader) (data map[string][]byte, err error) {
 	if o.literalSet() && !o.iKnow {
-		return nil, nil, errors.New("--from-literal puts the value on the command line (shell history, ps): use --from-file FILE or --from-file - (stdin), or add --i-know")
+		return nil, errors.New("--from-literal puts the value on the command line (shell history, ps): use --from-file KEY=FILE or --from-file KEY=- (stdin), or add --i-know")
 	}
 	stdinUsed := false
 	read := func(f string) ([]byte, error) {
 		if f == "-" {
 			if stdinUsed {
-				return nil, errors.New("--from-file -: stdin can give one value")
+				return nil, errors.New("--from-file KEY=-: stdin can give one key")
 			}
 			stdinUsed = true
 			b, err := io.ReadAll(io.LimitReader(stdin, 64<<10+1))
@@ -75,11 +80,8 @@ func (o secretOpts) keys(stdin io.Reader) (value []byte, data map[string][]byte,
 	}
 	defer func() {
 		if err != nil {
-			clear(value)
-			for _, b := range data {
-				clear(b)
-			}
-			value, data = nil, nil
+			clearData(data)
+			data = nil
 		}
 	}()
 	set := func(k string, b []byte) error {
@@ -94,36 +96,27 @@ func (o secretOpts) keys(stdin io.Reader) (value []byte, data map[string][]byte,
 	}
 	for _, f := range o.fromFiles {
 		k, path, keyed := splitKey(f)
-		if !keyed {
-			if value != nil || len(o.fromFiles) > 1 {
-				return nil, nil, fmt.Errorf("--from-file %s: with several --from-file, each is KEY=FILE", f)
-			}
-			if value, err = read(path); err != nil {
-				return nil, nil, err
-			}
-			continue
+		if !keyed || path == "" {
+			return nil, errFromFileForm(f)
 		}
 		b, rerr := read(path)
 		if rerr != nil {
-			return nil, nil, rerr
+			return nil, rerr
 		}
 		if err = set(k, b); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
 	for _, l := range o.fromLiterals {
 		k, v, keyed := splitKey(l)
 		if !keyed {
-			return nil, nil, fmt.Errorf("--from-literal: KEY=VALUE (the key value for a single value: --from-literal value=…)")
+			return nil, fmt.Errorf("--from-literal %s: KEY=VALUE", strings.SplitN(l, "=", 2)[0])
 		}
 		if err = set(k, []byte(v)); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
-	if value != nil && data != nil {
-		return nil, nil, errors.New("--from-file FILE (the one value) and KEY=… can't be mixed: name every key")
-	}
-	return value, data, nil
+	return data, nil
 }
 
 // trimNewline drops one trailing newline (echo and editors add it; tokens never mean it).
@@ -137,10 +130,13 @@ func trimNewline(b []byte) []byte {
 	return b
 }
 
-// keysNote is ", keys a, b" for a secret holding named keys ("" for the one value).
+// keysNote is ", keys a, b" (", key a" for one) for a secret's keys.
 func keysNote(keys []string) string {
-	if len(keys) == 0 || v1.SingleValue(keys) {
+	switch len(keys) {
+	case 0:
 		return ""
+	case 1:
+		return ", key " + keys[0]
 	}
 	return ", keys " + strings.Join(keys, ", ")
 }
@@ -153,23 +149,25 @@ func clearData(d map[string][]byte) {
 
 func createSecret(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdout io.Writer) error {
 	if len(o.args) != 2 {
-		return errors.New("create secret needs a NAME: kvo create secret NAME --from-file FILE|-")
+		return errors.New("create secret needs a NAME: kvo create secret NAME --from-file KEY=FILE")
 	}
 	if len(o.secret.removeKeys) > 0 {
 		return errors.New("--remove-key is for kvo secret set")
 	}
-	value, data, err := o.secret.keys(stdin)
+	data, err := o.secret.keys(stdin)
 	if err != nil {
 		return err
 	}
-	defer clear(value)
 	defer clearData(data)
-	if value == nil && data == nil && !o.secret.generate {
-		return errors.New("a secret needs a value: --from-file FILE, --from-file - (stdin), --from-file KEY=FILE (repeatable) or --generate")
+	if data != nil && o.secret.generate != "" {
+		return errors.New("--generate KEY makes the value: no --from-file with it")
+	}
+	if data == nil && o.secret.generate == "" {
+		return errors.New("a secret needs at least one key: --from-file KEY=FILE, --from-file KEY=- (stdin; repeatable with other files), or --generate KEY")
 	}
 	s := &v1.Secret{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Secret"},
 		ObjectMeta: meta.ObjectMeta{Name: o.args[1], Namespace: defaultNS(o)},
-		Spec:       v1.SecretSpec{Type: o.secret.typ, Generate: o.secret.generate, Value: value, Data: data, AllowedDelivery: o.secret.allow}}
+		Spec:       v1.SecretSpec{Type: o.secret.typ, Generate: o.secret.generate, Data: data, AllowedDelivery: o.secret.allow}}
 	if o.secret.writeOnly {
 		f := false
 		s.Spec.ValueReadable = &f
@@ -200,26 +198,22 @@ func createSecret(ctx context.Context, c *client.Client, o opts, stdin io.Reader
 
 func secretCommand(ctx context.Context, c *client.Client, o opts, stdin io.Reader, stdout io.Writer) error {
 	if len(o.args) != 2 || o.args[0] != "set" {
-		return errors.New("usage: kvo secret set NAME (--from-file FILE|- | --from-file KEY=FILE… | --remove-key KEY…)")
+		return errors.New("usage: kvo secret set NAME (--from-file KEY=FILE|KEY=-… | --remove-key KEY…)")
 	}
-	value, data, err := o.secret.keys(stdin)
+	data, err := o.secret.keys(stdin)
 	if err != nil {
 		return err
 	}
-	defer clear(value)
 	defer clearData(data)
-	if value != nil && len(o.secret.removeKeys) > 0 {
-		return errors.New("--from-file FILE replaces every key already: --remove-key goes with KEY=FILE, or alone")
-	}
-	if value == nil && data == nil && len(o.secret.removeKeys) == 0 {
-		return errors.New("secret set needs the new value: --from-file FILE, --from-file - (stdin), --from-file KEY=FILE (repeatable) or --remove-key KEY")
+	if data == nil && len(o.secret.removeKeys) == 0 {
+		return errors.New("secret set needs the keys to change: --from-file KEY=FILE, --from-file KEY=- (stdin; repeatable) or --remove-key KEY")
 	}
 	var s v1.Secret
 	if err := retryUpdate(func() error {
 		if err := c.Get(ctx, "Secret", defaultNS(o), o.args[1], &s); err != nil {
 			return err
 		}
-		s.Spec.Value, s.Spec.SetData, s.Spec.RemoveKeys = value, data, o.secret.removeKeys
+		s.Spec.SetData, s.Spec.RemoveKeys = data, o.secret.removeKeys
 		return c.Update(ctx, &s)
 	}); err != nil {
 		return err
@@ -228,29 +222,26 @@ func secretCommand(ctx context.Context, c *client.Client, o opts, stdin io.Reade
 	return nil
 }
 
-// revealValue prints a secret's (or a cluster secret's) value: one key's bytes with key, the
-// shorthand's value as it is, otherwise every key as KEY: VALUE lines.
+// revealValue prints a secret's (or a cluster secret's) value: one key's bytes (--key KEY), or
+// every key as KEY: VALUE lines (--key "*").
 func revealValue(ctx context.Context, c *client.Client, kind, ns, name, key string, stdout io.Writer) error {
+	if key == "" {
+		what := strings.ToLower(kind)
+		return fmt.Errorf("--reveal needs --key: kvo get %s %s --reveal --key KEY for one key, or --key \"*\" for every key", what, name)
+	}
 	p, err := client.Path(kind, ns, name)
 	if err != nil {
 		return err
 	}
-	p += "/value"
-	if key != "" {
-		p += "?key=" + url.QueryEscape(key)
-	}
+	p += "/value?key=" + url.QueryEscape(key)
 	var v client.SecretValue
 	if err := c.Call(ctx, http.MethodGet, p, nil, &v); err != nil {
 		return err
 	}
 	defer clear(v.Value)
 	defer clearData(v.Data)
-	if key != "" {
+	if key != v1.AllKeys {
 		_, err = stdout.Write(v.Value)
-		return err
-	}
-	if b, ok := v.Data[v1.ValueKey]; ok && len(v.Data) == 1 {
-		_, err = stdout.Write(b)
 		return err
 	}
 	keys := make([]string, 0, len(v.Data))

@@ -143,7 +143,7 @@ func TestOpenShellSilos(t *testing.T) {
 
 	apiKey := randomToken(t)
 	must(kvo.Run, "apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: agents }\n", "apply", "-f", "-")
-	must(kvo.Run, apiKey, "create", "secret", "api-key", "-n", "agents", "--from-file", "-", "--allow", "inject", "--write-only")
+	must(kvo.Run, apiKey, "create", "secret", "api-key", "-n", "agents", "--from-file", "token=-", "--allow", "inject", "--write-only")
 	osSilo := func(name, runtime string) string {
 		return fmt.Sprintf(`---
 apiVersion: kevaso/v1
@@ -161,7 +161,7 @@ kind: Grant
 metadata: { name: api, namespace: agents }
 spec:
   secrets:
-    - { name: api-key, deliver: inject, env: API_KEY, to: { host: ` + apiHost + ` } }
+    - { name: api-key, key: token, deliver: inject, env: API_KEY, to: { host: ` + apiHost + ` } }
   egress:
     - { to: ` + passHost + ` }
 ` + osSilo("vm", "openshell") + osSilo("ct", "openshell-container")
@@ -245,7 +245,7 @@ spec:
 
 	// Rotation: once, in Kevaso; both running silos follow with no restart.
 	apiKey2 := randomToken(t)
-	must(kvo.Run, apiKey2, "secret", "set", "api-key", "-n", "agents", "--from-file", "-")
+	must(kvo.Run, apiKey2, "secret", "set", "api-key", "-n", "agents", "--from-file", "token=-")
 	for _, s := range []string{"vm", "ct"} {
 		ok := false
 		for i := 0; i < 40 && !ok; i++ {

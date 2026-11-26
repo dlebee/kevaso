@@ -20,11 +20,10 @@ type ClusterSecret struct {
 }
 
 // ClusterSecretSpec is the secret's description and, write-only, its keys: sealed and removed
-// before the object is stored, so reads never carry them. Value, Data, SetData and RemoveKeys
-// work as a Secret's do (hack/design/secret-keys.md).
+// before the object is stored, so reads never carry them. Data, SetData and RemoveKeys work as a
+// Secret's do (hack/design/secret-keys.md).
 type ClusterSecretSpec struct {
 	Description string            `json:"description,omitempty"`
-	Value       []byte            `json:"value,omitempty"`
 	Data        map[string][]byte `json:"data,omitempty"`
 	SetData     map[string][]byte `json:"setData,omitempty"`
 	RemoveKeys  []string          `json:"removeKeys,omitempty"`

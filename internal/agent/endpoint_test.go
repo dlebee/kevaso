@@ -101,7 +101,7 @@ func TestEndpointIdentityFromArrivalOnly(t *testing.T) {
 		return client.BrokerResponse{Value: []byte("pw-1"), Version: 3}
 	}
 	// Whatever the request says about who it is, the host says web3/node.
-	resp, body := r.do(t, http.MethodGet, "/v1/secrets/db-password?namespace=other&name=victim&uid=x", nil, func(q *http.Request) {
+	resp, body := r.do(t, http.MethodGet, "/v1/secrets/db-password/password?namespace=other&name=victim&uid=x", nil, func(q *http.Request) {
 		q.Header.Set("X-Kevaso-Silo", "other/victim")
 		q.Header.Set("Authorization", "Bearer someone-else")
 	})
@@ -110,13 +110,13 @@ func TestEndpointIdentityFromArrivalOnly(t *testing.T) {
 	}
 	got := r.cp.calls()
 	if len(got) != 1 || got[0].Namespace != "web3" || got[0].Name != "node" || got[0].UID != "uid-node" || got[0].Host != "hv1" ||
-		got[0].Request.Op != client.OpGetSecret || got[0].Request.Name != "db-password" {
+		got[0].Request.Op != client.OpGetSecret || got[0].Request.Name != "db-password" || got[0].Request.Key != "password" {
 		t.Fatalf("relayed %+v", got)
 	}
 	// An address nobody registered (a silo whose grants need no endpoint) gets nothing, and the
 	// control plane isn't asked.
 	r.ep.Unregister("uid-node")
-	if resp, _ := r.do(t, http.MethodGet, "/v1/secrets/db-password", nil, nil); resp.StatusCode != 404 {
+	if resp, _ := r.do(t, http.MethodGet, "/v1/secrets/db-password/password", nil, nil); resp.StatusCode != 404 {
 		t.Fatalf("unregistered: %d", resp.StatusCode)
 	}
 	if len(r.cp.calls()) != 1 {
@@ -124,7 +124,7 @@ func TestEndpointIdentityFromArrivalOnly(t *testing.T) {
 	}
 	// Registering another silo at the address moves it: the newest owner of an address is who asks.
 	r.ep.Register(netip.MustParseAddr("127.0.0.1"), kri.ID{Namespace: "web3", Name: "other", UID: "uid-other"})
-	r.do(t, http.MethodGet, "/v1/secrets/db-password", nil, nil)
+	r.do(t, http.MethodGet, "/v1/secrets/db-password/password", nil, nil)
 	if got := r.cp.calls(); got[len(got)-1].Name != "other" {
 		t.Fatalf("after re-register: %+v", got[len(got)-1])
 	}
@@ -140,22 +140,22 @@ func TestEndpointRefusesBrowsersAndStrangers(t *testing.T) {
 		edit         func(*http.Request)
 		status       int
 	}{
-		"no header":            {"GET", "/v1/secrets/db", func(q *http.Request) { q.Header.Del("Kevaso-Local") }, 403},
-		"header, wrong value":  {"GET", "/v1/secrets/db", func(q *http.Request) { q.Header.Set("Kevaso-Local", "true") }, 403},
-		"Origin":               {"GET", "/v1/secrets/db", func(q *http.Request) { q.Header.Set("Origin", "http://169.254.42.1") }, 403},
-		"empty Origin":         {"GET", "/v1/secrets/db", func(q *http.Request) { q.Header["Origin"] = []string{""} }, 403},
-		"Sec-Fetch-Site":       {"GET", "/v1/secrets/db", func(q *http.Request) { q.Header.Set("Sec-Fetch-Site", "same-origin") }, 403},
-		"rebound name as Host": {"GET", "/v1/secrets/db", func(q *http.Request) { q.Host = "evil.example" }, 403},
-		"another port as Host": {"GET", "/v1/secrets/db", func(q *http.Request) { q.Host = "169.254.42.1:8080" }, 403},
-		"CORS preflight":       {"OPTIONS", "/v1/secrets/db", nil, 405},
-		"wrong method":         {"POST", "/v1/secrets/db", nil, 405},
+		"no header":            {"GET", "/v1/secrets/db/password", func(q *http.Request) { q.Header.Del("Kevaso-Local") }, 403},
+		"header, wrong value":  {"GET", "/v1/secrets/db/password", func(q *http.Request) { q.Header.Set("Kevaso-Local", "true") }, 403},
+		"Origin":               {"GET", "/v1/secrets/db/password", func(q *http.Request) { q.Header.Set("Origin", "http://169.254.42.1") }, 403},
+		"empty Origin":         {"GET", "/v1/secrets/db/password", func(q *http.Request) { q.Header["Origin"] = []string{""} }, 403},
+		"Sec-Fetch-Site":       {"GET", "/v1/secrets/db/password", func(q *http.Request) { q.Header.Set("Sec-Fetch-Site", "same-origin") }, 403},
+		"rebound name as Host": {"GET", "/v1/secrets/db/password", func(q *http.Request) { q.Host = "evil.example" }, 403},
+		"another port as Host": {"GET", "/v1/secrets/db/password", func(q *http.Request) { q.Host = "169.254.42.1:8080" }, 403},
+		"CORS preflight":       {"OPTIONS", "/v1/secrets/db/password", nil, 405},
+		"wrong method":         {"POST", "/v1/secrets/db/password", nil, 405},
 		"trailing slash":       {"GET", "/v1/secrets/db/", nil, 404},
 		"unclean path":         {"GET", "/v1//secrets/db", nil, 404},
 		"dot dot":              {"GET", "/v1/keys/../secrets/db", nil, 404},
 		"unknown route":        {"GET", "/v1/deliveries", nil, 404},
-		"upper-case name":      {"GET", "/v1/secrets/DB", nil, 400},
-		"bad duration":         {"GET", "/v1/secrets/db?for=forever", nil, 400},
-		"bad approval":         {"GET", "/v1/secrets/db?approval=a%20b", nil, 400},
+		"upper-case name":      {"GET", "/v1/secrets/DB/password", nil, 400},
+		"bad duration":         {"GET", "/v1/secrets/db/password?for=forever", nil, 400},
+		"bad approval":         {"GET", "/v1/secrets/db/password?approval=a%20b", nil, 400},
 		"bad slot":             {"POST", "/v1/sign/key?slot=-1", nil, 400},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -190,15 +190,15 @@ func TestEndpointRefusals(t *testing.T) {
 		}
 		return client.BrokerResponse{Error: "approval gh-x: denied"}
 	}
-	a, ab := r.do(t, "GET", "/v1/secrets/not-mine", nil, nil)
-	b, bb := r.do(t, "GET", "/v1/secrets/does-not-exist", nil, nil)
+	a, ab := r.do(t, "GET", "/v1/secrets/not-mine/token", nil, nil)
+	b, bb := r.do(t, "GET", "/v1/secrets/does-not-exist/token", nil, nil)
 	if a.StatusCode != 404 || b.StatusCode != 404 || strings.ReplaceAll(ab, "not-mine", "X") != strings.ReplaceAll(bb, "does-not-exist", "X") {
 		t.Fatalf("not granted vs missing: %d %q / %d %q", a.StatusCode, ab, b.StatusCode, bb)
 	}
 	if resp, _ := r.do(t, "POST", "/v1/sign/validator?slot=7", []byte("x"), nil); resp.StatusCode != 409 {
 		t.Fatalf("slashing: %d", resp.StatusCode)
 	}
-	if resp, body := r.do(t, "GET", "/v1/secrets/gh-admin", nil, nil); resp.StatusCode != 403 || !strings.Contains(body, "denied") {
+	if resp, body := r.do(t, "GET", "/v1/secrets/gh-admin/token", nil, nil); resp.StatusCode != 403 || !strings.Contains(body, "denied") {
 		t.Fatalf("denied: %d %s", resp.StatusCode, body)
 	}
 }
@@ -215,7 +215,7 @@ func TestEndpointPendingApproval(t *testing.T) {
 		}
 		return client.BrokerResponse{Value: []byte("ghp-admin")}
 	}
-	resp, body := r.do(t, "GET", "/v1/secrets/gh-admin?for=30m&wait=10m", nil, nil)
+	resp, body := r.do(t, "GET", "/v1/secrets/gh-admin/token?for=30m&wait=10m", nil, nil)
 	if resp.StatusCode != http.StatusPreconditionRequired || resp.Header.Get("Kevaso-Approval") != "gh-admin-x7k2p" || strings.Contains(body, "ghp") {
 		t.Fatalf("pending: %d %v %s", resp.StatusCode, resp.Header, body)
 	}
@@ -230,7 +230,7 @@ func TestEndpointPendingApproval(t *testing.T) {
 		t.Fatalf("first ask relayed %+v", q)
 	}
 	approved = true
-	resp, body = r.do(t, "GET", "/v1/secrets/gh-admin?for=30m&approval=gh-admin-x7k2p", nil, nil)
+	resp, body = r.do(t, "GET", "/v1/secrets/gh-admin/token?for=30m&approval=gh-admin-x7k2p", nil, nil)
 	if resp.StatusCode != 200 || body != "ghp-admin" {
 		t.Fatalf("after yes: %d %s", resp.StatusCode, body)
 	}
@@ -283,7 +283,7 @@ func TestEndpointLimits(t *testing.T) {
 		t.Fatalf("big payload: %d", resp.StatusCode)
 	}
 	// Headers past 8 KiB: refused by the server itself.
-	if resp, _ := r.do(t, "GET", "/v1/secrets/db", nil, func(q *http.Request) { q.Header.Set("X-Pad", strings.Repeat("p", 16<<10)) }); resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+	if resp, _ := r.do(t, "GET", "/v1/secrets/db/password", nil, func(q *http.Request) { q.Header.Set("X-Pad", strings.Repeat("p", 16<<10)) }); resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
 		t.Fatalf("big headers: %d", resp.StatusCode)
 	}
 	// At most 8 at once per silo.
@@ -297,12 +297,12 @@ func TestEndpointLimits(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Add(1)
-		go func() { defer wg.Done(); r.do(t, "GET", "/v1/secrets/db", nil, nil) }()
+		go func() { defer wg.Done(); r.do(t, "GET", "/v1/secrets/db/password", nil, nil) }()
 	}
 	for range 8 {
 		<-entered
 	}
-	if resp, _ := r.do(t, "GET", "/v1/secrets/db", nil, nil); resp.StatusCode != http.StatusTooManyRequests {
+	if resp, _ := r.do(t, "GET", "/v1/secrets/db/password", nil, nil); resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("9th at once: %d", resp.StatusCode)
 	}
 	close(release)
@@ -310,33 +310,51 @@ func TestEndpointLimits(t *testing.T) {
 	// The control plane gone: try again later.
 	r2 := newEndpoint(t)
 	r2.ep.Client = client.New("http://127.0.0.1:1")
-	if resp, _ := r2.do(t, "GET", "/v1/secrets/db", nil, nil); resp.StatusCode != http.StatusServiceUnavailable {
+	if resp, _ := r2.do(t, "GET", "/v1/secrets/db/password", nil, nil); resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("no control plane: %d", resp.StatusCode)
 	}
 }
 
-// /v1/secrets/NAME/KEY relays the key; an answer with several keys is JSON, one key is its bytes.
+// /v1/secrets/NAME/KEY relays the key and answers its bytes; /v1/secrets/NAME/* relays "*" and
+// answers every key the grant gives as JSON; /v1/secrets/NAME alone is refused, never guessed.
 func TestEndpointSecretKeys(t *testing.T) {
 	r := newEndpoint(t)
 	r.cp.answer = func(q client.AgentBrokerRequest) client.BrokerResponse {
-		if q.Request.Key != "" {
+		if q.Request.Key != "*" {
 			return client.BrokerResponse{Value: []byte("pw"), Version: 3}
 		}
 		return client.BrokerResponse{Data: map[string][]byte{"password": []byte("pw"), "username": []byte("app")}, Version: 3}
 	}
 	resp, body := r.do(t, "GET", "/v1/secrets/db/password", nil, nil)
-	if resp.StatusCode != 200 || body != "pw" || resp.Header.Get("Content-Type") != "application/octet-stream" {
+	if resp.StatusCode != 200 || body != "pw" || resp.Header.Get("Content-Type") != "application/octet-stream" || resp.Header.Get("Kevaso-Version") != "3" {
 		t.Fatalf("one key: %d %q", resp.StatusCode, body)
 	}
 	if q := r.cp.calls()[0].Request; q.Op != client.OpGetSecret || q.Name != "db" || q.Key != "password" {
 		t.Fatalf("relayed %+v", q)
 	}
-	resp, body = r.do(t, "GET", "/v1/secrets/db", nil, nil)
-	var all agent.SecretKeys
-	if resp.StatusCode != 200 || json.Unmarshal([]byte(body), &all) != nil || string(all.Data["username"]) != "app" || all.Version != 3 || resp.Header.Get("Content-Type") != "application/json" {
-		t.Fatalf("every key: %d %q", resp.StatusCode, body)
+	for _, p := range []string{"/v1/secrets/db/*", "/v1/secrets/db/%2A"} {
+		resp, body = r.do(t, "GET", p, nil, nil)
+		var all agent.SecretKeys
+		if resp.StatusCode != 200 || json.Unmarshal([]byte(body), &all) != nil || string(all.Data["username"]) != "app" || string(all.Data["password"]) != "pw" ||
+			all.Version != 3 || resp.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("%s, every key: %d %q", p, resp.StatusCode, body)
+		}
+		if q := r.cp.calls()[len(r.cp.calls())-1].Request; q.Key != "*" || q.Name != "db" {
+			t.Fatalf("%s relayed %+v", p, q)
+		}
 	}
-	for _, p := range []string{"/v1/secrets/db/a%20b", "/v1/secrets/db/.x"} {
+	// No key named: a 400 that shows both forms, and the control plane isn't asked.
+	n := len(r.cp.calls())
+	for _, p := range []string{"/v1/secrets/db", "/v1/secrets/db?for=1m"} {
+		resp, body = r.do(t, "GET", p, nil, nil)
+		if resp.StatusCode != 400 || !strings.Contains(body, "/v1/secrets/db/KEY for one key") || !strings.Contains(body, "/v1/secrets/db/* for every key") {
+			t.Fatalf("%s: %d %q", p, resp.StatusCode, body)
+		}
+	}
+	if len(r.cp.calls()) != n {
+		t.Fatal("a request with no key reached the control plane")
+	}
+	for _, p := range []string{"/v1/secrets/db/a%20b", "/v1/secrets/db/.x", "/v1/secrets/db/**", "/v1/secrets/db/a*"} {
 		if resp, _ := r.do(t, "GET", p, nil, nil); resp.StatusCode != 400 {
 			t.Fatalf("%s: %d", p, resp.StatusCode)
 		}

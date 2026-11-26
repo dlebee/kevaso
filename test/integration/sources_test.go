@@ -44,7 +44,7 @@ func TestWhatASiloStartsFrom(t *testing.T) {
 		t.Fatal(err)
 	}
 	pull := &v1.Secret{TypeMeta: tm("Secret"), ObjectMeta: meta.ObjectMeta{Name: "ghcr-pull", Namespace: "demo"},
-		Spec: v1.SecretSpec{Type: v1.SecretRegistry, Server: "ghcr.io", Username: "bot", Value: []byte("tok")}}
+		Spec: v1.SecretSpec{Type: v1.SecretRegistry, Server: "ghcr.io", Username: "bot", Data: map[string][]byte{v1.PasswordKey: []byte("tok")}}}
 	if err := admin.Create(ctx, pull); err != nil {
 		t.Fatal(err)
 	}

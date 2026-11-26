@@ -43,7 +43,7 @@ func TestASiloWaitsForItsGrantsBeforeItsInitSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := c.admin.Create(c.ctx, grantObj("app", v1.GrantSpec{Secrets: []v1.GrantSecret{
-		{Name: "tls-key", Deliver: v1.DeliverFile, Path: "/run/secrets/tls.pem"}}})); err != nil {
+		{Name: "tls-key", Key: "token", Deliver: v1.DeliverFile, Path: "/run/secrets/tls.pem"}}})); err != nil {
 		t.Fatal(err)
 	}
 	mounts := filepath.Join(t.TempDir(), "mounts")

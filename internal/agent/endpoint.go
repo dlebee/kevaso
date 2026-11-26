@@ -36,11 +36,10 @@ import (
 // header (a browser made it) or a Host that isn't the endpoint's (DNS rebinding). There are no
 // redirects and no CORS headers, ever. The routes, all answering errors as {"error": "…"}:
 //
-//	GET  /v1/secrets/NAME[?for=D&wait=D&approval=A]          200 the value (application/octet-stream), Kevaso-Version: N,
-//	                                                         when the answer is one key (the grant names one, or the
-//	                                                         secret's only key is value); otherwise every key the grant
-//	                                                         gives: {"data": {KEY: base64}, "version": N} (application/json)
-//	GET  /v1/secrets/NAME/KEY[?for=D&wait=D&approval=A]      200 that key's bytes (application/octet-stream)
+//	GET  /v1/secrets/NAME/KEY[?for=D&wait=D&approval=A]      200 that key's bytes (application/octet-stream), Kevaso-Version: N
+//	GET  /v1/secrets/NAME/*[?for=D&wait=D&approval=A]        200 every key the grant gives: {"data": {KEY: base64}, "version": N}
+//	                                                         (application/json). /v1/secrets/NAME alone is refused (400):
+//	                                                         a key is always named.
 //	POST /v1/sign/KEY[?slot=N&for=D&wait=D&approval=A]       body: the payload (≤ 512 KiB); 200 the signature, hex
 //	GET  /v1/keys/KEY                                        200 the public key, hex
 //	POST /v1/ports/NAME/open[?for=D&wait=D&approval=A]       200 {"port": NAME, "until": TIME, "clamped": BOOL}
@@ -185,6 +184,10 @@ func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	op, name, key, method, ok := endpointRoute(r.URL.Path)
+	if !ok && strings.HasPrefix(r.URL.Path, "/v1/secrets/") && strings.Count(r.URL.Path, "/") == 3 {
+		endpointFail(w, http.StatusBadRequest, r.URL.Path+": name a key: "+r.URL.Path+"/KEY for one key, or "+r.URL.Path+"/* for every key")
+		return
+	}
 	if !ok {
 		endpointFail(w, http.StatusNotFound, "no such route: "+r.URL.Path)
 		return
@@ -198,8 +201,8 @@ func (e *Endpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		endpointFail(w, http.StatusBadRequest, fmt.Sprintf("name %q: lower-case letters, digits, - and .", name))
 		return
 	}
-	if key != "" && !v1.ValidKey(key) {
-		endpointFail(w, http.StatusBadRequest, fmt.Sprintf("key %q: letters, digits, - _ and .", key))
+	if key != "" && key != v1.AllKeys && !v1.ValidKey(key) {
+		endpointFail(w, http.StatusBadRequest, fmt.Sprintf("key %q: letters, digits, - _ and ., or * for every key", key))
 		return
 	}
 	if e.Held != nil && e.Held() {
@@ -284,8 +287,6 @@ func endpointRoute(path string) (op, name, key, method string, ok bool) {
 		return "", "", "", "", false
 	}
 	switch {
-	case len(parts) == 3 && parts[1] == "secrets":
-		return client.OpGetSecret, parts[2], "", http.MethodGet, true
 	case len(parts) == 4 && parts[1] == "secrets" && parts[3] != "":
 		return client.OpGetSecret, parts[2], parts[3], http.MethodGet, true
 	case len(parts) == 3 && parts[1] == "sign":
@@ -300,7 +301,7 @@ func endpointRoute(path string) (op, name, key, method string, ok bool) {
 	return "", "", "", "", false
 }
 
-// SecretKeys is the answer to GET /v1/secrets/NAME when it holds several keys.
+// SecretKeys is the answer to GET /v1/secrets/NAME/*: every key the grant gives.
 type SecretKeys struct {
 	Data    map[string][]byte `json:"data"`
 	Version int64             `json:"version"`

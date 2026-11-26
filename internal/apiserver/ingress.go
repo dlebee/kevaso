@@ -163,7 +163,7 @@ func (s *Server) ingressDesired(ctx context.Context, silo *v1.Silo) (ingress.Des
 			if err != nil {
 				return nil
 			}
-			value, _, err := s.vault.KeyValue(ctx, obj.(*v1.Secret), v1.ValueKey) // the certificate's PEM bundle
+			value, _, err := s.vault.KeyValue(ctx, obj.(*v1.Secret), v1.CertificateKey) // the certificate's PEM bundle
 			if err != nil {
 				return nil // not issued yet
 			}

@@ -187,10 +187,10 @@ func TestSecretsInASilo(t *testing.T) {
 	// Secrets, from stdin: never on a command line.
 	apiKey, dbPassword, tlsValue := randomToken(t), randomToken(t), "-----TLS "+randomToken(t)+"-----"
 	must(kvo.Run, "apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: dev }\n", "apply", "-f", "-")
-	must(kvo.Run, apiKey, "create", "secret", "api-key", "-n", "dev", "--from-file", "-", "--allow", "inject", "--write-only")
-	must(kvo.Run, dbPassword, "create", "secret", "db-password", "-n", "dev", "--from-file", "-")
-	must(kvo.Run, tlsValue, "create", "secret", "tls-key", "-n", "dev", "--from-file", "-")
-	must(kvo.Run, "", "create", "secret", "validator-key", "-n", "dev", "--type", "ed25519", "--generate")
+	must(kvo.Run, apiKey, "create", "secret", "api-key", "-n", "dev", "--from-file", "token=-", "--allow", "inject", "--write-only")
+	must(kvo.Run, dbPassword, "create", "secret", "db-password", "-n", "dev", "--from-file", "password=-")
+	must(kvo.Run, tlsValue, "create", "secret", "tls-key", "-n", "dev", "--from-file", "tls.pem=-")
+	must(kvo.Run, "", "create", "secret", "validator-key", "-n", "dev", "--type", "ed25519", "--generate", "private-key")
 	if _, code := kvoRun(ctx, "", "create", "secret", "x", "-n", "dev", "--from-literal", "oops"); code == 0 {
 		t.Fatal("--from-literal without --i-know was accepted")
 	}
@@ -200,7 +200,7 @@ kind: Grant
 metadata: { name: api, namespace: dev }
 spec:
   secrets:
-    - { name: api-key, deliver: inject, to: { host: api.allowed.test } }
+    - { name: api-key, key: token, deliver: inject, to: { host: api.allowed.test } }
   egress:
     - { to: pass.test }
 ---
@@ -209,8 +209,8 @@ kind: Grant
 metadata: { name: app, namespace: dev }
 spec:
   secrets:
-    - { name: db-password }
-    - { name: tls-key, deliver: file, path: /run/secrets/tls.pem }
+    - { name: db-password, key: password }
+    - { name: tls-key, key: tls.pem, deliver: file, path: /run/secrets/tls.pem }
   operations:
     sign: { keyRef: validator-key, slashingProtection: true }
 ---
@@ -314,15 +314,15 @@ spec:
 		return in(silo, "curl -sS --max-time 10 -w ' %{http_code}' "+headers+" 'http://169.254.42.1"+path+"' 2>&1")
 	}
 	const local = "-H 'Kevaso-Local: 1'"
-	expect("broker: db-password", ep("agent", "/v1/secrets/db-password", local), dbPassword+" 200")
+	expect("broker: db-password", ep("agent", "/v1/secrets/db-password/password", local), dbPassword+" 200")
 	expect("file delivery in tmpfs", in("agent", "cat /run/secrets/tls.pem; echo; stat -c '%a %U' /run/secrets/tls.pem; df --output=fstype /run/secrets | tail -1"), tlsValue+"\n400 root\ntmpfs")
-	expect("broker: an inject-only key", ep("agent", "/v1/secrets/api-key", local), "no secret")
-	expect("broker: the signing key itself", ep("agent", "/v1/secrets/validator-key", local), "no secret")
-	expect("broker: a file secret isn't the endpoint's", ep("agent", "/v1/secrets/tls-key", local), " 404")
+	expect("broker: an inject-only key", ep("agent", "/v1/secrets/api-key/token", local), "no secret")
+	expect("broker: the signing key itself", ep("agent", "/v1/secrets/validator-key/private-key", local), "no secret")
+	expect("broker: a file secret isn't the endpoint's", ep("agent", "/v1/secrets/tls-key/tls.pem", local), " 404")
 	// No header at all (a second -H 'Kevaso-Local:' wouldn't take the first one away: curl sends the first).
-	expect("broker: no header, nothing", ep("agent", "/v1/secrets/db-password", ""), " 403")
-	expect("broker: a browser's request, nothing", ep("agent", "/v1/secrets/db-password", local+" -H 'Origin: http://evil.example'"), " 403")
-	if got := ep("plain", "/v1/secrets/db-password", local); strings.Contains(got, dbPassword) || strings.Contains(got, " 200") {
+	expect("broker: no header, nothing", ep("agent", "/v1/secrets/db-password/password", ""), " 403")
+	expect("broker: a browser's request, nothing", ep("agent", "/v1/secrets/db-password/password", local+" -H 'Origin: http://evil.example'"), " 403")
+	if got := ep("plain", "/v1/secrets/db-password/password", local); strings.Contains(got, dbPassword) || strings.Contains(got, " 200") {
 		t.Errorf("a silo whose grants need no endpoint reached it: %q", got)
 	} else {
 		t.Logf("a silo whose grants need no endpoint has none: %s", firstLine(got))
@@ -343,8 +343,8 @@ spec:
 
 	// Rotation: one place, the silo follows (gate at once, the file within seconds).
 	apiKey2, tls2 := randomToken(t), "-----TLS "+randomToken(t)+"-----"
-	must(kvo.Run, apiKey2, "secret", "set", "api-key", "-n", "dev", "--from-file", "-")
-	must(kvo.Run, tls2, "secret", "set", "tls-key", "-n", "dev", "--from-file", "-")
+	must(kvo.Run, apiKey2, "secret", "set", "api-key", "-n", "dev", "--from-file", "token=-")
+	must(kvo.Run, tls2, "secret", "set", "tls-key", "-n", "dev", "--from-file", "tls.pem=-")
 	waitFor := func(what string, f func() bool) {
 		t.Helper()
 		for i := 0; i < 30; i++ {
@@ -418,8 +418,8 @@ spec:
 	if err != nil || !strings.Contains(rot, `"rewrapped":4`) {
 		t.Errorf("kms-rotate: %v %s", err, rot)
 	}
-	expect("after the master key rotation", must(kvo.Run, "", "get", "secret", "db-password", "-n", "dev", "--reveal"), dbPassword)
-	if out, _ := kvoRun(ctx, "", "get", "secret", "api-key", "-n", "dev", "--reveal"); !strings.Contains(out, "write-only") {
+	expect("after the master key rotation", must(kvo.Run, "", "get", "secret", "db-password", "-n", "dev", "--reveal", "--key", "password"), dbPassword)
+	if out, _ := kvoRun(ctx, "", "get", "secret", "api-key", "-n", "dev", "--reveal", "--key", "token"); !strings.Contains(out, "write-only") {
 		t.Errorf("revealing a write-only secret: %q", out)
 	}
 	audit, _ := sh("metal", `grep -c '"event":"broker"' /var/lib/kevaso/audit.log; grep '"event":"broker"' /var/lib/kevaso/audit.log | grep -c '"allowed":false'`)

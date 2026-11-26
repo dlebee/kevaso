@@ -40,15 +40,15 @@ func TestPutValueVersions(t *testing.T) {
 	if v.Has(ctx, s) {
 		t.Fatal("has a value before Put")
 	}
-	st, err := v.Put(ctx, s, map[string][]byte{v1.ValueKey: []byte("key-1")}, false)
+	st, err := v.Put(ctx, s, map[string][]byte{"token": []byte("key-1")}, false)
 	if err != nil || st.Version != 1 || st.Size != 5 {
 		t.Fatalf("put: %+v %v", st, err)
 	}
-	st, _ = v.Put(ctx, s, map[string][]byte{v1.ValueKey: []byte("key-2")}, false)
+	st, _ = v.Put(ctx, s, map[string][]byte{"token": []byte("key-2")}, false)
 	if st.Version != 2 {
 		t.Fatalf("rotation: version %d", st.Version)
 	}
-	got, ver, err := v.KeyValue(ctx, s, v1.ValueKey)
+	got, ver, err := v.KeyValue(ctx, s, "token")
 	if err != nil || string(got) != "key-2" || ver != 2 {
 		t.Fatalf("value = %q v%d %v", got, ver, err)
 	}
@@ -61,10 +61,10 @@ func TestPutValueVersions(t *testing.T) {
 	}
 	// A new secret with the same name (another uid) doesn't get the old value.
 	again := secret("infura", "u2", "")
-	if _, _, err := v.KeyValue(ctx, again, v1.ValueKey); !errors.Is(err, ErrNoValue) {
+	if _, _, err := v.KeyValue(ctx, again, "token"); !errors.Is(err, ErrNoValue) {
 		t.Fatalf("re-created secret read the old value: %v", err)
 	}
-	if st, _ := v.Put(ctx, again, map[string][]byte{v1.ValueKey: []byte("fresh")}, false); st.Version != 1 {
+	if st, _ := v.Put(ctx, again, map[string][]byte{"token": []byte("fresh")}, false); st.Version != 1 {
 		t.Fatalf("re-created secret starts at version %d", st.Version)
 	}
 	v.Forget(ctx, "web3", "infura")
@@ -99,7 +99,7 @@ func TestSign(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		st, err := v.Put(ctx, s, map[string][]byte{v1.ValueKey: key}, false)
+		st, err := v.Put(ctx, s, map[string][]byte{v1.PrivateKeyKey: key}, false)
 		if err != nil || st.PublicKey == "" {
 			t.Fatalf("%s: put %+v %v", typ, st, err)
 		}
@@ -138,7 +138,7 @@ func TestSlashingProtection(t *testing.T) {
 	v, _ := newVault(t)
 	s := secret("validator-1-key", "u1", v1.SecretEd25519)
 	key, _ := Generate(v1.SecretEd25519)
-	if _, err := v.Put(ctx, s, map[string][]byte{v1.ValueKey: key}, false); err != nil {
+	if _, err := v.Put(ctx, s, map[string][]byte{v1.PrivateKeyKey: key}, false); err != nil {
 		t.Fatal(err)
 	}
 	slot := func(n int64) *int64 { return &n }
@@ -173,8 +173,8 @@ func TestRewrapAll(t *testing.T) {
 	ctx := context.Background()
 	v, l := newVault(t)
 	a, b := secret("a", "u1", ""), secret("b", "u2", "")
-	_, _ = v.Put(ctx, a, map[string][]byte{v1.ValueKey: []byte("va")}, false)
-	_, _ = v.Put(ctx, b, map[string][]byte{v1.ValueKey: []byte("vb")}, false)
+	_, _ = v.Put(ctx, a, map[string][]byte{"token": []byte("va")}, false)
+	_, _ = v.Put(ctx, b, map[string][]byte{"token": []byte("vb")}, false)
 	if _, err := l.Rotate(); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestRewrapAll(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range []*v1.Secret{a, b} {
-		got, ver, err := v.KeyValue(ctx, s, v1.ValueKey)
+		got, ver, err := v.KeyValue(ctx, s, "token")
 		if err != nil || !strings.HasPrefix(string(got), "v") || ver != 1 {
 			t.Fatalf("%s after rotation: %q v%d %v", s.Name, got, ver, err)
 		}

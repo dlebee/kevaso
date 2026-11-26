@@ -81,7 +81,7 @@ func TestK019OnlyTheCertificatesOwnSecretIsWrittenOrDeleted(t *testing.T) {
 
 	// Someone's database password, and a Certificate (made by hand, or for an Ingress) naming it.
 	db := &v1.Secret{TypeMeta: tm("Secret"), ObjectMeta: meta.ObjectMeta{Name: "db", Namespace: "shop"}}
-	db.Spec.Value = []byte("hunter2")
+	db.Spec.Data = map[string][]byte{"password": []byte("hunter2")}
 	if err := c.Create(ctx, db); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestK019OnlyTheCertificatesOwnSecretIsWrittenOrDeleted(t *testing.T) {
 	reconcile("web", anyCert)
 	value := func(name string) string {
 		var v client.SecretValue
-		if err := c.Call(ctx, "GET", "/apis/kevaso/v1/namespaces/shop/secrets/"+name+"/value?key=value", nil, &v); err != nil {
+		if err := c.Call(ctx, "GET", "/apis/kevaso/v1/namespaces/shop/secrets/"+name+"/value?key=password", nil, &v); err != nil {
 			return "(" + err.Error() + ")"
 		}
 		return string(v.Value)

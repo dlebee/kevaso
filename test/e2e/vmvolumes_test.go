@@ -25,7 +25,8 @@ const hostdirRoot = "/srv/hostdir"
 
 // installHostdir builds the test plugin (test/plugins/hostdir: a folder on hostdirRoot as a
 // mount-reach, global storage class) and installs one side of it on a machine with kvoadm, with
-// its manifest and a credential the silos must never see. It returns the credential.
+// its manifest and a credential the silos must never see: the cluster secret token, its key token
+// (the plugin reads the credential token_token). The first install creates the cluster secret.
 func installHostdir(r *rig, machine, side, token string) {
 	r.t.Helper()
 	dir := r.t.TempDir()
@@ -39,10 +40,13 @@ func installHostdir(r *rig, machine, side, token string) {
 	if out, err := r.sh(machine, "install -d -m 0755 "+hostdirRoot+"/volumes"); err != nil {
 		r.t.Fatalf("%s: %v %s", hostdirRoot, err, out)
 	}
+	if out, code := r.kvo("", "create", "clustersecret", "token", "--from-file", "token="+tok); code != 0 && !strings.Contains(out, "exists") {
+		r.t.Fatalf("clustersecret token: %s", out)
+	}
 	ssh := r.sshArgs(machine)
 	ssh = ssh[:len(ssh)-2] // not --kevasod
 	out := r.must(kvoadm.Run, "", append(append([]string{"plugin", "install"}, ssh...),
-		"--name", "hostdir", "--binary", bin, "--side", side, "--config", cfg, "--credential", "token="+tok,
+		"--name", "hostdir", "--binary", bin, "--side", side, "--config", cfg, "--cluster-secret", "token",
 		"--manifest", "../plugins/hostdir/kevaso-plugin.json", "--yes")...)
 	r.t.Logf("kvoadm plugin install --side %s on %s:\n%s", side, machine, out)
 }

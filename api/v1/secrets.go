@@ -42,8 +42,29 @@ const (
 	AssuranceConfidential = "confidential"
 )
 
-// ValueKey is the key spec.value stands for: `value: X` is `data: {value: X}`.
-const ValueKey = "value"
+// Keys are always named (hack/design/secret-keys.md, "Explicit keys"): no key is implied.
+const (
+	// AllKeys, as a Grant entry's key, gives every key of the secret (never for inject).
+	AllKeys = "*"
+	// PasswordKey is a registry secret's one key: the password or token.
+	PasswordKey = "password"
+	// PrivateKeyKey is a signing key's one key: the private key, never read, never delivered
+	// except through sign.
+	PrivateKeyKey = "private-key"
+	// CertificateKey is the key a Certificate's secret holds its PEM bundle (chain and key) in.
+	CertificateKey = "tls.pem"
+)
+
+// FixedKey is the one key a secret of type t must hold ("" for opaque, which takes any keys).
+func FixedKey(t string) string {
+	switch t {
+	case SecretRegistry:
+		return PasswordKey
+	case SecretEd25519, SecretECDSAP256:
+		return PrivateKeyKey
+	}
+	return ""
+}
 
 // Secret is one secret: named keys. Namespaced.
 type Secret struct {
@@ -58,7 +79,7 @@ type Secret struct {
 type SecretSpec struct {
 	Type string `json:"type,omitempty"` // opaque (default) | ed25519 | ecdsa-p256 | registry
 	// Server and Username: a registry secret's registry host (e.g. ghcr.io) and user; the key
-	// value is the password or token.
+	// password is the password or token.
 	Server   string `json:"server,omitempty"`
 	Username string `json:"username,omitempty"`
 	// AllowedDelivery restricts how Grants may deliver it, whatever they ask (default: every
@@ -68,15 +89,14 @@ type SecretSpec struct {
 	// admins (default true for opaque secrets, false for registry secrets, always false for
 	// signing keys).
 	ValueReadable *bool `json:"valueReadable,omitempty"`
-	// Generate asks the server to make the key value: a random 32-byte token (opaque) or a new
-	// private key. Nobody ever sees a generated signing key.
-	Generate  bool       `json:"generate,omitempty"`
+	// Generate names a key the server makes when the secret has no value yet: a random 32-byte
+	// token (opaque, any key name) or a new private key (signing keys: the key private-key).
+	// Nobody ever sees a generated signing key.
+	Generate  string     `json:"generate,omitempty"`
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"` // when the value stops working; kvo warns before
-	// Value is shorthand for Data with the one key "value". Data replaces every key (a key left
-	// out is removed). SetData adds or replaces the keys it names and keeps the others;
-	// RemoveKeys removes keys. A write carries Value, Data, or SetData and RemoveKeys. All
-	// write-only (base64 in JSON).
-	Value      []byte            `json:"value,omitempty"`
+	// Data replaces every key (a key left out is removed). SetData adds or replaces the keys it
+	// names and keeps the others; RemoveKeys removes keys. A write carries Data, or SetData and
+	// RemoveKeys. All write-only (base64 in JSON).
 	Data       map[string][]byte `json:"data,omitempty"`
 	SetData    map[string][]byte `json:"setData,omitempty"`
 	RemoveKeys []string          `json:"removeKeys,omitempty"`
@@ -154,19 +174,18 @@ type EgressRule struct {
 	Protocols []string `json:"protocols,omitempty"` // tcp, udp; default tcp (names: tcp only)
 }
 
-// GrantSecret lets a silo use one secret (every key, or one), delivered one way.
+// GrantSecret lets a silo use one secret's key (or every key, "*"), delivered one way.
 type GrantSecret struct {
 	Name string `json:"name"`
-	// Key names one of the secret's keys; empty gives every key (inject: the secret's only key).
-	Key     string `json:"key,omitempty"`
+	// Key names one of the secret's keys, or "*" for every key (not for inject). Required.
+	Key     string `json:"key"`
 	Deliver string `json:"deliver,omitempty"` // broker (default) | inject | file | env
 	// Inject: where and how the gate adds it.
 	To *InjectTarget `json:"to,omitempty"`
-	// File: with Key, the file's path (default /run/secrets/NAME/KEY); without, the file (a
-	// secret holding only the key value) or the folder with a file per key (default
-	// /run/secrets/NAME): FilePath.
+	// File: with a key, the file's path (default /run/secrets/NAME/KEY); with "*", the folder
+	// with a file per key (default /run/secrets/NAME): FilePath.
 	Path string `json:"path,omitempty"`
-	// Env: with Key, the variable's name; without, the prefix of every key's variable (EnvName).
+	// Env: with a key, the variable's name; with "*", the prefix of every key's variable (EnvName).
 	Env string `json:"env,omitempty"`
 	// Approval: each use waits for a person's yes (broker, inject; never file or env, §8.7).
 	Approval *ApprovalRule `json:"approval,omitempty"`
@@ -176,7 +195,9 @@ type GrantSecret struct {
 type InjectTarget struct {
 	Host   string `json:"host"`
 	Header string `json:"header,omitempty"` // default Authorization
-	Format string `json:"format,omitempty"` // default "Bearer {{value}}"
+	// Format is the header's value, with {{value}} standing for the injected key's value (it is
+	// not a key name). Default "Bearer {{value}}".
+	Format string `json:"format,omitempty"`
 }
 
 // GrantOperations are operations a silo may ask the broker for with keys that stay outside it.
@@ -263,67 +284,62 @@ func KeyProblems(keys []string) []string {
 
 // EnvName is the variable key k of the secret gets (deliver: env): with the grant naming the key,
 // its env if set; otherwise PREFIX_KEY, upper-cased with - and . as _, where PREFIX is the
-// grant's env (without a key) or the secret's name, and the key "value" is PREFIX alone. Pure.
+// grant's env (with "*") or the secret's name. Pure.
 func (g GrantSecret) EnvName(k string) string {
-	if g.Key != "" && g.Env != "" {
+	if g.Key != AllKeys && g.Env != "" {
 		return g.Env
 	}
 	prefix := envPart(g.Name)
-	if g.Key == "" && g.Env != "" {
+	if g.Key == AllKeys && g.Env != "" {
 		prefix = g.Env
-	}
-	if k == ValueKey {
-		return prefix
 	}
 	return prefix + "_" + envPart(k)
 }
 
-// SingleValue reports whether a secret's keys are just the shorthand's: the key value alone.
-func SingleValue(keys []string) bool { return len(keys) == 1 && keys[0] == ValueKey }
-
-// FilePath is where key k of a secret holding keys have is written (deliver: file). With the
-// grant naming the key: its path (default /run/secrets/NAME/KEY). Without: a secret holding only
-// the key value (SingleValue) is one file at its path (default /run/secrets/NAME); any other is a
-// folder there, FOLDER/KEY. Pure.
-func (g GrantSecret) FilePath(k string, have []string) string {
+// FilePath is where key k of the secret is written (deliver: file). With the grant naming the
+// key: its path (default /run/secrets/NAME/KEY). With "*": a folder at its path (default
+// /run/secrets/NAME), FOLDER/KEY. Pure.
+func (g GrantSecret) FilePath(k string) string {
 	switch {
-	case g.Key != "" && g.Path != "":
+	case g.Key != AllKeys && g.Path != "":
 		return g.Path
-	case g.Key != "":
+	case g.Key != AllKeys:
 		return "/run/secrets/" + g.Name + "/" + k
 	}
 	p := g.Path
 	if p == "" {
 		p = "/run/secrets/" + g.Name
 	}
-	if SingleValue(have) {
-		return p
-	}
 	return p + "/" + k
 }
 
-// Keys are the keys the grant gives of a secret holding keys: its one key, or every one. Pure.
+// Gives reports whether the grant entry gives key k (a key, not "*"). Pure.
+func (g GrantSecret) Gives(k string) bool { return g.Key == AllKeys || (g.Key != "" && g.Key == k) }
+
+// Keys are the keys the grant gives of a secret holding keys have: its one key (when the secret
+// has it), or every one ("*"). Pure.
 func (g GrantSecret) Keys(have []string) []string {
-	if g.Key == "" {
+	if g.Key == AllKeys {
 		return have
 	}
-	if slices.Contains(have, g.Key) {
+	if g.Key != "" && slices.Contains(have, g.Key) {
 		return []string{g.Key}
 	}
 	return nil
 }
 
-// InjectKey is the one key an inject delivers from a secret holding keys: the grant's, or the
-// secret's only key ("" when it names none and the secret has several, or the key isn't there). Pure.
-func (g GrantSecret) InjectKey(have []string) string {
+// KeyRefProblem says what's wrong with a Grant entry's key for its delivery ("" if nothing):
+// it must be named, a valid key or "*", and inject takes exactly one key. Pure.
+func (g GrantSecret) KeyRefProblem() string {
 	switch {
-	case g.Key != "":
-		if slices.Contains(have, g.Key) {
-			return g.Key
-		}
-		return ""
-	case len(have) == 1:
-		return have[0]
+	case g.Key == "" && g.Delivery() == DeliverInject:
+		return "key is required: name the one key to inject (key: KEY)"
+	case g.Key == "":
+		return "key is required: name one key (key: KEY) or every key (key: \"*\")"
+	case g.Key == AllKeys && g.Delivery() == DeliverInject:
+		return "inject adds one key: name it (key: KEY), not \"*\""
+	case g.Key != AllKeys && !ValidKey(g.Key):
+		return fmt.Sprintf("key %q: letters, digits, - _ and . (starting and ending with a letter or a digit), or \"*\" for every key", g.Key)
 	}
 	return ""
 }

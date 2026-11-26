@@ -66,11 +66,11 @@ func TestARefusedLooseningWriteKeepsThePreviousSecretValue(t *testing.T) {
 	}
 	no := false
 	sec := &v1.Secret{TypeMeta: tm("Secret"), ObjectMeta: meta.ObjectMeta{Name: "tok", Namespace: "dev"},
-		Spec: v1.SecretSpec{Value: []byte("old-value"), ValueReadable: &no}}
+		Spec: v1.SecretSpec{Data: map[string][]byte{"token": []byte("old-value")}, ValueReadable: &no}}
 	if err := c.Create(ctx, sec); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, err := srv.Vault().KeyValue(ctx, sec, v1.ValueKey); err != nil || string(got) != "old-value" {
+	if got, _, err := srv.Vault().KeyValue(ctx, sec, "token"); err != nil || string(got) != "old-value" {
 		t.Fatalf("value before the refused write: %q %v", got, err)
 	}
 	var cur v1.Secret
@@ -79,7 +79,7 @@ func TestARefusedLooseningWriteKeepsThePreviousSecretValue(t *testing.T) {
 	}
 	yes := true
 	cur.Spec.ValueReadable = &yes
-	cur.Spec.Value = []byte("new-value")
+	cur.Spec.Data = map[string][]byte{"token": []byte("new-value")}
 	st.armSecret()
 	if err := c.Update(ctx, &cur); !client.IsConflict(err) {
 		t.Fatalf("loosening write: %v, want a conflict", err)
@@ -90,7 +90,7 @@ func TestARefusedLooseningWriteKeepsThePreviousSecretValue(t *testing.T) {
 	if cur.Readable() {
 		t.Fatal("the refused write left the secret readable")
 	}
-	got, _, err := srv.Vault().KeyValue(ctx, &cur, v1.ValueKey)
+	got, _, err := srv.Vault().KeyValue(ctx, &cur, "token")
 	if err != nil || string(got) != "old-value" {
 		t.Fatalf("value after the refused write: %q %v", got, err)
 	}

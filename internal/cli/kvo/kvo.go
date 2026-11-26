@@ -21,16 +21,16 @@
 //	kvo invite NAME [--group G]… [-n NS --role role/NAME|clusterrole/NAME | --cluster-role NAME] [--ttl 30m]   a one-time sign-in code for a person
 //	        and, if given, a role: a Role in NS, a ClusterRole in NS only, or a ClusterRole everywhere
 //	        (cluster-admin only; prints the kvo login line and the code to send them)
-//	kvo create secret NAME (--from-file F|- | --from-file KEY=F… | --generate) [--type opaque|ed25519|ecdsa-p256]
-//	        [--write-only] [--allow broker,inject,file,env] [-l KEY=VALUE]…   values never on argv
-//	kvo create secret NAME --type registry --server HOST --username U --from-file -
+//	kvo create secret NAME (--from-file KEY=F|KEY=-… | --generate KEY) [--type opaque|ed25519|ecdsa-p256]
+//	        [--write-only] [--allow broker,inject,file,env] [-l KEY=VALUE]…   values never on argv; keys always named
+//	kvo create secret NAME --type registry --server HOST --username U --from-file password=-
 //	        [--default-pull]                    a registry credential, write-only; the password on stdin
-//	kvo secret set NAME --from-file F|-        rotate: every silo using it follows
-//	kvo secret set NAME --from-file KEY=F… | --remove-key KEY…   change or remove some keys
-//	kvo get secret NAME --reveal [--key KEY]   the value (read-value; never a write-only secret)
-//	kvo create clustersecret NAME [--description D] --from-file F|- | --from-file KEY=F…
-//	kvo set clustersecret NAME --from-file F|- | --from-file KEY=F… | --remove-key KEY…
-//	kvo get clustersecret [NAME] [--reveal [--key KEY]]   spec and status; --reveal is the value
+//	kvo secret set NAME --from-file KEY=F|KEY=-…   set these keys (rotate): every silo using it follows
+//	kvo secret set NAME --remove-key KEY…      remove keys
+//	kvo get secret NAME --reveal --key KEY|"*"   one key, or every key (read-value; never a write-only secret)
+//	kvo create clustersecret NAME [--description D] --from-file KEY=F|KEY=-…
+//	kvo set clustersecret NAME --from-file KEY=F|KEY=-… | --remove-key KEY…
+//	kvo get clustersecret [NAME] [--reveal --key KEY|"*"]   spec and status; --reveal is the value
 //	kvo delete clustersecret NAME
 //	kvo get approvals | kvo watch approvals    silos waiting for a person's yes to use a secret
 //	kvo pane watch SILO                        follow a silo's panes (plain text; one way)
@@ -191,7 +191,7 @@ func parse(args []string, env func(string) string) (opts, error) {
 		case "--i-know":
 			o.secret.iKnow = true
 		case "--generate":
-			o.secret.generate = true
+			o.secret.generate, err = val()
 		case "--type":
 			o.secret.typ, err = val()
 		case "--default-pull":
@@ -599,12 +599,12 @@ func get(ctx context.Context, c *client.Client, o opts, stdout io.Writer) error 
 	if o.secret.reveal {
 		if k.Kind == "ClusterSecret" {
 			if len(o.args) != 2 {
-				return errors.New("--reveal works with one clustersecret: kvo get clustersecret NAME --reveal")
+				return errors.New("--reveal works with one clustersecret: kvo get clustersecret NAME --reveal --key KEY")
 			}
 			return revealValue(ctx, c, "ClusterSecret", "", o.args[1], o.secret.key, stdout)
 		}
 		if k.Kind != "Secret" || len(o.args) != 2 {
-			return errors.New("--reveal works with one secret: kvo get secret NAME --reveal")
+			return errors.New("--reveal works with one secret: kvo get secret NAME --reveal --key KEY")
 		}
 		return revealValue(ctx, c, "Secret", ns, o.args[1], o.secret.key, stdout)
 	}

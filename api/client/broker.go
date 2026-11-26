@@ -52,7 +52,7 @@ type RegistryCredential struct {
 type BrokerRequest struct {
 	Op   string `json:"op"`
 	Name string `json:"name,omitempty"`
-	// Key: get-secret, one key of the secret ("" for what the grant gives: its key, or every key).
+	// Key: get-secret, one key of the secret, or "*" for every key the grant gives. Required.
 	Key     string `json:"key,omitempty"`
 	Payload []byte `json:"payload,omitempty"`
 	Slot    *int64 `json:"slot,omitempty"`
@@ -76,8 +76,7 @@ type BrokerResponse struct {
 	// Code says what kind of refusal Error is, for the endpoint's status: CodeNotFound, CodeConflict,
 	// or "" (refused).
 	Code string `json:"code,omitempty"`
-	// get-secret: Value is one key's bytes (a key asked for, the grant's key, or the secret's
-	// only key, value); Data is every key the grant gives, otherwise.
+	// get-secret: Value is the key asked for's bytes; Data, for "*", every key the grant gives.
 	Value      []byte            `json:"value,omitempty"`
 	Data       map[string][]byte `json:"data,omitempty"`
 	Version    int64             `json:"version,omitempty"`

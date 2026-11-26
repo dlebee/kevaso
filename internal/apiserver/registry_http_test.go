@@ -39,7 +39,7 @@ func TestChangingARegistryServerNeedsANewValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	sec := &v1.Secret{TypeMeta: tm("Secret"), ObjectMeta: meta.ObjectMeta{Name: "pull", Namespace: "dev"},
-		Spec: v1.SecretSpec{Type: v1.SecretRegistry, Server: "https://ghcr.io", Username: "ada", Value: []byte("pw")}}
+		Spec: v1.SecretSpec{Type: v1.SecretRegistry, Server: "https://ghcr.io", Username: "ada", Data: map[string][]byte{v1.PasswordKey: []byte("pw")}}}
 	if err := c.Create(ctx, sec); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestChangingARegistryServerNeedsANewValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	got.Spec.Server = "evil.example"
-	got.Spec.Value = []byte("new")
+	got.Spec.Data = map[string][]byte{v1.PasswordKey: []byte("new")}
 	if err := c.Update(ctx, &got); err != nil {
 		t.Fatalf("server change with a new value: %v", err)
 	}

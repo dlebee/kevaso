@@ -35,8 +35,8 @@ func TestHostWritesSecrets(t *testing.T) {
 		}
 	}
 	if err := c.admin.Create(c.ctx, grantObj("app", v1.GrantSpec{Secrets: []v1.GrantSecret{
-		{Name: "tls-key", Deliver: v1.DeliverFile, Path: "/run/secrets/tls.pem"},
-		{Name: "legacy-token", Deliver: v1.DeliverEnv},
+		{Name: "tls-key", Key: "token", Deliver: v1.DeliverFile, Path: "/run/secrets/tls.pem"},
+		{Name: "legacy-token", Key: "token", Deliver: v1.DeliverEnv, Env: "LEGACY_TOKEN"},
 	}})); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestHostWritesSecrets(t *testing.T) {
 	// One secret rotated: rewritten in every silo that has it.
 	var tls v1.Secret
 	_ = c.admin.Get(c.ctx, "Secret", "web3", "tls-key", &tls)
-	tls.Spec.Value = []byte("-----BEGIN KEY v2-----")
+	tls.Spec.Data = map[string][]byte{"token": []byte("-----BEGIN KEY v2-----")}
 	if err := c.admin.Update(c.ctx, &tls); err != nil {
 		t.Fatal(err)
 	}

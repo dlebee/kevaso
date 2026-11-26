@@ -64,9 +64,9 @@ func TestMetalOpenShell(t *testing.T) {
 
 	// Refused at admission, each with its reason.
 	apiKey := randomValue(t, "sk-os-")
-	c.must(apiKey, "create", "secret", "api-key", "-n", ns, "--from-file", "-", "--allow", "inject", "--write-only")
-	c.must("x", "create", "secret", "plain", "-n", ns, "--from-file", "-")
-	c.must("x", "create", "secret", "regcred", "-n", ns, "--type", "registry", "--server", "registry.example", "--username", "u", "--from-file", "-")
+	c.must(apiKey, "create", "secret", "api-key", "-n", ns, "--from-file", "token=-", "--allow", "inject", "--write-only")
+	c.must("x", "create", "secret", "plain", "-n", ns, "--from-file", "token=-")
+	c.must("x", "create", "secret", "regcred", "-n", ns, "--type", "registry", "--server", "registry.example", "--username", "u", "--from-file", "password=-")
 	osSilo := func(name, runtime, extra string) string {
 		return fmt.Sprintf("---\napiVersion: kevaso/v1\nkind: Silo\nmetadata: { name: %s, namespace: %s }\nspec:\n  runtime: %s\n  container: { image: ubuntu-24.04 }\n  resources: { cpu: 1, memory: 1Gi }\n%s",
 			name, ns, runtime, extra)
@@ -74,9 +74,9 @@ func TestMetalOpenShell(t *testing.T) {
 	grant := func(name, secret string) string {
 		return fmt.Sprintf("---\napiVersion: kevaso/v1\nkind: Grant\nmetadata: { name: %s, namespace: %s }\nspec:\n  secrets:\n    - %s\n", name, ns, secret)
 	}
-	c.apply(grant("files", "{ name: plain, deliver: file, path: /run/secrets/plain }") +
-		grant("vars", "{ name: plain, deliver: env, env: PLAIN }") + grant("broker", "{ name: plain, deliver: broker }") +
-		grant("preload", "{ name: api-key, deliver: inject, env: LD_PRELOAD, to: { host: "+osInetName+" } }"))
+	c.apply(grant("files", "{ name: plain, key: token, deliver: file, path: /run/secrets/plain }") +
+		grant("vars", "{ name: plain, key: token, deliver: env, env: PLAIN }") + grant("broker", "{ name: plain, key: token, deliver: broker }") +
+		grant("preload", "{ name: api-key, key: token, deliver: inject, env: LD_PRELOAD, to: { host: "+osInetName+" } }"))
 	for _, rt := range []string{"openshell", "openshell-container"} {
 		for what, c2 := range map[string]struct{ extra, want string }{
 			"a service (hostPort: [external])":  {"  ports: [{ name: web, port: 18150 }]\n  service:\n    ports: [{ port: web, hostPort: [external] }]\n", "no network interface, so no service"},
@@ -110,7 +110,7 @@ kind: Grant
 metadata: { name: api, namespace: ` + ns + ` }
 spec:
   secrets:
-    - { name: api-key, deliver: inject, env: API_KEY, to: { host: ` + osInetName + ` } }
+    - { name: api-key, key: token, deliver: inject, env: API_KEY, to: { host: ` + osInetName + ` } }
 ` + osSilo("osvm", "openshell", "  grants: [api]\n") + osSilo("osct", "openshell-container", "  grants: [api]\n"))
 	c.waitRunning(ns, 35*time.Minute, "osvm", "osct")
 

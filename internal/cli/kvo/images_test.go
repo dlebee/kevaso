@@ -7,11 +7,11 @@ import (
 	v1 "kevaso.com/core/api/v1"
 )
 
-// kvo create secret NAME --type registry --server HOST --username U --from-file -: --server is the
+// kvo create secret NAME --type registry --server HOST --username U --from-file password=-: --server is the
 // registry there (the API server still comes from $KVO_SERVER), the password comes from stdin only.
 func TestRegistrySecretFlags(t *testing.T) {
 	env := func(k string) string { return map[string]string{"KVO_SERVER": "http://127.0.0.1:7443"}[k] }
-	o, err := parse([]string{"secret", "ghcr-pull", "--type", "registry", "--server", "https://ghcr.io", "--username", "bot", "--from-file", "-", "--default-pull"}, env)
+	o, err := parse([]string{"secret", "ghcr-pull", "--type", "registry", "--server", "https://ghcr.io", "--username", "bot", "--from-file", "password=-", "--default-pull"}, env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,9 +20,9 @@ func TestRegistrySecretFlags(t *testing.T) {
 	if o.secret.server != "https://ghcr.io" || o.server != "http://127.0.0.1:7443" {
 		t.Fatalf("registry %q, API %q", o.secret.server, o.server)
 	}
-	value, _, err := o.secret.keys(strings.NewReader("tok-1\n"))
-	if err != nil || string(value) != "tok-1" {
-		t.Fatalf("value %q %v", value, err)
+	data, err := o.secret.keys(strings.NewReader("tok-1\n"))
+	if err != nil || len(data) != 1 || string(data[v1.PasswordKey]) != "tok-1" {
+		t.Fatalf("keys %q %v", data, err)
 	}
 	s := &v1.Secret{}
 	if err := registrySecret(s, o.secret); err != nil {
@@ -32,10 +32,10 @@ func TestRegistrySecretFlags(t *testing.T) {
 		t.Fatalf("secret %+v %v", s.Spec, s.Labels)
 	}
 	for _, bad := range []secretOpts{
-		{typ: v1.SecretRegistry, username: "bot"},                                    // no server
-		{typ: v1.SecretRegistry, server: "ghcr.io"},                                  // no user
-		{typ: v1.SecretRegistry, server: "ghcr.io", username: "bot", generate: true}, // a generated password
-		{typ: v1.SecretOpaque, server: "ghcr.io"},                                    // registry flags elsewhere
+		{typ: v1.SecretRegistry, username: "bot"},                                              // no server
+		{typ: v1.SecretRegistry, server: "ghcr.io"},                                            // no user
+		{typ: v1.SecretRegistry, server: "ghcr.io", username: "bot", generate: v1.PasswordKey}, // a generated password
+		{typ: v1.SecretOpaque, server: "ghcr.io"},                                              // registry flags elsewhere
 	} {
 		if err := registrySecret(&v1.Secret{}, bad); err == nil {
 			t.Errorf("%+v accepted", bad)

@@ -81,12 +81,12 @@ func TestMetalPodman(t *testing.T) {
 	}
 
 	pw := randomValue(t, "pod-")
-	c.must(pw, "create", "secret", "pod-pw", "-n", ns, "--from-file", "-")
+	c.must(pw, "create", "secret", "pod-pw", "-n", ns, "--from-file", "password=-")
 	c.apply(`apiVersion: kevaso/v1
 kind: Grant
 metadata: { name: podapp, namespace: ` + ns + ` }
 spec:
-  secrets: [{ name: pod-pw }]
+  secrets: [{ name: pod-pw, key: password }]
 ---
 ` + strings.Replace(boxEcho(ns, "web", 18130), "runtime: docker", "runtime: podman", 1) + `  grants: [podapp]
   ports: [{ name: web, port: 18130 }]
@@ -98,7 +98,7 @@ spec:
 		ok, got := c.open(18130)
 		return ok && strings.Contains(got, "web 18130"), got
 	})
-	got, _ := c.in(ns, "web", `python3 -c "import urllib.request as u; print(u.urlopen(u.Request('http://169.254.42.1/v1/secrets/pod-pw', headers={'Kevaso-Local': '1'}), timeout=10).read().decode())"`)
+	got, _ := c.in(ns, "web", `python3 -c "import urllib.request as u; print(u.urlopen(u.Request('http://169.254.42.1/v1/secrets/pod-pw/password', headers={'Kevaso-Local': '1'}), timeout=10).read().decode())"`)
 	c.expect("its local endpoint answers", got, pw)
 	uid := c.silo(ns, "web").UID
 	c.expect("it is podman's", c.mustSh("podman ps -a --filter label=kevaso.com/uid="+uid+" --format '{{.Labels}}' | head -1"), "kevaso.com/uid:"+uid)

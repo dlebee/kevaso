@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"kevaso.com/core/api/client"
+	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/agent"
 	"kevaso.com/core/sdk/kri"
 )
@@ -23,19 +24,21 @@ import (
 //	go test ./internal/agent -run '^$' -fuzz FuzzEndpointRequest -fuzztime 60s
 func FuzzEndpointRequest(f *testing.F) {
 	for _, seed := range []string{
+		"GET /v1/secrets/db-password/password HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\n\r\n",
+		"GET /v1/secrets/db-password/* HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\n\r\n",
 		"GET /v1/secrets/db-password HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\n\r\n",
-		"GET /v1/secrets/db-password?for=30m&wait=10s&approval=a-1 HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\n\r\n",
+		"GET /v1/secrets/db-password/password?for=30m&wait=10s&approval=a-1 HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\n\r\n",
 		"POST /v1/sign/validator-key?slot=7 HTTP/1.1\r\nHost: 169.254.42.1:80\r\nKevaso-Local: 1\r\nContent-Length: 3\r\n\r\nabc",
 		"GET /v1/keys/k HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\n\r\n",
 		"POST /v1/ports/rpc/open?for=1h HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\nContent-Length: 0\r\n\r\n",
 		"POST /v1/ports/rpc/close HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\nContent-Length: 0\r\n\r\n",
 		"GET /v1/secrets/../keys/x HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\n\r\n",
 		"GET /v1/secrets/a%2Fb HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\n\r\n",
-		"GET /v1/secrets/x HTTP/1.1\r\nHost: evil.example\r\nKevaso-Local: 1\r\n\r\n",
-		"GET /v1/secrets/x HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\nOrigin: http://evil\r\n\r\n",
-		"GET /v1/secrets/x HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\nsec-fetch-mode: cors\r\n\r\n",
-		"OPTIONS /v1/secrets/x HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\n\r\n",
-		"GET /v1/secrets/x?uid=other&namespace=kevaso-system HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\nKevaso-Silo: other\r\n\r\n",
+		"GET /v1/secrets/x/token HTTP/1.1\r\nHost: evil.example\r\nKevaso-Local: 1\r\n\r\n",
+		"GET /v1/secrets/x/token HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\nOrigin: http://evil\r\n\r\n",
+		"GET /v1/secrets/x/token HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\nsec-fetch-mode: cors\r\n\r\n",
+		"OPTIONS /v1/secrets/x/token HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\n\r\n",
+		"GET /v1/secrets/x/token?uid=other&namespace=kevaso-system HTTP/1.1\r\nHost: 169.254.42.1\r\nKevaso-Local: 1\r\nKevaso-Silo: other\r\n\r\n",
 	} {
 		f.Add([]byte(seed))
 	}
@@ -82,6 +85,8 @@ func FuzzEndpointRequest(f *testing.F) {
 			t.Fatalf("relayed name %q", got.Request.Name)
 		case got.Request.Approval != "" && !name.MatchString(got.Request.Approval):
 			t.Fatalf("relayed approval %q", got.Request.Approval)
+		case got.Request.Op == client.OpGetSecret && got.Request.Key != v1.AllKeys && !v1.ValidKey(got.Request.Key):
+			t.Fatalf("relayed a secret with key %q: a key is always named", got.Request.Key)
 		}
 		for k := range req.Header {
 			if strings.HasPrefix(http.CanonicalHeaderKey(k), "Sec-Fetch-") {

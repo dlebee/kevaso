@@ -17,7 +17,7 @@ import (
 	"kevaso.com/core/internal/store"
 )
 
-const valuePath = "/apis/kevaso/v1/namespaces/web3/secrets/%s/value?key=value"
+const valuePath = "/apis/kevaso/v1/namespaces/web3/secrets/%s/value?key=token"
 
 // readers polls a secret's value from several goroutines until stop, and records every value any
 // of them was given.
@@ -85,7 +85,7 @@ func TestLooseningWriteNeverLetsTheOldValueOut(t *testing.T) {
 		cur := getSecret(t, ada, c, name)
 		rd := startReaders(c, ada, name, 8)
 		cur.Spec.ValueReadable = &yes
-		cur.Spec.Value = []byte("dummy")
+		cur.Spec.Data = map[string][]byte{"token": []byte("dummy")}
 		err := ada.Update(c.ctx, cur)
 		seen := rd.finish()
 		if err != nil {
@@ -147,7 +147,7 @@ func TestValueWrittenWhileWriteOnlyIsNotServedWhenTheObjectTurnsReadable(t *test
 	}
 	// A write that brings its own value makes it readable, with that value.
 	cur := getSecret(t, ada, c, "held")
-	cur.Spec.Value = []byte("fresh")
+	cur.Spec.Data = map[string][]byte{"token": []byte("fresh")}
 	if err := ada.Update(c.ctx, cur); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestMutationPolicyCannotLoosenAWriteOnlySecret(t *testing.T) {
 	// With a new value in the same write the policies' loosening is a write the person made:
 	// allowed, and the old value is gone.
 	cur = getSecret(t, ada, c, "wo")
-	cur.Spec.Value = []byte("new")
+	cur.Spec.Data = map[string][]byte{"token": []byte("new")}
 	if err := ada.Update(c.ctx, cur); err != nil {
 		t.Fatalf("a write with a new value: %v", err)
 	}
@@ -234,9 +234,9 @@ func TestWriteOnlyValuesAreNeverReadUnderConcurrentWriters(t *testing.T) {
 				readable := i%2 == 0
 				s.Spec.ValueReadable = &readable
 				if readable {
-					s.Spec.Value = []byte(fmt.Sprintf("ro-%d-%d", w, i))
+					s.Spec.Data = map[string][]byte{"token": []byte(fmt.Sprintf("ro-%d-%d", w, i))}
 				} else {
-					s.Spec.Value = []byte(fmt.Sprintf("wo-%d-%d", w, i))
+					s.Spec.Data = map[string][]byte{"token": []byte(fmt.Sprintf("wo-%d-%d", w, i))}
 				}
 				if err := ada.Update(c.ctx, s); err != nil && status(err) != http.StatusConflict {
 					t.Errorf("writer %d: %v", w, err)
@@ -270,7 +270,7 @@ func TestMutationPolicyCannotTurnASigningKeyIntoAReadableSecret(t *testing.T) {
 	c.bind(t, "ada", "ClusterRole", "admin")
 	ada := c.as(t, "ada")
 	key := secretObj("signer", nil, "")
-	key.Spec.Type, key.Spec.Generate = v1.SecretEd25519, true
+	key.Spec.Type, key.Spec.Generate = v1.SecretEd25519, v1.PrivateKeyKey
 	if err := ada.Create(c.ctx, key); err != nil {
 		t.Fatal(err)
 	}

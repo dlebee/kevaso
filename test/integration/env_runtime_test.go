@@ -18,7 +18,7 @@ func TestEnvSecretWarningFollowsTheHosts(t *testing.T) {
 	if err := c.admin.Create(c.ctx, secretObj("legacy-token", nil, "tok-1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.admin.Create(c.ctx, grantObj("app", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "legacy-token", Deliver: v1.DeliverEnv}}})); err != nil {
+	if err := c.admin.Create(c.ctx, grantObj("app", v1.GrantSpec{Secrets: []v1.GrantSecret{{Name: "legacy-token", Key: "token", Deliver: v1.DeliverEnv, Env: "LEGACY_TOKEN"}}})); err != nil {
 		t.Fatal(err)
 	}
 	host := func(name string, outside bool) {
