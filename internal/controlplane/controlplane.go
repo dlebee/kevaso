@@ -528,7 +528,8 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
 	ipInf.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IP", Namespace: k.Namespace, Name: k.Name}) })
 	ipSets := newInf("IPSet")
-	e.Register(&ipcontroller.Controller{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, SiloSets: sets, IPSets: ipSets, Plugins: cfg.Plugins, Clock: cfg.Clock, Claims: uniq}, engine.Options{Workers: 1})
+	ipCtl := &ipcontroller.Controller{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, SiloSets: sets, IPSets: ipSets, Plugins: cfg.Plugins, Clock: cfg.Clock, Claims: uniq}
+	e.Register(ipCtl, engine.Options{Workers: 1})
 	e.Register(&ipcontroller.Sets{Client: c, IPSets: ipSets, IPs: ipInf, Silos: silos, SiloSets: sets, Clock: cfg.Clock}, engine.Options{Workers: 1})
 	ipSets.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IPSet", Namespace: k.Namespace, Name: k.Name}) })
 	namespaces := newInf("Namespace")
@@ -583,6 +584,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 		// What the plugins said about each host, and the volumes controller's own records: what
 		// those controllers act on, never what a worker may have written in a status (K-037).
 		known := &provider.Providers{}
+		ipCtl.HostProvider = known.Of // before the engine runs: a Provider IP is shared with its holder's host
 		e.Register(&provider.Hosts{Client: c, Hosts: hosts, Plugins: reg, Providers: known}, engine.Options{Workers: 1})
 		balancers := &provider.Balancers{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Plugins: reg, Clock: cfg.Clock, Providers: known}
 		e.Register(balancers, engine.Options{Workers: 2})

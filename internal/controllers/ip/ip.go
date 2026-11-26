@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"kevaso.com/core/api/client"
@@ -48,6 +49,17 @@ type Controller struct {
 	// Claims make each host address one IP's, by the store: of two IPs naming it, the second
 	// waits (Reserved False, Taken) until the first is deleted.
 	Claims *claims.Claims
+	// HostProvider is what the plugins said about a host (provider.Providers.Of: K-037); nil: its
+	// status.
+	HostProvider func(*v1.Host) (*v1.HostProvider, bool)
+
+	mu     sync.Mutex
+	shared map[string]sharedAt // IP UID → the host its address was last shared with
+}
+
+type sharedAt struct {
+	host string
+	at   time.Time
 }
 
 // Name implements engine.Controller.
@@ -182,6 +194,9 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	meta.SetCondition(&st.Conditions, bound, c.now())
 
 	again := c.reserve(ctx, x, &st)
+	if a := c.follow(ctx, x, &st); a > 0 && (again == 0 || a < again) {
+		again = a
+	}
 	if !statusEqual(x.Status, st) {
 		x.Status = st
 		if err := c.Client.UpdateStatus(ctx, x); err != nil {
@@ -189,6 +204,95 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		}
 	}
 	return engine.Result{RequeueAfter: again}, nil
+}
+
+// follow shares a Provider IP's address with its holder's host, the worker that announces it
+// (EnsureLoadBalancer of the reserving class, keyed by the IP's UID, the holder's host its one
+// backend): after a move, the new worker. With no holder placed on one of the provider's
+// machines it is unshared (DeleteLoadBalancer), and kept reserved. The Shared condition says
+// where. A plugin with no reserving class (networking v2 only) does nothing here.
+func (c *Controller) follow(ctx context.Context, x *v1.IP, st *v1.IPStatus) time.Duration {
+	if x.Spec.Type != v1.IPTypeProvider || st.Address == "" {
+		return 0
+	}
+	p, class, ok := c.provider(x.Spec.Provider)
+	if !ok || class == "" {
+		return 0
+	}
+	cond := meta.Condition{Type: "Shared", Status: meta.ConditionFalse, Reason: "Unshared", Message: "on no host (held by nobody placed)", ObservedGeneration: x.Generation}
+	defer func() { meta.SetCondition(&st.Conditions, cond, c.now()) }()
+	var target *v1.Host
+	var hosts []kplugin.HostInfo
+	var targetInfo kplugin.HostInfo
+	for _, o := range c.Hosts.List() {
+		h := o.(*v1.Host)
+		hp, known := c.hostProvider(h)
+		if !known {
+			cond = *meta.FindCondition(append(st.Conditions, cond), "Shared")
+			return 5 * time.Second // the plugins haven't described it yet
+		}
+		if hp == nil || hp.Name != p.Info.Name {
+			continue
+		}
+		hi := kplugin.HostInfo{Name: h.Name, ID: hp.ID, Region: hp.Region, PrivateAddress: hp.PrivateAddress}
+		hosts = append(hosts, hi)
+		if st.Host != "" && h.Name == st.Host {
+			target, targetInfo = h, hi
+		}
+	}
+	slices.SortFunc(hosts, func(a, b kplugin.HostInfo) int { return strings.Compare(a.Name, b.Name) })
+	c.mu.Lock()
+	last, had := c.shared[x.UID]
+	c.mu.Unlock()
+	was := meta.IsTrue(x.Status.Conditions, "Shared")
+	if target == nil {
+		if st.Host != "" {
+			cond.Message = st.Host + " isn't a " + p.Info.Name + " machine: the address can't reach it"
+			cond.Reason = "NotOnProvider"
+		}
+		if was || (had && last.host != "") {
+			err := p.Conn.DeleteLoadBalancer(ctx, kplugin.LoadBalancerRef{Class: class, ID: x.UID, Address: st.Address})
+			if err != nil && !errors.Is(err, kplugin.ErrNotFound) {
+				cond.Status, cond.Reason, cond.Message = meta.ConditionTrue, "Unsharing", err.Error()
+				return 10 * time.Second
+			}
+		}
+		c.remember(x.UID, "")
+		return 0
+	}
+	if was && had && last.host == target.Name && time.Since(last.at) < 10*time.Minute {
+		cond.Status, cond.Reason, cond.Message = meta.ConditionTrue, "Shared", "on "+target.Name
+		return 0
+	}
+	_, err := p.Conn.EnsureLoadBalancer(ctx, kplugin.LoadBalancer{Class: class, ID: x.UID, Namespace: x.Namespace, Name: x.Name,
+		Address: st.Address, Backends: []kplugin.HostInfo{targetInfo}, Hosts: hosts, Annotations: annotations(x.Annotations, x.Spec.Provider)})
+	switch {
+	case errors.Is(err, kplugin.ErrInProgress):
+		cond.Reason, cond.Message = "Sharing", "sharing with "+target.Name+": "+err.Error()
+		return 10 * time.Second
+	case err != nil:
+		cond.Reason, cond.Message = "Failed", "sharing with "+target.Name+": "+err.Error()
+		return 30 * time.Second
+	}
+	c.remember(x.UID, target.Name)
+	cond.Status, cond.Reason, cond.Message = meta.ConditionTrue, "Shared", "on "+target.Name
+	return 10 * time.Minute
+}
+
+func (c *Controller) remember(uid, host string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.shared == nil {
+		c.shared = map[string]sharedAt{}
+	}
+	c.shared[uid] = sharedAt{host: host, at: time.Now()}
+}
+
+func (c *Controller) hostProvider(h *v1.Host) (*v1.HostProvider, bool) {
+	if c.HostProvider == nil {
+		return h.Status.Provider, true
+	}
+	return c.HostProvider(h)
 }
 
 // HostAddressPool is the claims pool of host addresses (by NAME): one IP each.
@@ -272,6 +376,13 @@ func (c *Controller) release(ctx context.Context, x *v1.IP) (engine.Result, erro
 		if !ok {
 			return engine.Result{RequeueAfter: 30 * time.Second},
 				c.condition(ctx, x, "Reserved", meta.ConditionFalse, "PluginMissing", "releasing "+x.Status.Address+" needs the plugin named "+x.Spec.Provider)
+		}
+		if class != "" && x.Status.Address != "" { // unshared from any host first
+			err := p.Conn.DeleteLoadBalancer(ctx, kplugin.LoadBalancerRef{Class: class, ID: x.UID, Address: x.Status.Address})
+			if err != nil && !errors.Is(err, kplugin.ErrNotFound) {
+				_ = c.condition(ctx, x, "Shared", meta.ConditionFalse, "Unsharing", err.Error())
+				return engine.Result{}, fmt.Errorf("unshare %s: %w", x.Status.Address, err)
+			}
 		}
 		err := p.Conn.ReleaseAddress(ctx, kplugin.AddressRef{Class: class, ID: x.UID, Address: x.Status.Address, Handle: x.Status.Handle})
 		switch {

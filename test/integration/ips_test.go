@@ -149,6 +149,13 @@ func TestIPs(t *testing.T) {
 		return e.Status.Holders() == "silo/blue (25/TCP)" && e.Status.Host == "w1" && m.Status.Holder != nil && m.Status.Holder.Holder == "silo/blue",
 			fmt.Sprintf("edge %+v; mail %+v", e.Status, m.Status)
 	})
+	eventually("edge's address shared with w1, blue's host", func() (bool, string) {
+		e, _ := ip("edge")
+		lbs, _, _ := fake.Snapshot()
+		lb, ok := lbs[e.UID]
+		return ok && lb.Class == kplugintest.ClassIP && lb.Address == addr && len(lb.Backends) == 1 && lb.Backends[0].Name == "w1" &&
+			meta.IsTrue(e.Status.Conditions, "Shared"), fmt.Sprintf("%+v %+v", lb, e.Status.Conditions)
+	})
 	if err := admin.Create(ctx, silo("green")); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +202,8 @@ func TestIPs(t *testing.T) {
 		}
 		_, e := ip("edge")
 		_, m := ip("mail")
-		return client.IsNotFound(e) && client.IsNotFound(m) && slices.ContainsFunc(fake.CallLog(), func(c string) bool { return strings.HasPrefix(c, "release-address") }),
+		lbs, _, _ := fake.Snapshot()
+		return len(lbs) == 0 && client.IsNotFound(e) && client.IsNotFound(m) && slices.ContainsFunc(fake.CallLog(), func(c string) bool { return strings.HasPrefix(c, "release-address") }),
 			fmt.Sprint(e, m, fake.CallLog())
 	})
 }
@@ -243,11 +251,11 @@ func TestNamespaceCascadeReleasesBalancersAndIPs(t *testing.T) {
 		s.Status.Phase, s.Status.SiloIP = "Running", "10.64.0.7"
 		return false, fmt.Sprint(admin.UpdateStatus(ctx, &s))
 	})
-	eventually("two balancers and pool-0 held by relay-0", func() (bool, string) {
+	eventually("two balancers, and pool-0 held by relay-0 and shared with its host", func() (bool, string) {
 		lbs, _, _ := fake.Snapshot()
 		var x v1.IP
 		_ = admin.Get(ctx, "IP", "shop", "pool-0", &x)
-		return len(lbs) == 2 && x.Status.Address != "" && x.Status.Holder != nil && x.Status.Holder.Holder == "silo/relay-0",
+		return len(lbs) == 3 && x.Status.Address != "" && x.Status.Holder != nil && x.Status.Holder.Holder == "silo/relay-0",
 			fmt.Sprintf("%d balancers; pool-0 %+v", len(lbs), x.Status)
 	})
 
@@ -261,10 +269,17 @@ func TestNamespaceCascadeReleasesBalancersAndIPs(t *testing.T) {
 		return client.IsNotFound(err) && len(lbs) == 0, fmt.Sprintf("%v %v; %d balancers", n.Annotations, err, len(lbs))
 	})
 	// The provider was told in order: balancers removed before any address was released.
+	// (A Provider IP's own unshare, delete-lb of its UID, comes right before its release.)
+	released := map[string]bool{}
+	for _, c := range fake.CallLog() {
+		if f := strings.Fields(c); f[0] == "release-address" {
+			released[f[len(f)-1]] = true
+		}
+	}
 	lastLB, firstRelease := -1, -1
 	for i, c := range fake.CallLog() {
 		switch {
-		case strings.HasPrefix(c, "delete-lb"):
+		case strings.HasPrefix(c, "delete-lb") && !released[strings.Fields(c)[1]]:
 			lastLB = i
 		case strings.HasPrefix(c, "release-address") && firstRelease < 0:
 			firstRelease = i
