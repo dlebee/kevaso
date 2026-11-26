@@ -2,6 +2,7 @@ package hostreset
 
 import (
 	"errors"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"kevaso.com/core/builtin/kri/cloudhypervisor"
 	"kevaso.com/core/builtin/kri/openshell"
+	"kevaso.com/core/sdk/kri"
 )
 
 var fresh = State{
@@ -446,5 +448,40 @@ func TestFilesAreNeverRemovedThroughAMount(t *testing.T) {
 	}
 	if i, j := strings.Index(rm, "/proc/mounts"), strings.Index(rm, "rm -rf"); i < 0 || i > j {
 		t.Errorf("nothing checks for mounts before rm -rf:\n%s", rm)
+	}
+}
+
+// Run 16: a microVM with a volume on a mount class gets a virtiofsd socket unit
+// (kevaso-silo-…-fs-….socket). A crash leaves it behind; reset removed and checked only
+// kevaso-*.service, so it stayed and the host was called clean.
+func TestResetRemovesAndChecksEveryUnitFileTheRuntimesWrite(t *testing.T) {
+	n := cloudhypervisor.NamesFor(kri.ID{Namespace: "ai", Name: "dev", UID: "uid-dev"})
+	l := cloudhypervisor.LayoutFor(n, []kri.Volume{{Name: "data", MountPath: "/data", HostPath: "/var/lib/kevaso/volumes/uid-dev/data"}}, "")
+	if len(l.Shares) != 1 {
+		t.Fatalf("want one share, got %+v", l)
+	}
+	units := []string{n.Unit, l.Shares[0].Unit, l.Shares[0].SocketUnit}
+	checks := ""
+	for _, c := range Checklist(CheckOptions{}) {
+		checks += c.Script + "\n"
+	}
+	for _, u := range units {
+		f := "/etc/systemd/system/" + u
+		covered := false
+		for _, p := range Paths {
+			if ok, _ := path.Match(p, f); ok {
+				covered = true
+				if !strings.Contains(checks, p) {
+					t.Errorf("%s: no check looks for %s", u, p)
+				}
+			}
+		}
+		if !covered {
+			t.Errorf("reset neither removes nor checks %s", f)
+		}
+	}
+	stop := Plan(PlanInput{})[stepIndex(t, Plan(PlanInput{}), "stop every kevaso-* and "+TestUnitPrefix+"* unit")].Script
+	if !strings.Contains(stop, "/etc/systemd/system/kevaso*.socket") {
+		t.Error("the stop step doesn't disable socket units, which can start their service again")
 	}
 }
