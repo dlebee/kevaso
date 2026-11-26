@@ -113,7 +113,7 @@ func TestWorkerReadScope(t *testing.T) {
 		ObjectMeta: meta.ObjectMeta{Name: "theirs", Namespace: "dev"},
 		Spec:       v1.GrantSpec{Egress: []v1.EgressRule{{To: "example.com"}}}})
 
-	cluster := map[string]bool{"Host": true, "Silo": true, "Service": true, "IngressClass": true}
+	cluster := map[string]bool{"Host": true, "Silo": true, "Service": true, "IngressClass": true, "IP": true}
 	related := map[string]bool{"Grant": true, "Secret": true, "Lease": true, "Ingress": true, "OpenShellPolicy": true}
 	for _, k := range v1.Kinds() {
 		if k.Kind == "ClusterSecret" {

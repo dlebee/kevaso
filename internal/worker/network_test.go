@@ -46,7 +46,7 @@ func TestNetworkView(t *testing.T) {
 		}
 		switch s.Key {
 		case "web3/eth-node":
-			if s.LoadBalancerIP.IsValid() || s.EgressIP.String() != "198.51.100.10" || len(s.Paths["p2p"]) != 1 {
+			if s.LoadBalancerIP.IsValid() || s.EgressIP.IsValid() || len(s.Paths["p2p"]) != 1 { // its IP's address comes with WithIPs
 				t.Errorf("eth-node %+v", s)
 			}
 			if len(s.Egress) != 1 || s.Egress[0].Prefix.String() != "0.0.0.0/0" { // its namespace's grant only

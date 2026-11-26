@@ -111,13 +111,19 @@ type LivenessRestarts struct {
 	Backoff int `json:"backoff,omitempty"`
 }
 
-// Routing is whether a silo's own service gets traffic now, and why (design §0.6).
+// Routing is whether a silo's own services get traffic now, and why (design §0.6). Each service
+// decides by its own routeWhen (Services); the silo's line is all of them: routed when every one
+// is, else the first held one's reason.
 type Routing struct {
+	// Service is the service this decision is for (in Services; "" on the silo's line).
+	Service   string     `json:"service,omitempty"`
 	RouteWhen string     `json:"routeWhen"` // ready | running: as stated, or running without a readiness probe
 	Stated    bool       `json:"stated"`    // false: running because there's no readiness probe
 	Routed    bool       `json:"routed"`
 	Reason    string     `json:"reason,omitempty"` // why it's held
 	Since     *time.Time `json:"since,omitempty"`  // held since
+	// Services: each of the silo's services, by its own routeWhen (networking v2).
+	Services []Routing `json:"services,omitempty"`
 }
 
 // FindProbe is the status of the probe called name (nil: none).

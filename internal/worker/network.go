@@ -55,9 +55,6 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 			ks.LoadBalancerIP = netip.Addr{}
 			ks.NodePorts, ks.SourceRanges = s.Status.Service.NodePorts, s.Status.Service.SourceRanges
 		}
-		if s.Spec.Network.Egress.Source != nil { // TODO(net-v2 wave 2): own, and a balancer's IP that can't send
-			ks.EgressIP, _ = netip.ParseAddr(s.Status.Service.EgressIP)
-		}
 		for _, g := range v1.GrantsFor(s, grants) {
 			for _, r := range g.Spec.Egress {
 				if e, err := r.Parse(); err == nil {
@@ -67,7 +64,9 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 		}
 		ks.GatePorts = gate.PolicyFor(s, grants).Ports()
 		ks.Endpoint = v1.NeedsEndpoint(s, grants)
-		ks.Held = !routing.Routed(s) // routeWhen (design §0.6): no outside rule while held
+		// routeWhen (design §0.6), per service: no outside rule for a held service.
+		ks.HeldServices = routing.HeldServices(s)
+		ks.Held = len(s.Spec.Services) > 0 && len(ks.HeldServices) == len(s.Spec.Services)
 		ks.Paths = paths[ks.Key]
 		view.Local = append(view.Local, ks)
 	}
@@ -182,7 +181,8 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 	ingInf, classInf := informer.New(c, "Ingress"), informer.New(c, "IngressClass")
 	svcInf := informer.New(c, "Service")
 	leaseInf := informer.New(c, "Lease")
-	kept := []*informer.Informer{silos, hosts, grantsInf, ingInf, classInf, svcInf, leaseInf} // all but secrets
+	ipInf := informer.New(c, "IP")
+	kept := []*informer.Informer{silos, hosts, grantsInf, ingInf, classInf, svcInf, leaseInf, ipInf} // all but secrets
 	sv := newServed(held, kept...)
 	if o.StateFile != "" {
 		if st, ok := seedLastState(o.StateFile, kept...); ok {
@@ -213,9 +213,11 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 	go svcInf.Run(ctx)
 	leaseInf.AddHandler(poke)
 	go leaseInf.Run(ctx)
+	ipInf.AddHandler(poke)
+	go ipInf.Run(ctx)
 	// Every input before the first ruleset: one built without the leases (or services, ingress
 	// classes) closes their ports and resets what an open lease let in, on every restart.
-	for _, inf := range []*informer.Informer{silos, hosts, grantsInf, secretsInf, ingInf, classInf, svcInf, leaseInf} {
+	for _, inf := range []*informer.Informer{silos, hosts, grantsInf, secretsInf, ingInf, classInf, svcInf, leaseInf, ipInf} {
 		if !inf.WaitReady(ctx) { // a seed, else the first list (K-062)
 			return
 		}
@@ -261,6 +263,7 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 		view.Services = ServiceView(hostName, svcs)
 		now := time.Now()
 		view = WithLeases(view, all, st.leases, now)
+		view = WithIPs(view, hostName, me, all, st.ips)
 		leaseEnd, stopLeaseEnd := leaseTimer(st.leases, now)
 		base := view
 		base.Revoke = nil
@@ -321,7 +324,7 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 				}}
 		})
 		if !isHeld { // no address added or removed either
-			syncHostAddresses(ctx, hostName, me, all, log)
+			syncHostAddresses(ctx, hostName, me, all, st.ips, log)
 		}
 		select {
 		case <-ctx.Done():
@@ -339,9 +342,15 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 }
 
 // syncHostAddresses keeps the host's pool, announced and local endpoint addresses as the silos say.
-func syncHostAddresses(ctx context.Context, hostName string, me *v1.Host, all []*v1.Silo, log func(string, ...any)) {
+func syncHostAddresses(ctx context.Context, hostName string, me *v1.Host, all []*v1.Silo, ips []*v1.IP, log func(string, ...any)) {
 	if me != nil {
-		if err := syncPoolAddresses(ctx, me.Reach(), PoolAddresses(hostName, all)); err != nil {
+		want := PoolAddresses(hostName, all)
+		for _, a := range HeldAddresses(hostName, all, ips) {
+			if !slices.Contains(want, a) {
+				want = append(want, a)
+			}
+		}
+		if err := syncPoolAddresses(ctx, me.Reach(), want); err != nil {
 			log("pool addresses: %v", err)
 		}
 	}

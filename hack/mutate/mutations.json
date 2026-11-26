@@ -3008,8 +3008,8 @@
   "id": "G-521",
   "guard": "a silo whose HostPorts condition is false opens no host port",
   "file": "builtin/kni/rules.go",
-  "find": "if len(p.HostPort) > 0 && s.HostPortsRefused { // its HostPorts condition is false: it does not hold the port",
-  "replace": "if false && len(p.HostPort) > 0 && s.HostPortsRefused { // its HostPorts condition is false: it does not hold the port",
+  "find": "if onHost && s.HostPortsRefused { // its HostPorts condition is false: it does not hold the port",
+  "replace": "if false && onHost && s.HostPortsRefused { // its HostPorts condition is false: it does not hold the port",
   "mutation": "a silo that does not hold its host port is still translated",
   "packages": [
    "./builtin/kni"

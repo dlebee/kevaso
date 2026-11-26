@@ -26,10 +26,11 @@ const (
 // workerReadScope is the read scope of one kind for a worker certificate.
 func workerReadScope(kind string) workerScope {
 	switch kind {
-	case "Host", "Silo", "Service", "IngressClass":
+	case "Host", "Silo", "Service", "IngressClass", "IP":
 		// Silo is cluster-wide on purpose: allowFrom, DNS and the egress denylist need every
 		// silo's addresses, and mayRemove reads a silo that has moved to another host. The API
-		// returns the whole object.
+		// returns the whole object. IP too (networking v2): a HostPort on an IP opens on its
+		// address where its holder runs, and DNS answers a service on an IP with its address.
 		return workerCluster
 	case "Grant", "Secret", "Lease", "Ingress", "OpenShellPolicy": // a worker reads an OpenShellPolicy only when a silo on it names it
 		return workerRelated

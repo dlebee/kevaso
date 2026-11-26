@@ -1,4 +1,5 @@
 // Package routing decides whether traffic goes to a silo (design §0.6): explicit, never assumed.
+// Each service decides for itself (networking v2: one readiness gate per service, not per silo).
 // A service says routeWhen: ready (only while the silo's readiness probe passes) or running (as
 // soon as it runs). Without a readiness probe it is running, and the decision says it wasn't
 // stated. Pure: every path traffic takes asks the same question here — the service's name (DNS),
@@ -12,6 +13,7 @@
 package routing
 
 import (
+	"slices"
 	"time"
 
 	"kevaso.com/core/api/meta"
@@ -69,18 +71,82 @@ func decide(routeWhen string, spec v1.SiloSpec, st v1.SiloStatus) v1.Routing {
 }
 
 // Silo is whether a silo's own services (spec.services) get traffic now; nil if it has none.
+// Each service decides by its own routeWhen (Services, in order); the silo's line is routed when
+// every one is, and otherwise says the first held one and why.
 func Silo(spec v1.SiloSpec, st v1.SiloStatus) *v1.Routing {
+	return siloNamed("", spec, st)
+}
+
+// SiloNamed is Silo for the silo named name (it names its unnamed services).
+func SiloNamed(name string, spec v1.SiloSpec, st v1.SiloStatus) *v1.Routing {
+	return siloNamed(name, spec, st)
+}
+
+func siloNamed(name string, spec v1.SiloSpec, st v1.SiloStatus) *v1.Routing {
 	if len(spec.Services) == 0 {
 		return nil
 	}
-	r := decide(spec.RouteWhen(), spec, st)
-	return &r
+	var each []v1.Routing
+	for _, sv := range spec.Services {
+		r := decide(sv.RouteWhen, spec, st)
+		r.Service = v1.ServiceNameOf(sv, name)
+		each = append(each, r)
+	}
+	out := each[0]
+	out.Service = ""
+	someRouted := slices.ContainsFunc(each, func(r v1.Routing) bool { return r.Routed })
+	for _, r := range each {
+		if !r.Routed {
+			out = r
+			out.Service = ""
+			if someRouted && r.Service != "" { // services disagree: say which one is held
+				out.Reason = "service " + r.Service + ": " + r.Reason
+			}
+			break
+		}
+	}
+	if len(each) > 1 {
+		out.Services = each
+	}
+	return &out
 }
 
-// Routed reports whether traffic goes to s through its own service now (true for a silo with no
-// service: there is nothing to hold).
+// Service is whether the silo s's service named service gets traffic now, by its own routeWhen
+// (ok false: s has no such service).
+func Service(s *v1.Silo, service string) (r v1.Routing, ok bool) {
+	for _, sv := range s.Spec.Services {
+		if v1.ServiceNameOf(sv, s.Name) == service {
+			r = decide(sv.RouteWhen, s.Spec, s.Status)
+			r.Service = service
+			return r, true
+		}
+	}
+	return v1.Routing{}, false
+}
+
+// ServiceRouted reports whether traffic goes to s through its service named service now (false
+// for a service it doesn't have).
+func ServiceRouted(s *v1.Silo, service string) bool {
+	r, ok := Service(s, service)
+	return ok && r.Routed
+}
+
+// HeldServices are the names of s's services whose routeWhen holds traffic back now, in order.
+func HeldServices(s *v1.Silo) []string {
+	var out []string
+	for _, sv := range s.Spec.Services {
+		if r := decide(sv.RouteWhen, s.Spec, s.Status); !r.Routed {
+			out = append(out, v1.ServiceNameOf(sv, s.Name))
+		}
+	}
+	return out
+}
+
+// Routed reports whether traffic goes to s through every one of its own services now (true for a
+// silo with no service: there is nothing to hold). Paths that know which service they serve ask
+// ServiceRouted.
 func Routed(s *v1.Silo) bool {
-	r := Silo(s.Spec, s.Status)
+	r := SiloNamed(s.Name, s.Spec, s.Status)
 	return r == nil || r.Routed
 }
 

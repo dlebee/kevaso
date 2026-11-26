@@ -75,10 +75,6 @@ func Validate(spec v1.SiloSpec) []string {
 		default:
 			errs = append(errs, f+": ready or running")
 		}
-		// TODO(net-v2 wave 2): routing per service; until then one silo has one readiness gate.
-		if w := spec.RouteWhen(); sv.RouteWhen != "" && sv.RouteWhen != w {
-			errs = append(errs, fmt.Sprintf("%s: %s, but another service says %s: a silo's services route the same way for now (one readiness gate)", f, sv.RouteWhen, w))
-		}
 	}
 	return errs
 }
