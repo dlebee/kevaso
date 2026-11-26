@@ -37,6 +37,7 @@ import (
 	"kevaso.com/core/internal/controllers/certificate"
 	hostcontroller "kevaso.com/core/internal/controllers/host"
 	ipcontroller "kevaso.com/core/internal/controllers/ip"
+	nscontroller "kevaso.com/core/internal/controllers/namespace"
 	"kevaso.com/core/internal/controllers/provider"
 	restorecontroller "kevaso.com/core/internal/controllers/restore"
 	servicecontroller "kevaso.com/core/internal/controllers/service"
@@ -528,6 +529,9 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	e.Register(&ipcontroller.Controller{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Plugins: cfg.Plugins, Clock: cfg.Clock, Claims: uniq}, engine.Options{Workers: 1})
 	e.Register(&ipcontroller.Made{Client: c, IPs: ipInf, For: silos, ForKind: "Silo", Plugins: cfg.Plugins}, engine.Options{Workers: 1})
 	e.Register(&ipcontroller.Made{Client: c, IPs: ipInf, For: services, ForKind: "Service", Plugins: cfg.Plugins}, engine.Options{Workers: 1})
+	namespaces := newInf("Namespace")
+	e.Register(&nscontroller.Controller{Client: c, Clock: cfg.Clock}, engine.Options{Workers: 1})
+	namespaces.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Namespace", Name: k.Name}) })
 	e.Register(&siloset.Controller{Client: c, Sets: sets, Silos: silos, Clock: cfg.Clock}, engine.Options{Workers: 2})
 	e.Register(&servicecontroller.Controller{Client: c, Services: services, Silos: silos, Clock: cfg.Clock, Claims: uniq}, engine.Options{Workers: 2})
 	images.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "VMImage", Namespace: k.Namespace, Name: k.Name}) })
@@ -619,6 +623,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	go images.Run(ctx)
 	go sets.Run(ctx)
 	go services.Run(ctx)
+	go namespaces.Run(ctx)
 	e.WaitFor(caches...)
 	e.OnWait = func(kinds []string) { cfg.Log("controllers wait for their caches: %s", strings.Join(kinds, ", ")) }
 	e.Run(ctx)
