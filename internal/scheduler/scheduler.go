@@ -8,11 +8,16 @@
 //  3. carry every label in the silo's hostSelector;
 //  4. have no NoSchedule taint the silo doesn't tolerate;
 //  5. have room: allocatable CPU and memory minus what silos already placed there ask for;
-//  6. for exposure: a public address (not behind NAT) with the silo's host ports free, and for its
-//     IPs (networking v2): held by the silo, and on the host with the address (type Host), or on
-//     the provider's machines in its region (type Provider);
-//  7. for a plugin's class (a load balancer, a volume): be one of that plugin's machines, in the
-//     region the silo's volumes already are.
+//  6. for its worker host ports: the address (internal or external) with the numbers free;
+//  7. be where its addresses can be (address.go: placement follows the address): a Host IP's
+//     host, a Provider IP's or a balancer's provider reach, an IPSet member's by its type, all
+//     of them at once;
+//  8. for a plugin's storage class: be one of that plugin's machines, in the region the silo's
+//     volumes already are.
+//
+// Some reasons hold for every host and clear by themselves (an IP not held yet, no free IPSet
+// member, a Provider IP without its address yet, no worker with the address a host port asks
+// for): the decision then carries that one Reason.
 //
 // Among the hosts left, it prefers ones without an untolerated PreferNoSchedule taint, then (for a
 // silo with placement.spread, like a SiloSet's instances) the host whose domain has the fewest of
@@ -34,12 +39,18 @@ import (
 type Decision struct {
 	Host     string            // empty: nowhere fits
 	Excluded map[string]string // host → the first rule it failed
+	// Reason: why no host can take it, the same for all of them (it goes ahead by itself once
+	// that changes).
+	Reason string
 }
 
 // Message summarises an unschedulable decision for the silo's condition.
 func (d Decision) Message() string {
 	if d.Host != "" {
 		return "scheduled on " + d.Host
+	}
+	if d.Reason != "" {
+		return d.Reason
 	}
 	if len(d.Excluded) == 0 {
 		return "no hosts with a worker component"
@@ -99,6 +110,12 @@ type Env struct {
 	StartClaimAge func(s *v1.Silo) time.Duration
 	// Restore is the open restored history, when there is one. An unsettled silo is not placed.
 	Restore *v1.RestoreGate
+	// Networking says where each provider's IPs and balancers reach (plugins.Registry). Nil: only
+	// the provider's own machines, in the region.
+	Networking Reacher
+	// IPSets and SiloSets are for own (a SiloSet instance's IPSet member, by ordinal).
+	IPSets   []*v1.IPSet
+	SiloSets []*v1.SiloSet
 }
 
 // Claimed are values held on one host.
@@ -147,6 +164,16 @@ func ScheduleIn(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, env Env) (De
 	}
 	spread := spreadCounts(silo, hosts, placed)
 	d := Decision{Excluded: map[string]string{}}
+	limits, wait := addressLimits(silo, env)
+	if wait != "" {
+		d.Reason = wait
+		return d, nil
+	}
+	if a := intersect(limits, env.Hosts); a.Conflict != "" {
+		d.Reason = "its ways in can't meet: " + a.Conflict
+		return d, nil
+	}
+	var noAddress []HostPort // per host the address it lacks, when that was the only reason
 	var fits []candidate
 	for _, h := range hosts {
 		w := h.Spec.Components.Worker
@@ -156,6 +183,12 @@ func ScheduleIn(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, env Env) (De
 		reason := filter(silo, h, w, used[h.Name], needMem, runtimeCount[h.Name+"\x00"+silo.Spec.Runtime])
 		if reason == "" {
 			reason = netFilter(silo, h, placed, env)
+			if w, ok := missingAddress(silo, h); ok && reason != "" {
+				noAddress = append(noAddress, w)
+			}
+		}
+		if reason == "" {
+			reason = excludedBy(limits, h)
 		}
 		if reason == "" {
 			reason = classFilter(silo, h, env.Classes)
@@ -173,6 +206,7 @@ func ScheduleIn(silo *v1.Silo, hosts []*v1.Host, placed []*v1.Silo, env Env) (De
 		})
 	}
 	if len(fits) == 0 {
+		d.Reason = noWorkerWith(silo, noAddress, len(d.Excluded))
 		return d, nil
 	}
 	sort.Slice(fits, func(i, j int) bool {
@@ -239,16 +273,31 @@ func filter(silo *v1.Silo, h *v1.Host, w *v1.WorkerSpec, u usage, needMem int64,
 	return ""
 }
 
+// noWorkerWith is the reason when every one of the excluded hosts lacked the address a host port
+// asks for (the same one), "" otherwise: no worker has it, and the silo waits for one that does.
+func noWorkerWith(silo *v1.Silo, missing []HostPort, excluded int) string {
+	if excluded == 0 || len(missing) != excluded {
+		return ""
+	}
+	w := missing[0]
+	for _, m := range missing {
+		if m.Network != w.Network {
+			return ""
+		}
+	}
+	what := "worker"
+	if silo.Spec.Runtime == v1.RuntimeTart {
+		what = "Mac"
+		if w.Network == v1.NetworkExternal {
+			return fmt.Sprintf("no Mac with a public IP, which port %d/%s asks for (hostPort: worker external): it goes ahead once one has one", w.Port, w.Proto)
+		}
+	}
+	return fmt.Sprintf("no %s with an %s IP, which port %d/%s asks for (hostPort: worker %s): it goes ahead once one has one", what, w.Network, w.Port, w.Proto, w.Network)
+}
+
 // classFilter: a plugin's class needs one of the plugin's machines, and volumes that already exist
 // keep the silo in their region.
 func classFilter(silo *v1.Silo, h *v1.Host, classes map[string]Class) string {
-	// A load balancer is within its provider's reach: one of its machines.
-	// TODO(net-v2 wave 2): the provider's declared reach (Linode: its region, Linode workers).
-	for _, sv := range silo.Spec.Balancers() {
-		if p := sv.LoadBalancer.Provider; p != "" && (h.Status.Provider == nil || h.Status.Provider.Name != p) {
-			return "service " + v1.ServiceNameOf(sv, silo.Name) + ": provider " + p + "'s balancer needs a " + p + " machine"
-		}
-	}
 	var used []string
 	for _, v := range v1.PluginVolumes(silo) {
 		used = append(used, v.Class)
