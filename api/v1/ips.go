@@ -49,6 +49,10 @@ type IPStatus struct {
 	// (type Provider).
 	Host   string `json:"host,omitempty"`
 	Region string `json:"region,omitempty"` // type Provider: the provider's region it's in
+	// Announce (type Provider): the provider routes the address to Host, which puts it on its
+	// loopback, where the provider's node side announces it (BGP); otherwise Host puts it on its
+	// uplink.
+	Announce bool `json:"announce,omitempty"`
 	// Handle is the provider's for the reservation, given back when it's released.
 	Handle string `json:"handle,omitempty"`
 	// Waiting are the others that name it and can't have it now, and why.

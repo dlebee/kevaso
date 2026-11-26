@@ -110,11 +110,29 @@ func egressHere(hostName string, s *v1.Silo, ips []*v1.IP) netip.Addr {
 }
 
 // HeldAddresses are the addresses of the IPs this host's silos hold here (hostPort ip or own,
-// egress.source): they go on its uplink, as /32s, with the status's host addresses.
+// egress.source): they go on its uplink, as /32s, with the status's host addresses. A Provider
+// IP whose provider announces it (status.announce) goes on the loopback instead
+// (AnnouncedIPAddresses).
 func HeldAddresses(hostName string, silos []*v1.Silo, ips []*v1.IP) []string {
+	return heldAddresses(hostName, silos, ips, false)
+}
+
+// AnnouncedIPAddresses are the held addresses of Provider IPs whose provider announces them:
+// they go on the loopback, where the provider's node side announces them (BGP).
+func AnnouncedIPAddresses(hostName string, silos []*v1.Silo, ips []*v1.IP) []string {
+	return heldAddresses(hostName, silos, ips, true)
+}
+
+func announced(ips []*v1.IP, a netip.Addr) bool {
+	return slices.ContainsFunc(ips, func(x *v1.IP) bool {
+		return x.Spec.Type == v1.IPTypeProvider && x.Status.Announce && x.Status.Address == a.String()
+	})
+}
+
+func heldAddresses(hostName string, silos []*v1.Silo, ips []*v1.IP, announce bool) []string {
 	var out []string
 	add := func(a netip.Addr, ok bool) {
-		if ok && !slices.Contains(out, a.String()) {
+		if ok && announced(ips, a) == announce && !slices.Contains(out, a.String()) {
 			out = append(out, a.String())
 		}
 	}

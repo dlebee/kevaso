@@ -154,8 +154,8 @@ func TestIPs(t *testing.T) {
 		lbs, _, _ := fake.Snapshot()
 		lb, ok := lbs[e.UID]
 		return ok && lb.Class == kplugintest.ClassIP && lb.Address == addr && len(lb.Backends) == 1 && lb.Backends[0].Name == "w1" &&
-			meta.IsTrue(e.Status.Conditions, "Shared"), fmt.Sprintf("%+v %+v", lb, e.Status.Conditions)
-	})
+			meta.IsTrue(e.Status.Conditions, "Shared") && e.Status.Announce, fmt.Sprintf("%+v %+v announce %v", lb, e.Status.Conditions, e.Status.Announce)
+	}) // fake-ip announces (like Linode's shared IPs): blue's host puts it on its loopback
 	if err := admin.Create(ctx, silo("green")); err != nil {
 		t.Fatal(err)
 	}
