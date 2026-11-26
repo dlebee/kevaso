@@ -37,7 +37,7 @@ import (
 //     deleted, or it is no longer a LoadBalancer: DeleteLoadBalancer, then the finalizer. The
 //     plugin removes a shared balancer with the last service on it. A failed delete keeps the
 //     finalizer and is tried again (the namespace cascade waits on it).
-//   - Backends are the ready silos (routeWhen) on the provider's own machines: a silo's host, a
+//   - Backends are the ready silos (each service's own routeWhen) on the provider's own machines: a silo's host, a
 //     Service's endpoints' hosts. A balancer whose silos are all held keeps its address, parked.
 //   - Node ports: the balancer sends to each backend host on the node port of each port (the
 //     silo's status.service.nodePorts, allocated by the scheduler; a Service's status.nodePorts,
@@ -409,7 +409,7 @@ func (c *Balancers) siloPorts(s *v1.Silo, name string, sv v1.SiloService, p *plu
 	if s.Status.Host == "" {
 		return nil, nil, "waiting to be placed", "Pending"
 	}
-	if r := routing.Silo(s.Spec, s.Status); r != nil && !r.Routed {
+	if r, ok := routing.Service(s, name); ok && !r.Routed { // its own routeWhen, not the silo's others'
 		return nil, nil, "held back: " + r.Reason, "NotRouted"
 	}
 	ho, ok := c.Hosts.Get("", s.Status.Host)
