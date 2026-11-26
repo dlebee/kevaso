@@ -22,7 +22,7 @@ import (
 const letsEncryptStaging = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
 // TestMetalIngress is ingress through a stock nginx (design §7.3, ADR 0008) on a real external
-// IP: kvoadm ingress install puts the vendor's image in a silo with hostPort: [external]; an
+// IP: kvoadm ingress install puts the vendor's image in a silo with HostPort, worker: external; an
 // Ingress to a silo's service with tls: none answers this Mac on port 80, and one with no tls:
 // block (HTTPS, the default) redirects port 80 there; an Ingress with a broken annotation is
 // refused (or holds the class at its last good config) while traffic keeps flowing; and, only
@@ -56,8 +56,8 @@ func TestMetalIngress(t *testing.T) {
 	}
 	t.Logf("kvoadm ingress install:\n%s", o.String())
 	c.apply(boxEcho(ns, "app", 8080) + `  ports: [{ name: http, port: 8080 }]
-  service:
-    ports: [{ port: http }]
+  services:
+    - ports: [{ port: http }]
 ---
 apiVersion: kevaso/v1
 kind: Ingress
@@ -231,9 +231,10 @@ func TestMetalProbes(t *testing.T) {
 	c.namespace(ns)
 	probed := func(name string, port int, when string) string {
 		return boxEcho(ns, name, port) + fmt.Sprintf(`  ports: [{ name: web, port: %d }]
-  service:
-    routeWhen: %s
-    ports: [{ port: web, hostPort: [external] }]
+  services:
+    - type: HostPort
+      routeWhen: %s
+      ports: [{ port: web }]
   probes:
     readiness: { exec: { command: [test, -f, /tmp/ready] }, period: 2s, successes: 1, failures: 1 }
 `, port, when)

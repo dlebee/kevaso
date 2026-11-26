@@ -1188,19 +1188,23 @@ func exposure(obj meta.Object) string {
 	case *v1.SiloSet:
 		spec = o.Spec.Template.SiloSpec
 	case *v1.Service:
-		if o.Spec.Type == v1.ServiceLoadBalancer {
-			return "service:" + o.Spec.LoadBalancerClass
+		if o.Spec.Type == v1.ServiceLoadBalancer && o.Spec.LoadBalancer != nil {
+			return "service:" + o.Spec.LoadBalancer.Provider
 		}
 		return ""
 	}
 	var ways []string
-	for _, p := range spec.Open() {
-		for _, n := range p.HostPort {
-			if w := "hostPort:" + n; !slices.Contains(ways, w) {
-				ways = append(ways, w)
+	for _, sv := range spec.Services {
+		w := ""
+		switch sv.TypeOrDefault() {
+		case v1.ServiceHostPort:
+			w = "hostPort:" + sv.Way().String()
+		case v1.ServiceLoadBalancer:
+			if sv.LoadBalancer != nil {
+				w = "loadBalancer:" + sv.LoadBalancer.Provider
 			}
 		}
-		if w := "loadBalancer:" + spec.LBClass(); p.LoadBalancer && !slices.Contains(ways, w) {
+		if w != "" && len(sv.Ports) > 0 && !slices.Contains(ways, w) {
 			ways = append(ways, w)
 		}
 	}

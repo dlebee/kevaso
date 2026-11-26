@@ -14,15 +14,14 @@ import (
 
 func TestWithLeases(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
-	ext := []string{v1.NetworkExternal}
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Namespace: "dev", Name: "api", UID: "u1"},
 		Spec: v1.SiloSpec{
 			Ports: []v1.SiloPort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}, {Name: "preview", Port: 3000}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{
-				{Port: "web", HostPort: ext, Sources: []string{"203.0.113.0/24"}},
-				{Port: "debug", HostPort: ext, Sources: []string{"203.0.113.7"}, Lease: &v1.PortLease{}},
-				{Port: "preview", HostPort: ext, Sources: []string{"203.0.113.0/24"}, Lease: &v1.PortLease{Max: "8h"}},
-			}},
+			Services: []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{
+				{Port: "web", Sources: []string{"203.0.113.0/24"}},
+				{Port: "debug", Sources: []string{"203.0.113.7"}, Lease: &v1.PortLease{}},
+				{Port: "preview", Sources: []string{"203.0.113.0/24"}, Lease: &v1.PortLease{Max: "8h"}},
+			}}},
 		},
 		Status: v1.SiloStatus{Host: "hv1", SiloIP: "10.64.2.2"}}
 	silos := []*v1.Silo{s}

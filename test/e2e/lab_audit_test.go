@@ -91,8 +91,8 @@ func TestLabEgressGateClosedRanges(t *testing.T) {
 	// target listens in namespace a. Its service names nobody in namespace b, so b has no
 	// allowFrom path to it. probe, in b, is the client.
 	labKvo(t, ctx, boxEcho(labEgressA, "target", labListenPort)+fmt.Sprintf(`  ports: [{ name: http, port: %d }]
-  service:
-    ports: [{ port: http }]
+  services:
+    - ports: [{ port: http }]
 `, labListenPort), "apply", "--context", admin, "-f", "-")
 	target := labWaitRunning(t, ctx, admin, labEgressA, "target", 20*time.Minute)
 	siloIP := target.Status.SiloIP
@@ -179,8 +179,8 @@ func TestLabEgressGateWideCIDR(t *testing.T) {
 	labNamespace(t, ctx, admin, labWideB)
 	labNamespace(t, ctx, admin, labWideC)
 	labKvo(t, ctx, boxEcho(labWideA, "target", labListenPort)+fmt.Sprintf(`  ports: [{ name: http, port: %d }]
-  service:
-    ports: [{ port: http }]
+  services:
+    - ports: [{ port: http }]
 `, labListenPort), "apply", "--context", admin, "-f", "-")
 	target := labWaitRunning(t, ctx, admin, labWideA, "target", 20*time.Minute)
 	loopName := "127-0-0-1.sslip.io"
@@ -348,7 +348,7 @@ func TestLabAPIHardening(t *testing.T) {
 	ipYAML := fmt.Sprintf(`apiVersion: kevaso/v1
 kind: IP
 metadata: { name: pub, namespace: %s }
-spec: { class: ip-pool }
+spec: { type: Host, hostAddress: pub }
 status: { address: "203.0.113.50", handle: "res-1" }
 `, labHardNS)
 	if out := labKvo(t, ctx, ipYAML, "apply", "--context", user, "-f", "-"); !strings.Contains(out, "created") {
@@ -411,8 +411,8 @@ spec:
   container: { image: %s, command: ["python3", "-c", "import time; time.sleep(10**9)"] }
   resources: { cpu: 1, memory: 256Mi }
   ports: [{ name: http, port: %d }]
-  service:
-    ports: [{ port: http, allowFrom: [%s] }]
+  services:
+    - ports: [{ port: http, allowFrom: [%s] }]
 `, labAllowSilo, labNSY, labImage, labListenPort, yamlStr(labNSX+"/"+labSA)), "apply", "--context", admin, "-f", "-")
 
 	out, code := labKvoCode(ctx, "", "delete", "--context", admin, "namespace", labNSX)

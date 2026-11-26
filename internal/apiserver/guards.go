@@ -133,12 +133,16 @@ func checkMutatedSecretValue(obj meta.Object) error {
 func namedIPs(obj meta.Object) string {
 	switch o := obj.(type) {
 	case *v1.Silo:
-		if sv := o.Spec.Service; sv != nil && sv.LoadBalancer != nil && sv.LoadBalancer.IP != "" || o.Spec.Network.Egress.IP != "" {
-			return "|ips:" + fmt.Sprint(v1.SiloIPs(o, func(string) bool { return false }), o.Spec.Service != nil && o.Spec.Service.LoadBalancer != nil && o.Spec.Service.LoadBalancer.Dedicated)
+		if n := v1.SiloIPs(o); len(n) > 0 {
+			return "|ips:" + fmt.Sprint(n)
+		}
+	case *v1.SiloSet:
+		if o.Spec.IPs != "" {
+			return "|ipsets:" + o.Spec.IPs
 		}
 	case *v1.Service:
-		if o.Spec.LoadBalancerIP != "" {
-			return "|ips:" + o.Spec.LoadBalancerIP
+		if n := o.Spec.LoadBalancerIP(); n != "" {
+			return "|ips:" + n
 		}
 	}
 	return ""

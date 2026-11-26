@@ -1,11 +1,12 @@
 // Package names is who owns a name, and what a name answers (design §7.0). A name belongs to a
-// service (a silo's spec.service, named service.name or after the silo; or a standalone Service)
+// service (one of a silo's spec.services, named by its name or after the silo; or a standalone Service)
 // or to a host; nothing else has one. A service name is unique in its namespace: admission refuses
 // a second holder (Holder says who has it). Pure.
 package names
 
 import (
 	v1 "kevaso.com/core/api/v1"
+	"slices"
 )
 
 // Reserved says whether a namespace name is one of the networks (mesh, internal, external), which
@@ -29,7 +30,7 @@ func Owner(namespace, name string, silos []*v1.Silo, svcs []*v1.Service) (*v1.Si
 		}
 	}
 	for _, s := range silos {
-		if s.Namespace == namespace && s.DeletionTimestamp == nil && v1.ServiceName(s) == name {
+		if s.Namespace == namespace && s.DeletionTimestamp == nil && slices.Contains(v1.ServiceNames(s), name) {
 			return s, nil
 		}
 	}
@@ -45,7 +46,7 @@ func Holder(namespace, name, self string, silos []*v1.Silo, svcs []*v1.Service) 
 		}
 	}
 	for _, s := range silos {
-		if s.Namespace == namespace && s.DeletionTimestamp == nil && v1.ServiceName(s) == name && "silo/"+s.Name != self {
+		if s.Namespace == namespace && s.DeletionTimestamp == nil && slices.Contains(v1.ServiceNames(s), name) && "silo/"+s.Name != self {
 			return "silo/" + s.Name
 		}
 	}

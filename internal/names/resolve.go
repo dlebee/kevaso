@@ -206,7 +206,7 @@ func serviceAnswer(svc, ns, network string, v View) Answer {
 
 // siloOn is a silo's own service's address on network, if it has one there now.
 func siloOn(s *v1.Silo, network string, v View) []netip.Addr {
-	if s.Spec.Service == nil || !routing.Routed(s) || s.Status.SiloIP == "" {
+	if len(s.Spec.Services) == 0 || !routing.Routed(s) || s.Status.SiloIP == "" {
 		return nil
 	}
 	if network == v1.NetworkMesh {

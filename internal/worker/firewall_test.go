@@ -78,15 +78,13 @@ func TestOneBadSiloCannotStopTheFirewall(t *testing.T) {
 	mk(&v1.Host{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Host"}, ObjectMeta: meta.ObjectMeta{Name: "hv1"},
 		Spec: v1.HostSpec{InternalIP: "10.0.0.5", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}})
 	silo := func(name string, port int, sources []string, lb bool) *v1.Silo {
-		sp := v1.ServicePort{Port: "web", HostPort: []string{v1.NetworkInternal}, Sources: sources}
-		svc := &v1.SiloService{Ports: []v1.ServicePort{sp}}
+		svc := v1.SiloService{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{Worker: v1.NetworkInternal}, Ports: []v1.ServicePort{{Port: "web", Sources: sources}}}
 		if lb {
-			svc.Ports[0] = v1.ServicePort{Port: "web", LoadBalancer: true}
-			svc.LoadBalancer = &v1.LoadBalancerSpec{Class: v1.LBIPPool}
+			svc = v1.SiloService{Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "linode"}, Ports: []v1.ServicePort{{Port: "web"}}}
 		}
 		return &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "dev"},
 			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "nginx"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-				Ports: []v1.SiloPort{{Name: "web", Port: port}}, Service: svc}}
+				Ports: []v1.SiloPort{{Name: "web", Port: port}}, Services: []v1.SiloService{svc}}}
 	}
 	good, bad := silo("good", 8080, []string{"192.0.2.0/24"}, false), silo("bad", 9090, nil, true)
 	mk(good)
@@ -157,7 +155,7 @@ func TestOneBadSiloCannotStopTheFirewall(t *testing.T) {
 	if err := admin.Get(ctx, "Silo", "dev", "good", good); err != nil {
 		t.Fatal(err)
 	}
-	good.Spec.Service.Ports[0].Sources = []string{"203.0.113.0/24"}
+	good.Spec.Services[0].Ports[0].Sources = []string{"203.0.113.0/24"}
 	if err := admin.Update(ctx, good); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +168,7 @@ func TestOneBadSiloCannotStopTheFirewall(t *testing.T) {
 	if err := admin.Get(ctx, "Silo", "dev", "good", good); err != nil {
 		t.Fatal(err)
 	}
-	good.Spec.Service.Ports[0].Sources = []string{"198.51.100.0/24"}
+	good.Spec.Services[0].Ports[0].Sources = []string{"198.51.100.0/24"}
 	if err := admin.Update(ctx, good); err != nil {
 		t.Fatal(err)
 	}

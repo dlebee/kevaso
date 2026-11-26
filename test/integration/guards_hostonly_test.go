@@ -199,7 +199,7 @@ func TestAnEditorCannotExposeAnExistingSiloPublicly(t *testing.T) {
 		t.Fatal(err)
 	}
 	cur.Spec.Ports = []v1.SiloPort{{Name: "web", Port: 8080}}
-	cur.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", HostPort: []string{v1.NetworkExternal}}}}
+	cur.Spec.Services = []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "web"}}}}
 	if err := ed.Update(c.ctx, &cur); status(err) != http.StatusForbidden {
 		t.Fatalf("an editor opened an existing silo to the outside: %v, want 403", err)
 	}

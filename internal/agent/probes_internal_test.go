@@ -47,7 +47,7 @@ func TestRunProbe(t *testing.T) {
 		}
 		return "ok", 0
 	}
-	s := &v1.Silo{Spec: v1.SiloSpec{Runtime: "fake", Ports: []v1.SiloPort{{Name: "rpc", Port: 8545}}, Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "rpc"}}}}}
+	s := &v1.Silo{Spec: v1.SiloSpec{Runtime: "fake", Ports: []v1.SiloPort{{Name: "rpc", Port: 8545}}, Services: []v1.SiloService{{Ports: []v1.ServicePort{{Port: "rpc"}}}}}}
 	s.Namespace, s.Name, s.UID = "web3", "rpc", "u"
 	_ = rt.Create(context.Background(), kri.Spec{ID: idOf(s)})
 	_ = rt.Start(context.Background(), idOf(s))

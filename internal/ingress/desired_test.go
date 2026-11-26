@@ -38,11 +38,11 @@ func inputs(ings ...*v1.Ingress) Inputs {
 	for i, n := range []string{"payments/api-blue", "payments/ws", "shop/web", "shop/down"} {
 		ns, name, _ := strings.Cut(n, "/")
 		s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: name, Namespace: ns}, Spec: v1.SiloSpec{
-			Ports:   []v1.SiloPort{{Name: "http", Port: 8000 + i}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}}},
+			Ports:    []v1.SiloPort{{Name: "http", Port: 8000 + i}},
+			Services: []v1.SiloService{{Ports: []v1.ServicePort{{Port: "http"}}}}},
 			Status: v1.SiloStatus{Phase: "Running", SiloIP: "10.64.0." + string(rune('1'+i))}}
 		if name == "api-blue" {
-			s.Spec.Service.Name = "api"
+			s.Spec.Services[0].Name = "api"
 		}
 		if name == "down" {
 			s.Status.Phase, s.Status.SiloIP = "Stopped", ""

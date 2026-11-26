@@ -527,8 +527,6 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
 	ipInf.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IP", Namespace: k.Namespace, Name: k.Name}) })
 	e.Register(&ipcontroller.Controller{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Plugins: cfg.Plugins, Clock: cfg.Clock, Claims: uniq}, engine.Options{Workers: 1})
-	e.Register(&ipcontroller.Made{Client: c, IPs: ipInf, For: silos, ForKind: "Silo", Plugins: cfg.Plugins}, engine.Options{Workers: 1})
-	e.Register(&ipcontroller.Made{Client: c, IPs: ipInf, For: services, ForKind: "Service", Plugins: cfg.Plugins}, engine.Options{Workers: 1})
 	namespaces := newInf("Namespace")
 	e.Register(&nscontroller.Controller{Client: c, Clock: cfg.Clock}, engine.Options{Workers: 1})
 	namespaces.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Namespace", Name: k.Name}) })

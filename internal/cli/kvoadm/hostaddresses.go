@@ -14,48 +14,51 @@ import (
 	"kevaso.com/core/internal/ips"
 )
 
-// The extra addresses routed to a host (design §7.2c-1), which the built-in ip-pool class hands
-// out as IP objects:
+// A host's named extra addresses (networking v2), each reserved by an IP of type Host by name:
 //
-//	kvoadm host addresses HOST add CIDR…      e.g. 203.0.113.20/30 or 203.0.113.9
-//	kvoadm host addresses HOST remove CIDR…   refused for an address an IP holds
-//	kvoadm host addresses HOST list           each range, and which IP holds each address
+//	kvoadm host addresses HOST add NAME ADDRESS --external|--internal
+//	kvoadm host addresses HOST remove NAME     refused for an address an IP reserves
+//	kvoadm host addresses HOST list            each address, and which IP reserves it
 
-// EditAddresses is a host's extra addresses after adding or removing some (each IPv4 CIDR or
-// single address, masked; a single address as itself). Pure.
-func EditAddresses(cur []string, op string, args []string) ([]string, error) {
-	if len(args) == 0 {
-		return nil, fmt.Errorf("addresses %s needs at least one CIDR or address", op)
-	}
+// EditAddresses is a host's extra addresses after adding or removing one. Pure; the server
+// checks the rest (one IPv4 address each, names unique in the cluster).
+func EditAddresses(cur []v1.HostAddress, op string, args []string) ([]v1.HostAddress, error) {
 	out := slices.Clone(cur)
-	for _, a := range args {
-		p, err := ips.Parse(a)
-		if err != nil {
+	switch op {
+	case "add":
+		kind := ""
+		var rest []string
+		for _, a := range args {
+			switch a {
+			case "--external":
+				kind = v1.NetworkExternal
+			case "--internal":
+				kind = v1.NetworkInternal
+			default:
+				rest = append(rest, a)
+			}
+		}
+		if len(rest) != 2 || kind == "" {
+			return nil, errors.New("addresses add NAME ADDRESS --external|--internal")
+		}
+		if slices.ContainsFunc(out, func(a v1.HostAddress) bool { return a.Name == rest[0] }) {
+			return nil, fmt.Errorf("the host has an address named %s already", rest[0])
+		}
+		if _, err := ips.ParseAddress(rest[1]); err != nil {
 			return nil, err
 		}
-		norm := p.String()
-		if p.IsSingleIP() {
-			norm = p.Addr().String()
+		return append(out, v1.HostAddress{Name: rest[0], Kind: kind, Address: rest[1]}), nil
+	case "remove":
+		if len(args) != 1 {
+			return nil, errors.New("addresses remove NAME")
 		}
-		has := func(x string) bool {
-			q, err := ips.Parse(x)
-			return err == nil && q == p
+		i := slices.IndexFunc(out, func(a v1.HostAddress) bool { return a.Name == args[0] })
+		if i < 0 {
+			return nil, fmt.Errorf("%s isn't one of the host's addresses", args[0])
 		}
-		switch op {
-		case "add":
-			if !slices.ContainsFunc(out, has) {
-				out = append(out, norm)
-			}
-		case "remove":
-			if !slices.ContainsFunc(out, has) {
-				return nil, fmt.Errorf("%s isn't one of the host's addresses", norm)
-			}
-			out = slices.DeleteFunc(out, has)
-		default:
-			return nil, fmt.Errorf("unknown addresses command %q: add, remove or list", op)
-		}
+		return slices.Delete(out, i, i+1), nil
 	}
-	return out, nil
+	return nil, fmt.Errorf("unknown addresses command %q: add, remove or list", op)
 }
 
 func hostAddresses(ctx context.Context, args []string, out io.Writer) error {
@@ -70,9 +73,9 @@ func hostAddresses(ctx context.Context, args []string, out io.Writer) error {
 		rest = append(rest, args[i])
 	}
 	if len(rest) < 2 {
-		return errors.New("host addresses HOST add|remove|list [CIDR…]")
+		return errors.New("host addresses HOST add NAME ADDRESS --external|--internal | remove NAME | list")
 	}
-	name, op, cidrs := rest[0], rest[1], rest[2:]
+	name, op, more := rest[0], rest[1], rest[2:]
 	c, _, err := adminClient(kctx)
 	if err != nil {
 		return err
@@ -85,18 +88,22 @@ func hostAddresses(ctx context.Context, args []string, out io.Writer) error {
 		if err := c.Get(ctx, "Host", "", name, &h); err != nil {
 			return err
 		}
-		next, err := EditAddresses(h.Spec.Network.Addresses, op, cidrs)
+		next, err := EditAddresses(h.Spec.Addresses, op, more)
 		if err != nil {
 			return err
 		}
-		h.Spec.Network.Addresses = next
+		h.Spec.Addresses = next
 		err = c.Update(ctx, &h)
 		if err == nil {
-			_, _ = fmt.Fprintf(out, "→ %s's extra addresses: %s\n", name, dashOr(strings.Join(next, ", ")))
+			var names []string
+			for _, a := range next {
+				names = append(names, a.Name+" "+a.Address)
+			}
+			_, _ = fmt.Fprintf(out, "→ %s's extra addresses: %s\n", name, dashOr(strings.Join(names, ", ")))
 			return nil
 		}
-		if !client.IsConflict(err) || attempt > 5 || strings.Contains(err.Error(), "in use") || strings.Contains(err.Error(), "overlaps") {
-			return err // a held or overlapping address (Conflict, saying which) isn't worth retrying
+		if !client.IsConflict(err) || attempt > 5 || strings.Contains(err.Error(), "reserved") || strings.Contains(err.Error(), "already") {
+			return err // a reserved or duplicate address (Conflict, saying which) isn't worth retrying
 		}
 	}
 }
@@ -116,25 +123,21 @@ func listHostAddresses(ctx context.Context, c *client.Client, name string, out i
 		if err != nil {
 			return err
 		}
-		if x := obj.(*v1.IP); x.Spec.Class == v1.LBIPPool && x.Status.Host == name && x.Status.Address != "" {
+		if x := obj.(*v1.IP); x.Spec.Type == v1.IPTypeHost {
 			who := "ip " + x.Namespace + "/" + x.Name
-			if len(x.Status.BoundTo) > 0 {
+			if x.Status.Holder != nil {
 				who += " (held by " + x.Status.Holders() + ")"
 			}
-			holder[x.Status.Address] = who
+			holder[x.Spec.HostAddress] = who
 		}
 	}
-	addrs, err := ips.Expand(h.Spec.Network.Addresses)
-	if err != nil {
-		return err
-	}
 	tw := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "ADDRESS\tIP")
-	for _, a := range addrs {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\n", a, dashOr(holder[a.String()]))
+	_, _ = fmt.Fprintln(tw, "NAME\tKIND\tADDRESS\tIP")
+	for _, a := range h.Spec.Addresses {
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Name, a.Kind, a.Address, dashOr(holder[a.Name]))
 	}
-	if len(addrs) == 0 {
-		_, _ = fmt.Fprintf(tw, "(none: kvoadm host addresses %s add CIDR)\n", name)
+	if len(h.Spec.Addresses) == 0 {
+		_, _ = fmt.Fprintf(tw, "(none: kvoadm host addresses %s add NAME ADDRESS --external)\n", name)
 	}
 	return tw.Flush()
 }

@@ -1,8 +1,8 @@
-NAMESPACE   NAME         ADDRESS   CLASS     HELD-BY   KEPT   AGE
-web3        eth-node-a   -         ip-pool   -         yes    -
+NAMESPACE   NAME         TYPE   ADDRESS   WHERE   HELD-BY   AGE
+web3        eth-node-a   Host   -         -       -         -
 
-NAMESPACE   NAME         ADDRESS   CLASS     HELD-BY   KEPT   AGE
-web3        eth-node-a   -         ip-pool   -         yes    -
+NAMESPACE   NAME         TYPE   ADDRESS   WHERE   HELD-BY   AGE
+web3        eth-node-a   Host   -         -       -         -
 
 Name:       eth-node-a
 Namespace:  web3

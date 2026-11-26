@@ -38,7 +38,7 @@ func TestK031DeleteCarriesWhatTheCallerSaw(t *testing.T) {
 	}
 	must(c.Create(ctx, &v1.Namespace{TypeMeta: tm("Namespace"), ObjectMeta: meta.ObjectMeta{Name: "d"}}))
 	mk := func() *v1.IP {
-		x := &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: "x", Namespace: "d"}, Spec: v1.IPSpec{Class: v1.LBIPPool}}
+		x := &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: "x", Namespace: "d"}, Spec: v1.IPSpec{Type: v1.IPTypeHost, HostAddress: "x"}}
 		must(c.Create(ctx, x))
 		return x
 	}
@@ -71,7 +71,7 @@ func TestK031DeleteCarriesWhatTheCallerSaw(t *testing.T) {
 	}
 	// The same object, changed since the caller read it.
 	read := *exists()
-	read.Spec.Reclaim = v1.ReclaimRetain
+	read.Labels = map[string]string{"changed": "yes"} // an IP's spec never changes
 	changed := read
 	must(c.Update(ctx, &changed))
 	if code := del(url.Values{"uid": {now.UID}, "resourceVersion": {now.ResourceVersion}}); code != http.StatusConflict {

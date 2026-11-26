@@ -6,40 +6,54 @@ import (
 )
 
 // kvo's IP commands against the API server (no controllers: the address stays empty): create,
-// get, keep and release, describe; and the example of design §7.2c-1 applies as written.
+// get, describe and delete; keep and release are gone; and the example of networking v2 applies
+// as written.
 func TestKvoIPs(t *testing.T) {
 	h := newHarness(t)
 	h.ok(manifest, "apply", "-f", "-")
-	if out := h.ok("", "create", "ip", "eth", "--class", "ip-pool", "--host", "hv1", "-n", "demo"); !strings.Contains(out, "ip/eth created") {
+	if out := h.ok("", "create", "ip", "eth", "--type", "Host", "--host-address", "eth-extra", "-n", "demo"); !strings.Contains(out, "ip/eth created") {
 		t.Fatalf("create ip: %s", out)
 	}
-	if _, errs, code := h.kvo(t.Context(), "", "create", "ip", "nope", "-n", "demo"); code == 0 || !strings.Contains(errs, "--class") {
-		t.Fatalf("create ip without a class: %d %s", code, errs)
+	if _, errs, code := h.kvo(t.Context(), "", "create", "ip", "nope", "-n", "demo"); code == 0 || !strings.Contains(errs, "--type") {
+		t.Fatalf("create ip without a type: %d %s", code, errs)
 	}
 	out := h.ok("", "get", "ips", "-n", "demo")
-	for _, want := range []string{"ADDRESS", "CLASS", "HELD-BY", "KEPT", "eth", "ip-pool", "yes"} {
+	for _, want := range []string{"TYPE", "ADDRESS", "WHERE", "HELD-BY", "eth", "Host"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("get ips lacks %q:\n%s", want, out)
 		}
 	}
-	if out := h.ok("", "ip", "keep", "eth", "-n", "demo"); !strings.Contains(out, "kept already") {
-		t.Fatalf("keep a kept one: %s", out)
+	if _, errs, code := h.kvo(t.Context(), "", "ip", "keep", "eth", "-n", "demo"); code == 0 || !strings.Contains(errs, "no keep or release") {
+		t.Fatalf("kvo ip keep: %d %s", code, errs)
 	}
-	if out := h.ok("", "describe", "ip", "eth", "-n", "demo"); !strings.Contains(out, "Kept:") || !strings.Contains(out, "reclaim Retain") || !strings.Contains(out, "Held by:") {
+	if out := h.ok("", "describe", "ip", "eth", "-n", "demo"); !strings.Contains(out, "Host (host address eth-extra)") || !strings.Contains(out, "Held by:") {
 		t.Fatalf("describe ip:\n%s", out)
 	}
-	// Released while nobody holds it: it's deleted.
-	if out := h.ok("", "ip", "release", "eth", "-n", "demo"); !strings.Contains(out, "nothing held it") {
-		t.Fatalf("release: %s", out)
+	// A balancer can't answer on a host's address.
+	if _, errs, code := h.kvo(t.Context(), `apiVersion: kevaso/v1
+kind: Silo
+metadata: { name: other, namespace: demo }
+spec:
+  runtime: cloud-hypervisor
+  vm: { image: ubuntu-24.04 }
+  resources: { cpu: 2, memory: 4Gi }
+  ports: [{ name: p2p, port: 30303 }]
+  services:
+    - type: LoadBalancer
+      loadBalancer: { provider: linode, ip: eth }
+      ports: [{ port: p2p }]
+`, "apply", "-f", "-"); code == 0 || !strings.Contains(errs, "is a host's address (type Host)") {
+		t.Fatalf("a balancer on a Host IP: %d %s", code, errs)
 	}
+	h.ok("", "delete", "ip", "eth", "-n", "demo")
 	if out := h.ok("", "get", "ips", "-n", "demo"); strings.Contains(out, "eth") {
-		t.Fatalf("released IP still there:\n%s", out)
+		t.Fatalf("deleted IP still there:\n%s", out)
 	}
-	// The design's example applies: an IP and a silo naming it.
+	// The design's example applies: an IP and a silo naming it, in and out.
 	h.ok(`apiVersion: kevaso/v1
 kind: IP
 metadata: { name: eth-node-1, namespace: demo }
-spec: { class: linode-shared-ip, region: ca-central, reclaim: Retain }
+spec: { type: Provider, provider: linode, region: ca-central }
 ---
 apiVersion: kevaso/v1
 kind: Silo
@@ -49,27 +63,13 @@ spec:
   vm: { image: ubuntu-24.04 }
   resources: { cpu: 2, memory: 4Gi }
   ports: [{ name: p2p, port: 30303 }]
-  service:
-    ports: [{ port: p2p, loadBalancer: true }]
-    loadBalancer: { class: linode-shared-ip, ip: eth-node-1 }
-  network: { egress: { source: sameAsService } }
+  services:
+    - type: HostPort
+      hostPort: { ip: eth-node-1 }
+      ports: [{ port: p2p }]
+  network: { egress: { source: { ip: eth-node-1 } } }
 `, "apply", "-f", "-")
-	if out := h.ok("", "describe", "silo", "eth-node-1", "-n", "demo"); !strings.Contains(out, "In and out:") {
+	if out := h.ok("", "describe", "silo", "eth-node-1", "-n", "demo"); !strings.Contains(out, "In and out:") || !strings.Contains(out, "(ip: eth-node-1)") {
 		t.Fatalf("describe silo:\n%s", out)
-	}
-	// A silo naming an IP of another class is refused.
-	if _, errs, code := h.kvo(t.Context(), `apiVersion: kevaso/v1
-kind: Silo
-metadata: { name: other, namespace: demo }
-spec:
-  runtime: cloud-hypervisor
-  vm: { image: ubuntu-24.04 }
-  resources: { cpu: 2, memory: 4Gi }
-  ports: [{ name: p2p, port: 30303 }]
-  service:
-    ports: [{ port: p2p, loadBalancer: true }]
-    loadBalancer: { class: ip-pool, ip: eth-node-1 }
-`, "apply", "-f", "-"); code == 0 || !strings.Contains(errs, "class linode-shared-ip, not ip-pool") {
-		t.Fatalf("naming an IP of another class: %d %s", code, errs)
 	}
 }

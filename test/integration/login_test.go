@@ -345,7 +345,7 @@ func TestExposePublicNeedsItsOwnPermission(t *testing.T) {
 	node := func(name string) *v1.Silo {
 		s := silo(name, "web3")
 		s.Spec.Ports = []v1.SiloPort{{Name: "p2p", Port: 30303}}
-		s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "p2p", HostPort: []string{v1.NetworkExternal}}}}
+		s.Spec.Services = []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "p2p"}}}}
 		return s
 	}
 	ed, ada := as("ed"), as("ada")
@@ -356,7 +356,7 @@ func TestExposePublicNeedsItsOwnPermission(t *testing.T) {
 	}
 	private := silo("private", "web3")
 	private.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 8080}}
-	private.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http"}}}
+	private.Spec.Services = []v1.SiloService{{Ports: []v1.ServicePort{{Port: "http"}}}}
 	if err := ed.Create(c.ctx, private); err != nil {
 		t.Fatalf("editor, private service: %v", err)
 	}
@@ -378,24 +378,24 @@ func TestExposePublicNeedsItsOwnPermission(t *testing.T) {
 	if err := ed.Create(c.ctx, set); !errors.As(err, &ce) || ce.Code != http.StatusForbidden {
 		t.Fatalf("editor, an exposed set: %v", err)
 	}
-	set.Spec.Template.Ports, set.Spec.Template.Service = private.Spec.Ports, private.Spec.Service
+	set.Spec.Template.Ports, set.Spec.Template.Services = private.Spec.Ports, private.Spec.Services
 	if err := ed.Create(c.ctx, set); err != nil {
 		t.Fatalf("editor, a private set: %v", err)
 	}
 	lb := &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "rpc", Namespace: "web3"},
 		Spec: v1.ServiceSpec{Selector: map[string]string{"app": "rpc"}, Ports: []v1.ServicePortSpec{{Name: "rpc", Port: 8545}},
-			Type: v1.ServiceLoadBalancer, LoadBalancerClass: "linode-nodebalancer"}}
+			Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "linode"}}}
 	if err := ed.Create(c.ctx, lb); !errors.As(err, &ce) || ce.Code != http.StatusForbidden {
 		t.Fatalf("editor, a LoadBalancer service: %v", err)
 	}
-	lb.Spec.Type, lb.Spec.LoadBalancerClass = "", ""
+	lb.Spec.Type, lb.Spec.LoadBalancer = "", nil
 	if err := ed.Create(c.ctx, lb); err != nil {
-		t.Fatalf("editor, a ClusterIP service: %v", err)
+		t.Fatalf("editor, an Internal service: %v", err)
 	}
 	if err := ada.Get(c.ctx, "Service", "web3", "rpc", lb); err != nil {
 		t.Fatal(err)
 	}
-	lb.Spec.Type, lb.Spec.LoadBalancerClass = v1.ServiceLoadBalancer, "linode-nodebalancer"
+	lb.Spec.Type, lb.Spec.LoadBalancer = v1.ServiceLoadBalancer, &v1.LoadBalancerSpec{Provider: "linode"}
 	if err := ada.Update(c.ctx, lb); err != nil {
 		t.Fatalf("admin exposing the service: %v", err)
 	}

@@ -15,7 +15,7 @@ func TestMacSiloProblems(t *testing.T) {
 	}
 	bad := *ok
 	bad.Spec.Grants = []string{"github"}
-	bad.Spec.Service = &v1.SiloService{}
+	bad.Spec.Services = []v1.SiloService{{}}
 	p := strings.Join(macSiloProblems(&bad), "|")
 	if !strings.Contains(p, "grants") || !strings.Contains(p, "cluster address") {
 		t.Fatalf("%q", p)

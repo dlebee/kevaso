@@ -18,42 +18,40 @@ import (
 
 func TestPlatformHostPortsAreRefusedAtAdmission(t *testing.T) {
 	for _, n := range []int{22, 53, 2379, 2380, 6443, 51820, 51821, 15001} {
-		errs := checkPorts(hostPortAs(8080, n, true))
+		errs := checkPorts(hostPortAs(8080, n, true), "s", false)
 		if len(errs) == 0 || !strings.Contains(strings.Join(errs, "; "), "which a silo may not take") {
 			t.Errorf("host port %d: %v", n, errs)
 		}
 	}
 	for _, n := range []int{80, 443, 8080, 2222} {
-		if errs := checkPorts(hostPortAs(8080, n, true)); len(errs) != 0 {
+		if errs := checkPorts(hostPortAs(8080, n, true), "s", false); len(errs) != 0 {
 			t.Errorf("host port %d, which a silo may take: %v", n, errs)
 		}
 	}
 	// The declared port is the host number when as is unset.
 	declared := v1.SiloSpec{
-		Ports:   []v1.SiloPort{{Name: "web", Port: 6443}},
-		Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", HostPort: []string{v1.NetworkExternal}}}},
+		Ports:    []v1.SiloPort{{Name: "web", Port: 6443}},
+		Services: onWorker(v1.NetworkExternal, v1.ServicePort{Port: "web"}),
 	}
-	if errs := checkPorts(declared); len(errs) == 0 || !strings.Contains(strings.Join(errs, "; "), "the API") {
+	if errs := checkPorts(declared, "s", false); len(errs) == 0 || !strings.Contains(strings.Join(errs, "; "), "the API") {
 		t.Fatalf("a declared 6443 opened on the host: %v", errs)
 	}
-	if errs := checkPorts(hostPortAs(8080, 6443, false)); len(errs) != 0 {
+	if errs := checkPorts(hostPortAs(8080, 6443, false), "s", false); len(errs) != 0 {
 		t.Fatalf("a load balancer on 6443 is not the host's listener: %v", errs)
 	}
 }
 
 func hostPortAs(declared, as int, onHost bool) v1.SiloSpec {
-	sp := v1.ServicePort{Port: "web", As: as, LoadBalancer: !onHost}
-	if onHost {
-		sp.HostPort = []string{v1.NetworkExternal}
-	}
-	spec := v1.SiloSpec{
-		Ports:   []v1.SiloPort{{Name: "web", Port: declared}},
-		Service: &v1.SiloService{Ports: []v1.ServicePort{sp}},
-	}
+	sv := v1.SiloService{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "web", As: as}}}
 	if !onHost {
-		spec.Service.LoadBalancer = &v1.LoadBalancerSpec{Class: "linode-nodebalancer"}
+		sv.Type, sv.LoadBalancer = v1.ServiceLoadBalancer, &v1.LoadBalancerSpec{Provider: "linode"}
 	}
-	return spec
+	return v1.SiloSpec{Ports: []v1.SiloPort{{Name: "web", Port: declared}}, Services: []v1.SiloService{sv}}
+}
+
+// onWorker is one HostPort service on the worker's address on network.
+func onWorker(network string, ports ...v1.ServicePort) []v1.SiloService {
+	return []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{Worker: network}, Ports: ports}}
 }
 
 func TestAPlacedSiloCannotTakeAHostPortAnotherSiloHolds(t *testing.T) {
@@ -77,7 +75,7 @@ func TestAPlacedSiloCannotTakeAHostPortAnotherSiloHolds(t *testing.T) {
 		t.Helper()
 		spec := v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"}, Ports: ports}
 		if len(svc) > 0 {
-			spec.Service = &v1.SiloService{Ports: svc}
+			spec.Services = onWorker(v1.NetworkInternal, svc...)
 		}
 		s := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "d"}, Spec: spec}
 		must(c.Create(ctx, s))
@@ -95,20 +93,20 @@ func TestAPlacedSiloCannotTakeAHostPortAnotherSiloHolds(t *testing.T) {
 		cur.Status.Host, cur.Status.Phase = "hv1", "Running"
 		must(c.UpdateStatus(ctx, cur))
 	}
-	held := mk("c", []v1.SiloPort{{Name: "http", Port: 80}}, []v1.ServicePort{{Port: "http", HostPort: []string{v1.NetworkInternal}}})
+	held := mk("c", []v1.SiloPort{{Name: "http", Port: 80}}, []v1.ServicePort{{Port: "http"}})
 	place(held)
 	a := mk("a", nil, nil)
 	place(a)
 
 	a = get("a")
 	a.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 80}}
-	a.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", HostPort: []string{v1.NetworkInternal}}}}
+	a.Spec.Services = onWorker(v1.NetworkInternal, v1.ServicePort{Port: "http"})
 	err = c.Update(ctx, a)
 	if codeOf(err) != http.StatusConflict || !strings.Contains(err.Error(), "held by d/c") {
 		t.Fatalf("taking c's port: %v, want 409 naming d/c", err)
 	}
-	if stored := get("a"); stored.Spec.Service != nil {
-		t.Fatalf("the refused update was stored: %+v", stored.Spec.Service)
+	if stored := get("a"); len(stored.Spec.Services) > 0 {
+		t.Fatalf("the refused update was stored: %+v", stored.Spec.Services)
 	}
 
 	a = get("a")
@@ -117,10 +115,10 @@ func TestAPlacedSiloCannotTakeAHostPortAnotherSiloHolds(t *testing.T) {
 
 	a = get("a")
 	a.Spec.Ports = []v1.SiloPort{{Name: "extra", Port: 8081}, {Name: "http", Port: 80}}
-	a.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{
-		{Port: "extra", HostPort: []string{v1.NetworkInternal}},
-		{Port: "http", HostPort: []string{v1.NetworkInternal}},
-	}}
+	a.Spec.Services = onWorker(v1.NetworkInternal,
+		v1.ServicePort{Port: "extra"},
+		v1.ServicePort{Port: "http"},
+	)
 	if err := c.Update(ctx, a); codeOf(err) != http.StatusConflict {
 		t.Fatalf("adding a free port and a held one: %v, want 409", err)
 	}
@@ -128,7 +126,7 @@ func TestAPlacedSiloCannotTakeAHostPortAnotherSiloHolds(t *testing.T) {
 	place(b)
 	b = get("b")
 	b.Spec.Ports = []v1.SiloPort{{Name: "extra", Port: 8081}}
-	b.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "extra", HostPort: []string{v1.NetworkInternal}}}}
+	b.Spec.Services = onWorker(v1.NetworkInternal, v1.ServicePort{Port: "extra"})
 	if err := c.Update(ctx, b); err != nil {
 		t.Fatalf("8081 was still claimed after the refused update: %v", err)
 	}
@@ -136,7 +134,7 @@ func TestAPlacedSiloCannotTakeAHostPortAnotherSiloHolds(t *testing.T) {
 	place(f)
 	f = get("f")
 	f.Spec.Ports = []v1.SiloPort{{Name: "extra", Port: 8081}}
-	f.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "extra", HostPort: []string{v1.NetworkInternal}}}}
+	f.Spec.Services = onWorker(v1.NetworkInternal, v1.ServicePort{Port: "extra"})
 	if err := c.Update(ctx, f); codeOf(err) != http.StatusConflict || !strings.Contains(err.Error(), "held by d/b") {
 		t.Fatalf("taking b's port: %v, want 409 naming d/b", err)
 	}
@@ -144,26 +142,26 @@ func TestAPlacedSiloCannotTakeAHostPortAnotherSiloHolds(t *testing.T) {
 	mk("u", nil, nil)
 	u := get("u")
 	u.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 80}}
-	u.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", HostPort: []string{v1.NetworkInternal}}}}
+	u.Spec.Services = onWorker(v1.NetworkInternal, v1.ServicePort{Port: "http"})
 	if err := c.Update(ctx, u); err != nil {
 		t.Fatalf("an unplaced silo claims nothing at admission: %v", err)
 	}
 	a = get("a")
 	a.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 80}}
-	a.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", HostPort: []string{v1.NetworkInternal}}}}
+	a.Spec.Services = onWorker(v1.NetworkInternal, v1.ServicePort{Port: "http"})
 	if err := c.Update(ctx, a); codeOf(err) != http.StatusConflict || !strings.Contains(err.Error(), "held by d/c") {
 		t.Fatalf("the unplaced silo took c's port: %v", err)
 	}
 
-	e := mk("e", []v1.SiloPort{{Name: "http", Port: 90}}, []v1.ServicePort{{Port: "http", HostPort: []string{v1.NetworkInternal}, As: 9090}})
+	e := mk("e", []v1.SiloPort{{Name: "http", Port: 90}}, []v1.ServicePort{{Port: "http", As: 9090}})
 	place(e)
 	e = get("e")
-	e.Spec.Service.Ports[0].As = 80
+	e.Spec.Services[0].Ports[0].As = 80
 	if err := c.Update(ctx, e); codeOf(err) != http.StatusConflict || !strings.Contains(err.Error(), "held by d/c") {
 		t.Fatalf("changing as onto c's port: %v", err)
 	}
-	if stored := get("e"); stored.Spec.Service.Ports[0].As != 9090 {
-		t.Fatalf("the refused as was stored: %d", stored.Spec.Service.Ports[0].As)
+	if stored := get("e"); stored.Spec.Services[0].Ports[0].As != 9090 {
+		t.Fatalf("the refused as was stored: %d", stored.Spec.Services[0].Ports[0].As)
 	}
 }
 
@@ -187,8 +185,8 @@ func TestAHostPortAHostListensOnIsRefused(t *testing.T) {
 	open := func(name string, as int) *v1.Silo {
 		return &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "d"},
 			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"},
-				Ports:   []v1.SiloPort{{Name: "web", Port: 8080}},
-				Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", HostPort: []string{v1.NetworkExternal}, As: as}}}}}
+				Ports:    []v1.SiloPort{{Name: "web", Port: 8080}},
+				Services: onWorker(v1.NetworkExternal, v1.ServicePort{Port: "web", As: as})}}
 	}
 	if err := c.Create(ctx, open("early", 2222)); err != nil {
 		t.Fatalf("2222 before any host listens there: %v", err)
@@ -223,7 +221,7 @@ func TestAConflictingUpdateKeepsAHostPortTheSiloAlreadyHolds(t *testing.T) {
 	held := placeHostPort(t, ctx, c, "a", 8080)
 	stale := *held
 	stale.Spec.Ports = nil
-	stale.Spec.Service = nil
+	stale.Spec.Services = nil
 	rel, err := srv.claimAddedHostPorts(ctx, &stale, held, held.ResourceVersion)
 	if err != nil {
 		t.Fatal(err)
@@ -237,7 +235,7 @@ func TestAConflictingUpdateKeepsAHostPortTheSiloAlreadyHolds(t *testing.T) {
 	}
 	b := placeHostPort(t, ctx, c, "b", 0)
 	b.Spec.Ports = []v1.SiloPort{{Name: "web", Port: 8080}}
-	b.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", HostPort: []string{v1.NetworkInternal}}}}
+	b.Spec.Services = onWorker(v1.NetworkInternal, v1.ServicePort{Port: "web"})
 	if err := c.Update(ctx, b); codeOf(err) != http.StatusConflict || !strings.Contains(err.Error(), "held by d/a") {
 		t.Fatalf("another silo taking the port: %v, want 409 naming d/a", err)
 	}
@@ -254,7 +252,7 @@ func TestARefusedHostPortUpdateReleasesThePortItClaimed(t *testing.T) {
 	cur := placeHostPort(t, ctx, c, "a", 0)
 	next := *cur
 	next.Spec.Ports = []v1.SiloPort{{Name: "web", Port: 8080}}
-	next.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", HostPort: []string{v1.NetworkInternal}}}}
+	next.Spec.Services = onWorker(v1.NetworkInternal, v1.ServicePort{Port: "web"})
 	rel, err := srv.claimAddedHostPorts(ctx, cur, &next, cur.ResourceVersion)
 	if err != nil {
 		t.Fatal(err)
@@ -308,7 +306,7 @@ func placeHostPort(t *testing.T, ctx context.Context, c *client.Client, name str
 		return s
 	}
 	s.Spec.Ports = []v1.SiloPort{{Name: "web", Port: port}}
-	s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{{Port: "web", HostPort: []string{v1.NetworkInternal}}}}
+	s.Spec.Services = onWorker(v1.NetworkInternal, v1.ServicePort{Port: "web"})
 	if err := c.Update(ctx, s); err != nil {
 		t.Fatal(err)
 	}

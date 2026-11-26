@@ -10,7 +10,7 @@ import (
 // them keeps a grant from looking enforced when it isn't. Pure.
 func macSiloProblems(silo *v1.Silo) []string {
 	var out []string
-	if len(silo.Spec.Ports) > 0 || silo.Spec.Service != nil {
+	if len(silo.Spec.Ports) > 0 || len(silo.Spec.Services) > 0 {
 		out = append(out, "tart: a macOS silo has no cluster address yet (a Mac isn't on the mesh), so it can't declare ports or a service; reach it with kvo exec, kvo ssh and kvo cp")
 	}
 	if len(silo.Spec.Grants) > 0 {

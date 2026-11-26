@@ -39,7 +39,7 @@ func TestK125CreateStoresNoCallerStatus(t *testing.T) {
 
 	ip := &v1.IP{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "IP"},
 		ObjectMeta: meta.ObjectMeta{Name: "pub", Namespace: "dev"},
-		Spec:       v1.IPSpec{Class: v1.LBIPPool},
+		Spec:       v1.IPSpec{Type: v1.IPTypeHost, HostAddress: "pub"},
 		Status:     v1.IPStatus{Address: "203.0.113.50", Handle: "res-1"}}
 	if err := ada.Create(e.ctx, ip); err != nil {
 		t.Fatal(err)

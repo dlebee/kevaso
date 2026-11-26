@@ -66,8 +66,8 @@ func TestLabRemovingAllowFromResetsItsConnection(t *testing.T) {
 	labNamespace(t, ctx, admin, labCutNS)
 	targetSpec := func(allow string) string {
 		return boxEcho(labCutNS, "target", labListenPort) + fmt.Sprintf(`  ports: [{ name: http, port: %d }]
-  service:
-    ports: [{ port: http, allowFrom: [%s] }]
+  services:
+    - ports: [{ port: http, allowFrom: [%s] }]
 `, labListenPort, allow)
 	}
 	labKvo(t, ctx, targetSpec("caller, other"), "apply", "--context", admin, "-f", "-")
@@ -161,8 +161,8 @@ spec:
   container: { image: %s, command: ["python3", "-c", "import time; time.sleep(10**9)"] }
   resources: { cpu: 1, memory: 256Mi }
   ports: [{ name: http, port: 80 }]
-  service:
-    ports: [{ port: http }]
+  services:
+    - ports: [{ port: http }]
 `, labDNSNS, labImage), "apply", "--context", admin, "-f", "-")
 	labKvo(t, ctx, fmt.Sprintf(`apiVersion: kevaso/v1
 kind: Silo

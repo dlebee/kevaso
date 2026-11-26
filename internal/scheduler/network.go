@@ -86,26 +86,32 @@ func netFilter(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) string {
 	return ""
 }
 
-// ServiceStatus is where a silo placed on h is reached and sends from, and its name. An IP's
-// address is the IP's (design §7.2c-1): ip-pool's is set here; a plugin's class's is the plugin's
-// (the load-balancer controller writes it; kept here), and node ports, if the class uses them,
-// are allocated on h. The address out follows the table of §7.2b (Egress). Pure.
+// ServiceStatus is where a silo placed on h is reached and sends from, and its name. A Host IP's
+// address goes on h's uplink; a balancer's is the balancer controller's (kept here), and node
+// ports, if the provider uses them, are allocated on h. The address out is Egress's. Pure.
+// TODO(net-v2 wave 2): one status per service.
 func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloServiceStatus, error) {
 	var st v1.SiloServiceStatus
-	if s.Spec.Service != nil { // no service, no name: only where its own traffic comes from
+	if len(s.Spec.Services) > 0 { // no service, no name: only where its own traffic comes from
 		st.Name = v1.ServiceDNSName(v1.ServiceName(s), s.Namespace, "", env.Suffix)
 	}
-	svcName, _ := svcIPName(s, env)
-	svcIP, egIP := heldIP(s, svcName, env), heldIP(s, v1.SiloEgressIP(s), env)
-	if svcIP != nil {
-		st.IP = svcIP.Name
-	}
-	if class := v1.PluginLB(s); class != "" {
-		if svcIP != nil { // the balancer writes the address; a silo waiting for its IP has none
-			cur := s.Status.Service
-			st.LoadBalancerIP, st.SourceRanges, st.Announce = cur.LoadBalancerIP, cur.SourceRanges, cur.Announce
+	var lbIP *v1.IP
+	for _, sv := range s.Spec.Balancers() {
+		if sv.LoadBalancer != nil && sv.LoadBalancer.IP != "" {
+			lbIP = heldIP(s, sv.LoadBalancer.IP, env)
 		}
-		if c, ok := env.Classes[class]; ok && c.NodePorts {
+	}
+	var egIP *v1.IP
+	if src := s.Spec.Network.Egress.Source; src != nil {
+		egIP = heldIP(s, src.IP, env)
+	}
+	if lbIP != nil {
+		st.IP = lbIP.Name
+	}
+	if s.Spec.LoadBalanced() {
+		cur := s.Status.Service // the balancer writes the address; kept here
+		st.LoadBalancerIP, st.SourceRanges, st.Announce = cur.LoadBalancerIP, cur.SourceRanges, cur.Announce
+		if providerUsesNodePorts(env.Classes, balancerProvider(s)) {
 			np, err := nodePorts(s, h.Name, placed, env.Claimed[h.Name].NodePorts)
 			if err != nil {
 				return st, err
@@ -113,16 +119,15 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloS
 			st.NodePorts = np
 		}
 	}
-	for _, x := range []*v1.IP{svcIP, egIP} {
-		if x != nil && x.Spec.Class == v1.LBIPPool && x.Status.Address != "" && x.Status.Host == h.Name && !slices.Contains(st.HostAddresses, x.Status.Address) {
+	// A Host IP the silo holds on h is put on h's uplink.
+	// TODO(net-v2 wave 2): hostPort.ip opens its ports on that address (the agent's rules).
+	for _, name := range v1.SiloIPs(s) {
+		if x := heldIP(s, name, env); x != nil && x.Spec.Type == v1.IPTypeHost && x.Status.Address != "" && x.Status.Host == h.Name && !slices.Contains(st.HostAddresses, x.Status.Address) {
 			st.HostAddresses = append(st.HostAddresses, x.Status.Address)
 		}
 	}
-	if svcIP != nil && svcIP.Spec.Class == v1.LBIPPool && svcIP.Status.Host == h.Name {
-		st.LoadBalancerIP = svcIP.Status.Address
-	}
 	st.Ports = PortStatus(s, h, st.LoadBalancerIP)
-	st.EgressIP, st.EgressNote = Egress(s, h, st, svcIP, egIP, env.Classes)
+	st.EgressIP, st.EgressNote = Egress(s, h, st, egIP)
 	return st, nil
 }
 
@@ -176,7 +181,7 @@ func NodePorts(s *v1.Silo, host string, placed []*v1.Silo) ([]v1.NodePort, error
 
 // nodePorts is NodePorts, also avoiding the ports in avoid (held by others, says the store).
 func nodePorts(s *v1.Silo, host string, placed []*v1.Silo, avoid map[int]bool) ([]v1.NodePort, error) {
-	if s.Spec.Service == nil {
+	if !s.Spec.LoadBalanced() {
 		return nil, nil
 	}
 	taken := maps.Clone(avoid)

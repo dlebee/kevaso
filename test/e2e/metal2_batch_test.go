@@ -347,8 +347,8 @@ spec:
   runtime: docker
   container: { image: docker.io/library/nginx:1.27 }
 ` + on(metalHost) + `  ports: [{ name: http, port: 80 }]
-  service:
-    ports: [{ port: http }]
+  services:
+    - ports: [{ port: http }]
 ---
 apiVersion: kevaso/v1
 kind: IngressClass
@@ -360,8 +360,8 @@ spec:
       namespaces: [` + ns + `]
 ---
 ` + boxEcho(ns, "app", 8080) + `  ports: [{ name: http, port: 8080 }]
-  service:
-    ports: [{ port: http }]
+  services:
+    - ports: [{ port: http }]
 ` + ing("a", "a.ib.test", "") + ing("b", "b.ib.test", "") + ing("broken", "broken.ib.test", ""))
 	c.waitRunning("kevaso-system", 10*time.Minute, "ingress-ib")
 	c.waitRunning(ns, 10*time.Minute, "app")

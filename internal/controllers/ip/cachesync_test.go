@@ -18,7 +18,7 @@ import (
 )
 
 // K-027, the controller's own guard: given a Silo cache that has not loaded its first list, the
-// IP controller must not take "no claimant seen" for "no claimant", so a bound IP stays bound
+// IP controller must not take "no claimant seen" for "no claimant", so a held IP stays held
 // and is not deleted, whoever runs it and however it was started.
 func TestK027IPControllerActsOnlyOnSyncedClaimCaches(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -40,15 +40,14 @@ func TestK027IPControllerActsOnlyOnSyncedClaimCaches(t *testing.T) {
 	must(c.Create(ctx, &v1.Namespace{TypeMeta: tm("Namespace"), ObjectMeta: meta.ObjectMeta{Name: "d"}}))
 	s := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "d"},
 		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 2, Memory: "4Gi"},
-			Ports:   []v1.SiloPort{{Name: "http", Port: 80}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", LoadBalancer: true}}, LoadBalancer: &v1.LoadBalancerSpec{Class: v1.LBIPPool}}}}
+			Ports:    []v1.SiloPort{{Name: "http", Port: 80}},
+			Services: []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{IP: "web-ip"}, Ports: []v1.ServicePort{{Port: "http"}}}}}}
 	must(c.Create(ctx, s))
-	name, _ := v1.SiloServiceIP(s, true)
-	ip := &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "d", Finalizers: []string{v1.FinalizerIP},
-		OwnerReferences: []meta.OwnerReference{{APIVersion: v1.APIVersion, Kind: "Silo", Name: s.Name, UID: s.UID, Controller: true}}},
-		Spec: v1.IPSpec{Class: v1.LBIPPool, Reclaim: v1.ReclaimDelete}}
+	name := "web-ip"
+	ip := &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "d", Finalizers: []string{v1.FinalizerIP}},
+		Spec: v1.IPSpec{Type: v1.IPTypeHost, HostAddress: "a1"}}
 	must(c.Create(ctx, ip))
-	ip.Status.BoundTo = []v1.IPHolder{{Holder: v1.HolderSiloPrefix + s.Name, UID: s.UID, Ports: []string{"http"}}}
+	ip.Status.Holder = &v1.IPHolder{Holder: v1.HolderSiloPrefix + s.Name, UID: s.UID, Ports: []string{"80/TCP"}}
 	must(c.UpdateStatus(ctx, ip))
 
 	ips := informer.New(c, "IP")
@@ -65,7 +64,7 @@ func TestK027IPControllerActsOnlyOnSyncedClaimCaches(t *testing.T) {
 	if err := c.Get(ctx, "IP", "d", name, &now); err != nil {
 		t.Fatalf("the IP is gone: %v", err)
 	}
-	if now.DeletionTimestamp != nil || len(now.Status.BoundTo) != 1 || now.ResourceVersion != ip.ResourceVersion {
-		t.Fatalf("acted on an unsynced Silo cache: deleting %v, bound to %v", now.DeletionTimestamp != nil, now.Status.BoundTo)
+	if now.DeletionTimestamp != nil || now.Status.Holder == nil || now.ResourceVersion != ip.ResourceVersion {
+		t.Fatalf("acted on an unsynced Silo cache: deleting %v, held by %v", now.DeletionTimestamp != nil, now.Status.Holder)
 	}
 }

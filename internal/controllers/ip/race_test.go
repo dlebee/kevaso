@@ -3,6 +3,10 @@ package ip_test
 import (
 	"context"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,15 +18,16 @@ import (
 	"kevaso.com/core/internal/clock"
 	ipctl "kevaso.com/core/internal/controllers/ip"
 	"kevaso.com/core/internal/engine"
+	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/store"
+	"kevaso.com/core/sdk/kplugin/kplugintest"
 )
 
 func tm(k string) meta.TypeMeta { return meta.TypeMeta{APIVersion: v1.APIVersion, Kind: k} }
 
-// Two ip-pool IPs reconciled back to back, the second before the informer has seen the first
-// one's address (a watch is never instant): they must not get the same address. One address on
-// two hosts' silos is traffic for one going to the other.
-func TestPoolAddressesNeverHandedOutTwice(t *testing.T) {
+// An IP of type Host takes the address of the host's extra address it names, by name: none
+// while no host has it (saying how to add one), the address once a host has it.
+func TestHostIPTakesItsHostsAddressByName(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	srv, err := apiserver.New(store.NewMemory(0), clock.Real{})
@@ -42,12 +47,9 @@ func TestPoolAddressesNeverHandedOutTwice(t *testing.T) {
 	must(c.Create(ctx, &v1.Namespace{TypeMeta: tm("Namespace"), ObjectMeta: meta.ObjectMeta{Name: "d"}}))
 	h := &v1.Host{TypeMeta: tm("Host"), ObjectMeta: meta.ObjectMeta{Name: "h1"},
 		Spec: v1.HostSpec{InternalIP: "10.0.0.5", Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}
-	h.Spec.Network.Addresses = []string{"198.51.100.16/30"}
 	must(c.Create(ctx, h))
-	for _, n := range []string{"a", "b"} {
-		must(c.Create(ctx, &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: n, Namespace: "d"},
-			Spec: v1.IPSpec{Class: v1.LBIPPool}}))
-	}
+	must(c.Create(ctx, &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: "mail", Namespace: "d", Finalizers: []string{v1.FinalizerIP}},
+		Spec: v1.IPSpec{Type: v1.IPTypeHost, HostAddress: "mail-a"}}))
 	run := func(kind string) *informer.Informer {
 		inf := informer.New(c, kind)
 		go inf.Run(ctx)
@@ -57,34 +59,99 @@ func TestPoolAddressesNeverHandedOutTwice(t *testing.T) {
 		return inf
 	}
 	ctl := &ipctl.Controller{Client: c, IPs: run("IP"), Silos: run("Silo"), Services: run("Service"), Hosts: run("Host")}
-	settle := func(name string) {
-		for i := 0; i < 50; i++ {
-			if o, ok := ctl.IPs.Get("d", name); ok && len(o.GetObjectMeta().Finalizers) > 0 {
-				return
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
-	// The finalizers first (each a write and a fresh read), as the controller does.
-	for _, n := range []string{"a", "b"} {
-		if _, err := ctl.Reconcile(ctx, engine.Key{Namespace: "d", Name: n}); err != nil {
+	reconcile := func() v1.IP {
+		t.Helper()
+		if _, err := ctl.Reconcile(ctx, engine.Key{Kind: "IP", Namespace: "d", Name: "mail"}); err != nil {
 			t.Fatal(err)
 		}
-		settle(n)
+		var x v1.IP
+		must(c.Get(ctx, "IP", "d", "mail", &x))
+		return x
 	}
-	// Now back to back, as one worker takes the next key off the queue at once.
-	for _, n := range []string{"a", "b"} {
-		if _, err := ctl.Reconcile(ctx, engine.Key{Namespace: "d", Name: n}); err != nil {
+	x := reconcile()
+	r := meta.FindCondition(x.Status.Conditions, "Reserved")
+	if x.Status.Address != "" || r == nil || r.Reason != "NoAddress" || !strings.Contains(r.Message, "kvoadm host addresses HOST add mail-a ADDRESS") {
+		t.Fatalf("no host has it: %+v", x.Status)
+	}
+	must(c.Get(ctx, "Host", "", "h1", h))
+	h.Spec.Addresses = []v1.HostAddress{{Name: "mail-a", Kind: v1.NetworkExternal, Address: "198.51.100.17"}}
+	must(c.Update(ctx, h))
+	for i := 0; ; i++ {
+		if o, ok := ctl.Hosts.Get("", "h1"); ok && len(o.(*v1.Host).Spec.Addresses) == 1 {
+			break
+		}
+		if i == 100 {
+			t.Fatal("the host cache never saw the address")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	x = reconcile()
+	if x.Status.Address != "198.51.100.17" || x.Status.Host != "h1" || x.Status.Where != "host h1" {
+		t.Fatalf("the host's address: %+v", x.Status)
+	}
+}
+
+// An IP of type Provider is reserved from the plugin of that name, in its region, and released
+// when the IP is deleted.
+func TestProviderIPReservedAndReleased(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	srv, err := apiserver.New(store.NewMemory(0), clock.Real{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	defer cancel()
+	c := client.New(ts.URL)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	var a, b v1.IP
-	must(c.Get(ctx, "IP", "d", "a", &a))
-	must(c.Get(ctx, "IP", "d", "b", &b))
-	if a.Status.Address == "" || b.Status.Address == "" {
-		t.Fatalf("no address: a %q, b %q", a.Status.Address, b.Status.Address)
+	dir, _ := os.MkdirTemp("/tmp", "kvp")
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	fake := kplugintest.New()
+	reg := &plugins.Registry{Dir: filepath.Join(dir, "plugins")}
+	must(reg.Add(ctx, fake))
+	must(c.Create(ctx, &v1.Namespace{TypeMeta: tm("Namespace"), ObjectMeta: meta.ObjectMeta{Name: "d"}}))
+	must(c.Create(ctx, &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: "eth", Namespace: "d", Finalizers: []string{v1.FinalizerIP}},
+		Spec: v1.IPSpec{Type: v1.IPTypeProvider, Provider: "fake", Region: "r1"}}))
+	run := func(kind string) *informer.Informer {
+		inf := informer.New(c, kind)
+		go inf.Run(ctx)
+		if !inf.WaitSynced(ctx) {
+			t.Fatalf("%s never synced", kind)
+		}
+		return inf
 	}
-	if a.Status.Address == b.Status.Address {
-		t.Fatalf("a and b were both given %s", a.Status.Address)
+	ctl := &ipctl.Controller{Client: c, IPs: run("IP"), Silos: run("Silo"), Services: run("Service"), Hosts: run("Host"), Plugins: reg}
+	if _, err := ctl.Reconcile(ctx, engine.Key{Kind: "IP", Namespace: "d", Name: "eth"}); err != nil {
+		t.Fatal(err)
+	}
+	var x v1.IP
+	must(c.Get(ctx, "IP", "d", "eth", &x))
+	if x.Status.Address != "203.0.113.100" || x.Status.Region != "r1" || x.Status.Handle == "" || x.Status.Where != "fake r1" {
+		t.Fatalf("reserved: %+v", x.Status)
+	}
+	must(c.Delete(ctx, "IP", "d", "eth"))
+	for i := 0; ; i++ {
+		if o, ok := ctl.IPs.Get("d", "eth"); ok && o.GetObjectMeta().DeletionTimestamp != nil {
+			break
+		}
+		if i == 100 {
+			t.Fatal("the IP cache never saw the delete")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := ctl.Reconcile(ctx, engine.Key{Kind: "IP", Namespace: "d", Name: "eth"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(fake.CallLog(), func(s string) bool { return strings.HasPrefix(s, "release-address "+kplugintest.ClassIP) }) {
+		t.Fatalf("not released: %v", fake.CallLog())
+	}
+	if err := c.Get(ctx, "IP", "d", "eth", &x); !client.IsNotFound(err) {
+		t.Fatalf("the IP is still there: %v %+v", err, x.ObjectMeta)
 	}
 }

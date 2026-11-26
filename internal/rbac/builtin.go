@@ -47,13 +47,14 @@ var (
 	exposureAdmin  = v1.PolicyRule{Verbs: []string{v1.VerbOpen, v1.VerbApprove}, Resources: []string{v1.ResourceExposure}}
 )
 
-// IPs (design §7.2c-1): an address costs money and is what peers point at, so admins reserve
-// and release them (and use them); editors may put a silo they edit on one an admin made (use),
-// and see them; viewers see them. Naming an IP in a service needs use on it, like a secret.
+// IPs and IP sets (networking v2): an address costs money and is what peers point at, so admins
+// reserve and release them (and use them); editors may put a silo they edit on one an admin made
+// (use), and see them; viewers see them. Naming an IP in a service (or an IPSet on a SiloSet)
+// needs use on it, like a secret.
 var (
-	ipsAdmin  = v1.PolicyRule{Verbs: append(slices.Clone(write), v1.VerbUse), Resources: []string{"ips"}}
-	ipsEditor = v1.PolicyRule{Verbs: append(slices.Clone(read), v1.VerbUse), Resources: []string{"ips"}}
-	ipsViewer = v1.PolicyRule{Verbs: read, Resources: []string{"ips"}}
+	ipsAdmin  = v1.PolicyRule{Verbs: append(slices.Clone(write), v1.VerbUse), Resources: []string{"ips", "ipsets"}}
+	ipsEditor = v1.PolicyRule{Verbs: append(slices.Clone(read), v1.VerbUse), Resources: []string{"ips", "ipsets"}}
+	ipsViewer = v1.PolicyRule{Verbs: read, Resources: []string{"ips", "ipsets"}}
 )
 
 // siloShell is a terminal in a silo (create silos/ssh, kvo ssh) and its files (get silos/files to

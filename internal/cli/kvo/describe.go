@@ -128,29 +128,35 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		}
 		kv(0, "Silo IP", dash(o.Status.SiloIP))
 		st := o.Status.Service
-		if sv := o.Spec.Service; sv == nil {
+		if len(o.Spec.Services) == 0 {
 			kv(0, "Service", "none: no name, nothing reachable (a silo IP for its own traffic only)")
-		} else {
-			name := v1.ServiceName(o)
-			if st.Name != "" {
-				name += " (" + st.Name + ")"
-			}
-			kv(0, "Service", name)
-			if sv.LoadBalancer != nil {
-				lb := sv.LoadBalancer.Class
-				if st.LoadBalancerIP != "" {
-					lb += " at " + st.LoadBalancerIP
+		}
+		// TODO(net-v2 wave 2): each service's own status, and "can move: … (why)".
+		for _, sv := range o.Spec.Services {
+			line := v1.ServiceNameOf(sv, o.Name) + ": " + sv.TypeOrDefault()
+			switch sv.TypeOrDefault() {
+			case v1.ServiceHostPort:
+				line += " (" + sv.Way().String() + ")"
+			case v1.ServiceLoadBalancer:
+				if sv.LoadBalancer != nil {
+					line += " (" + sv.LoadBalancer.Provider
+					if st.LoadBalancerIP != "" {
+						line += " at " + st.LoadBalancerIP
+					}
+					line += ")"
 				}
-				kv(0, "Load balancer", lb)
 			}
+			kv(0, "Service", line)
 		}
 		if len(o.Spec.Ports) > 0 {
 			tables = append(tables, func() { writeSiloPorts(tw, o) })
 		}
-		if o.Spec.Service != nil {
+		if len(o.Spec.Services) > 0 {
 			egress := dash(st.EgressIP)
-			if src := o.Spec.Network.Egress.Source; src != "" {
-				egress += " (" + src + ")"
+			if src := o.Spec.Network.Egress.Source; src != nil && src.IP != "" {
+				egress += " (ip: " + src.IP + ")"
+			} else if src != nil && src.Own {
+				egress += " (own)"
 			}
 			kv(0, "Egress IP", egress)
 			kv(0, "In and out", st.AddressesLine())
@@ -558,12 +564,9 @@ func describeObject(w io.Writer, obj meta.Object) error {
 		}
 	case *v1.Service:
 		conds = o.Status.Conditions
-		typ := o.Spec.Type
-		if typ == "" {
-			typ = v1.ServiceClusterIP
-		}
-		if o.Spec.LoadBalancerClass != "" {
-			typ += " (" + o.Spec.LoadBalancerClass + ")"
+		typ := o.Spec.TypeOrDefault()
+		if l := o.Spec.LoadBalancer; l != nil {
+			typ += " (" + l.Provider + ")"
 		}
 		kv(0, "Type", typ)
 		kv(0, "Selector", pairs(o.Spec.Selector))

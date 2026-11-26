@@ -48,13 +48,15 @@ func TestMetal2Worker(t *testing.T) {
 		place = on(metalHost2)
 	}
 	c.apply(vmEcho(ns, "vm", 18200) + place + `  ports: [{ name: web, port: 18200 }]
-  service:
-    ports: [{ port: web, hostPort: [external] }]
+  services:
+    - type: HostPort
+      ports: [{ port: web }]
   grants: [app]
 ---
 ` + boxEcho(ns, "box", 18201) + place + `  ports: [{ name: web, port: 18201 }]
-  service:
-    ports: [{ port: web, hostPort: [external] }]
+  services:
+    - type: HostPort
+      ports: [{ port: web }]
   grants: [app]
 `)
 	c.waitRunning(ns, 20*time.Minute, "vm", "box")
@@ -82,8 +84,8 @@ func TestMetal2Worker(t *testing.T) {
 
 // TestMetal2Mesh is the mesh between two hosts at different sites: a microVM on machine 1 reaches
 // a container on machine 2 by its service name (the silo IP over WireGuard) on a port whose
-// allowFrom names it; a silo allowFrom doesn't name can't connect; a port on [external] answers
-// on its own host's IP only.
+// allowFrom names it; a silo allowFrom doesn't name can't connect; a HostPort port (worker:
+// external) answers on its own host's IP only.
 //
 // Listens on machine 2 while it runs: 18210. This Mac dials KEVASO_METAL_PORT_18210
 // (18210 when unset).
@@ -94,8 +96,11 @@ func TestMetal2Mesh(t *testing.T) {
 	ns := "mesh2"
 	c.namespace(ns)
 	c.apply(boxEcho(ns, "api", 8080, 18210) + on(metalHost2) + `  ports: [{ name: http, port: 8080 }, { name: pub, port: 18210 }]
-  service:
-    ports: [{ port: http, allowFrom: [caller] }, { port: pub, hostPort: [external] }]
+  services:
+    - ports: [{ port: http, allowFrom: [caller] }]
+    - name: api-pub
+      type: HostPort
+      ports: [{ port: pub }]
 ---
 ` + vmEcho(ns, "caller", 8080) + on(metalHost) + "---\n" + boxEcho(ns, "stranger", 8080) + on(metalHost))
 	c.waitRunning(ns, 20*time.Minute, "api", "caller", "stranger")
@@ -113,9 +118,9 @@ func TestMetal2Mesh(t *testing.T) {
 		out, _ := c.in(ns, "stranger", py)
 		return !strings.Contains(out, "api 8080"), out
 	})
-	c.eventually("[external] answers on its host's IP", time.Minute, func() (bool, string) { return openOn(p.m2, 18210) })
+	c.eventually("worker: external answers on its host's IP", time.Minute, func() (bool, string) { return openOn(p.m2, 18210) })
 	if ok, got := openOn(p.m1, 18210); ok {
-		t.Errorf("[external] also answers on the other host's IP: %s", got)
+		t.Errorf("worker: external also answers on the other host's IP: %s", got)
 	}
 }
 
@@ -401,8 +406,9 @@ spec:
   runtime: docker
   container: { image: docker.io/library/nginx:1.27 }
 ` + on(metalHost) + `  ports: [{ name: http, port: 80 }, { name: https, port: 443 }]
-  service:
-    ports: [{ port: http, hostPort: [external] }, { port: https, hostPort: [external] }]
+  services:
+    - type: HostPort
+      ports: [{ port: http }, { port: https }]
 ---
 apiVersion: kevaso/v1
 kind: IngressClass
@@ -414,8 +420,8 @@ spec:
       namespaces: [` + ns + `]
 ---
 ` + boxEcho(ns, "app", 8080) + on(metalHost2) + `  ports: [{ name: http, port: 8080 }]
-  service:
-    ports: [{ port: http }]
+  services:
+    - ports: [{ port: http }]
 ---
 apiVersion: kevaso/v1
 kind: Ingress

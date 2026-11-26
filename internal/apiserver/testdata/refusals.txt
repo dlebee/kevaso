@@ -32,10 +32,6 @@ Silo spec.availability={"onControlPlaneLoss":"Stop","after":"10s"}
   Silo s: availability.after "10s": want a duration from 30s to 24h0m0s (e.g. 2m)
 Silo spec.availability={"onControlPlaneLoss":"Stop","after":"soon"}
   Silo s: availability.after "soon": want a duration from 30s to 24h0m0s (e.g. 2m)
-Silo spec.network={"egress":{"source":"gateway"}}
-  Silo s: network.egress.source must be host, sameAsService or pool (gateway comes later)
-Silo spec.network={"egress":{"ip":"x"}}
-  Silo s: egress.ip goes with egress.source: pool
 Silo spec.volumes=[{"name":"Data","mountPath":"/d"}]
   Silo s: every volume needs a name (lower-case letters, digits, -), an absolute mountPath of letters, digits, . _ - and / (no . or .. part), and a class: local, or a plugin's (e.g. linode-block)
 Silo spec.volumes=[{"name":"d","mountPath":"/d:rw,z"}]
@@ -84,52 +80,82 @@ Silo spec.ports=[{"name":"web","port":80,"protocol":"SCTP"}]
   Silo s: spec.ports[web]: protocol "SCTP": TCP or UDP
 Silo spec.ports=[{"name":"a","port":80},{"name":"b","port":80}]
   Silo s: spec.ports: a and b are both 80/TCP
-Silo spec.network={"egress":{"source":"sameAsService"}}
-  Silo s: network.egress.source sameAsService needs a service with a port on the host or a load balancer: there's no address in to send from otherwise
-Silo spec.service={"name":"Api"}
-  Silo s: service.name "Api": lower-case letters, digits and -, at most 63
-Silo spec.service={"ports":[{"port":"web"}]}
-  Silo s: service.ports[web]: "web" isn't a declared port (spec.ports): declare it first
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web"},{"port":"web"}]}
-  Silo s: service.ports[web]: opened twice: put everything about one port in one entry
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","allowFrom":["a/b/c"]}]}
-  Silo s: service.ports[web].allowFrom: "a/b/c": a silo, NAME or NAMESPACE/NAME
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","allowFrom":["10.0.0.0/8"]}]}
-  Silo s: service.ports[web].allowFrom: "10.0.0.0/8" is a network range: allowFrom names silos; ranges go in sources (with hostPort or loadBalancer)
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["public"]}]}
-  Silo s: service.ports[web].hostPort: "public": internal or external
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external","external"]}]}
-  Silo s: service.ports[web].hostPort: external twice; service.ports[web]: 80/TCP on the external IP is web's already
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","as":443}]}
-  Silo s: service.ports[web].as: only with hostPort or loadBalancer (it's the number there)
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","sources":["10.0.0.0/8"]}]}
-  Silo s: service.ports[web].sources: only with hostPort or loadBalancer (who may connect on its silo IP is allowFrom)
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"as":70000}]}
-  Silo s: service.ports[web].as: 70000 isn't from 1 to 65535
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"as":6443}]}
-  Silo s: service.ports[web]: 6443 is the API, which a silo may not take
-SiloSet spec.template.ports=[{"name":"web","port":80}] spec.template.service={"ports":[{"port":"web","hostPort":["external"],"as":6443}]}
-  SiloSet set: template: service.ports[web]: 6443 is the API, which a silo may not take
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":["10.0.0.0/33"]}]}
-  Silo s: service.ports[web].sources: "10.0.0.0/33" isn't an address or CIDR
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":["2001:db8::/32"]}]}
-  Silo s: service.ports[web].sources: "2001:db8::/32": IPv6 comes later; IPv4 for now
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":["2001:db8::1"]}]}
-  Silo s: service.ports[web].sources: "2001:db8::1": IPv6 comes later; IPv4 for now
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":["::ffff:10.0.0.1"]}]}
-  Silo s: service.ports[web].sources: "::ffff:10.0.0.1": IPv6 comes later; IPv4 for now
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":["fe80::1%eth0"]}]}
-  Silo s: service.ports[web].sources: "fe80::1%eth0": IPv6 comes later; IPv4 for now
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":["10.0.0.1, 10.0.0.2"]}]}
-  Silo s: service.ports[web].sources: "10.0.0.1, 10.0.0.2" isn't an address or CIDR
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":[""]}]}
-  Silo s: service.ports[web].sources: "" isn't an address or CIDR
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","hostPort":["external"],"sources":["10.0.0.0/8; drop"]}]}
-  Silo s: service.ports[web].sources: "10.0.0.0/8; drop" isn't an address or CIDR
-SiloSet spec.template.ports=[{"name":"web","port":80}] spec.template.service={"ports":[{"port":"web","hostPort":["external"],"sources":["2001:db8::/32"]}]}
-  SiloSet set: template: service.ports[web].sources: "2001:db8::/32": IPv6 comes later; IPv4 for now
-IP spec.address="2001:db8::5"
-  IP ip: spec.address: "2001:db8::5": IPv6 comes later; IPv4 for now
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"name":"Api","ports":[{"port":"web"}]}]
+  Silo s: service Api: name "Api": lower-case letters, digits and -, at most 63
+Silo spec.services=[{"ports":[{"port":"web"}]}]
+  Silo s: services[0]: ports[web]: "web" isn't a declared port (spec.ports): declare it first
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"ports":[{"port":"web"},{"port":"web"}]}]
+  Silo s: services[0]: ports[web]: listed twice in one service: put everything about one port in one entry
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"ports":[{"port":"web"}]},{"ports":[{"port":"web"}]}]
+  Silo s: services[0] and services[1] are both named s (an unnamed service takes the silo's name): each service its own name (name: web, name: api)
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"name":"a"}]
+  Silo s: service a: no ports: a service opens at least one declared port
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"ports":[{"port":"web","allowFrom":["a/b/c"]}]}]
+  Silo s: services[0]: ports[web].allowFrom: "a/b/c": a silo, NAME or NAMESPACE/NAME
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"ports":[{"port":"web","allowFrom":["10.0.0.0/8"]}]}]
+  Silo s: services[0]: ports[web].allowFrom: "10.0.0.0/8" is a network range: allowFrom names silos; ranges go in sources (on a HostPort or LoadBalancer service)
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"NodePort","ports":[{"port":"web"}]}]
+  Silo s: services[0]: type "NodePort": Internal (silos in allowFrom, over the mesh), HostPort (at the worker running it) or LoadBalancer (a provider's balancer in front)
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","hostPort":{"worker":"public"},"ports":[{"port":"web"}]}]
+  Silo s: services[0]: hostPort.worker "public": external or internal (the worker's main IPs)
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","hostPort":{"worker":"external","ip":"x"},"ports":[{"port":"web"}]}]
+  Silo s: services[0]: hostPort takes exactly one of worker, ip and own (two ways in inside one service): make a service for each
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","hostPort":{},"ports":[{"port":"web"}]}]
+  Silo s: services[0]: hostPort: say one of worker (external or internal), ip (an IP's name) or own: true; or leave hostPort out for { worker: external }
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","hostPort":{"own":true},"ports":[{"port":"web"}]}]
+  Silo s: services[0]: hostPort.own is a SiloSet instance's own IPSet member: a single silo names its address with hostPort.ip (an IP), or put it in a SiloSet with ips: SETNAME
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","hostPort":{"ip":"ip/x"},"ports":[{"port":"web"}]}]
+  Silo s: services[0]: hostPort.ip "ip/x": an IP's name in this namespace (no kind/ prefix)
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"hostPort":{"worker":"external"},"ports":[{"port":"web"}]}]
+  Silo s: services[0]: hostPort goes with type: HostPort; this one is Internal (two ways in: make a second service for the other)
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","loadBalancer":{"provider":"linode"},"ports":[{"port":"web"}]}]
+  Silo s: services[0]: loadBalancer goes with type: LoadBalancer; this one is HostPort (two ways in: make a second service for the other)
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"LoadBalancer","ports":[{"port":"web"}]}]
+  Silo s: services[0]: type LoadBalancer needs loadBalancer.provider: the installed provider making the balancer (e.g. linode)
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"LoadBalancer","loadBalancer":{"provider":"Linode"},"ports":[{"port":"web"}]}]
+  Silo s: services[0]: loadBalancer.provider "Linode": an installed provider's name (e.g. linode)
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"LoadBalancer","loadBalancer":{"provider":"linode","ip":"lb/x"},"ports":[{"port":"web"}]}]
+  Silo s: services[0]: loadBalancer.ip "lb/x": an IP's name in this namespace (no kind/ prefix)
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"ports":[{"port":"web","as":443}]}]
+  Silo s: services[0]: ports[web].as: only on a HostPort or LoadBalancer service (it's the number there); an Internal port is reached on its own number
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"ports":[{"port":"web","sources":["10.0.0.0/8"]}]}]
+  Silo s: services[0]: ports[web].sources: only on a HostPort or LoadBalancer service; who may connect over the mesh is allowFrom
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"LoadBalancer","loadBalancer":{"provider":"linode"},"ports":[{"port":"web","lease":{"max":"1h"}}]}]
+  Silo s: services[0]: ports[web].lease: leases are on HostPort services only (silo-to-silo access is allowFrom; put the port in a HostPort service to lease it)
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","ports":[{"port":"web","as":70000}]}]
+  Silo s: services[0]: ports[web].as: 70000 isn't from 1 to 65535
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","ports":[{"port":"web","as":6443}]}]
+  Silo s: services[0]: ports[web]: 6443 is the API, which a silo may not take
+SiloSet spec.template.ports=[{"name":"web","port":80}] spec.template.services=[{"type":"HostPort","ports":[{"port":"web","as":6443}]}]
+  SiloSet set: template: services[0]: ports[web]: 6443 is the API, which a silo may not take
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","ports":[{"port":"web","sources":["10.0.0.0/33"]}]}]
+  Silo s: services[0]: ports[web].sources: "10.0.0.0/33" isn't an address or CIDR
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","ports":[{"port":"web","sources":["2001:db8::/32"]}]}]
+  Silo s: services[0]: ports[web].sources: "2001:db8::/32": IPv6 comes later; IPv4 for now
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","ports":[{"port":"web","sources":["2001:db8::1"]}]}]
+  Silo s: services[0]: ports[web].sources: "2001:db8::1": IPv6 comes later; IPv4 for now
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","ports":[{"port":"web","sources":["::ffff:10.0.0.1"]}]}]
+  Silo s: services[0]: ports[web].sources: "::ffff:10.0.0.1": IPv6 comes later; IPv4 for now
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","ports":[{"port":"web","sources":["fe80::1%eth0"]}]}]
+  Silo s: services[0]: ports[web].sources: "fe80::1%eth0": IPv6 comes later; IPv4 for now
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","ports":[{"port":"web","sources":["10.0.0.1, 10.0.0.2"]}]}]
+  Silo s: services[0]: ports[web].sources: "10.0.0.1, 10.0.0.2" isn't an address or CIDR
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","ports":[{"port":"web","sources":[""]}]}]
+  Silo s: services[0]: ports[web].sources: "" isn't an address or CIDR
+Silo spec.ports=[{"name":"web","port":80}] spec.services=[{"type":"HostPort","ports":[{"port":"web","sources":["10.0.0.0/8; drop"]}]}]
+  Silo s: services[0]: ports[web].sources: "10.0.0.0/8; drop" isn't an address or CIDR
+SiloSet spec.template.ports=[{"name":"web","port":80}] spec.template.services=[{"type":"HostPort","ports":[{"port":"web","sources":["2001:db8::/32"]}]}]
+  SiloSet set: template: services[0]: ports[web].sources: "2001:db8::/32": IPv6 comes later; IPv4 for now
+Silo spec.ports=[{"name":"a","port":80},{"name":"b","port":81}] spec.services=[{"name":"x","type":"HostPort","ports":[{"port":"a","as":443}]},{"name":"y","type":"HostPort","ports":[{"port":"b","as":443}]}]
+  Silo s: service y: ports[b]: 443/TCP on worker: external is x a's already: one port per number on an address
+Silo spec.network={"egress":{"source":{"own":true}}}
+  Silo s: network.egress.source.own is a SiloSet instance's own IPSet member: a single silo names its address with egress.source.ip (an IP), or put it in a SiloSet with ips: SETNAME
+Silo spec.network={"egress":{"source":{"ip":"a","own":true}}}
+  Silo s: network.egress.source takes exactly one of ip (an IP's name) and own: true; leave it out to send from the worker's own IP
+Silo spec.network={"egress":{"source":{}}}
+  Silo s: network.egress.source takes exactly one of ip (an IP's name) and own: true; leave it out to send from the worker's own IP
+Silo spec.network={"egress":{"source":{"ip":"A"}}}
+  Silo s: network.egress.source.ip "A": an IP's name in this namespace (no kind/ prefix)
 Grant spec.egress=[{"to":"2001:db8::/32"}]
   Grant g: egress "2001:db8::/32": IPv6 comes later; IPv4 for now
 Grant spec.egress=[{"to":"10.64.2.5"}]
@@ -144,18 +170,6 @@ Grant spec.egress=[{"to":"127.0.0.1"}]
   Grant g: egress "127.0.0.1" is inside 127.0.0.0/8 (loopback), which a grant never opens
 Grant spec.egress=[{"to":"169.254.169.254"}]
   Grant g: egress "169.254.169.254" is inside 169.254.0.0/16 (link-local), which a grant never opens
-Silo spec.ports=[{"name":"a","port":80},{"name":"b","port":81}] spec.service={"ports":[{"port":"a","hostPort":["external"],"as":443},{"port":"b","hostPort":["external"],"as":443}]}
-  Silo s: service.ports[b]: 443/TCP on the external IP is a's already
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","loadBalancer":true}]}
-  Silo s: a port with loadBalancer: true needs service.loadBalancer.class: ip-pool, or a plugin's class (e.g. linode-nodebalancer)
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web"}],"loadBalancer":{"class":"ip-pool"}}
-  Silo s: service.loadBalancer is where ports with loadBalancer: true get their address, and no port says so
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web","loadBalancer":true}],"loadBalancer":{"class":"ip-pool","ip":"x","dedicated":true}}
-  Silo s: service.loadBalancer.dedicated asks for an IP made for it alone: not with loadBalancer.ip (that one is named already)
-Silo spec.ports=[{"name":"web","port":80}] spec.service={"ports":[{"port":"web"}]} spec.network={"egress":{"source":"sameAsService"}}
-  Silo s: network.egress.source sameAsService needs a port on the host or a load balancer: there's no address in to send from otherwise
-Silo spec.network={"egress":{"source":"pool"}}
-  Silo s: network.egress.source pool needs egress.ip: an IP of class ip-pool (or ports on a load balancer of class ip-pool, whose IP it then sends from)
 VMImage spec.versions=[]
   VMImage u: a VMImage needs at least one version
 VMImage spec.versions.0.name="-v"
@@ -186,12 +200,16 @@ SiloSet spec.template.availability={"onControlPlaneLoss":"Stop","after":"5s"}
   SiloSet set: template: availability.after "5s": want a duration from 30s to 24h0m0s (e.g. 2m)
 SiloSet metadata.name="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   SiloSet aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: a SiloSet's name is at most 56 characters (its instances add -N)
-SiloSet spec.template.ports=[{"name":"web","port":80}] spec.template.service={"ports":[{"port":"web","loadBalancer":true}],"loadBalancer":{"class":"ip-pool","ip":"x"}}
-  SiloSet set: template.service.loadBalancer.ip would put every instance on one IP with the same ports, which clash: leave it out and each instance gets one of its own (or put the set behind a Service, which can name one)
-SiloSet spec.template.service={"name":"api"}
-  SiloSet set: template.service.name would give every instance the same name, and a name has one owner: each instance's service is named after it (api-0, api-1…); put a Service in front for one name
-SiloSet spec.template.network={"egress":{"source":"pool","ip":"x"}}
-  SiloSet set: template.network.egress.ip would give every instance the same IP, which serves one silo
+SiloSet spec.template.ports=[{"name":"web","port":80}] spec.template.services=[{"type":"HostPort","hostPort":{"ip":"x"},"ports":[{"port":"web"}]}]
+  SiloSet set: template.services[0].hostPort.ip names IP x: one IP can't serve many instances (even with one instance): use own: true and put the set on an IPSet (ips: SETNAME)
+SiloSet spec.template.ports=[{"name":"web","port":80}] spec.template.services=[{"type":"LoadBalancer","loadBalancer":{"provider":"linode","ip":"x"},"ports":[{"port":"web"}]}]
+  SiloSet set: template.services[0].loadBalancer.ip names IP x: one IP can't serve many instances (even with one instance): use own: true and put the set on an IPSet (ips: SETNAME)
+SiloSet spec.template.network={"egress":{"source":{"ip":"x"}}}
+  SiloSet set: template.network.egress.source.ip names IP x: one IP can't serve many instances (even with one instance): use own: true and put the set on an IPSet (ips: SETNAME)
+SiloSet spec.template.network={"egress":{"source":{"own":true}}}
+  SiloSet set: the template says own, so the set needs ips: SETNAME (an IPSet whose member N is instance N's address)
+SiloSet spec.ips="edge"
+  SiloSet set: spec.ips edge is only used with own: nothing in the template says own (hostPort: { own: true } or egress.source: { own: true }): drop ips, or use own
 SiloSet spec.template.runtime="kvm"
   SiloSet set: template: spec.runtime must be one of cloud-hypervisor, openshell, docker, podman, openshell-container, tart
 Service spec.selector={}
@@ -200,16 +218,6 @@ Service spec.ports=[{"name":"web","port":0}]
   Service svc: every port needs a name, a port from 1 to 65535, and protocol TCP or UDP
 Service spec.ports=[{"name":"web","port":80},{"name":"web","port":81}]
   Service svc: port names must be unique
-Service spec.type="NodePort"
-  Service svc: type must be ClusterIP or LoadBalancer
-Service spec.type="LoadBalancer" spec.loadBalancerClass="ip-pool"
-  Service svc: type LoadBalancer needs loadBalancerClass: a plugin's class (e.g. linode-nodebalancer); ip-pool's addresses are one host's, so they're for a single silo's own service
-Service spec.loadBalancerClass="linode-nodebalancer"
-  Service svc: loadBalancerClass goes with type: LoadBalancer
-Service spec.loadBalancerIP="x"
-  Service svc: loadBalancerIP (an IP's name) goes with type: LoadBalancer
-Service spec.loadBalancerDedicated=true
-  Service svc: loadBalancerDedicated asks for an IP of its own: with type LoadBalancer, and not with loadBalancerIP (that one is named already)
 Service spec.routeWhen="always"
   Service svc: routeWhen must be ready or running
 Service spec.ports.0.targetPort="Http"
@@ -346,6 +354,16 @@ RoleBinding subjects=[]
   RoleBinding b: a binding needs at least one subject
 ClusterRoleBinding subjects=[{"kind":"User","name":""}]
   ClusterRoleBinding b: every subject needs a name and a kind of User, Group or ServiceAccount
+Service spec.type="ClusterIP"
+  Service svc: type "ClusterIP": Internal (the default: a virtual IP on the mesh) or LoadBalancer (a provider's balancer in front)
+Service spec.type="HostPort"
+  Service svc: type HostPort arrives at the worker running one silo, so a Service of several can't be one: put a HostPort service in each silo's services (or the SiloSet's template, with own: true for an address each), or use type LoadBalancer for the group
+Service spec.type="LoadBalancer"
+  Service svc: type LoadBalancer needs loadBalancer.provider: the installed provider making the balancer (e.g. linode)
+Service spec.loadBalancer={"provider":"linode"}
+  Service svc: loadBalancer goes with type: LoadBalancer
+Service spec.type="LoadBalancer" spec.loadBalancer={"provider":"Linode"}
+  Service svc: loadBalancer.provider "Linode": an installed provider's name (e.g. linode)
 RoleBinding roleRef.kind="Group"
   RoleBinding b: roleRef.kind must be Role or ClusterRole
 ClusterRoleBinding roleRef.kind="Role"
@@ -356,16 +374,38 @@ ClusterRoleBinding subjects=[]
   ClusterRoleBinding b: a binding needs at least one subject
 RoleBinding subjects=[{"kind":"Robot","name":"r"}]
   RoleBinding b: every subject needs a name and a kind of User, Group or ServiceAccount
-IP spec.class="Pool"
-  IP ip: spec.class is required: ip-pool (a host's extra addresses) or a plugin's load-balancer class
-IP spec.reclaim="Keep"
-  IP ip: spec.reclaim must be Retain or Delete
-IP spec.region="ca-central"
-  IP ip: spec.region is for a plugin's class; ip-pool's addresses are a host's (spec.host)
-IP spec.class="linode-nodebalancer" spec.host="h"
-  IP ip: spec.host is for class ip-pool; a plugin's address is in a region (spec.region)
-IP spec.address="10.0.0.300"
-  IP ip: spec.address: "10.0.0.300" isn't an address
+IP spec.type!
+  IP ip: spec.type is required: Host (one of a host's extra addresses: hostAddress) or Provider (reserved from a provider: provider, region)
+IP spec.type="Pool"
+  IP ip: spec.type "Pool": Host or Provider
+IP spec.hostAddress!
+  IP ip: type Host needs hostAddress: the name of one of a host's extra addresses (kvoadm host addresses HOST add NAME ADDRESS)
+IP spec.hostAddress="Mail"
+  IP ip: spec.hostAddress "Mail": a host address's name (lower-case letters, digits, -)
+IP spec.region="us-ord"
+  IP ip: type Host is a host's address: provider and region are for type Provider (drop them, or make it type: Provider)
+IP spec.type="Provider" spec.hostAddress! spec.provider="linode"
+  IP ip: type Provider needs provider and region: the installed provider (e.g. linode) and where to reserve it (e.g. us-ord); never guessed
+IP spec.type="Provider" spec.provider="linode" spec.region="us-ord"
+  IP ip: type Provider is reserved from the provider: hostAddress is for type Host (drop it, or make it type: Host)
+IP spec.type="Provider" spec.hostAddress! spec.provider="Linode" spec.region="us-ord"
+  IP ip: spec.provider "Linode": an installed provider's name (e.g. linode)
+IPSet spec.type!
+  IPSet ips: spec.type is required: Static (members you list) or Dynamic (provider IPs reserved as instances need them)
+IPSet spec.type="Pool"
+  IPSet ips: spec.type "Pool": Static or Dynamic
+IPSet spec.members=[]
+  IPSet ips: type Static needs members: one per instance, each { ip: NAME } or { hostAddress: NAME }
+IPSet spec.members=[{"ip":"a","hostAddress":"b"}]
+  IPSet ips: members[0]: exactly one of ip (an IP's name) and hostAddress (a host address's name)
+IPSet spec.members=[{"ip":"a"},{"ip":"a"}]
+  IPSet ips: members[1]: ip: a is members[0] already: one address per ordinal
+IPSet spec.max=3
+  IPSet ips: type Static lists its members: provider, region and max are for type Dynamic
+IPSet spec.type="Dynamic" spec.provider="linode" spec.region="us-ord" spec.max=2
+  IPSet ips: type Dynamic reserves provider IPs, so it can't have a host's address (hostAddress b): use type Static with hostAddress members; type Dynamic has no members: Kevaso reserves them as instances need them (SET-0, SET-1, …); list them with type Static instead
+IPSet spec.type="Dynamic" spec.members! spec.provider="linode"
+  IPSet ips: type Dynamic needs provider, region and max (at least 1): who reserves the IPs, where, and how many at most
 Host spec.internalIP!
   Host h: a host needs spec.internalIP (its address on its own network), spec.externalIP (its address reachable from outside it), or both
 Host spec.components={}
@@ -382,8 +422,18 @@ Host spec.network={"dns":["mesh"]}
   Host h: spec.network.dns: "mesh": internal or external (silos and the mesh are always answered)
 Host spec.network={"dns":["external"]}
   Host h: spec.network.dns: external: the host has no external IP
-Host spec.network={"addresses":["nope"]}
-  Host h: spec.network.addresses: "nope" isn't an address or CIDR
+Host spec.addresses=[{"name":"mail","kind":"external","address":"nope"}]
+  Host h: spec.addresses[0]: "nope" isn't an address
+Host spec.addresses=[{"name":"mail","kind":"external","address":"203.0.113.0/30"}]
+  Host h: spec.addresses[0]: "203.0.113.0/30" is a range: one address per name (add each with its own name)
+Host spec.addresses=[{"name":"mail","kind":"public","address":"203.0.113.9"}]
+  Host h: spec.addresses[0]: kind "public": external (reachable from outside the host's network) or internal
+Host spec.addresses=[{"name":"Mail","kind":"external","address":"203.0.113.9"}]
+  Host h: spec.addresses[0]: name "Mail": lower-case letters, digits and - (an IP of type Host names it)
+Host spec.addresses=[{"name":"a","kind":"external","address":"203.0.113.9"},{"name":"a","kind":"external","address":"203.0.113.10"}]
+  Host h: spec.addresses[1]: a is listed twice
+Host spec.addresses=[{"name":"a","kind":"internal","address":"10.0.0.5"}]
+  Host h: spec.addresses[0]: 10.0.0.5 is its main IP already
 Namespace metadata.name="mesh"
   Namespace mesh: "mesh" is a network's name (mesh, internal, external), which names use as a label of their own: pick another
 Namespace metadata.name="internal"

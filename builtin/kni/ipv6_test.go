@@ -75,7 +75,7 @@ func TestPropertyNothingOverIPv6(t *testing.T) {
 // A host whose address on a network is IPv6 opens no host port there (the rules can't take it),
 // and says so; its IPv4 address on the other network still works.
 func TestAnIPv6HostAddressOpensNothing(t *testing.T) {
-	s := Silo{Key: "dev/web", IP: a("10.64.2.2"), Tap: "kvt02", Spec: opens(8080, v1.ServicePort{HostPort: []string{v1.NetworkInternal, v1.NetworkExternal}})}
+	s := Silo{Key: "dev/web", IP: a("10.64.2.2"), Tap: "kvt02", Spec: opens(8080, v1.ServicePort{}, v1.NetworkInternal, v1.NetworkExternal)}
 	h := host(s)
 	h.ExternalIP = a("2001:db8::10")
 	text, problems := Generate(h)

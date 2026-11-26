@@ -194,8 +194,9 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.secret.iKnow = true
 		case "--generate":
 			o.secret.generate, err = val()
-		case "--type":
+		case "--type": // a secret's, or an IP's
 			o.secret.typ, err = val()
+			o.ip.typ = o.secret.typ
 		case "--default-pull":
 			o.secret.defaultPull = true
 		case "--write-only":
@@ -232,18 +233,14 @@ func parse(args []string, env func(string) string) (opts, error) {
 			o.term.tty = true
 		case "--max-size":
 			o.term.maxSize, err = val()
-		case "--class":
-			o.ip.class, err = val()
-		case "--host":
-			o.ip.host, err = val()
+		case "--host-address":
+			o.ip.hostAddress, err = val()
+		case "--provider":
+			o.ip.provider, err = val()
 		case "--description":
 			o.cluster.description, err = val()
 		case "--region":
 			o.ip.region, err = val()
-		case "--address":
-			o.ip.address, err = val()
-		case "--reclaim":
-			o.ip.reclaim, err = val()
 		default:
 			if strings.HasPrefix(a, "-") && a != "-" {
 				return o, fmt.Errorf("unknown flag %s", a)
@@ -937,10 +934,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 			}
 			row = append(row, dash(o.InstanceSpec().From()), inst, fmt.Sprintf("%d/%d", o.Status.Ready, o.Spec.Instances), fmt.Sprint(o.Status.Updated))
 		case *v1.Service:
-			typ := o.Spec.Type
-			if typ == "" {
-				typ = v1.ServiceClusterIP
-			}
+			typ := o.Spec.TypeOrDefault()
 			var ps []string
 			for _, p := range o.Spec.Ports {
 				proto := p.Protocol

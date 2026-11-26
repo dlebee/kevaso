@@ -167,34 +167,35 @@ func (r *modelRig) rules(host string) string {
 	return kni.Rules(view)
 }
 
-func set(name, port string, number int, nets []string, site string) *v1.SiloSet {
+func set(name, port string, number int, net, site string) *v1.SiloSet {
 	return &v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "shop"},
 		Spec: v1.SiloSetSpec{Instances: 1, Template: v1.SiloTemplate{Labels: map[string]string{"app": name},
 			SiloSpec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "docker.io/library/nginx:1.27"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
 				Placement: v1.Placement{HostSelector: map[string]string{"site": site}},
 				Ports:     []v1.SiloPort{{Name: port, Port: number}},
-				Service:   &v1.SiloService{Ports: []v1.ServicePort{{Port: port, HostPort: nets, As: 443}}}}}}}
+				Services:  []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{Worker: net}, Ports: []v1.ServicePort{{Port: port, As: 443}}}}}}}}
 }
 
 // The three ways in (design §7.0): one api silo that opens nothing on any host, reached by three
-// sets of proxies: on hosts with their own external IP (hostPort: [external]); on a LAN host
-// behind a balancer that holds the external IP (hostPort: [internal], the balancer from the fake
-// plugin in front); internal only (hostPort: [internal], nothing in front). The second and third
-// are written the same way; what sits in front is the network's business.
+// sets of proxies: on hosts with their own external IP (hostPort: { worker: external }); on a LAN
+// host behind a balancer that holds the external IP (hostPort: { worker: internal }, the balancer
+// from the fake plugin in front); internal only (hostPort: { worker: internal }, nothing in
+// front). The second and third are written the same way; what sits in front is the network's
+// business.
 func TestThreeWaysIn(t *testing.T) {
 	r := newModelRig(t)
 	api := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "api-blue", Namespace: "shop"},
 		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "docker.io/library/nginx:1.27"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
 			Placement: v1.Placement{HostSelector: map[string]string{"site": "lan"}},
 			Ports:     []v1.SiloPort{{Name: "http", Port: 8080}},
-			Service: &v1.SiloService{Name: "api", Ports: []v1.ServicePort{
-				{Port: "http", AllowFrom: []string{"edge-0", "front-0", "inside-0"}}}}}}
+			Services: []v1.SiloService{{Name: "api", Ports: []v1.ServicePort{
+				{Port: "http", AllowFrom: []string{"edge-0", "front-0", "inside-0"}}}}}}}
 	for _, o := range []meta.Object{api,
-		set("edge", "https", 8443, []string{"external"}, "cloud"),
-		set("front", "https", 8443, []string{"internal"}, "lb"),
-		set("inside", "https", 8443, []string{"internal"}, "lan"),
+		set("edge", "https", 8443, "external", "cloud"),
+		set("front", "https", 8443, "internal", "lb"),
+		set("inside", "https", 8443, "internal", "lan"),
 		&v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "front-lb", Namespace: "shop"},
-			Spec: v1.ServiceSpec{Selector: map[string]string{"app": "front"}, Type: v1.ServiceLoadBalancer, LoadBalancerClass: kplugintest.ClassLB,
+			Spec: v1.ServiceSpec{Selector: map[string]string{"app": "front"}, Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "fake"},
 				Ports: []v1.ServicePortSpec{{Name: "https", Port: 443}}}},
 	} {
 		if err := r.admin.Create(r.ctx, o); err != nil {
@@ -241,11 +242,12 @@ func TestThreeWaysIn(t *testing.T) {
 			t.Errorf("api, or edge's internal IP, opened on a host:\n%s", rs)
 		}
 	}
-	// The balancer in front of the LAN proxies: an address from the fake plugin.
-	r.eventually("front-lb's address", func() (bool, string) {
+	// The balancer in front of the LAN proxies sends to the one front proxy.
+	// TODO(net-v2 wave 2): and has an address from the fake plugin (no balancer is made yet).
+	r.eventually("front-lb's endpoint", func() (bool, string) {
 		var svc v1.Service
 		_ = r.admin.Get(r.ctx, "Service", "shop", "front-lb", &svc)
-		return svc.Status.LoadBalancerIP != "" && len(svc.Status.Endpoints) == 1, fmt.Sprintf("%+v", svc.Status)
+		return len(svc.Status.Endpoints) == 1, fmt.Sprintf("%+v", svc.Status)
 	})
 	// Names, by who asks.
 	silos, hosts, svcs := r.all()
@@ -282,12 +284,12 @@ func TestThreeWaysIn(t *testing.T) {
 // claiming one service name; a number on an address another silo holds.
 func TestModelRefusals(t *testing.T) {
 	r := newModelRig(t)
-	mk := func(name, service string, nets []string, site string) *v1.Silo {
+	mk := func(name, service, net, site string) *v1.Silo {
 		return &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "shop"},
 			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "docker.io/library/nginx:1.27"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
 				Placement: v1.Placement{HostSelector: map[string]string{"site": site}},
 				Ports:     []v1.SiloPort{{Name: "https", Port: 8443}},
-				Service:   &v1.SiloService{Name: service, Ports: []v1.ServicePort{{Port: "https", HostPort: nets, As: 443}}}}}
+				Services:  []v1.SiloService{{Name: service, Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{Worker: net}, Ports: []v1.ServicePort{{Port: "https", As: 443}}}}}}
 	}
 	unschedulable := func(name, why string) {
 		t.Helper()
@@ -297,17 +299,17 @@ func TestModelRefusals(t *testing.T) {
 			return s.Status.Host == "" && c != nil && strings.Contains(c.Message, why), fmt.Sprintf("%+v", s.Status)
 		})
 	}
-	// Only an internal IP there: an [external] port can't land.
-	if err := r.admin.Create(r.ctx, mk("public", "", []string{"external"}, "lan")); err != nil {
+	// Only an internal IP there: a port on worker: external can't land.
+	if err := r.admin.Create(r.ctx, mk("public", "", "external", "lan")); err != nil {
 		t.Fatal(err)
 	}
 	unschedulable("public", "lan-1: no external IP, which port 443/TCP asks for (hostPort: [external])")
 
 	// One name, one owner.
-	if err := r.admin.Create(r.ctx, mk("api-blue", "api", []string{"external"}, "cloud")); err != nil {
+	if err := r.admin.Create(r.ctx, mk("api-blue", "api", "external", "cloud")); err != nil {
 		t.Fatal(err)
 	}
-	err := r.admin.Create(r.ctx, mk("api-green", "api", []string{"internal"}, "cloud"))
+	err := r.admin.Create(r.ctx, mk("api-green", "api", "internal", "cloud"))
 	var ce *client.Error
 	if !errors.As(err, &ce) || ce.Code != http.StatusConflict || !strings.Contains(err.Error(), "the service name api is silo/api-blue's") {
 		t.Fatalf("a second silo named api: %v", err)
@@ -321,12 +323,12 @@ func TestModelRefusals(t *testing.T) {
 
 	// The same address and number: the second goes nowhere, saying who holds it.
 	r.running("api-blue", "10.64.1.2")
-	if err := r.admin.Create(r.ctx, mk("other", "", []string{"external"}, "cloud")); err != nil {
+	if err := r.admin.Create(r.ctx, mk("other", "", "external", "cloud")); err != nil {
 		t.Fatal(err)
 	}
 	unschedulable("other", "ext-1: port 443/TCP on the external IP (51.38.10.21) is held by shop/api-blue")
 	// On the internal IP, the same number is free.
-	if err := r.admin.Create(r.ctx, mk("inner", "", []string{"internal"}, "cloud")); err != nil {
+	if err := r.admin.Create(r.ctx, mk("inner", "", "internal", "cloud")); err != nil {
 		t.Fatal(err)
 	}
 	r.eventually("inner placed on ext-1", func() (bool, string) {

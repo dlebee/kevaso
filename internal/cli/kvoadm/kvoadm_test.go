@@ -401,21 +401,45 @@ func TestUnitsFor(t *testing.T) {
 }
 
 func TestEditAddresses(t *testing.T) {
-	got, err := EditAddresses(nil, "add", []string{"203.0.113.21/30", "203.0.113.9/32", "198.51.100.7"})
-	if err != nil || strings.Join(got, " ") != "203.0.113.20/30 203.0.113.9 198.51.100.7" {
+	show := func(as []v1.HostAddress) string {
+		var out []string
+		for _, a := range as {
+			out = append(out, a.Name+"="+a.Kind+":"+a.Address)
+		}
+		return strings.Join(out, " ")
+	}
+	got, err := EditAddresses(nil, "add", []string{"mail", "203.0.113.21", "--external"})
+	if err != nil || show(got) != "mail=external:203.0.113.21" {
 		t.Fatalf("add: %v %v", got, err)
 	}
-	if again, _ := EditAddresses(got, "add", []string{"203.0.113.20/30"}); len(again) != 3 {
-		t.Fatalf("adding twice: %v", again)
+	got, err = EditAddresses(got, "add", []string{"--internal", "lan", "10.0.0.9"})
+	if err != nil || show(got) != "mail=external:203.0.113.21 lan=internal:10.0.0.9" {
+		t.Fatalf("add internal: %v %v", got, err)
 	}
-	got, err = EditAddresses(got, "remove", []string{"203.0.113.9"})
-	if err != nil || strings.Join(got, " ") != "203.0.113.20/30 198.51.100.7" {
+	for _, c := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"the same name twice", []string{"mail", "203.0.113.22", "--external"}, "named mail already"},
+		{"no kind", []string{"web", "203.0.113.22"}, "--external|--internal"},
+		{"no address", []string{"web", "--external"}, "--external|--internal"},
+		{"a range", []string{"web", "203.0.113.20/30", "--external"}, "is a range"},
+		{"IPv6", []string{"web", "2001:db8::1", "--external"}, "IPv6"},
+		{"not an address", []string{"web", "example.com", "--external"}, "isn't an address"},
+	} {
+		if _, err := EditAddresses(got, "add", c.args); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", c.name, err, c.want)
+		}
+	}
+	got, err = EditAddresses(got, "remove", []string{"mail"})
+	if err != nil || show(got) != "lan=internal:10.0.0.9" {
 		t.Fatalf("remove: %v %v", got, err)
 	}
-	if _, err := EditAddresses(got, "remove", []string{"192.0.2.1"}); err == nil {
+	if _, err := EditAddresses(got, "remove", []string{"mail"}); err == nil {
 		t.Fatal("removing one it doesn't have")
 	}
-	if _, err := EditAddresses(got, "add", []string{"2001:db8::/64"}); err == nil {
-		t.Fatal("IPv6")
+	if _, err := EditAddresses(got, "rename", nil); err == nil {
+		t.Fatal("an unknown command")
 	}
 }

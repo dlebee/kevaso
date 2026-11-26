@@ -19,7 +19,7 @@ import (
 // the addresses it was given; a cloud-hypervisor silo and a docker silo each declare ports and
 // open them on the external IP: one at its own number (reachable from this Mac), one with as: at
 // another number (and not at its own), one with sources: that leaves this Mac out (closed to it),
-// and, on the docker silo, one with sources: naming this Mac (open). A port asked for [internal]
+// and, on the docker silo, one with sources: naming this Mac (open). A port on worker: internal
 // on a machine without an internal IP is refused with the reason (with one: it opens there and
 // not on the external IP); two silos asking for one host port: the second is told who holds it.
 //
@@ -38,19 +38,21 @@ func TestMetalModel(t *testing.T) {
 
 	mine := c.macIP + "/32"
 	c.apply(vmEcho(ns, "vm", 18080, 8081, 18082) + `  ports: [{ name: web, port: 18080 }, { name: alt, port: 8081 }, { name: shut, port: 18082 }]
-  service:
-    ports:
-      - { port: web, hostPort: [external] }
-      - { port: alt, hostPort: [external], as: 18081 }
-      - { port: shut, hostPort: [external], sources: [` + testNet + `] }
+  services:
+    - type: HostPort
+      ports:
+        - { port: web }
+        - { port: alt, as: 18081 }
+        - { port: shut, sources: [` + testNet + `] }
 ---
 ` + boxEcho(ns, "box", 18090, 8091, 18092, 18093) + `  ports: [{ name: web, port: 18090 }, { name: alt, port: 8091 }, { name: mine, port: 18092 }, { name: shut, port: 18093 }]
-  service:
-    ports:
-      - { port: web, hostPort: [external] }
-      - { port: alt, hostPort: [external], as: 18091 }
-      - { port: mine, hostPort: [external], sources: [` + mine + `] }
-      - { port: shut, hostPort: [external], sources: [` + testNet + `] }
+  services:
+    - type: HostPort
+      ports:
+        - { port: web }
+        - { port: alt, as: 18091 }
+        - { port: mine, sources: [` + mine + `] }
+        - { port: shut, sources: [` + testNet + `] }
 `)
 	c.waitRunning(ns, 20*time.Minute, "vm", "box")
 
@@ -65,7 +67,7 @@ func TestMetalModel(t *testing.T) {
 	} {
 		t.Run(s.silo, func(t *testing.T) {
 			c := &mt{metalSuite: c.metalSuite, t: t, ctx: c.ctx}
-			c.eventually(fmt.Sprintf("%s: [external] port %d answers this Mac", s.silo, s.web), 2*time.Minute, func() (bool, string) {
+			c.eventually(fmt.Sprintf("%s: worker: external port %d answers this Mac", s.silo, s.web), 2*time.Minute, func() (bool, string) {
 				ok, got := c.open(s.web)
 				return ok && strings.Contains(got, s.wantWeb), got
 			})
@@ -92,34 +94,38 @@ func TestMetalModel(t *testing.T) {
 		})
 	}
 
-	// [internal]: refused without an internal IP, with the reason; opened there (and only there) with one.
+	// worker: internal: refused without an internal IP, with the reason; opened there (and only there) with one.
 	c.apply(boxEcho(ns, "inner", 18096) + `  ports: [{ name: web, port: 18096 }]
-  service:
-    ports: [{ port: web, hostPort: [internal] }]
+  services:
+    - type: HostPort
+      hostPort: { worker: internal }
+      ports: [{ port: web }]
 `)
 	if c.cfg.InternalIP == "" {
-		c.eventually("[internal] without an internal IP: refused, saying why", 2*time.Minute, func() (bool, string) {
+		c.eventually("worker: internal without an internal IP: refused, saying why", 2*time.Minute, func() (bool, string) {
 			d, _ := c.kvo("", "describe", "silo", "inner", "-n", ns)
 			return strings.Contains(d, "no internal IP") && c.silo(ns, "inner").Status.Phase != "Running", d
 		})
 	} else {
 		c.waitRunning(ns, 10*time.Minute, "inner")
-		c.eventually("[internal] answers on the internal IP (from the machine)", time.Minute, func() (bool, string) {
+		c.eventually("worker: internal answers on the internal IP (from the machine)", time.Minute, func() (bool, string) {
 			out, err := c.sh(fmt.Sprintf("curl -sS --max-time 3 http://%s:18096/", c.cfg.InternalIP))
 			return err == nil && strings.Contains(out, "inner 18096"), out
 		})
-		c.holds("[internal] stays closed on the external IP", 5*time.Second, func() (bool, string) { return c.closed(18096) })
+		c.holds("worker: internal stays closed on the external IP", 5*time.Second, func() (bool, string) { return c.closed(18096) })
 	}
 
 	// One host port, two silos: the second is told who holds it.
 	c.apply(boxEcho(ns, "first", 18095) + `  ports: [{ name: web, port: 18095 }]
-  service:
-    ports: [{ port: web, hostPort: [external] }]
+  services:
+    - type: HostPort
+      ports: [{ port: web }]
 `)
 	c.waitRunning(ns, 10*time.Minute, "first")
 	c.apply(boxEcho(ns, "second", 18095) + `  ports: [{ name: web, port: 18095 }]
-  service:
-    ports: [{ port: web, hostPort: [external] }]
+  services:
+    - type: HostPort
+      ports: [{ port: web }]
 `)
 	c.eventually("the second silo on port 18095 is told it's held by the first", 2*time.Minute, func() (bool, string) {
 		d, _ := c.kvo("", "describe", "silo", "second", "-n", ns)
@@ -142,8 +148,9 @@ func TestMetalNames(t *testing.T) {
 	ns := "names"
 	c.namespace(ns)
 	c.apply(boxEcho(ns, "api", 8080, 18100) + `  ports: [{ name: http, port: 8080 }, { name: pub, port: 18100 }]
-  service:
-    ports: [{ port: http }, { port: pub, hostPort: [external] }]
+  services:
+    - type: HostPort
+      ports: [{ port: pub }]
 ---
 ` + boxEcho(ns, "quiet", 8080) + `---
 ` + vmEcho(ns, "asker", 8080))

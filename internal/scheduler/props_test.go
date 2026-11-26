@@ -45,11 +45,12 @@ func TestPropertyPlacementsNeverClash(t *testing.T) {
 			num := []int{80, 443, 5432}[r.Intn(3)]
 			s.Spec.Ports = []v1.SiloPort{{Name: "p", Port: num, Protocol: []string{"TCP", "UDP"}[r.Intn(2)]}}
 			if r.Intn(4) != 0 {
-				sp := v1.ServicePort{Port: "p", HostPort: pick(r, []string{v1.NetworkInternal, v1.NetworkExternal})}
-				if len(sp.HostPort) > 0 && r.Intn(3) == 0 {
+				nets := pick(r, []string{v1.NetworkInternal, v1.NetworkExternal})
+				sp := v1.ServicePort{Port: "p"}
+				if len(nets) > 0 && r.Intn(3) == 0 {
 					sp.As = []int{80, 443, 8443}[r.Intn(3)]
 				}
-				s.Spec.Service = &v1.SiloService{Ports: []v1.ServicePort{sp}}
+				s.Spec.Services = onWorker(nets, sp)
 			}
 			d, err := Schedule(s, hosts, placed)
 			if err != nil {

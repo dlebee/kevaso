@@ -10,15 +10,14 @@ import (
 // Design §7.2d: a leased port has no outside rule while no lease is active; open, it takes the
 // port's own sources; its connections are cut once it closes; private access never changes.
 func TestLeasedPorts(t *testing.T) {
-	ext := []string{v1.NetworkExternal}
 	spec := func() v1.SiloSpec {
 		return v1.SiloSpec{
 			Ports: []v1.SiloPort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}, {Name: "disc", Port: 30303, Protocol: "UDP"}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{
-				{Port: "web", HostPort: ext, Sources: []string{"203.0.113.0/24"}},
-				{Port: "debug", HostPort: ext, Sources: []string{"203.0.113.7"}, Lease: &v1.PortLease{}, AllowFrom: []string{"worker"}},
-				{Port: "disc", HostPort: ext, Sources: []string{"203.0.113.64/26"}, Lease: &v1.PortLease{}},
-			}},
+			Services: []v1.SiloService{service(v1.NetworkExternal,
+				v1.ServicePort{Port: "web", Sources: []string{"203.0.113.0/24"}},
+				v1.ServicePort{Port: "debug", Sources: []string{"203.0.113.7"}, Lease: &v1.PortLease{}, AllowFrom: []string{"worker"}},
+				v1.ServicePort{Port: "disc", Sources: []string{"203.0.113.64/26"}, Lease: &v1.PortLease{}},
+			)},
 		}
 	}
 	worker := Silo{Key: "dev/worker", IP: a("10.64.2.9")}
@@ -66,23 +65,4 @@ func TestLeasedPorts(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestLeasedNodePorts(t *testing.T) {
-	s := Silo{Key: "dev/api", IP: a("10.64.2.2"), Spec: v1.SiloSpec{
-		Ports: []v1.SiloPort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}},
-		Service: &v1.SiloService{
-			Ports:        []v1.ServicePort{{Port: "web", LoadBalancer: true}, {Port: "debug", LoadBalancer: true, Lease: &v1.PortLease{}}},
-			LoadBalancer: &v1.LoadBalancerSpec{Class: "linode-nodebalancer"},
-		}}, NodePorts: []v1.NodePort{{Name: "web", Port: 8080, NodePort: 30001}, {Name: "debug", Port: 9229, NodePort: 30002}},
-		SourceRanges: []string{"192.168.255.0/24"}, Leased: []string{"debug"}, Closed: []string{"debug"}}
-	r := Rules(host(s))
-	has(t, r,
-		"ip saddr 192.168.255.0/24 tcp dport 30001 dnat ip to 10.64.2.2:8080",
-		`oifname "kvbr0" ip daddr 10.64.2.2 tcp dport 9229 ct status dnat ct original proto-dst 30002 reject with tcp reset`)
-	hasNot(t, r, "dport 30002 dnat")
-	s.Closed = nil
-	r = Rules(host(s))
-	has(t, r, "ip saddr 192.168.255.0/24 tcp dport 30002 dnat ip to 10.64.2.2:9229")
-	hasNot(t, r, "ct original")
 }

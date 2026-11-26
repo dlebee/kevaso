@@ -61,6 +61,27 @@ type HostSpec struct {
 	Unschedulable bool `json:"unschedulable,omitempty"`
 	// Network: how the mesh reaches this machine.
 	Network HostNetwork `json:"network,omitempty"`
+	// Addresses are the machine's named extra addresses (besides externalIP and internalIP, its
+	// main ones): an IP of type Host reserves one by name. Names are unique in the cluster; who
+	// may reserve them is a permission (roles). kvoadm host addresses HOST add NAME ADDRESS.
+	Addresses []HostAddress `json:"addresses,omitempty"`
+}
+
+// HostAddress is one of a host's named extra addresses.
+type HostAddress struct {
+	Name    string `json:"name"`
+	Kind    string `json:"kind"`    // external | internal
+	Address string `json:"address"` // one IPv4 address
+}
+
+// Address is the host's extra address named name (ok false: it has none of that name).
+func (h *Host) Address(name string) (HostAddress, bool) {
+	for _, a := range h.Spec.Addresses {
+		if a.Name == name {
+			return a, true
+		}
+	}
+	return HostAddress{}, false
 }
 
 // HostNetwork is what the mesh needs to know about a machine's reachability (design §7).
@@ -71,10 +92,6 @@ type HostNetwork struct {
 	// ListenPort is the WireGuard port on the host's reach address (Reach: default 51820), for
 	// hosts not behind NAT.
 	ListenPort int `json:"listenPort,omitempty"`
-	// Addresses are extra addresses routed to this machine (IPv4 CIDRs or single addresses), which
-	// the built-in ip-pool class hands out as IP objects (design §7.2c-1). The operator declares
-	// them: kvoadm host addresses HOST add CIDR.
-	Addresses []string `json:"addresses,omitempty"`
 	// DNS: the networks (internal, external) this host also answers Kevaso's names on, at its
 	// address there on port 53, besides its silos and the mesh. Off unless listed: an external
 	// listener answers anyone who can reach it (external names only, nothing forwarded).
@@ -265,11 +282,12 @@ type SiloSpec struct {
 	Panes *PaneConfig `json:"panes,omitempty"`
 	// Availability says what happens when the silo's host is lost (design §0.3).
 	Availability Availability `json:"availability,omitempty"`
-	// Ports are what the silo declares (design §7.0); Service is what makes some of them
-	// reachable, and by whom. Without a service nothing is reachable and the silo has no name.
-	Ports   []SiloPort   `json:"ports,omitempty"`
-	Service *SiloService `json:"service,omitempty"`
-	Network SiloNetwork  `json:"network,omitempty"`
+	// Ports are what the silo declares (design §7.0); Services are what make some of them
+	// reachable, each one way in (Internal, HostPort, LoadBalancer). Without a service nothing is
+	// reachable and the silo has no name.
+	Ports    []SiloPort    `json:"ports,omitempty"`
+	Services []SiloService `json:"services,omitempty"`
+	Network  SiloNetwork   `json:"network,omitempty"`
 	// Grants are the Grant objects (in this namespace) the silo uses: what it may reach outside
 	// the cluster and which secrets it gets, and how (design §8).
 	Grants []string `json:"grants,omitempty"`

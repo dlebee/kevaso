@@ -18,8 +18,8 @@ const (
 // NeedsEndpoint reports whether a silo has anything to ask its endpoint for: a broker secret, a
 // signing key or a leased port. A silo that doesn't has no endpoint at all. Pure.
 func NeedsEndpoint(s *Silo, grants []*Grant) bool {
-	if s.Spec.Service != nil {
-		for _, p := range s.Spec.Service.Ports {
+	for _, sv := range s.Spec.Services {
+		for _, p := range sv.Ports {
 			if p.Lease != nil {
 				return true
 			}

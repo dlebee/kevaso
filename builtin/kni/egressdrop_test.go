@@ -18,7 +18,7 @@ func TestWideCIDRDoesNotReachClosedRangesOrThisHost(t *testing.T) {
 	src := Silo{Key: "dev/probe", IP: a("10.64.2.2"), Tap: "kvt02", MAC: "02:00:00:00:00:02", Egress: []v1.ParsedEgress{e}}
 	peer := Silo{Key: "dev/peer", IP: a("10.64.2.3"), Tap: "kvt03", MAC: "02:00:00:00:00:03",
 		Spec: v1.SiloSpec{Ports: []v1.SiloPort{{Name: "http", Port: 8080}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", AllowFrom: []string{"probe"}}}}}}
+			Services: []v1.SiloService{{Ports: []v1.ServicePort{{Port: "http", AllowFrom: []string{"probe"}}}}}}}
 	h := host(src, peer)
 	h.All = []Silo{src, peer, {Key: "other/far", IP: a("10.64.3.9")}}
 	h.Services = []Service{{Key: "dev/web", ClusterIP: a("10.65.0.1"),

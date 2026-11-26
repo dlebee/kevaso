@@ -370,8 +370,8 @@ release), the Ubuntu archive and, with `KEVASO_METAL_HOSTNAME` set, Let's Encryp
   stopped. The owner's setup (a cloud VM as system node, this machine as its only worker) is
   described in `metal_linode_test.go` and belongs in the provider repository, next to its
   machine helpers.
-- **Load balancers and the `IP` kind**: no provider plugin on bare metal, and ip-pool needs extra
-  routed addresses the machine may not have.
+- **Load balancers and the `IP` kind**: no provider plugin on bare metal, and a Host IP needs an
+  extra routed address (a host address) the machine may not have.
 - **The DNS-01 solver and Let's Encrypt production.** Certificates are HTTP-01 against staging
   only, and only with a hostname. Never production in a test.
 - **The 1:1 NAT case** (external IP not on any interface): refused at setup, because it is known

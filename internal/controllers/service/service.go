@@ -72,7 +72,7 @@ func Split(svc *v1.Service, silos []*v1.Silo) (routed, held []v1.ServiceEndpoint
 }
 
 // unpublished says why a LoadBalancer Service may not publish s's ports ("" when it may): each of
-// its ports must target one s opens itself (spec.service.ports) and not only on a lease (K-061).
+// its ports must target one s opens itself (in spec.services) and not only on a lease (K-061).
 // Else anyone who may create a Service would open outside a port the silo keeps closed, or opens
 // only on an approved lease. A ClusterIP Service stays on the mesh: not judged here.
 func unpublished(svc *v1.Service, s *v1.Silo) string {
@@ -91,7 +91,7 @@ func unpublished(svc *v1.Service, s *v1.Silo) string {
 		op, ok := s.Spec.OpenPort(name)
 		switch {
 		case !ok:
-			why = append(why, fmt.Sprintf("port %s isn't one silo %s opens (open it in its spec.service.ports)", name, s.Name))
+			why = append(why, fmt.Sprintf("port %s isn't one silo %s opens (open it in one of its spec.services)", name, s.Name))
 		case op.Lease != nil:
 			why = append(why, fmt.Sprintf("port %s of silo %s opens outside only on a lease (kvo open; a LoadBalancer Service can't publish it)", name, s.Name))
 		}

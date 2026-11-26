@@ -201,8 +201,8 @@ spec:
   container: { image: docker.io/library/python:3.12-slim, command: [python3, -m, http.server, "%[3]s", --directory, /site] }
   volumes: [{ name: site, mountPath: /site }]
   ports: [{ name: http, port: %[3]s }]
-  service:
-    ports: [{ port: http }]
+  services:
+    - ports: [{ port: http }]
   init:
     steps:
       - name: page
@@ -242,8 +242,10 @@ spec:
   runtime: docker
   container: { image: docker.io/library/nginx:1.27 }   # the vendor's image as shipped: driven from outside
   ports: [{ name: http, port: 80 }, { name: https, port: 443 }]
-  service:
-    ports: [{ port: http, hostPort: [internal] }, { port: https, hostPort: [internal] }]
+  services:
+    - type: HostPort
+      hostPort: { worker: internal }
+      ports: [{ port: http }, { port: https }]
 ---
 apiVersion: kevaso/v1
 kind: IngressClass

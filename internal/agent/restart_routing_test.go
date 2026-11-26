@@ -56,9 +56,9 @@ func TestARestartedSiloIsNotRoutedBeforeItsReadinessPassesAgain(t *testing.T) {
 	agent.RunForTest(t, ctx, a)
 	s := &v1.Silo{TypeMeta: meta.TypeMeta{APIVersion: v1.APIVersion, Kind: "Silo"}, ObjectMeta: meta.ObjectMeta{Name: "web", Namespace: "dev"},
 		Spec: v1.SiloSpec{Runtime: "cloud-hypervisor", VM: &v1.VMSource{Image: "ubuntu-24.04"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-			Ports:   []v1.SiloPort{{Name: "web", Port: 8080}},
-			Service: &v1.SiloService{RouteWhen: v1.RouteWhenReady, Ports: []v1.ServicePort{{Port: "web"}}},
-			Probes:  &v1.Probes{Readiness: &v1.Probe{Exec: &v1.ExecProbe{Command: []string{"true"}}, Period: "1s"}}}}
+			Ports:    []v1.SiloPort{{Name: "web", Port: 8080}},
+			Services: []v1.SiloService{{RouteWhen: v1.RouteWhenReady, Ports: []v1.ServicePort{{Port: "web"}}}},
+			Probes:   &v1.Probes{Readiness: &v1.Probe{Exec: &v1.ExecProbe{Command: []string{"true"}}, Period: "1s"}}}}
 	if err := c.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}

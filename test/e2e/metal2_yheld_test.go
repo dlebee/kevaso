@@ -40,7 +40,7 @@ metadata: { name: g, namespace: ` + ns + ` }
 spec:
   egress: [{ to: example.com }]
 ---
-` + vmEcho(ns, "vm", 8080) + on(metalHost2) + "  grants: [g]\n  ports: [{ name: http, port: 8080 }]\n  service:\n    ports: [{ port: http }]\n")
+` + vmEcho(ns, "vm", 8080) + on(metalHost2) + "  grants: [g]\n  ports: [{ name: http, port: 8080 }]\n  services:\n    - ports: [{ port: http }]\n")
 	c.waitRunning(ns, 20*time.Minute, "vm")
 	// The time on a line is when the try finished. date runs after curl, which waits up to 4s.
 	logger := `systemd-run -q --unit kvtlog sh -c 'while true; do code=$(curl -sk -o /dev/null -w %{http_code} -m 4 --resolve example.com:443:203.0.113.9 https://example.com/ 2>/dev/null); dns=$(getent hosts vm.` + ns + `.kevaso | cut -d" " -f1); echo "$(date +%s) $code $dns" >> /root/egress.log; sleep 5; done'`

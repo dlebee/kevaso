@@ -3,6 +3,7 @@ package kni
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 
@@ -72,19 +73,32 @@ func unionAllow(old, cur v1.SiloSpec) v1.SiloSpec {
 			out.Ports = append(out.Ports, p)
 		}
 	}
-	if old.Service == nil {
+	if len(old.Services) == 0 {
 		return out
 	}
-	svc := v1.SiloService{}
-	if out.Service != nil {
-		svc = *out.Service
-		svc.Ports = append([]v1.ServicePort(nil), out.Service.Ports...)
+	out.Services = append([]v1.SiloService(nil), cur.Services...)
+	for _, osv := range old.Services {
+		j := slices.IndexFunc(out.Services, func(sv v1.SiloService) bool { return sv.Name == osv.Name })
+		if j < 0 {
+			c := osv
+			c.Ports = append([]v1.ServicePort(nil), osv.Ports...)
+			out.Services = append(out.Services, c)
+			continue
+		}
+		out.Services[j] = unionService(osv, out.Services[j])
 	}
+	return out
+}
+
+// unionService is cur with every port and allowFrom old has too.
+func unionService(old, cur v1.SiloService) v1.SiloService {
+	svc := cur
+	svc.Ports = append([]v1.ServicePort(nil), cur.Ports...)
 	idx := map[string]int{}
 	for i := range svc.Ports {
 		idx[svc.Ports[i].Port] = i
 	}
-	for _, p := range old.Service.Ports {
+	for _, p := range old.Ports {
 		i, ok := idx[p.Port]
 		if !ok {
 			p.AllowFrom = append([]string(nil), p.AllowFrom...)
@@ -103,8 +117,7 @@ func unionAllow(old, cur v1.SiloSpec) v1.SiloSpec {
 			}
 		}
 	}
-	out.Service = &svc
-	return out
+	return svc
 }
 
 func unionPaths(a, b map[string][]string) map[string][]string {

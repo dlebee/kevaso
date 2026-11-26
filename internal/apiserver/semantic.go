@@ -11,7 +11,6 @@ import (
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
-	"kevaso.com/core/internal/ips"
 	"kevaso.com/core/internal/names"
 	"kevaso.com/core/internal/policy"
 	"kevaso.com/core/internal/probes"
@@ -25,7 +24,7 @@ func semantic(obj meta.Object) []string {
 	var errs []string
 	switch o := obj.(type) {
 	case *v1.Silo:
-		errs = append(errs, checkPorts(o.Spec)...)
+		errs = append(errs, checkPorts(o.Spec, o.Name, ownedBySet(o))...)
 		for _, u := range o.Spec.Upkeep {
 			if d, err := time.ParseDuration(u.Every); err != nil || d < time.Minute {
 				errs = append(errs, fmt.Sprintf("upkeep %s: every %q: want a duration of at least 1m (e.g. 6h)", u.Name, u.Every))
@@ -36,12 +35,15 @@ func semantic(obj meta.Object) []string {
 		if len(o.Spec.OpenShellPolicies) > 0 && !policy.SelfEnforced(o.Spec.Runtime) { // openshellPolicies only on an openshell runtime
 			errs = append(errs, fmt.Sprintf("openshellPolicies is only for runtime openshell or openshell-container; %s can't use one", o.Spec.Runtime))
 		}
+	case *v1.SiloSet:
+		errs = append(errs, checkTemplate(o)...)
 	case *v1.Service:
 		for _, p := range o.Spec.Ports {
 			if t := p.TargetPort; t != "" && !label.MatchString(t) {
 				errs = append(errs, fmt.Sprintf("port %s: targetPort %q: the name of a port the silos declare (spec.ports)", p.Name, t))
 			}
 		}
+		errs = append(errs, checkService(o)...)
 	case *v1.Namespace:
 		if names.Reserved(o.Name) {
 			errs = append(errs, fmt.Sprintf("%q is a network's name (mesh, internal, external), which names use as a label of their own: pick another", o.Name))
@@ -122,13 +124,9 @@ func semantic(obj meta.Object) []string {
 			}
 		}
 	case *v1.IP:
-		if a := o.Spec.Address; a != "" {
-			if ad, err := netip.ParseAddr(a); err != nil {
-				errs = append(errs, fmt.Sprintf("spec.address: %q isn't an address", a))
-			} else if !ad.Is4() {
-				errs = append(errs, fmt.Sprintf("spec.address: %q: IPv6 comes later; IPv4 for now", a))
-			}
-		}
+		errs = append(errs, checkIP(o)...)
+	case *v1.IPSet:
+		errs = append(errs, checkIPSet(o)...)
 	case *v1.OpenShellPolicy:
 		errs = append(errs, openShellPolicyProblems(o)...)
 	case *v1.Host:
@@ -148,11 +146,7 @@ func semantic(obj meta.Object) []string {
 				errs = append(errs, fmt.Sprintf("spec.network.dns: %s: the host has no %s IP", n, n))
 			}
 		}
-		for _, a := range o.Spec.Network.Addresses {
-			if _, err := ips.Parse(a); err != nil {
-				errs = append(errs, "spec.network.addresses: "+err.Error())
-			}
-		}
+		errs = append(errs, checkHostAddressList(o)...)
 	}
 	return errs
 }
@@ -161,21 +155,21 @@ func semantic(obj meta.Object) []string {
 // stored: a port's sources (silo, and a SiloSet's template) and the CIDRs of a Grant's egress.
 // Entries that don't parse are left for semantic to refuse.
 func normalize(obj meta.Object) {
-	ports := func(sv *v1.SiloService) {
-		if sv == nil {
-			return
-		}
-		for i := range sv.Ports {
-			if len(sv.Ports[i].Sources) > 0 {
-				sv.Ports[i].Sources = v1.NormalizeSources(sv.Ports[i].Sources)
+	ports := func(svs []v1.SiloService) {
+		for j := range svs {
+			sv := &svs[j]
+			for i := range sv.Ports {
+				if len(sv.Ports[i].Sources) > 0 {
+					sv.Ports[i].Sources = v1.NormalizeSources(sv.Ports[i].Sources)
+				}
 			}
 		}
 	}
 	switch o := obj.(type) {
 	case *v1.Silo:
-		ports(o.Spec.Service)
+		ports(o.Spec.Services)
 	case *v1.SiloSet:
-		ports(o.Spec.Template.Service)
+		ports(o.Spec.Template.Services)
 	case *v1.Grant:
 		for i, r := range o.Spec.Egress {
 			if e, err := r.Parse(); err == nil && e.Prefix.IsValid() {
@@ -230,6 +224,9 @@ func transition(old, next meta.Object) []string {
 	var errs []string
 	if o, ok := old.(*v1.IP); ok {
 		errs = append(errs, ipTransition(o, next.(*v1.IP))...)
+	}
+	if o, ok := old.(*v1.IPSet); ok {
+		errs = append(errs, ipSetTransition(o, next.(*v1.IPSet))...)
 	}
 	if o, ok := old.(*v1.VMImage); ok {
 		n := next.(*v1.VMImage)

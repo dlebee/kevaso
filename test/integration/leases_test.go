@@ -35,28 +35,32 @@ func TestPortLeases(t *testing.T) {
 	_ = c.admin.Create(c.ctx, ns("web3"))
 
 	api := silo("api", "web3")
-	ext, office := []string{v1.NetworkExternal}, []string{"203.0.113.0/24"}
+	office := []string{"203.0.113.0/24"}
 	api.Spec.Ports = []v1.SiloPort{{Name: "web", Port: 8080}, {Name: "debug", Port: 9229}, {Name: "preview", Port: 3000}}
-	api.Spec.Service = &v1.SiloService{
-		Ports: []v1.ServicePort{{Port: "web", HostPort: ext, Sources: office},
-			{Port: "debug", HostPort: ext, Sources: []string{"203.0.113.7"}, AllowFrom: []string{"worker"},
+	api.Spec.Services = []v1.SiloService{{Type: v1.ServiceHostPort,
+		Ports: []v1.ServicePort{{Port: "web", Sources: office},
+			{Port: "debug", Sources: []string{"203.0.113.7"}, AllowFrom: []string{"worker"},
 				Lease: &v1.PortLease{Max: "1h", Approval: &v1.ApprovalRule{Required: true}}},
-			{Port: "preview", HostPort: ext, Sources: office, Lease: &v1.PortLease{Max: "2h"}}},
-	}
+			{Port: "preview", Sources: office, Lease: &v1.PortLease{Max: "2h"}}},
+	}}
 
 	// Admission.
 	for _, bad := range []struct {
 		mod  func(*v1.SiloService)
 		want string
 	}{
-		{func(sv *v1.SiloService) { sv.Ports[1].HostPort, sv.Ports[1].Sources = nil, nil },
-			"service.ports[debug].lease: only on a port with hostPort or loadBalancer"},
-		{func(sv *v1.SiloService) { sv.Ports[2].Lease.Max = "3h" }, "service.ports[preview].lease.max 3h0m0s is more than this cluster allows (2h0m0s)"},
-		{func(sv *v1.SiloService) { sv.Ports[1].Lease.Default = "2h" }, "service.ports[debug].lease.default 2h0m0s is more than its max (1h0m0s)"},
+		{func(sv *v1.SiloService) {
+			sv.Type = ""
+			for i := range sv.Ports {
+				sv.Ports[i].Sources = nil
+			}
+		}, "ports[debug].lease: only on a HostPort service"},
+		{func(sv *v1.SiloService) { sv.Ports[2].Lease.Max = "3h" }, "ports[preview].lease.max 3h0m0s is more than this cluster allows (2h0m0s)"},
+		{func(sv *v1.SiloService) { sv.Ports[1].Lease.Default = "2h" }, "ports[debug].lease.default 2h0m0s is more than its max (1h0m0s)"},
 	} {
 		s := silo("bad", "web3")
 		s.Spec.Ports = api.Spec.Ports
-		cp := *api.Spec.Service
+		cp := api.Spec.Services[0]
 		cp.Ports = append([]v1.ServicePort(nil), cp.Ports...)
 		for i := range cp.Ports {
 			if cp.Ports[i].Lease != nil {
@@ -65,7 +69,7 @@ func TestPortLeases(t *testing.T) {
 			}
 		}
 		bad.mod(&cp)
-		s.Spec.Service = &cp
+		s.Spec.Services = []v1.SiloService{cp}
 		if err := c.admin.Create(c.ctx, s); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), bad.want) {
 			t.Fatalf("admission %q: %v", bad.want, err)
 		}

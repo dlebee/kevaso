@@ -342,9 +342,9 @@ func namespacesNamed(obj meta.Object) []string {
 	case *v1.ClusterRoleBinding:
 		subjectNamespaces(add, own, o.Subjects)
 	case *v1.Silo:
-		allowFromNamespaces(add, o.Spec.Service)
+		allowFromNamespaces(add, o.Spec.Services)
 	case *v1.SiloSet:
-		allowFromNamespaces(add, o.Spec.Template.Service)
+		allowFromNamespaces(add, o.Spec.Template.Services)
 	case *v1.IngressClass:
 		add(o.Spec.Controller.Namespace)
 	case *v1.Plugin:
@@ -391,14 +391,13 @@ func subjectNamespaces(add func(string), own string, subs []v1.Subject) {
 
 // allowFromNamespaces adds namespaces from NAMESPACE/NAME entries. A name with no slash is a silo
 // in the object's own namespace.
-func allowFromNamespaces(add func(string), sv *v1.SiloService) {
-	if sv == nil {
-		return
-	}
-	for _, p := range sv.Ports {
-		for _, a := range p.AllowFrom {
-			if ns, _, ok := strings.Cut(a, "/"); ok {
-				add(ns)
+func allowFromNamespaces(add func(string), svs []v1.SiloService) {
+	for _, sv := range svs {
+		for _, p := range sv.Ports {
+			for _, a := range p.AllowFrom {
+				if ns, _, ok := strings.Cut(a, "/"); ok {
+					add(ns)
+				}
 			}
 		}
 	}

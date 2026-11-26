@@ -178,8 +178,10 @@ spec:
   runtime: docker
   container: { image: docker.io/library/python:3.12-slim, command: [python3, -m, http.server, "8080"] }
   ports: [{ name: http, port: 8080 }]
-  service:
-    ports: [{ port: http, hostPort: [internal] }]
+  services:
+    - type: HostPort
+      hostPort: { worker: internal }
+      ports: [{ port: http }]
 `
 	must(kvo.Run, manifest, "apply", "-f", "-")
 	deadline := time.Now().Add(25 * time.Minute)

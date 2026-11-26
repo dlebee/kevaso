@@ -275,7 +275,7 @@ func TestMetal2Soak(t *testing.T) {
 				doc = vmEcho(ns, name, 8080)
 				doc = strings.Replace(doc, "memory: 768Mi", "memory: 512Mi", 1)
 			}
-			b.WriteString(doc + on(host) + "  ports: [{ name: http, port: 8080 }]\n  service:\n    ports: [{ port: http, allowFrom: [probe] }]\n---\n")
+			b.WriteString(doc + on(host) + "  ports: [{ name: http, port: 8080 }]\n  services:\n    - ports: [{ port: http, allowFrom: [probe] }]\n---\n")
 		}
 		c.apply(b.String())
 		c.waitRunning(ns, 30*time.Minute, names...)

@@ -3,26 +3,33 @@ package scheduler
 import (
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/internal/ips"
-	"kevaso.com/core/sdk/kplugin"
 )
 
-// Exclusive reports whether a load-balancer class's address is one host's at a time (ip-pool,
-// or a plugin's class that says so), so it's never shared between services.
-func Exclusive(class string, classes map[string]Class) bool {
-	return class == v1.LBIPPool || classes[class].Exclusive
-}
+// TODO(net-v2 wave 2): placement follows the address (networking v2 "Rules"): worker anywhere, a
+// Host IP pinned to its host, a Provider IP and load balancers within the provider's reach, own
+// by the instance's IPSet member, several ways in intersected, and "can move: … (why)". What is
+// here is the minimum that keeps the old guarantees: an IP is held before its silo is placed, and
+// its address only goes where it can be.
 
-// ExclusiveIn is Exclusive over classes, as a function (for v1.SiloIPs).
-func ExclusiveIn(classes map[string]Class) func(string) bool {
-	return func(c string) bool { return Exclusive(c, classes) }
-}
-
-// svcIPName is the IP the silo's service has its address from ("" if none), and how.
-func svcIPName(s *v1.Silo, env Env) (string, v1.IPWay) {
-	if sv := s.Spec.Service; sv != nil && sv.LoadBalancer != nil {
-		return v1.SiloServiceIP(s, Exclusive(sv.LoadBalancer.Class, env.Classes))
+// balancerProvider is the provider of the silo's first LoadBalancer service ("" if none).
+// TODO(net-v2 wave 2): one balancer per service; the plugin's capabilities, not its class map.
+func balancerProvider(s *v1.Silo) string {
+	if b := s.Spec.Balancers(); len(b) > 0 && b[0].LoadBalancer != nil {
+		return b[0].LoadBalancer.Provider
 	}
-	return "", v1.IPNone
+	return ""
+}
+
+// providerUsesNodePorts says whether the provider's balancer sends to the host on node ports
+// (one of its plugin's load-balancer classes says so).
+// TODO(net-v2 wave 2): the provider's declared capability, not its classes.
+func providerUsesNodePorts(classes map[string]Class, provider string) bool {
+	for _, c := range classes {
+		if c.Plugin == provider && c.NodePorts {
+			return true
+		}
+	}
+	return false
 }
 
 func findIP(env Env, ns, name string) *v1.IP {
@@ -47,118 +54,65 @@ func heldIP(s *v1.Silo, name string, env Env) *v1.IP {
 }
 
 // ipFilter: the rules a host must meet for the silo's IPs (empty: fine). The silo must hold each
-// IP first; an ip-pool address only goes on the host it's routed to (or, not reserved yet, a host
-// with one free); a plugin's address only where its class lets it follow (its region, by default).
+// IP first; a Host IP only goes on the host with its address; a Provider IP only on that
+// provider's machines in its region.
 func ipFilter(s *v1.Silo, h *v1.Host, env Env) string {
-	for _, name := range v1.SiloIPs(s, ExclusiveIn(env.Classes)) {
+	for _, name := range v1.SiloIPs(s) {
 		x := findIP(env, s.Namespace, name)
-		n, way := svcIPName(s, env)
 		switch {
 		case x == nil:
-			if n == name && way != v1.IPNamed {
-				return "waiting for IP " + name + " to be made"
-			}
 			return "IP " + name + " doesn't exist"
 		case !x.Status.Holds(s.UID):
 			if why := x.Status.WaitingReason(s.UID); why != "" {
 				return why
 			}
-			if n == name && way == v1.IPMade && !ownedBy(x, s.UID) {
-				return "IP " + name + " exists and wasn't made for it: name it in loadBalancer.ip to take it"
-			}
 			return "waiting for IP " + name + " to be bound to it"
 		}
-		if x.Spec.Class == v1.LBIPPool {
+		switch x.Spec.Type {
+		case v1.IPTypeHost:
 			where := x.Status.Host
 			if where == "" {
-				where = x.Spec.Host
+				if hh, _, ok := ips.FindAddress(env.Hosts, x.Spec.HostAddress); ok {
+					where = hh.Name
+				}
 			}
-			if where != "" && where != h.Name {
-				return "IP " + name + "'s address is routed to " + where
+			if where == "" {
+				return "no host has address " + x.Spec.HostAddress + " (kvoadm host addresses HOST add " + x.Spec.HostAddress + " ADDRESS)"
 			}
-			if where == "" && ips.Free(env.Hosts, env.IPs, x)[h.Name] == 0 {
-				return "no free extra address for IP " + name + " (kvoadm host addresses " + h.Name + " add CIDR)"
+			if where != h.Name {
+				return "IP " + name + " is host " + where + "'s address"
 			}
-			continue
-		}
-		follows := x.Status.Follows
-		if c, ok := env.Classes[x.Spec.Class]; ok && c.Follows != "" {
-			follows = c.Follows
-		}
-		if follows == kplugin.FollowsHost && x.Status.Host != "" && x.Status.Host != h.Name {
-			return "IP " + name + "'s address stays on " + x.Status.Host + " (class " + x.Spec.Class + " can't move it)"
-		}
-		if follows != kplugin.FollowsGlobal && x.Status.Region != "" && (h.Status.Provider == nil || h.Status.Provider.Region != x.Status.Region) {
-			return "IP " + name + "'s address is in " + x.Status.Region
+		case v1.IPTypeProvider:
+			if p := h.Status.Provider; p == nil || p.Name != x.Spec.Provider || p.Region != x.Spec.Region {
+				return "IP " + name + " is " + x.Spec.Provider + "'s, in " + x.Spec.Region
+			}
 		}
 	}
 	return ""
 }
 
-// Egress is where a silo placed on h sends from, given where it's reached (st: its load-balancer
-// address, its ports on the host) and the IPs it holds, and why that isn't in when it isn't:
-// design §7.2b's table.
-//
-//   - hostPort: the host's address, for host and sameAsService alike;
-//   - ip-pool, and a class whose address is on the silo's host (SendsFrom: an announced shared IP):
-//     the IP's address with sameAsService (and egress.source pool: its own IP's);
-//   - a balancer in front (not SendsFrom), or a class no plugin serves now: never the balancer's
-//     address, which is on no host: the host's, with the reason.
-func Egress(s *v1.Silo, h *v1.Host, st v1.SiloServiceStatus, svcIP, egIP *v1.IP, classes map[string]Class) (out, note string) {
+// Egress is where a silo placed on h sends from, and why that isn't where it's reached when it
+// isn't: the worker's own address by default; egress.source.ip that IP's address, once it holds
+// it and it's on h.
+// TODO(net-v2 wave 2): egress.source own (the instance's IPSet member); a balancer's IP can't
+// send out.
+func Egress(s *v1.Silo, h *v1.Host, st v1.SiloServiceStatus, egIP *v1.IP) (out, note string) {
 	hostOut := ""
 	if !h.Spec.Network.BehindNAT {
 		hostOut = h.Reach()
 	}
-	class, in := s.Spec.LBClass(), st.LoadBalancerIP
-	c, served := classes[class]
-	switch s.Spec.Network.Egress.Source {
-	case v1.EgressPool:
-		name := v1.SiloEgressIP(s)
+	src := s.Spec.Network.Egress.Source
+	switch {
+	case src != nil && src.IP != "":
 		if egIP == nil || egIP.Status.Address == "" || egIP.Status.Host != h.Name {
-			return hostOut, "waiting for IP " + name + "'s address: out is the host's meanwhile"
-		}
-		if in != "" && in != egIP.Status.Address {
-			return egIP.Status.Address, "out is IP " + name + "'s own address (egress.source pool)"
+			return hostOut, "waiting for IP " + src.IP + "'s address: out is the worker's meanwhile"
 		}
 		return egIP.Status.Address, ""
-	case v1.EgressSameAsService:
-		switch {
-		case class == "" && s.Spec.OnHost():
-			return hostOut, ""
-		case class == v1.LBIPPool:
-			if in == "" {
-				n, _ := v1.SiloServiceIP(s, true)
-				return hostOut, "waiting for IP " + n + "'s address: out is the host's meanwhile"
-			}
-			return in, ""
-		case !served:
-			return hostOut, "no plugin serves class " + class + " now, so nothing says its address can be sent from: out is the host's (sameAsService not applied)"
-		case !c.SendsFrom:
-			return hostOut, class + "'s address is its balancer's, on no host, so nothing can send from it: out is the host's (sameAsService can't be honoured)"
-		case svcIP == nil || svcIP.Status.Address == "":
-			n, _ := v1.SiloServiceIP(s, Exclusive(class, classes))
-			return hostOut, "waiting for IP " + n + "'s address: out is the host's meanwhile"
-		}
-		return svcIP.Status.Address, ""
+	case src != nil && src.Own:
+		return hostOut, "egress.source own isn't applied yet: out is the worker's"
 	}
-	if in == "" || in == hostOut {
-		return hostOut, ""
+	if in := st.LoadBalancerIP; in != "" && in != hostOut {
+		return hostOut, "out is the worker's address (no egress.source)"
 	}
-	note = "out is the host's address (egress.source host)"
-	switch {
-	case class == v1.LBIPPool || (served && c.SendsFrom):
-		note += "; egress.source sameAsService sends from " + in
-	case served && !c.SendsFrom:
-		note += "; " + in + " is " + class + "'s balancer's, on no host, so nothing can send from it"
-	}
-	return hostOut, note
-}
-
-func ownedBy(x *v1.IP, uid string) bool {
-	for _, r := range x.OwnerReferences {
-		if r.UID == uid {
-			return true
-		}
-	}
-	return false
+	return hostOut, ""
 }

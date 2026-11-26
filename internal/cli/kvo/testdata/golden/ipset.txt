@@ -1,0 +1,10 @@
+NAMESPACE   NAME      AGE
+web3        eth-ips   -
+
+NAMESPACE   NAME      AGE
+web3        eth-ips   -
+
+Name:       eth-ips
+Namespace:  web3
+Labels:     -
+---

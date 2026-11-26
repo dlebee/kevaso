@@ -144,10 +144,12 @@ spec:
       - name: banner
         run: echo %s | base64 -d > /usr/local/bin/banner.py && systemd-run --unit=banner python3 /usr/local/bin/banner.py %d %d
   ports: [{ name: web, port: %d }, { name: debug, port: %d }]
-  service:
-    ports:
-      - { port: web, hostPort: [internal] }
-      - { port: debug, hostPort: [internal], lease: %s }
+  services:
+    - type: HostPort
+      hostPort: { worker: internal }
+      ports:
+        - { port: web }
+        - { port: debug, lease: %s }
 `, name, b64, web, debug, web, debug, lease)
 	}
 	r.must(kvo.Run, "apiVersion: kevaso/v1\nkind: Namespace\nmetadata: { name: lz }\n"+

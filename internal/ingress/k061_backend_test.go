@@ -24,7 +24,7 @@ func TestK061AnIngressNeverPublishesALeasedPort(t *testing.T) {
 	t.Skip("K-061, ingress lane: Backend serves a port that opens only on a lease (fix described above)")
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "api", Namespace: "shop"},
 		Spec: v1.SiloSpec{Ports: []v1.SiloPort{{Name: "debug", Port: 9229}},
-			Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "debug", HostPort: []string{v1.NetworkExternal}, Lease: &v1.PortLease{}}}}},
+			Services: []v1.SiloService{{Type: v1.ServiceHostPort, Ports: []v1.ServicePort{{Port: "debug", Lease: &v1.PortLease{}}}}}},
 		Status: v1.SiloStatus{Host: "w1", SiloIP: "10.64.1.2", Phase: "Running"}}
 	if b, ok := ingress.Backend([]*v1.Silo{s}, nil, "shop", v1.IngressTarget{Name: "api", Port: "debug"}, nil); ok {
 		t.Fatalf("an Ingress backend on a port that opens only on a lease: %+v", b)

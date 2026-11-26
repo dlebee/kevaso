@@ -22,10 +22,10 @@ import (
 	"kevaso.com/core/sdk/kplugin/kplugintest"
 )
 
-// Review (check-then-act) item 7: the IP controller lets go of a balancer (parks it, or deletes
-// it for a class that reserves) when its cache shows no holder left. A silo that claims the IP
-// after that read must not lose the balancer: before letting go, the claimants are read fresh
-// and the decision made again; with a holder there, nothing is let go.
+// Review (check-then-act) item 7: the IP controller lets go of an IP when its cache shows no
+// holder left. A silo that claims the IP after that read must not see it let go (and handed to
+// nobody, or another): before letting go, the claimants are read fresh and the decision made
+// again; with a holder there, nothing is let go and the address stays reserved.
 func TestALetGoDecidedFromACacheSparesAHolderThatCameSince(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -52,16 +52,16 @@ func TestALetGoDecidedFromACacheSparesAHolderThatCameSince(t *testing.T) {
 	mk := func(name string) *v1.Silo {
 		s := &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "d"},
 			Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "app"}, Resources: v1.Resources{CPU: 1, Memory: "1Gi"},
-				Ports:   []v1.SiloPort{{Name: "http", Port: 80}},
-				Service: &v1.SiloService{Ports: []v1.ServicePort{{Port: "http", LoadBalancer: true}}, LoadBalancer: &v1.LoadBalancerSpec{Class: kplugintest.ClassLB, IP: "shared"}}}}
+				Ports:    []v1.SiloPort{{Name: "http", Port: 80}},
+				Services: []v1.SiloService{{Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{IP: "shared"}, Ports: []v1.ServicePort{{Port: "http"}}}}}}
 		must(c.Create(ctx, s))
 		return s
 	}
 	a := mk("a")
 	ip := &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: "shared", Namespace: "d", Finalizers: []string{v1.FinalizerIP}},
-		Spec: v1.IPSpec{Class: kplugintest.ClassLB, Reclaim: v1.ReclaimRetain}}
+		Spec: v1.IPSpec{Type: v1.IPTypeProvider, Provider: "fake", Region: "r1"}}
 	must(c.Create(ctx, ip))
-	ip.Status.BoundTo = []v1.IPHolder{{Holder: v1.HolderSiloPrefix + a.Name, UID: a.UID, Ports: []string{"http"}}}
+	ip.Status.Holder = &v1.IPHolder{Holder: v1.HolderSiloPrefix + a.Name, UID: a.UID, Ports: []string{"80/TCP"}}
 	ip.Status.Address = "198.51.100.7"
 	must(c.UpdateStatus(ctx, ip))
 	must(c.Delete(ctx, "Silo", "d", "a"))
@@ -82,13 +82,13 @@ func TestALetGoDecidedFromACacheSparesAHolderThatCameSince(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, call := range fake.CallLog()[mark:] {
-		if strings.HasPrefix(call, "ensure-lb") || strings.HasPrefix(call, "delete-lb") {
-			t.Fatalf("let go of the balancer of an IP a silo claims now: %q", call)
+		if strings.HasPrefix(call, "release-address") {
+			t.Fatalf("released the address of an IP a silo claims now: %q", call)
 		}
 	}
 	var now v1.IP
 	must(c.Get(ctx, "IP", "d", "shared", &now))
-	if len(now.Status.BoundTo) == 0 {
+	if now.Status.Holder == nil || now.Status.Address != "198.51.100.7" {
 		t.Fatalf("unbound although b holds it now: %+v", now.Status)
 	}
 }

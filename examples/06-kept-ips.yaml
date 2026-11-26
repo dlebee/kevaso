@@ -1,0 +1,72 @@
+# 06 · Addresses you keep: IPs and IP sets (networking v2), in and out.
+#
+#   kvoadm host addresses metal-1 add eth-a 203.0.113.21 --external   # named extra addresses on metal-1
+#   kvoadm host addresses metal-1 add eth-0 203.0.113.22 --external
+#   kvoadm host addresses metal-1 add eth-1 203.0.113.23 --external
+#   kvo apply -f examples/06-kept-ips.yaml
+#   kvo get ips -n web3                     # type, address, where, who holds it
+#   kvo describe silo eth-node-a -n web3    # "same address in and out: 203.0.113.21"
+#
+# P2P nodes on the same port on one host, each reached on and sending from an address of its own.
+# eth-node-a reserves one of the host's addresses by name (an IP of type Host: it runs on that
+# host). The eth-pool set's instances each take their ordinal's member of the eth-ips IPSet
+# (own: true). An IP is kept until you delete it: the next silo naming it gets the same address.
+
+apiVersion: kevaso/v1
+kind: Namespace
+metadata: { name: web3 }
+---
+apiVersion: kevaso/v1
+kind: IP
+metadata: { name: eth-node-a, namespace: web3 }
+spec:
+  type: Host                      # one of a host's extra addresses: pinned to that host
+  hostAddress: eth-a
+---
+apiVersion: kevaso/v1
+kind: Silo
+metadata: { name: eth-node-a, namespace: web3 }
+spec:
+  runtime: cloud-hypervisor
+  vm: { image: ubuntu-24.04 }
+  resources: { cpu: 2, memory: 4Gi }
+  disk: { size: 100Gi }
+  ports:
+    - { name: p2p,  port: 30303, protocol: TCP }
+    - { name: disc, port: 30303, protocol: UDP }
+  services:
+    - type: HostPort
+      hostPort: { ip: eth-node-a }  # this address and no other
+      ports: [{ port: p2p }, { port: disc }]
+  network:
+    egress: { source: { ip: eth-node-a } }   # out from the same address
+---
+apiVersion: kevaso/v1
+kind: IPSet
+metadata: { name: eth-ips, namespace: web3 }
+spec:
+  type: Static                    # members by ordinal: instance 0 gets the first, and so on
+  members:
+    - { hostAddress: eth-0 }
+    - { hostAddress: eth-1 }      # add more at the end; they're never renumbered
+---
+apiVersion: kevaso/v1
+kind: SiloSet
+metadata: { name: eth-pool, namespace: web3 }
+spec:
+  instances: 2
+  ips: eth-ips                    # the IPSet its template's own: true takes from
+  template:
+    runtime: cloud-hypervisor
+    vm: { image: ubuntu-24.04 }
+    resources: { cpu: 2, memory: 4Gi }
+    disk: { size: 100Gi }
+    ports:
+      - { name: p2p,  port: 30303, protocol: TCP }
+      - { name: disc, port: 30303, protocol: UDP }
+    services:
+      - type: HostPort
+        hostPort: { own: true }   # each instance its own member of eth-ips
+        ports: [{ port: p2p }, { port: disc }]
+    network:
+      egress: { source: { own: true } }

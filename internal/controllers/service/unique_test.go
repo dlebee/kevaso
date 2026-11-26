@@ -53,7 +53,7 @@ func TestK028ClusterIPsAndNodePortsAreUniqueByTheStore(t *testing.T) {
 	for _, n := range []string{"a", "b"} {
 		if err := c.Create(ctx, &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: n, Namespace: "d"},
 			Spec: v1.ServiceSpec{Selector: map[string]string{"app": n}, Ports: []v1.ServicePortSpec{{Name: "http", Port: 80}},
-				Type: v1.ServiceLoadBalancer, LoadBalancerClass: "some-plugin"}}); err != nil {
+				Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "some-plugin"}}}); err != nil {
 			t.Fatal(err)
 		}
 	}

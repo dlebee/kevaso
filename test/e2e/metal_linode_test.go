@@ -21,7 +21,7 @@ package e2e
 //     cloud-hypervisor --runtime docker, --external-ip KEVASO_METAL_EXTERNAL_IP (and
 //     --internal-ip when set). The mesh joins over the external IPs (Reach()).
 //  3. The model over two networks: a cloud-hypervisor silo on the metal worker with a port open
-//     on [external] answers the test from the metal IP; its name answers from a silo with the
+//     on worker: external answers the test from the metal IP; its name answers from a silo with the
 //     silo IP; kvo exec reaches it through the agent's tunnel to the Linode.
 //  4. Placement: the Linode has no worker, so every silo lands on the metal machine; a silo
 //     asking for a runtime only the Linode would have is Pending with the reason.
