@@ -100,6 +100,51 @@ func newIPRig(t *testing.T) *ipRig {
 	return &ipRig{ctx: ctx, admin: admin, fake: fake, eventually: eventually}
 }
 
+// A provider that can't share a Provider IP with its holder's host now, for a reason a person
+// fixes (Linode: an account's per-Linode IPv4 limit), leaves the IP waiting with its reason, and
+// shares it once it can.
+func TestProviderIPWaitsForTheProvider(t *testing.T) {
+	r := newIPRig(t)
+	ctx, admin, fake, eventually := r.ctx, r.admin, r.fake, r.eventually
+	if err := admin.Create(ctx, ns("mail")); err != nil {
+		t.Fatal(err)
+	}
+	fake.SetShareRefused(fmt.Errorf("w1 can't take another IPv4: ask the provider's support to raise the limit: %w", kplugin.ErrConflict))
+	if err := admin.Create(ctx, &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: "edge", Namespace: "mail"},
+		Spec: v1.IPSpec{Type: v1.IPTypeProvider, Provider: "fake", Region: "ca-central"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Create(ctx, &v1.Silo{TypeMeta: tm("Silo"), ObjectMeta: meta.ObjectMeta{Name: "mx", Namespace: "mail"},
+		Spec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "postfix"}, Resources: v1.Resources{CPU: 1, Memory: "256Mi"},
+			Ports:    []v1.SiloPort{{Name: "smtp", Port: 2525}},
+			Services: []v1.SiloService{{Name: "mx", Type: v1.ServiceHostPort, HostPort: &v1.HostPortSource{IP: "edge"}, Ports: []v1.ServicePort{{Port: "smtp", As: 25}}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	shared := func() *meta.Condition {
+		var x v1.IP
+		_ = admin.Get(ctx, "IP", "mail", "edge", &x)
+		return meta.FindCondition(x.Status.Conditions, "Shared")
+	}
+	eventually("edge waits, saying why and what to do", func() (bool, string) {
+		c := shared()
+		return c != nil && c.Status == meta.ConditionFalse && c.Reason == "Waiting" &&
+			c.Message == "can't share with w1 yet: w1 can't take another IPv4: ask the provider's support to raise the limit", fmt.Sprintf("%+v", c)
+	})
+	fake.SetShareRefused(nil)
+	var x v1.IP // a change makes the controller look again now, not in a minute
+	if err := admin.Get(ctx, "IP", "mail", "edge", &x); err != nil {
+		t.Fatal(err)
+	}
+	x.Annotations = map[string]string{"test.example/poke": "1"}
+	if err := admin.Update(ctx, &x); err != nil {
+		t.Fatal(err)
+	}
+	eventually("edge shared once the provider can", func() (bool, string) {
+		c := shared()
+		return c != nil && c.Status == meta.ConditionTrue && c.Reason == "Shared", fmt.Sprintf("%+v", c)
+	})
+}
+
 func TestIPs(t *testing.T) {
 	r := newIPRig(t)
 	ctx, admin, fake, eventually := r.ctx, r.admin, r.fake, r.eventually
