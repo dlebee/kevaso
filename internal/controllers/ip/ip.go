@@ -6,9 +6,10 @@
 //
 // The decisions are internal/ips's; this only reads and writes the API and calls the plugins.
 //
-// TODO(net-v2 wave 2): IPSet members (Static: their IPs; Dynamic: SET-N reserved per ordinal),
-// a Provider IP announced by the new worker after a move, and the plugin's provider lookup by
-// name with its declared capabilities instead of its load-balancer classes.
+// A SiloSet instance's own (hostPort: { own: true }, egress.source: { own: true }) claims member N
+// of its set's IPSet, like a silo naming that IP; the members themselves are the IPSet
+// controller's (Sets, in this package). A Provider IP's host is its holder's: the worker that
+// announces it, so after a move the new worker does.
 package ip
 
 import (
@@ -17,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"kevaso.com/core/api/client"
@@ -38,6 +40,9 @@ type Controller struct {
 	Silos    *informer.Informer
 	Services *informer.Informer
 	Hosts    *informer.Informer
+	// SiloSets and IPSets resolve an instance's own to its member IP (nil: no instance claims one).
+	SiloSets *informer.Informer
+	IPSets   *informer.Informer
 	Plugins  *plugins.Registry // nil: only type Host
 	Clock    clock.Clock
 	// Claims make each host address one IP's, by the store: of two IPs naming it, the second
@@ -58,23 +63,58 @@ func (c *Controller) now() time.Time {
 	return c.Clock.Now().UTC().Truncate(time.Second)
 }
 
-// provider is the plugin named provider and its load-balancer class that reserves addresses.
-// TODO(net-v2 wave 2): the plugin session's provider lookup and capabilities.
-func (c *Controller) provider(name string) (*plugins.Plugin, kplugin.Class, bool) {
-	if c.Plugins == nil {
-		return nil, kplugin.Class{}, false
+// provider is the plugin installed as name and the class its addresses are reserved in (its
+// first load-balancer class that reserves; "" for a plugin that declares only networking).
+func (c *Controller) provider(name string) (*plugins.Plugin, string, bool) {
+	return ProviderPlugin(c.Plugins, name)
+}
+
+// ProviderPlugin is the plugin installed as name that makes Provider IPs, and the class it
+// reserves them in ("" when it has no class: a plugin declaring networking v2 only).
+func ProviderPlugin(r *plugins.Registry, name string) (*plugins.Plugin, string, bool) {
+	if r == nil {
+		return nil, "", false
 	}
-	for _, p := range c.Plugins.All() {
+	for _, p := range r.All() {
 		if p.Info.Name != name {
 			continue
 		}
 		for _, cl := range p.Info.LoadBalancers {
 			if cl.Reserve {
-				return p, cl, true
+				return p, cl.Name, true
 			}
 		}
+		if n := p.Info.Networking; n != nil && n.ProviderIPs {
+			return p, "", true
+		}
 	}
-	return nil, kplugin.Class{}, false
+	return nil, "", false
+}
+
+// own resolves a SiloSet instance's own IP from the caches ("" for none).
+func (c *Controller) own(s *v1.Silo) string {
+	return OwnFrom(c.SiloSets, c.IPSets)(s)
+}
+
+// OwnFrom resolves instances' own IPs from SiloSet and IPSet caches (either nil: none).
+func OwnFrom(siloSets, ipSets *informer.Informer) func(*v1.Silo) string {
+	return func(s *v1.Silo) string {
+		if siloSets == nil || ipSets == nil || !s.Spec.UsesOwn() {
+			return ""
+		}
+		set, _ := ips.InstanceOf(s)
+		so, ok := siloSets.Get(s.Namespace, set)
+		if !ok {
+			return ""
+		}
+		ss := so.(*v1.SiloSet)
+		var ipset *v1.IPSet
+		if o, ok := ipSets.Get(s.Namespace, ss.Spec.IPs); ok {
+			ipset = o.(*v1.IPSet)
+		}
+		n, _ := ips.OwnIP(s, ss, ipset)
+		return n
+	}
 }
 
 func (c *Controller) lists(ns string) ([]*v1.Silo, []*v1.Service) {
@@ -97,7 +137,7 @@ func (c *Controller) lists(ns string) ([]*v1.Silo, []*v1.Service) {
 
 // Reconcile implements engine.Controller.
 func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
-	if !informer.AllSynced(c.IPs, c.Silos, c.Services, c.Hosts) {
+	if !informer.AllSynced(c.IPs, c.Silos, c.Services, c.Hosts, c.SiloSets, c.IPSets) {
 		return engine.Result{RequeueAfter: time.Second}, nil // no claimant seen is not no claimant
 	}
 	o, ok := c.IPs.Get(k.Namespace, k.Name)
@@ -106,7 +146,7 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 	}
 	x := o.(*v1.IP)
 	silos, svcs := c.lists(x.Namespace)
-	claimants := ips.Claims(x, silos, svcs)
+	claimants := ips.Claims(x, silos, svcs, c.own)
 
 	if x.DeletionTimestamp != nil {
 		return c.release(ctx, x)
@@ -197,15 +237,17 @@ func (c *Controller) reserve(ctx context.Context, x *v1.IP, st *v1.IPStatus) tim
 		return 0
 	case v1.IPTypeProvider:
 		st.Where = x.Spec.Provider + " " + x.Spec.Region
+		st.Host = c.holderHost(x, st.Holder) // the worker announcing it: its holder's, wherever that moved
 		if st.Address != "" {
 			return 0
 		}
-		p, pc, ok := c.provider(x.Spec.Provider)
+		p, class, ok := c.provider(x.Spec.Provider)
 		if !ok {
 			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "PluginMissing", "no plugin named "+x.Spec.Provider+" reserves addresses"
 			return 30 * time.Second
 		}
-		as, err := p.Conn.ReserveAddress(ctx, kplugin.AddressReservation{Class: pc.Name, ID: x.UID, Namespace: x.Namespace, Name: x.Name, Region: x.Spec.Region})
+		as, err := p.Conn.ReserveAddress(ctx, kplugin.AddressReservation{Class: class, ID: x.UID, Namespace: x.Namespace, Name: x.Name, Region: x.Spec.Region,
+			Annotations: annotations(x.Annotations, x.Spec.Provider)})
 		if errors.Is(err, kplugin.ErrInProgress) {
 			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "Reserving", err.Error()
 			return 10 * time.Second
@@ -226,12 +268,12 @@ func (c *Controller) release(ctx context.Context, x *v1.IP) (engine.Result, erro
 		return engine.Result{}, nil
 	}
 	if x.Spec.Type == v1.IPTypeProvider && (x.Status.Address != "" || x.Status.Handle != "") {
-		p, pc, ok := c.provider(x.Spec.Provider)
+		p, class, ok := c.provider(x.Spec.Provider)
 		if !ok {
 			return engine.Result{RequeueAfter: 30 * time.Second},
 				c.condition(ctx, x, "Reserved", meta.ConditionFalse, "PluginMissing", "releasing "+x.Status.Address+" needs the plugin named "+x.Spec.Provider)
 		}
-		err := p.Conn.ReleaseAddress(ctx, kplugin.AddressRef{Class: pc.Name, ID: x.UID, Address: x.Status.Address, Handle: x.Status.Handle})
+		err := p.Conn.ReleaseAddress(ctx, kplugin.AddressRef{Class: class, ID: x.UID, Address: x.Status.Address, Handle: x.Status.Handle})
 		switch {
 		case errors.Is(err, kplugin.ErrInProgress):
 			return engine.Result{RequeueAfter: 10 * time.Second}, nil
@@ -249,6 +291,32 @@ func (c *Controller) condition(ctx context.Context, x *v1.IP, typ string, status
 		return nil
 	}
 	return client.IgnoreNotFound(c.Client.UpdateStatus(ctx, x))
+}
+
+// holderHost is the host of the silo holding x ("" for none, a Service, or one not placed).
+func (c *Controller) holderHost(x *v1.IP, h *v1.IPHolder) string {
+	if h == nil || !strings.HasPrefix(h.Holder, v1.HolderSiloPrefix) {
+		return ""
+	}
+	o, ok := c.Silos.Get(x.Namespace, strings.TrimPrefix(h.Holder, v1.HolderSiloPrefix))
+	if !ok || o.(*v1.Silo).UID != h.UID {
+		return ""
+	}
+	return o.(*v1.Silo).Status.Host
+}
+
+// annotations are m's annotations in the provider's domain (nil if none), untouched.
+func annotations(m map[string]string, provider string) map[string]string {
+	var out map[string]string
+	for k, v := range m {
+		if strings.HasPrefix(k, kplugin.Domain(provider)) {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func statusEqual(a, b v1.IPStatus) bool {
@@ -277,9 +345,11 @@ func (c *Controller) Map(changed engine.Key) []engine.Key {
 	switch changed.Kind {
 	case "Silo":
 		if o, ok := c.Silos.Get(changed.Namespace, changed.Name); ok {
-			for _, n := range v1.SiloIPs(o.(*v1.Silo)) {
+			s := o.(*v1.Silo)
+			for _, n := range v1.SiloIPs(s) {
 				add(changed.Namespace, n)
 			}
+			add(changed.Namespace, c.own(s))
 		}
 		c.heldBy(changed.Namespace, v1.HolderSiloPrefix+changed.Name, add)
 	case "Service":
@@ -292,6 +362,12 @@ func (c *Controller) Map(changed engine.Key) []engine.Key {
 	case "Host":
 		for _, o := range c.IPs.List() {
 			if x := o.(*v1.IP); x.Spec.Type == v1.IPTypeHost {
+				add(x.Namespace, x.Name)
+			}
+		}
+	case "IPSet", "SiloSet": // an instance's own may name another IP now: every IP of the namespace
+		for _, o := range c.IPs.List() {
+			if x := o.(*v1.IP); x.Namespace == changed.Namespace {
 				add(x.Namespace, x.Name)
 			}
 		}
@@ -344,7 +420,7 @@ func (c *Controller) stillDecided(ctx context.Context, x *v1.IP, d ips.Decision)
 			}
 		}
 	}
-	fresh := ips.Decide(x, ips.Claims(x, silos, svcs))
+	fresh := ips.Decide(x, ips.Claims(x, silos, svcs, c.own))
 	if (fresh.Holder == nil) != (d.Holder == nil) {
 		return false, nil
 	}

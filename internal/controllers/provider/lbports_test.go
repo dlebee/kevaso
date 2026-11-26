@@ -29,7 +29,6 @@ import (
 // no port on it, or a port on an address taken away. TestIPs read such a version ("out X,
 // nothing in") between the balancer's write and the scheduler's next one.
 func TestBalancerWritesTheAddressOnTheSilosPortsToo(t *testing.T) {
-	t.Skip("TODO(net-v2 wave 2): the balancer controller (provider.Balancers) writes a LoadBalancer service's address")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	srv, err := apiserver.New(store.NewMemory(0), clock.Real{})
@@ -75,8 +74,9 @@ func TestBalancerWritesTheAddressOnTheSilosPortsToo(t *testing.T) {
 	x.Status.Address, x.Status.Region = "203.0.113.100", "r"
 	x.Status.Holder = &v1.IPHolder{Holder: v1.HolderSiloPrefix + "node", UID: s.UID, Ports: []string{"30303/TCP"}}
 	must(c.UpdateStatus(ctx, x))
-	// Placed on w1 by the scheduler: its ports, no address in yet (the balancer's to write).
-	s.Status.Host, s.Status.Phase = "w1", "Scheduled"
+	// Placed on w1 and running (its backend is routed): its ports, no address in yet (the
+	// balancer's to write).
+	s.Status.Host, s.Status.Phase, s.Status.SiloIP = "w1", "Running", "10.64.0.5"
 	s.Status.Service.IP = "eth"
 	s.Status.Service.Ports = scheduler.PortStatus(s, h, "")
 	must(c.UpdateStatus(ctx, s))
@@ -90,7 +90,13 @@ func TestBalancerWritesTheAddressOnTheSilosPortsToo(t *testing.T) {
 		return inf
 	}
 	ctl := &provider.Balancers{Client: c, IPs: synced("IP"), Silos: synced("Silo"), Services: synced("Service"), Hosts: synced("Host"), Plugins: reg}
-	if _, err := ctl.Reconcile(ctx, engine.Key{Kind: "IP", Namespace: "d", Name: "eth"}); err != nil {
+	for {
+		if o, ok := ctl.Silos.Get("d", "node"); ok && o.(*v1.Silo).Status.Host == "w1" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := ctl.Reconcile(ctx, engine.Key{Kind: "Silo", Namespace: "d", Name: "node"}); err != nil {
 		t.Fatal(err)
 	}
 	var cur v1.Silo
@@ -106,7 +112,7 @@ func TestBalancerWritesTheAddressOnTheSilosPortsToo(t *testing.T) {
 	// The address taken away (another holds it now, says the IP): off both, in one write.
 	must(c.Get(ctx, "IP", "d", "eth", x))
 	x.Status.Holder = &v1.IPHolder{Holder: v1.HolderSiloPrefix + "other", UID: "other-uid"}
-	x.Status.Waiting = []v1.IPWaiting{{Holder: v1.HolderSiloPrefix + "node", Reason: "held by silo/other"}}
+	x.Status.Waiting = []v1.IPWaiting{{Holder: v1.HolderSiloPrefix + "node", UID: s.UID, Reason: "held by silo/other"}}
 	must(c.UpdateStatus(ctx, x))
 	for {
 		if o, ok := ctl.IPs.Get("d", "eth"); ok && len(o.(*v1.IP).Status.Waiting) == 1 {
@@ -117,7 +123,7 @@ func TestBalancerWritesTheAddressOnTheSilosPortsToo(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, err := ctl.Reconcile(ctx, engine.Key{Kind: "IP", Namespace: "d", Name: "eth"}); err != nil {
+	if _, err := ctl.Reconcile(ctx, engine.Key{Kind: "Silo", Namespace: "d", Name: "node"}); err != nil {
 		t.Fatal(err)
 	}
 	var after v1.Silo // a fresh one: decoding into cur would keep what the JSON leaves out

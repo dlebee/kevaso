@@ -33,8 +33,9 @@ type Claim struct {
 }
 
 // Claims are the silos and Services in ip's namespace that name ip (a service's hostPort.ip or
-// loadBalancer.ip, egress.source.ip; a Service's loadBalancer.ip), oldest first.
-func Claims(ip *v1.IP, silos []*v1.Silo, svcs []*v1.Service) []Claim {
+// loadBalancer.ip, egress.source.ip; a Service's loadBalancer.ip), and the SiloSet instances
+// whose own is ip (own resolves an instance's own IP, OwnIP; nil: none), oldest first.
+func Claims(ip *v1.IP, silos []*v1.Silo, svcs []*v1.Service, own func(*v1.Silo) string) []Claim {
 	var out []Claim
 	created := func(t *time.Time) time.Time {
 		if t == nil {
@@ -43,11 +44,19 @@ func Claims(ip *v1.IP, silos []*v1.Silo, svcs []*v1.Service) []Claim {
 		return *t
 	}
 	for _, s := range silos {
-		if s.Namespace != ip.Namespace || !slices.Contains(v1.SiloIPs(s), ip.Name) {
+		if s.Namespace != ip.Namespace {
 			continue
 		}
+		named, owned := slices.Contains(v1.SiloIPs(s), ip.Name), own != nil && own(s) == ip.Name
+		if !named && !owned {
+			continue
+		}
+		ports := v1.SiloPortsOn(s, ip.Name)
+		if owned {
+			ports = append(ports, ownPorts(s)...)
+		}
 		out = append(out, Claim{Holder: v1.HolderSiloPrefix + s.Name, UID: s.UID, Created: created(s.CreationTimestamp),
-			Deleting: s.DeletionTimestamp != nil, Host: s.Status.Host, Ports: v1.SiloPortsOn(s, ip.Name)})
+			Deleting: s.DeletionTimestamp != nil, Host: s.Status.Host, Ports: ports})
 	}
 	for _, svc := range svcs {
 		if svc.Namespace != ip.Namespace || svc.Spec.LoadBalancerIP() != ip.Name {
@@ -62,6 +71,19 @@ func Claims(ip *v1.IP, silos []*v1.Silo, svcs []*v1.Service) []Claim {
 		}
 		return out[i].Holder < out[j].Holder
 	})
+	return out
+}
+
+// ownPorts are the ports a silo's hostPort: { own: true } services take on its own IP (PORT/PROTO).
+func ownPorts(s *v1.Silo) []string {
+	var out []string
+	for _, p := range s.Spec.Open() {
+		if p.Type == v1.ServiceHostPort && p.Way.Own {
+			if k := fmt.Sprintf("%d/%s", p.HostNumber(), p.Protocol); !slices.Contains(out, k) {
+				out = append(out, k)
+			}
+		}
+	}
 	return out
 }
 

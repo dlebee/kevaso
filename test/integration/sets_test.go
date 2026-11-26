@@ -21,8 +21,7 @@ import (
 )
 
 // Example 07 in a real control plane (M12): a SiloSet of three container instances spread
-// over two hosts, and a Service of type LoadBalancer in front of them (the fake provider's; its
-// balancer itself is wave 2's).
+// over two hosts, and a Service of type LoadBalancer in front of them through the fake provider.
 // Then a rolling upgrade to v2 (never more than one instance down), admission refusing what would
 // run two copies, a scale-in that spares a protected instance, and deleting the set deleting its
 // instances. The hosts' agents are played by this test: they report each placed instance running
@@ -206,12 +205,14 @@ func TestSiloSetAndService(t *testing.T) {
 	if l := instances(); l[0].Name != "rpc-pool-0" || l[2].Name != "rpc-pool-2" {
 		t.Fatalf("names: %s", describe(l))
 	}
-	// TODO(net-v2 wave 2): and a load balancer on both hosts (node ports, an address), once
-	// balancers are made again.
-	eventually("the service: a virtual IP, three endpoints", func() (bool, string) {
+	eventually("the service: a virtual IP, three endpoints, a load balancer on both hosts", func() (bool, string) {
 		var s v1.Service
 		_ = admin.Get(ctx, "Service", "web3", "rpc", &s)
-		return s.Status.ClusterIP == "10.65.0.1" && len(s.Status.Endpoints) == 3, fmt.Sprintf("%+v", s.Status)
+		lb, ok := fake.LBOf("web3", "service/rpc")
+		return s.Status.ClusterIP == "10.65.0.1" && len(s.Status.Endpoints) == 3 && len(s.Status.NodePorts) == 1 &&
+				s.Status.NodePorts[0].NodePort == v1.NodePortSiloMax+1 && s.Status.LoadBalancerIP != "" && ok && len(lb.Backends) == 2 &&
+				lb.Ports[0].NodePort == v1.NodePortSiloMax+1,
+			fmt.Sprintf("%+v lb=%+v", s.Status, lb)
 	})
 	var set1 v1.SiloSet
 	eventually("the set Ready", func() (bool, string) {
@@ -293,11 +294,11 @@ func TestSiloSetAndService(t *testing.T) {
 		l := instances()
 		return len(l) == 1 && l[0].Name == "rpc-pool-1", describe(l)
 	})
-	// TODO(net-v2 wave 2): and the load balancer down to its host.
-	eventually("the service down to one endpoint", func() (bool, string) {
+	eventually("the load balancer down to its host", func() (bool, string) {
 		var s v1.Service
 		_ = admin.Get(ctx, "Service", "web3", "rpc", &s)
-		return len(s.Status.Endpoints) == 1, fmt.Sprint(s.Status.Endpoints)
+		lb, _ := fake.LBOf("web3", "service/rpc")
+		return len(s.Status.Endpoints) == 1 && len(lb.Backends) == 1, fmt.Sprintf("%+v", lb)
 	})
 
 	// Deleting the set deletes its instances; deleting the service, its load balancer.

@@ -242,12 +242,11 @@ func TestThreeWaysIn(t *testing.T) {
 			t.Errorf("api, or edge's internal IP, opened on a host:\n%s", rs)
 		}
 	}
-	// The balancer in front of the LAN proxies sends to the one front proxy.
-	// TODO(net-v2 wave 2): and has an address from the fake plugin (no balancer is made yet).
-	r.eventually("front-lb's endpoint", func() (bool, string) {
+	// The balancer in front of the LAN proxies: an address from the fake plugin.
+	r.eventually("front-lb's address", func() (bool, string) {
 		var svc v1.Service
 		_ = r.admin.Get(r.ctx, "Service", "shop", "front-lb", &svc)
-		return len(svc.Status.Endpoints) == 1, fmt.Sprintf("%+v", svc.Status)
+		return svc.Status.LoadBalancerIP != "" && len(svc.Status.Endpoints) == 1, fmt.Sprintf("%+v", svc.Status)
 	})
 	// Names, by who asks.
 	silos, hosts, svcs := r.all()

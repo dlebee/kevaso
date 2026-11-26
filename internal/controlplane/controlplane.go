@@ -527,7 +527,10 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	silos.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: k.Name}) })
 	hosts.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Host", Name: k.Name}) })
 	ipInf.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IP", Namespace: k.Namespace, Name: k.Name}) })
-	e.Register(&ipcontroller.Controller{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Plugins: cfg.Plugins, Clock: cfg.Clock, Claims: uniq}, engine.Options{Workers: 1})
+	ipSets := newInf("IPSet")
+	e.Register(&ipcontroller.Controller{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, SiloSets: sets, IPSets: ipSets, Plugins: cfg.Plugins, Clock: cfg.Clock, Claims: uniq}, engine.Options{Workers: 1})
+	e.Register(&ipcontroller.Sets{Client: c, IPSets: ipSets, IPs: ipInf, Silos: silos, SiloSets: sets, Clock: cfg.Clock}, engine.Options{Workers: 1})
+	ipSets.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IPSet", Namespace: k.Namespace, Name: k.Name}) })
 	namespaces := newInf("Namespace")
 	e.Register(&nscontroller.Controller{Client: c, Clock: cfg.Clock}, engine.Options{Workers: 1})
 	namespaces.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "Namespace", Name: k.Name}) })
@@ -581,14 +584,9 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 		// those controllers act on, never what a worker may have written in a status (K-037).
 		known := &provider.Providers{}
 		e.Register(&provider.Hosts{Client: c, Hosts: hosts, Plugins: reg, Providers: known}, engine.Options{Workers: 1})
-		leaseInf := newInf("Lease") // a plugin's load balancer has no backend for a closed leased port
-		leaseInf.AddHandler(func(k informer.Key) {
-			if o, ok := leaseInf.Get(k.Namespace, k.Name); ok {
-				e.Changed(engine.Key{Kind: "Silo", Namespace: k.Namespace, Name: o.(*v1.Lease).Spec.Silo})
-			}
-		})
-		go leaseInf.Run(ctx)
-		e.Register(&provider.Balancers{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Leases: leaseInf, Plugins: reg, Clock: cfg.Clock, Providers: known}, engine.Options{Workers: 2})
+		balancers := &provider.Balancers{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, Plugins: reg, Clock: cfg.Clock, Providers: known}
+		e.Register(balancers, engine.Options{Workers: 2})
+		e.Register(provider.ServiceBalancers{Balancers: balancers}, engine.Options{Workers: 2})
 		e.Register(&provider.Volumes{Client: c, Silos: silos, Hosts: hosts, Plugins: reg, Records: cd.store, Providers: known, Gates: gates}, engine.Options{Workers: 2})
 		e.Register(&provider.IngressDNS{Client: c, Ingresses: ingresses, Classes: classes, Plugins: reg, Cluster: cfg.ClusterName, Clock: cfg.Clock}, engine.Options{Workers: 1})
 		classes.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IngressClass", Name: k.Name}) })
@@ -623,6 +621,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	go sets.Run(ctx)
 	go services.Run(ctx)
 	go namespaces.Run(ctx)
+	go ipSets.Run(ctx)
 	e.WaitFor(caches...)
 	e.OnWait = func(kinds []string) { cfg.Log("controllers wait for their caches: %s", strings.Join(kinds, ", ")) }
 	e.Run(ctx)

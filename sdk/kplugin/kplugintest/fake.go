@@ -42,7 +42,16 @@ type Fake struct {
 	Fail   error
 	Calls  []string
 	next   int
-	lbAddr map[string]string // a node-port balancer's address, by ID
+	lbAddr map[string]string // a node-port balancer's address, by its group (sharedBy)
+}
+
+// sharedBy is the group a balancer is in: services in one namespace naming the same
+// fake.kevaso.com/balancer share one balancer (one address); any other is its own (its ID).
+func sharedBy(lb kplugin.LoadBalancer) string {
+	if b := lb.Annotations[kplugin.Domain("fake")+AnnotationBalancer]; b != "" {
+		return lb.Namespace + "/" + b
+	}
+	return lb.ID
 }
 
 // FakeVolume is a fake block volume.
@@ -153,7 +162,7 @@ func (f *Fake) EnsureLoadBalancer(_ context.Context, lb kplugin.LoadBalancer) (k
 			return kplugin.LoadBalancerStatus{}, kplugin.ErrNotFound
 		}
 		f.LBs[lb.ID] = lb
-		return kplugin.LoadBalancerStatus{Address: f.lbAddr[lb.ID]}, nil
+		return kplugin.LoadBalancerStatus{Address: f.lbAddr[sharedBy(lb)]}, nil
 	}
 	for k := range lb.Annotations {
 		if err := fakeAnnotation(k); err != nil {
@@ -177,31 +186,40 @@ func (f *Fake) EnsureLoadBalancer(_ context.Context, lb kplugin.LoadBalancer) (k
 		if lb.Address == "" {
 			return kplugin.LoadBalancerStatus{}, fmt.Errorf("fake-ip needs an address")
 		}
-		if r, ok := f.Reserved[lb.ID]; !ok || r.Address != lb.Address {
-			return kplugin.LoadBalancerStatus{}, fmt.Errorf("fake-ip: %s isn't reserved for %s", lb.Address, lb.ID)
+		if !f.reserved(lb.Address) { // a balancer is its service's; the address it answers on, a kept IP's
+			return kplugin.LoadBalancerStatus{}, fmt.Errorf("fake-ip: %s isn't reserved", lb.Address)
 		}
 		f.LBs[lb.ID] = lb
 		return kplugin.LoadBalancerStatus{Address: lb.Address}, nil
 	}
 	f.LBs[lb.ID] = lb
-	// A balancer's address is its own for its whole life: the lowest free from 198.51.100.10.
-	if f.lbAddr[lb.ID] == "" {
+	// A balancer's address is its own for its whole life (shared by the services sharing it):
+	// the lowest free from 198.51.100.10.
+	g := sharedBy(lb)
+	if f.lbAddr[g] == "" {
 		taken := map[string]bool{}
 		for _, a := range f.lbAddr {
 			taken[a] = true
 		}
 		for n := 10; ; n++ {
 			if a := netip.AddrFrom4([4]byte{198, 51, 100, byte(n)}).String(); !taken[a] {
-				f.lbAddr[lb.ID] = a
+				f.lbAddr[g] = a
 				break
 			}
 		}
 	}
-	return kplugin.LoadBalancerStatus{Address: f.lbAddr[lb.ID], SourceRanges: []string{"192.168.255.0/24"}}, nil
+	return kplugin.LoadBalancerStatus{Address: f.lbAddr[g], SourceRanges: []string{"192.168.255.0/24"}}, nil
 }
 
-// FakeAnnotations are the annotations the fake knows (it refuses others in its domain).
-var FakeAnnotations = []string{"fake.kevaso.com/algorithm"}
+// FakeAnnotations are the annotations the fake knows (it refuses others in its domain): the
+// ones it declares (FakeNetworking) and fake.kevaso.com/algorithm.
+var FakeAnnotations = func() []string {
+	out := []string{"fake.kevaso.com/algorithm"}
+	for _, a := range FakeNetworking().Annotations {
+		out = append(out, kplugin.Domain("fake")+a.Key)
+	}
+	return out
+}()
 
 func fakeAnnotation(k string) error {
 	if strings.HasPrefix(k, "fake.kevaso.com/") && !slices.Contains(FakeAnnotations, k) {
@@ -239,6 +257,16 @@ func (f *Fake) LBOf(ns, holder string) (kplugin.LoadBalancer, bool) {
 	return kplugin.LoadBalancer{}, false
 }
 
+// reserved says whether addr is one of fake-ip's reservations.
+func (f *Fake) reserved(addr string) bool {
+	for _, r := range f.Reserved {
+		if r.Address == addr {
+			return true
+		}
+	}
+	return false
+}
+
 // DeleteLoadBalancer implements kplugin.LoadBalancers.
 func (f *Fake) DeleteLoadBalancer(_ context.Context, ref kplugin.LoadBalancerRef) error {
 	f.mu.Lock()
@@ -246,10 +274,18 @@ func (f *Fake) DeleteLoadBalancer(_ context.Context, ref kplugin.LoadBalancerRef
 	if err := f.call("delete-lb %s", ref.ID); err != nil {
 		return err
 	}
-	if _, ok := f.LBs[ref.ID]; !ok {
+	lb, ok := f.LBs[ref.ID]
+	if !ok {
 		return kplugin.ErrNotFound
 	}
 	delete(f.LBs, ref.ID)
+	g := sharedBy(lb)
+	for _, o := range f.LBs {
+		if sharedBy(o) == g {
+			return nil // still shared: the balancer stays, with the others' ports
+		}
+	}
+	delete(f.lbAddr, g) // its last service gone: the balancer with it
 	return nil
 }
 
@@ -301,18 +337,21 @@ func (f *Fake) ReleaseAddress(_ context.Context, ref kplugin.AddressRef) error {
 		return err
 	}
 	if ref.Class != ClassIP {
-		if _, ok := f.LBs[ref.ID]; !ok {
+		lb, ok := f.LBs[ref.ID]
+		if !ok {
 			return kplugin.ErrNotFound
 		}
 		delete(f.LBs, ref.ID)
-		delete(f.lbAddr, ref.ID)
+		delete(f.lbAddr, sharedBy(lb))
 		return nil
 	}
 	if _, ok := f.Reserved[ref.ID]; !ok {
 		return kplugin.ErrNotFound
 	}
-	if _, ok := f.LBs[ref.ID]; ok {
-		return fmt.Errorf("%s is still shared with a silo's host: %w", ref.Address, kplugin.ErrConflict)
+	for _, lb := range f.LBs {
+		if lb.Address != "" && lb.Address == f.Reserved[ref.ID].Address {
+			return fmt.Errorf("%s still fronts %s's balancer: %w", lb.Address, lb.Name, kplugin.ErrConflict)
+		}
 	}
 	delete(f.Reserved, ref.ID)
 	return nil
