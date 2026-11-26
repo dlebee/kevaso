@@ -254,6 +254,18 @@ func (s SiloSpec) OpenPort(name string) (OpenPort, bool) {
 	return OpenPort{}, false
 }
 
+// LeasedPort is the first service port that opens the declared port name outside on a lease
+// (ok false: none does). A port may be in several services, say an Internal one for other silos
+// and a HostPort one on a lease: OpenPort is the first, which may not be the leased one.
+func (s SiloSpec) LeasedPort(name string) (OpenPort, bool) {
+	for _, p := range s.Open() {
+		if p.Name == name && p.Lease != nil && p.Outside() {
+			return p, true
+		}
+	}
+	return OpenPort{}, false
+}
+
 // LoadBalanced says whether any of its services is a LoadBalancer.
 func (s SiloSpec) LoadBalanced() bool {
 	return slices.ContainsFunc(s.Services, func(sv SiloService) bool { return sv.TypeOrDefault() == ServiceLoadBalancer })

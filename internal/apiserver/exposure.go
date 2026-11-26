@@ -426,8 +426,8 @@ func serviceOpensLeasedIngress(prev, obj meta.Object, silos []*v1.Silo, svcs []*
 func backendLeased(ns string, tgt v1.IngressTarget, silos []*v1.Silo, svcs []*v1.Service) bool {
 	silo, svc := names.Owner(ns, tgt.Name, silos, svcs)
 	if silo != nil {
-		p, ok := silo.Spec.OpenPort(tgt.Port)
-		return ok && p.Lease != nil
+		_, ok := silo.Spec.LeasedPort(tgt.Port)
+		return ok
 	}
 	if svc == nil {
 		return false
@@ -451,7 +451,7 @@ func backendLeased(ns string, tgt v1.IngressTarget, silos []*v1.Silo, svcs []*v1
 		if s.Namespace != ns || !v1.Selects(svc.Spec.Selector, s.Labels) {
 			continue
 		}
-		if p, ok := s.Spec.OpenPort(name); ok && p.Lease != nil {
+		if _, ok := s.Spec.LeasedPort(name); ok {
 			return true
 		}
 	}

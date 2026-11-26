@@ -88,11 +88,12 @@ func unpublished(svc *v1.Service, s *v1.Silo) string {
 		if name == "" {
 			name = p.Name
 		}
-		op, ok := s.Spec.OpenPort(name)
+		_, ok := s.Spec.OpenPort(name)
+		_, leased := s.Spec.LeasedPort(name)
 		switch {
 		case !ok:
 			why = append(why, fmt.Sprintf("port %s isn't one silo %s opens (open it in one of its spec.services)", name, s.Name))
-		case op.Lease != nil:
+		case leased:
 			why = append(why, fmt.Sprintf("port %s of silo %s opens outside only on a lease (kvo open; a LoadBalancer Service can't publish it)", name, s.Name))
 		}
 	}

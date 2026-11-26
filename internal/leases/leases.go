@@ -77,11 +77,12 @@ func Exposed(spec v1.SiloSpec) []string {
 	return out
 }
 
-// Of is the lease terms of the port named port: nil unless the service opens it outside and
-// says lease (a port without lease is always open).
+// Of is the lease terms of the port named port: nil unless a service opens it outside and says
+// lease (a port without lease is always open). The port may be in other services too (an
+// Internal one, say): the leased one counts.
 func Of(spec v1.SiloSpec, port string) *v1.PortLease {
-	p, ok := spec.OpenPort(port)
-	if !ok || !p.Outside() {
+	p, ok := spec.LeasedPort(port)
+	if !ok {
 		return nil
 	}
 	return p.Lease
@@ -319,7 +320,10 @@ func Decide(a Ask, silo *v1.Silo, existing *v1.Lease, appr *v1.Approval, l Limit
 		}
 		wait = w
 	}
-	op, _ := silo.Spec.OpenPort(a.Port)
+	op, ok := silo.Spec.LeasedPort(a.Port)
+	if !ok {
+		op, _ = silo.Spec.OpenPort(a.Port)
+	}
 	proto, port := op.Protocol, op.HostNumber()
 	from := "from anywhere"
 	if len(op.Sources) > 0 {

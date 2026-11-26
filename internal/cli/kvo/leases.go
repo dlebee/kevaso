@@ -225,7 +225,7 @@ func writePorts(w io.Writer, s *v1.Silo, all []*v1.Lease, readErr error, now tim
 			}
 		}
 		terms := leaseTerms(pl)
-		if op, _ := s.Spec.OpenPort(p); len(op.Sources) > 0 {
+		if op, _ := s.Spec.LeasedPort(p); len(op.Sources) > 0 {
 			terms += ", from " + strings.Join(op.Sources, ", ")
 		}
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\n", p, terms, state)
