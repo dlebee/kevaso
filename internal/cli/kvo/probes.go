@@ -170,8 +170,15 @@ func writeSiloPorts(w io.Writer, s *v1.Silo) {
 			if len(ops) > 1 {
 				name += " (" + op.Service + ")"
 			}
+			internal, external := want(op.On(v1.NetworkInternal), ws.Internal), want(op.On(v1.NetworkExternal), ws.External)
+			if op.Way.IP != "" || op.Way.Own { // on an IP: its address, in the column of its kind
+				internal, external = dash(ws.Internal), dash(ws.External)
+				if ws.Internal == "" && ws.External == "" {
+					external = fmt.Sprintf("(when held) :%d", op.HostNumber())
+				}
+			}
 			_, _ = fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, num, mesh,
-				want(op.On(v1.NetworkInternal), ws.Internal), want(op.On(v1.NetworkExternal), ws.External), want(op.LoadBalancer, ws.LoadBalancer),
+				internal, external, want(op.LoadBalancer, ws.LoadBalancer),
 				dash(strings.Join(op.AllowFrom, ", ")), dash(strings.Join(op.Sources, ", ")))
 		}
 	}
