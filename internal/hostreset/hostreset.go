@@ -60,7 +60,7 @@ const VG = cloudhypervisor.VG
 var Paths = []string{
 	"/usr/local/bin/kevasod", "/usr/local/bin/kevaso-plugin-*", "/usr/local/lib/kevaso",
 	"/etc/kevaso", "/etc/kevaso-silos.nft", "/etc/profile.d/kevaso-secrets.sh",
-	"/etc/systemd/system/kevasod.service", "/etc/systemd/system/kevaso-*.service", "/etc/systemd/system/kevaso-*.d",
+	"/etc/systemd/system/kevasod.service", "/etc/systemd/system/kevaso-*.service", "/etc/systemd/system/kevaso-*.socket", "/etc/systemd/system/kevaso-*.d",
 	"/opt/kevaso",
 	"/var/lib/kevaso", "/var/lib/kevaso-*", "/var/cache/kevaso",
 	"/run/kevaso", "/run/kevaso-*",
@@ -408,7 +408,7 @@ for u in $(systemctl list-units --all --plain --no-legend 'kevaso*' '`+TestUnitP
   systemctl stop "$u" || { echo "stopping $u failed"; rc=1; }
   systemctl kill -s KILL "$u" 2>/dev/null
 done
-for f in /etc/systemd/system/kevaso*.service; do [ -e "$f" ] && systemctl disable "$(basename "$f")" 2>/dev/null; done
+for f in /etc/systemd/system/kevaso*.service /etc/systemd/system/kevaso*.socket; do [ -e "$f" ] && systemctl disable "$(basename "$f")" 2>/dev/null; done
 exit $rc`)
 	add("kill what is left", `for p in `+strings.Join(Processes, " ")+`; do pkill -KILL -x "$(printf %.15s "$p")"; done; sleep 1; true`)
 
