@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"kevaso.com/core/sdk/kri"
 )
@@ -230,6 +231,13 @@ func (r *Runtime) runProgram(ctx context.Context, id kri.ID, req kri.ExecRequest
 		r.mu.Unlock()
 		return code, nil
 	case <-ctx.Done():
+		// The program got the same ctx: wait (briefly) for it to stop, so nothing it does (a
+		// command writing files, say) outlives this Exec; a test's folder removed right after
+		// raced it ("directory not empty").
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+		}
 		r.mu.Lock()
 		r.running--
 		r.killed++
