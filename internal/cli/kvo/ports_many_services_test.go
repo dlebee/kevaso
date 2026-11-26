@@ -49,6 +49,9 @@ func TestDescribePortOpenedByTwoServices(t *testing.T) {
 	if in == nil || !strings.Contains(strings.Join(in, " "), "app") || strings.Contains(strings.Join(in, " "), "192.0.2.10") {
 		t.Errorf("Internal row wrong: %q\n%s", in, b.String())
 	}
+	if strings.Contains(strings.Join(pub, " "), "no silo allowed") {
+		t.Errorf("app may connect through the Internal service, yet the HostPort row says no silo is allowed: %q", pub)
+	}
 	if !strings.Contains(b.String(), "not opened: reachable nowhere") {
 		t.Errorf("the unopened port lost its row:\n%s", b.String())
 	}

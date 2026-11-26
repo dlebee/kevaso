@@ -144,6 +144,10 @@ func writeSiloPorts(w io.Writer, s *v1.Silo) {
 			_, _ = fmt.Fprintf(w, "  %s\t%s\tnot opened: reachable nowhere\t\t\t\t\t\n", d.Name, num)
 			continue
 		}
+		allowed := false // some service lets a silo in on its silo IP
+		for _, op := range ops {
+			allowed = allowed || len(op.AllowFrom) > 0
+		}
 		for i, op := range ops {
 			var ws v1.ServicePortStatus
 			if st := where[d.Name]; i < len(st) {
@@ -159,7 +163,7 @@ func writeSiloPorts(w io.Writer, s *v1.Silo) {
 				return got
 			}
 			mesh := at(ws.Mesh, "(when running)")
-			if len(op.AllowFrom) == 0 {
+			if !allowed {
 				mesh += " (no silo allowed)"
 			}
 			name := d.Name
