@@ -24,7 +24,9 @@ const Protocol = "kevaso.plugin/v1"
 // they mean. A plugin's server reports it in Info, filled in by Serve (like Protocol), so it is
 // the sdk's the plugin was built with. Bump it when a message or a field's meaning changes; core
 // serves plugins of revisions MinRevision to Revision and refuses others.
-const Revision = 1
+//
+// Revision 2 adds Info.Networking (networking v2): a plugin of revision 1 declares nothing.
+const Revision = 2
 
 // MinRevision is the oldest plugin revision core still serves.
 const MinRevision = 1
@@ -53,6 +55,9 @@ type Info struct {
 	LoadBalancers []Class  `json:"loadBalancers,omitempty"`
 	Storage       []Class  `json:"storage,omitempty"`
 	DNS           []string `json:"dns,omitempty"`
+	// Networking is what its provider does for services and IPs and the annotations it accepts;
+	// nil: nothing declared (a plugin of sdk wire revision 1).
+	Networking *Networking `json:"networking,omitempty"`
 }
 
 // Class is one load-balancer or storage class.

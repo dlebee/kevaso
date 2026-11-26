@@ -36,6 +36,8 @@ type Fake struct {
 	Mounts map[string]string
 	// DetachCalls before a detach completes (0: at once); counts down per volume.
 	DetachSlow int
+	// Networking, if set, is what Info declares instead of FakeNetworking.
+	Networking *kplugin.Networking
 	// Fail, if set, is returned by every mutating call.
 	Fail   error
 	Calls  []string
@@ -85,7 +87,41 @@ func (f *Fake) Info(context.Context) (kplugin.Info, error) {
 			{Name: ClassBlock, OwnHostsOnly: true},
 			{Name: ClassShare, Topology: kplugin.TopologyGlobal, Reach: kplugin.ReachMount},
 		},
-		DNS: []string{"fake-dns"}}, nil
+		DNS: []string{"fake-dns"}, Networking: f.networking()}, nil
+}
+
+func (f *Fake) networking() *kplugin.Networking {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Networking != nil {
+		return f.Networking
+	}
+	return FakeNetworking()
+}
+
+// The fake's annotations (in its domain, fake.kevaso.com/).
+const (
+	AnnotationBalancer      = "balancer"        // string, a name: services naming the same one share it
+	AnnotationBalancerSize  = "balancer-size"   // enum: small | medium | large
+	AnnotationConnections   = "max-connections" // int, 1 to 10000
+	AnnotationProxyProtocol = "proxy-protocol"  // bool
+	AnnotationIPTag         = "tag"             // string, on an IP
+)
+
+// FakeNetworking is what the fake declares by default: Provider IPs and load balancers in two
+// regions, its own hosts only, a balancer with its own address (no kept IP in front, like a
+// Linode NodeBalancer) that doesn't keep the client's address, and an annotation of each type.
+func FakeNetworking() *kplugin.Networking {
+	one, most := int64(1), int64(10000)
+	return &kplugin.Networking{ProviderIPs: true, LoadBalancers: true, Reach: kplugin.FollowsRegion,
+		Regions: []string{"ca-central", "us-ord"}, OwnHostsOnly: true,
+		Annotations: []kplugin.Annotation{
+			{Key: AnnotationBalancer, Description: "share a balancer: services naming the same one share it", Pattern: `[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?`},
+			{Key: AnnotationBalancerSize, Description: "the balancer's size", Type: kplugin.AnnotationEnum, Values: []string{"small", "medium", "large"}},
+			{Key: AnnotationConnections, Description: "connections the balancer accepts at once", Type: kplugin.AnnotationInt, Min: &one, Max: &most},
+			{Key: AnnotationProxyProtocol, Description: "send the client's address in the PROXY protocol", Type: kplugin.AnnotationBool},
+			{Key: AnnotationIPTag, Description: "a tag on the reserved address", On: []string{kplugin.OnIP}},
+		}}
 }
 
 // DescribeHosts implements kplugin.HostDescriber.

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -91,6 +93,48 @@ func Conformance(t *testing.T, s Suite) {
 			}
 			if !addresses {
 				t.Errorf("load-balancer class %s: a plugin serving load balancers serves Addresses too (ReleaseAddress deletes an IP's balancer)", cl.Name)
+			}
+		}
+	})
+
+	t.Run("networking", func(t *testing.T) {
+		n := info.Networking
+		if n == nil {
+			t.Fatal("Info declares no Networking: every plugin says what it does for services, even nothing (&kplugin.Networking{})")
+		}
+		if err := n.Check(); err != nil {
+			t.Fatalf("Networking: %v", err)
+		}
+		direct, err := s.Plugin.Info(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(normal(direct.Networking), normal(n)) {
+			t.Errorf("Networking changes over the wire:\n  declared %+v\n  received %+v", direct.Networking, n)
+		}
+		if n.FrontWithIP && !addressesServed(s.Plugin) {
+			t.Error("frontWithIP: fronting a balancer with a kept IP needs Addresses (ReserveAddress)")
+		}
+		if (n.ProviderIPs || n.LoadBalancers) && !addressesServed(s.Plugin) {
+			t.Error("providerIPs or loadBalancers: a plugin making either serves Addresses")
+		}
+		if _, ok := s.Plugin.(kplugin.LoadBalancers); n.LoadBalancers && !ok {
+			t.Error("loadBalancers: the plugin doesn't serve LoadBalancers")
+		}
+		domain := kplugin.Domain(info.Name)
+		for _, a := range n.Annotations {
+			on := kplugin.OnService
+			if !a.Goes(on) {
+				on = kplugin.OnIP
+			}
+			if v, ok := sample(a); ok {
+				if err := n.ValidateAnnotations(info.Name, on, map[string]string{domain + a.Key: v}); err != nil {
+					t.Errorf("annotation %s: a good value refused: %v", a.Key, err)
+				}
+			}
+			var ae *kplugin.AnnotationError
+			if err := n.ValidateAnnotations(info.Name, on, map[string]string{domain + a.Key + "x": "1"}); !errors.As(err, &ae) || ae.Name != domain+a.Key+"x" {
+				t.Errorf("annotation %sx (a misspelling): %v, want it refused by name", a.Key, err)
 			}
 		}
 	})
@@ -331,4 +375,50 @@ func ServeForTest(t testing.TB, p kplugin.Plugin) *kplugin.Client {
 	c := kplugin.Dial(sock)
 	t.Cleanup(func() { _ = c.Close(); cancel(); <-done })
 	return c
+}
+
+func addressesServed(p kplugin.Plugin) bool {
+	_, ok := p.(kplugin.Addresses)
+	return ok
+}
+
+// normal makes empty lists nil, as the wire does.
+func normal(n *kplugin.Networking) *kplugin.Networking {
+	if n == nil {
+		return nil
+	}
+	c := *n
+	if len(c.Regions) == 0 {
+		c.Regions = nil
+	}
+	c.Annotations = nil
+	for _, a := range n.Annotations {
+		if len(a.Values) == 0 {
+			a.Values = nil
+		}
+		if len(a.On) == 0 {
+			a.On = nil
+		}
+		c.Annotations = append(c.Annotations, a)
+	}
+	return &c
+}
+
+// sample is a value the annotation accepts, when one is easy to make (not for a pattern).
+func sample(a kplugin.Annotation) (string, bool) {
+	switch a.Type {
+	case kplugin.AnnotationEnum:
+		return a.Values[0], true
+	case kplugin.AnnotationBool:
+		return "true", true
+	case kplugin.AnnotationInt:
+		switch {
+		case a.Min != nil:
+			return strconv.FormatInt(*a.Min, 10), true
+		case a.Max != nil:
+			return strconv.FormatInt(*a.Max, 10), true
+		}
+		return "0", true
+	}
+	return "x", a.Pattern == ""
 }

@@ -79,7 +79,10 @@ type PluginInfo struct {
 	Dns           []string               `protobuf:"bytes,7,rep,name=dns,proto3" json:"dns,omitempty"` // DNS provider names
 	// The wire revision of the sdk the plugin was built with (kplugin.Revision); 0: before there
 	// was one. Core refuses a plugin outside the revisions it serves.
-	Revision      uint32 `protobuf:"varint,8,opt,name=revision,proto3" json:"revision,omitempty"`
+	Revision uint32 `protobuf:"varint,8,opt,name=revision,proto3" json:"revision,omitempty"`
+	// What the plugin's provider does for services (networking v2): absent from a plugin built
+	// before sdk wire revision 2, which declares nothing (its annotations go to it unchecked).
+	Networking    *Networking `protobuf:"bytes,9,opt,name=networking,proto3" json:"networking,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -170,6 +173,215 @@ func (x *PluginInfo) GetRevision() uint32 {
 	return 0
 }
 
+func (x *PluginInfo) GetNetworking() *Networking {
+	if x != nil {
+		return x.Networking
+	}
+	return nil
+}
+
+// Networking is what a provider does for services and IPs, and the annotations it accepts.
+type Networking struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProviderIps   bool                   `protobuf:"varint,1,opt,name=provider_ips,json=providerIps,proto3" json:"provider_ips,omitempty"`         // it makes IPs of type Provider (reserved from the provider)
+	LoadBalancers bool                   `protobuf:"varint,2,opt,name=load_balancers,json=loadBalancers,proto3" json:"load_balancers,omitempty"`   // it makes balancers for services of type LoadBalancer
+	FrontWithIp   bool                   `protobuf:"varint,3,opt,name=front_with_ip,json=frontWithIp,proto3" json:"front_with_ip,omitempty"`       // a kept Provider IP can front a balancer (loadBalancer.ip)
+	KeepsClientIp bool                   `protobuf:"varint,4,opt,name=keeps_client_ip,json=keepsClientIp,proto3" json:"keeps_client_ip,omitempty"` // the silo sees the client's address behind its balancers
+	Reach         string                 `protobuf:"bytes,5,opt,name=reach,proto3" json:"reach,omitempty"`                                         // where its IPs and balancers reach silos: host | region (default) | global
+	Regions       []string               `protobuf:"bytes,6,rep,name=regions,proto3" json:"regions,omitempty"`                                     // the regions it serves; empty: any
+	OwnHostsOnly  bool                   `protobuf:"varint,7,opt,name=own_hosts_only,json=ownHostsOnly,proto3" json:"own_hosts_only,omitempty"`    // only its own machines (Hosts) can be behind them
+	Annotations   []*Annotation          `protobuf:"bytes,8,rep,name=annotations,proto3" json:"annotations,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Networking) Reset() {
+	*x = Networking{}
+	mi := &file_kplugin_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Networking) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Networking) ProtoMessage() {}
+
+func (x *Networking) ProtoReflect() protoreflect.Message {
+	mi := &file_kplugin_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Networking.ProtoReflect.Descriptor instead.
+func (*Networking) Descriptor() ([]byte, []int) {
+	return file_kplugin_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *Networking) GetProviderIps() bool {
+	if x != nil {
+		return x.ProviderIps
+	}
+	return false
+}
+
+func (x *Networking) GetLoadBalancers() bool {
+	if x != nil {
+		return x.LoadBalancers
+	}
+	return false
+}
+
+func (x *Networking) GetFrontWithIp() bool {
+	if x != nil {
+		return x.FrontWithIp
+	}
+	return false
+}
+
+func (x *Networking) GetKeepsClientIp() bool {
+	if x != nil {
+		return x.KeepsClientIp
+	}
+	return false
+}
+
+func (x *Networking) GetReach() string {
+	if x != nil {
+		return x.Reach
+	}
+	return ""
+}
+
+func (x *Networking) GetRegions() []string {
+	if x != nil {
+		return x.Regions
+	}
+	return nil
+}
+
+func (x *Networking) GetOwnHostsOnly() bool {
+	if x != nil {
+		return x.OwnHostsOnly
+	}
+	return false
+}
+
+func (x *Networking) GetAnnotations() []*Annotation {
+	if x != nil {
+		return x.Annotations
+	}
+	return nil
+}
+
+// Annotation is one annotation a provider accepts, in its domain (NAME.kevaso.com/KEY).
+type Annotation struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"` // KEY, without the domain: the plugin's install name gives the domain
+	Description   string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	Type          string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`       // string (default) | int | bool | enum
+	Values        []string               `protobuf:"bytes,4,rep,name=values,proto3" json:"values,omitempty"`   // enum: the values allowed
+	Pattern       string                 `protobuf:"bytes,5,opt,name=pattern,proto3" json:"pattern,omitempty"` // string: an RE2 expression the whole value matches
+	Min           *int64                 `protobuf:"varint,6,opt,name=min,proto3,oneof" json:"min,omitempty"`  // int
+	Max           *int64                 `protobuf:"varint,7,opt,name=max,proto3,oneof" json:"max,omitempty"`  // int
+	On            []string               `protobuf:"bytes,8,rep,name=on,proto3" json:"on,omitempty"`           // where it goes: service (default) | ip
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Annotation) Reset() {
+	*x = Annotation{}
+	mi := &file_kplugin_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Annotation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Annotation) ProtoMessage() {}
+
+func (x *Annotation) ProtoReflect() protoreflect.Message {
+	mi := &file_kplugin_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Annotation.ProtoReflect.Descriptor instead.
+func (*Annotation) Descriptor() ([]byte, []int) {
+	return file_kplugin_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *Annotation) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *Annotation) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *Annotation) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *Annotation) GetValues() []string {
+	if x != nil {
+		return x.Values
+	}
+	return nil
+}
+
+func (x *Annotation) GetPattern() string {
+	if x != nil {
+		return x.Pattern
+	}
+	return ""
+}
+
+func (x *Annotation) GetMin() int64 {
+	if x != nil && x.Min != nil {
+		return *x.Min
+	}
+	return 0
+}
+
+func (x *Annotation) GetMax() int64 {
+	if x != nil && x.Max != nil {
+		return *x.Max
+	}
+	return 0
+}
+
+func (x *Annotation) GetOn() []string {
+	if x != nil {
+		return x.On
+	}
+	return nil
+}
+
 type Class struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Name           string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -190,7 +402,7 @@ type Class struct {
 
 func (x *Class) Reset() {
 	*x = Class{}
-	mi := &file_kplugin_proto_msgTypes[2]
+	mi := &file_kplugin_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -202,7 +414,7 @@ func (x *Class) String() string {
 func (*Class) ProtoMessage() {}
 
 func (x *Class) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[2]
+	mi := &file_kplugin_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -215,7 +427,7 @@ func (x *Class) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Class.ProtoReflect.Descriptor instead.
 func (*Class) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{2}
+	return file_kplugin_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Class) GetName() string {
@@ -313,7 +525,7 @@ type Host struct {
 
 func (x *Host) Reset() {
 	*x = Host{}
-	mi := &file_kplugin_proto_msgTypes[3]
+	mi := &file_kplugin_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -325,7 +537,7 @@ func (x *Host) String() string {
 func (*Host) ProtoMessage() {}
 
 func (x *Host) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[3]
+	mi := &file_kplugin_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -338,7 +550,7 @@ func (x *Host) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Host.ProtoReflect.Descriptor instead.
 func (*Host) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{3}
+	return file_kplugin_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Host) GetName() string {
@@ -374,7 +586,7 @@ type HostInfo struct {
 
 func (x *HostInfo) Reset() {
 	*x = HostInfo{}
-	mi := &file_kplugin_proto_msgTypes[4]
+	mi := &file_kplugin_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -386,7 +598,7 @@ func (x *HostInfo) String() string {
 func (*HostInfo) ProtoMessage() {}
 
 func (x *HostInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[4]
+	mi := &file_kplugin_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -399,7 +611,7 @@ func (x *HostInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostInfo.ProtoReflect.Descriptor instead.
 func (*HostInfo) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{4}
+	return file_kplugin_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *HostInfo) GetName() string {
@@ -439,7 +651,7 @@ type DescribeHostsRequest struct {
 
 func (x *DescribeHostsRequest) Reset() {
 	*x = DescribeHostsRequest{}
-	mi := &file_kplugin_proto_msgTypes[5]
+	mi := &file_kplugin_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -451,7 +663,7 @@ func (x *DescribeHostsRequest) String() string {
 func (*DescribeHostsRequest) ProtoMessage() {}
 
 func (x *DescribeHostsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[5]
+	mi := &file_kplugin_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -464,7 +676,7 @@ func (x *DescribeHostsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeHostsRequest.ProtoReflect.Descriptor instead.
 func (*DescribeHostsRequest) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{5}
+	return file_kplugin_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *DescribeHostsRequest) GetHosts() []*Host {
@@ -483,7 +695,7 @@ type DescribeHostsResponse struct {
 
 func (x *DescribeHostsResponse) Reset() {
 	*x = DescribeHostsResponse{}
-	mi := &file_kplugin_proto_msgTypes[6]
+	mi := &file_kplugin_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -495,7 +707,7 @@ func (x *DescribeHostsResponse) String() string {
 func (*DescribeHostsResponse) ProtoMessage() {}
 
 func (x *DescribeHostsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[6]
+	mi := &file_kplugin_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -508,7 +720,7 @@ func (x *DescribeHostsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescribeHostsResponse.ProtoReflect.Descriptor instead.
 func (*DescribeHostsResponse) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{6}
+	return file_kplugin_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DescribeHostsResponse) GetHosts() []*HostInfo {
@@ -536,7 +748,7 @@ type Port struct {
 
 func (x *Port) Reset() {
 	*x = Port{}
-	mi := &file_kplugin_proto_msgTypes[7]
+	mi := &file_kplugin_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -548,7 +760,7 @@ func (x *Port) String() string {
 func (*Port) ProtoMessage() {}
 
 func (x *Port) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[7]
+	mi := &file_kplugin_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -561,7 +773,7 @@ func (x *Port) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Port.ProtoReflect.Descriptor instead.
 func (*Port) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{7}
+	return file_kplugin_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *Port) GetName() string {
@@ -638,7 +850,7 @@ type LoadBalancer struct {
 
 func (x *LoadBalancer) Reset() {
 	*x = LoadBalancer{}
-	mi := &file_kplugin_proto_msgTypes[8]
+	mi := &file_kplugin_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -650,7 +862,7 @@ func (x *LoadBalancer) String() string {
 func (*LoadBalancer) ProtoMessage() {}
 
 func (x *LoadBalancer) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[8]
+	mi := &file_kplugin_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -663,7 +875,7 @@ func (x *LoadBalancer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoadBalancer.ProtoReflect.Descriptor instead.
 func (*LoadBalancer) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{8}
+	return file_kplugin_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *LoadBalancer) GetClass() string {
@@ -739,7 +951,7 @@ type LoadBalancerStatus struct {
 
 func (x *LoadBalancerStatus) Reset() {
 	*x = LoadBalancerStatus{}
-	mi := &file_kplugin_proto_msgTypes[9]
+	mi := &file_kplugin_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -751,7 +963,7 @@ func (x *LoadBalancerStatus) String() string {
 func (*LoadBalancerStatus) ProtoMessage() {}
 
 func (x *LoadBalancerStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[9]
+	mi := &file_kplugin_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -764,7 +976,7 @@ func (x *LoadBalancerStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoadBalancerStatus.ProtoReflect.Descriptor instead.
 func (*LoadBalancerStatus) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{9}
+	return file_kplugin_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *LoadBalancerStatus) GetAddress() string {
@@ -792,7 +1004,7 @@ type LoadBalancerRef struct {
 
 func (x *LoadBalancerRef) Reset() {
 	*x = LoadBalancerRef{}
-	mi := &file_kplugin_proto_msgTypes[10]
+	mi := &file_kplugin_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -804,7 +1016,7 @@ func (x *LoadBalancerRef) String() string {
 func (*LoadBalancerRef) ProtoMessage() {}
 
 func (x *LoadBalancerRef) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[10]
+	mi := &file_kplugin_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -817,7 +1029,7 @@ func (x *LoadBalancerRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoadBalancerRef.ProtoReflect.Descriptor instead.
 func (*LoadBalancerRef) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{10}
+	return file_kplugin_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *LoadBalancerRef) GetClass() string {
@@ -849,7 +1061,7 @@ type DeleteLoadBalancerResponse struct {
 
 func (x *DeleteLoadBalancerResponse) Reset() {
 	*x = DeleteLoadBalancerResponse{}
-	mi := &file_kplugin_proto_msgTypes[11]
+	mi := &file_kplugin_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -861,7 +1073,7 @@ func (x *DeleteLoadBalancerResponse) String() string {
 func (*DeleteLoadBalancerResponse) ProtoMessage() {}
 
 func (x *DeleteLoadBalancerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[11]
+	mi := &file_kplugin_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -874,7 +1086,7 @@ func (x *DeleteLoadBalancerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteLoadBalancerResponse.ProtoReflect.Descriptor instead.
 func (*DeleteLoadBalancerResponse) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{11}
+	return file_kplugin_proto_rawDescGZIP(), []int{13}
 }
 
 type AddressReservation struct {
@@ -892,7 +1104,7 @@ type AddressReservation struct {
 
 func (x *AddressReservation) Reset() {
 	*x = AddressReservation{}
-	mi := &file_kplugin_proto_msgTypes[12]
+	mi := &file_kplugin_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -904,7 +1116,7 @@ func (x *AddressReservation) String() string {
 func (*AddressReservation) ProtoMessage() {}
 
 func (x *AddressReservation) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[12]
+	mi := &file_kplugin_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -917,7 +1129,7 @@ func (x *AddressReservation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddressReservation.ProtoReflect.Descriptor instead.
 func (*AddressReservation) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{12}
+	return file_kplugin_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *AddressReservation) GetClass() string {
@@ -980,7 +1192,7 @@ type AddressStatus struct {
 
 func (x *AddressStatus) Reset() {
 	*x = AddressStatus{}
-	mi := &file_kplugin_proto_msgTypes[13]
+	mi := &file_kplugin_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -992,7 +1204,7 @@ func (x *AddressStatus) String() string {
 func (*AddressStatus) ProtoMessage() {}
 
 func (x *AddressStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[13]
+	mi := &file_kplugin_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1005,7 +1217,7 @@ func (x *AddressStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddressStatus.ProtoReflect.Descriptor instead.
 func (*AddressStatus) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{13}
+	return file_kplugin_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AddressStatus) GetAddress() string {
@@ -1041,7 +1253,7 @@ type AddressRef struct {
 
 func (x *AddressRef) Reset() {
 	*x = AddressRef{}
-	mi := &file_kplugin_proto_msgTypes[14]
+	mi := &file_kplugin_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1053,7 +1265,7 @@ func (x *AddressRef) String() string {
 func (*AddressRef) ProtoMessage() {}
 
 func (x *AddressRef) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[14]
+	mi := &file_kplugin_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1066,7 +1278,7 @@ func (x *AddressRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddressRef.ProtoReflect.Descriptor instead.
 func (*AddressRef) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{14}
+	return file_kplugin_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *AddressRef) GetClass() string {
@@ -1105,7 +1317,7 @@ type ReleaseAddressResponse struct {
 
 func (x *ReleaseAddressResponse) Reset() {
 	*x = ReleaseAddressResponse{}
-	mi := &file_kplugin_proto_msgTypes[15]
+	mi := &file_kplugin_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1117,7 +1329,7 @@ func (x *ReleaseAddressResponse) String() string {
 func (*ReleaseAddressResponse) ProtoMessage() {}
 
 func (x *ReleaseAddressResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[15]
+	mi := &file_kplugin_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1130,7 +1342,7 @@ func (x *ReleaseAddressResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseAddressResponse.ProtoReflect.Descriptor instead.
 func (*ReleaseAddressResponse) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{15}
+	return file_kplugin_proto_rawDescGZIP(), []int{17}
 }
 
 type Volume struct {
@@ -1146,7 +1358,7 @@ type Volume struct {
 
 func (x *Volume) Reset() {
 	*x = Volume{}
-	mi := &file_kplugin_proto_msgTypes[16]
+	mi := &file_kplugin_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1158,7 +1370,7 @@ func (x *Volume) String() string {
 func (*Volume) ProtoMessage() {}
 
 func (x *Volume) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[16]
+	mi := &file_kplugin_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1171,7 +1383,7 @@ func (x *Volume) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Volume.ProtoReflect.Descriptor instead.
 func (*Volume) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{16}
+	return file_kplugin_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *Volume) GetClass() string {
@@ -1223,7 +1435,7 @@ type VolumeStatus struct {
 
 func (x *VolumeStatus) Reset() {
 	*x = VolumeStatus{}
-	mi := &file_kplugin_proto_msgTypes[17]
+	mi := &file_kplugin_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1235,7 +1447,7 @@ func (x *VolumeStatus) String() string {
 func (*VolumeStatus) ProtoMessage() {}
 
 func (x *VolumeStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[17]
+	mi := &file_kplugin_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1248,7 +1460,7 @@ func (x *VolumeStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VolumeStatus.ProtoReflect.Descriptor instead.
 func (*VolumeStatus) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{17}
+	return file_kplugin_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *VolumeStatus) GetHandle() string {
@@ -1290,7 +1502,7 @@ type Attachment struct {
 
 func (x *Attachment) Reset() {
 	*x = Attachment{}
-	mi := &file_kplugin_proto_msgTypes[18]
+	mi := &file_kplugin_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1302,7 +1514,7 @@ func (x *Attachment) String() string {
 func (*Attachment) ProtoMessage() {}
 
 func (x *Attachment) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[18]
+	mi := &file_kplugin_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1315,7 +1527,7 @@ func (x *Attachment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Attachment.ProtoReflect.Descriptor instead.
 func (*Attachment) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{18}
+	return file_kplugin_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *Attachment) GetClass() string {
@@ -1348,7 +1560,7 @@ type AttachmentStatus struct {
 
 func (x *AttachmentStatus) Reset() {
 	*x = AttachmentStatus{}
-	mi := &file_kplugin_proto_msgTypes[19]
+	mi := &file_kplugin_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1360,7 +1572,7 @@ func (x *AttachmentStatus) String() string {
 func (*AttachmentStatus) ProtoMessage() {}
 
 func (x *AttachmentStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[19]
+	mi := &file_kplugin_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1373,7 +1585,7 @@ func (x *AttachmentStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachmentStatus.ProtoReflect.Descriptor instead.
 func (*AttachmentStatus) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{19}
+	return file_kplugin_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *AttachmentStatus) GetDevice() string {
@@ -1391,7 +1603,7 @@ type DetachVolumeResponse struct {
 
 func (x *DetachVolumeResponse) Reset() {
 	*x = DetachVolumeResponse{}
-	mi := &file_kplugin_proto_msgTypes[20]
+	mi := &file_kplugin_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1403,7 +1615,7 @@ func (x *DetachVolumeResponse) String() string {
 func (*DetachVolumeResponse) ProtoMessage() {}
 
 func (x *DetachVolumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[20]
+	mi := &file_kplugin_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1416,7 +1628,7 @@ func (x *DetachVolumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DetachVolumeResponse.ProtoReflect.Descriptor instead.
 func (*DetachVolumeResponse) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{20}
+	return file_kplugin_proto_rawDescGZIP(), []int{22}
 }
 
 type VolumeRef struct {
@@ -1429,7 +1641,7 @@ type VolumeRef struct {
 
 func (x *VolumeRef) Reset() {
 	*x = VolumeRef{}
-	mi := &file_kplugin_proto_msgTypes[21]
+	mi := &file_kplugin_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1441,7 +1653,7 @@ func (x *VolumeRef) String() string {
 func (*VolumeRef) ProtoMessage() {}
 
 func (x *VolumeRef) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[21]
+	mi := &file_kplugin_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1454,7 +1666,7 @@ func (x *VolumeRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VolumeRef.ProtoReflect.Descriptor instead.
 func (*VolumeRef) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{21}
+	return file_kplugin_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *VolumeRef) GetClass() string {
@@ -1479,7 +1691,7 @@ type DeleteVolumeResponse struct {
 
 func (x *DeleteVolumeResponse) Reset() {
 	*x = DeleteVolumeResponse{}
-	mi := &file_kplugin_proto_msgTypes[22]
+	mi := &file_kplugin_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1491,7 +1703,7 @@ func (x *DeleteVolumeResponse) String() string {
 func (*DeleteVolumeResponse) ProtoMessage() {}
 
 func (x *DeleteVolumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[22]
+	mi := &file_kplugin_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1504,7 +1716,7 @@ func (x *DeleteVolumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteVolumeResponse.ProtoReflect.Descriptor instead.
 func (*DeleteVolumeResponse) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{22}
+	return file_kplugin_proto_rawDescGZIP(), []int{24}
 }
 
 type NodeMount struct {
@@ -1519,7 +1731,7 @@ type NodeMount struct {
 
 func (x *NodeMount) Reset() {
 	*x = NodeMount{}
-	mi := &file_kplugin_proto_msgTypes[23]
+	mi := &file_kplugin_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1531,7 +1743,7 @@ func (x *NodeMount) String() string {
 func (*NodeMount) ProtoMessage() {}
 
 func (x *NodeMount) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[23]
+	mi := &file_kplugin_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1544,7 +1756,7 @@ func (x *NodeMount) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeMount.ProtoReflect.Descriptor instead.
 func (*NodeMount) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{23}
+	return file_kplugin_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *NodeMount) GetClass() string {
@@ -1583,7 +1795,7 @@ type NodeMountResponse struct {
 
 func (x *NodeMountResponse) Reset() {
 	*x = NodeMountResponse{}
-	mi := &file_kplugin_proto_msgTypes[24]
+	mi := &file_kplugin_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1595,7 +1807,7 @@ func (x *NodeMountResponse) String() string {
 func (*NodeMountResponse) ProtoMessage() {}
 
 func (x *NodeMountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[24]
+	mi := &file_kplugin_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1608,7 +1820,7 @@ func (x *NodeMountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeMountResponse.ProtoReflect.Descriptor instead.
 func (*NodeMountResponse) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{24}
+	return file_kplugin_proto_rawDescGZIP(), []int{26}
 }
 
 type NodeUnmountResponse struct {
@@ -1619,7 +1831,7 @@ type NodeUnmountResponse struct {
 
 func (x *NodeUnmountResponse) Reset() {
 	*x = NodeUnmountResponse{}
-	mi := &file_kplugin_proto_msgTypes[25]
+	mi := &file_kplugin_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1631,7 +1843,7 @@ func (x *NodeUnmountResponse) String() string {
 func (*NodeUnmountResponse) ProtoMessage() {}
 
 func (x *NodeUnmountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[25]
+	mi := &file_kplugin_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1644,7 +1856,7 @@ func (x *NodeUnmountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeUnmountResponse.ProtoReflect.Descriptor instead.
 func (*NodeUnmountResponse) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{25}
+	return file_kplugin_proto_rawDescGZIP(), []int{27}
 }
 
 type Record struct {
@@ -1661,7 +1873,7 @@ type Record struct {
 
 func (x *Record) Reset() {
 	*x = Record{}
-	mi := &file_kplugin_proto_msgTypes[26]
+	mi := &file_kplugin_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1673,7 +1885,7 @@ func (x *Record) String() string {
 func (*Record) ProtoMessage() {}
 
 func (x *Record) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[26]
+	mi := &file_kplugin_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1686,7 +1898,7 @@ func (x *Record) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Record.ProtoReflect.Descriptor instead.
 func (*Record) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{26}
+	return file_kplugin_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *Record) GetProvider() string {
@@ -1739,7 +1951,7 @@ type EnsureRecordResponse struct {
 
 func (x *EnsureRecordResponse) Reset() {
 	*x = EnsureRecordResponse{}
-	mi := &file_kplugin_proto_msgTypes[27]
+	mi := &file_kplugin_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1751,7 +1963,7 @@ func (x *EnsureRecordResponse) String() string {
 func (*EnsureRecordResponse) ProtoMessage() {}
 
 func (x *EnsureRecordResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[27]
+	mi := &file_kplugin_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1764,7 +1976,7 @@ func (x *EnsureRecordResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnsureRecordResponse.ProtoReflect.Descriptor instead.
 func (*EnsureRecordResponse) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{27}
+	return file_kplugin_proto_rawDescGZIP(), []int{29}
 }
 
 type DeleteRecordResponse struct {
@@ -1775,7 +1987,7 @@ type DeleteRecordResponse struct {
 
 func (x *DeleteRecordResponse) Reset() {
 	*x = DeleteRecordResponse{}
-	mi := &file_kplugin_proto_msgTypes[28]
+	mi := &file_kplugin_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1787,7 +1999,7 @@ func (x *DeleteRecordResponse) String() string {
 func (*DeleteRecordResponse) ProtoMessage() {}
 
 func (x *DeleteRecordResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_kplugin_proto_msgTypes[28]
+	mi := &file_kplugin_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1800,7 +2012,7 @@ func (x *DeleteRecordResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRecordResponse.ProtoReflect.Descriptor instead.
 func (*DeleteRecordResponse) Descriptor() ([]byte, []int) {
-	return file_kplugin_proto_rawDescGZIP(), []int{28}
+	return file_kplugin_proto_rawDescGZIP(), []int{30}
 }
 
 var File_kplugin_proto protoreflect.FileDescriptor
@@ -1808,7 +2020,7 @@ var File_kplugin_proto protoreflect.FileDescriptor
 const file_kplugin_proto_rawDesc = "" +
 	"\n" +
 	"\rkplugin.proto\x12\x10kevaso.plugin.v1\"\x16\n" +
-	"\x14GetPluginInfoRequest\"\x8d\x02\n" +
+	"\x14GetPluginInfoRequest\"\xcb\x02\n" +
 	"\n" +
 	"PluginInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
@@ -1818,7 +2030,32 @@ const file_kplugin_proto_rawDesc = "" +
 	"\x0eload_balancers\x18\x05 \x03(\v2\x17.kevaso.plugin.v1.ClassR\rloadBalancers\x121\n" +
 	"\astorage\x18\x06 \x03(\v2\x17.kevaso.plugin.v1.ClassR\astorage\x12\x10\n" +
 	"\x03dns\x18\a \x03(\tR\x03dns\x12\x1a\n" +
-	"\brevision\x18\b \x01(\rR\brevision\"\xea\x02\n" +
+	"\brevision\x18\b \x01(\rR\brevision\x12<\n" +
+	"\n" +
+	"networking\x18\t \x01(\v2\x1c.kevaso.plugin.v1.NetworkingR\n" +
+	"networking\"\xb8\x02\n" +
+	"\n" +
+	"Networking\x12!\n" +
+	"\fprovider_ips\x18\x01 \x01(\bR\vproviderIps\x12%\n" +
+	"\x0eload_balancers\x18\x02 \x01(\bR\rloadBalancers\x12\"\n" +
+	"\rfront_with_ip\x18\x03 \x01(\bR\vfrontWithIp\x12&\n" +
+	"\x0fkeeps_client_ip\x18\x04 \x01(\bR\rkeepsClientIp\x12\x14\n" +
+	"\x05reach\x18\x05 \x01(\tR\x05reach\x12\x18\n" +
+	"\aregions\x18\x06 \x03(\tR\aregions\x12$\n" +
+	"\x0eown_hosts_only\x18\a \x01(\bR\fownHostsOnly\x12>\n" +
+	"\vannotations\x18\b \x03(\v2\x1c.kevaso.plugin.v1.AnnotationR\vannotations\"\xd4\x01\n" +
+	"\n" +
+	"Annotation\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12 \n" +
+	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x12\n" +
+	"\x04type\x18\x03 \x01(\tR\x04type\x12\x16\n" +
+	"\x06values\x18\x04 \x03(\tR\x06values\x12\x18\n" +
+	"\apattern\x18\x05 \x01(\tR\apattern\x12\x15\n" +
+	"\x03min\x18\x06 \x01(\x03H\x00R\x03min\x88\x01\x01\x12\x15\n" +
+	"\x03max\x18\a \x01(\x03H\x01R\x03max\x88\x01\x01\x12\x0e\n" +
+	"\x02on\x18\b \x03(\tR\x02onB\x06\n" +
+	"\x04_minB\x06\n" +
+	"\x04_max\"\xea\x02\n" +
 	"\x05Class\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +
@@ -1980,87 +2217,91 @@ func file_kplugin_proto_rawDescGZIP() []byte {
 	return file_kplugin_proto_rawDescData
 }
 
-var file_kplugin_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_kplugin_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
 var file_kplugin_proto_goTypes = []any{
 	(*GetPluginInfoRequest)(nil),       // 0: kevaso.plugin.v1.GetPluginInfoRequest
 	(*PluginInfo)(nil),                 // 1: kevaso.plugin.v1.PluginInfo
-	(*Class)(nil),                      // 2: kevaso.plugin.v1.Class
-	(*Host)(nil),                       // 3: kevaso.plugin.v1.Host
-	(*HostInfo)(nil),                   // 4: kevaso.plugin.v1.HostInfo
-	(*DescribeHostsRequest)(nil),       // 5: kevaso.plugin.v1.DescribeHostsRequest
-	(*DescribeHostsResponse)(nil),      // 6: kevaso.plugin.v1.DescribeHostsResponse
-	(*Port)(nil),                       // 7: kevaso.plugin.v1.Port
-	(*LoadBalancer)(nil),               // 8: kevaso.plugin.v1.LoadBalancer
-	(*LoadBalancerStatus)(nil),         // 9: kevaso.plugin.v1.LoadBalancerStatus
-	(*LoadBalancerRef)(nil),            // 10: kevaso.plugin.v1.LoadBalancerRef
-	(*DeleteLoadBalancerResponse)(nil), // 11: kevaso.plugin.v1.DeleteLoadBalancerResponse
-	(*AddressReservation)(nil),         // 12: kevaso.plugin.v1.AddressReservation
-	(*AddressStatus)(nil),              // 13: kevaso.plugin.v1.AddressStatus
-	(*AddressRef)(nil),                 // 14: kevaso.plugin.v1.AddressRef
-	(*ReleaseAddressResponse)(nil),     // 15: kevaso.plugin.v1.ReleaseAddressResponse
-	(*Volume)(nil),                     // 16: kevaso.plugin.v1.Volume
-	(*VolumeStatus)(nil),               // 17: kevaso.plugin.v1.VolumeStatus
-	(*Attachment)(nil),                 // 18: kevaso.plugin.v1.Attachment
-	(*AttachmentStatus)(nil),           // 19: kevaso.plugin.v1.AttachmentStatus
-	(*DetachVolumeResponse)(nil),       // 20: kevaso.plugin.v1.DetachVolumeResponse
-	(*VolumeRef)(nil),                  // 21: kevaso.plugin.v1.VolumeRef
-	(*DeleteVolumeResponse)(nil),       // 22: kevaso.plugin.v1.DeleteVolumeResponse
-	(*NodeMount)(nil),                  // 23: kevaso.plugin.v1.NodeMount
-	(*NodeMountResponse)(nil),          // 24: kevaso.plugin.v1.NodeMountResponse
-	(*NodeUnmountResponse)(nil),        // 25: kevaso.plugin.v1.NodeUnmountResponse
-	(*Record)(nil),                     // 26: kevaso.plugin.v1.Record
-	(*EnsureRecordResponse)(nil),       // 27: kevaso.plugin.v1.EnsureRecordResponse
-	(*DeleteRecordResponse)(nil),       // 28: kevaso.plugin.v1.DeleteRecordResponse
-	nil,                                // 29: kevaso.plugin.v1.Port.AnnotationsEntry
-	nil,                                // 30: kevaso.plugin.v1.LoadBalancer.AnnotationsEntry
-	nil,                                // 31: kevaso.plugin.v1.AddressReservation.AnnotationsEntry
+	(*Networking)(nil),                 // 2: kevaso.plugin.v1.Networking
+	(*Annotation)(nil),                 // 3: kevaso.plugin.v1.Annotation
+	(*Class)(nil),                      // 4: kevaso.plugin.v1.Class
+	(*Host)(nil),                       // 5: kevaso.plugin.v1.Host
+	(*HostInfo)(nil),                   // 6: kevaso.plugin.v1.HostInfo
+	(*DescribeHostsRequest)(nil),       // 7: kevaso.plugin.v1.DescribeHostsRequest
+	(*DescribeHostsResponse)(nil),      // 8: kevaso.plugin.v1.DescribeHostsResponse
+	(*Port)(nil),                       // 9: kevaso.plugin.v1.Port
+	(*LoadBalancer)(nil),               // 10: kevaso.plugin.v1.LoadBalancer
+	(*LoadBalancerStatus)(nil),         // 11: kevaso.plugin.v1.LoadBalancerStatus
+	(*LoadBalancerRef)(nil),            // 12: kevaso.plugin.v1.LoadBalancerRef
+	(*DeleteLoadBalancerResponse)(nil), // 13: kevaso.plugin.v1.DeleteLoadBalancerResponse
+	(*AddressReservation)(nil),         // 14: kevaso.plugin.v1.AddressReservation
+	(*AddressStatus)(nil),              // 15: kevaso.plugin.v1.AddressStatus
+	(*AddressRef)(nil),                 // 16: kevaso.plugin.v1.AddressRef
+	(*ReleaseAddressResponse)(nil),     // 17: kevaso.plugin.v1.ReleaseAddressResponse
+	(*Volume)(nil),                     // 18: kevaso.plugin.v1.Volume
+	(*VolumeStatus)(nil),               // 19: kevaso.plugin.v1.VolumeStatus
+	(*Attachment)(nil),                 // 20: kevaso.plugin.v1.Attachment
+	(*AttachmentStatus)(nil),           // 21: kevaso.plugin.v1.AttachmentStatus
+	(*DetachVolumeResponse)(nil),       // 22: kevaso.plugin.v1.DetachVolumeResponse
+	(*VolumeRef)(nil),                  // 23: kevaso.plugin.v1.VolumeRef
+	(*DeleteVolumeResponse)(nil),       // 24: kevaso.plugin.v1.DeleteVolumeResponse
+	(*NodeMount)(nil),                  // 25: kevaso.plugin.v1.NodeMount
+	(*NodeMountResponse)(nil),          // 26: kevaso.plugin.v1.NodeMountResponse
+	(*NodeUnmountResponse)(nil),        // 27: kevaso.plugin.v1.NodeUnmountResponse
+	(*Record)(nil),                     // 28: kevaso.plugin.v1.Record
+	(*EnsureRecordResponse)(nil),       // 29: kevaso.plugin.v1.EnsureRecordResponse
+	(*DeleteRecordResponse)(nil),       // 30: kevaso.plugin.v1.DeleteRecordResponse
+	nil,                                // 31: kevaso.plugin.v1.Port.AnnotationsEntry
+	nil,                                // 32: kevaso.plugin.v1.LoadBalancer.AnnotationsEntry
+	nil,                                // 33: kevaso.plugin.v1.AddressReservation.AnnotationsEntry
 }
 var file_kplugin_proto_depIdxs = []int32{
-	2,  // 0: kevaso.plugin.v1.PluginInfo.load_balancers:type_name -> kevaso.plugin.v1.Class
-	2,  // 1: kevaso.plugin.v1.PluginInfo.storage:type_name -> kevaso.plugin.v1.Class
-	3,  // 2: kevaso.plugin.v1.DescribeHostsRequest.hosts:type_name -> kevaso.plugin.v1.Host
-	4,  // 3: kevaso.plugin.v1.DescribeHostsResponse.hosts:type_name -> kevaso.plugin.v1.HostInfo
-	4,  // 4: kevaso.plugin.v1.Port.backends:type_name -> kevaso.plugin.v1.HostInfo
-	29, // 5: kevaso.plugin.v1.Port.annotations:type_name -> kevaso.plugin.v1.Port.AnnotationsEntry
-	7,  // 6: kevaso.plugin.v1.LoadBalancer.ports:type_name -> kevaso.plugin.v1.Port
-	4,  // 7: kevaso.plugin.v1.LoadBalancer.backends:type_name -> kevaso.plugin.v1.HostInfo
-	4,  // 8: kevaso.plugin.v1.LoadBalancer.hosts:type_name -> kevaso.plugin.v1.HostInfo
-	30, // 9: kevaso.plugin.v1.LoadBalancer.annotations:type_name -> kevaso.plugin.v1.LoadBalancer.AnnotationsEntry
-	31, // 10: kevaso.plugin.v1.AddressReservation.annotations:type_name -> kevaso.plugin.v1.AddressReservation.AnnotationsEntry
-	4,  // 11: kevaso.plugin.v1.Attachment.host:type_name -> kevaso.plugin.v1.HostInfo
-	0,  // 12: kevaso.plugin.v1.Identity.GetPluginInfo:input_type -> kevaso.plugin.v1.GetPluginInfoRequest
-	5,  // 13: kevaso.plugin.v1.Hosts.DescribeHosts:input_type -> kevaso.plugin.v1.DescribeHostsRequest
-	8,  // 14: kevaso.plugin.v1.LoadBalancers.EnsureLoadBalancer:input_type -> kevaso.plugin.v1.LoadBalancer
-	10, // 15: kevaso.plugin.v1.LoadBalancers.DeleteLoadBalancer:input_type -> kevaso.plugin.v1.LoadBalancerRef
-	12, // 16: kevaso.plugin.v1.Addresses.ReserveAddress:input_type -> kevaso.plugin.v1.AddressReservation
-	14, // 17: kevaso.plugin.v1.Addresses.ReleaseAddress:input_type -> kevaso.plugin.v1.AddressRef
-	16, // 18: kevaso.plugin.v1.Volumes.EnsureVolume:input_type -> kevaso.plugin.v1.Volume
-	18, // 19: kevaso.plugin.v1.Volumes.AttachVolume:input_type -> kevaso.plugin.v1.Attachment
-	18, // 20: kevaso.plugin.v1.Volumes.DetachVolume:input_type -> kevaso.plugin.v1.Attachment
-	21, // 21: kevaso.plugin.v1.Volumes.DeleteVolume:input_type -> kevaso.plugin.v1.VolumeRef
-	23, // 22: kevaso.plugin.v1.Node.NodeMountVolume:input_type -> kevaso.plugin.v1.NodeMount
-	23, // 23: kevaso.plugin.v1.Node.NodeUnmountVolume:input_type -> kevaso.plugin.v1.NodeMount
-	26, // 24: kevaso.plugin.v1.DNS.EnsureRecord:input_type -> kevaso.plugin.v1.Record
-	26, // 25: kevaso.plugin.v1.DNS.DeleteRecord:input_type -> kevaso.plugin.v1.Record
-	1,  // 26: kevaso.plugin.v1.Identity.GetPluginInfo:output_type -> kevaso.plugin.v1.PluginInfo
-	6,  // 27: kevaso.plugin.v1.Hosts.DescribeHosts:output_type -> kevaso.plugin.v1.DescribeHostsResponse
-	9,  // 28: kevaso.plugin.v1.LoadBalancers.EnsureLoadBalancer:output_type -> kevaso.plugin.v1.LoadBalancerStatus
-	11, // 29: kevaso.plugin.v1.LoadBalancers.DeleteLoadBalancer:output_type -> kevaso.plugin.v1.DeleteLoadBalancerResponse
-	13, // 30: kevaso.plugin.v1.Addresses.ReserveAddress:output_type -> kevaso.plugin.v1.AddressStatus
-	15, // 31: kevaso.plugin.v1.Addresses.ReleaseAddress:output_type -> kevaso.plugin.v1.ReleaseAddressResponse
-	17, // 32: kevaso.plugin.v1.Volumes.EnsureVolume:output_type -> kevaso.plugin.v1.VolumeStatus
-	19, // 33: kevaso.plugin.v1.Volumes.AttachVolume:output_type -> kevaso.plugin.v1.AttachmentStatus
-	20, // 34: kevaso.plugin.v1.Volumes.DetachVolume:output_type -> kevaso.plugin.v1.DetachVolumeResponse
-	22, // 35: kevaso.plugin.v1.Volumes.DeleteVolume:output_type -> kevaso.plugin.v1.DeleteVolumeResponse
-	24, // 36: kevaso.plugin.v1.Node.NodeMountVolume:output_type -> kevaso.plugin.v1.NodeMountResponse
-	25, // 37: kevaso.plugin.v1.Node.NodeUnmountVolume:output_type -> kevaso.plugin.v1.NodeUnmountResponse
-	27, // 38: kevaso.plugin.v1.DNS.EnsureRecord:output_type -> kevaso.plugin.v1.EnsureRecordResponse
-	28, // 39: kevaso.plugin.v1.DNS.DeleteRecord:output_type -> kevaso.plugin.v1.DeleteRecordResponse
-	26, // [26:40] is the sub-list for method output_type
-	12, // [12:26] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	4,  // 0: kevaso.plugin.v1.PluginInfo.load_balancers:type_name -> kevaso.plugin.v1.Class
+	4,  // 1: kevaso.plugin.v1.PluginInfo.storage:type_name -> kevaso.plugin.v1.Class
+	2,  // 2: kevaso.plugin.v1.PluginInfo.networking:type_name -> kevaso.plugin.v1.Networking
+	3,  // 3: kevaso.plugin.v1.Networking.annotations:type_name -> kevaso.plugin.v1.Annotation
+	5,  // 4: kevaso.plugin.v1.DescribeHostsRequest.hosts:type_name -> kevaso.plugin.v1.Host
+	6,  // 5: kevaso.plugin.v1.DescribeHostsResponse.hosts:type_name -> kevaso.plugin.v1.HostInfo
+	6,  // 6: kevaso.plugin.v1.Port.backends:type_name -> kevaso.plugin.v1.HostInfo
+	31, // 7: kevaso.plugin.v1.Port.annotations:type_name -> kevaso.plugin.v1.Port.AnnotationsEntry
+	9,  // 8: kevaso.plugin.v1.LoadBalancer.ports:type_name -> kevaso.plugin.v1.Port
+	6,  // 9: kevaso.plugin.v1.LoadBalancer.backends:type_name -> kevaso.plugin.v1.HostInfo
+	6,  // 10: kevaso.plugin.v1.LoadBalancer.hosts:type_name -> kevaso.plugin.v1.HostInfo
+	32, // 11: kevaso.plugin.v1.LoadBalancer.annotations:type_name -> kevaso.plugin.v1.LoadBalancer.AnnotationsEntry
+	33, // 12: kevaso.plugin.v1.AddressReservation.annotations:type_name -> kevaso.plugin.v1.AddressReservation.AnnotationsEntry
+	6,  // 13: kevaso.plugin.v1.Attachment.host:type_name -> kevaso.plugin.v1.HostInfo
+	0,  // 14: kevaso.plugin.v1.Identity.GetPluginInfo:input_type -> kevaso.plugin.v1.GetPluginInfoRequest
+	7,  // 15: kevaso.plugin.v1.Hosts.DescribeHosts:input_type -> kevaso.plugin.v1.DescribeHostsRequest
+	10, // 16: kevaso.plugin.v1.LoadBalancers.EnsureLoadBalancer:input_type -> kevaso.plugin.v1.LoadBalancer
+	12, // 17: kevaso.plugin.v1.LoadBalancers.DeleteLoadBalancer:input_type -> kevaso.plugin.v1.LoadBalancerRef
+	14, // 18: kevaso.plugin.v1.Addresses.ReserveAddress:input_type -> kevaso.plugin.v1.AddressReservation
+	16, // 19: kevaso.plugin.v1.Addresses.ReleaseAddress:input_type -> kevaso.plugin.v1.AddressRef
+	18, // 20: kevaso.plugin.v1.Volumes.EnsureVolume:input_type -> kevaso.plugin.v1.Volume
+	20, // 21: kevaso.plugin.v1.Volumes.AttachVolume:input_type -> kevaso.plugin.v1.Attachment
+	20, // 22: kevaso.plugin.v1.Volumes.DetachVolume:input_type -> kevaso.plugin.v1.Attachment
+	23, // 23: kevaso.plugin.v1.Volumes.DeleteVolume:input_type -> kevaso.plugin.v1.VolumeRef
+	25, // 24: kevaso.plugin.v1.Node.NodeMountVolume:input_type -> kevaso.plugin.v1.NodeMount
+	25, // 25: kevaso.plugin.v1.Node.NodeUnmountVolume:input_type -> kevaso.plugin.v1.NodeMount
+	28, // 26: kevaso.plugin.v1.DNS.EnsureRecord:input_type -> kevaso.plugin.v1.Record
+	28, // 27: kevaso.plugin.v1.DNS.DeleteRecord:input_type -> kevaso.plugin.v1.Record
+	1,  // 28: kevaso.plugin.v1.Identity.GetPluginInfo:output_type -> kevaso.plugin.v1.PluginInfo
+	8,  // 29: kevaso.plugin.v1.Hosts.DescribeHosts:output_type -> kevaso.plugin.v1.DescribeHostsResponse
+	11, // 30: kevaso.plugin.v1.LoadBalancers.EnsureLoadBalancer:output_type -> kevaso.plugin.v1.LoadBalancerStatus
+	13, // 31: kevaso.plugin.v1.LoadBalancers.DeleteLoadBalancer:output_type -> kevaso.plugin.v1.DeleteLoadBalancerResponse
+	15, // 32: kevaso.plugin.v1.Addresses.ReserveAddress:output_type -> kevaso.plugin.v1.AddressStatus
+	17, // 33: kevaso.plugin.v1.Addresses.ReleaseAddress:output_type -> kevaso.plugin.v1.ReleaseAddressResponse
+	19, // 34: kevaso.plugin.v1.Volumes.EnsureVolume:output_type -> kevaso.plugin.v1.VolumeStatus
+	21, // 35: kevaso.plugin.v1.Volumes.AttachVolume:output_type -> kevaso.plugin.v1.AttachmentStatus
+	22, // 36: kevaso.plugin.v1.Volumes.DetachVolume:output_type -> kevaso.plugin.v1.DetachVolumeResponse
+	24, // 37: kevaso.plugin.v1.Volumes.DeleteVolume:output_type -> kevaso.plugin.v1.DeleteVolumeResponse
+	26, // 38: kevaso.plugin.v1.Node.NodeMountVolume:output_type -> kevaso.plugin.v1.NodeMountResponse
+	27, // 39: kevaso.plugin.v1.Node.NodeUnmountVolume:output_type -> kevaso.plugin.v1.NodeUnmountResponse
+	29, // 40: kevaso.plugin.v1.DNS.EnsureRecord:output_type -> kevaso.plugin.v1.EnsureRecordResponse
+	30, // 41: kevaso.plugin.v1.DNS.DeleteRecord:output_type -> kevaso.plugin.v1.DeleteRecordResponse
+	28, // [28:42] is the sub-list for method output_type
+	14, // [14:28] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_kplugin_proto_init() }
@@ -2068,13 +2309,14 @@ func file_kplugin_proto_init() {
 	if File_kplugin_proto != nil {
 		return
 	}
+	file_kplugin_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_kplugin_proto_rawDesc), len(file_kplugin_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   32,
+			NumMessages:   34,
 			NumExtensions: 0,
 			NumServices:   7,
 		},

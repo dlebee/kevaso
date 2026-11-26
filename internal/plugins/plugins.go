@@ -9,6 +9,7 @@
 package plugins
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -98,6 +99,9 @@ func (r *Registry) claimed(info kplugin.Info, sock string) string {
 		if folder := filepath.Base(filepath.Dir(sock)); info.Name != folder {
 			return fmt.Sprintf("it answers as plugin %s, but it is installed as %s (its socket's folder): a plugin answers under the name it was installed under (kvoadm plugin install --name %s)", info.Name, folder, info.Name)
 		}
+	}
+	if err := info.Networking.Check(); err != nil {
+		return "it declares networking Kevaso can't check (" + strings.ReplaceAll(err.Error(), "\n", "; ") + "): fix the plugin (its conformance tests fail too)"
 	}
 	type claim struct{ what, kind string }
 	mine := map[string]claim{}
@@ -225,6 +229,16 @@ func describe(i kplugin.Info) string {
 	}
 	if i.Hosts {
 		parts = append(parts, "hosts")
+	}
+	if n := i.Networking; n != nil {
+		var can []string
+		if n.ProviderIPs {
+			can = append(can, "provider IPs")
+		}
+		if n.LoadBalancers {
+			can = append(can, "load balancers")
+		}
+		parts = append(parts, fmt.Sprintf("networking: %s, %d annotations", strings.Join(append(can, "reach "+cmp.Or(n.Reach, kplugin.FollowsRegion)), ", "), len(n.Annotations)))
 	}
 	if len(parts) == 0 {
 		return "nothing"

@@ -33,6 +33,33 @@ message PluginInfo {
   // The wire revision of the sdk the plugin was built with (kplugin.Revision); 0: before there
   // was one. Core refuses a plugin outside the revisions it serves.
   uint32 revision = 8;
+  // What the plugin's provider does for services (networking v2): absent from a plugin built
+  // before sdk wire revision 2, which declares nothing (its annotations go to it unchecked).
+  Networking networking = 9;
+}
+
+// Networking is what a provider does for services and IPs, and the annotations it accepts.
+message Networking {
+  bool provider_ips = 1;     // it makes IPs of type Provider (reserved from the provider)
+  bool load_balancers = 2;   // it makes balancers for services of type LoadBalancer
+  bool front_with_ip = 3;    // a kept Provider IP can front a balancer (loadBalancer.ip)
+  bool keeps_client_ip = 4;  // the silo sees the client's address behind its balancers
+  string reach = 5;          // where its IPs and balancers reach silos: host | region (default) | global
+  repeated string regions = 6; // the regions it serves; empty: any
+  bool own_hosts_only = 7;   // only its own machines (Hosts) can be behind them
+  repeated Annotation annotations = 8;
+}
+
+// Annotation is one annotation a provider accepts, in its domain (NAME.kevaso.com/KEY).
+message Annotation {
+  string key = 1;          // KEY, without the domain: the plugin's install name gives the domain
+  string description = 2;
+  string type = 3;         // string (default) | int | bool | enum
+  repeated string values = 4; // enum: the values allowed
+  string pattern = 5;      // string: an RE2 expression the whole value matches
+  optional int64 min = 6;  // int
+  optional int64 max = 7;  // int
+  repeated string on = 8;  // where it goes: service (default) | ip
 }
 
 message Class {

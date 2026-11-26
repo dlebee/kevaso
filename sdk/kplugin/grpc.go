@@ -99,6 +99,32 @@ func classesFrom(cs []*pb.Class) []Class {
 	return out
 }
 
+func networkingTo(n *Networking) *pb.Networking {
+	if n == nil {
+		return nil
+	}
+	out := &pb.Networking{ProviderIps: n.ProviderIPs, LoadBalancers: n.LoadBalancers, FrontWithIp: n.FrontWithIP,
+		KeepsClientIp: n.KeepsClientIP, Reach: n.Reach, Regions: n.Regions, OwnHostsOnly: n.OwnHostsOnly}
+	for _, a := range n.Annotations {
+		out.Annotations = append(out.Annotations, &pb.Annotation{Key: a.Key, Description: a.Description, Type: a.Type,
+			Values: a.Values, Pattern: a.Pattern, Min: a.Min, Max: a.Max, On: a.On})
+	}
+	return out
+}
+
+func networkingFrom(m *pb.Networking) *Networking {
+	if m == nil {
+		return nil
+	}
+	out := &Networking{ProviderIPs: m.GetProviderIps(), LoadBalancers: m.GetLoadBalancers(), FrontWithIP: m.GetFrontWithIp(),
+		KeepsClientIP: m.GetKeepsClientIp(), Reach: m.GetReach(), Regions: m.GetRegions(), OwnHostsOnly: m.GetOwnHostsOnly()}
+	for _, a := range m.GetAnnotations() {
+		out.Annotations = append(out.Annotations, Annotation{Key: a.GetKey(), Description: a.GetDescription(), Type: a.GetType(),
+			Values: a.GetValues(), Pattern: a.GetPattern(), Min: a.Min, Max: a.Max, On: a.GetOn()})
+	}
+	return out
+}
+
 func hostInfoTo(h HostInfo) *pb.HostInfo {
 	return &pb.HostInfo{Name: h.Name, Id: h.ID, Region: h.Region, PrivateAddress: h.PrivateAddress}
 }
@@ -168,7 +194,7 @@ func (s identityServer) GetPluginInfo(ctx context.Context, _ *pb.GetPluginInfoRe
 		return nil, toStatus(err)
 	}
 	return &pb.PluginInfo{Name: i.Name, Version: i.Version, Protocol: Protocol, Revision: Revision, Hosts: i.Hosts,
-		LoadBalancers: classesTo(i.LoadBalancers), Storage: classesTo(i.Storage), Dns: i.DNS}, nil
+		LoadBalancers: classesTo(i.LoadBalancers), Storage: classesTo(i.Storage), Dns: i.DNS, Networking: networkingTo(i.Networking)}, nil
 }
 
 type hostsServer struct {
@@ -390,7 +416,8 @@ func (c *Client) Info(ctx context.Context) (Info, error) {
 		return Info{}, fromStatus(err)
 	}
 	return Info{Name: r.GetName(), Version: r.GetVersion(), Protocol: r.GetProtocol(), Revision: int(r.GetRevision()), Hosts: r.GetHosts(),
-		LoadBalancers: classesFrom(r.GetLoadBalancers()), Storage: classesFrom(r.GetStorage()), DNS: r.GetDns()}, nil
+		LoadBalancers: classesFrom(r.GetLoadBalancers()), Storage: classesFrom(r.GetStorage()), DNS: r.GetDns(),
+		Networking: networkingFrom(r.GetNetworking())}, nil
 }
 
 // DescribeHosts implements HostDescriber.
