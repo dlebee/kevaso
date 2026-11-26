@@ -87,6 +87,21 @@ func TestWithIPs(t *testing.T) {
 	if ks := view(p); ks.Addrs["mx"].String() != "172.233.1.5" || ks.EgressIP.String() != "172.233.1.5" {
 		t.Fatalf("provider IP: %+v %v", ks.Addrs, ks.EgressIP)
 	}
+	// On the uplink, unless its provider announces it: then on the loopback (the node side's BGP).
+	if held, lo := HeldAddresses("metal-1", []*v1.Silo{s}, []*v1.IP{p}), AnnouncedIPAddresses("metal-1", []*v1.Silo{s}, []*v1.IP{p}); !slices.Contains(held, "172.233.1.5") || len(lo) != 0 {
+		t.Fatalf("provider IP, not announced: uplink %v, loopback %v", held, lo)
+	}
+	p.Status.Announce = true
+	if held, lo := HeldAddresses("metal-1", []*v1.Silo{s}, []*v1.IP{p}), AnnouncedIPAddresses("metal-1", []*v1.Silo{s}, []*v1.IP{p}); len(held) != 0 || !slices.Equal(lo, []string{"172.233.1.5"}) {
+		t.Fatalf("provider IP, announced: uplink %v, loopback %v", held, lo)
+	}
+	if lo := AnnouncedIPAddresses("metal-2", []*v1.Silo{s}, []*v1.IP{p}); len(lo) != 0 {
+		t.Fatalf("announced on a host its holder isn't on: %v", lo)
+	}
+	if ks := view(p); ks.Addrs["mx"].String() != "172.233.1.5" || ks.EgressIP.String() != "172.233.1.5" {
+		t.Fatalf("announced provider IP: in %+v, out %v", ks.Addrs, ks.EgressIP)
+	}
+	p.Status.Announce = false
 	// A balancer's IP never sends out.
 	lb := mailSilo()
 	lb.Spec.Services = append(lb.Spec.Services, v1.SiloService{Name: "front", Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "azure", IP: "mail"}, Ports: []v1.ServicePort{{Port: "web"}}})

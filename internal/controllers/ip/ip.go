@@ -219,6 +219,7 @@ func (c *Controller) follow(ctx context.Context, x *v1.IP, st *v1.IPStatus) time
 	if !ok || class == "" {
 		return 0
 	}
+	st.Announce = slices.ContainsFunc(p.Info.LoadBalancers, func(cl kplugin.Class) bool { return cl.Name == class && cl.Announce })
 	cond := meta.Condition{Type: "Shared", Status: meta.ConditionFalse, Reason: "Unshared", Message: "on no host (held by nobody placed)", ObservedGeneration: x.Generation}
 	defer func() { meta.SetCondition(&st.Conditions, cond, c.now()) }()
 	var target *v1.Host
@@ -270,6 +271,11 @@ func (c *Controller) follow(ctx context.Context, x *v1.IP, st *v1.IPStatus) time
 	case errors.Is(err, kplugin.ErrInProgress):
 		cond.Reason, cond.Message = "Sharing", "sharing with "+target.Name+": "+err.Error()
 		return 10 * time.Second
+	case errors.Is(err, kplugin.ErrConflict):
+		// The provider can't now, for a reason a person fixes (an account limit, say): it waits,
+		// saying what to do, and asks again now and then.
+		cond.Reason, cond.Message = "Waiting", "can't share with "+target.Name+" yet: "+strings.TrimSuffix(err.Error(), ": "+kplugin.ErrConflict.Error())
+		return time.Minute
 	case err != nil:
 		cond.Reason, cond.Message = "Failed", "sharing with "+target.Name+": "+err.Error()
 		return 30 * time.Second

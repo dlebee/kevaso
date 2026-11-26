@@ -168,6 +168,39 @@ func TestPortStatus(t *testing.T) {
 	}
 }
 
+// Two LoadBalancer services on one declared port, each at its own number: the balancer's write of
+// the address (SetLoadBalancerIP) gives each entry its own service's number, as PortStatus does,
+// so the balancer and the scheduler write the same ports and don't undo each other.
+func TestSetLoadBalancerIPTwoServicesOnOnePort(t *testing.T) {
+	h := host("lin-1", func(h *v1.Host) { h.Spec.ExternalIP = "172.105.1.2" })
+	s := silo("shop-b")
+	s.Status.Host, s.Status.SiloIP = "lin-1", "10.64.3.2"
+	s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 80}}
+	lb := &v1.LoadBalancerSpec{Provider: "linode"}
+	s.Spec.Services = []v1.SiloService{
+		{Name: "shop-b-live", Type: v1.ServiceLoadBalancer, LoadBalancer: lb, Ports: []v1.ServicePort{{Port: "http", As: 8081}}},
+		{Name: "shop-b", Type: v1.ServiceLoadBalancer, LoadBalancer: lb, Ports: []v1.ServicePort{{Port: "http", As: 8080}}},
+	}
+	want := []v1.ServicePortStatus{
+		{Port: "http", Mesh: "10.64.3.2:80", LoadBalancer: "172.105.24.121:8081"},
+		{Port: "http", Mesh: "10.64.3.2:80", LoadBalancer: "172.105.24.121:8080"},
+	}
+	scheduled := v1.SiloServiceStatus{Ports: PortStatus(s, h, "172.105.24.121")}
+	set := v1.SiloServiceStatus{Ports: PortStatus(s, h, "")}
+	SetLoadBalancerIP(s, &set, "172.105.24.121")
+	for i := range want {
+		if scheduled.Ports[i] != want[i] || set.Ports[i] != want[i] {
+			t.Errorf("port %d: scheduler %+v, balancer %+v, want %+v", i, scheduled.Ports[i], set.Ports[i], want[i])
+		}
+	}
+	SetLoadBalancerIP(s, &set, "")
+	for i, ps := range set.Ports {
+		if ps.LoadBalancer != "" {
+			t.Errorf("address taken away: port %d still %s", i, ps.LoadBalancer)
+		}
+	}
+}
+
 // An IP is held before its silo is placed; a Host IP goes only on the host with its address, a
 // Provider IP only on that provider's machines in its region.
 func TestIPScheduling(t *testing.T) {

@@ -39,10 +39,20 @@ type Fake struct {
 	// Networking, if set, is what Info declares instead of FakeNetworking.
 	Networking *kplugin.Networking
 	// Fail, if set, is returned by every mutating call.
-	Fail   error
-	Calls  []string
-	next   int
-	lbAddr map[string]string // a node-port balancer's address, by its group (sharedBy)
+	Fail error
+	// ShareRefused, if set, is what fake-ip answers when asked to share an address with its
+	// holder's host (an account limit, say); SetShareRefused changes it while plugins run.
+	ShareRefused error
+	Calls        []string
+	next         int
+	lbAddr       map[string]string // a node-port balancer's address, by its group (sharedBy)
+}
+
+// SetShareRefused sets ShareRefused (nil: shares again).
+func (f *Fake) SetShareRefused(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ShareRefused = err
 }
 
 // sharedBy is the group a balancer is in: services in one namespace naming the same
@@ -188,6 +198,9 @@ func (f *Fake) EnsureLoadBalancer(_ context.Context, lb kplugin.LoadBalancer) (k
 		}
 		if !f.reserved(lb.Address) { // a balancer is its service's; the address it answers on, a kept IP's
 			return kplugin.LoadBalancerStatus{}, fmt.Errorf("fake-ip: %s isn't reserved", lb.Address)
+		}
+		if f.ShareRefused != nil {
+			return kplugin.LoadBalancerStatus{}, f.ShareRefused
 		}
 		f.LBs[lb.ID] = lb
 		return kplugin.LoadBalancerStatus{Address: lb.Address}, nil

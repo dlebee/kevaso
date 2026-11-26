@@ -354,7 +354,13 @@ func syncHostAddresses(ctx context.Context, hostName string, me *v1.Host, all []
 			log("pool addresses: %v", err)
 		}
 	}
-	if err := syncAddresses(ctx, "lo", "lo:kv", AnnouncedAddresses(hostName, all)); err != nil {
+	lo := AnnouncedAddresses(hostName, all)
+	for _, a := range AnnouncedIPAddresses(hostName, all, ips) {
+		if !slices.Contains(lo, a) {
+			lo = append(lo, a)
+		}
+	}
+	if err := syncAddresses(ctx, "lo", "lo:kv", lo); err != nil {
 		log("announced addresses: %v", err)
 	}
 	if err := syncAddresses(ctx, cloudhypervisor.Bridge, cloudhypervisor.Bridge+":kv", []string{v1.EndpointAddress}); err != nil {
