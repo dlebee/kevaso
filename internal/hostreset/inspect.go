@@ -27,7 +27,7 @@ echo '== silos'
 if command -v docker >/dev/null && systemctl is-active -q docker; then
   docker ps -a --filter label=kevaso.com/name --format 'container {{.Label "kevaso.com/namespace"}}/{{.Label "kevaso.com/name"}}' | sort -u
 else
-` + containerStateLines + `
+` + containerStateLines(cloudhypervisor.ContainersDir) + `
 fi
 ` + openShellSiloLines(openshell.StateDir) + `
 if command -v podman >/dev/null; then
@@ -71,14 +71,31 @@ func openShellSiloLines(dir string) string {
 done`
 }
 
-// containerStateLines lists container silos from the container runtime's state on disk, for
+// containerStateLines lists container silos from the container runtime's state in dir, for
 // when their engine isn't running (K-078): its containers can't be listed, and would go with
-// its directories.
-const containerStateLines = `for f in ` + cloudhypervisor.ContainersDir + `/*/state.json; do
+// its directories. The state's id is a kri.ID, whose keys are Namespace and Name; the first of
+// each in the file is the id's (it is the state's first field).
+func containerStateLines(dir string) string {
+	return `for f in ` + dir + `/*/state.json; do
   [ -f "$f" ] || continue
-  ns=$(sed -n 's/.*"namespace": *"\([^"]*\)".*/\1/p' "$f" | head -1); n=$(sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' "$f" | head -1)
-  echo "container $ns/$n (from its state; its engine isn't running)"
+  ns=$(sed -n 's/.*"Namespace": *"\([^"]*\)".*/\1/p' "$f" | head -1); n=$(sed -n 's/.*"Name": *"\([^"]*\)".*/\1/p' "$f" | head -1)
+  echo "container $ns/$n` + fromState + `"
 done`
+}
+
+// fromState ends a container silo's line when it was read from the runtime's state on disk.
+const fromState = " (from its state; its engine isn't running)"
+
+// SiloID is the silo a line of Inspection.Silos names, without how it was found: the same
+// container is "container NS/NAME" while its engine runs and "container NS/NAME (from its
+// state; …)" once the engine is gone (a reset purges it), and podman's end in "(podman)". Two
+// inspections are compared by it.
+func SiloID(line string) string {
+	if i := strings.Index(line, " ("); i > 0 && strings.HasSuffix(line, ")") {
+		return line[:i]
+	}
+	return line
+}
 
 // Inspection is the host as a reset sees it.
 type Inspection struct {
