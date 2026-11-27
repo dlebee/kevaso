@@ -17,7 +17,8 @@ import (
 
 // stubbed is every program the plan's scripts call that changes the machine.
 var stubbed = []string{"rm", "docker", "podman", "systemctl", "pkill", "ip", "nft", "sysctl", "vgs", "pvs", "lvremove", "vgremove",
-	"pvremove", "losetup", "apt-get", "cp", "sed", "userdel", "groupdel", "umount", "sleep", "cmp", "mv"}
+	"pvremove", "losetup", "apt-get", "cp", "sed", "userdel", "groupdel", "umount", "sleep", "cmp", "mv", "iptables", "ip6tables",
+	"iptables-restore", "ip6tables-restore"}
 
 // harmless programs the steps use to read, found on the machine the test runs on.
 var harmless = []string{"awk", "grep", "tr", "cut", "sort", "basename", "cat", "head", "printf", "echo", "test", "["}
@@ -28,6 +29,7 @@ name="${0##*/}"
 printf '%s' "$name" >> "$STUBLOG"
 for a in "$@"; do printf ' %s' "$a" >> "$STUBLOG"; done
 printf '\n' >> "$STUBLOG"
+case "$name" in *-restore) while IFS= read -r l; do printf '%s< %s\n' "$name" "$l" >> "$STUBLOG"; done ;; esac
 case "$name $*" in
   "docker ps -aq --filter"*)          echo kevaso-c1 ;;
   "docker ps -aq")                    echo other-c1 other-c2 ;;
@@ -57,6 +59,13 @@ case "$name $*" in
   "losetup -n -O NAME"*)              : ;;
   "systemctl list-units"*)            : ;;
   "vgs "*)                            exit "${STUB_VG_EXIT:-0}" ;;
+  "iptables -t filter -S")
+    printf '%s\n' '-P INPUT ACCEPT' '-P FORWARD ACCEPT' '-N DOCKER' '-N DOCKER-USER' '-N f2b-sshd' \
+      '-A INPUT -p tcp -m multiport --dports 22 -j f2b-sshd' '-A FORWARD -j DOCKER-USER' '-A FORWARD -o docker0 -j DOCKER' '-A DOCKER-USER -j RETURN' \
+      '-A FORWARD -m comment --comment "$(touch pwned)" -j DOCKER-USER' ;;
+  "iptables -t nat -S")
+    printf '%s\n' '-P PREROUTING ACCEPT' '-N DOCKER' '-A PREROUTING -m addrtype --dst-type LOCAL -j DOCKER' '-A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE' \
+      '-A POSTROUTING -s 192.168.50.0/24 -o eth0 -j MASQUERADE' '-A DOCKER -i docker0 -j RETURN' ;;
 esac
 if [ "$name" = rm ] && [ -n "${STUB_RM_EXIT:-}" ]; then exit "$STUB_RM_EXIT"; fi
 if [ "$name" = systemctl ] && [ -n "${STUB_SYSTEMCTL_EXIT:-}" ]; then exit "$STUB_SYSTEMCTL_EXIT"; fi
@@ -352,5 +361,75 @@ func TestOnlySafeWordsReachAPurgeOrATableCommand(t *testing.T) {
 	nft := r.calls("nft")
 	if len(nft) != 2 || strings.Contains(r.text(), "reboot") {
 		t.Fatalf("nft ran %v", nft)
+	}
+}
+
+// Docker that Kevaso installed made DOCKER* chains on its first start, before Kevaso's daemon.json
+// turned its firewall off, and a NAT rule for docker0. The reset removes them, the jumps to them
+// and docker0's rule first, from every table, and leaves every other chain and rule (here
+// fail2ban's and someone's own MASQUERADE) alone.
+func TestDockersChainsGoWithADockerThatIsKevasos(t *testing.T) {
+	// A rule's comment reaches iptables-restore as it is, never a shell: "$(touch pwned)" stays text.
+	r, err := runStep(t, PlanInput{DockerOurs: true}, "delete Docker's iptables chains")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What iptables-restore was fed, table by table ("*filter", its lines, "COMMIT").
+	fed := map[string][]string{}
+	table := ""
+	for _, l := range r.lines {
+		line, ok := strings.CutPrefix(l, "iptables-restore< ")
+		if !ok {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "*"):
+			table = line[1:]
+		case line != "COMMIT":
+			fed[table] = append(fed[table], line)
+		}
+	}
+	want := map[string][]string{
+		"filter": {"-D FORWARD -j DOCKER-USER", "-D FORWARD -o docker0 -j DOCKER", `-D FORWARD -m comment --comment "$(touch pwned)" -j DOCKER-USER`,
+			"-F DOCKER", "-F DOCKER-USER", "-X DOCKER", "-X DOCKER-USER"},
+		"nat": {"-D PREROUTING -m addrtype --dst-type LOCAL -j DOCKER", "-D POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE", "-F DOCKER", "-X DOCKER"},
+	}
+	for tb, lines := range want {
+		if !slices.Equal(fed[tb], lines) {
+			t.Errorf("table %s: fed\n  %s\nwant\n  %s", tb, strings.Join(fed[tb], "\n  "), strings.Join(lines, "\n  "))
+		}
+	}
+	if len(fed) != len(want) {
+		t.Errorf("tables fed: %v, want only filter and nat (the others have nothing of Docker's)", fed)
+	}
+	for _, c := range r.calls("iptables") {
+		if slices.ContainsFunc(c, func(a string) bool { return a == "-D" || a == "-F" || a == "-X" }) {
+			t.Errorf("iptables run to change a rule, outside iptables-restore: %v", c)
+		}
+	}
+	if !strings.Contains(r.text(), "ip6tables -t filter -S") {
+		t.Error("IPv6's tables are not looked at")
+	}
+}
+
+// A Docker that was there before keeps its chains: no step touches them, and no check expects
+// them gone. With a Docker that was Kevaso's, the checklist looks for them.
+func TestADockerThatIsNotKevasosKeepsItsChains(t *testing.T) {
+	for _, s := range Plan(PlanInput{DockerOurs: false}) {
+		if strings.Contains(s.Script, "iptables") && strings.Contains(s.Script, "DOCKER") {
+			t.Errorf("step %q touches the chains of a Docker that isn't Kevaso's", s.Name)
+		}
+	}
+	for _, c := range Checklist(CheckOptions{}) {
+		if strings.Contains(c.Script, "DOCKER") {
+			t.Errorf("check %q expects Docker's chains gone, but Docker stays", c.Name)
+		}
+	}
+	found := false
+	for _, c := range Checklist(CheckOptions{DockerGone: true}) {
+		found = found || c.Script == DockerChainsCheckScript
+	}
+	if !found {
+		t.Error("no check that Docker's chains are gone when Docker was Kevaso's")
 	}
 }
