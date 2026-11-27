@@ -33,3 +33,26 @@ func TestClosedRangeIPv6(t *testing.T) {
 		}
 	}
 }
+
+// An IPv6 port status is "[ADDRESS]:PORT": the address is read whole, not cut at its first colon.
+func TestOutsideAddressesOfIPv6Ports(t *testing.T) {
+	st := SiloServiceStatus{
+		Ports: []ServicePortStatus{
+			{Port: "web", External: "[2001:db8:20::21]:8080"},
+			{Port: "api", Internal: "10.0.0.5:443", External: "[2001:db8:20::21]:8443"},
+		},
+		EgressIP: "203.0.113.10",
+	}
+	if got := st.OutsideIPs(); len(got) != 2 || got[0] != "2001:db8:20::21" || got[1] != "10.0.0.5" {
+		t.Errorf("OutsideIPs = %q, want [2001:db8:20::21 10.0.0.5]", got)
+	}
+	if got, want := st.AddressesLine(), "in 2001:db8:20::21, 10.0.0.5, out 203.0.113.10"; got != want {
+		t.Errorf("AddressesLine = %q, want %q", got, want)
+	}
+	if got := st.Front(); got != "2001:db8:20::21" {
+		t.Errorf("Front = %q, want 2001:db8:20::21 (an IPv6-only service's front is its whole address)", got)
+	}
+	if got := (SiloServiceStatus{Ports: []ServicePortStatus{{Port: "x", External: "garbage"}}}).Front(); got != "" {
+		t.Errorf("Front of no address = %q, want empty", got)
+	}
+}

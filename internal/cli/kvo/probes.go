@@ -170,7 +170,11 @@ func writeSiloPorts(w io.Writer, s *v1.Silo) {
 			if len(ops) > 1 {
 				name += " (" + op.Service + ")"
 			}
-			internal, external := want(op.On(v1.NetworkInternal), ws.Internal), want(op.On(v1.NetworkExternal), ws.External)
+			ext := ws.External // and its IPv6 address, where the worker has one
+			if ws.ExternalIPv6 != "" {
+				ext = strings.TrimPrefix(ext+", "+ws.ExternalIPv6, ", ")
+			}
+			internal, external := want(op.On(v1.NetworkInternal), ws.Internal), want(op.On(v1.NetworkExternal), ext)
 			if op.Way.IP != "" || op.Way.Own { // on an IP: its address, in the column of its kind
 				internal, external = dash(ws.Internal), dash(ws.External)
 				if ws.Internal == "" && ws.External == "" {

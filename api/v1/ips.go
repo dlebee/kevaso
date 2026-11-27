@@ -2,6 +2,7 @@ package v1
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"slices"
 	"strings"
@@ -276,13 +277,23 @@ func portKey(port int, proto string) string {
 func (st SiloServiceStatus) OutsideIPs() []string {
 	var out []string
 	for _, p := range st.Ports {
-		for _, a := range []string{p.Internal, p.External, p.LoadBalancer} {
-			if h, _, ok := strings.Cut(a, ":"); ok && !slices.Contains(out, h) {
+		for _, a := range []string{p.Internal, p.External, p.ExternalIPv6, p.LoadBalancer} {
+			if h := hostOf(a); h != "" && !slices.Contains(out, h) {
 				out = append(out, h)
 			}
 		}
 	}
 	return out
+}
+
+// hostOf is the address in a port status's "ADDRESS:PORT" ("[ADDRESS]:PORT" for IPv6), or ""
+// when there is none. An IPv6 address has colons of its own, so it is split at the port.
+func hostOf(hostPort string) string {
+	h, _, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		return ""
+	}
+	return h
 }
 
 // Front is the address the outside reaches the service on, for one name to point at (an
@@ -295,9 +306,10 @@ func (st SiloServiceStatus) Front() string {
 	for _, pick := range []func(ServicePortStatus) string{
 		func(p ServicePortStatus) string { return p.External },
 		func(p ServicePortStatus) string { return p.Internal },
+		func(p ServicePortStatus) string { return p.ExternalIPv6 },
 	} {
 		for _, p := range st.Ports {
-			if h, _, ok := strings.Cut(pick(p), ":"); ok {
+			if h := hostOf(pick(p)); h != "" {
 				return h
 			}
 		}

@@ -438,10 +438,13 @@ type SiloServiceStatus struct {
 // ServicePortStatus is where one service port is reachable: ADDRESS:PORT on each network it's
 // open on ("" where it isn't).
 type ServicePortStatus struct {
-	Port         string `json:"port"`                   // the declared port's name
-	Mesh         string `json:"mesh,omitempty"`         // its silo IP, to the silos allowFrom names
-	Internal     string `json:"internal,omitempty"`     // its host's internal IP (hostPort: internal)
-	External     string `json:"external,omitempty"`     // its host's external IP (hostPort: external)
+	Port     string `json:"port"`               // the declared port's name
+	Mesh     string `json:"mesh,omitempty"`     // its silo IP, to the silos allowFrom names
+	Internal string `json:"internal,omitempty"` // its host's internal IP (hostPort: internal)
+	External string `json:"external,omitempty"` // its host's external IP (hostPort: external)
+	// ExternalIPv6 is "[ADDRESS]:PORT" on its host's externalIPv6 (hostPort: external, on a worker
+	// with IPv6, and a port without sources: sources are IPv4, so such a port is closed on IPv6).
+	ExternalIPv6 string `json:"externalIPv6,omitempty"`
 	LoadBalancer string `json:"loadBalancer,omitempty"` // its load-balancer address (a LoadBalancer service)
 }
 

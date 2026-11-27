@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -374,9 +375,23 @@ func wayIn(sv v1.SiloService) string {
 // reachable says where each of a service's ports is reachable: ADDRESS:PORT once known, else
 // what it waits for.
 func reachable(s *v1.Silo, sv v1.SiloService, env *netEnv) []string {
-	st := map[string]v1.ServicePortStatus{}
-	for _, p := range s.Status.Service.Ports {
-		st[p.Port] = p
+	// The status has an entry per service port, in the order the spec opens them: a port in two
+	// services (an Internal one and a HostPort one) has two, each with its own addresses.
+	open := s.Spec.OpenIn(s.Name)
+	statusOf := func(port string) v1.ServicePortStatus {
+		name := v1.ServiceNameOf(sv, s.Name)
+		for i, op := range open {
+			if op.Service == name && op.Name == port && i < len(s.Status.Service.Ports) && s.Status.Service.Ports[i].Port == port {
+				return s.Status.Service.Ports[i]
+			}
+		}
+		var last v1.ServicePortStatus // a status not in that order (older): the port's last entry
+		for _, ps := range s.Status.Service.Ports {
+			if ps.Port == port {
+				last = ps
+			}
+		}
+		return last
 	}
 	number := func(p v1.ServicePort) int {
 		if p.As != 0 {
@@ -410,12 +425,16 @@ func reachable(s *v1.Silo, sv v1.SiloService, env *netEnv) []string {
 			way := sv.Way()
 			switch {
 			case way.Worker != "":
-				got := st[p.Port].External
+				ps := statusOf(p.Port)
+				got := []string{ps.External, ps.ExternalIPv6}
 				if way.Worker == v1.NetworkInternal {
-					got = st[p.Port].Internal
+					got = []string{ps.Internal}
 				}
-				if got != "" {
-					add(got)
+				got = slices.DeleteFunc(got, func(a string) bool { return a == "" })
+				if len(got) > 0 {
+					for _, a := range got {
+						add(a)
+					}
 				} else {
 					add(fmt.Sprintf("the worker's %s IP :%d (when placed)", way.Worker, n))
 				}
@@ -423,7 +442,7 @@ func reachable(s *v1.Silo, sv v1.SiloService, env *netEnv) []string {
 				x := env.ip(s.Namespace, way.IP)
 				switch {
 				case x != nil && x.Status.Address != "":
-					add(fmt.Sprintf("%s:%d", x.Status.Address, n))
+					add(net.JoinHostPort(x.Status.Address, strconv.Itoa(n))) // [ADDRESS]:PORT for IPv6
 				case x != nil:
 					add(fmt.Sprintf("ip %s :%d (not reserved yet)", way.IP, n))
 				case env != nil && env.ips != nil:
