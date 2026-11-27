@@ -175,7 +175,7 @@ spec:
 	}
 	grant("192.0.2.1/32", "2606:4700:4700::1111/128")
 	var o strings.Builder
-	c.kvoadmOrFail(&o, "host", "addresses", metalHost, "add", "edge6", extra)
+	c.kvoadmOrFail(&o, "host", "addresses", metalHost, "add", "edge6", extra, "--external")
 	t.Cleanup(func() {
 		c.kvo("", "delete", "silo", "kept", "-n", ns)
 		c.eventually("kept gone", 3*time.Minute, func() (bool, string) {
