@@ -291,7 +291,13 @@ func describeWith(w io.Writer, obj meta.Object, env *netEnv) error {
 		kv(0, "Internal IP", internal)
 		kv(0, "External IP", dash(o.External()))
 		ipv6 := o.ExternalIPv6()
-		if ipv6 == "" {
+		switch {
+		case ipv6 != "":
+		case o.Spec.Components.Worker == nil:
+			// A host's worker finds its IPv6 address: with no worker nothing looked, and silos
+			// never run here, so "no global IPv6 address" would be a guess.
+			ipv6 = "not detected: this host runs no worker, which is what finds it (set spec.externalIPv6 if it has one)"
+		default:
 			ipv6 = "none: IPv4 only (no global IPv6 address; set spec.externalIPv6 if it has one)"
 		}
 		kv(0, "External IPv6", ipv6)
