@@ -142,7 +142,7 @@ func TestPlanOrder(t *testing.T) {
 	order := []string{
 		"stop kevasod", "stop every kevaso-*", "kill what is left",
 		"remove containers", "stop docker", "remove Kevaso's podman containers",
-		"delete links", "delete docker0", "delete addresses", "delete the IPv6 addresses", "delete nftables tables", "restore net.ipv4.ip_forward",
+		"delete links", "delete docker0", "delete Docker's iptables chains", "delete addresses", "delete the IPv6 addresses", "delete nftables tables", "restore net.ipv4.ip_forward",
 		"restore net.ipv6.conf.all.forwarding",
 		"remove volume group", "purge docker.io",
 		"unmount what is mounted", "remove Kevaso's files", "remove the tests' /etc/hosts", "remove kevaso-* users",

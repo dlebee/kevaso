@@ -480,6 +480,11 @@ done
 true`)
 	if in.DockerOurs {
 		add("delete docker0", `ip link show docker0 >/dev/null 2>&1 && ip link del docker0; true`)
+		// dockerd's first start, before Kevaso's daemon.json turned its firewall off, made its
+		// DOCKER* chains, and nothing removes them since. In a table that was there before the
+		// install, the tables step leaves them, so they go here: the jumps to them first, then
+		// the chains. Only when Docker was Kevaso's: a Docker that was there keeps its own.
+		add("delete Docker's iptables chains", DockerChainsScript)
 	}
 	add("delete addresses labelled :kv", `ip -4 -o addr show | awk '$NF ~ /:kv$/ {print $2, $4, $NF}' | while read dev addr label; do ip addr del "$addr" dev "$dev" label "$label"; done; true`)
 	add("delete the IPv6 addresses in "+Ledger6, `[ -f `+Ledger6+` ] && while read dev addr; do ip -6 addr del "$addr" dev "$dev" 2>/dev/null; done < `+Ledger6+`; true`)
@@ -602,6 +607,33 @@ true`)
 	add(RecordStep, `rm -rf --one-file-system `+RecordDir)
 	return steps
 }
+
+// DockerChainsScript deletes dockerd's DOCKER* chains from every iptables table, IPv4 and IPv6,
+// one table at a time in one iptables-restore --noflush (which reads the rules itself: nothing
+// of them reaches a shell): each rule outside those chains that jumps to one or names docker0
+// (its NAT for 172.17.0.0/16), its -A line turned into -D, which deletes by match; then each
+// chain, flushed and deleted. Other chains and rules stay. A host without iptables, or without
+// those chains and rules, is left as it is.
+const DockerChainsScript = `for ipt in iptables ip6tables; do
+  command -v "$ipt" >/dev/null && command -v "$ipt-restore" >/dev/null || continue
+  for t in filter nat mangle raw; do
+    cmds=$("$ipt" -t "$t" -S 2>/dev/null | awk '
+      $1 == "-N" && $2 ~ /^DOCKER/ { chains[++n] = $2; next }
+      $1 == "-A" && $2 !~ /^DOCKER/ && (/ -j DOCKER/ || / docker0( |$)/) { sub(/^-A /, "-D "); print }
+      END { for (i = 1; i <= n; i++) print "-F " chains[i]; for (i = 1; i <= n; i++) print "-X " chains[i] }')
+    [ -n "$cmds" ] || continue
+    printf '*%s\n%s\nCOMMIT\n' "$t" "$cmds" | "$ipt-restore" --noflush || echo "can't delete Docker's chains in $ipt -t $t" >&2
+  done
+done
+true`
+
+// DockerChainsCheckScript prints each DOCKER* chain left in an iptables table.
+const DockerChainsCheckScript = `for ipt in iptables ip6tables; do
+  command -v "$ipt" >/dev/null || continue
+  for t in filter nat mangle raw; do
+    "$ipt" -t "$t" -S 2>/dev/null | awk -v w="$ipt -t $t" '$1 == "-N" && $2 ~ /^DOCKER/ {print w, $2}'
+  done
+done; true`
 
 // RecordStep is the plan's last step: the install record goes. kvoadm reset runs it only when
 // every step before it succeeded: a reset cut short keeps it, and run again it does the rest
@@ -744,7 +776,8 @@ done; true`},
 			Check{"no device-mapper device of " + VG, `dmsetup ls 2>/dev/null | awk '$1 ~ /^` + VG + `-/ {print $1}'`})
 	}
 	if o.DockerGone {
-		checks = append(checks, Check{"no docker", `command -v docker containerd dockerd 2>/dev/null; true`})
+		checks = append(checks, Check{"no docker", `command -v docker containerd dockerd 2>/dev/null; true`},
+			Check{"no DOCKER* iptables chain", DockerChainsCheckScript})
 	}
 	if o.PodmanGone {
 		checks = append(checks, Check{"no podman", `command -v podman conmon 2>/dev/null; true`})
