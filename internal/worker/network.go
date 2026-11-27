@@ -383,6 +383,7 @@ func RunNetworkWith(ctx context.Context, c *client.Client, hostName string, ca *
 
 // syncHostAddresses keeps the host's pool, announced and local endpoint addresses as the silos say.
 func syncHostAddresses(ctx context.Context, hostName string, me *v1.Host, all []*v1.Silo, ips []*v1.IP, log func(string, ...any)) {
+	allowed := map[string][]string{} // interface → the Provider IPs' addresses this host holds there
 	if me != nil {
 		want := PoolAddresses(hostName, all)
 		for _, a := range HeldAddresses(hostName, all, ips) {
@@ -395,6 +396,12 @@ func syncHostAddresses(ctx context.Context, hostName string, me *v1.Host, all []
 			log("pool addresses: %v", err)
 		}
 		up6 := uplink6(me)
+		if up := uplink(me.Reach()); up != "" {
+			allowed[up] = append(allowed[up], want4...)
+		}
+		for a := range want6 {
+			allowed[up6] = append(allowed[up6], a.String())
+		}
 		switch {
 		case up6 != "":
 			if err := syncUplink6(ctx, up6, want6); err != nil {
@@ -415,6 +422,14 @@ func syncHostAddresses(ctx context.Context, hostName string, me *v1.Host, all []
 	}
 	if err := syncAddresses(ctx, "lo", "lo:kv", lo); err != nil {
 		log("announced addresses: %v", err)
+	}
+	allowed["lo"] = append(allowed["lo"], lo...)
+	gone, err := dropStrayProviderAddresses(ctx, ips, allowed)
+	for _, a := range gone {
+		log("removed Provider IP %s from %s: this host doesn't hold it there (only on lo when announced, on the uplink otherwise)", a.Prefix, a.Iface)
+	}
+	if err != nil {
+		log("Provider IPs held elsewhere: %v", err)
 	}
 	if err := syncAddresses(ctx, cloudhypervisor.Bridge, cloudhypervisor.Bridge+":kv", []string{v1.EndpointAddress}); err != nil {
 		log("the local endpoint's address: %v", err)
