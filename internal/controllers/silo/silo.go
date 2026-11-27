@@ -531,6 +531,7 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 					changed = meta.SetCondition(&st.Conditions, meta.Condition{Type: moves.CondUnschedulable, Status: meta.ConditionFalse,
 						Reason: "Placed", Message: st.Host + " has this silo", ObservedGeneration: s.Generation}, now) || changed
 				}
+				changed = moveDone(&st, s.Generation, now) || changed
 				// A handoff to it whose source is gone (K-119).
 				srcChanged, srcAgain := handoffSource(s, &st, hosts, env, now)
 				return st, changed || srcChanged || imageChanged || movableChanged, srcAgain, nil
@@ -624,6 +625,30 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 	}
 	return st, changed, again, nil
 }
+
+// moveDone ends a move's Moved condition once the silo runs on a host with no handoff left,
+// whichever way it got there: on the move's target ("moved … to H") or elsewhere, such as back on
+// the host it was moving from ("move ended: running on H"). Kept at Reason Moving it said
+// "moving … from A to B" for as long as the silo lived.
+func moveDone(st *v1.SiloStatus, gen int64, now time.Time) bool {
+	c := meta.FindCondition(st.Conditions, CondMoved)
+	if c == nil || c.Reason != ReasonMoving || st.Phase != "Running" || st.Host == "" || moves.HandingOff(*st) {
+		return false
+	}
+	msg := "move ended: running on " + st.Host
+	if strings.HasPrefix(c.Message, "moving ") && strings.HasSuffix(c.Message, " to "+st.Host) {
+		msg = "moved " + strings.TrimPrefix(c.Message, "moving ")
+	}
+	return meta.SetCondition(&st.Conditions, meta.Condition{Type: CondMoved, Status: meta.ConditionTrue, Reason: "Moved",
+		Message: msg, ObservedGeneration: gen}, now)
+}
+
+// CondMoved is the condition a move sets (kvo move): Reason Moving while it is under way,
+// Moved once the silo runs again (moveDone).
+const (
+	CondMoved    = "Moved"
+	ReasonMoving = "Moving"
+)
 
 func dropCondition(conds []meta.Condition, typ string) []meta.Condition {
 	out := conds[:0:0]
