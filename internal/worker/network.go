@@ -397,7 +397,7 @@ func syncHostAddresses(ctx context.Context, hostName string, me *v1.Host, all []
 		up6 := uplink6(me)
 		switch {
 		case up6 != "":
-			if err := syncAddresses6(ctx, up6, want6, true); err != nil {
+			if err := syncUplink6(ctx, up6, want6); err != nil {
 				log("pool addresses (IPv6): %v", err)
 			}
 		case len(want6) > 0:

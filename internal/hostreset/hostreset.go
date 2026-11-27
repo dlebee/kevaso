@@ -117,12 +117,9 @@ func Watched() []string {
 	return out
 }
 
-// AddrProto6 is the address protocol Kevaso's IPv6 addresses carry (internal/worker's
-// AddrProto: IPv6 addresses have no labels).
-const AddrProto6 = "0x6b"
-
-// ipv6Ours prints "DEV ADDR/LEN" for each IPv6 address of protocol AddrProto6.
-const ipv6Ours = `ip -6 -o addr show 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "proto" && $(i+1) == "` + AddrProto6 + `") print $2, $4}'`
+// Ledger6 lists the IPv6 addresses Kevaso put on the host's uplink ("DEV ADDR/LEN" lines;
+// internal/worker's Ledger6): IPv6 addresses have no labels. Those on the bridge go with it.
+const Ledger6 = "/run/kevaso/ipv6-addresses"
 
 // State is what a reset compares with the record.
 type State struct {
@@ -485,7 +482,7 @@ true`)
 		add("delete docker0", `ip link show docker0 >/dev/null 2>&1 && ip link del docker0; true`)
 	}
 	add("delete addresses labelled :kv", `ip -4 -o addr show | awk '$NF ~ /:kv$/ {print $2, $4, $NF}' | while read dev addr label; do ip addr del "$addr" dev "$dev" label "$label"; done; true`)
-	add("delete IPv6 addresses of protocol "+AddrProto6, ipv6Ours+` | while read dev addr; do ip -6 addr del "$addr" dev "$dev"; done; true`)
+	add("delete the IPv6 addresses in "+Ledger6, `[ -f `+Ledger6+` ] && while read dev addr; do ip -6 addr del "$addr" dev "$dev" 2>/dev/null; done < `+Ledger6+`; true`)
 	var del strings.Builder
 	for _, t := range in.Tables {
 		f := strings.Fields(t)
@@ -727,7 +724,7 @@ func Checklist(o CheckOptions) []Check {
 		{"nothing is mounted under Kevaso's paths", `awk '{print $2}' /proc/mounts | grep -E '` + mountPattern + `'; true`},
 		{"no Kevaso link is left", `ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -E '^(` + links + `)'; true`},
 		{"no :kv address is left", `ip -4 -o addr show | awk '$NF ~ /:kv$/ {print $2, $4}'`},
-		{"no IPv6 address of protocol " + AddrProto6 + " is left", ipv6Ours + `; true`},
+		{"no IPv6 address of " + Ledger6 + " is left", `[ -f ` + Ledger6 + ` ] && while read dev addr; do ip -6 -o addr show dev "$dev" 2>/dev/null | grep -qF " $addr " && echo "$dev $addr"; done < ` + Ledger6 + `; true`},
 		{"no nftables table named kevaso*", `nft list tables 2>/dev/null | awk '$3 ~ /^kevaso/ {print $2, $3}'`},
 		{"no Kevaso container", `command -v docker >/dev/null && systemctl is-active -q docker && docker ps -aq --filter label=kevaso.com/uid
 command -v podman >/dev/null && podman ps -aq --filter label=kevaso.com/uid; true`},

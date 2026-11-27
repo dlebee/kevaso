@@ -99,7 +99,7 @@ func TestMetalIPv6(t *testing.T) {
 	}
 	sub6 := netip.MustParsePrefix(h.Status.Network.SiloSubnetIPv6)
 	t.Logf("%s: externalIPv6 %s, silo /64 %s", metalHost, ext6, sub6)
-	c.expect("the silos' gateway is on the bridge, Kevaso's", c.mustSh(`ip -6 -o addr show dev kvbr0 | awk '/proto 0x6b/ {print $4}'`),
+	c.expect("the silos' gateway is on the bridge", c.mustSh(`ip -6 -o addr show dev kvbr0 scope global | awk '{print $4}'`),
 		netip.PrefixFrom(sub6.Addr().Next(), 64).String())
 	c.expect("IPv6 forwarding is on", c.mustSh("sysctl -n net.ipv6.conf.all.forwarding"), "1")
 
@@ -211,9 +211,10 @@ spec:
       ports: [{ port: web }]
 `, ns, ns, yamlList(echo6Argv("kept", 18151))))
 	c.waitRunning(ns, 10*time.Minute, "kept")
-	c.eventually("the kept address is on the uplink as Kevaso's deprecated /128", time.Minute, func() (bool, string) {
-		out, _ := c.sh(`ip -6 -o addr show | grep -F ' ` + extra + `/128 '; true`)
-		return strings.Contains(out, "proto 0x6b") && strings.Contains(out, "deprecated"), out
+	c.eventually("the kept address is on the uplink as a deprecated /128, in Kevaso's ledger", time.Minute, func() (bool, string) {
+		out, _ := c.sh(`ip -6 -o addr show | grep -F ' ` + extra + `/128 '; echo ledger: $(cat /run/kevaso/ipv6-addresses)`)
+		addrs, ledger, _ := strings.Cut(out, "ledger: ")
+		return strings.Contains(addrs, "deprecated") && strings.Contains(ledger, extra+"/128"), out
 	})
 	c.eventually("kept answers this Mac on its IPv6 address, seeing the Mac's address", time.Minute, func() (bool, string) {
 		body, from, err := fromMac6(extra, 18151)

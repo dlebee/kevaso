@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -210,10 +212,11 @@ func TestRouteSrc6(t *testing.T) {
 	}
 }
 
-// fakeIP is `ip` on a host: the addresses on each interface, with their protocol.
+// fakeIP is `ip` on a host: the addresses on each interface. Like iproute2 6.1, it refuses
+// an address protocol.
 type fakeIP struct {
 	mu    sync.Mutex
-	addrs map[string][]string // iface → "PREFIX[ proto P][ preferred_lft 0]"
+	addrs map[string][]string // iface → "PREFIX"
 	calls []string
 	sys   map[string]string
 }
@@ -236,24 +239,28 @@ func (f *fakeIP) run(_ context.Context, name string, args ...string) ([]byte, er
 		}
 		return []byte(b.String()), nil
 	case strings.HasPrefix(cmd, "ip -6 addr add "):
-		line := args[3]
-		for i, a := range args {
-			if a == "proto" {
-				line += " proto " + args[i+1]
-			}
+		if slices.Contains(args, "proto") {
+			return []byte(`Error: either "local" is duplicate, or "proto" is a garbage.`), errors.New("exit status 255")
 		}
-		f.addrs[args[5]] = append(f.addrs[args[5]], line)
+		if slices.Contains(f.addrs[args[5]], args[3]) {
+			return []byte("RTNETLINK answers: File exists"), errors.New("exit status 2")
+		}
+		f.addrs[args[5]] = append(f.addrs[args[5]], args[3])
 		return nil, nil
 	case strings.HasPrefix(cmd, "ip -6 addr del "):
-		f.addrs[args[5]] = slices.DeleteFunc(f.addrs[args[5]], func(a string) bool { return strings.HasPrefix(a, args[3]+" ") || a == args[3] })
+		if !slices.Contains(f.addrs[args[5]], args[3]) {
+			return []byte("RTNETLINK answers: Cannot assign requested address"), errors.New("exit status 2")
+		}
+		f.addrs[args[5]] = slices.DeleteFunc(f.addrs[args[5]], func(a string) bool { return a == args[3] })
 		return nil, nil
 	}
 	return nil, errors.New("unexpected " + cmd)
 }
 
 func withFakeIP(t *testing.T, f *fakeIP) {
-	r, rs, ws := run6, readSysctl, writeSysctl
+	r, rs, ws, l := run6, readSysctl, writeSysctl, Ledger6
 	run6 = f.run
+	Ledger6 = filepath.Join(t.TempDir(), "run", "ipv6-addresses")
 	readSysctl = func(p string) (string, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -263,48 +270,73 @@ func withFakeIP(t *testing.T, f *fakeIP) {
 		return "", errors.New("no " + p)
 	}
 	writeSysctl = func(p, v string) error { f.mu.Lock(); defer f.mu.Unlock(); f.sys[p] = v; return nil }
-	t.Cleanup(func() { run6, readSysctl, writeSysctl = r, rs, ws })
+	t.Cleanup(func() { run6, readSysctl, writeSysctl, Ledger6 = r, rs, ws, l })
 }
 
-func TestSyncAddresses6KeepsOnlyOurs(t *testing.T) {
-	f := &fakeIP{addrs: map[string][]string{"eth0": {"2001:db8:e::10/64", "2001:db8:e::99/128 proto " + AddrProto}}, sys: map[string]string{}}
+// The uplink's held IPv6 addresses: in the ledger before they are added, deprecated /128s; one
+// not wanted any more is taken off (here or on an earlier uplink) and leaves the ledger; the host's
+// own addresses are never touched.
+func TestSyncUplink6KeepsOnlyOurs(t *testing.T) {
+	f := &fakeIP{addrs: map[string][]string{"eth0": {"2001:db8:e::10/64", "2001:db8:e::99/128"}, "eth1": {"2001:db8:f::5/128"}}, sys: map[string]string{}}
 	withFakeIP(t, f)
-	want := map[netip.Addr]int{netip.MustParseAddr("2001:db8:e::21"): 128}
-	if err := syncAddresses6(context.Background(), "eth0", want, true); err != nil {
+	if err := os.MkdirAll(filepath.Dir(Ledger6), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.addrs["eth0"]; !slices.Equal(got, []string{"2001:db8:e::10/64", "2001:db8:e::21/128 proto " + AddrProto}) {
-		t.Fatalf("addresses %v (calls %v)", got, f.calls)
+	if err := os.WriteFile(Ledger6, []byte("eth0 2001:db8:e::99/128\neth1 2001:db8:f::5/128\njunk line here\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if !slices.ContainsFunc(f.calls, func(c string) bool {
-		return strings.HasPrefix(c, "ip -6 addr add 2001:db8:e::21/128 dev eth0 proto "+AddrProto+" nodad preferred_lft 0")
-	}) {
+	want := map[netip.Addr]int{netip.MustParseAddr("2001:db8:e::21"): 128}
+	if err := syncUplink6(context.Background(), "eth0", want); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.addrs["eth0"]; !slices.Equal(got, []string{"2001:db8:e::10/64", "2001:db8:e::21/128"}) || len(f.addrs["eth1"]) != 0 {
+		t.Fatalf("addresses %v (calls %v)", f.addrs, f.calls)
+	}
+	if !slices.Contains(f.calls, "ip -6 addr add 2001:db8:e::21/128 dev eth0 nodad preferred_lft 0") {
 		t.Errorf("not added deprecated: %v", f.calls)
 	}
-	// Again: nothing to do.
+	if b, _ := os.ReadFile(Ledger6); string(b) != "eth0 2001:db8:e::21/128\n" {
+		t.Errorf("ledger %q", b)
+	}
+	// Again: nothing to do but look.
 	f.calls = nil
-	if err := syncAddresses6(context.Background(), "eth0", want, true); err != nil || len(f.calls) != 1 {
+	if err := syncUplink6(context.Background(), "eth0", want); err != nil || len(f.calls) != 1 {
 		t.Errorf("calls %v, %v", f.calls, err)
 	}
-	if AddrProto != hostreset.AddrProto6 {
-		t.Errorf("kvoadm reset removes protocol %s, the worker adds %s", hostreset.AddrProto6, AddrProto)
+	// Someone deleted it by hand: it comes back.
+	f.addrs["eth0"] = f.addrs["eth0"][:1]
+	if err := syncUplink6(context.Background(), "eth0", want); err != nil || len(f.addrs["eth0"]) != 2 {
+		t.Errorf("addresses %v, %v", f.addrs, err)
+	}
+	// Nothing wanted: off, and out of the ledger.
+	if err := syncUplink6(context.Background(), "eth0", nil); err != nil || !slices.Equal(f.addrs["eth0"], []string{"2001:db8:e::10/64"}) {
+		t.Errorf("addresses %v, %v", f.addrs, err)
+	}
+	if b, _ := os.ReadFile(Ledger6); len(b) != 0 {
+		t.Errorf("ledger %q", b)
+	}
+	if hostreset.Ledger6 != ledger6Path {
+		t.Errorf("kvoadm reset reads %s, the worker writes %s", hostreset.Ledger6, ledger6Path)
 	}
 }
 
 func TestSyncBridge6(t *testing.T) {
 	conf := "/proc/sys/net/ipv6/conf/"
-	f := &fakeIP{addrs: map[string][]string{cloudhypervisor.Bridge: nil, "eth0": {"2001:db8:e::10/64"}},
+	f := &fakeIP{addrs: map[string][]string{cloudhypervisor.Bridge: {"fd00:aa:bb:9::1/64"}, "eth0": {"2001:db8:e::10/64"}},
 		sys: map[string]string{conf + "all/forwarding": "0", conf + "eth0/accept_ra": "1", conf + cloudhypervisor.Bridge + "/accept_ra": "1",
 			conf + cloudhypervisor.Bridge + "/disable_ipv6": "0"}}
 	withFakeIP(t, f)
 	if err := syncBridge6(context.Background(), host6(), "eth0"); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.addrs[cloudhypervisor.Bridge]; !slices.Equal(got, []string{"fd00:aa:bb:2::1/64 proto " + AddrProto}) {
-		t.Fatalf("bridge %v", got)
+	if got := f.addrs[cloudhypervisor.Bridge]; !slices.Equal(got, []string{"fd00:aa:bb:2::1/64"}) {
+		t.Fatalf("bridge %v (calls %v)", got, f.calls)
 	}
 	if f.sys[conf+"all/forwarding"] != "1" || f.sys[conf+"eth0/accept_ra"] != "2" || f.sys[conf+cloudhypervisor.Bridge+"/accept_ra"] != "0" {
 		t.Fatalf("sysctls %v", f.sys)
+	}
+	if !slices.Equal(f.addrs["eth0"], []string{"2001:db8:e::10/64"}) {
+		t.Fatalf("the uplink was touched: %v", f.addrs["eth0"])
 	}
 	// The host loses its IPv6: the gateway goes, forwarding stays (kvoadm reset puts it back).
 	h := host6()

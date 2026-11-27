@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -16,11 +17,16 @@ import (
 // IPv6 at the edge (the IPv6 effort) on the host: the bridge has the host's address in its IPv6
 // silo /64 (the silos' gateway), the host forwards IPv6 (NAT66 out, DNAT in, as kni's rules say),
 // and the IPv6 addresses this host's silos hold (kept IPv6 IPs, IPv6 host addresses) are on its
-// uplink as /128s. IPv6 addresses have no labels, so Kevaso's carry an address protocol of its own
-// (AddrProto) instead of IPv4's IFACE:kv label; kvoadm reset removes them by it.
+// uplink as /128s. IPv6 addresses have no labels, and iproute2 before 6.3 (Ubuntu 24.04's 6.1)
+// can't set an address protocol either, so Kevaso's are known another way: every global address on
+// the bridge (Kevaso's device) is its own, and the uplink's are written in Ledger6 before they are
+// added (kvoadm reset removes what it names).
 
-// AddrProto is the address protocol Kevaso's IPv6 addresses carry (ip address add … proto).
-const AddrProto = "0x6b"
+// Ledger6 lists the IPv6 addresses Kevaso put on the host's uplink, one "DEV ADDR/LEN" a line. In
+// /run: like the addresses themselves, it is gone after a reboot.
+var Ledger6 = ledger6Path
+
+const ledger6Path = "/run/kevaso/ipv6-addresses"
 
 // run6 runs a command on the host and returns what it printed (tests replace it).
 var run6 = func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -36,55 +42,144 @@ var (
 	writeSysctl = func(path, v string) error { return os.WriteFile(path, []byte(v+"\n"), 0o644) }
 )
 
-// ours6 are the IPv6 addresses (with their prefix length) Kevaso put on an interface, read from
-// `ip -6 -o addr show dev IFACE`: the lines with its address protocol.
-func ours6(out string) map[netip.Addr]int {
+// global6 are the global IPv6 addresses (with their prefix length) in `ip -6 -o addr show`'s
+// output.
+func global6(out string) map[netip.Addr]int {
 	have := map[netip.Addr]int{}
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
-		mine := false
-		var p netip.Prefix
 		for i := 0; i+1 < len(f); i++ {
-			switch f[i] {
-			case "inet6":
-				p, _ = netip.ParsePrefix(f[i+1])
-			case "proto":
-				mine = f[i+1] == AddrProto
+			if f[i] == "inet6" {
+				if p, err := netip.ParsePrefix(f[i+1]); err == nil && !p.Addr().IsLinkLocalUnicast() {
+					have[p.Addr()] = p.Bits()
+				}
 			}
-		}
-		if mine && p.IsValid() {
-			have[p.Addr()] = p.Bits()
 		}
 	}
 	return have
 }
 
-// syncAddresses6 keeps Kevaso's IPv6 addresses on iface as want says (address → prefix length),
-// and removes its others there. nodad: they are the host's to answer for at once (a silo's
-// gateway, a held address). deprecated: the host never picks them as the source of its own
-// connections (preferred_lft 0); they still receive, and kni sends from them where it SNATs.
-func syncAddresses6(ctx context.Context, iface string, want map[netip.Addr]int, deprecated bool) error {
-	out, err := run6(ctx, "ip", "-6", "-o", "addr", "show", "dev", iface)
-	if err != nil {
-		return &cmdError{"ip -6 addr show dev " + iface, err, string(out)}
+// addr6 adds one IPv6 address. nodad: the host answers for it at once (a silo's gateway, a held
+// address). deprecated: the host never picks it as the source of its own connections
+// (preferred_lft 0); it still receives, and kni sends from it where it SNATs.
+func addr6(ctx context.Context, iface string, p netip.Prefix, deprecated bool) error {
+	args := []string{"-6", "addr", "add", p.String(), "dev", iface, "nodad"}
+	if deprecated {
+		args = append(args, "preferred_lft", "0")
 	}
-	have := ours6(string(out))
+	if b, err := run6(ctx, "ip", args...); err != nil && !strings.Contains(string(b), "File exists") {
+		return &cmdError{"ip -6 addr add " + p.String(), err, string(b)}
+	}
+	return nil
+}
+
+func show6(ctx context.Context, iface string) (map[netip.Addr]int, error) {
+	out, err := run6(ctx, "ip", "-6", "-o", "addr", "show", "dev", iface, "scope", "global")
+	if err != nil {
+		return nil, &cmdError{"ip -6 addr show dev " + iface, err, string(out)}
+	}
+	return global6(string(out)), nil
+}
+
+// syncBridgeAddresses6 makes the bridge's global IPv6 addresses exactly want.
+func syncBridgeAddresses6(ctx context.Context, want map[netip.Addr]int) error {
+	have, err := show6(ctx, cloudhypervisor.Bridge)
+	if err != nil {
+		return err
+	}
 	for a, bits := range have {
 		if w, ok := want[a]; !ok || w != bits {
-			_, _ = run6(ctx, "ip", "-6", "addr", "del", netip.PrefixFrom(a, bits).String(), "dev", iface)
+			_, _ = run6(ctx, "ip", "-6", "addr", "del", netip.PrefixFrom(a, bits).String(), "dev", cloudhypervisor.Bridge)
 			delete(have, a)
 		}
 	}
 	for a, bits := range want {
-		if _, ok := have[a]; ok {
+		if _, ok := have[a]; !ok {
+			if err := addr6(ctx, cloudhypervisor.Bridge, netip.PrefixFrom(a, bits), false); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ledgerLine is one Ledger6 entry.
+type ledgerLine struct {
+	dev string
+	p   netip.Prefix
+}
+
+func readLedger6() []ledgerLine {
+	b, err := os.ReadFile(Ledger6)
+	if err != nil {
+		return nil
+	}
+	var out []ledgerLine
+	for _, l := range strings.Split(string(b), "\n") {
+		f := strings.Fields(l)
+		if len(f) != 2 || !safeIfname(f[0]) {
 			continue
 		}
-		args := []string{"-6", "addr", "add", netip.PrefixFrom(a, bits).String(), "dev", iface, "proto", AddrProto, "nodad"}
-		if deprecated {
-			args = append(args, "preferred_lft", "0")
+		if p, err := netip.ParsePrefix(f[1]); err == nil && p.Addr().Is6() {
+			out = append(out, ledgerLine{f[0], p})
 		}
-		if b, err := run6(ctx, "ip", args...); err != nil && !strings.Contains(string(b), "File exists") {
-			return &cmdError{"ip -6 addr add " + a.String(), err, string(b)}
+	}
+	return out
+}
+
+func writeLedger6(ls []ledgerLine) error {
+	var b strings.Builder
+	for _, l := range ls {
+		b.WriteString(l.dev + " " + l.p.String() + "\n")
+	}
+	if err := os.MkdirAll(filepath.Dir(Ledger6), 0o755); err != nil {
+		return err
+	}
+	tmp := Ledger6 + ".tmp"
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, Ledger6)
+}
+
+// syncUplink6 keeps the held IPv6 addresses on iface as want says (/128s, deprecated), and takes
+// off every other one Kevaso added (on iface or an earlier uplink). An address is in the ledger
+// before it is added, and leaves it only once it is deleted, so none is ever Kevaso's unknowingly.
+func syncUplink6(ctx context.Context, iface string, want map[netip.Addr]int) error {
+	ledger := readLedger6()
+	var keep []ledgerLine
+	for _, l := range ledger {
+		if w, ok := want[l.p.Addr()]; ok && l.dev == iface && w == l.p.Bits() {
+			keep = append(keep, l)
+			continue
+		}
+		if b, err := run6(ctx, "ip", "-6", "addr", "del", l.p.String(), "dev", l.dev); err != nil && !strings.Contains(string(b), "Cannot assign") &&
+			!strings.Contains(string(b), "does not exist") && !strings.Contains(string(b), "Cannot find device") {
+			keep = append(keep, l) // still there: tried again next time
+		}
+	}
+	add := slices.Clone(keep)
+	for a, bits := range want {
+		l := ledgerLine{iface, netip.PrefixFrom(a, bits)}
+		if !slices.Contains(add, l) {
+			add = append(add, l)
+		}
+	}
+	slices.SortFunc(add, func(x, y ledgerLine) int { return strings.Compare(x.dev+" "+x.p.String(), y.dev+" "+y.p.String()) })
+	if len(add) != len(ledger) || !slices.Equal(add, ledger) {
+		if err := writeLedger6(add); err != nil {
+			return err
+		}
+	}
+	have, err := show6(ctx, iface)
+	if err != nil {
+		return err
+	}
+	for a, bits := range want {
+		if _, ok := have[a]; !ok {
+			if err := addr6(ctx, iface, netip.PrefixFrom(a, bits), true); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -115,7 +210,7 @@ func syncBridge6(ctx context.Context, me *v1.Host, uplink6 string) error {
 			_ = writeSysctl(conf+"accept_ra", "0")
 		}
 	}
-	if err := syncAddresses6(ctx, cloudhypervisor.Bridge, want, false); err != nil {
+	if err := syncBridgeAddresses6(ctx, want); err != nil {
 		return err
 	}
 	if !ok {
