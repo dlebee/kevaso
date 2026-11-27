@@ -49,6 +49,11 @@ func boundHostWrite(oh v1.HostStatus, nh *v1.HostStatus, host string, now time.T
 	// Ready kept as stored, as its fence counts none (K-108).
 	hostctl.Beat(oh, nh, now)
 	nh.ControlPlane = oh.ControlPlane
+	// The IPv6 address it found: only a global unicast one (as spec.externalIPv6 takes); anything
+	// else is dropped, never refused (the rest of the write is the host's heartbeat).
+	if v := nh.Network.ExternalIPv6; v != "" && !GlobalIPv6(v) {
+		nh.Network.ExternalIPv6 = ""
+	}
 	if oh.Network.PublicKey != "" && nh.Network.PublicKey != oh.Network.PublicKey {
 		return errf(http.StatusForbidden, "Forbidden", "%s may not change its published mesh key: a new key is a new join (kvoadm host remove %s, then add it again)", host, host)
 	}
@@ -198,4 +203,11 @@ func (s *Server) hostGone(ctx context.Context, host string) bool {
 	}
 	lost, _ := hostctl.Lost(obj.(*v1.Host))
 	return lost
+}
+
+// GlobalIPv6 says whether v is an address a host may have as its externalIPv6: one global
+// unicast IPv6 address, canonical, not unique local, mapped or zoned.
+func GlobalIPv6(v string) bool {
+	a, err := netip.ParseAddr(v)
+	return err == nil && a.Is6() && !a.Is4In6() && a.Zone() == "" && a.IsGlobalUnicast() && !a.IsPrivate() && a.String() == v
 }

@@ -162,7 +162,7 @@ func Duplicates(hosts []*v1.Host) string {
 	names := map[string]string{}
 	addrs := map[string]string{}
 	for _, h := range sorted {
-		for _, a := range []string{h.Spec.ExternalIP, h.Spec.InternalIP, h.Spec.ExternalIPv6} {
+		for _, a := range []string{h.Spec.ExternalIP, h.Spec.InternalIP, h.ExternalIPv6()} {
 			if a != "" {
 				addrs[a] = h.Name + "'s main IP"
 			}

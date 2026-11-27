@@ -355,8 +355,9 @@ func TestSyncBridge6(t *testing.T) {
 	}
 }
 
-// The host's global IPv6 address, detected, fills spec.externalIPv6 where none is set; one set
-// stays; nothing detected leaves the host IPv4 only.
+// The host's global IPv6 address, detected, is reported in status.network.externalIPv6 (as the
+// host itself: a worker writes no spec) and is the host's externalIPv6 unless spec.externalIPv6 is
+// set; nothing detected leaves the host IPv4 only.
 func TestUpdateHostDetectsIPv6(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -380,7 +381,7 @@ func TestUpdateHostDetectsIPv6(t *testing.T) {
 		{"c", "", ""},
 	} {
 		cfg := Config{HostName: x.host, Log: t.Logf, DetectIPv6: func(context.Context) string { return x.detected }}
-		h, err := updateHost(ctx, c, cfg, nil, nil)
+		h, err := UpdateHost(ctx, c, cfg, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -388,8 +389,8 @@ func TestUpdateHostDetectsIPv6(t *testing.T) {
 		if err := c.Get(ctx, "Host", "", x.host, &got); err != nil {
 			t.Fatal(err)
 		}
-		if got.Spec.ExternalIPv6 != x.want || h.Spec.ExternalIPv6 != x.want {
-			t.Errorf("host %s: externalIPv6 %q (returned %q), want %q", x.host, got.Spec.ExternalIPv6, h.Spec.ExternalIPv6, x.want)
+		if got.ExternalIPv6() != x.want || h.ExternalIPv6() != x.want || got.Status.Network.ExternalIPv6 != x.detected {
+			t.Errorf("host %s: externalIPv6 %q (returned %q, found %q), want %q", x.host, got.ExternalIPv6(), h.ExternalIPv6(), got.Status.Network.ExternalIPv6, x.want)
 		}
 	}
 }

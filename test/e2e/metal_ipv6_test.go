@@ -90,9 +90,9 @@ func fromMac6(addr string, port int) (body, from string, err error) {
 func TestMetalIPv6(t *testing.T) {
 	c := metal(t)
 	h := c.host()
-	ext6 := h.Spec.ExternalIPv6
+	ext6 := h.ExternalIPv6()
 	if ext6 == "" {
-		t.Fatalf("no spec.externalIPv6 detected on %s (the machine has a global IPv6 address): %s", metalHost, c.journal(20))
+		t.Fatalf("no externalIPv6 found on %s (the machine has a global IPv6 address): %s", metalHost, c.journal(20))
 	}
 	if h.Status.Network.SiloSubnetIPv6 == "" {
 		t.Fatalf("no silo IPv6 subnet on %s", metalHost)

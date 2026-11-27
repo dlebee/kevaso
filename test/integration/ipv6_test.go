@@ -4,13 +4,17 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/builtin/kni"
+	"kevaso.com/core/internal/controlplane"
 	"kevaso.com/core/internal/mesh"
 	"kevaso.com/core/internal/worker"
 )
@@ -230,4 +234,53 @@ func TestIPv6AddressesAndFamilies(t *testing.T) {
 		}
 		return true, ""
 	})
+}
+
+// Wave 2: a worker reports the global IPv6 address it found in its Host's status, as the host
+// itself (a worker writes no spec), and that is the host's externalIPv6 while spec.externalIPv6 is
+// empty; a set spec.externalIPv6 wins; an address that isn't a global one is dropped, the rest of
+// the report written.
+func TestWorkerReportsItsIPv6(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	dir, _ := os.MkdirTemp("/tmp", "kvi")
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	cp, err := controlplane.Start(ctx, controlplane.Config{Create: true, ClusterName: "it", HostName: "cp-1", InternalIP: "127.0.0.1",
+		DataDir: filepath.Join(dir, "cp"), Listen: "127.0.0.1:0", AdminSocket: filepath.Join(dir, "a.sock"), Heartbeat: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cancel(); _ = cp.Wait() })
+	admin := client.NewUnix(filepath.Join(dir, "a.sock"))
+	if err := admin.Create(ctx, &v1.Host{TypeMeta: tm("Host"), ObjectMeta: meta.ObjectMeta{Name: "w1"},
+		Spec: v1.HostSpec{ExternalIP: "203.0.113.5", Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "docker"}}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	w1 := hostClient(t, ctx, admin, cp, "w1")
+	found := "2001:db8::5"
+	cfg := worker.Config{HostName: "w1", Log: t.Logf, DetectIPv6: func(context.Context) string { return found }}
+	states := map[string]v1.RuntimeStatus{"docker": {State: "Ready"}}
+	check := func(what, want string) {
+		t.Helper()
+		if _, err := worker.UpdateHost(ctx, w1, cfg, states, nil); err != nil {
+			t.Fatalf("%s: the worker's report: %v", what, err)
+		}
+		var h v1.Host
+		if err := admin.Get(ctx, "Host", "", "w1", &h); err != nil {
+			t.Fatal(err)
+		}
+		if h.ExternalIPv6() != want || h.Status.Runtimes["docker"].State != "Ready" {
+			t.Fatalf("%s: externalIPv6 %q (status %q), runtimes %v; want %q", what, h.ExternalIPv6(), h.Status.Network.ExternalIPv6, h.Status.Runtimes, want)
+		}
+	}
+	check("found", "2001:db8::5")
+	found = "fd00::5"
+	check("a unique local address is no external one", "")
+	found = ""
+	check("none found: IPv4 only", "")
+	found = "2001:db8::5"
+	if err := editHost(ctx, t, admin, "w1", func(h *v1.Host) { h.Spec.ExternalIPv6 = "2001:db8::99" }); err != nil {
+		t.Fatal(err)
+	}
+	check("the spec's wins", "2001:db8::99")
 }

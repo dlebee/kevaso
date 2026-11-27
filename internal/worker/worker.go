@@ -236,7 +236,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 			snap[k] = v
 		}
 		mu.Unlock()
-		h, err := updateHost(ctx, c, cfg, snap, nodes.MountClasses())
+		h, err := UpdateHost(ctx, c, cfg, snap, nodes.MountClasses())
 		if err != nil && ctx.Err() == nil {
 			cfg.Log("worker status: %v", err)
 		}
@@ -490,9 +490,10 @@ func upstreamCAFile(dir, extra string, internal []byte) (string, error) {
 	return path, nil
 }
 
-// updateHost makes sure the Host declares the worker component and reports its runtimes and
-// allocatable resources, retrying on conflicts with the control plane's own heartbeat.
-func updateHost(ctx context.Context, c *client.Client, cfg Config, states map[string]v1.RuntimeStatus, mountClasses []string) (*v1.Host, error) {
+// UpdateHost makes sure the Host declares the worker component and reports its runtimes,
+// allocatable resources, mount classes and the IPv6 address it found (cfg.DetectIPv6), retrying on
+// conflicts with the control plane's own heartbeat. It returns the Host as written.
+func UpdateHost(ctx context.Context, c *client.Client, cfg Config, states map[string]v1.RuntimeStatus, mountClasses []string) (*v1.Host, error) {
 	detected := ""
 	if cfg.DetectIPv6 != nil {
 		detected = cfg.DetectIPv6(ctx)
@@ -502,17 +503,13 @@ func updateHost(ctx context.Context, c *client.Client, cfg Config, states map[st
 		if err := c.Get(ctx, "Host", "", cfg.HostName, &h); err != nil {
 			return nil, err
 		}
-		// Its global IPv6 address, detected, where none is set (spec.externalIPv6 stays settable:
-		// one set is never replaced). None detected: the host is IPv4 only.
-		if h.Spec.ExternalIPv6 == "" && detected != "" {
-			h.Spec.ExternalIPv6 = detected
-			if err := c.Update(ctx, &h); err != nil {
-				if client.IsConflict(err) {
-					continue
-				}
-				return nil, err
+		// Its global IPv6 address as found now, in its status (a worker writes no spec): the
+		// host's externalIPv6 while spec.externalIPv6, which wins, is empty. None found: IPv4 only.
+		if cfg.DetectIPv6 != nil {
+			if detected != h.Status.Network.ExternalIPv6 {
+				cfg.Log("external IPv6 found: %q (was %q)", detected, h.Status.Network.ExternalIPv6)
 			}
-			cfg.Log("external IPv6 %s (detected)", detected)
+			h.Status.Network.ExternalIPv6 = detected
 		}
 		if h.Spec.Components.Worker == nil {
 			w := &v1.WorkerSpec{Labels: cfg.Labels}
