@@ -166,7 +166,7 @@ func TestIPv6Egress(t *testing.T) {
 		`iifname "kvbr0" ip6 saddr fd00:aa:bb:2::2 ip6 daddr ::/0 tcp dport 443 accept`,
 		`iifname "kvbr0" ip6 saddr fd00:aa:bb:2::2 ip6 daddr 2001:db8:9::/48 meta l4proto udp accept`,
 		`iifname "kvbr0" ip saddr 10.64.2.2 ip daddr 0.0.0.0/0 meta l4proto tcp accept`,
-		`iifname "kvbr0" ip6 daddr { ::1/128, fe80::/10, ff00::/8, ::/128, ::ffff:0:0/96, fc00::/7 } drop`,
+		`iifname "kvbr0" ip6 daddr { ::1/128, fe80::/10, ::/128, ff00::/8, ::ffff:0:0/96, fc00::/7 } drop`,
 		`iifname "kvbr0" ip6 daddr { 2001:db8:a::5, 2001:db8:e::10, fd00:aa:bb:2::1, 2001:db8:e::30 } drop`,
 		`ip6 saddr fd00:aa:bb:2::/64 oifname != "kvbr0" masquerade`,
 		`ip6 saddr fd00:aa:bb:2::/64 ip6 daddr fd00:aa:bb:2::/64 oifname "kvbr0" ct status dnat masquerade`)
