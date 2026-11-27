@@ -13,7 +13,7 @@ for linux and darwin (`make vet-tags`), so tagged code cannot rot, but compiling
 | `e2e` | Lima VMs on macOS, or a Linux machine with SSH access to its test machines | 20 | 1 |
 | `metal` | bare metal (test/e2e/METAL.md) | 10 | 0 |
 | `metal` | two bare-metal machines (test/e2e/METAL.md) | 48 | 0 |
-| `metal` | one bare-metal machine (test/e2e/METAL.md) | 31 | 0 |
+| `metal` | one bare-metal machine (test/e2e/METAL.md) | 32 | 0 |
 
 CI's `e2e` job (ubuntu-latest, KVM, no SSH to itself) runs the tests in `test/e2e/ci-expected.txt`, and
 fails when any of them reports SKIP (`hack/skipbudget`). Every other tagged test below skips there.
@@ -113,6 +113,7 @@ fails when any of them reports SKIP (`hack/skipbudget`). Every other tagged test
 | TestMetalImages | test/e2e/metal_images_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMetalIngress | test/e2e/metal_ingress_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMetalProbes | test/e2e/metal_ingress_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
+| TestMetalIPv6 | test/e2e/metal_ipv6_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMetalBridgeBinding | test/e2e/metal_k002_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMetalKvoadmResetLeavesForeign | test/e2e/metal_kvoadmreset_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
 | TestMetalModel | test/e2e/metal_model_test.go | one bare-metal machine (test/e2e/METAL.md) | skips |
