@@ -2,6 +2,7 @@ package cloudhypervisor
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -49,6 +50,29 @@ var Gateway = netip.MustParseAddr("10.64.0.1")
 func SetNetwork(p netip.Prefix) {
 	Network = p.Masked()
 	Gateway = Network.Addr().Next()
+}
+
+// SiloNet6 is the IPv6 address and default route of the silo whose IPv4 address is ip (the IPv6
+// effort), from a spec's Subnet6 and Gateway6: Subnet6 (an IPv6 /64) with ip's host part in
+// Network (10.64.3.17 in 10.64.3.0/24 is …:3::11, the rule of mesh.SiloIPv6), via Gateway6 (an
+// address of Subnet6). ok false, and the silo has IPv4 only, when they are empty or not that, or
+// ip isn't a silo address of Network.
+func SiloNet6(subnet6, gateway6 string, ip netip.Addr) (ip6, gw6 netip.Addr, ok bool) {
+	p, err := netip.ParsePrefix(subnet6)
+	g, gerr := netip.ParseAddr(gateway6)
+	if err != nil || gerr != nil || !p.Addr().Is6() || p.Addr().Is4In6() || p.Bits() != 64 || g.Zone() != "" ||
+		!p.Contains(g) || g == p.Masked().Addr() || !ip.Is4() || !Network.Contains(ip) || ip == Gateway {
+		return netip.Addr{}, netip.Addr{}, false
+	}
+	v4 := ip.As4()
+	host := binary.BigEndian.Uint32(v4[:]) & (1<<(32-Network.Bits()) - 1)
+	b := p.Masked().Addr().As16()
+	binary.BigEndian.PutUint32(b[12:16], host)
+	ip6 = netip.AddrFrom16(b)
+	if ip6 == g {
+		return netip.Addr{}, netip.Addr{}, false
+	}
+	return ip6, g, true
 }
 
 // short is a stable 10-hex-digit name for a silo: device names (TAP: 15 chars max), LVs, units.
@@ -193,16 +217,27 @@ func MetaData(id kri.ID, hostPub, hostName string) string {
 
 // NetworkConfig gives the guest its static address on the bridge, and the host's DNS on the
 // gateway, which answers private names (NAME.NAMESPACE.kevaso, or NAME in the same namespace).
-func NetworkConfig(mac string, ip netip.Addr, namespace string) string {
+// A valid ip6 and gw6 (SiloNet6) add the silo's IPv6 address (in its /64) and a default IPv6
+// route via gw6, static: router advertisements are not accepted, so nothing else configures it.
+// DNS stays on IPv4.
+func NetworkConfig(mac string, ip, ip6, gw6 netip.Addr, namespace string) string {
+	addrs := fmt.Sprintf("%s/%d", ip, Network.Bits())
+	routes := fmt.Sprintf("{ to: default, via: %s }", Gateway)
+	extra := ""
+	if ip6.IsValid() && gw6.IsValid() {
+		addrs += fmt.Sprintf(`, "%s/64"`, ip6)
+		routes += fmt.Sprintf(`, { to: "::/0", via: "%s" }`, gw6)
+		extra = "    accept-ra: false\n"
+	}
 	return fmt.Sprintf(`version: 2
 ethernets:
   nic0:
     match: { macaddress: "%s" }
     set-name: eth0
-    addresses: [%s/%d]
-    routes: [{ to: default, via: %s }]
-    nameservers: { addresses: [%s], search: [%s.kevaso, kevaso] }
-`, mac, ip, Network.Bits(), Gateway, Gateway, namespace)
+    addresses: [%s]
+    routes: [%s]
+%s    nameservers: { addresses: [%s], search: [%s.kevaso, kevaso] }
+`, mac, addrs, routes, extra, Gateway, namespace)
 }
 
 // serialLogMax is how large the guest's serial log may grow before it is kept as the previous

@@ -70,6 +70,11 @@ type state struct {
 	// their silos' state in the same Dir, so each one only ever takes its own.
 	Engine string `json:"engine,omitempty"`
 	IP     string `json:"ip"`
+	// IP6 and Gateway6 are its IPv6 address and default route (the IPv6 effort), from the spec's
+	// Subnet6 and Gateway6 (cloudhypervisor.SiloNet6) at its last Create; empty: IPv4 only. The
+	// worker binds the silo's port to ip6.
+	IP6      string `json:"ip6,omitempty"`
+	Gateway6 string `json:"gateway6,omitempty"`
 	// MAC is its veth peer's, fixed like a VM's (cloudhypervisor.MAC): the bridge binds its port
 	// to it (K-002). Empty in a state from before: a random one, as then.
 	MAC     string       `json:"mac,omitempty"`
@@ -350,31 +355,102 @@ func (r *Runtime) ensurePause(ctx context.Context, s state) error {
 }
 
 // wire puts a veth from the bridge into the pause container's network namespace, with the silo's
-// address. It's done again whenever the namespace is new (a new pause container, a host reboot).
+// address (and its IPv6 address, when it has one: wireIPv6). It's done again whenever
+// the namespace is new (a new pause container, a host reboot).
 func (r *Runtime) wire(ctx context.Context, s state, pid int) error {
 	n := NamesFor(s.ID)
 	p := strconv.Itoa(pid)
 	if out, err := r.cmd(ctx, nil, "nsenter", "-t", p, "-n", "ip", "-4", "-o", "addr", "show", "dev", "eth0"); err == nil && strings.Contains(string(out), " "+s.IP+"/") {
-		return nil // already wired
+		return r.wireIPv6(ctx, s, p) // already wired; the host may have had no IPv6 then
 	}
 	bits := strconv.Itoa(cloudhypervisor.Network.Bits())
 	steps := [][]string{
 		vethAdd(n, s.MAC),
 		{"ip", "link", "set", n.Peer, "netns", p},
 		{"nsenter", "-t", p, "-n", "ip", "link", "set", n.Peer, "name", "eth0"},
+	}
+	if _, on := ipv6Steps(s, p); on {
+		steps = append(steps, ipv6Sysctls(p, "eth0")...) // before eth0 is up: no router advertisement is taken
+	}
+	steps = append(steps, [][]string{
 		{"nsenter", "-t", p, "-n", "ip", "addr", "add", s.IP + "/" + bits, "dev", "eth0"},
 		{"nsenter", "-t", p, "-n", "ip", "link", "set", "lo", "up"},
 		{"nsenter", "-t", p, "-n", "ip", "link", "set", "eth0", "up"},
 		{"nsenter", "-t", p, "-n", "ip", "route", "add", "default", "via", cloudhypervisor.Gateway.String()},
 		{"ip", "link", "set", n.Veth, "master", cloudhypervisor.Bridge, "up"},
-	}
+	}...)
 	_, _ = r.cmd(ctx, nil, "ip", "link", "del", n.Veth) // an old one, from a namespace that's gone
 	for _, st := range steps {
 		if _, err := r.cmd(ctx, nil, st[0], st[1:]...); err != nil {
 			return err
 		}
 	}
+	return r.wireIPv6(ctx, s, p)
+}
+
+// ipv6Sysctls keep IPv6 in the silo's namespace static (the IPv6 effort): no router
+// advertisement is accepted and no address made from one, on dev and on any interface made later.
+// IPv6 itself is turned on (an engine may turn it off in a namespace it made). Only for a silo with
+// an IPv6 address: without one its namespace is left as it was before the IPv6 effort.
+func ipv6Sysctls(pid, dev string) [][]string {
+	var out [][]string
+	for _, c := range []string{"all", "default", dev} {
+		for _, kv := range []string{"accept_ra=0", "autoconf=0", "disable_ipv6=0"} {
+			out = append(out, []string{"nsenter", "-t", pid, "-n", "sysctl", "-q", "-w", "net.ipv6.conf." + c + "." + kv})
+		}
+	}
+	return out
+}
+
+// wireIPv6 gives eth0 the silo's IPv6 address (in its /64, no duplicate address detection: the
+// bridge drops its unspecified-source probes anyway) and a default IPv6 route via its gateway, when
+// it has them and the namespace doesn't yet. A silo without IPv6: nothing.
+func (r *Runtime) wireIPv6(ctx context.Context, s state, p string) error {
+	steps, ok := ipv6Steps(s, p)
+	if !ok {
+		return nil
+	}
+	if out, err := r.cmd(ctx, nil, "nsenter", "-t", p, "-n", "ip", "-6", "-o", "addr", "show", "dev", "eth0"); err == nil && strings.Contains(string(out), " "+s.IP6+"/64 ") {
+		if out, err := r.cmd(ctx, nil, "nsenter", "-t", p, "-n", "ip", "-6", "route", "show", "default"); err == nil && strings.Contains(string(out), "via "+s.Gateway6+" ") {
+			return nil // already wired
+		}
+	}
+	for _, st := range steps {
+		if _, err := r.cmd(ctx, nil, st[0], st[1:]...); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// ipv6Steps are the commands that give the namespace of pid p the silo's IPv6 address and route
+// (ok false: it has none). Each may run again: the address is replaced, the route too.
+func ipv6Steps(s state, p string) ([][]string, bool) {
+	ip6, err := netip.ParseAddr(s.IP6)
+	gw6, gerr := netip.ParseAddr(s.Gateway6)
+	if err != nil || gerr != nil {
+		return nil, false
+	}
+	steps := ipv6Sysctls(p, "eth0")
+	steps = append(steps,
+		[]string{"nsenter", "-t", p, "-n", "ip", "-6", "addr", "replace", ip6.String() + "/64", "dev", "eth0", "nodad"},
+		[]string{"nsenter", "-t", p, "-n", "ip", "-6", "route", "replace", "default", "via", gw6.String(), "dev", "eth0"},
+	)
+	return steps, true
+}
+
+// net6 sets s's IPv6 address and route from spec (cloudhypervisor.SiloNet6); changed says
+// whether they differ from what s had.
+func net6(s *state, spec kri.Spec) (changed bool) {
+	ip6, gw6 := "", ""
+	if ip, err := netip.ParseAddr(s.IP); err == nil {
+		if a, g, ok := cloudhypervisor.SiloNet6(spec.Subnet6, spec.Gateway6, ip); ok {
+			ip6, gw6 = a.String(), g.String()
+		}
+	}
+	changed = s.IP6 != ip6 || s.Gateway6 != gw6
+	s.IP6, s.Gateway6 = ip6, gw6
+	return changed
 }
 
 // ── lifecycle ────────────────────────────────────────────────────────────────
@@ -398,10 +474,15 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 		}
 		if err == nil {
 			s = state{ID: spec.ID, IP: ip.String(), MAC: cloudhypervisor.MAC(spec.ID), Image: spec.Image, Command: spec.Command, Volumes: spec.Volumes, CPU: spec.CPU, Memory: spec.Memory}
+			net6(&s, spec)
 			err = r.save(s)
 		}
 		cloudhypervisor.IPMu.Unlock()
 		if err != nil {
+			return err
+		}
+	} else if net6(&s, spec) { // a silo made before its host had IPv6 (or since without): its namespace follows
+		if err := r.save(s); err != nil {
 			return err
 		}
 	}
@@ -794,7 +875,7 @@ func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 			// it runs). A stop and start wires it again.
 			return kri.Status{State: kri.Running, Address: s.IP, Message: "its pause container " + n.Pause + " doesn't run: its network is gone"}, nil
 		}
-		return kri.Status{State: kri.Running, Address: s.IP}, nil
+		return kri.Status{State: kri.Running, Address: s.IP, Address6: s.IP6}, nil
 	}
 	if is, ipid, err := r.inspect(ctx, n.Init); err != nil {
 		return kri.Status{}, err
