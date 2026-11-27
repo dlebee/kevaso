@@ -32,8 +32,10 @@ so it proves what Lima (no real external IP) and Linode (no KVM) can't.
   which is the only kind the reset will remove. Volume tests run on it; nothing is skipped.
 - **One interface with the external IPv4 on it, plus IPv6, no internal IP.** Leave
   `KEVASO_METAL_INTERNAL_IP` unset: TestMetalModel then checks that an `[internal]` port is
-  refused with the reason. IPv6 isn't used by Kevaso or tested; ports opened on the external IP
-  are IPv4 only, so a scan over IPv6 finds only sshd.
+  refused with the reason. Kevaso finds the machine's global IPv6 address (spec.externalIPv6):
+  HostPort ports answer on it too, for silos with an IPv6 address (TestMetalIPv6); nothing else
+  is opened over IPv6. Setting `KEVASO_METAL_IPV6_EXTRA` to another address of the machine's
+  /64 adds TestMetalIPv6's kept IPv6 IP.
 - **Only sshd listens, no Docker, ufw inactive:** a fresh baseline will be recorded. With ufw
   inactive nothing on the machine filters the suite's ports or DNS on 53.
 - **ED25519 host key fingerprint, as read on the provider's console:**
@@ -132,7 +134,7 @@ go test -tags metal -run '^TestMetalModel$' -v -count=1 -timeout 90m ./test/e2e/
 
 The tests are `TestMetalModel`, `TestMetalNames`, `TestMetalImages`, `TestMetalRegistry`,
 `TestMetalSecrets`, `TestMetalSecretKeys`, `TestMetalIngress`, `TestMetalProbes`, `TestMetalLeases`, `TestMetalPanes`,
-`TestMetalFence`, `TestMetalVolumes`, `TestMetalPodman` and `TestMetalReboot`. Each one can run
+`TestMetalFence`, `TestMetalVolumes`, `TestMetalIPv6`, `TestMetalPodman` and `TestMetalReboot`. Each one can run
 alone. Files run in name order, so podman and the reboot (in `metal_zlast_test.go`) come last.
 The reboot takes the machine down and waits up to 15 minutes for it to come back with the same
 pinned host key.
@@ -358,6 +360,7 @@ machine, 6443 (the API, mutual TLS) is open from the first test to the final res
 | TestMetalVolumes | nothing | |
 | TestMetalPodman | 18130 | echo, in a podman silo |
 | TestMetalReboot | 18140, 18141, before and after the machine itself goes down and up | echo |
+| TestMetalIPv6 | 18150 (IPv4 and IPv6); 18151 on `KEVASO_METAL_IPV6_EXTRA` when set (18151 stays closed on the worker's own addresses) | an echo of the silo's name, port and the client's address |
 
 Silos reach the internet too: Docker Hub, cloud-images.ubuntu.com, GitHub (the Cloud Hypervisor
 release), the Ubuntu archive and, with `KEVASO_METAL_HOSTNAME` set, Let's Encrypt staging.
