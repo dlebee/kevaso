@@ -185,6 +185,9 @@ type Port struct {
 // LoadBalancerStatus is where the load balancer is.
 type LoadBalancerStatus struct {
 	Address string `json:"address"`
+	// AddressIPv6 is the balancer's IPv6 address too, when it answers on IPv6 beside Address (a
+	// Linode NodeBalancer does); empty: IPv4 only.
+	AddressIPv6 string `json:"addressIPv6,omitempty"`
 	// SourceRanges are where the load balancer connects to the hosts from (NodePorts classes): the
 	// host only forwards node ports from these.
 	SourceRanges []string `json:"sourceRanges,omitempty"`
@@ -204,6 +207,9 @@ type AddressReservation struct {
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
 	Region    string `json:"region"` // where to reserve it
+	// Family is the address's: IPv4 ("", the default) or IPv6 (only asked of a plugin declaring
+	// Networking.ProviderIPv6).
+	Family string `json:"family,omitempty"`
 	// Address asks for this one (an address you already own at the provider); empty: any.
 	Address string `json:"address,omitempty"`
 	// Annotations are the IP's in the plugin's domain, untouched.

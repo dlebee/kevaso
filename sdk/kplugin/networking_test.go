@@ -40,6 +40,31 @@ func TestNetworkingRoundTrip(t *testing.T) {
 	if err != nil || info.Networking == nil {
 		t.Fatalf("declared it does nothing, got %+v %v", info.Networking, err)
 	}
+	// The IPv6 capability and the reason a provider can't float IPv6 cross the wire.
+	for _, n := range []kplugin.Networking{{ProviderIPs: true, ProviderIPv6: true}, {ProviderIPs: true, NoProviderIPv6: "a /64 moves as one unit"}} {
+		h := kplugintest.New()
+		h.Networking = &n
+		info, err = serve(t, h).Info(context.Background())
+		if err != nil || !reflect.DeepEqual(*info.Networking, n) {
+			t.Fatalf("over the wire\n got %+v %v\nwant %+v", info.Networking, err, n)
+		}
+	}
+}
+
+// A reservation says its family: a provider floating IPv6 is asked for IPv6 and gives one.
+func TestAReservationCarriesItsFamily(t *testing.T) {
+	f := kplugintest.New()
+	f.Networking = kplugintest.FakeNetworking()
+	f.Networking.ProviderIPv6 = true
+	c := serve(t, f)
+	st, err := c.ReserveAddress(context.Background(), kplugin.AddressReservation{Class: kplugintest.ClassIP, ID: "u6", Region: "ca-central", Family: "IPv6"})
+	if err != nil || st.Address != "2001:db8:f::64" {
+		t.Fatalf("IPv6 reservation: %+v %v", st, err)
+	}
+	st, err = c.ReserveAddress(context.Background(), kplugin.AddressReservation{Class: kplugintest.ClassIP, ID: "u4", Region: "ca-central"})
+	if err != nil || st.Address != "203.0.113.100" {
+		t.Fatalf("IPv4 reservation: %+v %v", st, err)
+	}
 }
 
 // oldIdentity is a plugin built against an sdk of wire revision 1: its PluginInfo has no field 9.
@@ -80,6 +105,9 @@ func TestNetworkingCheck(t *testing.T) {
 		{"nothing", kplugin.Networking{}, ""},
 		{"reach", kplugin.Networking{Reach: "zone"}, `reach "zone"`},
 		{"front without IPs", kplugin.Networking{FrontWithIP: true, LoadBalancers: true}, "frontWithIP needs both"},
+		{"IPv6 without IPs", kplugin.Networking{ProviderIPv6: true}, "providerIPv6 needs providerIPs"},
+		{"IPv6 and a reason it can't", kplugin.Networking{ProviderIPs: true, ProviderIPv6: true, NoProviderIPv6: "x"}, "noProviderIPv6 is the reason it can't"},
+		{"a reason it can't float IPv6", kplugin.Networking{ProviderIPs: true, NoProviderIPv6: "a /64 moves as one unit"}, ""},
 		{"region twice", kplugin.Networking{Regions: []string{"a", "a"}}, `region "a" empty or twice`},
 		{"key with domain", kplugin.Networking{Annotations: []kplugin.Annotation{{Key: "linode.kevaso.com/x"}}}, "without the domain"},
 		{"key twice", kplugin.Networking{Annotations: []kplugin.Annotation{{Key: "a"}, {Key: "a"}}}, "declared twice"},

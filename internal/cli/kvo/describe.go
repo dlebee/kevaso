@@ -593,6 +593,9 @@ func describeWith(w io.Writer, obj meta.Object, env *netEnv) error {
 		kv(0, "Cluster IP", dash(o.Status.ClusterIP))
 		if o.Spec.Type == v1.ServiceLoadBalancer {
 			kv(0, "Load-balancer IP", dash(o.Status.LoadBalancerIP))
+			if o.Status.LoadBalancerIPv6 != "" {
+				kv(0, "Load-balancer IPv6", o.Status.LoadBalancerIPv6)
+			}
 		}
 		nps := map[string]int{}
 		for _, np := range o.Status.NodePorts {

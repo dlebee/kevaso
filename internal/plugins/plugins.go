@@ -235,6 +235,9 @@ func describe(i kplugin.Info) string {
 		if n.ProviderIPs {
 			can = append(can, "provider IPs")
 		}
+		if n.ProviderIPv6 {
+			can = append(can, "provider IPv6 IPs")
+		}
 		if n.LoadBalancers {
 			can = append(can, "load balancers")
 		}

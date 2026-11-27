@@ -22,7 +22,7 @@ import (
 // The IPv6 effort, wave 1 (the API and addresses), in a real control plane: the cluster's ULA
 // /48 gives each host its silo /64; a host takes an externalIPv6 and IPv6 extra addresses; one
 // IP is one address of one family, a Host IP's its address's (a mismatch refused, either way it
-// comes); a Static set is one family; a Provider IPv6 IP waits for its provider; a grant takes
+// comes); a Static set is one family; a Provider IPv6 IP is refused from a provider that can't float one; a grant takes
 // IPv6 ranges but never the cluster's own; egress.source sets the address out of its own family.
 
 // editHost changes w1's spec, again on a conflict (its heartbeats write it too).
@@ -109,16 +109,13 @@ func TestIPv6AddressesAndFamilies(t *testing.T) {
 	x.Spec.Family = ""
 	refusedWith(t, "changing an IP's family", admin.Update(ctx, x), "spec can't change")
 
-	// A Provider IPv6 IP is accepted, and waits for a provider that can reserve one.
-	if err := mkIP("edge6", v1.IPSpec{Type: v1.IPTypeProvider, Provider: "fake", Region: "ca-central", Family: v1.FamilyIPv6}); err != nil {
-		t.Fatal(err)
-	}
-	eventually("mail6 reserved on w1, edge6 waiting with the reason", func() (bool, string) {
-		m, e := getIP("mail6"), getIP("edge6")
-		c := meta.FindCondition(e.Status.Conditions, "Reserved")
-		return m.Status.Address == "2001:db8::21" && m.Status.Host == "w1" &&
-				c != nil && c.Status == meta.ConditionFalse && c.Reason == "Waiting" && strings.Contains(c.Message, "can't reserve IPv6 addresses yet"),
-			fmt.Sprintf("mail6 %+v; edge6 %+v", m.Status, c)
+	// A Provider IPv6 IP is refused at apply: the fake declares no IPv6 Provider IPs (like linode).
+	refusedWith(t, "a Provider IPv6 IP from a provider that can't float one",
+		mkIP("edge6", v1.IPSpec{Type: v1.IPTypeProvider, Provider: "fake", Region: "ca-central", Family: v1.FamilyIPv6}),
+		"fake can't float an IPv6 address: it doesn't declare providerIPv6; use an IPv4 Provider IP")
+	eventually("mail6 reserved on w1", func() (bool, string) {
+		m := getIP("mail6")
+		return m.Status.Address == "2001:db8::21" && m.Status.Host == "w1", fmt.Sprintf("mail6 %+v", m.Status)
 	})
 
 	// One family per set.
@@ -132,7 +129,9 @@ func TestIPv6AddressesAndFamilies(t *testing.T) {
 	if err := set("six", v1.IPSetSpec{Type: v1.IPSetStatic, Members: []v1.IPSetMember{{IP: "mail6"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := set("dyn6", v1.IPSetSpec{Type: v1.IPSetDynamic, Provider: "fake", Region: "ca-central", Max: 2, Family: v1.FamilyIPv6}); err != nil {
+	refusedWith(t, "a Dynamic IPv6 set from a provider that can't float one",
+		set("dyn6", v1.IPSetSpec{Type: v1.IPSetDynamic, Provider: "fake", Region: "ca-central", Max: 2, Family: v1.FamilyIPv6}), "fake can't float an IPv6 address")
+	if err := set("dyn4", v1.IPSetSpec{Type: v1.IPSetDynamic, Provider: "fake", Region: "ca-central", Max: 2}); err != nil {
 		t.Fatal(err)
 	}
 

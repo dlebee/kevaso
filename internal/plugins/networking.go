@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	v1 "kevaso.com/core/api/v1"
 	"kevaso.com/core/sdk/kplugin"
 )
 
@@ -21,8 +22,9 @@ type Networking interface {
 	ValidateServiceAnnotations(provider string, annotations map[string]string) error
 	// ValidateIPAnnotations is the same for an IP of type Provider.
 	ValidateIPAnnotations(provider string, annotations map[string]string) error
-	// ValidateProviderIP checks that provider makes IPs of type Provider in region.
-	ValidateProviderIP(provider, region string) error
+	// ValidateProviderIP checks that provider makes IPs of type Provider in region, of family
+	// (IPv4 or "", or IPv6 only where the provider declares it can float one).
+	ValidateProviderIP(provider, region, family string) error
 	// ValidateLoadBalancer checks that provider makes balancers for services of type LoadBalancer.
 	ValidateLoadBalancer(provider string) error
 	// CanFrontWithIP says whether a kept Provider IP can front provider's balancers
@@ -86,8 +88,8 @@ func (s Static) ValidateIPAnnotations(provider string, a map[string]string) erro
 }
 
 // ValidateProviderIP implements Networking.
-func (s Static) ValidateProviderIP(provider, region string) error {
-	return validateProviderIP(s.declared, provider, region)
+func (s Static) ValidateProviderIP(provider, region, family string) error {
+	return validateProviderIP(s.declared, provider, region, family)
 }
 
 // ValidateLoadBalancer implements Networking.
@@ -149,8 +151,8 @@ func (r *Registry) ValidateIPAnnotations(provider string, a map[string]string) e
 }
 
 // ValidateProviderIP implements Networking.
-func (r *Registry) ValidateProviderIP(provider, region string) error {
-	return validateProviderIP(r.declared, provider, region)
+func (r *Registry) ValidateProviderIP(provider, region, family string) error {
+	return validateProviderIP(r.declared, provider, region, family)
 }
 
 // ValidateLoadBalancer implements Networking.
@@ -199,7 +201,7 @@ func undeclared(provider, what string) error {
 	return fmt.Errorf("provider %s declares nothing about networking (built against an sdk before wire revision 2), so Kevaso can't tell whether it makes %s: upgrade the plugin", provider, what)
 }
 
-func validateProviderIP(get lookup, provider, region string) error {
+func validateProviderIP(get lookup, provider, region, family string) error {
 	n, err := get(provider)
 	if err != nil {
 		return err
@@ -213,8 +215,19 @@ func validateProviderIP(get lookup, provider, region string) error {
 		return fmt.Errorf("provider %s: an IP of type Provider needs a region%s", provider, among(n.Regions))
 	case len(n.Regions) > 0 && !contains(n.Regions, region):
 		return fmt.Errorf("provider %s doesn't serve region %s%s", provider, region, among(n.Regions))
+	case family == v1.FamilyIPv6 && !n.ProviderIPv6:
+		return NoProviderIPv6(provider, n.NoProviderIPv6)
 	}
 	return nil
+}
+
+// NoProviderIPv6 is the refusal of an IPv6 Provider IP from a provider that can't float one,
+// with its reason (its declared NoProviderIPv6) and the ways that work.
+func NoProviderIPv6(provider, why string) error {
+	if why == "" {
+		why = "it doesn't declare providerIPv6"
+	}
+	return fmt.Errorf("%s can't float an IPv6 address: %s; use an IPv4 Provider IP (family: IPv4), the worker's own IPv6 (a HostPort service on worker), or a host address (an IP of type Host, family: IPv6)", provider, why)
 }
 
 func among(regions []string) string {

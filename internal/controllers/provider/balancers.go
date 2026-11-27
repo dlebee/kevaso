@@ -159,7 +159,7 @@ func (c *Balancers) providerHosts(plugin string) ([]kplugin.HostInfo, bool) {
 // outcome is one balancer's: its address, or why it has none yet.
 type outcome struct {
 	service, provider string
-	addr              string
+	addr, addr6       string
 	ranges            []string
 	announce          bool
 	ready             bool
@@ -275,7 +275,7 @@ func (c *Balancers) Reconcile(ctx context.Context, k engine.Key) (engine.Result,
 		if s.DeletionTimestamp == nil && meta.FindCondition(s.Status.Conditions, "LoadBalancer") != nil && !s.Spec.LoadBalanced() {
 			return engine.Result{}, updateSiloStatus(ctx, c.Client, s, func(cur *v1.Silo) {
 				scheduler.SetLoadBalancerIP(cur, &cur.Status.Service, "")
-				cur.Status.Service.SourceRanges, cur.Status.Service.Announce = nil, false
+				cur.Status.Service.LoadBalancerIPv6, cur.Status.Service.SourceRanges, cur.Status.Service.Announce = "", nil, false
 				cur.Status.Conditions = slices.DeleteFunc(cur.Status.Conditions, func(c meta.Condition) bool { return c.Type == "LoadBalancer" })
 			})
 		}
@@ -384,7 +384,7 @@ func (c *Balancers) siloService(ctx context.Context, s *v1.Silo, sv v1.SiloServi
 	if !exists {
 		return wait(reason, why, 0)
 	}
-	out.addr, out.ranges, out.announce = st.Address, st.SourceRanges, pc.Announce
+	out.addr, out.addr6, out.ranges, out.announce = st.Address, st.AddressIPv6, st.SourceRanges, pc.Announce
 	if out.addr == "" {
 		out.addr = lb.Address
 	}
@@ -456,13 +456,13 @@ func (c *Balancers) siloPorts(s *v1.Silo, name string, sv v1.SiloService, p *plu
 // on loadBalancerIP and each load-balanced port in one write, the balancers' source ranges, and
 // the LoadBalancer condition.
 func (c *Balancers) siloDone(ctx context.Context, s *v1.Silo, outs []outcome) error {
-	addr, announce := "", false
+	addr, addr6, announce := "", "", false
 	var ranges []string
 	cond := meta.Condition{Type: "LoadBalancer", Status: meta.ConditionTrue, Reason: "Ready", ObservedGeneration: s.Generation}
 	var msgs []string
 	for _, o := range outs {
 		if o.addr != "" && addr == "" {
-			addr, announce = o.addr, o.announce
+			addr, addr6, announce = o.addr, o.addr6, o.announce
 		}
 		for _, r := range o.ranges {
 			if !slices.Contains(ranges, r) {
@@ -479,6 +479,7 @@ func (c *Balancers) siloDone(ctx context.Context, s *v1.Silo, outs []outcome) er
 		// The ports' addresses with it, in the same write: a reader in between would see an
 		// address with no port on it.
 		scheduler.SetLoadBalancerIP(cur, &cur.Status.Service, addr)
+		cur.Status.Service.LoadBalancerIPv6 = addr6
 		cur.Status.Service.SourceRanges, cur.Status.Service.Announce = ranges, announce
 		meta.SetCondition(&cur.Status.Conditions, cond, c.now())
 	})
@@ -602,10 +603,10 @@ func (c ServiceBalancers) Reconcile(ctx context.Context, k engine.Key) (engine.R
 			cond.Status, cond.Reason = meta.ConditionFalse, out.reason
 		}
 		if made || out.addr != "" {
-			ss.LoadBalancerIP, ss.SourceRanges = out.addr, out.ranges
+			ss.LoadBalancerIP, ss.LoadBalancerIPv6, ss.SourceRanges = out.addr, out.addr6, out.ranges
 			ss.IP = svc.Spec.LoadBalancerIP()
 		} else {
-			ss.LoadBalancerIP, ss.IP, ss.SourceRanges = "", "", nil
+			ss.LoadBalancerIP, ss.LoadBalancerIPv6, ss.IP, ss.SourceRanges = "", "", "", nil
 		}
 		meta.SetCondition(&ss.Conditions, cond, c.now())
 	})
@@ -683,7 +684,7 @@ func (c ServiceBalancers) service(ctx context.Context, svc *v1.Service, finalize
 	if !exists {
 		return wait(reason, why, 0)
 	}
-	out.addr, out.ranges = st.Address, st.SourceRanges
+	out.addr, out.addr6, out.ranges = st.Address, st.AddressIPv6, st.SourceRanges
 	if out.addr == "" {
 		out.addr = lb.Address
 	}

@@ -251,7 +251,7 @@ func (c *Controller) Reconcile(ctx context.Context, k engine.Key) (engine.Result
 		hadIP, hadPorts := cur.Status.ClusterIP, cur.Status.NodePorts
 		cur.Status.ClusterIP, cur.Status.Name, cur.Status.Endpoints, cur.Status.Held, cur.Status.NodePorts = ip, svc.Name+"."+svc.Namespace+".kevaso", eps, held, nps
 		if svc.Spec.Type != v1.ServiceLoadBalancer {
-			cur.Status.LoadBalancerIP, cur.Status.IP, cur.Status.SourceRanges = "", "", nil
+			cur.Status.LoadBalancerIP, cur.Status.LoadBalancerIPv6, cur.Status.IP, cur.Status.SourceRanges = "", "", "", nil
 		}
 		meta.SetCondition(&cur.Status.Conditions, cond, c.now())
 		if jsonOf(cur.Status) == before {

@@ -7,12 +7,16 @@ import (
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/sdk/kplugin/kplugintest"
 )
 
-// The IPv6 effort: a Provider IP of family IPv6 is accepted and waits, saying why, until its
-// provider can reserve IPv6 (wave 3); a Host IP of an IPv6 host address takes it now.
-func TestAProviderIPv6WaitsAndAHostIPv6IsReserved(t *testing.T) {
-	e := newSetEnv(t)
+// The IPv6 effort: a Provider IP of family IPv6 from a provider that doesn't declare providerIPv6
+// is refused at apply; one that got in anyway (its provider stopped declaring it) is never
+// reserved as IPv4 and says why, with the ways that work. A Host IP of an IPv6 host address takes it.
+func TestAProviderIPv6WithoutTheCapabilityIsNotReservedAndAHostIPv6Is(t *testing.T) {
+	n := kplugintest.FakeNetworking()
+	n.NoProviderIPv6 = "a /64 moves as one unit"
+	e := newSetEnvWith(t, n)
 	e.must(e.c.Create(e.ctx, &v1.Host{TypeMeta: tm("Host"), ObjectMeta: meta.ObjectMeta{Name: "metal-1"},
 		Spec: v1.HostSpec{InternalIP: "10.0.0.5", Addresses: []v1.HostAddress{{Name: "mail6", Kind: v1.NetworkExternal, Address: "2001:db8::22"}},
 			Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}}}))
@@ -20,13 +24,33 @@ func TestAProviderIPv6WaitsAndAHostIPv6IsReserved(t *testing.T) {
 		Spec: v1.IPSpec{Type: v1.IPTypeProvider, Provider: "fake", Region: "ca-central", Family: v1.FamilyIPv6}}))
 	e.must(e.c.Create(e.ctx, &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: "mail6", Namespace: "d"},
 		Spec: v1.IPSpec{Type: v1.IPTypeHost, HostAddress: "mail6", Family: v1.FamilyIPv6}}))
-	e.eventually("the Provider IPv6 IP waits for its provider, and the Host one has its address", func() (bool, string) {
+	e.eventually("the Provider IPv6 IP says the provider can't float it, and the Host one has its address", func() (bool, string) {
 		p, _ := e.ip("edge6")
 		h, _ := e.ip("mail6")
 		r := meta.FindCondition(p.Status.Conditions, "Reserved")
-		ok := r != nil && r.Status == meta.ConditionFalse && r.Reason == "Waiting" && strings.Contains(r.Message, "can't reserve IPv6 addresses yet") &&
+		ok := r != nil && r.Status == meta.ConditionFalse && r.Reason == "NoIPv6" &&
+			strings.Contains(r.Message, "fake can't float an IPv6 address: a /64 moves as one unit; use an IPv4 Provider IP") &&
 			p.Status.Address == "" && h.Status.Address == "2001:db8::22" && h.Status.Host == "metal-1"
 		return ok, fmt.Sprintf("edge6 %v; mail6 %+v", r, h.Status)
+	})
+	for _, c := range e.fake.CallLog() {
+		if strings.HasPrefix(c, "reserve-address") {
+			t.Errorf("the plugin was asked to reserve an address (%s): it can't float IPv6, so it must not be asked", c)
+		}
+	}
+}
+
+// A provider declaring providerIPv6 is asked for an IPv6 address (the reservation says the
+// family), and the IP gets it.
+func TestAProviderIPv6IsReservedByAProviderThatFloatsIPv6(t *testing.T) {
+	n := kplugintest.FakeNetworking()
+	n.ProviderIPv6 = true
+	e := newSetEnvWith(t, n)
+	e.must(e.c.Create(e.ctx, &v1.IP{TypeMeta: tm("IP"), ObjectMeta: meta.ObjectMeta{Name: "edge6", Namespace: "d"},
+		Spec: v1.IPSpec{Type: v1.IPTypeProvider, Provider: "fake", Region: "ca-central", Family: v1.FamilyIPv6}}))
+	e.eventually("edge6 reserved, an IPv6 address", func() (bool, string) {
+		p, _ := e.ip("edge6")
+		return v1.FamilyOf(p.Status.Address) == v1.FamilyIPv6, fmt.Sprintf("%+v", p.Status)
 	})
 }
 

@@ -25,9 +25,9 @@ func TestProvidersAreAskedAtAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv.SetNetworking(plugins.Static{
-		"linode": {ProviderIPs: true, LoadBalancers: true, Regions: []string{"us-ord"},
+		"linode": {ProviderIPs: true, LoadBalancers: true, Regions: []string{"us-ord"}, NoProviderIPv6: "a /64 moves as one unit",
 			Annotations: []kplugin.Annotation{{Key: "nodebalancer", Type: "string"}, {Key: "tag", Type: "string", On: []string{kplugin.OnIP}}}},
-		"azure": {ProviderIPs: true, LoadBalancers: true, FrontWithIP: true},
+		"azure": {ProviderIPs: true, ProviderIPv6: true, LoadBalancers: true, FrontWithIP: true},
 		"dns":   {},
 	})
 	c, done := srv.InProcess()
@@ -78,4 +78,23 @@ func TestProvidersAreAskedAtAdmission(t *testing.T) {
 	set := &v1.SiloSet{TypeMeta: tm("SiloSet"), ObjectMeta: meta.ObjectMeta{Name: "pool", Namespace: "d"},
 		Spec: v1.SiloSetSpec{Instances: 1, Template: v1.SiloTemplate{SiloSpec: silo("pool", "gcp", "", nil).Spec}}}
 	refused("a template's balancer of a provider not installed", set, "template.services[0].loadBalancer")
+
+	// IPv6 Provider IPs only from a provider that floats them (the IPv6 effort, wave 3).
+	ip6 := func(name, provider string) *v1.IP {
+		x := ip(name, provider, "us-ord", nil)
+		x.Spec.Family = v1.FamilyIPv6
+		return x
+	}
+	refused("an IPv6 Provider IP on linode", ip6("edge6", "linode"),
+		"IP edge6: spec: linode can't float an IPv6 address: a /64 moves as one unit; use an IPv4 Provider IP (family: IPv4), the worker's own IPv6 (a HostPort service on worker), or a host address")
+	admitted("an IPv6 Provider IP on a provider that floats IPv6", ip6("az6", "azure"))
+	dyn := func(name, provider string) *v1.IPSet {
+		return &v1.IPSet{TypeMeta: tm("IPSet"), ObjectMeta: meta.ObjectMeta{Name: name, Namespace: "d"},
+			Spec: v1.IPSetSpec{Type: v1.IPSetDynamic, Provider: provider, Region: "us-ord", Max: 2, Family: v1.FamilyIPv6}}
+	}
+	refused("a Dynamic IPv6 set on linode", dyn("pool6", "linode"), "IPSet pool6: spec: linode can't float an IPv6 address")
+	admitted("a Dynamic IPv6 set on a provider that floats IPv6", dyn("az-pool6", "azure"))
+	four := dyn("pool4", "linode")
+	four.Spec.Family = ""
+	admitted("a Dynamic IPv4 set on linode", four)
 }

@@ -119,7 +119,7 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloS
 	}
 	if s.Spec.LoadBalanced() {
 		cur := s.Status.Service // the balancer writes the address; kept here
-		st.LoadBalancerIP, st.SourceRanges, st.Announce = cur.LoadBalancerIP, cur.SourceRanges, cur.Announce
+		st.LoadBalancerIP, st.LoadBalancerIPv6, st.SourceRanges, st.Announce = cur.LoadBalancerIP, cur.LoadBalancerIPv6, cur.SourceRanges, cur.Announce
 		if providerUsesNodePorts(env.Classes, balancerProvider(s)) {
 			np, err := nodePorts(s, h.Name, placed, env.Claimed[h.Name].NodePorts)
 			if err != nil {

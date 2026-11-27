@@ -198,14 +198,22 @@ func (s *Server) checkProviders(_ context.Context, t target, obj meta.Object) er
 			return balancer("spec.loadBalancer", o.Spec.LoadBalancer, o.Annotations)
 		}
 	case *v1.IP:
-		if o.Spec.Type != v1.IPTypeProvider {
+		if o.Spec.Type != v1.IPTypeProvider || o.DeletionTimestamp != nil { // a deleting IP is let go (its finalizer comes off)
 			return nil
 		}
-		if err := n.ValidateProviderIP(o.Spec.Provider, o.Spec.Region); err != nil {
+		if err := n.ValidateProviderIP(o.Spec.Provider, o.Spec.Region, o.Spec.FamilyOrDefault()); err != nil {
 			return refuse(fmt.Errorf("spec: %w", err))
 		}
 		if err := n.ValidateIPAnnotations(o.Spec.Provider, o.Annotations); err != nil {
 			return refuse(err)
+		}
+	case *v1.IPSet:
+		// A Dynamic set's IPs are Provider IPs of its family: an IPv6 set needs a provider that
+		// floats IPv6 addresses, or none of its IPs could ever be reserved.
+		if o.Spec.Type == v1.IPSetDynamic && v1.FamilyOrDefault(o.Spec.Family) == v1.FamilyIPv6 {
+			if err := n.ValidateProviderIP(o.Spec.Provider, o.Spec.Region, v1.FamilyIPv6); err != nil {
+				return refuse(fmt.Errorf("spec: %w", err))
+			}
 		}
 	}
 	return nil

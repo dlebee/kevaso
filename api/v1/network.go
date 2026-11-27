@@ -412,7 +412,10 @@ type SiloServiceStatus struct {
 	Ports []ServicePortStatus `json:"ports,omitempty"`
 	// LoadBalancerIP is the address of its loadBalancer ports (its IP's), when it has one.
 	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
-	EgressIP       string `json:"egressIP,omitempty"` // where its outgoing traffic comes from: the address out
+	// LoadBalancerIPv6 is its balancer's IPv6 address, when the balancer answers on IPv6 too (a
+	// Linode NodeBalancer); the silo still gets IPv4 from it.
+	LoadBalancerIPv6 string `json:"loadBalancerIPv6,omitempty"`
+	EgressIP         string `json:"egressIP,omitempty"` // where its outgoing traffic comes from: the address out
 	// EgressIPv6 is its address out over IPv6: its worker's externalIPv6, or an IPv6 IP named by
 	// egress.source (a source applies to its own family only). Empty: no IPv6 out on that worker.
 	EgressIPv6 string `json:"egressIPv6,omitempty"`
@@ -451,7 +454,7 @@ type NodePort struct {
 
 // Equal reports whether two service statuses are the same.
 func (a SiloServiceStatus) Equal(b SiloServiceStatus) bool {
-	if a.Name != b.Name || a.LoadBalancerIP != b.LoadBalancerIP || !slices.Equal(a.Ports, b.Ports) || a.EgressIP != b.EgressIP || a.EgressIPv6 != b.EgressIPv6 || a.EgressNote != b.EgressNote || a.IP != b.IP || a.Announce != b.Announce ||
+	if a.Name != b.Name || a.LoadBalancerIP != b.LoadBalancerIP || a.LoadBalancerIPv6 != b.LoadBalancerIPv6 || !slices.Equal(a.Ports, b.Ports) || a.EgressIP != b.EgressIP || a.EgressIPv6 != b.EgressIPv6 || a.EgressNote != b.EgressNote || a.IP != b.IP || a.Announce != b.Announce ||
 		len(a.NodePorts) != len(b.NodePorts) || len(a.SourceRanges) != len(b.SourceRanges) || !slices.Equal(a.HostAddresses, b.HostAddresses) {
 		return false
 	}

@@ -97,18 +97,18 @@ func TestNetworkingCapabilities(t *testing.T) {
 		if err := n.ValidateLoadBalancer("old"); err == nil || !strings.Contains(err.Error(), "declares nothing about networking") {
 			t.Errorf("old balancer: %v", err)
 		}
-		if err := n.ValidateProviderIP("linode", "us-ord"); err != nil {
+		if err := n.ValidateProviderIP("linode", "us-ord", ""); err != nil {
 			t.Error(err)
 		}
 		for region, says := range map[string]string{
 			"":        "provider linode: an IP of type Provider needs a region (one of ca-central, us-ord)",
 			"eu-west": "provider linode doesn't serve region eu-west (one of ca-central, us-ord)",
 		} {
-			if err := n.ValidateProviderIP("linode", region); err == nil || err.Error() != says {
+			if err := n.ValidateProviderIP("linode", region, "IPv4"); err == nil || err.Error() != says {
 				t.Errorf("region %q: %v, want %q", region, err, says)
 			}
 		}
-		if err := n.ValidateProviderIP("nope", "us-ord"); !errors.Is(err, ErrNoProvider) {
+		if err := n.ValidateProviderIP("nope", "us-ord", ""); !errors.Is(err, ErrNoProvider) {
 			t.Errorf("unknown: %v", err)
 		}
 		r, err := n.Reach("linode")
@@ -123,7 +123,7 @@ func TestNetworkingCapabilities(t *testing.T) {
 
 func TestStaticDoesNothingCapableWithoutDeclaring(t *testing.T) {
 	s := Static{"bare": &kplugin.Networking{}}
-	if err := s.ValidateProviderIP("bare", "x"); err == nil || err.Error() != "provider bare doesn't make IPs of type Provider" {
+	if err := s.ValidateProviderIP("bare", "x", ""); err == nil || err.Error() != "provider bare doesn't make IPs of type Provider" {
 		t.Errorf("ip: %v", err)
 	}
 	if err := s.ValidateLoadBalancer("bare"); err == nil || !strings.Contains(err.Error(), "doesn't make load balancers") {
@@ -152,5 +152,28 @@ func TestABadNetworkingDeclarationIsRefused(t *testing.T) {
 	}
 	if got := strings.Join(r.Providers(), ","); got != "good" {
 		t.Fatalf("registered %s", got)
+	}
+}
+
+// An IPv6 Provider IP needs a provider declaring providerIPv6; the refusal says why (the
+// provider's own reason when it gave one) and what works instead.
+func TestAProviderIPv6NeedsTheCapability(t *testing.T) {
+	s := Static{
+		"linode": {ProviderIPs: true, NoProviderIPv6: "a /64 moves as one unit"},
+		"quiet":  {ProviderIPs: true},
+		"floats": {ProviderIPs: true, ProviderIPv6: true},
+	}
+	if err := s.ValidateProviderIP("linode", "x", "IPv4"); err != nil {
+		t.Errorf("IPv4: %v", err)
+	}
+	want := "linode can't float an IPv6 address: a /64 moves as one unit; use an IPv4 Provider IP (family: IPv4), the worker's own IPv6 (a HostPort service on worker), or a host address (an IP of type Host, family: IPv6)"
+	if err := s.ValidateProviderIP("linode", "x", "IPv6"); err == nil || err.Error() != want {
+		t.Errorf("linode IPv6: %v\nwant %s", err, want)
+	}
+	if err := s.ValidateProviderIP("quiet", "x", "IPv6"); err == nil || !strings.Contains(err.Error(), "quiet can't float an IPv6 address: it doesn't declare providerIPv6; use an IPv4 Provider IP") {
+		t.Errorf("no reason given: %v", err)
+	}
+	if err := s.ValidateProviderIP("floats", "x", "IPv6"); err != nil {
+		t.Errorf("a provider that floats IPv6: %v", err)
 	}
 }
