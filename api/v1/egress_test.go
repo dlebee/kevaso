@@ -17,7 +17,12 @@ func TestEgressParse(t *testing.T) {
 		{EgressRule{To: "*.github.com", Ports: []string{"443", "8443"}}, true, "*.github.com", "", "443,8443"},
 		{EgressRule{To: "198.51.100.0/24", Ports: []string{"30000-30100"}}, true, "", "198.51.100.0/24", "30000-30100"},
 		{EgressRule{To: "api.github.com", Protocols: []string{"udp"}}, false, "", "", ""}, // names are TLS only
-		{EgressRule{To: "2001:db8::/32"}, false, "", "", ""},
+		{EgressRule{To: "2001:db8::/32"}, true, "", "2001:db8::/32", ""},                  // IPv6 ranges (the IPv6 effort)
+		{EgressRule{To: "2001:db8::7"}, true, "", "2001:db8::7/128", ""},
+		{EgressRule{To: "2001:DB8::1/48", Ports: []string{"443"}}, true, "", "2001:db8::/48", "443"},
+		{EgressRule{To: "::ffff:203.0.113.7"}, false, "", "", ""}, // write the IPv4 address
+		{EgressRule{To: "fe80::1%eth0"}, false, "", "", ""},       // a link's
+		{EgressRule{To: "::/0"}, true, "", "::/0", ""},
 		{EgressRule{To: "localhost"}, false, "", "", ""}, // not a fully qualified name
 		{EgressRule{To: "bad_name.example.com"}, false, "", "", ""},
 		{EgressRule{To: "0.0.0.0/0", Ports: []string{"0"}}, false, "", "", ""},

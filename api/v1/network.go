@@ -413,6 +413,9 @@ type SiloServiceStatus struct {
 	// LoadBalancerIP is the address of its loadBalancer ports (its IP's), when it has one.
 	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
 	EgressIP       string `json:"egressIP,omitempty"` // where its outgoing traffic comes from: the address out
+	// EgressIPv6 is its address out over IPv6: its worker's externalIPv6, or an IPv6 IP named by
+	// egress.source (a source applies to its own family only). Empty: no IPv6 out on that worker.
+	EgressIPv6 string `json:"egressIPv6,omitempty"`
 	// EgressNote says why the address out isn't the address in, when it isn't (design §7.2b).
 	EgressNote string `json:"egressNote,omitempty"`
 	// IP is the IP object its load-balancer address is, when it has one (design §7.2c-1).
@@ -448,7 +451,7 @@ type NodePort struct {
 
 // Equal reports whether two service statuses are the same.
 func (a SiloServiceStatus) Equal(b SiloServiceStatus) bool {
-	if a.Name != b.Name || a.LoadBalancerIP != b.LoadBalancerIP || !slices.Equal(a.Ports, b.Ports) || a.EgressIP != b.EgressIP || a.EgressNote != b.EgressNote || a.IP != b.IP || a.Announce != b.Announce ||
+	if a.Name != b.Name || a.LoadBalancerIP != b.LoadBalancerIP || !slices.Equal(a.Ports, b.Ports) || a.EgressIP != b.EgressIP || a.EgressIPv6 != b.EgressIPv6 || a.EgressNote != b.EgressNote || a.IP != b.IP || a.Announce != b.Announce ||
 		len(a.NodePorts) != len(b.NodePorts) || len(a.SourceRanges) != len(b.SourceRanges) || !slices.Equal(a.HostAddresses, b.HostAddresses) {
 		return false
 	}
@@ -513,6 +516,7 @@ func closedRanges() []closedRange {
 func neverRouted() []closedRange {
 	return []closedRange{
 		{netip.MustParsePrefix("0.0.0.0/8"), "this network"},
+		{netip.MustParsePrefix("::/128"), "this network"},
 		{netip.MustParsePrefix("224.0.0.0/4"), "multicast"},
 		{netip.MustParsePrefix("240.0.0.0/4"), "reserved"},
 		{netip.MustParsePrefix("ff00::/8"), "multicast"},

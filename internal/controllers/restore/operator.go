@@ -88,7 +88,7 @@ func reportedThisCopy(h *v1.Host, g *v1.RestoreGate, s *v1.Silo) bool {
 // of this write; the controller's later write is what marks the silo settled.
 func placeOn(st v1.SiloStatus, history, host string) v1.SiloStatus {
 	st.Host = host
-	st.SiloIP = "" // the old address is not the placement's
+	st.SiloIP, st.SiloIPv6 = "", "" // the old addresses are not the placement's
 	st.Phase = "Scheduled"
 	st.MovingFrom = "" // no handoff: the other copies stay stopped with their disks
 

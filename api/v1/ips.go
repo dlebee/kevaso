@@ -2,6 +2,7 @@ package v1
 
 import (
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 
@@ -14,8 +15,10 @@ import (
 //   - type Provider: an address reserved from a provider (spec.provider, spec.region): it follows
 //     its silo within the provider's reach.
 //
-// One IP is exactly one address (a range is an IPSet) and has one holder at a time. Deleting the
-// silo keeps the IP: the next silo naming it gets the same address.
+// One IP is exactly one address of one family (spec.family: IPv4, the default, or IPv6; a range
+// is an IPSet) and has one holder at a time. A service answering on both families of kept
+// addresses is two services, one per IP. Deleting the silo keeps the IP: the next silo naming it
+// gets the same address.
 type IP struct {
 	meta.TypeMeta   `json:",inline"`
 	meta.ObjectMeta `json:"metadata"`
@@ -29,10 +32,39 @@ const (
 	IPTypeProvider = "Provider"
 )
 
+// Address families: an IP, an IPSet and a host's extra address are each one of them.
+const (
+	FamilyIPv4 = "IPv4"
+	FamilyIPv6 = "IPv6"
+)
+
+// FamilyOf is the family of an address ("" if a isn't one). An IPv4-mapped IPv6 address is IPv6
+// (admission refuses it where an address is written).
+func FamilyOf(a string) string {
+	ad, err := netip.ParseAddr(a)
+	switch {
+	case err != nil:
+		return ""
+	case ad.Is4():
+		return FamilyIPv4
+	}
+	return FamilyIPv6
+}
+
+// FamilyOrDefault is family, IPv4 when it says none.
+func FamilyOrDefault(family string) string {
+	if family == "" {
+		return FamilyIPv4
+	}
+	return family
+}
+
 // IPSpec is where the address comes from: Host requires hostAddress, Provider requires provider
-// and region; the other fields are refused.
+// and region; the other fields are refused. Family is the address's (IPv4 when empty); a Host
+// IP's is its host address's (a mismatch is refused).
 type IPSpec struct {
 	Type        string `json:"type"`
+	Family      string `json:"family,omitempty"`      // IPv4 (the default) | IPv6
 	HostAddress string `json:"hostAddress,omitempty"` // type Host: a host's extra address, by name
 	Provider    string `json:"provider,omitempty"`    // type Provider: the installed provider, e.g. linode
 	Region      string `json:"region,omitempty"`      // type Provider: its region, e.g. us-ord
@@ -73,6 +105,9 @@ type IPWaiting struct {
 	UID    string `json:"uid"`
 	Reason string `json:"reason"`
 }
+
+// FamilyOrDefault is the IP's family: spec.family, IPv4 when it says none.
+func (s IPSpec) FamilyOrDefault() string { return FamilyOrDefault(s.Family) }
 
 // Holds reports whether the object with uid holds the IP.
 func (st IPStatus) Holds(uid string) bool {
@@ -118,7 +153,11 @@ const (
 //     (hostAddress: NAME). It never grows on its own; members are only added at the end, never
 //     renumbered or removed.
 //   - type Dynamic: Kevaso reserves provider IPs as instances need them, up to max, kept per
-//     ordinal (SET-0, SET-1, …). A Dynamic set has no host addresses.
+//     ordinal (SET-0, SET-1, …), of its family (IPv4 by default). A Dynamic set has no host
+//     addresses.
+//
+// A set is one family: a Static set's members all are (one that differs is refused), a Dynamic
+// set's family is spec.family. A SiloSet answering on both uses two sets, one per service.
 //
 // Its members are ordinary IP objects (labelled LabelIPSet and LabelIPSetOrdinal), so kvo get ips
 // lists everything. Namespaced.
@@ -135,14 +174,15 @@ const (
 	IPSetDynamic = "Dynamic"
 )
 
-// IPSetSpec: Static requires members; Dynamic requires provider, region and max; the other fields
-// are refused.
+// IPSetSpec: Static requires members; Dynamic requires provider, region and max, and takes a
+// family (IPv4 when empty); the other fields are refused.
 type IPSetSpec struct {
 	Type     string        `json:"type"`
 	Members  []IPSetMember `json:"members,omitempty"`
 	Provider string        `json:"provider,omitempty"`
 	Region   string        `json:"region,omitempty"`
 	Max      int           `json:"max,omitempty"`
+	Family   string        `json:"family,omitempty"` // Dynamic: IPv4 (the default) | IPv6
 }
 
 // IPSetMember is one ordinal of a Static set: exactly one of ip and hostAddress.

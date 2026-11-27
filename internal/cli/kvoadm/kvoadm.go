@@ -451,6 +451,9 @@ func parseTarget(args []string) (InitOptions, error) {
 	}
 	for _, f := range []struct{ flag, v string }{{"--internal-ip", o.InternalIP}, {"--external-ip", o.ExternalIP}} {
 		if a, err := netip.ParseAddr(f.v); f.v != "" && (err != nil || !a.Is4()) {
+			if err == nil && a.Is6() && !a.Is4In6() {
+				return o, fmt.Errorf("%s %q: want an IPv4 address (the mesh is IPv4); a global IPv6 address is the host's spec.externalIPv6, set once it has joined", f.flag, f.v)
+			}
 			return o, fmt.Errorf("%s %q: want an IPv4 address", f.flag, f.v)
 		}
 	}

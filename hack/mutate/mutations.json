@@ -3560,8 +3560,8 @@
   "id": "G-567",
   "guard": "the one copy is the placement",
   "file": "internal/controllers/restore/settle.go",
-  "find": "st.Host, st.SiloIP, st.Phase = holders[0], \"\", \"Scheduled\" // the one copy is the placement",
-  "replace": "st.Host, st.SiloIP, st.Phase = st.Host, st.SiloIP, st.Phase // the one copy is the placement",
+  "find": "st.Host, st.SiloIP, st.SiloIPv6, st.Phase = holders[0], \"\", \"\", \"Scheduled\" // the one copy is the placement",
+  "replace": "st.Host, st.SiloIP, st.SiloIPv6, st.Phase = st.Host, st.SiloIP, st.SiloIPv6, st.Phase // the one copy is the placement",
   "mutation": "the one host that holds the copy is not where it is placed",
   "packages": [
    "./internal/controllers/restore"
@@ -4100,8 +4100,8 @@
   "id": "G-613",
   "guard": "settle clears the old address",
   "file": "internal/controllers/restore/operator.go",
-  "find": "st.SiloIP = \"\" // the old address is not the placement's",
-  "replace": "_ = st.SiloIP // the old address is not the placement's",
+  "find": "st.SiloIP, st.SiloIPv6 = \"\", \"\" // the old addresses are not the placement's",
+  "replace": "_, _ = st.SiloIP, st.SiloIPv6 // the old addresses are not the placement's",
   "mutation": "settle keeps the old address",
   "packages": [
    "./internal/controllers/restore"

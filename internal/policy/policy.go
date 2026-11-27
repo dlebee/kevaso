@@ -39,7 +39,7 @@ func For(s *v1.Silo, grants []*v1.Grant, policies []*v1.OpenShellPolicy, injecti
 			}
 			host := e.Host
 			if host == "" {
-				if e.Prefix.Bits() != 32 {
+				if e.Prefix.Bits() != e.Prefix.Addr().BitLen() {
 					problems = append(problems, fmt.Sprintf("grant %s: %s is an address range; %s opens single addresses and names only", g.Name, r.To, s.Spec.Runtime))
 					continue
 				}

@@ -388,7 +388,7 @@ func placeDeletedHost(s *v1.Silo, st v1.SiloStatus, now time.Time, env scheduler
 		meta.SetCondition(&st.Conditions, meta.Condition{Type: CondHostUnreachable, Status: meta.ConditionFalse, Reason: "NewDestination",
 			Message:            fmt.Sprintf("%s, where it was moving, was deleted; it never started there (%s hasn't let go): placing it elsewhere", host, st.MovingFrom),
 			ObservedGeneration: s.Generation}, now)
-		st.Host, st.SiloIP = "", ""
+		st.Host, st.SiloIP, st.SiloIPv6 = "", "", ""
 		return st, true, true, 0
 	}
 	place, recreate, local := moves.PlaceAfterHostDelete(s, env.Classes)
@@ -418,7 +418,7 @@ func placeDeletedHost(s *v1.Silo, st v1.SiloStatus, now time.Time, env scheduler
 	meta.SetCondition(&st.Conditions, meta.Condition{Type: CondHostUnreachable, Status: meta.ConditionFalse, Reason: "HostDeleted",
 		Message:            fmt.Sprintf("%s was deleted, which confirmed it is off or wiped: %s elsewhere (onHostLoss: %s)", host, how, s.Policy()),
 		ObservedGeneration: s.Generation}, now)
-	st.Host, st.SiloIP = "", ""
+	st.Host, st.SiloIP, st.SiloIPv6 = "", "", ""
 	return st, true, true, 0
 }
 
@@ -545,7 +545,7 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 				cond.Status, cond.Reason = meta.ConditionFalse, "NewDestination"
 				cond.Message = fmt.Sprintf("%s, where it was moving, is unreachable; it never started there (%s hasn't let go): placing it elsewhere", st.Host, st.MovingFrom)
 				meta.SetCondition(&st.Conditions, cond, now)
-				st.Host, st.SiloIP = "", ""
+				st.Host, st.SiloIP, st.SiloIPv6 = "", "", ""
 				// …and it's scheduled right away, below.
 			} else if ok, why := restartsItself(s, env); ok {
 				// The one opt-in (brainstorm §0.7): the silo stops itself when its host loses the
@@ -561,11 +561,11 @@ func DecideIn(s *v1.Silo, hosts []*v1.Host, silos []*v1.Silo, now time.Time, env
 					if st.MovingFrom == st.Host {
 						st.MovingFrom = ""
 					}
-					st.Host, st.SiloIP = "", ""
+					st.Host, st.SiloIP, st.SiloIPv6 = "", "", ""
 				} else { // Recreate
 					meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Recreating",
 						Message: "recreating after losing " + st.Host, ObservedGeneration: s.Generation}, now)
-					st.Host, st.SiloIP, st.Init = "", "", nil
+					st.Host, st.SiloIP, st.SiloIPv6, st.Init = "", "", "", nil
 					if st.Image != nil { // a fresh instance from the image
 						st.Image.Running, st.Image.Reset = "", ""
 					}

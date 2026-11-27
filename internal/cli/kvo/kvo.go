@@ -745,6 +745,9 @@ func summary(obj meta.Object) string {
 		if o.Status.SiloIP != "" {
 			parts = append(parts, "address="+o.Status.SiloIP)
 		}
+		if o.Status.SiloIPv6 != "" {
+			parts = append(parts, "ipv6="+o.Status.SiloIPv6)
+		}
 		conds = o.Status.Conditions
 	case *v1.Unstructured:
 		conds = unstructuredConditions(o)
@@ -791,7 +794,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 	case "Silo":
 		head = append(head, "RUNTIME", "PHASE", "READY", "HOST")
 		if wide {
-			head = append(head, "MOVABLE", "ON-CP-LOSS")
+			head = append(head, "SILO IP", "SILO IPV6", "MOVABLE", "ON-CP-LOSS")
 		}
 	case "Host":
 		head = append(head, "INTERNAL IP", "EXTERNAL IP", "REGION", "COMPONENTS", "RUNTIMES")
@@ -843,7 +846,7 @@ func printTable(w io.Writer, k v1.KindInfo, objs []meta.Object, all, wide bool) 
 		case *v1.Silo:
 			row = append(row, o.Spec.Runtime, dash(o.Status.Phase), readiness(o.Status.Conditions), dash(o.Status.Host))
 			if wide {
-				row = append(row, dash(o.Status.Movable), cpLoss(o.Spec.Availability))
+				row = append(row, dash(o.Status.SiloIP), dash(o.Status.SiloIPv6), dash(o.Status.Movable), cpLoss(o.Spec.Availability))
 			}
 		case *v1.Host:
 			var comps, rts []string

@@ -131,8 +131,28 @@ func semantic(obj meta.Object) []string {
 		errs = append(errs, openShellPolicyProblems(o)...)
 	case *v1.Host:
 		for _, f := range []struct{ field, v string }{{"spec.internalIP", o.Spec.InternalIP}, {"spec.externalIP", o.Spec.ExternalIP}} {
-			if a, err := netip.ParseAddr(f.v); f.v != "" && (err != nil || !a.Is4()) {
+			a, err := netip.ParseAddr(f.v)
+			switch {
+			case f.v == "" || (err == nil && a.Is4()):
+			case err == nil && f.field == "spec.externalIP" && !a.Is4In6():
+				errs = append(errs, fmt.Sprintf("spec.externalIP: %q is IPv6: it goes in spec.externalIPv6 (externalIP is the host's IPv4 address; the mesh is IPv4)", f.v))
+			case err == nil && !a.Is4In6():
+				errs = append(errs, fmt.Sprintf("spec.internalIP: %q is IPv6: the internal IP is IPv4 (the mesh is IPv4); a global IPv6 address goes in spec.externalIPv6, others in spec.addresses", f.v))
+			default:
 				errs = append(errs, fmt.Sprintf("%s: %q isn't an IPv4 address", f.field, f.v))
+			}
+		}
+		if v := o.Spec.ExternalIPv6; v != "" {
+			a, err := netip.ParseAddr(v)
+			switch {
+			case err != nil:
+				errs = append(errs, fmt.Sprintf("spec.externalIPv6: %q isn't an IPv6 address", v))
+			case a.Is4():
+				errs = append(errs, fmt.Sprintf("spec.externalIPv6: %q is IPv4: it goes in spec.externalIP", v))
+			case a.Is4In6():
+				errs = append(errs, fmt.Sprintf("spec.externalIPv6: %q is an IPv4-mapped address: the IPv4 address goes in spec.externalIP", v))
+			case a.Zone() != "" || !a.IsGlobalUnicast() || a.IsPrivate():
+				errs = append(errs, fmt.Sprintf("spec.externalIPv6: %q isn't a global IPv6 address (link-local, unique local, loopback, multicast and :: aren't; a host without one is IPv4 only, so leave it out)", v))
 			}
 		}
 		if o.Spec.InternalIP != "" && o.Spec.InternalIP == o.Spec.ExternalIP {
@@ -173,7 +193,7 @@ func normalize(obj meta.Object) {
 	case *v1.Grant:
 		for i, r := range o.Spec.Egress {
 			if e, err := r.Parse(); err == nil && e.Prefix.IsValid() {
-				if e.Prefix.Bits() == 32 {
+				if e.Prefix.Bits() == e.Prefix.Addr().BitLen() {
 					o.Spec.Egress[i].To = e.Prefix.Addr().String()
 				} else {
 					o.Spec.Egress[i].To = e.Prefix.String()

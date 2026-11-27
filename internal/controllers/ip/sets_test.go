@@ -61,7 +61,7 @@ func newSetEnv(t *testing.T) *setEnv {
 	}
 	e.Register(&ipctl.Controller{Client: c, IPs: infs["IP"], Silos: infs["Silo"], Services: infs["Service"], Hosts: infs["Host"],
 		SiloSets: infs["SiloSet"], IPSets: infs["IPSet"], Plugins: reg}, engine.Options{Workers: 1})
-	e.Register(&ipctl.Sets{Client: c, IPSets: infs["IPSet"], IPs: infs["IP"], Silos: infs["Silo"], SiloSets: infs["SiloSet"]}, engine.Options{Workers: 1})
+	e.Register(&ipctl.Sets{Client: c, IPSets: infs["IPSet"], IPs: infs["IP"], Silos: infs["Silo"], SiloSets: infs["SiloSet"], Hosts: infs["Host"]}, engine.Options{Workers: 1})
 	go func() { e.Run(ctx); close(done) }()
 	s := &setEnv{t: t, ctx: ctx, c: c, fake: fake}
 	s.must(c.Create(ctx, &v1.Namespace{TypeMeta: tm("Namespace"), ObjectMeta: meta.ObjectMeta{Name: "d"}}))

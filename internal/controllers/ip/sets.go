@@ -36,7 +36,10 @@ type Sets struct {
 	IPs      *informer.Informer
 	Silos    *informer.Informer
 	SiloSets *informer.Informer
-	Clock    clock.Clock
+	// Hosts give a Static set's hostAddress member its family (its address's): the member's IP is
+	// made once a host has the address. nil: made at once, IPv4.
+	Hosts *informer.Informer
+	Clock clock.Clock
 }
 
 // Name implements engine.Controller.
@@ -54,7 +57,7 @@ func (c *Sets) now() time.Time {
 
 // Reconcile implements engine.Controller.
 func (c *Sets) Reconcile(ctx context.Context, k engine.Key) (engine.Result, error) {
-	if !informer.AllSynced(c.IPSets, c.IPs, c.Silos, c.SiloSets) {
+	if !informer.AllSynced(c.IPSets, c.IPs, c.Silos, c.SiloSets) || (c.Hosts != nil && !informer.AllSynced(c.Hosts)) {
 		return engine.Result{RequeueAfter: time.Second}, nil
 	}
 	o, ok := c.IPSets.Get(k.Namespace, k.Name)
@@ -92,7 +95,17 @@ func (c *Sets) Reconcile(ctx context.Context, k engine.Key) (engine.Result, erro
 
 	var problems []string
 	for i := range n {
-		want := ips.Made(set, i)
+		family := set.Spec.Family
+		if set.Spec.Type == v1.IPSetStatic && set.Spec.Members[i].HostAddress != "" && c.Hosts != nil {
+			a := set.Spec.Members[i].HostAddress
+			_, ha, ok := ips.FindAddress(c.hosts(), a)
+			if !ok {
+				problems = append(problems, fmt.Sprintf("member %d: no host has address %s yet (kvoadm host addresses HOST add %s ADDRESS): its IP is made, of that address's family, once one does", i, a, a))
+				continue
+			}
+			family = ha.Family()
+		}
+		want := ips.Made(set, i, family)
 		if want == nil {
 			continue
 		}
@@ -108,6 +121,18 @@ func (c *Sets) Reconcile(ctx context.Context, k engine.Key) (engine.Result, erro
 		}
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("making IP %s: %v", want.Name, err))
+		}
+	}
+
+	if c.Hosts != nil { // one family per set: a member made or added since admission may differ
+		var nsIPs []*v1.IP
+		for _, o := range c.IPs.List() {
+			if x := o.(*v1.IP); x.Namespace == set.Namespace {
+				nsIPs = append(nsIPs, x)
+			}
+		}
+		if why := ips.SetFamilies(set, nsIPs, c.hosts()); why != "" {
+			problems = append([]string{why}, problems...)
 		}
 	}
 
@@ -156,6 +181,14 @@ func (c *Sets) Reconcile(ctx context.Context, k engine.Key) (engine.Result, erro
 }
 
 func o2silo(o meta.Object) *v1.Silo { return o.(*v1.Silo) }
+
+func (c *Sets) hosts() []*v1.Host {
+	var out []*v1.Host
+	for _, o := range c.Hosts.List() {
+		out = append(out, o.(*v1.Host))
+	}
+	return out
+}
 
 // made are the IPs the set made, by ordinal.
 func (c *Sets) made(set *v1.IPSet) map[int]*v1.IP {
@@ -238,6 +271,20 @@ func (c *Sets) Map(changed engine.Key) []engine.Key {
 		}
 	}
 	switch changed.Kind {
+	case "Host": // a host address a Static set's member waits for (its IP not made yet)
+		for _, o := range c.IPSets.List() {
+			set := o.(*v1.IPSet)
+			if set.Spec.Type != v1.IPSetStatic {
+				continue
+			}
+			for i, m := range set.Spec.Members {
+				name, _ := ips.MemberIP(set, i)
+				if _, made := c.IPs.Get(set.Namespace, name); m.HostAddress != "" && !made {
+					add(set.Namespace, set.Name)
+					break
+				}
+			}
+		}
 	case "IP":
 		if o, ok := c.IPs.Get(changed.Namespace, changed.Name); ok {
 			add(changed.Namespace, o.(*v1.IP).Labels[v1.LabelIPSet])

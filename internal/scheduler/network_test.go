@@ -348,14 +348,14 @@ func TestEgressTable(t *testing.T) {
 		{"a balancer in front, no source: says so", mk(nil), "198.51.100.200", nil, "198.51.100.10", "no egress.source"},
 		{"a balancer in front on the worker's address: no note", mk(nil), "198.51.100.10", nil, "198.51.100.10", ""},
 	} {
-		out, note := Egress(c.silo, h, v1.SiloServiceStatus{LoadBalancerIP: c.in}, c.ip)
+		out, note := Egress(c.silo, h, v1.SiloServiceStatus{LoadBalancerIP: c.in}, c.ip, "")
 		if out != c.want || (c.note == "" && note != "") || !strings.Contains(note, c.note) {
 			t.Errorf("%s: out %q (%s), want %q (%q)", c.name, out, note, c.want, c.note)
 		}
 	}
 	// Behind NAT, the worker's own address out isn't known.
 	nat := host("home", func(h *v1.Host) { h.Spec.ExternalIP, h.Spec.Network.BehindNAT = "", true })
-	if out, _ := Egress(mk(nil), nat, v1.SiloServiceStatus{}, nil); out != "" {
+	if out, _ := Egress(mk(nil), nat, v1.SiloServiceStatus{}, nil, ""); out != "" {
 		t.Errorf("behind NAT: %q", out)
 	}
 }

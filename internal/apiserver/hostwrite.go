@@ -37,7 +37,8 @@ import (
 //
 // And on a silo placed on it (moves.HostWrite for the rest): siloIP inside the subnet the control
 // plane assigned the host, or on the default network. A host with no subnet yet, and a host that
-// is not in the store, may use only that default network (siloIPInSubnet); phase is the host's
+// is not in the store, may use only that default network (siloIPInSubnet); siloIPv6 only inside
+// its IPv6 /64, and none without one (siloIPv6InSubnet); phase is the host's
 // to report.
 const CondReportedChange = "ReportedChange"
 
@@ -137,6 +138,39 @@ func (s *Server) siloIPInSubnet(ctx context.Context, old, next v1.SiloStatus, ho
 	}
 	if !p.Contains(ip) && !inDefault { // the address is in this host's subnet, or on the default network
 		return errf(http.StatusForbidden, "Forbidden", "%s may give a silo an address only in its subnet %s (or the default %s), not %s", host, subnet, defSubnet, next.SiloIP)
+	}
+	return nil
+}
+
+// siloIPv6InSubnet: a host gives a silo placed on it an IPv6 address only inside the IPv6 /64
+// the control plane assigned it (status.network.siloSubnetIPv6). A host with none (not yet, or
+// not in the store) gives none: there is no default IPv6 network.
+func (s *Server) siloIPv6InSubnet(ctx context.Context, old, next v1.SiloStatus, host string) error {
+	if next.SiloIPv6 == "" || next.SiloIPv6 == old.SiloIPv6 {
+		return nil
+	}
+	ip, err := netip.ParseAddr(next.SiloIPv6)
+	if err != nil || !ip.Is6() || ip.Is4In6() || ip.Zone() != "" {
+		return errf(http.StatusForbidden, "Forbidden", "%s may not give a silo the IPv6 address %q", host, next.SiloIPv6)
+	}
+	subnet := ""
+	o, err := s.store.Get(ctx, store.Key{Kind: "Host", Name: host})
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+	case err != nil:
+		return err
+	default:
+		obj, _, err := v1.Decode(o.Data)
+		if err != nil {
+			return err
+		}
+		subnet = obj.(*v1.Host).Status.Network.SiloSubnetIPv6
+	}
+	if subnet == "" {
+		return errf(http.StatusForbidden, "Forbidden", "%s has no IPv6 subnet: it gives a silo no IPv6 address, not %s", host, next.SiloIPv6)
+	}
+	if p, err := netip.ParsePrefix(subnet); err != nil || !p.Contains(ip) {
+		return errf(http.StatusForbidden, "Forbidden", "%s may give a silo an IPv6 address only in its subnet %s, not %s", host, subnet, next.SiloIPv6)
 	}
 	return nil
 }

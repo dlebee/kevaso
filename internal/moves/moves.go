@@ -233,7 +233,7 @@ func PlanMove(s *v1.Silo, m Movability, r Request, fromLost, sourceLost bool, fi
 // Apply is the status after a planned move: placed on the target, the old host (if up) told to
 // let go first. A recreate starts from the image.
 func Apply(st v1.SiloStatus, p Plan) v1.SiloStatus {
-	st.Host, st.SiloIP, st.Phase = p.To, "", "Scheduled"
+	st.Host, st.SiloIP, st.SiloIPv6, st.Phase = p.To, "", "", "Scheduled"
 	st.MovingFrom = ""
 	if p.Handoff {
 		st.MovingFrom = p.From

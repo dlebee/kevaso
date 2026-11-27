@@ -33,15 +33,15 @@ func (r EgressRule) Parse() (ParsedEgress, error) {
 		return e, fmt.Errorf("egress: to is required")
 	}
 	if p, err := netip.ParsePrefix(to); err == nil {
-		if !p.Addr().Is4() {
-			return e, fmt.Errorf("egress %q: IPv6 comes later; IPv4 for now", to)
+		if err := plainAddr(to, p.Addr()); err != nil {
+			return e, err
 		}
 		e.Prefix = p.Masked()
 	} else if a, err := netip.ParseAddr(to); err == nil {
-		if !a.Is4() {
-			return e, fmt.Errorf("egress %q: IPv6 comes later; IPv4 for now", to)
+		if err := plainAddr(to, a); err != nil {
+			return e, err
 		}
-		e.Prefix = netip.PrefixFrom(a, 32)
+		e.Prefix = netip.PrefixFrom(a, a.BitLen())
 	} else {
 		h := strings.ToLower(strings.TrimSuffix(to, "."))
 		if !validHostPattern(h) {
@@ -75,6 +75,18 @@ func (r EgressRule) Parse() (ParsedEgress, error) {
 		}
 	}
 	return e, nil
+}
+
+// plainAddr refuses the forms of an address a rule can't take: an IPv4-mapped IPv6 address (write
+// the IPv4 one) and a zone (a link's, never a destination outside).
+func plainAddr(to string, a netip.Addr) error {
+	switch {
+	case a.Is4In6():
+		return fmt.Errorf("egress %q: an IPv4-mapped IPv6 address: write the IPv4 address (%s)", to, a.Unmap())
+	case a.Zone() != "":
+		return fmt.Errorf("egress %q: an address with a zone is a link's: write the address alone", to)
+	}
+	return nil
 }
 
 func parsePorts(s string) (PortRange, error) {

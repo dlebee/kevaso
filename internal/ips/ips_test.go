@@ -251,7 +251,15 @@ func TestParseAddress(t *testing.T) {
 		{"203.0.113.21", ""},
 		{"203.0.113.0/30", "is a range"},
 		{"203.0.113.21/32", "is a range"},
-		{"2001:db8::1", "IPv6 comes later"},
+		{"2001:db8::1", ""}, // IPv6 (the IPv6 effort)
+		{"2001:db8::/64", "is a range"},
+		{"::ffff:203.0.113.21", "write the IPv4 address (203.0.113.21)"},
+		{"fe80::1%eth0", "has a zone"},
+		{"fe80::1", "isn't a unicast address of the host's own"},
+		{"::1", "isn't a unicast address of the host's own"},
+		{"::", "isn't a unicast address of the host's own"},
+		{"ff02::1", "isn't a unicast address of the host's own"},
+		{"fd12:3456:789a::5", ""}, // a unique local address, on an internal network
 		{"web", "isn't an address"},
 		{"", "isn't an address"},
 	} {

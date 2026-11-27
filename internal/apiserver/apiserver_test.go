@@ -338,16 +338,16 @@ func TestServiceAndAddressValidation(t *testing.T) {
 			t.Errorf("IP %s: want Invalid, got %v", name, err)
 		}
 	}
-	// A host's extra addresses: named, one IPv4 address each, names unique in the cluster.
+	// A host's extra addresses: named, one address each (IPv4 or IPv6), names unique in the cluster.
 	host := func(name, ext string, a ...v1.HostAddress) *v1.Host {
 		return &v1.Host{TypeMeta: tm("Host"), ObjectMeta: meta.ObjectMeta{Name: name},
 			Spec: v1.HostSpec{ExternalIP: ext, Components: v1.HostComponents{Worker: &v1.WorkerSpec{}}, Addresses: a}}
 	}
 	for name, a := range map[string]v1.HostAddress{
-		"garbage":      {Name: "x", Kind: "external", Address: "nope"},
-		"IPv6 for now": {Name: "x", Kind: "external", Address: "2001:db8:42::1"},
-		"a range":      {Name: "x", Kind: "external", Address: "198.51.100.0/30"},
-		"no kind":      {Name: "x", Address: "198.51.100.20"},
+		"garbage":         {Name: "x", Kind: "external", Address: "nope"},
+		"IPv6 link-local": {Name: "x", Kind: "external", Address: "fe80::1"},
+		"a range":         {Name: "x", Kind: "external", Address: "198.51.100.0/30"},
+		"no kind":         {Name: "x", Address: "198.51.100.20"},
 	} {
 		if err := c.Create(ctx, host("addr", "198.51.100.9", a)); !client.IsInvalid(err) {
 			t.Errorf("host address %s: want Invalid, got %v", name, err)

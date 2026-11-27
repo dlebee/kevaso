@@ -332,6 +332,11 @@ func (c *Controller) reserve(ctx context.Context, x *v1.IP, st *v1.IPStatus) tim
 				"no host has address "+x.Spec.HostAddress+" (kvoadm host addresses HOST add "+x.Spec.HostAddress+" ADDRESS)"
 			return 0 // a host's change maps here
 		}
+		if why := ips.FamilyMismatch(x, hosts); why != "" && st.Address == "" {
+			st.Host, st.Where = "", ""
+			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "FamilyMismatch", why
+			return 0 // a host's change maps here
+		}
 		if c.Claims != nil && st.Address == "" {
 			ok, _, err := c.Claims.Take(ctx, HostAddressPool, x.Spec.HostAddress, claims.Holder{Kind: "IP", Namespace: x.Namespace, Name: x.Name, UID: x.UID, Version: x.ResourceVersion}, UsesAddress)
 			if err != nil {
@@ -355,6 +360,12 @@ func (c *Controller) reserve(ctx context.Context, x *v1.IP, st *v1.IPStatus) tim
 		if !ok {
 			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "PluginMissing", "no plugin named "+x.Spec.Provider+" reserves addresses"
 			return 30 * time.Second
+		}
+		if x.Spec.FamilyOrDefault() == v1.FamilyIPv6 {
+			// TODO(ipv6 wave 3): providers that share IPv6 (Linode first) declare it and are asked.
+			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "Waiting",
+				x.Spec.Provider+" can't reserve IPv6 addresses yet: the IP waits, and its holder with it (a Host IP of an IPv6 host address works now)"
+			return time.Minute
 		}
 		as, err := p.Conn.ReserveAddress(ctx, kplugin.AddressReservation{Class: class, ID: x.UID, Namespace: x.Namespace, Name: x.Name, Region: x.Spec.Region,
 			Annotations: annotations(x.Annotations, x.Spec.Provider)})

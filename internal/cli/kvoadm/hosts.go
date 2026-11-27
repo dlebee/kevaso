@@ -503,7 +503,7 @@ func DrainHandoffs(host string, silos []*v1.Silo) []*v1.Silo {
 func DrainStatus(s *v1.Silo, host string, now time.Time) v1.SiloStatus {
 	st := s.Status
 	st.Conditions = slices.Clone(st.Conditions)
-	st.Host, st.Phase, st.SiloIP, st.Init = "", "Pending", "", nil
+	st.Host, st.Phase, st.SiloIP, st.SiloIPv6, st.Init = "", "Pending", "", "", nil
 	st.MovingFrom = host
 	meta.SetCondition(&st.Conditions, meta.Condition{Type: "Ready", Status: meta.ConditionFalse, Reason: "Drained",
 		Message: "moved off " + host + " by kvoadm host drain: a fresh instance from its image (onHostLoss: Recreate)", ObservedGeneration: s.Generation}, now)
