@@ -181,7 +181,7 @@ func checkHostAddressList(h *v1.Host) []string {
 	var errs []string
 	add := func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }
 	names, addrs := map[string]bool{}, map[string]string{}
-	for _, a := range []string{h.Spec.ExternalIP, h.Spec.InternalIP, h.Spec.ExternalIPv6} {
+	for _, a := range []string{h.Spec.ExternalIP, h.Spec.InternalIP, h.ExternalIPv6()} {
 		if a != "" {
 			addrs[a] = "its main IP"
 		}

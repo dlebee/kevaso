@@ -117,11 +117,18 @@ func Watched() []string {
 	return out
 }
 
+// Ledger6 lists the IPv6 addresses Kevaso put on the host's uplink ("DEV ADDR/LEN" lines;
+// internal/worker's Ledger6): IPv6 addresses have no labels. Those on the bridge go with it.
+const Ledger6 = "/run/kevaso/ipv6-addresses"
+
 // State is what a reset compares with the record.
 type State struct {
 	Packages  []string // installed packages (dpkg "ii")
 	Tables    []string // nftables tables, "FAMILY NAME"
 	IPForward string   // net.ipv4.ip_forward
+	// IPForward6 is net.ipv6.conf.all.forwarding ("" when not known: a record older than the
+	// IPv6 effort, or a host without IPv6).
+	IPForward6 string
 }
 
 // StateScript prints the host's State in sections (ParseState reads it).
@@ -131,6 +138,8 @@ echo '== tables'
 nft list tables 2>/dev/null | awk '$1 == "table" {print $2, $3}' | sort -u
 echo '== ipforward'
 sysctl -n net.ipv4.ip_forward
+echo '== ipforward6'
+sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null; true
 `
 
 // sections splits "== NAME" sectioned output; text before the first section is an error.
@@ -164,7 +173,7 @@ func ParseState(out string) (State, error) {
 		return State{}, fmt.Errorf("state: %w", err)
 	}
 	for name := range sec {
-		if name != "packages" && name != "tables" && name != "ipforward" {
+		if name != "packages" && name != "tables" && name != "ipforward" && name != "ipforward6" {
 			return State{}, fmt.Errorf("state: unknown section %q", name)
 		}
 	}
@@ -190,6 +199,9 @@ func stateFrom(sec map[string][]string) (State, error) {
 	if s.IPForward != "0" && s.IPForward != "1" {
 		return State{}, fmt.Errorf("state: ip_forward %q", s.IPForward)
 	}
+	if f := sec["ipforward6"]; len(f) == 1 && (f[0] == "0" || f[0] == "1") { // optional: older records have none
+		s.IPForward6 = f[0]
+	}
 	return s, nil
 }
 
@@ -205,6 +217,9 @@ func (s State) Render() string {
 		b.WriteString(t + "\n")
 	}
 	b.WriteString("== ipforward\n" + s.IPForward + "\n")
+	if s.IPForward6 != "" {
+		b.WriteString("== ipforward6\n" + s.IPForward6 + "\n")
+	}
 	return b.String()
 }
 
@@ -334,6 +349,9 @@ func LeftoversExcept(base, now State, notOurs []string) []string {
 	if base.IPForward != now.IPForward {
 		out = append(out, fmt.Sprintf("net.ipv4.ip_forward is %s, was %s", now.IPForward, base.IPForward))
 	}
+	if base.IPForward6 != "" && now.IPForward6 != "" && base.IPForward6 != now.IPForward6 {
+		out = append(out, fmt.Sprintf("net.ipv6.conf.all.forwarding is %s, was %s", now.IPForward6, base.IPForward6))
+	}
 	return out
 }
 
@@ -381,6 +399,7 @@ type PlanInput struct {
 	Purge      []string // packages to purge
 	Tables     []string // nftables tables to delete, "FAMILY NAME"
 	IPForward  string   // the record's value; "" leaves it as it is
+	IPForward6 string   // the record's IPv6 forwarding; "" leaves it as it is
 	DockerOurs bool     // Kevaso installed Docker: every container and image goes, then Docker itself
 	PodmanOurs bool     // Kevaso installed podman: every container, image and its storage go
 	// DockerJSON is what happens to Docker's daemon.json when Docker stays.
@@ -463,6 +482,7 @@ true`)
 		add("delete docker0", `ip link show docker0 >/dev/null 2>&1 && ip link del docker0; true`)
 	}
 	add("delete addresses labelled :kv", `ip -4 -o addr show | awk '$NF ~ /:kv$/ {print $2, $4, $NF}' | while read dev addr label; do ip addr del "$addr" dev "$dev" label "$label"; done; true`)
+	add("delete the IPv6 addresses in "+Ledger6, `[ -f `+Ledger6+` ] && while read dev addr; do ip -6 addr del "$addr" dev "$dev" 2>/dev/null; done < `+Ledger6+`; true`)
 	var del strings.Builder
 	for _, t := range in.Tables {
 		f := strings.Fields(t)
@@ -473,6 +493,9 @@ true`)
 	add("delete nftables tables", del.String()+"true")
 	if in.IPForward == "0" || in.IPForward == "1" {
 		add("restore net.ipv4.ip_forward", "sysctl -qw net.ipv4.ip_forward="+in.IPForward)
+	}
+	if in.IPForward6 == "0" || in.IPForward6 == "1" {
+		add("restore net.ipv6.conf.all.forwarding", "sysctl -qw net.ipv6.conf.all.forwarding="+in.IPForward6)
 	}
 
 	// 4. Storage.
@@ -701,6 +724,7 @@ func Checklist(o CheckOptions) []Check {
 		{"nothing is mounted under Kevaso's paths", `awk '{print $2}' /proc/mounts | grep -E '` + mountPattern + `'; true`},
 		{"no Kevaso link is left", `ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -E '^(` + links + `)'; true`},
 		{"no :kv address is left", `ip -4 -o addr show | awk '$NF ~ /:kv$/ {print $2, $4}'`},
+		{"no IPv6 address of " + Ledger6 + " is left", `[ -f ` + Ledger6 + ` ] && while read dev addr; do ip -6 -o addr show dev "$dev" 2>/dev/null | grep -qF " $addr " && echo "$dev $addr"; done < ` + Ledger6 + `; true`},
 		{"no nftables table named kevaso*", `nft list tables 2>/dev/null | awk '$3 ~ /^kevaso/ {print $2, $3}'`},
 		{"no Kevaso container", `command -v docker >/dev/null && systemctl is-active -q docker && docker ps -aq --filter label=kevaso.com/uid
 command -v podman >/dev/null && podman ps -aq --filter label=kevaso.com/uid; true`},

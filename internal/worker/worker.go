@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -44,7 +45,10 @@ import (
 // Config configures the worker component.
 type Config struct {
 	HostName string
-	Runtimes []string // runtimes to install, e.g. cloud-hypervisor
+	// DetectIPv6, if set, finds the host's global IPv6 address ("" when it has none): reported as
+	// spec.externalIPv6 where none is set. Nil: none detected (kevasod passes DetectIPv6).
+	DetectIPv6 func(context.Context) string
+	Runtimes   []string // runtimes to install, e.g. cloud-hypervisor
 	// TartSoftnet starts every macOS silo behind Tart's softnet packet filter (default-deny to the
 	// LAN and other silos); needs root for softnet. On by default on a Mac.
 	TartSoftnet bool
@@ -201,6 +205,24 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 		}
 	}
 	var mu sync.Mutex
+	// The host's IPv6 silo subnet, for the agent's new silos ("" while it has none): kept current
+	// from each report's Host.
+	var subnet6 atomic.Value
+	subnet6.Store("")
+	setSubnet6 := func(h *v1.Host) {
+		v := ""
+		if p, _, ok := SiloNetwork6(h); ok {
+			v = p.String()
+		}
+		if old, _ := subnet6.Load().(string); old != v {
+			if v == "" {
+				cfg.Log("silo IPv6: none (this host is IPv4 only)")
+			} else {
+				cfg.Log("silo IPv6 subnet %s", v)
+			}
+		}
+		subnet6.Store(v)
+	}
 	states := map[string]v1.RuntimeStatus{}
 	for name, rt := range rts {
 		states[name] = v1.RuntimeStatus{State: "Installing", Version: rt.Info().Version}
@@ -214,8 +236,12 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 			snap[k] = v
 		}
 		mu.Unlock()
-		if err := updateHost(ctx, c, cfg, snap, nodes.MountClasses()); err != nil && ctx.Err() == nil {
+		h, err := UpdateHost(ctx, c, cfg, snap, nodes.MountClasses())
+		if err != nil && ctx.Err() == nil {
 			cfg.Log("worker status: %v", err)
+		}
+		if h != nil {
+			setSubnet6(h)
 		}
 	}
 	// The control plane registers the Host (and, on the mesh, gives it a subnet); wait for it
@@ -226,6 +252,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 		var h v1.Host
 		err := c.Get(ctx, "Host", "", cfg.HostName, &h)
 		if err == nil {
+			setSubnet6(&h)
 			if !cfg.MeshSubnet {
 				break
 			}
@@ -340,6 +367,7 @@ func Run(ctx context.Context, c *client.Client, cfg Config, rts map[string]Insta
 		runtimes[name] = rt
 	}
 	a := &agent.Agent{Client: c, HostName: cfg.HostName, Runtimes: runtimes, Clock: cfg.Clock, Log: cfg.Log, Nodes: nodes, Watermark: cfg.Watermark, PluginsEtc: cfg.PluginsEtc, Bound: bindings.Port,
+		Subnet6: func() string { v, _ := subnet6.Load().(string); return v },
 		RuntimeReady: func(name string) bool {
 			mu.Lock()
 			defer mu.Unlock()
@@ -462,13 +490,26 @@ func upstreamCAFile(dir, extra string, internal []byte) (string, error) {
 	return path, nil
 }
 
-// updateHost makes sure the Host declares the worker component and reports its runtimes and
-// allocatable resources, retrying on conflicts with the control plane's own heartbeat.
-func updateHost(ctx context.Context, c *client.Client, cfg Config, states map[string]v1.RuntimeStatus, mountClasses []string) error {
+// UpdateHost makes sure the Host declares the worker component and reports its runtimes,
+// allocatable resources, mount classes and the IPv6 address it found (cfg.DetectIPv6), retrying on
+// conflicts with the control plane's own heartbeat. It returns the Host as written.
+func UpdateHost(ctx context.Context, c *client.Client, cfg Config, states map[string]v1.RuntimeStatus, mountClasses []string) (*v1.Host, error) {
+	detected := ""
+	if cfg.DetectIPv6 != nil {
+		detected = cfg.DetectIPv6(ctx)
+	}
 	for attempt := 0; attempt < 5; attempt++ {
 		var h v1.Host
 		if err := c.Get(ctx, "Host", "", cfg.HostName, &h); err != nil {
-			return err
+			return nil, err
+		}
+		// Its global IPv6 address as found now, in its status (a worker writes no spec): the
+		// host's externalIPv6 while spec.externalIPv6, which wins, is empty. None found: IPv4 only.
+		if cfg.DetectIPv6 != nil {
+			if detected != h.Status.Network.ExternalIPv6 {
+				cfg.Log("external IPv6 found: %q (was %q)", detected, h.Status.Network.ExternalIPv6)
+			}
+			h.Status.Network.ExternalIPv6 = detected
 		}
 		if h.Spec.Components.Worker == nil {
 			w := &v1.WorkerSpec{Labels: cfg.Labels}
@@ -488,7 +529,7 @@ func updateHost(ctx context.Context, c *client.Client, cfg Config, states map[st
 				if client.IsConflict(err) {
 					continue
 				}
-				return err
+				return nil, err
 			}
 		}
 		h.Status.Runtimes = states
@@ -498,9 +539,12 @@ func updateHost(ctx context.Context, c *client.Client, cfg Config, states map[st
 		if client.IsConflict(err) {
 			continue
 		}
-		return err
+		if err != nil {
+			return nil, err
+		}
+		return &h, nil
 	}
-	return errors.New("host kept changing")
+	return nil, errors.New("host kept changing")
 }
 
 // allocatable is what silos may use: all CPUs but one, and memory minus 1Gi for the host itself.

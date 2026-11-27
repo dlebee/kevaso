@@ -69,6 +69,15 @@ type Spec struct {
 	// compares it with status.image.reset). Empty on a create. A runtime that remembers a reset
 	// under way binds that memory to this request.
 	Reset string
+	// Subnet6 and Gateway6 are IPv6 at the edge (the IPv6 effort; the mesh stays IPv4): the
+	// host's IPv6 silo subnet, a /64 of the cluster's ULA ("fdXX:XXXX:XXXX:N::/64"), and the
+	// host's address in it on the bridge (the subnet's ::1): the silo's IPv6 default route.
+	// Empty: this silo gets no IPv6. A runtime on the silo bridge gives the silo the address of
+	// Subnet6 with its IPv4 address's host part (10.64.3.17 in 10.64.3.0/24 → …:3::11; core's
+	// mesh.SiloIPv6), keeps it in its state file as "ip6" beside "ip" (the worker binds the
+	// silo's port to it), and reports it in Status.Address6. Other runtimes ignore them.
+	Subnet6  string
+	Gateway6 string
 }
 
 // Volume is extra storage mounted in the silo.
@@ -193,7 +202,9 @@ const (
 type Status struct {
 	State   State
 	Address string // private address, if it has one
-	Message string
+	// Address6 is its IPv6 address, if it has one (Spec.Subnet6): status.siloIPv6.
+	Address6 string
+	Message  string
 }
 
 // ExecRequest runs a command inside a silo.

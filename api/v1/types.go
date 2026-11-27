@@ -207,8 +207,14 @@ func (h *Host) Internal() string {
 // External is the host's external IP ("" if it has none).
 func (h *Host) External() string { return h.Spec.ExternalIP }
 
-// ExternalIPv6 is the host's global IPv6 address ("" if it has none: IPv4 only).
-func (h *Host) ExternalIPv6() string { return h.Spec.ExternalIPv6 }
+// ExternalIPv6 is the host's global IPv6 address ("" if it has none: IPv4 only):
+// spec.externalIPv6 when it is set, else the one its worker found (status.network.externalIPv6).
+func (h *Host) ExternalIPv6() string {
+	if h.Spec.ExternalIPv6 != "" {
+		return h.Spec.ExternalIPv6
+	}
+	return h.Status.Network.ExternalIPv6
+}
 
 // Reach is where other hosts reach this one (the mesh's WireGuard endpoint, the API and store
 // peer URLs): its external IP if it has one, else its internal IP (ADR 0010).
@@ -246,6 +252,9 @@ type NetworkStatus struct {
 	// SiloSubnetIPv6 is its silos' private IPv6 /64, from the cluster's ULA /48 by the index
 	// (e.g. fd12:3456:789a:3::/64). Not routed over the mesh: silos go out by NAT66.
 	SiloSubnetIPv6 string `json:"siloSubnetIPv6,omitempty"`
+	// ExternalIPv6 is the global IPv6 address the worker found on the host ("" when it has
+	// none): the host's externalIPv6 while spec.externalIPv6 is empty. The worker's own report.
+	ExternalIPv6   string `json:"externalIPv6,omitempty"`
 	PublicKey      string `json:"publicKey,omitempty"`      // kevaso0's WireGuard key
 	InnerIP        string `json:"innerIP,omitempty"`        // behind NAT: on the end-to-end tunnel kevaso1
 	InnerPublicKey string `json:"innerPublicKey,omitempty"` // kevaso1's key

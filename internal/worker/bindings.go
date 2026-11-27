@@ -22,9 +22,11 @@ import (
 // rules are default-deny per port), so the order the runtime, the agent and this loop run in
 // never leaves a port open.
 
-// Bound is the address, and the MAC where the runtime fixed one, a silo's port was made with.
+// Bound is the address, and the MAC where the runtime fixed one, a silo's port was made with. IP6
+// is its IPv6 address ("ip6" in the state file; invalid: it was given none).
 type Bound struct {
 	IP  netip.Addr
+	IP6 netip.Addr
 	MAC string
 }
 
@@ -45,6 +47,7 @@ func LocalBindings(h cloudhypervisor.Host) map[string]Bound {
 			var s struct {
 				ID  kri.ID `json:"id"`
 				IP  string `json:"ip"`
+				IP6 string `json:"ip6"`
 				MAC string `json:"mac"`
 			}
 			if json.Unmarshal(b, &s) != nil || s.ID.Name == "" || s.ID.UID == "" {
@@ -58,7 +61,11 @@ func LocalBindings(h cloudhypervisor.Host) map[string]Bound {
 			if path.Base(path.Dir(p)) != n.Short {
 				continue
 			}
-			out[n.Tap] = Bound{IP: ip, MAC: s.MAC}
+			bd := Bound{IP: ip, MAC: s.MAC}
+			if ip6, err := netip.ParseAddr(s.IP6); err == nil && ip6.Is6() && !ip6.Is4In6() && ip6.Zone() == "" {
+				bd.IP6 = ip6
+			}
+			out[n.Tap] = bd
 		}
 	}
 	return out
@@ -66,12 +73,16 @@ func LocalBindings(h cloudhypervisor.Host) map[string]Bound {
 
 // WithBindings gives each local silo the address and MAC its port was made with (they win over
 // status.siloIP, which is a copy written later). A local silo with no binding keeps the address
-// its status gives, without a MAC.
+// its status gives, without a MAC. Its IPv6 address is the binding's too (none if its port was
+// made without one), and only inside this host's IPv6 silo subnet.
 func WithBindings(view kni.Host, bound map[string]Bound) kni.Host {
 	local := make([]kni.Silo, len(view.Local))
 	for i, s := range view.Local {
 		if b, ok := bound[s.Tap]; ok {
-			s.IP, s.MAC = b.IP, b.MAC
+			s.IP, s.MAC, s.IP6 = b.IP, b.MAC, netip.Addr{}
+			if view.Subnet6.Contains(b.IP6) {
+				s.IP6 = b.IP6
+			}
 		}
 		local[i] = s
 	}

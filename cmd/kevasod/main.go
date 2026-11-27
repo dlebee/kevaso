@@ -285,8 +285,8 @@ func runControlPlane(ctx context.Context, args []string) error {
 			lbl[k] = v
 		}
 		cfg.Worker = &worker.Config{Runtimes: runtimes, Labels: lbl, EgressExtraCA: *egressCA, GatewayScope: *gwScope,
-			PluginsEtc: plugins.DefaultManifests,
-			Storage:    cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize, Device: *device}}
+			PluginsEtc: plugins.DefaultManifests, DetectIPv6: worker.DetectIPv6,
+			Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize, Device: *device}}
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	cfg.Log = logger.Printf
@@ -353,8 +353,8 @@ func runWorker(ctx context.Context, args []string) error {
 	contact := &worker.Contact{}
 	contact.SetFence(true) // a worker only: the control plane is elsewhere and carries on without it
 	wc := worker.Config{HostName: jc.HostName, Runtimes: runtimes, DataDir: jc.DataDir, Clock: clock.Real{}, Log: logger.Printf,
-		PluginsEtc: plugins.DefaultManifests,
-		Storage:    cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize, Device: *device}, Contact: contact, MeshSubnet: *withMesh, TartSoftnet: *tartSoftnet, TartUser: *tartUser, EgressExtraCA: *egressCA, GatewayScope: *gwScope, Watermark: wm}
+		PluginsEtc: plugins.DefaultManifests, DetectIPv6: worker.DetectIPv6,
+		Storage: cloudhypervisor.StorageOptions{LoopFile: *loop, LoopSize: *loopSize, Device: *device}, Contact: contact, MeshSubnet: *withMesh, TartSoftnet: *tartSoftnet, TartUser: *tartUser, EgressExtraCA: *egressCA, GatewayScope: *gwScope, Watermark: wm}
 	rts, err := worker.NewRuntimes(wc)
 	if err != nil {
 		return err

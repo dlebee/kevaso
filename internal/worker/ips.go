@@ -13,6 +13,8 @@ import (
 // IP's address, and egress.source ip or own sends from it, only while the silo holds the IP and
 // the address is on this host: a Host IP whose host is this one, or a Provider IP whose holder
 // runs here (the worker announces it). Read from the IP objects themselves, not a status copy.
+// One IP, one family (the IPv6 effort): a Host IP may be IPv6 (an IPv6 host address); Provider
+// IPs here are IPv4 only (no provider floats single IPv6 addresses yet).
 
 // ipHere is the IP named name (in s's namespace) when s holds it and its address is on this host.
 func ipHere(hostName string, s *v1.Silo, name string, ips []*v1.IP) (netip.Addr, bool) {
@@ -47,8 +49,8 @@ func addrHere(hostName string, s *v1.Silo, x *v1.IP) (netip.Addr, bool) {
 	if s.Status.Host != hostName || s.DeletionTimestamp != nil || !x.Status.Holds(s.UID) {
 		return netip.Addr{}, false
 	}
-	a, ok := listenAddr(x.Status.Address)
-	if !ok || !a.Is4() {
+	a, ok := hostAddr(x.Status.Address)
+	if !ok {
 		return netip.Addr{}, false
 	}
 	switch x.Spec.Type {
@@ -57,6 +59,9 @@ func addrHere(hostName string, s *v1.Silo, x *v1.IP) (netip.Addr, bool) {
 			return netip.Addr{}, false
 		}
 	case v1.IPTypeProvider: // its holder runs here: this worker announces it
+		if !a.Is4() {
+			return netip.Addr{}, false
+		}
 	default:
 		return netip.Addr{}, false
 	}
@@ -88,6 +93,7 @@ func serviceAddrs(hostName string, s *v1.Silo, ips []*v1.IP) map[string]netip.Ad
 
 // egressHere is where s's traffic leaves from on this host: egress.source's IP when it is here
 // (invalid otherwise: the worker's own address). A balancer's IP (loadBalancer.ip) never sends.
+// The address's family is the one it applies to (an IPv6 IP sets the IPv6 source only).
 func egressHere(hostName string, s *v1.Silo, ips []*v1.IP) netip.Addr {
 	src := s.Spec.Network.Egress.Source
 	if src == nil {
@@ -110,7 +116,7 @@ func egressHere(hostName string, s *v1.Silo, ips []*v1.IP) netip.Addr {
 }
 
 // HeldAddresses are the addresses of the IPs this host's silos hold here (hostPort ip or own,
-// egress.source): they go on its uplink, as /32s, with the status's host addresses. A Provider
+// egress.source): they go on its uplink, as /32s (IPv6: /128s), with the status's host addresses. A Provider
 // IP whose provider announces it (status.announce) goes on the loopback instead
 // (AnnouncedIPAddresses).
 func HeldAddresses(hostName string, silos []*v1.Silo, ips []*v1.IP) []string {
@@ -166,13 +172,18 @@ func WithIPs(view kni.Host, hostName string, me *v1.Host, silos []*v1.Silo, ips 
 			continue
 		}
 		ks.Addrs = serviceAddrs(hostName, s, ips)
-		ks.EgressIP = egressHere(hostName, s, ips)
+		ks.EgressIP, ks.EgressIPv6 = netip.Addr{}, netip.Addr{}
+		if e := egressHere(hostName, s, ips); e.Is4() {
+			ks.EgressIP = e
+		} else if e.IsValid() {
+			ks.EgressIPv6 = e
+		}
 		local[i] = ks
 	}
 	view.Local = local
 	own := append([]netip.Addr(nil), view.OwnIPs...)
 	addOwn := func(s string) {
-		if a, ok := listenAddr(s); ok && a.Is4() && !slices.Contains(own, a) {
+		if a, ok := hostAddr(s); ok && !slices.Contains(own, a) {
 			own = append(own, a)
 		}
 	}

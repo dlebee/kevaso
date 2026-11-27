@@ -244,13 +244,17 @@ func Decide(in Inspection, f Flags) (Decision, error) {
 			}
 		}
 		d.Plan.Tables = ExtraTables(r.State, in.Now)
-		d.Plan.IPForward = r.IPForward
+		d.Plan.IPForward, d.Plan.IPForward6 = r.IPForward, r.IPForward6
 		d.Plan.DockerOurs = slices.Contains(d.Plan.Purge, "docker.io")
 		if d.Plan.DockerJSON = DockerJSONRemove; r.DockerJSONBefore {
 			d.Plan.DockerJSON = DockerJSONRestore
 		}
-		say("from the install record: purge %s; delete nftables tables %s; set net.ipv4.ip_forward back to %s",
-			orNone(d.Plan.Purge), orNone(d.Plan.Tables), r.IPForward)
+		fwd6 := ""
+		if r.IPForward6 != "" {
+			fwd6 = "; set net.ipv6.conf.all.forwarding back to " + r.IPForward6
+		}
+		say("from the install record: purge %s; delete nftables tables %s; set net.ipv4.ip_forward back to %s%s",
+			orNone(d.Plan.Purge), orNone(d.Plan.Tables), r.IPForward, fwd6)
 		if len(d.NotOurs) > 0 {
 			say("left installed (not in the install record, but not installed by Kevaso either: someone installed them since): %s", strings.Join(d.NotOurs, " "))
 		}

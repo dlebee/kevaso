@@ -55,6 +55,10 @@ type Agent struct {
 	// silos are neither made nor started: a microVM started before its runtime's storage is up
 	// fails, and a failed one stays failed.
 	RuntimeReady func(name string) bool
+	// Subnet6, if set, is this host's IPv6 silo subnet (status.network.siloSubnetIPv6) when the
+	// host has IPv6 at the edge (a global address, spec.externalIPv6), else "": what a new silo's
+	// runtime gives it its IPv6 address in (kri.Spec.Subnet6). Nil: no IPv6.
+	Subnet6 func() string
 	// Bound is the worker's loaded bridge bindings (address → port), for the local endpoint
 	// (K-002): nil until the worker gives it.
 	Bound func(netip.Addr) (port string, ok bool)
@@ -708,9 +712,11 @@ func (a *Agent) runHere(ctx context.Context, k engine.Key, s *v1.Silo) (engine.R
 			return engine.Result{}, err
 		}
 		digest, err := a.pull(ctx, rt, s, image)
+		sub6, gw6 := a.ipv6()
 		if err == nil {
 			err = rt.Create(ctx, kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
-				Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath, GuestHostKey: guestHostKeyFor(s)})
+				Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath, GuestHostKey: guestHostKeyFor(s),
+				Subnet6: sub6, Gateway6: gw6})
 		}
 		if err != nil {
 			wait := a.createFailed(s)
@@ -1016,7 +1022,7 @@ func (a *Agent) reconcileRunning(ctx, inside context.Context, rt kri.Runtime, s 
 	}
 	if err := a.setStatus(ctx, s, func(st *v1.SiloStatus) {
 		a.volumesResponding(s, st, bad, dirs)
-		st.Phase, st.SiloIP = PhaseRunning, rs.Address
+		st.Phase, st.SiloIP, st.SiloIPv6 = PhaseRunning, rs.Address, a.siloIPv6(rs.Address6)
 		if key, ok := guestKeyOf(rt, idOf(s)); ok && st.GuestHostKey != key {
 			st.GuestHostKey = key
 		}
@@ -1184,6 +1190,7 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 	}
 	spec := kri.Spec{ID: id, Image: image, CPU: s.Spec.Resources.CPU, Memory: mem, DiskBytes: disk,
 		Volumes: vols, Command: s.Spec.Command(), DiskHostPath: diskPath, Reset: s.Spec.Reset}
+	spec.Subnet6, spec.Gateway6 = a.ipv6()
 	if g, ok := rr.(gatedResetter); ok {
 		err = g.ResetGated(ctx, spec, gate)
 	} else if err = gate(ctx); err == nil {
@@ -1205,7 +1212,7 @@ func (a *Agent) update(ctx context.Context, rt kri.Runtime, s *v1.Silo, image st
 	a.guestMounted.Delete(s.UID)
 	a.log("silo %s/%s: reset onto %s (%s)", s.Namespace, s.Name, image, what)
 	return true, a.setStatus(ctx, s, func(st *v1.SiloStatus) {
-		st.Image, st.Init, st.SiloIP = running(st.Image, s, image), nil, ""
+		st.Image, st.Init, st.SiloIP, st.SiloIPv6 = running(st.Image, s, image), nil, "", ""
 		st.Image.Digest = digest
 		setCond(st, "Updated", meta.ConditionTrue, "Reset", "reset onto "+image+" (stop-first, volumes kept)", s.Generation, a.now())
 	})
@@ -2379,4 +2386,34 @@ func (a *Agent) watchDeletes(ctx context.Context, e *engine.Engine) {
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// ipv6 is this host's IPv6 silo subnet and its gateway on the bridge (the subnet's ::1), for a
+// runtime's spec: both "" when the host has no IPv6 for its silos.
+func (a *Agent) ipv6() (subnet6, gateway6 string) {
+	if a.Subnet6 == nil {
+		return "", ""
+	}
+	p, err := netip.ParsePrefix(a.Subnet6())
+	if err != nil || !p.Addr().Is6() || p.Addr().Is4In6() || p.Bits() != 64 {
+		return "", ""
+	}
+	p = p.Masked()
+	return p.String(), p.Addr().Next().String()
+}
+
+// siloIPv6 is the IPv6 address a runtime reports for a silo as status.siloIPv6: only one inside
+// this host's IPv6 silo subnet, and not its network or gateway address (the API refuses anything
+// else, and the whole status write with it), else "".
+func (a *Agent) siloIPv6(addr string) string {
+	sub, gw := a.ipv6()
+	ip, err := netip.ParseAddr(addr)
+	if sub == "" || err != nil || ip.Zone() != "" {
+		return ""
+	}
+	p := netip.MustParsePrefix(sub)
+	if !p.Contains(ip) || ip == p.Addr() || ip.String() == gw {
+		return ""
+	}
+	return ip.String()
 }
