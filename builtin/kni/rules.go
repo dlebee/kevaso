@@ -493,9 +493,12 @@ func (g *gen) parseRanges(kind, owner, port string, items []string) ranges {
 }
 
 // v4Ranges is parseRanges' IPv4 list, for what opens over IPv4 only (node ports, Services): an
-// IPv6 entry is not a problem there, it just opens nothing.
+// IPv6 entry there opens nothing, so it is reported like any entry the rules can't take.
 func (g *gen) v4Ranges(kind, owner, port string, items []string) (out []string, closed bool) {
 	r := g.parseRanges(kind, owner, port, items)
+	for _, it := range r.v6 {
+		g.bad(kind, owner, port, it, "an IPv6 range; what it limits opens over IPv4 only")
+	}
 	return r.v4, r.shut4
 }
 
