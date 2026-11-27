@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -410,12 +411,15 @@ func reachable(s *v1.Silo, sv v1.SiloService, env *netEnv) []string {
 			way := sv.Way()
 			switch {
 			case way.Worker != "":
-				got := st[p.Port].External
+				got := []string{st[p.Port].External, st[p.Port].ExternalIPv6}
 				if way.Worker == v1.NetworkInternal {
-					got = st[p.Port].Internal
+					got = []string{st[p.Port].Internal}
 				}
-				if got != "" {
-					add(got)
+				got = slices.DeleteFunc(got, func(a string) bool { return a == "" })
+				if len(got) > 0 {
+					for _, a := range got {
+						add(a)
+					}
 				} else {
 					add(fmt.Sprintf("the worker's %s IP :%d (when placed)", way.Worker, n))
 				}
@@ -423,7 +427,7 @@ func reachable(s *v1.Silo, sv v1.SiloService, env *netEnv) []string {
 				x := env.ip(s.Namespace, way.IP)
 				switch {
 				case x != nil && x.Status.Address != "":
-					add(fmt.Sprintf("%s:%d", x.Status.Address, n))
+					add(net.JoinHostPort(x.Status.Address, strconv.Itoa(n))) // [ADDRESS]:PORT for IPv6
 				case x != nil:
 					add(fmt.Sprintf("ip %s :%d (not reserved yet)", way.IP, n))
 				case env != nil && env.ips != nil:

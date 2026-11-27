@@ -54,11 +54,19 @@ func AddedHostPorts(old, next v1.SiloSpec) []HostPort {
 }
 
 // missingAddress is the first of the silo's worker host ports h has no address for (ok false:
-// it has them all).
+// it has them all). An external port is open on the host's externalIPv6 too, so a host with an
+// externalIPv6 and no external IPv4 has an address for it, unless the port has sources: they are
+// IPv4, and such a port is closed on IPv6.
 func missingAddress(s *v1.Silo, h *v1.Host) (HostPort, bool) {
-	for _, w := range HostPorts(s) {
-		if h.IPOn(w.Network) == "" {
-			return w, true
+	for _, p := range s.Spec.Open() {
+		for _, n := range p.HostPort {
+			if h.IPOn(n) != "" {
+				continue
+			}
+			if n == v1.NetworkExternal && len(p.Sources) == 0 && h.ExternalIPv6() != "" {
+				continue
+			}
+			return HostPort{n, p.Protocol, p.HostNumber()}, true
 		}
 	}
 	return HostPort{}, false
@@ -178,6 +186,9 @@ func PortStatusWith(s *v1.Silo, h *v1.Host, lb string, held func(v1.OpenPort) *v
 		}
 		if p.On(v1.NetworkExternal) {
 			ps.External = at(h.External(), p.HostNumber())
+			if len(p.Sources) == 0 { // sources are IPv4: such a port is closed on IPv6
+				ps.ExternalIPv6 = at(h.ExternalIPv6(), p.HostNumber())
+			}
 		}
 		if p.LoadBalancer {
 			ps.LoadBalancer = at(lb, p.HostNumber())
