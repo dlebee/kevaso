@@ -8,15 +8,15 @@ payments    api          docker             -          -                   -    
 payments    ledger       cloud-hypervisor   -          -                   -             -
 web3        eth-node-a   cloud-hypervisor   -          -                   -             -
 
-NAMESPACE   NAME         RUNTIME            PHASE      READY               HOST          MOVABLE                                                      ON-CP-LOSS       AGE
-demo        hello        cloud-hypervisor   -          -                   -             -                                                            -                -
-demo        hello        cloud-hypervisor   Starting   no (Initializing)   hv1           -                                                            stops after <age>   <age>
-mail        far          docker             -          -                   -             -                                                            -                <age>
-mail        smtp         cloud-hypervisor   Running    -                   baremetal-1   no: pinned to baremetal-1 (IP mail is that host's address)   -                <age>
-mail        web          docker             -          -                   -             -                                                            -                <age>
-payments    api          docker             -          -                   -             -                                                            -                -
-payments    ledger       cloud-hypervisor   -          -                   -             -                                                            -                -
-web3        eth-node-a   cloud-hypervisor   -          -                   -             -                                                            -                -
+NAMESPACE   NAME         RUNTIME            PHASE      READY               HOST          SILO IP     SILO IPV6             MOVABLE                                                      ON-CP-LOSS       AGE
+demo        hello        cloud-hypervisor   -          -                   -             -           -                     -                                                            -                -
+demo        hello        cloud-hypervisor   Starting   no (Initializing)   hv1           10.64.2.7   fd12:3456:789a:2::7   -                                                            stops after <age>   <age>
+mail        far          docker             -          -                   -             -           -                     -                                                            -                <age>
+mail        smtp         cloud-hypervisor   Running    -                   baremetal-1   10.64.3.4   -                     no: pinned to baremetal-1 (IP mail is that host's address)   -                <age>
+mail        web          docker             -          -                   -             -           -                     -                                                            -                <age>
+payments    api          docker             -          -                   -             -           -                     -                                                            -                -
+payments    ledger       cloud-hypervisor   -          -                   -             -           -                     -                                                            -                -
+web3        eth-node-a   cloud-hypervisor   -          -                   -             -           -                     -                                                            -                -
 
 Name:                   hello
 Namespace:              demo
@@ -31,6 +31,7 @@ Can move:               unknown
 On host loss:           Wait
 On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
+Silo IPv6:              -
 Services:               none: no name, nothing reachable (a silo IP for its own traffic only)
 Grants:                 -
 OpenShell policies:     -
@@ -55,7 +56,9 @@ Can move:               unknown
 On host loss:           Wait
 On control-plane loss:  STOPS: the host stops this silo after <age> without the control plane (onControlPlaneLoss: Stop)
 Silo IP:                10.64.2.7
+Silo IPv6:              fd12:3456:789a:2::7
 Egress IP:              -
+Egress IPv6:            2001:db8:10::5
 In and out:             no outside address in or out
 Grants:                 -
 OpenShell policies:     -
@@ -96,7 +99,9 @@ Can move:               unknown
 On host loss:           Wait
 On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
+Silo IPv6:              -
 Egress IP:              -
+Egress IPv6:            -
 In and out:             no outside address in or out
 Grants:                 -
 OpenShell policies:     -
@@ -129,7 +134,9 @@ Can move:               no: pinned to baremetal-1 (IP mail is that host's addres
 On host loss:           Wait
 On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                10.64.3.4
+Silo IPv6:              none: host baremetal-1 has no IPv6 subnet (IPv4 only)
 Egress IP:              203.0.113.21 (ip: mail)
+Egress IPv6:            none (no IPv6 out on its worker)
 In and out:             in 203.0.113.20, out 203.0.113.21
 Grants:                 -
 OpenShell policies:     -
@@ -165,7 +172,9 @@ Can move:               unknown
 On host loss:           Wait
 On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
+Silo IPv6:              -
 Egress IP:              -
+Egress IPv6:            -
 In and out:             no outside address in or out
 Grants:                 -
 OpenShell policies:     -
@@ -198,6 +207,7 @@ Can move:               unknown
 On host loss:           Wait
 On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
+Silo IPv6:              -
 Services:               none: no name, nothing reachable (a silo IP for its own traffic only)
 Grants:                 -
 OpenShell policies:     -
@@ -216,6 +226,7 @@ Can move:               unknown
 On host loss:           Wait
 On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
+Silo IPv6:              -
 Services:               none: no name, nothing reachable (a silo IP for its own traffic only)
 Grants:                 -
 OpenShell policies:     -
@@ -234,7 +245,9 @@ Can move:               unknown
 On host loss:           Wait
 On control-plane loss:  keeps running (onControlPlaneLoss: Continue)
 Silo IP:                -
+Silo IPv6:              -
 Egress IP:              - (ip: eth-node-a)
+Egress IPv6:            -
 In and out:             no outside address in or out
 Grants:                 -
 OpenShell policies:     -

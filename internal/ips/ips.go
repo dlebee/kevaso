@@ -162,7 +162,7 @@ func Duplicates(hosts []*v1.Host) string {
 	names := map[string]string{}
 	addrs := map[string]string{}
 	for _, h := range sorted {
-		for _, a := range []string{h.Spec.ExternalIP, h.Spec.InternalIP} {
+		for _, a := range []string{h.Spec.ExternalIP, h.Spec.InternalIP, h.Spec.ExternalIPv6} {
 			if a != "" {
 				addrs[a] = h.Name + "'s main IP"
 			}
@@ -227,7 +227,9 @@ func Together(named []*v1.IP, hosts []*v1.Host) string {
 	return ""
 }
 
-// ParseAddress reads one IPv4 address (no range: an IP is one address).
+// ParseAddress reads one address, IPv4 or IPv6 (no range: an IP is one address). An IPv6 one
+// is a unicast address of its own: not loopback, link-local, multicast or unspecified, not the
+// IPv4-mapped form (write the IPv4 address), and without a zone.
 func ParseAddress(a string) (netip.Addr, error) {
 	ad, err := netip.ParseAddr(a)
 	if err != nil {
@@ -236,8 +238,102 @@ func ParseAddress(a string) (netip.Addr, error) {
 		}
 		return netip.Addr{}, fmt.Errorf("%q isn't an address", a)
 	}
-	if !ad.Is4() {
-		return netip.Addr{}, fmt.Errorf("%q: IPv6 comes later; IPv4 for now", a)
+	switch {
+	case ad.Is4():
+	case ad.Is4In6():
+		return netip.Addr{}, fmt.Errorf("%q is an IPv4-mapped IPv6 address: write the IPv4 address (%s)", a, ad.Unmap())
+	case ad.Zone() != "":
+		return netip.Addr{}, fmt.Errorf("%q has a zone: write the address alone (a link-local address can't be one of a host's addresses)", a)
+	case !ad.IsGlobalUnicast():
+		return netip.Addr{}, fmt.Errorf("%q isn't a unicast address of the host's own (loopback, link-local, multicast and :: can't be)", a)
 	}
 	return ad, nil
+}
+
+// ── Families: one IP, one family ─────────────────────────────────────────────
+
+// FamilyMismatch says why a Host IP's family isn't its host address's ("" when it is, or no host
+// has that address yet): the fix is the family, or another address.
+func FamilyMismatch(x *v1.IP, hosts []*v1.Host) string {
+	if x.Spec.Type != v1.IPTypeHost || !knownFamily(x.Spec.Family) {
+		return "" // a family that isn't one is refused on its own (admission's checkIP)
+	}
+	h, a, ok := FindAddress(hosts, x.Spec.HostAddress)
+	if !ok || a.Family() == "" || a.Family() == x.Spec.FamilyOrDefault() {
+		return ""
+	}
+	return fmt.Sprintf("host address %s is %s (%s on %s) and the IP is %s: a Host IP's family is its address's; set family: %s, or name an %s address",
+		a.Name, a.Family(), a.Address, h.Name, familyWord(x.Spec.Family), a.Family(), x.Spec.FamilyOrDefault())
+}
+
+func knownFamily(f string) bool { return f == "" || f == v1.FamilyIPv4 || f == v1.FamilyIPv6 }
+
+// familyWord is a spec's family for people ("IPv4 (the default)" when it says none).
+func familyWord(f string) string {
+	if f == "" {
+		return v1.FamilyIPv4 + " (the default)"
+	}
+	return f
+}
+
+// AddressFamilyConflicts says why host can't have its extra addresses as they are ("" when it
+// can): an IP of type Host naming one of them is of the other family.
+func AddressFamilyConflicts(h *v1.Host, all []*v1.IP) string {
+	var bad []string
+	for _, x := range all {
+		if x.Spec.Type != v1.IPTypeHost || !knownFamily(x.Spec.Family) {
+			continue
+		}
+		a, ok := h.Address(x.Spec.HostAddress)
+		if !ok || a.Family() == "" || a.Family() == x.Spec.FamilyOrDefault() {
+			continue
+		}
+		bad = append(bad, fmt.Sprintf("%s %s is %s and IP %s/%s naming it is %s", a.Name, a.Address, a.Family(), x.Namespace, x.Name, x.Spec.FamilyOrDefault()))
+	}
+	if len(bad) == 0 {
+		return ""
+	}
+	sort.Strings(bad)
+	return "an IP of type Host is one family, its address's: " + strings.Join(bad, "; ") + ": give the address one of the IP's family, or make an IP of the address's family (an IP's family can't change)"
+}
+
+// MemberFamily is the family of a Static set's member, as far as it is known ("" if not yet:
+// an IP not made, an address no host has).
+func MemberFamily(m v1.IPSetMember, nsIPs []*v1.IP, hosts []*v1.Host) string {
+	if m.IP != "" {
+		for _, x := range nsIPs {
+			if x.Name == m.IP {
+				return x.Spec.FamilyOrDefault()
+			}
+		}
+		return ""
+	}
+	if _, a, ok := FindAddress(hosts, m.HostAddress); ok {
+		return a.Family()
+	}
+	return ""
+}
+
+// SetFamilies says why a Static set's members aren't one family ("" when they are, as far as is
+// known). nsIPs are the IPs of the set's namespace.
+func SetFamilies(set *v1.IPSet, nsIPs []*v1.IP, hosts []*v1.Host) string {
+	if set.Spec.Type != v1.IPSetStatic {
+		return ""
+	}
+	first, fi := "", -1
+	for i, m := range set.Spec.Members {
+		f := MemberFamily(m, nsIPs, hosts)
+		if f == "" {
+			continue
+		}
+		if first == "" {
+			first, fi = f, i
+			continue
+		}
+		if f != first {
+			return fmt.Sprintf("members[%d] (%s) is %s and members[%d] (%s) is %s: a set is one family; make two sets, one per family, and a service on each (a port may be in several services)",
+				fi, set.Spec.Members[fi], first, i, m, f)
+		}
+	}
+	return ""
 }

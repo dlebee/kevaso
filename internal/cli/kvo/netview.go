@@ -41,6 +41,52 @@ func (e *netEnv) ip(ns, name string) *v1.IP {
 	return nil
 }
 
+// ipFamily is the family of the IP named name ("" if it isn't known).
+func (e *netEnv) ipFamily(ns, name string) string {
+	if x := e.ip(ns, name); x != nil {
+		return x.Spec.FamilyOrDefault()
+	}
+	return ""
+}
+
+func (e *netEnv) host(name string) *v1.Host {
+	if e == nil {
+		return nil
+	}
+	for _, h := range e.hosts {
+		if h.Name == name {
+			return h
+		}
+	}
+	return nil
+}
+
+// siloIPv6Line is a silo's IPv6 address for kvo describe, or why it has none.
+func siloIPv6Line(s *v1.Silo, env *netEnv) string {
+	if s.Status.SiloIPv6 != "" {
+		return s.Status.SiloIPv6
+	}
+	if s.Status.Host == "" {
+		return "-"
+	}
+	if h := env.host(s.Status.Host); h != nil && h.Status.Network.SiloSubnetIPv6 == "" {
+		return "none: host " + h.Name + " has no IPv6 subnet (IPv4 only)"
+	}
+	return "-"
+}
+
+// hostSubnets is a host's silo subnets, both families.
+func hostSubnets(h *v1.Host) string {
+	n := h.Status.Network
+	switch {
+	case n.SiloSubnet == "" && n.SiloSubnetIPv6 == "":
+		return "- (not on the mesh yet)"
+	case n.SiloSubnetIPv6 == "":
+		return n.SiloSubnet + " (no IPv6)"
+	}
+	return dash(n.SiloSubnet) + ", " + n.SiloSubnetIPv6
+}
+
 // addressHost is the host with the extra address named name ("" if none known).
 func (e *netEnv) addressHost(name string) string {
 	if e == nil {
@@ -110,10 +156,10 @@ func listOf[T meta.Object](ctx context.Context, c *client.Client, kind, ns strin
 
 // ── IPs ──────────────────────────────────────────────────────────────────────
 
-var ipHead = []string{"TYPE", "ADDRESS", "WHERE", "SET", "USED BY", "MOVES"}
+var ipHead = []string{"TYPE", "FAMILY", "ADDRESS", "WHERE", "SET", "USED BY", "MOVES"}
 
 func ipRow(x *v1.IP) []string {
-	return []string{x.Spec.Type, dash(x.Status.Address), dash(ipWhere(x)), dash(ipSet(x)), dash(x.Status.Holders()), ipMoves(x)}
+	return []string{x.Spec.Type, x.Spec.FamilyOrDefault(), dash(x.Status.Address), dash(ipWhere(x)), dash(ipSet(x)), dash(x.Status.Holders()), ipMoves(x)}
 }
 
 // ipWhere is where the address can be: the status's, else what the spec says.
@@ -171,6 +217,7 @@ func describeIPInto(kv func(int, string, any), x *v1.IP, env *netEnv) {
 		kv(0, "Releasing", "its address goes back once it's deleted")
 	}
 	kv(0, "Type", ipFrom(x))
+	kv(0, "Family", x.Spec.FamilyOrDefault())
 	kv(0, "Address", dash(x.Status.Address))
 	where := dash(ipWhere(x))
 	if x.Spec.Type == v1.IPTypeHost && x.Status.Host == "" {
@@ -413,7 +460,7 @@ func reachable(s *v1.Silo, sv v1.SiloService, env *netEnv) []string {
 // writeHostAddresses is a host's main and extra addresses, and who reserves or uses each.
 func writeHostAddresses(w io.Writer, h *v1.Host, env *netEnv) {
 	_, _ = fmt.Fprintln(w, "Addresses:")
-	_, _ = fmt.Fprintln(w, "  NAME\tKIND\tADDRESS\tRESERVED BY")
+	_, _ = fmt.Fprintln(w, "  NAME\tKIND\tFAMILY\tADDRESS\tRESERVED BY")
 	usedBy := func(kind string) string {
 		if env == nil || env.silos == nil {
 			return "-"
@@ -434,10 +481,13 @@ func writeHostAddresses(w io.Writer, h *v1.Host, env *netEnv) {
 		}
 		return "used by " + strings.Join(who, ", ") + " (worker: " + kind + ")"
 	}
-	_, _ = fmt.Fprintf(w, "  (main)\t%s\t%s\t%s\n", v1.NetworkExternal, dash(h.External()), usedBy(v1.NetworkExternal))
-	_, _ = fmt.Fprintf(w, "  (main)\t%s\t%s\t%s\n", v1.NetworkInternal, dash(h.Internal()), usedBy(v1.NetworkInternal))
+	_, _ = fmt.Fprintf(w, "  (main)\t%s\t%s\t%s\t%s\n", v1.NetworkExternal, v1.FamilyIPv4, dash(h.External()), usedBy(v1.NetworkExternal))
+	if v6 := h.ExternalIPv6(); v6 != "" {
+		_, _ = fmt.Fprintf(w, "  (main)\t%s\t%s\t%s\t%s\n", v1.NetworkExternal, v1.FamilyIPv6, v6, usedBy(v1.NetworkExternal))
+	}
+	_, _ = fmt.Fprintf(w, "  (main)\t%s\t%s\t%s\t%s\n", v1.NetworkInternal, v1.FamilyIPv4, dash(h.Internal()), usedBy(v1.NetworkInternal))
 	for _, a := range h.Spec.Addresses {
-		_, _ = fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", a.Name, a.Kind, a.Address, reservedBy(a.Name, env))
+		_, _ = fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\n", a.Name, a.Kind, dash(a.Family()), a.Address, reservedBy(a.Name, env))
 	}
 }
 

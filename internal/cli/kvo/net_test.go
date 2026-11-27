@@ -132,8 +132,8 @@ func TestIPCommandsOnTheAPI(t *testing.T) {
 	wantIn(t, "describe silo", out, "Can move: no: pinned to baremetal-1 (IP mail is that host's address)", "On host loss: Wait",
 		"Services:", "smtp      HostPort  ip: mail", "203.0.113.21:25", "webmail", "worker: external", "https→443")
 	out, _, _ = kvo(t, ctx, "describe", "host", "baremetal-1")
-	wantIn(t, "describe host", out, "Addresses:", "(main)  external  203.0.113.20  used by mail/smtp (webmail)",
-		"mail    external  203.0.113.21  ip mail/mail, used by silo/smtp (25/TCP)")
+	wantIn(t, "describe host", out, "Addresses:", "(main)  external  IPv4    203.0.113.20  used by mail/smtp (webmail)",
+		"mail    external  IPv4    203.0.113.21  ip mail/mail, used by silo/smtp (25/TCP)")
 
 	_, errs, code = kvo(t, ctx, "delete", "ip", "mail", "-n", "mail")
 	if code == 0 || strings.Contains(errs, "409") || !strings.Contains(errs, "IP mail is held by silo/smtp (25/TCP)") || !strings.Contains(errs, "delete that one first") {

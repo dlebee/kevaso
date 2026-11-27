@@ -46,18 +46,18 @@ func heldIP(s *v1.Silo, name string, env Env) *v1.IP {
 	return nil
 }
 
-// Egress is where a silo placed on h sends from, and why that isn't where it's reached when it
-// isn't: the worker's own address by default; egress.source.ip that IP's address, once it holds
-// it and it's on h.
-// egress.source own the instance's IPSet member's, the same way. egIP is the IP it names (or its
-// own member), as held.
-func Egress(s *v1.Silo, h *v1.Host, st v1.SiloServiceStatus, egIP *v1.IP) (out, note string) {
+// Egress is where a silo placed on h sends from over IPv4, and why that isn't where it's reached
+// when it isn't: the worker's own address by default; egress.source.ip that IP's address, once it
+// holds it and it's on h. egress.source own the instance's IPSet member's, the same way. egIP is
+// the IP it names (or its own member), as held; family is that IP's (IPv4 when unknown): a source
+// sets the address out of its own family only, so an IPv6 source leaves IPv4 out the worker's.
+func Egress(s *v1.Silo, h *v1.Host, st v1.SiloServiceStatus, egIP *v1.IP, family string) (out, note string) {
 	hostOut := ""
 	if !h.Spec.Network.BehindNAT {
 		hostOut = h.Reach()
 	}
 	src := s.Spec.Network.Egress.Source
-	if src != nil && (src.IP != "" || src.Own) {
+	if src != nil && (src.IP != "" || src.Own) && v1.FamilyOrDefault(family) == v1.FamilyIPv4 {
 		what := "IP " + src.IP
 		if src.Own {
 			what = "its IPSet member"
@@ -74,4 +74,33 @@ func Egress(s *v1.Silo, h *v1.Host, st v1.SiloServiceStatus, egIP *v1.IP) (out, 
 		return hostOut, "out is the worker's address (no egress.source)"
 	}
 	return hostOut, ""
+}
+
+// EgressIPv6 is where a silo placed on h sends from over IPv6: an IPv6 egress.source's address
+// once it holds it on h, else the worker's externalIPv6 ("" when h has none: no IPv6 out). family
+// is the source IP's, as in Egress.
+func EgressIPv6(s *v1.Silo, h *v1.Host, egIP *v1.IP, family string) string {
+	src := s.Spec.Network.Egress.Source
+	if src != nil && (src.IP != "" || src.Own) && family == v1.FamilyIPv6 &&
+		egIP != nil && egIP.Status.Address != "" && egIP.Status.Host == h.Name {
+		return egIP.Status.Address
+	}
+	return h.ExternalIPv6()
+}
+
+// sourceFamily is the family of the IP a silo's egress.source names (its own member for own),
+// "" when it names none or that IP isn't known yet.
+func sourceFamily(s *v1.Silo, env Env) string {
+	src := s.Spec.Network.Egress.Source
+	if src == nil {
+		return ""
+	}
+	name := src.IP
+	if src.Own {
+		name, _, _, _ = ownMember(s, env)
+	}
+	if x := findIP(env, s.Namespace, name); x != nil {
+		return x.Spec.FamilyOrDefault()
+	}
+	return ""
 }

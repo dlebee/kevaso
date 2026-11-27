@@ -50,9 +50,12 @@ type HostSpec struct {
 	// from outside that network (design §7.0). The operator says which is which: at least one.
 	// With no internalIP, a provider's private address (status.provider.privateAddress) is its
 	// internal IP.
-	InternalIP string         `json:"internalIP,omitempty"`
-	ExternalIP string         `json:"externalIP,omitempty"`
-	Components HostComponents `json:"components"`
+	InternalIP string `json:"internalIP,omitempty"`
+	ExternalIP string `json:"externalIP,omitempty"`
+	// ExternalIPv6 is its global IPv6 address, if it has one (detected like externalIP, or set):
+	// IPv6 at the edge only, the mesh stays IPv4. Without it the host is IPv4 only (not an error).
+	ExternalIPv6 string         `json:"externalIPv6,omitempty"`
+	Components   HostComponents `json:"components"`
 	// Region and Zone say where the machine is (design §3.4): shown everywhere, used for placement.
 	Region string `json:"region,omitempty"`
 	Zone   string `json:"zone,omitempty"`
@@ -71,8 +74,11 @@ type HostSpec struct {
 type HostAddress struct {
 	Name    string `json:"name"`
 	Kind    string `json:"kind"`    // external | internal
-	Address string `json:"address"` // one IPv4 address
+	Address string `json:"address"` // one address, IPv4 or IPv6
 }
+
+// Family is the address's family (IPv4 or IPv6; "" if it isn't an address).
+func (a HostAddress) Family() string { return FamilyOf(a.Address) }
 
 // Address is the host's extra address named name (ok false: it has none of that name).
 func (h *Host) Address(name string) (HostAddress, bool) {
@@ -201,6 +207,9 @@ func (h *Host) Internal() string {
 // External is the host's external IP ("" if it has none).
 func (h *Host) External() string { return h.Spec.ExternalIP }
 
+// ExternalIPv6 is the host's global IPv6 address ("" if it has none: IPv4 only).
+func (h *Host) ExternalIPv6() string { return h.Spec.ExternalIPv6 }
+
 // Reach is where other hosts reach this one (the mesh's WireGuard endpoint, the API and store
 // peer URLs): its external IP if it has one, else its internal IP (ADR 0010).
 func (h *Host) Reach() string {
@@ -231,9 +240,12 @@ type HostProvider struct {
 
 // NetworkStatus is a host's mesh identity.
 type NetworkStatus struct {
-	Index          int    `json:"index,omitempty"`          // 1…255, assigned once
-	MeshIP         string `json:"meshIP,omitempty"`         // on kevaso0, e.g. 10.63.0.3
-	SiloSubnet     string `json:"siloSubnet,omitempty"`     // its silos, e.g. 10.64.3.0/24
+	Index      int    `json:"index,omitempty"`      // 1…255, assigned once
+	MeshIP     string `json:"meshIP,omitempty"`     // on kevaso0, e.g. 10.63.0.3
+	SiloSubnet string `json:"siloSubnet,omitempty"` // its silos, e.g. 10.64.3.0/24
+	// SiloSubnetIPv6 is its silos' private IPv6 /64, from the cluster's ULA /48 by the index
+	// (e.g. fd12:3456:789a:3::/64). Not routed over the mesh: silos go out by NAT66.
+	SiloSubnetIPv6 string `json:"siloSubnetIPv6,omitempty"`
 	PublicKey      string `json:"publicKey,omitempty"`      // kevaso0's WireGuard key
 	InnerIP        string `json:"innerIP,omitempty"`        // behind NAT: on the end-to-end tunnel kevaso1
 	InnerPublicKey string `json:"innerPublicKey,omitempty"` // kevaso1's key
@@ -487,14 +499,17 @@ func (t Toleration) Tolerates(taint Taint) bool {
 
 // SiloStatus is what controllers report.
 type SiloStatus struct {
-	Phase      string            `json:"phase,omitempty"` // Pending | Scheduled | Starting | Running | Failed
-	Host       string            `json:"host,omitempty"`  // where the scheduler placed it
-	Conditions []meta.Condition  `json:"conditions,omitempty"`
-	Init       []StepStatus      `json:"init,omitempty"`
-	Daemons    []DaemonStatus    `json:"daemons,omitempty"`
-	Upkeep     []UpkeepStatus    `json:"upkeep,omitempty"`
-	SiloIP     string            `json:"siloIP,omitempty"` // the silo's own address in the cluster
-	Service    SiloServiceStatus `json:"service,omitempty"`
+	Phase      string           `json:"phase,omitempty"` // Pending | Scheduled | Starting | Running | Failed
+	Host       string           `json:"host,omitempty"`  // where the scheduler placed it
+	Conditions []meta.Condition `json:"conditions,omitempty"`
+	Init       []StepStatus     `json:"init,omitempty"`
+	Daemons    []DaemonStatus   `json:"daemons,omitempty"`
+	Upkeep     []UpkeepStatus   `json:"upkeep,omitempty"`
+	SiloIP     string           `json:"siloIP,omitempty"` // the silo's own address in the cluster
+	// SiloIPv6 is its IPv6 address in its host's siloSubnetIPv6, derived like siloIP (empty: its
+	// host has no IPv6 subnet, or it isn't running). Edge traffic only: the mesh is IPv4.
+	SiloIPv6 string            `json:"siloIPv6,omitempty"`
+	Service  SiloServiceStatus `json:"service,omitempty"`
 	// Volumes are its volumes from a provider's storage class: where each is and whether it's
 	// attached and mounted.
 	Volumes []VolumeStatus `json:"volumes,omitempty"`

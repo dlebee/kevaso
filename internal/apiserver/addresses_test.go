@@ -105,7 +105,9 @@ func TestCheckHostAddressList(t *testing.T) {
 		"an address twice": {host(mail, v1.HostAddress{Name: "smtp", Kind: v1.NetworkExternal, Address: "203.0.113.21"}), "203.0.113.21 is mail already"},
 		"a main IP":        {host(v1.HostAddress{Name: "web", Kind: v1.NetworkExternal, Address: "203.0.113.10"}), "203.0.113.10 is its main IP already"},
 		"a range":          {host(v1.HostAddress{Name: "pool", Kind: v1.NetworkExternal, Address: "203.0.113.20/30"}), "is a range: one address per name"},
-		"IPv6":             {host(v1.HostAddress{Name: "six", Kind: v1.NetworkExternal, Address: "2001:db8::1"}), "IPv6 comes later"},
+		"IPv6":             {host(v1.HostAddress{Name: "six", Kind: v1.NetworkExternal, Address: "2001:db8::1"}), ""},
+		"IPv6 link-local":  {host(v1.HostAddress{Name: "six", Kind: v1.NetworkExternal, Address: "fe80::1"}), "isn't a unicast address"},
+		"its externalIPv6": {&v1.Host{Spec: v1.HostSpec{ExternalIP: "203.0.113.10", ExternalIPv6: "2001:db8::10", Addresses: []v1.HostAddress{{Name: "six", Kind: v1.NetworkExternal, Address: "2001:db8::10"}}}}, "2001:db8::10 is its main IP already"},
 		"no kind":          {host(v1.HostAddress{Name: "mail", Address: "203.0.113.21"}), `kind "": external`},
 		"a bad name":       {host(v1.HostAddress{Name: "Mail", Kind: v1.NetworkExternal, Address: "203.0.113.21"}), `name "Mail"`},
 	} {

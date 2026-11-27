@@ -690,6 +690,9 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		if err := s.siloIPInSubnet(ctx, old.(*v1.Silo).Status, obj.(*v1.Silo).Status, id.Name); err != nil {
 			return store.Object{}, err
 		}
+		if err := s.siloIPv6InSubnet(ctx, old.(*v1.Silo).Status, obj.(*v1.Silo).Status, id.Name); err != nil {
+			return store.Object{}, err
+		}
 		obj.(*v1.Silo).Status.Restore = old.(*v1.Silo).Status.Restore // a worker cannot mark a silo settled
 	}
 	if id, ok := IdentityFrom(ctx); (!ok || id.Type != "host" || id.Role != "worker") && t.kind.Kind == "Silo" && t.status && !t.planned {
@@ -765,6 +768,7 @@ func (s *Server) update(ctx context.Context, t target, obj meta.Object) (store.O
 		oh, nh := old.(*v1.Host).Status, &obj.(*v1.Host).Status
 		nh.Provider = oh.Provider
 		nh.Network.Index, nh.Network.MeshIP, nh.Network.SiloSubnet, nh.Network.InnerIP = oh.Network.Index, oh.Network.MeshIP, oh.Network.SiloSubnet, oh.Network.InnerIP
+		nh.Network.SiloSubnetIPv6 = oh.Network.SiloSubnetIPv6
 		// The rest per field (review batch 3; the table is in hostwrite.go).
 		if err := boundHostWrite(oh, nh, id.Name, s.clock.Now()); err != nil {
 			return store.Object{}, err

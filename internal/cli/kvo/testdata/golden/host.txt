@@ -11,7 +11,9 @@ Labels:             -
 Created:            YYYY-MM-DD hh:mm:ss (<age> ago)
 Internal IP:        10.0.0.6
 External IP:        203.0.113.20
+External IPv6:      none: IPv4 only (no global IPv6 address; set spec.externalIPv6 if it has one)
 Mesh IP:            -
+Silo subnets:       - (not on the mesh yet)
 Names answered on:  its silos and the mesh
 Region:             ca-central
 Zone:               -
@@ -20,11 +22,12 @@ Worker labels:      -
 Taints:             -
 Allocatable:        0 CPU, - memory
 Addresses:
-  NAME    KIND      ADDRESS       RESERVED BY
-  (main)  external  203.0.113.20  used by mail/smtp (webmail) (worker: external)
-  (main)  internal  10.0.0.6      -
-  mail    external  203.0.113.21  ip mail/mail, used by silo/smtp (25/TCP)
-  spare   internal  10.0.0.66     - (free: an IP with type: Host, hostAddress: spare reserves it)
+  NAME    KIND      FAMILY  ADDRESS          RESERVED BY
+  (main)  external  IPv4    203.0.113.20     used by mail/smtp (webmail) (worker: external)
+  (main)  internal  IPv4    10.0.0.6         -
+  mail    external  IPv4    203.0.113.21     ip mail/mail, used by silo/smtp (25/TCP)
+  spare   internal  IPv4    10.0.0.66        - (free: an IP with type: Host, hostAddress: spare reserves it)
+  mail6   external  IPv6    2001:db8:20::21  ip mail/mail6
 Runtimes:
   NAME              STATE  VERSION  MESSAGE
   cloud-hypervisor  -      -        -
@@ -34,7 +37,9 @@ Labels:             -
 Created:            YYYY-MM-DD hh:mm:ss (<age> ago)
 Internal IP:        10.0.0.5
 External IP:        203.0.113.10
+External IPv6:      2001:db8:10::5
 Mesh IP:            10.63.0.2
+Silo subnets:       10.64.2.0/24, fd12:3456:789a:2::/64
 Names answered on:  its silos and the mesh
 Region:             ca-central
 Zone:               -
@@ -44,9 +49,10 @@ Taints:             gpu=yes:NoSchedule
 Allocatable:        3 CPU, 4886Mi memory
 Last heartbeat:     <age> ago
 Addresses:
-  NAME    KIND      ADDRESS       RESERVED BY
-  (main)  external  203.0.113.10  used by demo/hello (api) (worker: external)
-  (main)  internal  10.0.0.5      -
+  NAME    KIND      FAMILY  ADDRESS         RESERVED BY
+  (main)  external  IPv4    203.0.113.10    used by demo/hello (api) (worker: external)
+  (main)  external  IPv6    2001:db8:10::5  used by demo/hello (api) (worker: external)
+  (main)  internal  IPv4    10.0.0.5        -
 Runtimes:
   NAME              STATE       VERSION  MESSAGE
   cloud-hypervisor  Ready       v54.1    -

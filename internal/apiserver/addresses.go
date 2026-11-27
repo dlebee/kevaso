@@ -74,13 +74,25 @@ func checkIP(o *v1.IP) []string {
 	default:
 		add("spec.type %q: Host or Provider", sp.Type)
 	}
+	if f := checkFamily("spec.family", sp.Family); f != "" {
+		add("%s", f)
+	}
 	return errs
+}
+
+// checkFamily is why family isn't one ("" when it is, or empty: IPv4).
+func checkFamily(field, family string) string {
+	switch family {
+	case "", v1.FamilyIPv4, v1.FamilyIPv6:
+		return ""
+	}
+	return fmt.Sprintf("%s %q: IPv4 (the default) or IPv6; one IP is one address of one family (two families on a kept address are two IPs, and a service on each)", field, family)
 }
 
 // ipTransition: an IP is one address from one place; it never changes.
 func ipTransition(o, x *v1.IP) []string {
 	if o.Spec != x.Spec {
-		return []string{"spec can't change (type, hostAddress, provider, region): an IP is one address from one place; make another IP"}
+		return []string{"spec can't change (type, family, hostAddress, provider, region): an IP is one address from one place; make another IP"}
 	}
 	return nil
 }
@@ -97,6 +109,9 @@ func checkIPSet(o *v1.IPSet) []string {
 		}
 		if sp.Provider != "" || sp.Region != "" || sp.Max != 0 {
 			add("type Static lists its members: provider, region and max are for type Dynamic")
+		}
+		if sp.Family != "" {
+			add("type Static is its members' family: family is for type Dynamic (drop it; a set whose members differ is refused)")
 		}
 		seen := map[string]int{}
 		for i, m := range sp.Members {
@@ -129,6 +144,9 @@ func checkIPSet(o *v1.IPSet) []string {
 		if sp.Provider != "" && !label.MatchString(sp.Provider) {
 			add("spec.provider %q: an installed provider's name (e.g. linode)", sp.Provider)
 		}
+		if f := checkFamily("spec.family", sp.Family); f != "" {
+			add("%s", f)
+		}
 	case "":
 		add("spec.type is required: Static (members you list) or Dynamic (provider IPs reserved as instances need them)")
 	default:
@@ -141,6 +159,9 @@ func checkIPSet(o *v1.IPSet) []string {
 // added at the end, never renumbered or removed (instance N keeps member N).
 func ipSetTransition(o, x *v1.IPSet) []string {
 	var errs []string
+	if o.Spec.Family != x.Spec.Family {
+		errs = append(errs, "spec.family can't change: its members are addresses of that family; make another set")
+	}
 	if o.Spec.Type != x.Spec.Type {
 		return []string{"spec.type can't change (it's " + o.Spec.Type + "): make another IPSet"}
 	}
@@ -153,14 +174,14 @@ func ipSetTransition(o, x *v1.IPSet) []string {
 	return errs
 }
 
-// checkHostAddressList: a host's extra addresses, each a name, a kind and one IPv4 address, none
+// checkHostAddressList: a host's extra addresses, each a name, a kind and one address (IPv4 or IPv6), none
 // twice and none a main IP. Names unique in the cluster is checked against the other hosts
 // (checkHostAddresses).
 func checkHostAddressList(h *v1.Host) []string {
 	var errs []string
 	add := func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }
 	names, addrs := map[string]bool{}, map[string]string{}
-	for _, a := range []string{h.Spec.ExternalIP, h.Spec.InternalIP} {
+	for _, a := range []string{h.Spec.ExternalIP, h.Spec.InternalIP, h.Spec.ExternalIPv6} {
 		if a != "" {
 			addrs[a] = "its main IP"
 		}

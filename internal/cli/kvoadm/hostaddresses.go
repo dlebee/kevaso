@@ -21,7 +21,7 @@ import (
 //	kvoadm host addresses HOST list            each address, and which IP reserves it
 
 // EditAddresses is a host's extra addresses after adding or removing one. Pure; the server
-// checks the rest (one IPv4 address each, names unique in the cluster).
+// checks the rest (one address each, IPv4 or IPv6, names unique in the cluster).
 func EditAddresses(cur []v1.HostAddress, op string, args []string) ([]v1.HostAddress, error) {
 	out := slices.Clone(cur)
 	switch op {
@@ -44,10 +44,11 @@ func EditAddresses(cur []v1.HostAddress, op string, args []string) ([]v1.HostAdd
 		if slices.ContainsFunc(out, func(a v1.HostAddress) bool { return a.Name == rest[0] }) {
 			return nil, fmt.Errorf("the host has an address named %s already", rest[0])
 		}
-		if _, err := ips.ParseAddress(rest[1]); err != nil {
+		ad, err := ips.ParseAddress(rest[1])
+		if err != nil {
 			return nil, err
 		}
-		return append(out, v1.HostAddress{Name: rest[0], Kind: kind, Address: rest[1]}), nil
+		return append(out, v1.HostAddress{Name: rest[0], Kind: kind, Address: ad.String()}), nil // one way to write it (2001:DB8::1 is 2001:db8::1)
 	case "remove":
 		if len(args) != 1 {
 			return nil, errors.New("addresses remove NAME")

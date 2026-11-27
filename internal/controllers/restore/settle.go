@@ -225,7 +225,7 @@ func Settle(s *v1.Silo, g *v1.RestoreGate, hosts []*v1.Host) (v1.SiloStatus, boo
 		st.Restore = marked(g.Spec.History, v1.RestoreSettled, holders)
 		if st.Host != holders[0] && !moves.HandingOff(st) { // a handoff in the backup is not cleared here
 			from := st.Host
-			st.Host, st.SiloIP, st.Phase = holders[0], "", "Scheduled" // the one copy is the placement
+			st.Host, st.SiloIP, st.SiloIPv6, st.Phase = holders[0], "", "", "Scheduled" // the one copy is the placement
 			st.Conditions = dropHostConditions(st.Conditions)
 			followVolumes(&st, from, holders[0], storedLive(g, byName, from))
 		}

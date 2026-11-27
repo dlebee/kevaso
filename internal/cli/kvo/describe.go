@@ -133,6 +133,7 @@ func describeWith(w io.Writer, obj meta.Object, env *netEnv) error {
 			kv(0, "On control-plane loss", "keeps running (onControlPlaneLoss: Continue)")
 		}
 		kv(0, "Silo IP", dash(o.Status.SiloIP))
+		kv(0, "Silo IPv6", siloIPv6Line(o, env))
 		st := o.Status.Service
 		if len(o.Spec.Services) == 0 {
 			kv(0, "Services", "none: no name, nothing reachable (a silo IP for its own traffic only)")
@@ -150,6 +151,17 @@ func describeWith(w io.Writer, obj meta.Object, env *netEnv) error {
 				egress += " (own)"
 			}
 			kv(0, "Egress IP", egress)
+			egress6 := st.EgressIPv6
+			if src := o.Spec.Network.Egress.Source; egress6 != "" && src != nil && src.IP != "" && env.ipFamily(o.Namespace, src.IP) == v1.FamilyIPv6 {
+				egress6 += " (ip: " + src.IP + ")"
+			}
+			switch {
+			case egress6 == "" && o.Status.Host == "":
+				egress6 = "-"
+			case egress6 == "":
+				egress6 = "none (no IPv6 out on its worker)"
+			}
+			kv(0, "Egress IPv6", egress6)
 			kv(0, "In and out", st.AddressesLine())
 			if st.IP != "" {
 				kv(0, "IP", st.IP+" (kvo describe ip "+st.IP+")")
@@ -278,7 +290,13 @@ func describeWith(w io.Writer, obj meta.Object, env *netEnv) error {
 		}
 		kv(0, "Internal IP", internal)
 		kv(0, "External IP", dash(o.External()))
+		ipv6 := o.ExternalIPv6()
+		if ipv6 == "" {
+			ipv6 = "none: IPv4 only (no global IPv6 address; set spec.externalIPv6 if it has one)"
+		}
+		kv(0, "External IPv6", ipv6)
 		kv(0, "Mesh IP", dash(o.Status.Network.MeshIP))
+		kv(0, "Silo subnets", hostSubnets(o))
 		tables = append(tables, func() { writeHostAddresses(tw, o, env) })
 		dnsOn := "its silos and the mesh"
 		for _, n := range o.Spec.Network.DNS {

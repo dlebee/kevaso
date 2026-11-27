@@ -532,7 +532,7 @@ func runControllers(ctx context.Context, c *client.Client, cfg Config, cd certDe
 	ipInf.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IP", Namespace: k.Namespace, Name: k.Name}) })
 	ipCtl := &ipcontroller.Controller{Client: c, IPs: ipInf, Silos: silos, Services: services, Hosts: hosts, SiloSets: sets, IPSets: ipSets, Plugins: cfg.Plugins, Clock: cfg.Clock, Claims: uniq}
 	e.Register(ipCtl, engine.Options{Workers: 1})
-	e.Register(&ipcontroller.Sets{Client: c, IPSets: ipSets, IPs: ipInf, Silos: silos, SiloSets: sets, Clock: cfg.Clock}, engine.Options{Workers: 1})
+	e.Register(&ipcontroller.Sets{Client: c, IPSets: ipSets, IPs: ipInf, Silos: silos, SiloSets: sets, Hosts: hosts, Clock: cfg.Clock}, engine.Options{Workers: 1})
 	ipSets.AddHandler(func(k informer.Key) { e.Changed(engine.Key{Kind: "IPSet", Namespace: k.Namespace, Name: k.Name}) })
 	namespaces := newInf("Namespace")
 	e.Register(&nscontroller.Controller{Client: c, Clock: cfg.Clock}, engine.Options{Workers: 1})

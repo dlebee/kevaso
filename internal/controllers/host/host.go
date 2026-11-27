@@ -1,5 +1,5 @@
 // Package host is the control plane's host controller. It gives every host its place on the mesh
-// (an index, its mesh IP and silo subnet), and runs the host lease: a host whose kevasod stops
+// (an index, its mesh IP and silo subnet, and its silos' IPv6 /64 from the cluster's /48), and runs the host lease: a host whose kevasod stops
 // reporting is marked lost (Ready Unknown, reason HostLost) once its lease runs out. That only
 // informs: the silo controller marks the host's silos HostUnreachable and starts no other copy
 // (brainstorm §0.7); a person's kvo move … --confirm-fenced moves them.
@@ -21,6 +21,7 @@ import (
 	"kevaso.com/core/internal/clock"
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/mesh"
+	"kevaso.com/core/internal/store"
 )
 
 // DefaultLease is how long a host may go without a heartbeat before it's lost. Agents fence
@@ -70,6 +71,31 @@ type Controller struct {
 	Claims *claims.Claims
 	// Contacts, if set, learn of every heartbeat seen (the silo controller reads them).
 	Contacts *Contacts
+	// Store keeps the cluster's IPv6 /48 (EnsureULA) that hosts' silo /64s come from; nil: the
+	// Claims' store, and with neither, hosts get no IPv6 subnet.
+	Store store.Store
+
+	ulaOnce string // the cluster's /48, once read (it never changes)
+}
+
+// ula is the cluster's IPv6 /48 ("" when the controller has no store). Called with c.mu held.
+func (c *Controller) ula(ctx context.Context) (string, error) {
+	if c.ulaOnce != "" {
+		return c.ulaOnce, nil
+	}
+	st := c.Store
+	if st == nil && c.Claims != nil {
+		st = c.Claims.Store
+	}
+	if st == nil {
+		return "", nil
+	}
+	ula, err := EnsureULA(ctx, st)
+	if err != nil {
+		return "", fmt.Errorf("the cluster's IPv6 range: %w", err)
+	}
+	c.ulaOnce = ula
+	return ula, nil
 }
 
 // PoolMeshIndex is the claims pool of hosts' mesh indexes.
@@ -84,15 +110,21 @@ func UsesMeshIndex(obj []byte, value string) bool {
 // assignIndex gives h its mesh index if it has none, reporting whether it wrote. Called with c.mu
 // held.
 func (c *Controller) assignIndex(ctx context.Context, h *v1.Host) (bool, error) {
+	ula, err := c.ula(ctx)
+	if err != nil {
+		return false, err
+	}
 	if n := &h.Status.Network; n.Index > 0 {
 		delete(c.assigned, h.Name)
-		// The addresses follow from the index (mesh.Addresses): one rewritten in the Host's status
-		// is put back, so it is never what peers keep (review of the control-plane fixes, item 2).
+		// The addresses follow from the index (mesh.Addresses, and the /64 from the cluster's
+		// /48): one rewritten in the Host's status is put back, so it is never what peers keep
+		// (review of the control-plane fixes, item 2).
 		meshIP, subnet, inner := mesh.Addresses(n.Index)
-		if n.MeshIP == meshIP && n.SiloSubnet == subnet && n.InnerIP == inner {
+		subnet6 := mesh.SubnetIPv6(ula, n.Index)
+		if n.MeshIP == meshIP && n.SiloSubnet == subnet && n.InnerIP == inner && n.SiloSubnetIPv6 == subnet6 {
 			return false, nil
 		}
-		n.MeshIP, n.SiloSubnet, n.InnerIP = meshIP, subnet, inner
+		n.MeshIP, n.SiloSubnet, n.InnerIP, n.SiloSubnetIPv6 = meshIP, subnet, inner, subnet6
 		return true, c.Client.UpdateStatus(ctx, h)
 	}
 	if c.assigned == nil {
@@ -134,6 +166,7 @@ func (c *Controller) assignIndex(ctx context.Context, h *v1.Host) (bool, error) 
 	n := &h.Status.Network
 	n.Index = i
 	n.MeshIP, n.SiloSubnet, n.InnerIP = mesh.Addresses(i)
+	n.SiloSubnetIPv6 = mesh.SubnetIPv6(ula, i)
 	if err := c.Client.UpdateStatus(ctx, h); err != nil {
 		return false, err
 	}

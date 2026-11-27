@@ -156,8 +156,10 @@ Silo spec.network={"egress":{"source":{}}}
   Silo s: network.egress.source takes exactly one of ip (an IP's name) and own: true; leave it out to send from the worker's own IP
 Silo spec.network={"egress":{"source":{"ip":"A"}}}
   Silo s: network.egress.source.ip "A": an IP's name in this namespace (no kind/ prefix)
-Grant spec.egress=[{"to":"2001:db8::/32"}]
-  Grant g: egress "2001:db8::/32": IPv6 comes later; IPv4 for now
+Grant spec.egress=[{"to":"::ffff:203.0.113.7"}]
+  Grant g: egress "::ffff:203.0.113.7": an IPv4-mapped IPv6 address: write the IPv4 address (203.0.113.7)
+Grant spec.egress=[{"to":"fe80::/64"}]
+  Grant g: egress "fe80::/64" is inside fe80::/10 (link-local), which a grant never opens
 Grant spec.egress=[{"to":"10.64.2.5"}]
   Grant g: egress "10.64.2.5" is inside 10.64.0.0/16 (the silo range), which a grant never opens
 Grant spec.egress=[{"to":"10.65.0.9"}]
@@ -415,7 +417,15 @@ Host spec.components.worker={"taints":[{"key":"k","effect":"NoExecute"}]}
 Host spec.components.worker={"runtimes":[{"name":"kvm"}]}
   Host h: unknown runtime in spec.components.worker.runtimes
 Host spec.internalIP="fd00::1"
-  Host h: spec.internalIP: "fd00::1" isn't an IPv4 address
+  Host h: spec.internalIP: "fd00::1" is IPv6: the internal IP is IPv4 (the mesh is IPv4); a global IPv6 address goes in spec.externalIPv6, others in spec.addresses
+Host spec.externalIP="2001:db8::5"
+  Host h: spec.externalIP: "2001:db8::5" is IPv6: it goes in spec.externalIPv6 (externalIP is the host's IPv4 address; the mesh is IPv4)
+Host spec.externalIPv6="203.0.113.5"
+  Host h: spec.externalIPv6: "203.0.113.5" is IPv4: it goes in spec.externalIP
+Host spec.externalIPv6="fe80::1"
+  Host h: spec.externalIPv6: "fe80::1" isn't a global IPv6 address (link-local, unique local, loopback, multicast and :: aren't; a host without one is IPv4 only, so leave it out)
+IP spec.family="IPv4+IPv6"
+  IP ip: spec.family "IPv4+IPv6": IPv4 (the default) or IPv6; one IP is one address of one family (two families on a kept address are two IPs, and a service on each)
 Host spec.externalIP="10.0.0.5"
   Host h: spec.internalIP and spec.externalIP are the same address: a machine with one address has one of the two (external if it's reachable from outside its network)
 Host spec.network={"dns":["mesh"]}

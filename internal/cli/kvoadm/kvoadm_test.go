@@ -425,12 +425,17 @@ func TestEditAddresses(t *testing.T) {
 		{"no kind", []string{"web", "203.0.113.22"}, "--external|--internal"},
 		{"no address", []string{"web", "--external"}, "--external|--internal"},
 		{"a range", []string{"web", "203.0.113.20/30", "--external"}, "is a range"},
-		{"IPv6", []string{"web", "2001:db8::1", "--external"}, "IPv6"},
+		{"IPv6 link-local", []string{"web", "fe80::1", "--external"}, "isn't a unicast address"},
+		{"IPv4-mapped", []string{"web", "::ffff:203.0.113.22", "--external"}, "write the IPv4 address"},
 		{"not an address", []string{"web", "example.com", "--external"}, "isn't an address"},
 	} {
 		if _, err := EditAddresses(got, "add", c.args); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want %q", c.name, err, c.want)
 		}
+	}
+	six, err := EditAddresses(got, "add", []string{"mail6", "2001:DB8::21", "--external"}) // the IPv6 effort
+	if err != nil || show(six) != "mail=external:203.0.113.21 lan=internal:10.0.0.9 mail6=external:2001:db8::21" {
+		t.Fatalf("add IPv6: %v %v", six, err)
 	}
 	got, err = EditAddresses(got, "remove", []string{"mail"})
 	if err != nil || show(got) != "lan=internal:10.0.0.9" {

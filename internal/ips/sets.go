@@ -44,8 +44,10 @@ func Size(set *v1.IPSet) int {
 }
 
 // Made is the IP the set makes for its ordinal i (labelled with the set and the ordinal), or nil
-// when member i is an IP of the namespace's own (a Static ip member) or there is none.
-func Made(set *v1.IPSet, i int) *v1.IP {
+// when member i is an IP of the namespace's own (a Static ip member) or there is none. Its family
+// is a Dynamic set's, or a Static hostAddress member's address's (family: that address's family,
+// "" when no host has it yet: IPv4).
+func Made(set *v1.IPSet, i int, family string) *v1.IP {
 	name, ok := MemberIP(set, i)
 	if !ok {
 		return nil
@@ -60,11 +62,19 @@ func Made(set *v1.IPSet, i int) *v1.IP {
 		if m.IP != "" {
 			return nil
 		}
-		x.Spec = v1.IPSpec{Type: v1.IPTypeHost, HostAddress: m.HostAddress}
+		x.Spec = v1.IPSpec{Type: v1.IPTypeHost, HostAddress: m.HostAddress, Family: explicitFamily(family)}
 	case v1.IPSetDynamic:
-		x.Spec = v1.IPSpec{Type: v1.IPTypeProvider, Provider: set.Spec.Provider, Region: set.Spec.Region}
+		x.Spec = v1.IPSpec{Type: v1.IPTypeProvider, Provider: set.Spec.Provider, Region: set.Spec.Region, Family: explicitFamily(set.Spec.Family)}
 	}
 	return x
+}
+
+// explicitFamily is family as a spec writes it: IPv4, the default, is left out.
+func explicitFamily(f string) string {
+	if f == v1.FamilyIPv4 {
+		return ""
+	}
+	return f
 }
 
 // MadeBy says whether x is the set's own IP for its ordinal i (it carries the set's labels).

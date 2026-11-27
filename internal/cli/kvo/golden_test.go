@@ -91,6 +91,8 @@ func livedIn() map[string][]meta.Object {
 			Conditions: []meta.Condition{{Type: "Ready", Status: meta.ConditionTrue, Reason: "WorkerUp", LastTransitionTime: created}},
 			Runtimes:   map[string]v1.RuntimeStatus{"cloud-hypervisor": {State: "Ready", Version: "v54.1"}, "docker": {State: "Installing", Message: "3/5 engine"}}}}
 	h.Status.Network.MeshIP = "10.63.0.2"
+	h.Spec.ExternalIPv6 = "2001:db8:10::5" // the IPv6 effort: both families at the edge
+	h.Status.Network.SiloSubnet, h.Status.Network.SiloSubnetIPv6 = "10.64.2.0/24", "fd12:3456:789a:2::/64"
 	s := silo()
 	s.Spec.Ports = []v1.SiloPort{{Name: "http", Port: 8080}, {Name: "metrics", Port: 9090}}
 	s.Spec.Services = []v1.SiloService{
@@ -98,7 +100,8 @@ func livedIn() map[string][]meta.Object {
 		{Name: "api-metrics", Ports: []v1.ServicePort{{Port: "metrics", AllowFrom: []string{"prom"}}}},
 	}
 	s.Spec.Availability = v1.Availability{OnControlPlaneLoss: v1.OnControlPlaneLossStop, After: "5m"}
-	s.Status.SiloIP = "10.64.2.7"
+	s.Status.SiloIP, s.Status.SiloIPv6 = "10.64.2.7", "fd12:3456:789a:2::7"
+	s.Status.Service.EgressIPv6 = "2001:db8:10::5"
 	net := netObjects(created)
 	for k, l := range map[string][]meta.Object{"Host": {h}, "Silo": {s}} {
 		net[k] = append(l, net[k]...)
@@ -114,11 +117,14 @@ func netObjects(created time.Time) map[string][]meta.Object {
 	}
 	h := &v1.Host{ObjectMeta: om("baremetal-1", "", nil),
 		Spec: v1.HostSpec{InternalIP: "10.0.0.6", ExternalIP: "203.0.113.20", Region: "ca-central",
-			Addresses:  []v1.HostAddress{{Name: "mail", Kind: v1.NetworkExternal, Address: "203.0.113.21"}, {Name: "spare", Kind: v1.NetworkInternal, Address: "10.0.0.66"}},
+			Addresses: []v1.HostAddress{{Name: "mail", Kind: v1.NetworkExternal, Address: "203.0.113.21"}, {Name: "spare", Kind: v1.NetworkInternal, Address: "10.0.0.66"},
+				{Name: "mail6", Kind: v1.NetworkExternal, Address: "2001:db8:20::21"}},
 			Components: v1.HostComponents{Worker: &v1.WorkerSpec{Runtimes: []v1.RuntimeSpec{{Name: "cloud-hypervisor"}}}}}}
 	mail := &v1.IP{ObjectMeta: om("mail", "mail", nil), Spec: v1.IPSpec{Type: v1.IPTypeHost, HostAddress: "mail"},
 		Status: v1.IPStatus{Address: "203.0.113.21", Where: "host baremetal-1", Host: "baremetal-1",
 			Holder: &v1.IPHolder{Holder: "silo/smtp", UID: "u-smtp", Ports: []string{"25/TCP"}}}}
+	mail6 := &v1.IP{ObjectMeta: om("mail6", "mail", nil), Spec: v1.IPSpec{Type: v1.IPTypeHost, HostAddress: "mail6", Family: v1.FamilyIPv6},
+		Status: v1.IPStatus{Address: "2001:db8:20::21", Where: "host baremetal-1", Host: "baremetal-1"}}
 	edge := &v1.IP{ObjectMeta: om("api-edge", "mail", nil), Spec: v1.IPSpec{Type: v1.IPTypeProvider, Provider: "linode", Region: "us-ord"},
 		Status: v1.IPStatus{Address: "172.232.0.9", Where: "linode us-ord", Region: "us-ord",
 			Waiting: []v1.IPWaiting{{Holder: "silo/web2", UID: "u-web2", Reason: "held by silo/web"}}}}
@@ -151,7 +157,7 @@ func netObjects(created time.Time) map[string][]meta.Object {
 		}}}
 	set := &v1.SiloSet{ObjectMeta: om("relay", "mail", nil), Spec: v1.SiloSetSpec{Instances: 2, IPs: "relays",
 		Template: v1.SiloTemplate{SiloSpec: v1.SiloSpec{Runtime: "docker", Container: &v1.ContainerSource{Image: "relay:v1"}}}}}
-	return map[string][]meta.Object{"Host": {h}, "IP": {mail, edge, member}, "IPSet": {static, dynamic}, "Silo": {smtp, web, far}, "SiloSet": {set}}
+	return map[string][]meta.Object{"Host": {h}, "IP": {mail, mail6, edge, member}, "IPSet": {static, dynamic}, "Silo": {smtp, web, far}, "SiloSet": {set}}
 }
 
 // envOf is what describe would read for these objects, from the objects themselves.

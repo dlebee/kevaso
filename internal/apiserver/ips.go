@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"slices"
 
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	hostctl "kevaso.com/core/internal/controllers/host"
 	"kevaso.com/core/internal/ips"
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/rbac"
@@ -53,6 +55,12 @@ func (s *Server) checkIPs(ctx context.Context, t target, obj meta.Object) error 
 		}
 	case *v1.Host:
 		return s.checkHostAddresses(ctx, t, o)
+	case *v1.IP:
+		return s.checkIPFamily(ctx, t, o)
+	case *v1.IPSet:
+		return s.checkIPSetFamily(ctx, t, o)
+	case *v1.Grant:
+		return s.checkGrantIPv6(ctx, t, o)
 	}
 	return nil
 }
@@ -203,6 +211,76 @@ func (s *Server) checkProviders(_ context.Context, t target, obj meta.Object) er
 	return nil
 }
 
+// checkGrantIPv6: a grant never opens the cluster's own IPv6 range (its silos' /64s), as it never
+// opens the IPv4 silo range (v1.ClosedRange); a wider range holding it is a range of the internet,
+// like 0.0.0.0/0, and the firewall still drops the cluster's part.
+func (s *Server) checkGrantIPv6(ctx context.Context, t target, g *v1.Grant) error {
+	var ula netip.Prefix
+	for _, r := range g.Spec.Egress {
+		e, err := r.Parse()
+		if err != nil || !e.Prefix.IsValid() || !e.Prefix.Addr().Is6() {
+			continue
+		}
+		if !ula.IsValid() {
+			got, err := hostctl.ReadULA(ctx, s.store)
+			if err != nil {
+				return err
+			}
+			if got == "" {
+				return nil // no IPv6 range made yet: nothing of the cluster's to open
+			}
+			ula = netip.MustParsePrefix(got)
+		}
+		if e.Prefix.Bits() >= ula.Bits() && ula.Contains(e.Prefix.Addr()) {
+			return errf(http.StatusUnprocessableEntity, "Invalid", "%s %s: egress %q is inside %s (the silos' IPv6 range), which a grant never opens: silos reach each other by their services (allowFrom), not through grants",
+				t.kind.Kind, t.name, r.To, ula)
+		}
+	}
+	return nil
+}
+
+// checkIPFamily: a Host IP's family is its host address's. An address no host has yet could come
+// later; the controller says so (Reserved False) if it comes in the other family.
+func (s *Server) checkIPFamily(ctx context.Context, t target, x *v1.IP) error {
+	if x.Spec.Type != v1.IPTypeHost || x.Spec.HostAddress == "" {
+		return nil
+	}
+	hosts, err := listAs[*v1.Host](ctx, s.store, "Host")
+	if err != nil {
+		return err
+	}
+	if why := ips.FamilyMismatch(x, hosts); why != "" {
+		return errf(http.StatusUnprocessableEntity, "Invalid", "IP %s: %s", t.name, why)
+	}
+	return nil
+}
+
+// checkIPSetFamily: a Static set is one family; its members that exist (IPs) or are on a host
+// (host addresses) are judged, the others when they come (the set controller says so).
+func (s *Server) checkIPSetFamily(ctx context.Context, t target, set *v1.IPSet) error {
+	if set.Spec.Type != v1.IPSetStatic {
+		return nil
+	}
+	hosts, err := listAs[*v1.Host](ctx, s.store, "Host")
+	if err != nil {
+		return err
+	}
+	all, err := listAs[*v1.IP](ctx, s.store, "IP")
+	if err != nil {
+		return err
+	}
+	var mine []*v1.IP
+	for _, x := range all {
+		if x.Namespace == t.namespace {
+			mine = append(mine, x)
+		}
+	}
+	if why := ips.SetFamilies(set, mine, hosts); why != "" {
+		return errf(http.StatusUnprocessableEntity, "Invalid", "IPSet %s: %s", t.name, why)
+	}
+	return nil
+}
+
 func (s *Server) checkHostAddresses(ctx context.Context, t target, h *v1.Host) error {
 	var prev []v1.HostAddress
 	if cur, err := s.store.Get(ctx, t.key()); err == nil {
@@ -239,6 +317,15 @@ func (s *Server) checkHostAddresses(ctx context.Context, t target, h *v1.Host) e
 	}
 	if why := ips.Duplicates(hosts); why != "" {
 		return errf(http.StatusConflict, "Conflict", "host %s: %s", h.Name, why)
+	}
+	if len(h.Spec.Addresses) > 0 {
+		all, err := listAs[*v1.IP](ctx, s.store, "IP")
+		if err != nil {
+			return err
+		}
+		if why := ips.AddressFamilyConflicts(h, all); why != "" {
+			return errf(http.StatusUnprocessableEntity, "Invalid", "host %s: %s", h.Name, why)
+		}
 	}
 	return nil
 }

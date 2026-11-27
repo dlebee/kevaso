@@ -146,7 +146,9 @@ func ServiceStatus(s *v1.Silo, h *v1.Host, placed []*v1.Silo, env Env) (v1.SiloS
 		}
 		return heldIP(s, p.Way.IP, env)
 	})
-	st.EgressIP, st.EgressNote = Egress(s, h, st, egIP)
+	family := sourceFamily(s, env)
+	st.EgressIP, st.EgressNote = Egress(s, h, st, egIP, family)
+	st.EgressIPv6 = EgressIPv6(s, h, egIP, family)
 	return st, nil
 }
 
