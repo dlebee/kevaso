@@ -275,8 +275,8 @@ func match(t *testing.T, r []string, p *pkt) (bool, []string) {
 			default:
 				t.Fatalf("meta %s in %v", r[i+1], r)
 			}
-		case "icmp":
-			return false, nil // not modelled: never a TCP/UDP packet
+		case "icmp", "icmpv6":
+			return false, nil // not modelled: never a TCP/UDP packet (nor ARP)
 		case "ct":
 			switch r[i+1] {
 			case "status":
@@ -290,8 +290,13 @@ func match(t *testing.T, r []string, p *pkt) (bool, []string) {
 				i += 3
 			case "original":
 				switch r[i+2] {
-				case "ip":
-					ok = ok && p.dnat && addrIn(t, p.origDaddr, r[i+4])
+				case "ip", "ip6":
+					// ct original ip daddr matches IPv4 connections only, ip6 IPv6 only.
+					fam := "ip"
+					if p.origDaddr.Is6() {
+						fam = "ip6"
+					}
+					ok = ok && p.dnat && fam == r[i+2] && addrIn(t, p.origDaddr, r[i+4])
 					i += 5
 				case "proto-dst":
 					n, _ := strconv.Atoi(r[i+3])
@@ -325,6 +330,10 @@ func (rs nftRuleset) prerouting(t *testing.T, p pkt) (out pkt, redirected bool) 
 			return p, true
 		case "dnat":
 			// dnat ip to A:P | dnat ip to numgen random mod N map {0 : A . P,…} (the first target)
+			// The family must be the packet's (nft refuses dnat ip6 for an IPv4 packet).
+			if v[1] != p.family() {
+				t.Fatalf("dnat %s for an %s packet: %v", v[1], p.family(), v)
+			}
 			to := v[3]
 			if to == "numgen" {
 				first := setItems(v[len(v)-1])[0]
@@ -405,7 +414,7 @@ func (rs nftRuleset) outFrom(t *testing.T, h Host, p pkt) (out, toGate bool) {
 // port after translation) when it's routed onto the bridge and forward accepts it.
 func (rs nftRuleset) reaches(t *testing.T, h Host, p pkt) (netip.AddrPort, bool) {
 	p, redirected := rs.prerouting(t, p)
-	if redirected || !h.Subnet.Contains(p.daddr) {
+	if redirected || (!h.Subnet.Contains(p.daddr) && !h.Subnet6.Contains(p.daddr)) {
 		return netip.AddrPort{}, false
 	}
 	p.oif = h.Bridge

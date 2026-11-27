@@ -12,6 +12,13 @@
 // network (10.64.N.1), on this host or another, and a packet that arrives over the mesh from a
 // silo reaches nothing of this host. Exposed ports are DNAT (the client's address is kept: E009), and a silo's
 // outbound source is SNAT to its service's or its pool's address when it asks.
+//
+// IPv6 at the edge (the IPv6 effort): with an IPv6 silo subnet (Host.Subnet6), every rule that
+// opens something from or to outside has its IPv6 twin in the same inet table: a host port DNAT
+// to the silo's IPv6 address, its forward accept, leases' cuts, grants with IPv6 ranges, the
+// closed ranges, NAT66 (masquerade, or SNAT to a kept IPv6 IP) and the per-port binding. Silo to
+// silo, Services and load balancers stay IPv4 (the mesh is IPv4); everything not opened is
+// dropped over IPv6 too.
 package kni
 
 import (
@@ -29,6 +36,10 @@ import (
 type Silo struct {
 	Key string // namespace/name
 	IP  netip.Addr
+	// IP6 is its IPv6 address, in the host's IPv6 silo subnet (Host.Subnet6); invalid: none (the
+	// host has no IPv6, or the silo isn't given one). The edge only: incoming IPv6 is DNAT to it,
+	// outgoing IPv6 leaves from it (masquerade, or EgressIPv6). Silo to silo stays IPv4.
+	IP6 netip.Addr
 	Tap string // its tap device on the bridge (local silos only)
 	// MAC is the source MAC its runtime fixed for that tap ("": not fixed; the address alone is
 	// bound then).
@@ -39,8 +50,11 @@ type Silo struct {
 	// default).
 	LoadBalancerIP netip.Addr
 	EgressIP       netip.Addr
-	// Egress is what its Grants open outside the cluster (CIDR rules; host names go through the
-	// egress gate).
+	// EgressIPv6 is where its IPv6 traffic leaves from (a kept IPv6 IP's address with
+	// egress.source; invalid: the host's, by masquerade).
+	EgressIPv6 netip.Addr
+	// Egress is what its Grants open outside the cluster (CIDR rules, IPv4 or IPv6; host names go
+	// through the egress gate). An IPv6 range opens only when the silo has an IPv6 address here.
 	Egress []v1.ParsedEgress
 	// GatePorts are the TCP ports its traffic outside the cluster goes to the egress gate on
 	// (grants by host name, injected secrets).
@@ -66,7 +80,8 @@ type Silo struct {
 	HeldServices []string
 	// Addrs are where its HostPort services on an IP (hostPort ip or own) open, by service name:
 	// that IP's address, only while the silo holds it and it is on this host. A service missing
-	// here opens nothing (its IP is elsewhere, or not yet held).
+	// here opens nothing (its IP is elsewhere, or not yet held). An IPv6 address (a kept IPv6 IP:
+	// one IP, one family) opens only when the silo has an IPv6 address here.
 	Addrs map[string]netip.Addr
 	// HostPortsRefused: the controller's HostPorts condition is False. Another silo holds a host
 	// port this one asks for, so none of its host-port rules are emitted. A load balancer it has
@@ -77,24 +92,29 @@ type Silo struct {
 	Paths map[string][]string
 }
 
-// Binding is one bridge port and the only source it may send from.
+// Binding is one bridge port and the only sources it may send from.
 type Binding struct {
 	Tap string
 	IP  netip.Addr
-	MAC string // normalized; "": the address alone
+	IP6 netip.Addr // invalid: it sends no IPv6
+	MAC string     // normalized; "": the address alone
 }
 
 // Bindings are the ports of the local silos and the address (and MAC) each may send from: only
 // silos with a tap whose name and address the rules can write (an IPv4 address; a MAC that parses),
-// one binding per tap and per address. Anything else binds nothing, so that port stays closed.
+// one binding per tap and per address. Anything else binds nothing, so that port stays closed. Its
+// IPv6 address, when it has a global one no other silo claims, is bound too.
 func Bindings(local []Silo) []Binding {
 	var out []Binding
-	taps, ips := map[string]int{}, map[netip.Addr]int{}
+	taps, ips, ip6s := map[string]int{}, map[netip.Addr]int{}, map[netip.Addr]int{}
 	for _, s := range local {
 		if !s.IP.Is4() || !validIfname(s.Tap) {
 			continue
 		}
-		b := Binding{Tap: s.Tap, IP: s.IP}
+		b := Binding{Tap: s.Tap, IP: s.IP, IP6: s.IP6}
+		if !okSilo6(b.IP6) {
+			b.IP6 = netip.Addr{}
+		}
 		if s.MAC != "" {
 			m, err := net.ParseMAC(s.MAC)
 			if err != nil || len(m) != 6 {
@@ -104,6 +124,9 @@ func Bindings(local []Silo) []Binding {
 		}
 		taps[b.Tap]++
 		ips[b.IP]++
+		if b.IP6.IsValid() {
+			ip6s[b.IP6]++
+		}
 		out = append(out, b)
 	}
 	// Two silos claiming one tap or one address: neither is bound (one of them is stale, and the
@@ -111,6 +134,9 @@ func Bindings(local []Silo) []Binding {
 	var keep []Binding
 	for _, b := range out {
 		if taps[b.Tap] == 1 && ips[b.IP] == 1 {
+			if ip6s[b.IP6] > 1 { // two silos claiming one IPv6 address: neither sends IPv6
+				b.IP6 = netip.Addr{}
+			}
 			keep = append(keep, b)
 		}
 	}
@@ -156,28 +182,52 @@ func (s Silo) name() string {
 func (s Silo) open() []v1.OpenPort { return s.Spec.OpenIn(s.name()) }
 
 // hostAddrs are the addresses on this host a HostPort port opens on: the host's internal and/or
-// external IP (worker), or its IP's address here (ip, own; none while it isn't). Valid IPv4 only.
+// external IP (worker), each in both families where the host has it and the silo has an IPv6
+// address, or its IP's address here (ip, own; none while it isn't). Valid addresses only.
 func hostAddrs(h Host, s Silo, p v1.OpenPort) []netip.Addr {
 	if p.Type != v1.ServiceHostPort {
 		return nil
 	}
 	var out []netip.Addr
 	for _, n := range p.HostPort {
-		a := h.InternalIP
+		a, a6 := h.InternalIP, h.InternalIPv6
 		if n == v1.NetworkExternal {
-			a = h.ExternalIP
+			a, a6 = h.ExternalIP, h.ExternalIPv6
 		}
 		if a.IsValid() {
 			out = append(out, a)
 		}
+		if a6.IsValid() && s.IP6.IsValid() {
+			out = append(out, a6)
+		}
 	}
 	if p.Way.IP != "" || p.Way.Own {
-		if a := s.Addrs[p.Service]; a.Is4() && !a.IsUnspecified() {
+		if a := s.Addrs[p.Service]; keptAddrOK(s, a) {
 			out = append(out, a)
 		}
 	}
 	return out
 }
+
+// keptAddrOK: a, a kept IP's address, opens for s here: IPv4, or a global IPv6 address while s
+// has an IPv6 address.
+func keptAddrOK(s Silo, a netip.Addr) bool {
+	if a.Is4() {
+		return !a.IsUnspecified()
+	}
+	return okGlobal6(a) && s.IP6.IsValid()
+}
+
+// okGlobal6: a is an IPv6 address a host, a kept IP or an egress source may have: not IPv4 nor
+// IPv4-mapped, no zone, not unspecified, loopback, link-local or multicast.
+func okGlobal6(a netip.Addr) bool {
+	return a.Is6() && !a.Is4In6() && a.Zone() == "" && !a.IsUnspecified() && !a.IsLoopback() &&
+		!a.IsLinkLocalUnicast() && !a.IsMulticast()
+}
+
+// okSilo6: a may be a silo's IPv6 address in the rules (Generate also checks it is in the host's
+// IPv6 silo subnet).
+func okSilo6(a netip.Addr) bool { return okGlobal6(a) }
 
 // Service is a standalone Service as the rules need it (design §7.1): its virtual IP, sent to its
 // endpoints from this host's silos (like kube-proxy), and for a load balancer, its node ports sent
@@ -213,8 +263,16 @@ type Host struct {
 	// there). A host port opens on the ones its service port asks for.
 	InternalIP netip.Addr
 	ExternalIP netip.Addr
-	// OwnIPs are the host's other addresses (its named extra addresses, the IPs its silos hold
-	// here): like its main ones, no silo reaches the host on them, whatever a grant says.
+	// InternalIPv6 and ExternalIPv6 are the host's IPv6 addresses there (invalid: none). A host
+	// port opens on them too, for a silo with an IPv6 address.
+	InternalIPv6 netip.Addr
+	ExternalIPv6 netip.Addr
+	// Subnet6 is this host's IPv6 silo subnet (a /64 of the cluster's ULA /48) and Gateway6 the
+	// host's address in it; invalid: no IPv6 for this host's silos. Not routed over the mesh.
+	Subnet6  netip.Prefix
+	Gateway6 netip.Addr
+	// OwnIPs are the host's other addresses, IPv4 or IPv6 (its named extra addresses, the IPs its
+	// silos hold here): like its main ones, no silo reaches the host on them, whatever a grant says.
 	OwnIPs []netip.Addr
 	Local  []Silo // silos on this host
 	All    []Silo // every silo in the cluster with an address, to resolve allowFrom sources
@@ -246,36 +304,68 @@ var MeshDevices = []string{"kevaso0", "kevaso1"}
 // servicesAll is where Services' virtual IPs are (v1.ServiceCIDR).
 const servicesAll = "10.65.0.0/16"
 
-// closedRangeDrops refuses silo egress to every IPv4 range a grant never opens, before any
-// per-grant accept. Link-local 169.254/16 is one of those ranges.
+// closedRangeDrops refuses silo egress to every range a grant never opens, before any per-grant
+// accept. Link-local 169.254/16 is one of those ranges. With IPv6 on (Subnet6), its twin too:
+// the API's IPv6 closed ranges (loopback, link-local, multicast) and closed6, which holds every
+// host's silo subnet (the cluster's ULA, and any other) and IPv4 reached through IPv6.
 func closedRangeDrops(h Host) []string {
-	var pfx []string
+	var pfx, pfx6 []string
 	for _, p := range v1.ClosedPrefixes() {
 		if p.Addr().Is4() {
 			pfx = append(pfx, p.String())
+		} else if h.Subnet6.IsValid() {
+			pfx6 = append(pfx6, p.String())
 		}
 	}
-	if len(pfx) == 0 {
-		return nil
+	var out []string
+	if len(pfx) > 0 {
+		out = append(out, fmt.Sprintf("iifname %q ip daddr { %s } drop", h.Bridge, strings.Join(pfx, ", ")))
 	}
-	return []string{fmt.Sprintf("iifname %q ip daddr { %s } drop", h.Bridge, strings.Join(pfx, ", "))}
+	if h.Subnet6.IsValid() {
+		for _, p := range closed6 {
+			if !contains(pfx6, p) {
+				pfx6 = append(pfx6, p)
+			}
+		}
+		if !h.Subnet6.Overlaps(netip.MustParsePrefix("fc00::/7")) && !contains(pfx6, h.Subnet6.String()) {
+			pfx6 = append(pfx6, h.Subnet6.String()) // this host's silo subnet, wherever it is
+		}
+		out = append(out, fmt.Sprintf("iifname %q ip6 daddr { %s } drop", h.Bridge, strings.Join(pfx6, ", ")))
+	}
+	return out
 }
 
+// closed6 are the IPv6 ranges a grant never opens beyond the API's: the unspecified address,
+// unique local (every host's silo subnet is in the cluster's ULA /48, and the silos are reached
+// over the mesh by IPv4 only), and IPv4-mapped addresses (an IPv4 address is reached by IPv4).
+var closed6 = []string{"::/128", "::ffff:0:0/96", "fc00::/7"}
+
 // hostAddressDrops refuses silo egress to this host's own addresses. A wide grant does not
-// name them; the same addresses the egress gate keeps off a name (InternalIP, ExternalIP).
+// name them; the same addresses the egress gate keeps off a name (InternalIP, ExternalIP), and
+// their IPv6 twins when IPv6 is on.
 func hostAddressDrops(h Host) []string {
-	var addrs []string
+	var addrs, addrs6 []string
 	seen := map[netip.Addr]bool{}
-	for _, a := range append([]netip.Addr{h.InternalIP, h.ExternalIP}, h.OwnIPs...) {
-		if a.IsValid() && a.Is4() && !a.IsUnspecified() && !seen[a] {
-			seen[a] = true
+	for _, a := range append([]netip.Addr{h.InternalIP, h.ExternalIP, h.InternalIPv6, h.ExternalIPv6, h.Gateway6}, h.OwnIPs...) {
+		if !a.IsValid() || seen[a] {
+			continue
+		}
+		seen[a] = true
+		switch {
+		case a.Is4() && !a.IsUnspecified():
 			addrs = append(addrs, a.String())
+		case h.Subnet6.IsValid() && okGlobal6(a):
+			addrs6 = append(addrs6, a.String())
 		}
 	}
-	if len(addrs) == 0 {
-		return nil
+	var out []string
+	if len(addrs) > 0 {
+		out = append(out, fmt.Sprintf("iifname %q ip daddr { %s } drop", h.Bridge, strings.Join(addrs, ", ")))
 	}
-	return []string{fmt.Sprintf("iifname %q ip daddr { %s } drop", h.Bridge, strings.Join(addrs, ", "))}
+	if len(addrs6) > 0 {
+		out = append(out, fmt.Sprintf("iifname %q ip6 daddr { %s } drop", h.Bridge, strings.Join(addrs6, ", ")))
+	}
+	return out
 }
 
 // pick sends to one of targets, chosen at random per connection.
@@ -320,10 +410,19 @@ func cutRules(bridge string, ip netip.Addr, proto string, port int, orig string)
 	if proto == "tcp" {
 		verdict = "reject with tcp reset"
 	}
+	fam := family(ip)
 	return []string{
-		fmt.Sprintf("oifname %q ip daddr %s %s dport %d ct status dnat %s %s", bridge, ip, proto, port, orig, verdict),
-		fmt.Sprintf("iifname %q ip saddr %s %s sport %d ct status dnat %s %s", bridge, ip, proto, port, orig, verdict),
+		fmt.Sprintf("oifname %q %s daddr %s %s dport %d ct status dnat %s %s", bridge, fam, ip, proto, port, orig, verdict),
+		fmt.Sprintf("iifname %q %s saddr %s %s sport %d ct status dnat %s %s", bridge, fam, ip, proto, port, orig, verdict),
 	}
+}
+
+// family is the nft keyword for a's family: ip or ip6.
+func family(a netip.Addr) string {
+	if a.Is4() {
+		return "ip"
+	}
+	return "ip6"
 }
 
 // Problem is an entry the rules can't express (K-009, K-036): left out, fail closed (it opens
@@ -351,39 +450,85 @@ func (g *gen) bad(kind, owner, port, entry, reason string) {
 	g.problems = append(g.problems, Problem{Kind: kind, Owner: owner, Port: port, Entry: strconv.Quote(entry), Reason: reason})
 }
 
-// v4Ranges parses a list of IPv4 addresses and prefixes, each written canonically (a prefix with
-// host bits set is the network it names). closed: the list had entries and none could be kept,
-// so whatever it limits must stay closed (an empty list would mean "from anywhere").
-func (g *gen) v4Ranges(kind, owner, port string, items []string) (out []string, closed bool) {
+// ranges are a list of addresses and prefixes split by family, each written canonically (a
+// prefix with host bits set is the network it names). A family's list is closed when the list had
+// entries and none of that family could be kept: whatever it limits stays closed for that family
+// (an empty list would mean "from anywhere"). A list of IPv4 ranges only lets no IPv6 source in.
+type ranges struct {
+	v4, v6       []string
+	shut4, shut6 bool
+}
+
+// of is the family's list and whether it is closed.
+func (r ranges) of(fam string) ([]string, bool) {
+	if fam == "ip6" {
+		return r.v6, r.shut6
+	}
+	return r.v4, r.shut4
+}
+
+// parseRanges parses items, reporting those the rules can't take.
+func (g *gen) parseRanges(kind, owner, port string, items []string) ranges {
+	var r ranges
 	seen := map[string]bool{}
 	for _, it := range items {
-		v, why := v4Range(it)
+		v, six, why := parseRange(it)
 		if why != "" {
 			g.bad(kind, owner, port, it, why)
 			continue
 		}
-		if !seen[v] {
-			seen[v] = true
-			out = append(out, v)
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		if six {
+			r.v6 = append(r.v6, v)
+		} else {
+			r.v4 = append(r.v4, v)
 		}
 	}
-	return out, len(items) > 0 && len(out) == 0
+	r.shut4 = len(items) > 0 && len(r.v4) == 0
+	r.shut6 = len(items) > 0 && len(r.v6) == 0
+	return r
 }
 
-func v4Range(it string) (string, string) {
+// v4Ranges is parseRanges' IPv4 list, for what opens over IPv4 only (node ports, Services): an
+// IPv6 entry is not a problem there, it just opens nothing.
+func (g *gen) v4Ranges(kind, owner, port string, items []string) (out []string, closed bool) {
+	r := g.parseRanges(kind, owner, port, items)
+	return r.v4, r.shut4
+}
+
+func parseRange(it string) (v string, six bool, why string) {
 	if p, err := netip.ParsePrefix(it); err == nil {
-		if !p.Addr().Is4() {
-			return "", "an IPv6 range; these rules are IPv4 only"
+		if p.Addr().Is4In6() {
+			return "", false, "an IPv4-mapped IPv6 range; write the IPv4 range"
 		}
-		return p.Masked().String(), ""
+		return p.Masked().String(), p.Addr().Is6(), ""
 	}
 	if a, err := netip.ParseAddr(it); err == nil {
-		if !a.Is4() {
-			return "", "an IPv6 address; these rules are IPv4 only"
+		if a.Zone() != "" {
+			return "", false, "an address with a zone"
 		}
-		return a.String(), ""
+		if a.Is4In6() {
+			return "", false, "an IPv4-mapped IPv6 address; write the IPv4 address"
+		}
+		return a.String(), a.Is6(), ""
 	}
-	return "", "not an IPv4 address or prefix"
+	return "", false, "not an IPv4 or IPv6 address or prefix"
+}
+
+// v6Addr: a is a global IPv6 address the rules can use for what; otherwise it's reported (when
+// set at all) and not used.
+func (g *gen) v6Addr(kind, owner, port, what string, a netip.Addr) bool {
+	if !a.IsValid() {
+		return false
+	}
+	if !okGlobal6(a) {
+		g.bad(kind, owner, port, a.String(), what+" is not a global IPv6 address")
+		return false
+	}
+	return true
 }
 
 // v4Addr: a is an IPv4 address the rules can use for what; otherwise it's reported (when set at
@@ -422,6 +567,25 @@ func Generate(h Host) (string, []Problem) {
 	if !g.v4Addr("Host", "externalIP", "", "the host's external IP", h.ExternalIP) {
 		h.ExternalIP = netip.Addr{}
 	}
+	if !g.v6Addr("Host", "internalIPv6", "", "the host's internal IPv6 address", h.InternalIPv6) {
+		h.InternalIPv6 = netip.Addr{}
+	}
+	if !g.v6Addr("Host", "externalIPv6", "", "the host's external IPv6 address", h.ExternalIPv6) {
+		h.ExternalIPv6 = netip.Addr{}
+	}
+	if h.Subnet6.IsValid() {
+		h.Subnet6 = h.Subnet6.Masked()
+		if sa := h.Subnet6.Addr(); !sa.Is6() || sa.Is4In6() || h.Subnet6.Bits() > 126 || sa.IsLinkLocalUnicast() || sa.IsMulticast() || sa.IsLoopback() || sa.IsUnspecified() {
+			g.bad("Host", "subnet6", "", h.Subnet6.String(), "not an IPv6 silo subnet the rules can take; this host's silos get no IPv6")
+			h.Subnet6 = netip.Prefix{}
+		}
+	}
+	if h.Gateway6.IsValid() && (!h.Subnet6.IsValid() || !okSilo6(h.Gateway6) || !h.Subnet6.Contains(h.Gateway6)) {
+		if h.Subnet6.IsValid() {
+			g.bad("Host", "gateway6", "", h.Gateway6.String(), "not an address in this host's IPv6 silo subnet")
+		}
+		h.Gateway6 = netip.Addr{}
+	}
 	if !h.Endpoint.Is4() {
 		h.Endpoint = netip.Addr{}
 	}
@@ -440,6 +604,18 @@ func Generate(h Host) (string, []Problem) {
 		if s.IP.IsValid() && !s.IP.Is4() {
 			g.bad("Silo", s.Key, "", s.IP.String(), "its silo address is not IPv4; its port on the bridge stays closed")
 			s.IP = netip.Addr{}
+		}
+		if s.IP6.IsValid() {
+			switch {
+			case !s.IP.IsValid(): // not running to the rules: nothing over IPv6 either
+				s.IP6 = netip.Addr{}
+			case !h.Subnet6.IsValid():
+				g.bad("Silo", s.Key, "", s.IP6.String(), "its silo IPv6 address, but this host has no IPv6 silo subnet; no IPv6 for it")
+				s.IP6 = netip.Addr{}
+			case !okSilo6(s.IP6) || !h.Subnet6.Contains(s.IP6) || s.IP6 == h.Gateway6 || s.IP6 == h.Subnet6.Addr():
+				g.bad("Silo", s.Key, "", s.IP6.String(), "its silo IPv6 address is not one in this host's IPv6 silo subnet; no IPv6 for it")
+				s.IP6 = netip.Addr{}
+			}
 		}
 		keep = append(keep, s)
 	}
@@ -481,8 +657,12 @@ func Generate(h Host) (string, []Problem) {
 			if hostWhy != "" {
 				g.bad("Silo", s.Key, p.Name, fmt.Sprintf("%s/%d", proto, at), hostWhy)
 			}
-			if onHost && hostWhy == "" && (p.Way.IP != "" || p.Way.Own) && !s.Addrs[p.Service].Is4() {
-				g.bad("Silo", s.Key, p.Name, fmt.Sprintf("%s/%d on %s", proto, at, p.Way), "that IP isn't held by this silo on this host (yet), so it is not opened")
+			if onHost && hostWhy == "" && (p.Way.IP != "" || p.Way.Own) && !keptAddrOK(s, s.Addrs[p.Service]) {
+				why := "that IP isn't held by this silo on this host (yet), so it is not opened"
+				if ka := s.Addrs[p.Service]; okGlobal6(ka) && !s.IP6.IsValid() {
+					why = "that IP is IPv6 and this silo has no IPv6 address on this host, so it is not opened"
+				}
+				g.bad("Silo", s.Key, p.Name, fmt.Sprintf("%s/%d on %s", proto, at, p.Way), why)
 			}
 			for _, a := range hostAddrs(h, s, p) {
 				if hostWhy != "" {
@@ -503,27 +683,46 @@ func Generate(h Host) (string, []Problem) {
 			if len(ips) == 0 {
 				continue
 			}
-			orig := "ct original ip daddr " + set(ips)
 			// Leased with no lease now: no rule; cut what a lease let in. Held by routing: no
-			// rule, nothing cut.
+			// rule, nothing cut. Each family on its own: IPv6 to the silo's IPv6 address.
 			open, closed := Outside(s, p.Service, p.Name)
-			if closed {
-				cut = append(cut, cutRules(h.Bridge, s.IP, proto, p.Number, orig)...)
-				continue
+			var srcs ranges
+			if open && !closed {
+				srcs = g.parseRanges("Silo", s.Key, p.Name, p.Sources)
 			}
-			if !open {
-				continue
+			for _, fam := range []string{"ip", "ip6"} {
+				var on []string
+				for _, ip := range ips {
+					if family(netip.MustParseAddr(ip)) == fam {
+						on = append(on, ip)
+					}
+				}
+				to := s.IP
+				if fam == "ip6" {
+					to = s.IP6
+				}
+				if len(on) == 0 || !to.IsValid() {
+					continue
+				}
+				orig := "ct original " + fam + " daddr " + set(on)
+				if closed {
+					cut = append(cut, cutRules(h.Bridge, to, proto, p.Number, orig)...)
+					continue
+				}
+				if !open {
+					continue
+				}
+				sources, shut := srcs.of(fam)
+				if shut {
+					continue // no source of this family: closed, not open to all
+				}
+				dnat = append(dnat, fmt.Sprintf("%s daddr %s %s dport %d dnat %s to %s", fam, set(on), proto, at, fam, netip.AddrPortFrom(to, uint16(p.Number))))
+				src := ""
+				if len(sources) > 0 {
+					src = fam + " saddr " + set(sources) + " "
+				}
+				fwd = append(fwd, fmt.Sprintf("oifname %q %s daddr %s %s%s dport %d %s ct status dnat accept", h.Bridge, fam, to, src, proto, p.Number, orig))
 			}
-			sources, shut := g.v4Ranges("Silo", s.Key, p.Name, p.Sources)
-			if shut {
-				continue // every source left out: closed, not open to all
-			}
-			dnat = append(dnat, fmt.Sprintf("ip daddr %s %s dport %d dnat ip to %s:%d", set(ips), proto, at, s.IP, p.Number))
-			src := ""
-			if len(sources) > 0 {
-				src = "ip saddr " + set(sources) + " "
-			}
-			fwd = append(fwd, fmt.Sprintf("oifname %q ip daddr %s %s%s dport %d %s ct status dnat accept", h.Bridge, s.IP, src, proto, p.Number, orig))
 		}
 		// From a plugin's load balancer: its node ports, from its addresses only.
 		ranges, shut := g.v4Ranges("Silo", s.Key, nodePortNames(s.NodePorts), s.SourceRanges)
@@ -581,9 +780,15 @@ func Generate(h Host) (string, []Problem) {
 			if !e.Prefix.IsValid() {
 				continue
 			}
+			from := s.IP
 			if !e.Prefix.Addr().Is4() {
-				g.bad("Silo", s.Key, "", e.Prefix.String(), "a grant's IPv6 range; these rules are IPv4 only")
-				continue
+				if e.Prefix.Addr().Is4In6() || e.Prefix.Addr().Zone() != "" {
+					g.bad("Silo", s.Key, "", e.Prefix.String(), "a grant's IPv4-mapped IPv6 range; write the IPv4 range")
+					continue
+				}
+				if from = s.IP6; !from.IsValid() {
+					continue // no IPv6 for this silo here: an IPv6 grant opens nothing (not a problem)
+				}
 			}
 			var ps []string
 			for _, p := range e.Ports {
@@ -601,7 +806,8 @@ func Generate(h Host) (string, []Problem) {
 					g.bad("Silo", s.Key, "", proto, "a grant's protocol the rules can't take")
 					continue
 				}
-				m := fmt.Sprintf("iifname %q ip saddr %s ip daddr %s ", h.Bridge, s.IP, e.Prefix.Masked())
+				fam := family(from)
+				m := fmt.Sprintf("iifname %q %s saddr %s %s daddr %s ", h.Bridge, fam, from, fam, e.Prefix.Masked())
 				if len(ps) == 0 {
 					egress = append(egress, m+"meta l4proto "+proto+" accept")
 					continue
@@ -612,6 +818,9 @@ func Generate(h Host) (string, []Problem) {
 		// Outbound source.
 		if g.v4Addr("Silo", s.Key, "", "its egress address", s.EgressIP) {
 			snat = append(snat, fmt.Sprintf("ip saddr %s ip daddr != { %s, 10.62.0.0/16, 10.63.0.0/16 } oifname != %q snat ip to %s", s.IP, silosAll, h.Bridge, s.EgressIP))
+		}
+		if g.v6Addr("Silo", s.Key, "", "its IPv6 egress address", s.EgressIPv6) && s.IP6.IsValid() {
+			snat = append(snat, fmt.Sprintf("ip6 saddr %s oifname != %q snat ip6 to %s", s.IP6, h.Bridge, s.EgressIPv6))
 		}
 		// allowFrom: other silos, by their current address, to the port that names them.
 		ns := strings.SplitN(s.Key, "/", 2)[0]
@@ -717,6 +926,10 @@ func Generate(h Host) (string, []Problem) {
 	// Service's virtual IP, an exposed port): without this the reply would go straight across the
 	// bridge and skip the translation back. allowFrom was checked in forward, on the real source.
 	w("    ip saddr %s ip daddr %s oifname %q ct status dnat masquerade", h.Subnet, h.Subnet, h.Bridge)
+	if h.Subnet6.IsValid() { // NAT66: IPv6 leaves from the host's address, and hairpins the same way
+		w("    ip6 saddr %s oifname != %q masquerade", h.Subnet6, h.Bridge)
+		w("    ip6 saddr %s ip6 daddr %s oifname %q ct status dnat masquerade", h.Subnet6, h.Subnet6, h.Bridge)
+	}
 	w("  }")
 	w("  chain forward {")
 	w("    type filter hook forward priority filter; policy accept;")
@@ -725,6 +938,9 @@ func Generate(h Host) (string, []Problem) {
 	// from the uplink. allowFrom trusts the source address, so a silo-range source on any other
 	// interface is dropped here, whichever interface it would leave on.
 	w("    ip saddr %s iifname != { %q, %q, %q } drop", silosAll, h.Bridge, MeshDevices[0], MeshDevices[1])
+	if h.Subnet6.IsValid() { // a silo's IPv6 address comes from the bridge only (not over the mesh)
+		w("    ip6 saddr %s iifname != %q drop", h.Subnet6, h.Bridge)
+	}
 	for _, r := range cut {
 		w("    %s", r)
 	}
@@ -763,6 +979,15 @@ func Generate(h Host) (string, []Problem) {
 	w("    iifname %q ip daddr %s udp dport 53 accept", h.Bridge, h.Gateway)
 	w("    iifname %q ip daddr %s tcp dport 53 accept", h.Bridge, h.Gateway)
 	w("    iifname %q ip daddr %s icmp type echo-request accept", h.Bridge, h.Gateway)
+	if h.Subnet6.IsValid() {
+		// IPv6's ARP: neighbour discovery between the silos and the host, from the silo subnet
+		// only (the bridge's port rules let a silo send from its own address alone). No DNS or
+		// gate over IPv6: the silos ask the gateway's IPv4 address.
+		w("    iifname %q ip6 saddr %s icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept", h.Bridge, h.Subnet6)
+		if h.Gateway6.IsValid() {
+			w("    iifname %q ip6 daddr %s icmpv6 type echo-request accept", h.Bridge, h.Gateway6)
+		}
+	}
 	if h.GatePort > 0 && len(redirect) > 0 {
 		w("    iifname %q ip daddr %s tcp dport %d accept", h.Bridge, h.Gateway, h.GatePort)
 	}
@@ -806,6 +1031,13 @@ func Generate(h Host) (string, []Problem) {
 			ae = " arp saddr ether " + b.MAC
 		}
 		w("    iifname %q %sarp saddr ip %s%s accept", b.Tap, e, b.IP, ae) // …nor claims its address
+		if b.IP6.IsValid() {
+			// IPv6 likewise: its own address only, and a neighbour advertisement for that address
+			// only (IPv6's way to claim one). No link-local source: it needs none to reach its
+			// gateway by its silo-subnet address.
+			w("    iifname %q icmpv6 type nd-neighbor-advert icmpv6 taddr != %s drop", b.Tap, b.IP6)
+			w("    iifname %q %sip6 saddr %s accept", b.Tap, e, b.IP6)
+		}
 	}
 	w("  }")
 	w("  chain forward {")
