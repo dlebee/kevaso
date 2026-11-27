@@ -46,3 +46,18 @@ func TestAPlainMoveOfAContainerIsRefusedLikeAMicroVMs(t *testing.T) {
 		t.Errorf("ending a container's handoff from a lost source: %+v, %v", p, err)
 	}
 }
+
+// A plain move refused for a silo that already has onHostLoss: Recreate names only what is
+// missing: --recreate. It said "needs onHostLoss: Recreate and --recreate" though the silo had it.
+func TestAPlainMoveRefusalNamesOnlyWhatIsMissing(t *testing.T) {
+	for _, rt := range []string{"docker", "cloud-hypervisor"} {
+		r := silo(rt, v1.OnHostLossRecreate)
+		_, err := PlanMove(r, Of(r, classes), Request{To: "hv3"}, false, false, "")
+		if !errors.Is(err, ErrNotMovable) {
+			t.Fatalf("%s with onHostLoss: Recreate, a plain move: %v, want ErrNotMovable", rt, err)
+		}
+		if strings.Contains(err.Error(), "needs onHostLoss: Recreate") || !strings.Contains(err.Error(), "a fresh copy needs --recreate") {
+			t.Errorf("%s with onHostLoss: Recreate: %q, want it to ask for --recreate only", rt, err)
+		}
+	}
+}

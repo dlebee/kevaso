@@ -91,8 +91,9 @@ func TestMoves(t *testing.T) {
 	if _, err := mv(ed, "pinned", moves.Request{To: "hv3"}); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "disk root uses local on hv1") {
 		t.Fatalf("pinned silo: %v", err)
 	}
-	// A plain move of a container is refused as a microVM's is: its own files are never kept.
-	if _, err := mv(ed, "web", moves.Request{To: "hv2"}); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "a fresh copy needs onHostLoss: Recreate and --recreate") {
+	// A plain move of a container is refused as a microVM's is: its own files are never kept. It
+	// has onHostLoss: Recreate, so only --recreate is missing.
+	if _, err := mv(ed, "web", moves.Request{To: "hv2"}); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "a fresh copy needs --recreate") {
 		t.Fatalf("a plain move of a container: %v", err)
 	}
 	if _, err := mv(ed, "web", moves.Request{To: "hv3", Recreate: true}); status(err) != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), "hv3 can't take it") {

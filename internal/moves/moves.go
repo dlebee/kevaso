@@ -207,12 +207,12 @@ func PlanMove(s *v1.Silo, m Movability, r Request, fromLost, sourceLost bool, fi
 		}
 	} else {
 		if !m.WithData {
-			return p, fmt.Errorf("%w: %s; a fresh copy needs onHostLoss: Recreate and --recreate", ErrNotMovable, m.Pinned)
+			return p, fmt.Errorf("%w: %s; %s", ErrNotMovable, m.Pinned, freshCopyNeeds(s))
 		}
 		if containerRuntime(s.Spec.Runtime) && !ending {
 			// A container's own files are never kept (only its volumes travel): a plain move would
 			// start it fresh, init steps not run again. Said as a microVM's local disk is.
-			return p, fmt.Errorf("%w: its root (a %s container's own files) is never kept: not movable; a fresh copy needs onHostLoss: Recreate and --recreate", ErrNotMovable, s.Spec.Runtime)
+			return p, fmt.Errorf("%w: its root (a %s container's own files) is never kept: not movable; %s", ErrNotMovable, s.Spec.Runtime, freshCopyNeeds(s))
 		}
 		p.WithData = true
 	}
@@ -613,4 +613,13 @@ func CheckFenced(s *v1.Silo, r Request, now time.Time) error {
 	}
 	return fmt.Errorf("%w: %s claimed its start %s ago, so it answered then and may be starting it now: it is not provably stopped. Wait %s, or add --insist if you know the old copy is off",
 		ErrClaimStands, s.Status.Host, max(age, 0).Round(time.Second), (StartClaimFresh - age).Round(time.Second))
+}
+
+// freshCopyNeeds says what a plain move that can't keep s's data is missing for a fresh copy:
+// --recreate only, when s already has onHostLoss: Recreate; both otherwise.
+func freshCopyNeeds(s *v1.Silo) string {
+	if s.Policy() == v1.OnHostLossRecreate {
+		return "a fresh copy needs --recreate (it has onHostLoss: Recreate)"
+	}
+	return "a fresh copy needs onHostLoss: Recreate and --recreate"
 }

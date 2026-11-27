@@ -598,8 +598,8 @@
   "id": "G-046",
   "guard": "PlanMove: a non-movable silo is not moved with its data",
   "file": "internal/moves/moves.go",
-  "find": "if !m.WithData {\n\t\t\treturn p, fmt.Errorf(\"%w: %s; a fresh copy",
-  "replace": "if false {\n\t\t\treturn p, fmt.Errorf(\"%w: %s; a fresh copy",
+  "find": "if !m.WithData {\n\t\t\treturn p, fmt.Errorf(\"%w: %s; %s\", ErrNotMovable, m.Pinned, freshCopyNeeds(s))",
+  "replace": "if false {\n\t\t\treturn p, fmt.Errorf(\"%w: %s; %s\", ErrNotMovable, m.Pinned, freshCopyNeeds(s))",
   "mutation": "check removed",
   "packages": [
    "./internal/moves",
