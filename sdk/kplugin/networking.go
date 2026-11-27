@@ -18,6 +18,12 @@ import (
 type Networking struct {
 	// ProviderIPs: it makes IPs of type Provider (an address reserved from the provider).
 	ProviderIPs bool `json:"providerIPs,omitempty"`
+	// ProviderIPv6: its Provider IPs can be IPv6 (family: IPv6), each one address that follows its
+	// holder on its own. Without it an IPv6 Provider IP is refused at apply (IPv4 only).
+	ProviderIPv6 bool `json:"providerIPv6,omitempty"`
+	// NoProviderIPv6 is why it can't float an IPv6 address, said when one is refused (e.g. linode:
+	// "a /64 moves as one unit"); empty: no reason given.
+	NoProviderIPv6 string `json:"noProviderIPv6,omitempty"`
 	// LoadBalancers: it makes balancers for services of type LoadBalancer.
 	LoadBalancers bool `json:"loadBalancers,omitempty"`
 	// FrontWithIP: a kept Provider IP can front one of its balancers (loadBalancer: { ip: NAME }).
@@ -98,6 +104,12 @@ func (n *Networking) Check() error {
 	case "", FollowsHost, FollowsRegion, FollowsGlobal:
 	default:
 		errs = append(errs, fmt.Errorf("reach %q: want %s, %s or %s", n.Reach, FollowsHost, FollowsRegion, FollowsGlobal))
+	}
+	if n.ProviderIPv6 && !n.ProviderIPs {
+		errs = append(errs, errors.New("providerIPv6 needs providerIPs"))
+	}
+	if n.ProviderIPv6 && n.NoProviderIPv6 != "" {
+		errs = append(errs, errors.New("noProviderIPv6 is the reason it can't: not with providerIPv6"))
 	}
 	if n.FrontWithIP && (!n.ProviderIPs || !n.LoadBalancers) {
 		errs = append(errs, errors.New("frontWithIP needs both providerIPs and loadBalancers"))

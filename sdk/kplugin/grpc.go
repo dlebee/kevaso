@@ -104,7 +104,8 @@ func networkingTo(n *Networking) *pb.Networking {
 		return nil
 	}
 	out := &pb.Networking{ProviderIps: n.ProviderIPs, LoadBalancers: n.LoadBalancers, FrontWithIp: n.FrontWithIP,
-		KeepsClientIp: n.KeepsClientIP, Reach: n.Reach, Regions: n.Regions, OwnHostsOnly: n.OwnHostsOnly}
+		KeepsClientIp: n.KeepsClientIP, Reach: n.Reach, Regions: n.Regions, OwnHostsOnly: n.OwnHostsOnly,
+		ProviderIpv6: n.ProviderIPv6, NoProviderIpv6: n.NoProviderIPv6}
 	for _, a := range n.Annotations {
 		out.Annotations = append(out.Annotations, &pb.Annotation{Key: a.Key, Description: a.Description, Type: a.Type,
 			Values: a.Values, Pattern: a.Pattern, Min: a.Min, Max: a.Max, On: a.On})
@@ -117,7 +118,8 @@ func networkingFrom(m *pb.Networking) *Networking {
 		return nil
 	}
 	out := &Networking{ProviderIPs: m.GetProviderIps(), LoadBalancers: m.GetLoadBalancers(), FrontWithIP: m.GetFrontWithIp(),
-		KeepsClientIP: m.GetKeepsClientIp(), Reach: m.GetReach(), Regions: m.GetRegions(), OwnHostsOnly: m.GetOwnHostsOnly()}
+		KeepsClientIP: m.GetKeepsClientIp(), Reach: m.GetReach(), Regions: m.GetRegions(), OwnHostsOnly: m.GetOwnHostsOnly(),
+		ProviderIPv6: m.GetProviderIpv6(), NoProviderIPv6: m.GetNoProviderIpv6()}
 	for _, a := range m.GetAnnotations() {
 		out.Annotations = append(out.Annotations, Annotation{Key: a.GetKey(), Description: a.GetDescription(), Type: a.GetType(),
 			Values: a.GetValues(), Pattern: a.GetPattern(), Min: a.Min, Max: a.Max, On: a.GetOn()})
@@ -224,7 +226,7 @@ func (s lbServer) EnsureLoadBalancer(ctx context.Context, r *pb.LoadBalancer) (*
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &pb.LoadBalancerStatus{Address: st.Address, SourceRanges: st.SourceRanges}, nil
+	return &pb.LoadBalancerStatus{Address: st.Address, AddressIpv6: st.AddressIPv6, SourceRanges: st.SourceRanges}, nil
 }
 
 func (s lbServer) DeleteLoadBalancer(ctx context.Context, r *pb.LoadBalancerRef) (*pb.DeleteLoadBalancerResponse, error) {
@@ -239,7 +241,7 @@ type addressesServer struct {
 
 func (s addressesServer) ReserveAddress(ctx context.Context, r *pb.AddressReservation) (*pb.AddressStatus, error) {
 	st, err := s.p.ReserveAddress(ctx, AddressReservation{Class: r.GetClass(), ID: r.GetId(), Namespace: r.GetNamespace(),
-		Name: r.GetName(), Region: r.GetRegion(), Address: r.GetAddress(), Annotations: r.GetAnnotations()})
+		Name: r.GetName(), Region: r.GetRegion(), Family: r.GetFamily(), Address: r.GetAddress(), Annotations: r.GetAnnotations()})
 	if err != nil {
 		return nil, toStatus(err)
 	}
@@ -439,7 +441,7 @@ func (c *Client) EnsureLoadBalancer(ctx context.Context, lb LoadBalancer) (LoadB
 	if err != nil {
 		return LoadBalancerStatus{}, fromStatus(err)
 	}
-	return LoadBalancerStatus{Address: r.GetAddress(), SourceRanges: r.GetSourceRanges()}, nil
+	return LoadBalancerStatus{Address: r.GetAddress(), AddressIPv6: r.GetAddressIpv6(), SourceRanges: r.GetSourceRanges()}, nil
 }
 
 // DeleteLoadBalancer implements LoadBalancers.
@@ -505,7 +507,7 @@ func (c *Client) UnmountVolume(ctx context.Context, m NodeMount) error {
 // ReserveAddress implements Addresses.
 func (c *Client) ReserveAddress(ctx context.Context, r AddressReservation) (AddressStatus, error) {
 	st, err := c.addrs.ReserveAddress(ctx, &pb.AddressReservation{Class: r.Class, Id: r.ID, Namespace: r.Namespace,
-		Name: r.Name, Region: r.Region, Address: r.Address, Annotations: r.Annotations})
+		Name: r.Name, Region: r.Region, Family: r.Family, Address: r.Address, Annotations: r.Annotations})
 	if err != nil {
 		return AddressStatus{}, fromStatus(err)
 	}

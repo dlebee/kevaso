@@ -361,14 +361,21 @@ func (c *Controller) reserve(ctx context.Context, x *v1.IP, st *v1.IPStatus) tim
 			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "PluginMissing", "no plugin named "+x.Spec.Provider+" reserves addresses"
 			return 30 * time.Second
 		}
+		family := ""
 		if x.Spec.FamilyOrDefault() == v1.FamilyIPv6 {
-			// TODO(ipv6 wave 3): providers that share IPv6 (Linode first) declare it and are asked.
-			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "Waiting",
-				x.Spec.Provider+" can't reserve IPv6 addresses yet: the IP waits, and its holder with it (a Host IP of an IPv6 host address works now)"
-			return time.Minute
+			// Refused at apply; this is for an IP made before its provider stopped declaring it.
+			if n := p.Info.Networking; n == nil || !n.ProviderIPv6 {
+				why := ""
+				if n != nil {
+					why = n.NoProviderIPv6
+				}
+				cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "NoIPv6", plugins.NoProviderIPv6(x.Spec.Provider, why).Error()
+				return 5 * time.Minute
+			}
+			family = v1.FamilyIPv6
 		}
 		as, err := p.Conn.ReserveAddress(ctx, kplugin.AddressReservation{Class: class, ID: x.UID, Namespace: x.Namespace, Name: x.Name, Region: x.Spec.Region,
-			Annotations: annotations(x.Annotations, x.Spec.Provider)})
+			Family: family, Annotations: annotations(x.Annotations, x.Spec.Provider)})
 		if errors.Is(err, kplugin.ErrInProgress) {
 			cond.Status, cond.Reason, cond.Message = meta.ConditionFalse, "Reserving", err.Error()
 			return 10 * time.Second

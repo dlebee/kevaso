@@ -38,6 +38,9 @@ type Fake struct {
 	DetachSlow int
 	// Networking, if set, is what Info declares instead of FakeNetworking.
 	Networking *kplugin.Networking
+	// BalancerIPv6: its node-port balancers answer on IPv6 too (like a Linode NodeBalancer), at
+	// 2001:db8:b::<their IPv4>.
+	BalancerIPv6 bool
 	// Fail, if set, is returned by every mutating call.
 	Fail error
 	// ShareRefused, if set, is what fake-ip answers when asked to share an address with its
@@ -172,7 +175,7 @@ func (f *Fake) EnsureLoadBalancer(_ context.Context, lb kplugin.LoadBalancer) (k
 			return kplugin.LoadBalancerStatus{}, kplugin.ErrNotFound
 		}
 		f.LBs[lb.ID] = lb
-		return kplugin.LoadBalancerStatus{Address: f.lbAddr[sharedBy(lb)]}, nil
+		return kplugin.LoadBalancerStatus{Address: f.lbAddr[sharedBy(lb)], AddressIPv6: f.lbAddr6(f.lbAddr[sharedBy(lb)])}, nil
 	}
 	for k := range lb.Annotations {
 		if err := fakeAnnotation(k); err != nil {
@@ -221,7 +224,24 @@ func (f *Fake) EnsureLoadBalancer(_ context.Context, lb kplugin.LoadBalancer) (k
 			}
 		}
 	}
-	return kplugin.LoadBalancerStatus{Address: f.lbAddr[g], SourceRanges: []string{"192.168.255.0/24"}}, nil
+	return kplugin.LoadBalancerStatus{Address: f.lbAddr[g], AddressIPv6: f.lbAddr6(f.lbAddr[g]), SourceRanges: []string{"192.168.255.0/24"}}, nil
+}
+
+// LBAddr6 is the IPv6 address its node-port balancer at v4 answers on ("" without BalancerIPv6).
+func (f *Fake) LBAddr6(v4 string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lbAddr6(v4)
+}
+
+// lbAddr6 is a node-port balancer's IPv6 address when BalancerIPv6 (its IPv4 in the last 32 bits).
+func (f *Fake) lbAddr6(v4 string) string {
+	a, err := netip.ParseAddr(v4)
+	if !f.BalancerIPv6 || err != nil {
+		return ""
+	}
+	b := a.As4()
+	return netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0x0b, 12: b[0], 13: b[1], 14: b[2], 15: b[3]}).String()
 }
 
 // FakeAnnotations are the annotations the fake knows (it refuses others in its domain): the
@@ -325,9 +345,15 @@ func (f *Fake) ReserveAddress(_ context.Context, r kplugin.AddressReservation) (
 	}
 	addr := r.Address
 	handle := "adopted:" + addr
+	if r.Family == "IPv6" && (f.Networking == nil || !f.Networking.ProviderIPv6) {
+		return kplugin.AddressStatus{}, fmt.Errorf("fake declares no IPv6 Provider IPs: %w", kplugin.ErrUnsupported)
+	}
 	if addr == "" {
 		for n := 100; ; n++ {
 			a := netip.AddrFrom4([4]byte{203, 0, 113, byte(n)}).String()
+			if r.Family == "IPv6" { // 2001:db8:f::N (documentation range)
+				a = netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0x0f, 14: byte(n >> 8), 15: byte(n)}).String()
+			}
 			if !taken[a] {
 				addr, handle = a, "reserved:"+a
 				break

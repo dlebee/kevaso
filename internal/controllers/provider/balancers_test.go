@@ -204,6 +204,20 @@ func TestBalancerPerServiceMadeAndRemovedWithTheSilo(t *testing.T) {
 	}
 }
 
+// A balancer answering on IPv6 too (a Linode NodeBalancer): its IPv6 address goes on the silo's
+// status beside its IPv4, and comes off with it.
+func TestBalancerIPv6OnTheSilosStatus(t *testing.T) {
+	e := newLBEnv(t)
+	e.fake.BalancerIPv6 = true
+	e.silo("shop", "w1", nil, "shop")
+	e.reconcile("Silo", "shop", func() (bool, string) {
+		cur, _ := e.get("shop")
+		st := cur.Status.Service
+		return st.LoadBalancerIP == "198.51.100.10" && st.LoadBalancerIPv6 == "2001:db8:b::c633:640a" && meta.IsTrue(cur.Status.Conditions, "LoadBalancer"),
+			fmt.Sprintf("%q %q %s", st.LoadBalancerIP, st.LoadBalancerIPv6, lbCond(cur.Status.Conditions))
+	})
+}
+
 // Services naming the same shared balancer (the provider's annotation) get one address; one
 // going leaves the other's; the last going removes it.
 func TestBalancerSharedByAnnotation(t *testing.T) {
@@ -302,6 +316,7 @@ func TestBalancerRemovalRetried(t *testing.T) {
 // the provider's machines, on its node ports; removed with the Service.
 func TestServiceBalancer(t *testing.T) {
 	e := newLBEnv(t)
+	e.fake.BalancerIPv6 = true // its IPv6 goes on the Service's status too
 	svc := &v1.Service{TypeMeta: tm("Service"), ObjectMeta: meta.ObjectMeta{Name: "group", Namespace: "d"},
 		Spec: v1.ServiceSpec{Selector: map[string]string{"app": "g"}, Type: v1.ServiceLoadBalancer, LoadBalancer: &v1.LoadBalancerSpec{Provider: "fake"},
 			Ports: []v1.ServicePortSpec{{Name: "web", Port: 443, TargetPort: "web"}}}}
@@ -323,6 +338,10 @@ func TestServiceBalancer(t *testing.T) {
 		e.must(e.c.Get(e.ctx, "Service", "d", "group", &cur))
 		return cur.Status.LoadBalancerIP != "" && meta.IsTrue(cur.Status.Conditions, "LoadBalancer"), lbCond(cur.Status.Conditions)
 	})
+	e.must(e.c.Get(e.ctx, "Service", "d", "group", &cur))
+	if want := e.fake.LBAddr6(cur.Status.LoadBalancerIP); cur.Status.LoadBalancerIPv6 != want || want == "" {
+		t.Errorf("IPv6 %q, want the balancer's %q beside its IPv4", cur.Status.LoadBalancerIPv6, want)
+	}
 	lbs, _, _ := e.fake.Snapshot()
 	lb := lbs[svc.UID]
 	if len(lb.Backends) != 2 || lb.Backends[0].Name != "w1" || lb.Backends[1].Name != "w2" || lb.Ports[0].NodePort != 30100 {

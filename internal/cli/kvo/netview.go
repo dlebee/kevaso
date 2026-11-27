@@ -443,6 +443,9 @@ func reachable(s *v1.Silo, sv v1.SiloService, env *netEnv) []string {
 			}
 			if addr != "" {
 				add(fmt.Sprintf("%s:%d", addr, n))
+				if a6 := s.Status.Service.LoadBalancerIPv6; a6 != "" {
+					add(fmt.Sprintf("[%s]:%d", a6, n))
+				}
 			} else {
 				prov := "the provider"
 				if sv.LoadBalancer != nil {

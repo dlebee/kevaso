@@ -319,11 +319,13 @@ type ServiceStatus struct {
 	Held      []ServiceEndpoint `json:"held,omitempty"`
 	// For type LoadBalancer: its load-balancer address, the node port each port arrives on at the
 	// endpoints' hosts, and where the load balancer's traffic comes from.
-	LoadBalancerIP string           `json:"loadBalancerIP,omitempty"`
-	IP             string           `json:"ip,omitempty"` // the kept IP LoadBalancerIP is (loadBalancer.ip)
-	NodePorts      []NodePort       `json:"nodePorts,omitempty"`
-	SourceRanges   []string         `json:"sourceRanges,omitempty"`
-	Conditions     []meta.Condition `json:"conditions,omitempty"`
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+	IP             string `json:"ip,omitempty"` // the kept IP LoadBalancerIP is (loadBalancer.ip)
+	// LoadBalancerIPv6 is the balancer's IPv6 address, when it answers on IPv6 too.
+	LoadBalancerIPv6 string           `json:"loadBalancerIPv6,omitempty"`
+	NodePorts        []NodePort       `json:"nodePorts,omitempty"`
+	SourceRanges     []string         `json:"sourceRanges,omitempty"`
+	Conditions       []meta.Condition `json:"conditions,omitempty"`
 }
 
 // ServiceEndpoint is one silo behind a service, with each service port's target there.

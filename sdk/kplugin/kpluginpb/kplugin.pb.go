@@ -182,17 +182,19 @@ func (x *PluginInfo) GetNetworking() *Networking {
 
 // Networking is what a provider does for services and IPs, and the annotations it accepts.
 type Networking struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ProviderIps   bool                   `protobuf:"varint,1,opt,name=provider_ips,json=providerIps,proto3" json:"provider_ips,omitempty"`         // it makes IPs of type Provider (reserved from the provider)
-	LoadBalancers bool                   `protobuf:"varint,2,opt,name=load_balancers,json=loadBalancers,proto3" json:"load_balancers,omitempty"`   // it makes balancers for services of type LoadBalancer
-	FrontWithIp   bool                   `protobuf:"varint,3,opt,name=front_with_ip,json=frontWithIp,proto3" json:"front_with_ip,omitempty"`       // a kept Provider IP can front a balancer (loadBalancer.ip)
-	KeepsClientIp bool                   `protobuf:"varint,4,opt,name=keeps_client_ip,json=keepsClientIp,proto3" json:"keeps_client_ip,omitempty"` // the silo sees the client's address behind its balancers
-	Reach         string                 `protobuf:"bytes,5,opt,name=reach,proto3" json:"reach,omitempty"`                                         // where its IPs and balancers reach silos: host | region (default) | global
-	Regions       []string               `protobuf:"bytes,6,rep,name=regions,proto3" json:"regions,omitempty"`                                     // the regions it serves; empty: any
-	OwnHostsOnly  bool                   `protobuf:"varint,7,opt,name=own_hosts_only,json=ownHostsOnly,proto3" json:"own_hosts_only,omitempty"`    // only its own machines (Hosts) can be behind them
-	Annotations   []*Annotation          `protobuf:"bytes,8,rep,name=annotations,proto3" json:"annotations,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ProviderIps    bool                   `protobuf:"varint,1,opt,name=provider_ips,json=providerIps,proto3" json:"provider_ips,omitempty"`         // it makes IPs of type Provider (reserved from the provider)
+	LoadBalancers  bool                   `protobuf:"varint,2,opt,name=load_balancers,json=loadBalancers,proto3" json:"load_balancers,omitempty"`   // it makes balancers for services of type LoadBalancer
+	FrontWithIp    bool                   `protobuf:"varint,3,opt,name=front_with_ip,json=frontWithIp,proto3" json:"front_with_ip,omitempty"`       // a kept Provider IP can front a balancer (loadBalancer.ip)
+	KeepsClientIp  bool                   `protobuf:"varint,4,opt,name=keeps_client_ip,json=keepsClientIp,proto3" json:"keeps_client_ip,omitempty"` // the silo sees the client's address behind its balancers
+	Reach          string                 `protobuf:"bytes,5,opt,name=reach,proto3" json:"reach,omitempty"`                                         // where its IPs and balancers reach silos: host | region (default) | global
+	Regions        []string               `protobuf:"bytes,6,rep,name=regions,proto3" json:"regions,omitempty"`                                     // the regions it serves; empty: any
+	OwnHostsOnly   bool                   `protobuf:"varint,7,opt,name=own_hosts_only,json=ownHostsOnly,proto3" json:"own_hosts_only,omitempty"`    // only its own machines (Hosts) can be behind them
+	Annotations    []*Annotation          `protobuf:"bytes,8,rep,name=annotations,proto3" json:"annotations,omitempty"`
+	ProviderIpv6   bool                   `protobuf:"varint,9,opt,name=provider_ipv6,json=providerIpv6,proto3" json:"provider_ipv6,omitempty"`         // its Provider IPs can be IPv6, one address each following its holder
+	NoProviderIpv6 string                 `protobuf:"bytes,10,opt,name=no_provider_ipv6,json=noProviderIpv6,proto3" json:"no_provider_ipv6,omitempty"` // why it can't float an IPv6 address (said when one is refused)
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Networking) Reset() {
@@ -279,6 +281,20 @@ func (x *Networking) GetAnnotations() []*Annotation {
 		return x.Annotations
 	}
 	return nil
+}
+
+func (x *Networking) GetProviderIpv6() bool {
+	if x != nil {
+		return x.ProviderIpv6
+	}
+	return false
+}
+
+func (x *Networking) GetNoProviderIpv6() string {
+	if x != nil {
+		return x.NoProviderIpv6
+	}
+	return ""
 }
 
 // Annotation is one annotation a provider accepts, in its domain (NAME.kevaso.com/KEY).
@@ -945,6 +961,7 @@ type LoadBalancerStatus struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Address       string                 `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
 	SourceRanges  []string               `protobuf:"bytes,2,rep,name=source_ranges,json=sourceRanges,proto3" json:"source_ranges,omitempty"` // where it connects to node ports from
+	AddressIpv6   string                 `protobuf:"bytes,3,opt,name=address_ipv6,json=addressIpv6,proto3" json:"address_ipv6,omitempty"`    // its IPv6 address too, when it answers on IPv6; empty: IPv4 only
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -991,6 +1008,13 @@ func (x *LoadBalancerStatus) GetSourceRanges() []string {
 		return x.SourceRanges
 	}
 	return nil
+}
+
+func (x *LoadBalancerStatus) GetAddressIpv6() string {
+	if x != nil {
+		return x.AddressIpv6
+	}
+	return ""
 }
 
 type LoadBalancerRef struct {
@@ -1098,6 +1122,7 @@ type AddressReservation struct {
 	Region        string                 `protobuf:"bytes,5,opt,name=region,proto3" json:"region,omitempty"`
 	Address       string                 `protobuf:"bytes,6,opt,name=address,proto3" json:"address,omitempty"` // one you already own; empty: any
 	Annotations   map[string]string      `protobuf:"bytes,7,rep,name=annotations,proto3" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Family        string                 `protobuf:"bytes,8,opt,name=family,proto3" json:"family,omitempty"` // IPv4 ("", default) | IPv6 (only for a plugin declaring provider_ipv6)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1179,6 +1204,13 @@ func (x *AddressReservation) GetAnnotations() map[string]string {
 		return x.Annotations
 	}
 	return nil
+}
+
+func (x *AddressReservation) GetFamily() string {
+	if x != nil {
+		return x.Family
+	}
+	return ""
 }
 
 type AddressStatus struct {
@@ -2033,7 +2065,7 @@ const file_kplugin_proto_rawDesc = "" +
 	"\brevision\x18\b \x01(\rR\brevision\x12<\n" +
 	"\n" +
 	"networking\x18\t \x01(\v2\x1c.kevaso.plugin.v1.NetworkingR\n" +
-	"networking\"\xb8\x02\n" +
+	"networking\"\x87\x03\n" +
 	"\n" +
 	"Networking\x12!\n" +
 	"\fprovider_ips\x18\x01 \x01(\bR\vproviderIps\x12%\n" +
@@ -2043,7 +2075,10 @@ const file_kplugin_proto_rawDesc = "" +
 	"\x05reach\x18\x05 \x01(\tR\x05reach\x12\x18\n" +
 	"\aregions\x18\x06 \x03(\tR\aregions\x12$\n" +
 	"\x0eown_hosts_only\x18\a \x01(\bR\fownHostsOnly\x12>\n" +
-	"\vannotations\x18\b \x03(\v2\x1c.kevaso.plugin.v1.AnnotationR\vannotations\"\xd4\x01\n" +
+	"\vannotations\x18\b \x03(\v2\x1c.kevaso.plugin.v1.AnnotationR\vannotations\x12#\n" +
+	"\rprovider_ipv6\x18\t \x01(\bR\fproviderIpv6\x12(\n" +
+	"\x10no_provider_ipv6\x18\n" +
+	" \x01(\tR\x0enoProviderIpv6\"\xd4\x01\n" +
 	"\n" +
 	"Annotation\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12 \n" +
@@ -2111,15 +2146,16 @@ const file_kplugin_proto_rawDesc = "" +
 	"\vannotations\x18\t \x03(\v2/.kevaso.plugin.v1.LoadBalancer.AnnotationsEntryR\vannotations\x1a>\n" +
 	"\x10AnnotationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"S\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"v\n" +
 	"\x12LoadBalancerStatus\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12#\n" +
-	"\rsource_ranges\x18\x02 \x03(\tR\fsourceRanges\"Q\n" +
+	"\rsource_ranges\x18\x02 \x03(\tR\fsourceRanges\x12!\n" +
+	"\faddress_ipv6\x18\x03 \x01(\tR\vaddressIpv6\"Q\n" +
 	"\x0fLoadBalancerRef\x12\x14\n" +
 	"\x05class\x18\x01 \x01(\tR\x05class\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x18\n" +
 	"\aaddress\x18\x03 \x01(\tR\aaddress\"\x1c\n" +
-	"\x1aDeleteLoadBalancerResponse\"\xb7\x02\n" +
+	"\x1aDeleteLoadBalancerResponse\"\xcf\x02\n" +
 	"\x12AddressReservation\x12\x14\n" +
 	"\x05class\x18\x01 \x01(\tR\x05class\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x1c\n" +
@@ -2127,7 +2163,8 @@ const file_kplugin_proto_rawDesc = "" +
 	"\x04name\x18\x04 \x01(\tR\x04name\x12\x16\n" +
 	"\x06region\x18\x05 \x01(\tR\x06region\x12\x18\n" +
 	"\aaddress\x18\x06 \x01(\tR\aaddress\x12W\n" +
-	"\vannotations\x18\a \x03(\v25.kevaso.plugin.v1.AddressReservation.AnnotationsEntryR\vannotations\x1a>\n" +
+	"\vannotations\x18\a \x03(\v25.kevaso.plugin.v1.AddressReservation.AnnotationsEntryR\vannotations\x12\x16\n" +
+	"\x06family\x18\b \x01(\tR\x06family\x1a>\n" +
 	"\x10AnnotationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"Y\n" +

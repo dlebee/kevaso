@@ -48,6 +48,8 @@ message Networking {
   repeated string regions = 6; // the regions it serves; empty: any
   bool own_hosts_only = 7;   // only its own machines (Hosts) can be behind them
   repeated Annotation annotations = 8;
+  bool provider_ipv6 = 9;      // its Provider IPs can be IPv6, one address each following its holder
+  string no_provider_ipv6 = 10; // why it can't float an IPv6 address (said when one is refused)
 }
 
 // Annotation is one annotation a provider accepts, in its domain (NAME.kevaso.com/KEY).
@@ -135,6 +137,7 @@ message LoadBalancer {
 message LoadBalancerStatus {
   string address = 1;
   repeated string source_ranges = 2; // where it connects to node ports from
+  string address_ipv6 = 3;           // its IPv6 address too, when it answers on IPv6; empty: IPv4 only
 }
 
 message LoadBalancerRef {
@@ -163,6 +166,7 @@ message AddressReservation {
   string region = 5;
   string address = 6; // one you already own; empty: any
   map<string, string> annotations = 7;
+  string family = 8; // IPv4 ("", default) | IPv6 (only for a plugin declaring provider_ipv6)
 }
 
 message AddressStatus {

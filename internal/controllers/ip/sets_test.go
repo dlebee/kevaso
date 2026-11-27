@@ -20,6 +20,7 @@ import (
 	"kevaso.com/core/internal/engine"
 	"kevaso.com/core/internal/plugins"
 	"kevaso.com/core/internal/store"
+	"kevaso.com/core/sdk/kplugin"
 	"kevaso.com/core/sdk/kplugin/kplugintest"
 )
 
@@ -32,7 +33,10 @@ type setEnv struct {
 	fake *kplugintest.Fake
 }
 
-func newSetEnv(t *testing.T) *setEnv {
+func newSetEnv(t *testing.T) *setEnv { return newSetEnvWith(t, nil) }
+
+// newSetEnvWith runs the controllers with a fake plugin declaring n (nil: FakeNetworking).
+func newSetEnvWith(t *testing.T, n *kplugin.Networking) *setEnv {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	srv, err := apiserver.New(store.NewMemory(0), clock.Real{})
 	if err != nil {
@@ -46,6 +50,7 @@ func newSetEnv(t *testing.T) *setEnv {
 	dir, _ := os.MkdirTemp("/tmp", "kvs")
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	fake := kplugintest.New()
+	fake.Networking = n
 	reg := &plugins.Registry{Dir: filepath.Join(dir, "plugins")}
 	if err := reg.Add(ctx, fake); err != nil {
 		t.Fatal(err)
