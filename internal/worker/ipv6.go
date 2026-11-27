@@ -138,12 +138,14 @@ func syncBridge6(ctx context.Context, me *v1.Host, uplink6 string) error {
 
 // safeIfname: an interface name that is safe in a /proc/sys path (1-15 of [A-Za-z0-9_.-], not
 // "." or "..").
+const ifnameChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."
+
 func safeIfname(n string) bool {
 	if n == "" || len(n) > 15 || n == "." || n == ".." {
 		return false
 	}
 	for _, c := range []byte(n) {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.') {
+		if !strings.ContainsRune(ifnameChars, rune(c)) {
 			return false
 		}
 	}
