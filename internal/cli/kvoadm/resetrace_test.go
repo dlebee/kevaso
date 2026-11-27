@@ -51,6 +51,20 @@ func TestResetLooksAgainBeforeRemovingAnything(t *testing.T) {
 	if !slices.Contains(c.scripts, hostreset.StartAgainScript) {
 		t.Fatal("kevasod wasn't started again after the reset stopped")
 	}
+	// The same container, read from its runtime's state once the plan purged its engine: not new.
+	// A forced reset of a host with a running container finishes in one run.
+	silos := []string{"container ai/app"}
+	h = newResetHost(t, rec, silos, pvs, nil, hostreset.Flags{Force: true})
+	c = &changingHost{fakeResetHost: h, later: inspection(rec, []string{"container ai/app (from its state; its engine isn't running)"}, pvs, nil, baseState)}
+	if out, err := reset(c, ResetOptions{Yes: true, Force: true}, ""); err != nil || !slices.Contains(h.ran, "step:remove volume group kevaso (on the loop file only)") {
+		t.Fatalf("the same container, found another way, stopped a forced reset: %v, ran %v\n%s", err, h.ran, out)
+	}
+	// A container that wasn't shown still stops it, found either way.
+	h = newResetHost(t, rec, silos, pvs, nil, hostreset.Flags{Force: true})
+	c = &changingHost{fakeResetHost: h, later: inspection(rec, []string{"container ai/app", "container ai/other (from its state; its engine isn't running)"}, pvs, nil, baseState)}
+	if out, err := reset(c, ResetOptions{Yes: true, Force: true}, ""); err == nil || !strings.Contains(err.Error(), "container ai/other") {
+		t.Fatalf("a container that wasn't shown didn't stop the reset: %v\n%s", err, out)
+	}
 	// Nothing new: the reset goes on as before.
 	h = newResetHost(t, rec, nil, pvs, []string{"kv-01-ab 1.00g"}, hostreset.Flags{WipeStorage: true})
 	if out, err := reset(h, ResetOptions{Yes: true, WipeStorage: true}, ""); err != nil || !slices.Contains(h.ran, "step:remove volume group kevaso (on the loop file only)") {

@@ -282,9 +282,15 @@ func lookAgain(ctx context.Context, h hostRunner, before hostreset.Inspection, s
 	if err != nil {
 		return "", err
 	}
+	// A silo is compared by what it is, not how it was found: once the plan purges its engine,
+	// the same container is read from its runtime's state on disk instead.
+	shownSilos := map[string]bool{}
+	for _, s := range before.Silos {
+		shownSilos[hostreset.SiloID(s)] = true
+	}
 	var news []string
 	for _, s := range now.Silos {
-		if !slices.Contains(before.Silos, s) {
+		if !shownSilos[hostreset.SiloID(s)] {
 			news = append(news, "silo "+s)
 		}
 	}
