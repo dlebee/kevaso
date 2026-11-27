@@ -100,14 +100,16 @@ func TestWithIngressPaths(t *testing.T) {
 	}
 }
 
-// Addresses a silo's status asks this host to hold go on its interfaces only as IPv4 /32s: an
-// IPv6 or malformed one (a plugin's answer, K-045) is never added, so it can't be left behind.
-func TestPoolAndAnnouncedAddressesAreIPv4Only(t *testing.T) {
+// Addresses a silo's status asks this host to hold go on its interfaces only as IPv4 /32s or
+// global IPv6 /128s (marked as Kevaso's, so they are taken off again): a malformed, link-local or
+// unique local one (a plugin's answer, K-045) is never added. Announced ones (the loopback, for a
+// provider's BGP) stay IPv4 only.
+func TestPoolAndAnnouncedAddresses(t *testing.T) {
 	s := &v1.Silo{ObjectMeta: meta.ObjectMeta{Name: "x", Namespace: "dev"}}
 	s.Status.Host = "hv1"
-	s.Status.Service.HostAddresses = []string{"198.51.100.17", "2001:db8::17", "::", "0.0.0.0", "198.51.100.18/24", "1.2.3.4 dev lo", "169.254.1.1"}
+	s.Status.Service.HostAddresses = []string{"198.51.100.17", "2001:db8::17", "::", "0.0.0.0", "198.51.100.18/24", "1.2.3.4 dev lo", "169.254.1.1", "fe80::1", "fd00::5"}
 	s.Status.Service.Announce, s.Status.Service.LoadBalancerIP = true, "2001:db8::18"
-	if got := PoolAddresses("hv1", []*v1.Silo{s}); len(got) != 1 || got[0] != "198.51.100.17" {
+	if got := PoolAddresses("hv1", []*v1.Silo{s}); len(got) != 2 || got[0] != "198.51.100.17" || got[1] != "2001:db8::17" {
 		t.Errorf("pool addresses %v", got)
 	}
 	if got := AnnouncedAddresses("hv1", []*v1.Silo{s}); len(got) != 0 {

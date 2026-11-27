@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -172,7 +173,14 @@ func (r *Runtime) Status(_ context.Context, id kri.ID) (kri.Status, error) {
 	}
 	st := kri.Status{State: s.state}
 	if s.state == kri.Running {
-		st.Address = "10.64.0." + fmt.Sprint(1+len(id.Name)%250)
+		host := 1 + len(id.Name)%250
+		st.Address = "10.64.0." + fmt.Sprint(host)
+		// IPv6 where its spec gives a subnet: the same host part, as the bridge runtimes do.
+		if p, err := netip.ParsePrefix(s.spec.Subnet6); err == nil && p.Addr().Is6() {
+			b := p.Masked().Addr().As16()
+			b[15] = byte(host)
+			st.Address6 = netip.AddrFrom16(b).String()
+		}
 	}
 	return st, nil
 }

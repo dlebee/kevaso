@@ -135,14 +135,15 @@ func names(steps []Step) []string {
 	return n
 }
 
-var full = PlanInput{Purge: []string{"docker.io"}, Tables: []string{"inet kevaso"}, IPForward: "0", DockerOurs: true, Storage: StorageLoop}
+var full = PlanInput{Purge: []string{"docker.io"}, Tables: []string{"inet kevaso"}, IPForward: "0", IPForward6: "0", DockerOurs: true, Storage: StorageLoop}
 
 func TestPlanOrder(t *testing.T) {
 	steps := Plan(full)
 	order := []string{
 		"stop kevasod", "stop every kevaso-*", "kill what is left",
 		"remove containers", "stop docker", "remove Kevaso's podman containers",
-		"delete links", "delete docker0", "delete addresses", "delete nftables tables", "restore net.ipv4.ip_forward",
+		"delete links", "delete docker0", "delete addresses", "delete IPv6 addresses", "delete nftables tables", "restore net.ipv4.ip_forward",
+		"restore net.ipv6.conf.all.forwarding",
 		"remove volume group", "purge docker.io",
 		"unmount what is mounted", "remove Kevaso's files", "remove the tests' /etc/hosts", "remove kevaso-* users",
 		RecordStep,
@@ -483,5 +484,35 @@ func TestResetRemovesAndChecksEveryUnitFileTheRuntimesWrite(t *testing.T) {
 	stop := Plan(PlanInput{})[stepIndex(t, Plan(PlanInput{}), "stop every kevaso-* and "+TestUnitPrefix+"* unit")].Script
 	if !strings.Contains(stop, "/etc/systemd/system/kevaso*.socket") {
 		t.Error("the stop step doesn't disable socket units, which can start their service again")
+	}
+}
+
+// The IPv6 effort: IPv6 forwarding is recorded and put back, and a record from before it (no
+// ipforward6 section) still parses and leaves it alone.
+func TestIPForward6(t *testing.T) {
+	st, err := ParseState("== packages\na\n== tables\n== ipforward\n0\n== ipforward6\n0\n")
+	if err != nil || st.IPForward6 != "0" {
+		t.Fatalf("state %+v, %v", st, err)
+	}
+	if again, err := ParseState(st.Render()); err != nil || again.IPForward6 != "0" {
+		t.Fatalf("rendered %q: %+v, %v", st.Render(), again, err)
+	}
+	old, err := ParseState("== packages\na\n== tables\n== ipforward\n0\n")
+	if err != nil || old.IPForward6 != "" {
+		t.Fatalf("an older state: %+v, %v", old, err)
+	}
+	if strings.Contains(old.Render(), "ipforward6") {
+		t.Errorf("an unknown IPv6 forwarding is rendered: %q", old.Render())
+	}
+	if hasStep(Plan(PlanInput{IPForward: "0"}), "restore net.ipv6") {
+		t.Error("an unknown IPv6 forwarding is restored")
+	}
+	now := st
+	now.IPForward6 = "1"
+	if got := Leftovers(st, now); !slices.ContainsFunc(got, func(s string) bool { return strings.Contains(s, "net.ipv6.conf.all.forwarding is 1, was 0") }) {
+		t.Errorf("leftovers %v", got)
+	}
+	if got := Leftovers(old, now); len(got) != 0 {
+		t.Errorf("leftovers against an older record: %v", got)
 	}
 }

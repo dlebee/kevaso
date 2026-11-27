@@ -33,6 +33,12 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 		view.InternalIP, _ = netip.ParseAddr(h.Internal())
 		view.ExternalIP, _ = netip.ParseAddr(h.External())
 		view.Reserved = h.ExtraReservedPorts() // numbers this host listens on, beyond the fixed set
+		// IPv6 at the edge: only with a global address of its own (a host without one is IPv4
+		// only) and an IPv6 silo subnet.
+		if sub6, gw6, ok := SiloNetwork6(h); ok {
+			view.Subnet6, view.Gateway6 = sub6, gw6
+			view.ExternalIPv6, _ = hostAddr(h.ExternalIPv6())
+		}
 	}
 	for _, s := range silos {
 		ks := kni.Silo{Key: s.Namespace + "/" + s.Name, Spec: s.Spec}
@@ -47,6 +53,9 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 		// to what its runtime gave it (WithBindings) or, until then, closed.
 		if s.Status.Host != hostName {
 			continue
+		}
+		if ip6, err := netip.ParseAddr(s.Status.SiloIPv6); err == nil && view.Subnet6.Contains(ip6) {
+			ks.IP6 = ip6
 		}
 		ks.Tap = cloudhypervisor.NamesFor(kri.ID{Namespace: s.Namespace, Name: s.Name, UID: s.UID}).Tap
 		ks.LoadBalancerIP, _ = netip.ParseAddr(s.Status.Service.LoadBalancerIP)
@@ -71,6 +80,24 @@ func NetworkView(hostName string, h *v1.Host, silos []*v1.Silo, grants []*v1.Gra
 		view.Local = append(view.Local, ks)
 	}
 	return view
+}
+
+// SiloNetwork6 is h's IPv6 silo subnet (status.network.siloSubnetIPv6, a /64) and its address in
+// it on the bridge (the subnet's ::1), when h has IPv6 at the edge: a global address of its own
+// (spec.externalIPv6). ok false: its silos are IPv4 only.
+func SiloNetwork6(h *v1.Host) (subnet6 netip.Prefix, gateway6 netip.Addr, ok bool) {
+	if h == nil {
+		return netip.Prefix{}, netip.Addr{}, false
+	}
+	if a, ok := hostAddr(h.ExternalIPv6()); !ok || !a.Is6() {
+		return netip.Prefix{}, netip.Addr{}, false
+	}
+	p, err := netip.ParsePrefix(h.Status.Network.SiloSubnetIPv6)
+	if err != nil || !p.Addr().Is6() || p.Addr().Is4In6() || p.Bits() != 64 || !p.Addr().IsPrivate() {
+		return netip.Prefix{}, netip.Addr{}, false
+	}
+	p = p.Masked()
+	return p, p.Addr().Next(), true
 }
 
 // ServiceView is the cluster's Services as this host's rules need them: each port's targets (the
@@ -117,8 +144,8 @@ func PoolAddresses(hostName string, silos []*v1.Silo) []string {
 	for _, s := range silos {
 		if s.Status.Host == hostName {
 			for _, a := range s.Status.Service.HostAddresses {
-				if v, ok := hostV4(a); ok {
-					out = append(out, v)
+				if v, ok := hostAddr(a); ok {
+					out = append(out, v.String())
 				}
 			}
 		}
@@ -127,14 +154,27 @@ func PoolAddresses(hostName string, silos []*v1.Silo) []string {
 }
 
 // hostV4 is a status address the host may put on an interface as a /32: one IPv4 unicast address,
-// written canonically (syncAddresses only knows IPv4: anything else would be added and never
-// taken off again).
+// written canonically.
 func hostV4(s string) (string, bool) {
-	a, ok := listenAddr(s)
-	if !ok || !a.Is4() || a.IsLinkLocalUnicast() {
+	a, ok := hostAddr(s)
+	if !ok || !a.Is4() {
 		return "", false
 	}
 	return a.String(), true
+}
+
+// hostAddr is a status address the host may put on an interface as a /32 or a /128: one IPv4
+// unicast address, or one global IPv6 unicast address (not link-local, not unique local: the
+// silos' own /64s are fd00::/8), unmapped.
+func hostAddr(s string) (netip.Addr, bool) {
+	a, ok := listenAddr(s)
+	if !ok || a.IsLinkLocalUnicast() {
+		return netip.Addr{}, false
+	}
+	if a.Is6() && (!a.IsGlobalUnicast() || a.IsPrivate()) {
+		return netip.Addr{}, false
+	}
+	return a, true
 }
 
 // AnnouncedAddresses are the shared addresses this host's silos are reached on (status.service
@@ -350,8 +390,21 @@ func syncHostAddresses(ctx context.Context, hostName string, me *v1.Host, all []
 				want = append(want, a)
 			}
 		}
-		if err := syncPoolAddresses(ctx, me.Reach(), want); err != nil {
+		want4, want6 := split46(want)
+		if err := syncPoolAddresses(ctx, me.Reach(), want4); err != nil {
 			log("pool addresses: %v", err)
+		}
+		up6 := uplink6(me)
+		switch {
+		case up6 != "":
+			if err := syncAddresses6(ctx, up6, want6, true); err != nil {
+				log("pool addresses (IPv6): %v", err)
+			}
+		case len(want6) > 0:
+			log("pool addresses (IPv6): no interface has the host's address")
+		}
+		if err := syncBridge6(ctx, me, up6); err != nil {
+			log("the silos' IPv6 gateway: %v", err)
 		}
 	}
 	lo := AnnouncedAddresses(hostName, all)

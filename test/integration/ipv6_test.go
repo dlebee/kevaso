@@ -10,6 +10,9 @@ import (
 	"kevaso.com/core/api/client"
 	"kevaso.com/core/api/meta"
 	v1 "kevaso.com/core/api/v1"
+	"kevaso.com/core/builtin/kni"
+	"kevaso.com/core/internal/mesh"
+	"kevaso.com/core/internal/worker"
 )
 
 // The IPv6 effort, wave 1 (the API and addresses), in a real control plane: the cluster's ULA
@@ -158,5 +161,73 @@ func TestIPv6AddressesAndFamilies(t *testing.T) {
 		st := s.Status.Service
 		return s.Status.Host == "w1" && st.EgressIP == "203.0.113.5" && st.EgressIPv6 == "2001:db8::21" && st.EgressNote == "",
 			fmt.Sprintf("host %q, out %q, IPv6 out %q, note %q", s.Status.Host, st.EgressIP, st.EgressIPv6, st.EgressNote)
+	})
+
+	// Wave 2, the worker's wiring: once its runtime gave mx6 its addresses (the agent writes them),
+	// w1's ruleset has the IPv6 twins: mx6's service on mail6, NAT66 from mail6, the IPv6 grant.
+	var w1 v1.Host
+	if err := admin.Get(ctx, "Host", "", "w1", &w1); err != nil {
+		t.Fatal(err)
+	}
+	sub4 := netip.MustParsePrefix(w1.Status.Network.SiloSubnet)
+	silo4 := sub4.Addr().Next().Next().String()
+	silo6, ok := mesh.SiloIPv6(w1.Status.Network.SiloSubnetIPv6, sub4.String(), silo4)
+	if !ok {
+		t.Fatalf("no silo IPv6 for %s in %s", silo4, w1.Status.Network.SiloSubnetIPv6)
+	}
+	for i := 0; ; i++ {
+		var s v1.Silo
+		if err := admin.Get(ctx, "Silo", "mail", "mx6", &s); err != nil {
+			t.Fatal(err)
+		}
+		s.Status.SiloIP, s.Status.SiloIPv6, s.Status.Phase = silo4, silo6, "Running"
+		err := admin.UpdateStatus(ctx, &s)
+		if err == nil {
+			break
+		}
+		if !client.IsConflict(err) || i > 20 {
+			t.Fatal(err)
+		}
+	}
+	rules := func() string {
+		var silos []*v1.Silo
+		var grants []*v1.Grant
+		var ips []*v1.IP
+		for kind, add := range map[string]func(meta.Object){
+			"Silo":  func(o meta.Object) { silos = append(silos, o.(*v1.Silo)) },
+			"Grant": func(o meta.Object) { grants = append(grants, o.(*v1.Grant)) },
+			"IP":    func(o meta.Object) { ips = append(ips, o.(*v1.IP)) },
+		} {
+			l, err := admin.List(ctx, kind, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, raw := range l.Items {
+				if o, _, err := v1.Decode(raw); err == nil {
+					add(o)
+				}
+			}
+		}
+		var me v1.Host
+		_ = admin.Get(ctx, "Host", "", "w1", &me)
+		view := worker.NetworkView("w1", &me, silos, grants, nil)
+		view = worker.WithIPs(view, "w1", &me, silos, ips)
+		text, _ := kni.Generate(view)
+		return text
+	}
+	sub6 := w1.Status.Network.SiloSubnetIPv6
+	wants := []string{
+		"ip6 daddr 2001:db8::21 tcp dport 25 dnat ip6 to [" + silo6 + "]:2525",
+		"ip6 saddr " + silo6 + ` oifname != "kvbr0" snat ip6 to 2001:db8::21`,
+		`ip6 saddr ` + sub6 + ` oifname != "kvbr0" masquerade`,
+	}
+	eventually("w1's rules have mx6's IPv6 twins", func() (bool, string) {
+		text := rules()
+		for _, w := range wants {
+			if !strings.Contains(text, w) {
+				return false, "no " + w
+			}
+		}
+		return true, ""
 	})
 }
