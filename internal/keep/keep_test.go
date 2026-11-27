@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -185,6 +186,38 @@ func shells(t *testing.T) []string {
 	return out
 }
 
+// waitFor polls cond until it holds or the time is up. Under load, a fixed number of short
+// sleeps runs out before a slow fork or exec has happened, so the tests wait on the condition.
+func waitFor(d time.Duration, cond func() bool) bool {
+	for end := time.Now().Add(d); ; time.Sleep(20 * time.Millisecond) {
+		if cond() {
+			return true
+		}
+		if time.Now().After(end) {
+			return false
+		}
+	}
+}
+
+// running says whether pid is a live process. A zombie isn't: kill -0 succeeds on one, and a
+// stopped daemon's children stay zombies until their new parent reaps them, which a container's
+// PID 1 ("sleep infinity") never does.
+func running(pid string) bool {
+	if st, err := os.ReadFile("/proc/" + pid + "/status"); err == nil {
+		for _, l := range strings.Split(string(st), "\n") {
+			if s, ok := strings.CutPrefix(l, "State:"); ok {
+				s = strings.TrimSpace(s)
+				return s != "" && s[0] != 'Z' && s[0] != 'X'
+			}
+		}
+		return false
+	}
+	if _, err := os.Stat("/proc/self"); err == nil {
+		return false // /proc is there and the process isn't
+	}
+	return exec.Command("kill", "-0", pid).Run() == nil
+}
+
 // in runs one of the commands with a given sh in place of "sh".
 func in(t *testing.T, shell string, argv []string) string {
 	t.Helper()
@@ -203,22 +236,18 @@ func TestStopKillsTheGroupInEveryShell(t *testing.T) {
 			d := v1.Daemon{Name: "long", Run: "sleep 30 & echo $! > " + Dir + "/child; wait"}
 			in(t, shell, StartCommand(d))
 			var child string
-			for i := 0; i < 100 && child == ""; i++ {
-				time.Sleep(20 * time.Millisecond)
-				child = strings.TrimSpace(sh(t, []string{"sh", "-c", "cat " + Dir + "/child 2>/dev/null || true"}))
-			}
-			if child == "" {
+			if !waitFor(30*time.Second, func() bool {
+				b, _ := os.ReadFile(Dir + "/child")
+				child = strings.TrimSpace(string(b))
+				return len(b) > 0 && b[len(b)-1] == '\n' // echo writes the newline last
+			}) {
 				t.Fatal("the daemon never started")
 			}
 			in(t, shell, StopCommand("long"))
-			for i := 0; i < 100; i++ {
-				if exec.Command("kill", "-0", child).Run() != nil {
-					return
-				}
-				time.Sleep(20 * time.Millisecond)
+			if !waitFor(10*time.Second, func() bool { return !running(child) }) {
+				_ = exec.Command("kill", "-9", child).Run()
+				t.Fatalf("with %s, the daemon's child %s outlived the stop", shell, child)
 			}
-			_ = exec.Command("kill", "-9", child).Run()
-			t.Fatalf("with %s, the daemon's child %s outlived the stop", shell, child)
 		})
 	}
 }
@@ -231,23 +260,22 @@ func TestProbeSeesAZombieAsDead(t *testing.T) {
 	}
 	Dir = t.TempDir()
 	pid, _, _ := files("z")
-	// The child exits at once; its parent becomes "sleep 3", which never reaps it.
-	parent := exec.Command("sh", "-c", "sh -c 'exit 0' & echo $! > "+pid+"; exec sleep 3")
-	if err := parent.Start(); err != nil {
+	// The test is the child's parent and doesn't reap it until the end (Go reaps a child only in
+	// Wait), so once it exits it stays a zombie for as long as the test looks at it. A shell
+	// parent ("cmd & …; exec sleep") isn't reliable: when the child exits before the exec, the
+	// shell reaps it and no zombie is left.
+	child := exec.Command("true")
+	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = parent.Process.Kill(); _ = parent.Wait() }()
-	zombie := false
-	for i := 0; i < 100 && !zombie; i++ {
-		time.Sleep(20 * time.Millisecond)
-		b, err := os.ReadFile(pid)
-		if err != nil || len(b) == 0 {
-			continue
-		}
-		st, _ := os.ReadFile("/proc/" + strings.TrimSpace(string(b)) + "/status")
-		zombie = strings.Contains(string(st), "State:\tZ")
+	defer func() { _ = child.Wait() }()
+	if err := os.WriteFile(pid, []byte(strconv.Itoa(child.Process.Pid)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if !zombie {
+	if !waitFor(30*time.Second, func() bool {
+		st, _ := os.ReadFile("/proc/" + strconv.Itoa(child.Process.Pid) + "/status")
+		return strings.Contains(string(st), "State:\tZ")
+	}) {
 		t.Fatal("couldn't make a zombie")
 	}
 	for _, shell := range shells(t) {
