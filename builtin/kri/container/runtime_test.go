@@ -30,6 +30,7 @@ type fake struct {
 	digests    map[string]string                                // image → its RepoDigests (JSON)
 	onPull     func(engine string, args []string) (int, error)  // a pull, if set (pull_test.go)
 	replies    map[string]string                                // command line prefix → its stdout (envshim_test.go)
+	v6         map[int][2]string                                // pid → its namespace's IPv6 address and default route (ipv6_test.go)
 }
 
 func newFake() *fake {
@@ -72,6 +73,8 @@ func (f *fake) Run(ctx context.Context, c hostexec.Cmd) (int, error) {
 		}
 		f.files["/proc/self/mounts"] = []byte(strings.Join(keep, ""))
 		f.fmu.Unlock()
+	case c.Name == "nsenter" && indexOf(a, "-6") >= 0:
+		return f.runIPv6(a, out)
 	case c.Name == "nsenter" && strings.Contains(strings.Join(a, " "), "addr show dev eth0"):
 		if !f.wired[f.pid] {
 			return fail("")

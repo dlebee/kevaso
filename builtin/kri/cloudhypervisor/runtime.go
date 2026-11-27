@@ -45,11 +45,17 @@ type Host interface {
 
 // State is what the runtime remembers about a silo (in its directory, silo.json).
 type State struct {
-	ID      kri.ID `json:"id"`
-	IP      string `json:"ip"`
-	MAC     string `json:"mac"`
-	HostKey string `json:"hostKey"` // the guest's SSH host key (public), pinned for Exec
-	Started bool   `json:"started"` // started at least once (Stopped vs Created)
+	ID kri.ID `json:"id"`
+	IP string `json:"ip"`
+	// IP6 and Gateway6 are the silo IPv6 address and default route its seed gives the guest
+	// (the IPv6 effort; SiloNet6 of the spec's Subnet6, Gateway6): empty when the spec had none
+	// when the seed was built. A guest takes its network config once per instance, so a silo
+	// made without them gets them with its next seed (a reset, a move).
+	IP6      string `json:"ip6,omitempty"`
+	Gateway6 string `json:"gateway6,omitempty"`
+	MAC      string `json:"mac"`
+	HostKey  string `json:"hostKey"` // the guest's SSH host key (public), pinned for Exec
+	Started  bool   `json:"started"` // started at least once (Stopped vs Created)
 	// Made is set once the unit file is written, and a reset keeps it. Started is cleared by a
 	// finished reset, so it cannot say whether this silo was ever finished: a missing unit after
 	// that is not a half-made create, and the disk stays.
@@ -373,7 +379,8 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 			keyFromDisk = true
 		}
 	}
-	st := State{ID: spec.ID, IP: ip.String(), MAC: MAC(spec.ID), HostKey: hostPub, CPUs: cpus, MemMiB: mem >> 20,
+	ip6, gw6, _ := SiloNet6(spec.Subnet6, spec.Gateway6, ip)
+	st := State{ID: spec.ID, IP: ip.String(), IP6: addrString(ip6), Gateway6: addrString(gw6), MAC: MAC(spec.ID), HostKey: hostPub, CPUs: cpus, MemMiB: mem >> 20,
 		Volumes: spec.Volumes, RootDir: spec.DiskHostPath, KeyFromDisk: keyFromDisk}
 	layout := st.layout()
 
@@ -411,7 +418,7 @@ func (r *Runtime) Create(ctx context.Context, spec kri.Spec) error {
 			return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(spec.ID, hostPub, r.HostName)), 0o600)
 		},
 		func() error {
-			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, spec.ID.Namespace)), 0o600)
+			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, ip6, gw6, spec.ID.Namespace)), 0o600)
 		},
 		func() error {
 			return r.run(ctx, "cloud-localds", "--network-config="+n.Dir+"/network-config", n.Dir+"/seed.img", n.Dir+"/user-data", n.Dir+"/meta-data")
@@ -512,7 +519,8 @@ func (r *Runtime) SetGuestHostKey(ctx context.Context, id kri.ID, pub string) er
 	if err := r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(id, pub, r.HostName)), 0o600); err != nil {
 		return err
 	}
-	if err := r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, id.Namespace)), 0o600); err != nil {
+	ip6, gw6 := st.net6()
+	if err := r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, ip6, gw6, id.Namespace)), 0o600); err != nil {
 		return err
 	}
 	if err := r.run(ctx, "cloud-localds", "--network-config="+n.Dir+"/network-config", n.Dir+"/seed.img", n.Dir+"/user-data", n.Dir+"/meta-data"); err != nil {
@@ -1130,9 +1138,9 @@ func (r *Runtime) Status(ctx context.Context, id kri.ID) (kri.Status, error) {
 	}
 	switch state, up := r.vmm(ctx, NamesFor(id)); {
 	case up && state == "active":
-		return kri.Status{State: kri.Running, Address: st.IP}, nil
+		return kri.Status{State: kri.Running, Address: st.IP, Address6: st.IP6}, nil
 	case up:
-		return kri.Status{State: kri.Running, Address: st.IP, Message: "its VMM's unit is " + strconv.Quote(state) + " and may still run"}, nil
+		return kri.Status{State: kri.Running, Address: st.IP, Address6: st.IP6, Message: "its VMM's unit is " + strconv.Quote(state) + " and may still run"}, nil
 	case state == "failed":
 		out, _ := r.Host.Run(ctx, "journalctl", "-u", NamesFor(id).Unit, "-n", "3", "--no-pager", "-o", "cat")
 		return kri.Status{State: kri.Failed, Message: strings.TrimSpace(string(out))}, nil
@@ -1390,7 +1398,8 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 	if !ok {
 		return fmt.Errorf("%s: %w", spec.ID, kri.ErrNotFound)
 	}
-	if _, err := netip.ParseAddr(st.IP); err != nil {
+	ip, err := netip.ParseAddr(st.IP)
+	if err != nil {
 		return err
 	}
 	n := NamesFor(spec.ID)
@@ -1405,6 +1414,8 @@ func (r *Runtime) ResetGated(ctx context.Context, spec kri.Spec, gate func(conte
 	}
 	old := st
 	st.CPUs, st.MemMiB, st.Volumes, st.RootDir = cpus, mem>>20, spec.Volumes, spec.DiskHostPath
+	ip6, gw6, _ := SiloNet6(spec.Subnet6, spec.Gateway6, ip) // the new seed's: the spec's IPv6 now
+	st.IP6, st.Gateway6 = addrString(ip6), addrString(gw6)
 	for _, c := range StopPlan(n, old.layout()) {
 		_, _ = r.Host.Run(ctx, c[0], c[1:]...)
 	}
@@ -1545,6 +1556,7 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 	if err != nil {
 		return err
 	}
+	ip6, gw6 := st.net6() // ResetGated took them from its spec
 	hostPub, hostPriv, err := newHostKey()
 	if err != nil {
 		return err
@@ -1576,7 +1588,7 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 			return r.Host.WriteFile(n.Dir+"/meta-data", []byte(MetaData(st.ID, hostPub, r.HostName)), 0o600)
 		},
 		func() error {
-			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, st.ID.Namespace)), 0o600)
+			return r.Host.WriteFile(n.Dir+"/network-config", []byte(NetworkConfig(st.MAC, ip, ip6, gw6, st.ID.Namespace)), 0o600)
 		},
 		func() error {
 			return r.run(ctx, "cloud-localds", "--network-config="+n.Dir+"/network-config", n.Dir+"/seed.img", n.Dir+"/user-data", n.Dir+"/meta-data")
@@ -1592,6 +1604,24 @@ func (r *Runtime) remakeLocked(ctx context.Context, st State, img string) error 
 	}
 	st.HostKey, st.Started, st.Made, st.Remake, st.KeyFromDisk, st.KeyImage = hostPub, false, true, nil, false, id
 	return r.saveState(st)
+}
+
+// net6 is the silo IPv6 address and route its state keeps (zero: none).
+func (st State) net6() (ip6, gw6 netip.Addr) {
+	a, err := netip.ParseAddr(st.IP6)
+	g, gerr := netip.ParseAddr(st.Gateway6)
+	if err != nil || gerr != nil {
+		return netip.Addr{}, netip.Addr{}
+	}
+	return a, g
+}
+
+// addrString is a's text, "" for the zero address.
+func addrString(a netip.Addr) string {
+	if !a.IsValid() {
+		return ""
+	}
+	return a.String()
 }
 
 // imagePath maps an image name to its cached file.
